@@ -49,9 +49,15 @@ use the same features).
   Their compressed bytes differ (zlib vs zlib-rs), so OCI image IDs differ
   between the two implementations even though layer contents and configs are
   identical.
-- **The wasm example is only 1.4× faster** because the Rust build compiles the
-  wasm module with Cranelift on every run (~55 ms). Caching the compiled
-  module would remove most of that.
+- **The wasm example is fast only because compiled modules are cached.**
+  Cranelift takes ~55 ms per module, and the Rust build used to pay it on every
+  run (62 ms for the example, 1.4× faster than TypeScript). Compiled modules
+  are now cached at `$SITEFILE_HOME/cache/wasm` (and compiled once per process),
+  so a warm build takes about 10 ms (14×); the first build, or one with
+  `SITEFILE_NO_WASM_CACHE=1`, still pays the compile. The wasm row in
+  REPORT.md was re-measured alone (`node bench/run.mjs --only wasm --runs 21`,
+  warm cache) on the same machine; before the change the same run gave ~110 ms
+  for Rust, in a noisier session than the 62 ms originally reported.
 
 ## What profiling changed
 
