@@ -60,3 +60,19 @@ export const DEFAULT_FETCH_POLICY: FetchPolicy = {
   timeoutMs: 30_000,
   maxRedirects: 5,
 };
+
+/** Limits applied when an archive is extracted with `IMPORT … AS tree`. Defaults are secure. */
+export interface ArchiveLimits {
+  /** Maximum number of entries (default 10 000). */
+  readonly maxEntries: number;
+  /** Maximum total uncompressed bytes (default 500 MiB). */
+  readonly maxTotalBytes: number;
+  /** Maximum uncompressed:compressed ratio of the gzip/zip data (default 100). */
+  readonly maxRatio: number;
+}
+
+export const DEFAULT_ARCHIVE_LIMITS: ArchiveLimits = {
+  maxEntries: 10_000,
+  maxTotalBytes: 500 * 1024 * 1024,
+  maxRatio: 100,
+};

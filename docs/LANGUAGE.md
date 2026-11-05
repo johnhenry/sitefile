@@ -25,7 +25,7 @@ RENDER ./templates/index.html TO /index.html
 EXPORT / AS directory
 ```
 
-Design decisions still open: typed expression grammar, override syntax, remote tree import behavior, template engine extension API, lockfile format.
+Design decisions still open: typed expression grammar, override syntax, template engine extension API, lockfile format.
 
 ---
 
@@ -88,7 +88,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - Default kind: `tree` for a local directory, otherwise `file`.
   - `text` must be valid UTF-8; `json` must parse. Both produce **values**:
     they can be read by RENDER templates but not copied (`E_TYPE`).
-  - Remote `tree` imports are M2.
+  - `AS tree` on a **file** (local or remote) means "extract this archive";
+    archives are never extracted implicitly. See Archives below. A local
+    directory with `AS tree` imports the directory as before.
   - Import names must not equal an ARG/LET name or another import.
 - `COPY [--overwrite] [--from=<stage>] <source> <dest>`
   - With `--from=<stage>`, `<source>` is an absolute path (starts with `/`, no
@@ -178,6 +180,28 @@ gitignore subset:
   for https in addition to the built-in roots, for tests and enterprise private
   CAs. Certificate and hostname verification are never disabled; there is no
   CLI flag for it.
+
+### Archives (`IMPORT … AS tree` on a file)
+- Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
+  tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
+  else fails with `E_TYPE`. Supported tar extras: ustar prefix, GNU long names,
+  pax `path`/`size`. Other pax keys are ignored.
+- `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
+  imports, and the import's provenance digest is the archive's digest.
+- Directories are implicit. Modes are reduced to `0644`/`0755`. A single
+  top-level directory is **not** stripped: `COPY name:/top/ /` does that.
+- Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
+  `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
+  device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
+  directory at one path, fail with `E_CONFLICT`. Malformed or truncated
+  archives fail with `E_ARCHIVE`.
+- Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
+  `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
+  `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the
+  whole zip; not enforced below 1 MiB of output, since tar padding compresses
+  extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
+  bomb is stopped at the limit, never fully inflated; zip entries are never
+  inflated beyond their declared size. The download cap still applies first.
 
 ### Export
 - Output is written to a temporary sibling directory, then swapped in.

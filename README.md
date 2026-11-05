@@ -24,9 +24,9 @@ This writes `examples/hello/dist/index.html` (with the title substituted) and
 
 ## Status
 
-Milestones **M0** (local vertical slice) and **M1** (remote inputs) plus
-multi-stage builds (see `examples/multistage`) are
-implemented and tested; see [docs/TASKS.md](docs/TASKS.md). Requires Node.js 22+,
+Milestones **M0** (local vertical slice), **M1** (remote inputs) and **M2**
+(trees and stages: multi-stage builds, `COPY --from`, archive imports,
+`.sitefileignore`; see `examples/multistage`) are implemented and tested; see [docs/TASKS.md](docs/TASKS.md). Requires Node.js 22+,
 no runtime dependencies.
 
 | Instruction | Supported |
@@ -34,7 +34,7 @@ no runtime dependencies.
 | `FROM scratch\|<dir>\|<stage> [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: M2) |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`) |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest>` | yes; `${NAME}`, `${json.path}` |
 | `EXPORT <path> [AS directory]` | yes |

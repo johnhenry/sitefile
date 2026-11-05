@@ -8,6 +8,8 @@ import path from 'node:path';
 import { build, buildToDirectory, type BuildOptions } from '../src/executor.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { sha256 } from '../src/digest.js';
+import { gzipSync } from 'node:zlib';
+import { tar, zip } from './archive-fixtures.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -167,12 +169,16 @@ test('remote sources are refused when given as COPY sources or blocked protocols
 let server: Server;
 let base = '';
 let body = 'remote content v1';
+let archive: Buffer = Buffer.alloc(0);
 async function startServer(): Promise<void> {
   if (server) return;
   server = createServer((req, res) => {
     if (req.url === '/lib.js') {
       res.writeHead(200, { 'content-type': 'text/javascript' });
       res.end(body);
+    } else if (req.url === '/site.tgz') {
+      res.writeHead(200, { 'content-type': 'application/gzip' });
+      res.end(archive);
     } else if (req.url === '/moved') {
       res.writeHead(302, { location: '/lib.js' });
       res.end();
@@ -240,6 +246,70 @@ test('lockfile records unpinned URLs, detects drift, and honours --frozen-lockfi
 
   const fresh = await project({ Sitefile: `FROM scratch\nIMPORT lib FROM ${base}/lib.js\nEXPORT /` });
   await rejectsWith(build({ contextDir: fresh, ...permissive, frozenLockfile: true }), 'E_LOCK_MISSING');
+});
+
+// ------------------------------------------------------------ archives
+
+test('IMPORT … AS tree extracts a pinned remote archive; lockfile covers the archive bytes', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: 'site/index.html', data: '<p>hi</p>' }, { name: 'site/a/b.css', data: 'b{}' }]));
+  const pin = sha256(archive);
+  const sitefile = `FROM scratch\nIMPORT site FROM ${base}/site.tgz AS tree INTEGRITY ${pin}\nCOPY site:/site/ /\nEXPORT /`;
+  const dir = await project({ Sitefile: sitefile });
+  const opts: BuildOptions = { contextDir: dir, ...permissive };
+  const r = await build(opts);
+  assert.deepEqual(r.output.entries().map(([p]) => p), ['/a/b.css', '/index.html']);
+  assert.equal(r.resources.get('site')?.provenance.digest, pin);
+  const lock = JSON.parse(await readFile(path.join(dir, 'Sitefile.lock'), 'utf8'));
+  assert.equal(lock.resources[`${base}/site.tgz`].integrity, pin);
+
+  // A wrong pin fails before anything is extracted.
+  await rejectsWith(
+    run({ Sitefile: sitefile.replace(pin, sha256('other')) }, permissive).then((x) => x.result),
+    'E_INTEGRITY',
+  );
+  // A changed archive is caught by the lockfile.
+  archive = gzipSync(tar([{ name: 'site/index.html', data: '<p>changed</p>' }]));
+  await rejectsWith(build({ ...opts, frozenLockfile: true }), 'E_INTEGRITY');
+});
+
+test('unpinned remote archive is locked and drift is detected', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: 'a.txt', data: 'one' }]));
+  const dir = await project({ Sitefile: `FROM scratch\nIMPORT s FROM ${base}/site.tgz AS tree\nCOPY s: /\nEXPORT /` });
+  const opts: BuildOptions = { contextDir: dir, ...permissive };
+  await build(opts);
+  archive = gzipSync(tar([{ name: 'a.txt', data: 'two' }]));
+  await rejectsWith(build(opts), 'E_LOCK_MISMATCH');
+});
+
+test('remote archive limits are enforced and configurable', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: '../evil', data: 'x' }]));
+  const sf = { Sitefile: `FROM scratch\nIMPORT s FROM ${base}/site.tgz AS tree\nCOPY s: /\nEXPORT /` };
+  await rejectsWith(run(sf, permissive).then((x) => x.result), 'E_ARCHIVE_UNSAFE', 2);
+  archive = gzipSync(tar([{ name: 'a', data: '1' }, { name: 'b', data: '2' }]));
+  await rejectsWith(run(sf, { ...permissive, archiveLimits: { maxEntries: 1 } }).then((x) => x.result), 'E_ARCHIVE_LIMIT', 2);
+  const ok = await run(sf, permissive);
+  assert.equal(ok.result.output.size, 2);
+});
+
+test('local archive files extract AS tree; a non-archive file is E_TYPE; directories are unchanged', async () => {
+  const dir = await project({
+    Sitefile: 'FROM scratch\nIMPORT z FROM ./site.zip AS tree INTEGRITY ' + sha256(zip([{ name: 'x.txt', data: 'zip!', deflate: true }])) + '\nCOPY z: /\nEXPORT /',
+    'notes.txt': 'plain',
+  });
+  await writeFile(path.join(dir, 'site.zip'), zip([{ name: 'x.txt', data: 'zip!', deflate: true }]));
+  const r = await build({ contextDir: dir, lockfile: false });
+  assert.equal(text(r.output.get('/x.txt')?.bytes), 'zip!');
+
+  await rejectsWith(
+    run({ Sitefile: 'FROM scratch\nIMPORT n FROM ./notes.txt AS tree\nEXPORT /', 'notes.txt': 'plain' }).then((x) => x.result),
+    'E_TYPE',
+    2,
+  );
+  const d = await run({ Sitefile: 'FROM scratch\nIMPORT d FROM ./src AS tree\nCOPY d: /\nEXPORT /', 'src/a.txt': 'a' });
+  assert.deepEqual(d.result.output.entries().map(([p]) => p), ['/a.txt']);
 });
 
 // ------------------------------------------------------------ export

@@ -11,7 +11,7 @@ import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
-import { DEFAULT_FETCH_POLICY, type FetchPolicy, type Resource } from './resources/types.js';
+import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 import type { Scalar } from './values.js';
 import { exportDirectory, isExporterTempName } from './exporter.js';
@@ -25,6 +25,8 @@ export interface BuildOptions {
   /** Export destination; skipped when walking the context if it lies inside it. */
   readonly outDir?: string;
   readonly fetchPolicy?: Partial<FetchPolicy>;
+  /** Limits for extracting archives imported AS tree. */
+  readonly archiveLimits?: Partial<ArchiveLimits>;
   /** Lockfile path, or false to disable. Default: `Sitefile.lock` next to the Sitefile. */
   readonly lockfile?: string | false;
   /** Fail instead of adding or changing lockfile entries. */
@@ -106,11 +108,12 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
+  const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
   const lockPath =
     options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
 
-  const env: ImportEnv = { local, policy, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
+  const env: ImportEnv = { local, policy, archiveLimits, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
   const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, resolved[i]!]));
 
@@ -150,6 +153,7 @@ export async function buildToDirectory(
 interface ImportEnv {
   readonly local: LocalContext;
   readonly policy: FetchPolicy;
+  readonly archiveLimits: ArchiveLimits;
   readonly lock: Lockfile | undefined;
   readonly label: string;
   readonly warn: (m: string) => void;
@@ -169,18 +173,14 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
       if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
       return env.local.readTree(rel, origin, spec.span);
     }
-    if (spec.as === 'tree') {
-      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a file, not a directory`, spec.span);
-    }
     const file = await env.local.readFile(rel, spec.span);
     if (spec.integrity) verifyIntegrity(file.bytes, spec.integrity, spec.uri, spec.span);
     if (!spec.as || spec.as === 'file') return file;
-    return bytesToResource(file.bytes, spec.as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span);
+    return bytesToResource(file.bytes, spec.as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span, env.archiveLimits);
   }
 
   const url = spec.location.url;
   const as = spec.as ?? 'file';
-  if (as === 'tree') throw new SitefileError('E_UNSUPPORTED', 'remote tree imports arrive in M2', spec.span);
   const entry = env.lock?.get(url);
   if (env.frozen && !entry) {
     throw new SitefileError('E_LOCK_MISSING', `IMPORT ${spec.name}: '${url}' is not in the lockfile (--frozen-lockfile)`, spec.span);
@@ -203,7 +203,7 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
   }
   env.lock?.record(url, { integrity: digest, size: bytes.byteLength, resolved: finalUrl });
   const basename = path.posix.basename(new URL(finalUrl).pathname) || spec.name;
-  return bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span);
+  return bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits);
 }
 
 // ---------------------------------------------------------------- operations

@@ -5,3 +5,6 @@ examples/*/dist/
 
 # Source chat transcripts (local only)
 extracted_conversations/
+
+# Agent worktrees
+.claude/
