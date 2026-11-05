@@ -9,9 +9,9 @@ Instructions:
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
 - `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
-- `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn] [BASE <https-url>]` (CLI specifies destination)
+- `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>]` (CLI specifies destination)
 - `PLUGIN` and `TRANSFORM` (custom renderers): see Plugins below.
-- Future: REMOVE, GENERATE, ASSERT, META, EXEC, OCI output.
+- Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
 
@@ -153,11 +153,14 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
   - Only `COPY` and `RENDER` lines are scanned for `<<`; elsewhere it is plain text.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn] [BASE <url>]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>]` must be the last
   instruction, exactly once; it exports from the last stage. The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
   tree is mounted at and is required by `wbn` (from here or `--base-url`).
+  `AT` (an operand) is the directory the files occupy inside an `oci` image
+  (default `/srv/www`; `--oci-root` overrides it); with any other format it is
+  an error (`E_VALIDATION`).
   The CLI's `--out` picks the host destination and `--format` / `--base-url`
   override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
@@ -343,7 +346,7 @@ gitignore subset:
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
 `dist.wbn`. The format is chosen by, in order: `--format`; the `--out`
 extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`), so `-o site.zip` writes a
-zip; then the Sitefile's `EXPORT ... AS`; then `directory`.
+zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 
 All archive writers are deterministic: the same tree gives byte-identical
 output (for the same Node/zlib version), whatever the order files were added.
@@ -365,6 +368,31 @@ and tar timestamps instead.
   pax `x` header carries the full `path`. Files of 8 GiB or more fail with
   `E_EXPORT`.
 - **tgz**: gzip of that tar.
+- **oci**: an [OCI image](https://github.com/opencontainers/image-spec) (v1.1) of
+  the site's files. The image has one layer: a deterministic tar of the tree
+  placed under the root (default `/srv/www`, `AT`/`--oci-root`; the parent
+  directory entries `srv` and `srv/www` are emitted so runtimes can unpack
+  it), gzip-compressed (`application/vnd.oci.image.layer.v1.tar+gzip`). The
+  config's `rootfs.diff_ids` is the sha256 of the *uncompressed* tar; the
+  layer descriptor is the sha256 of the gzip. `created` is `SOURCE_DATE_EPOCH`
+  or `1970-01-01T00:00:00Z`; `architecture`/`os` default to `amd64`/`linux`
+  (`--platform os/arch`; metadata only). Labels: `org.opencontainers.image.title`
+  (the context directory name), `dev.sitefile.root`, any `--label key=value`,
+  and, only with `--git-labels`, `.source` and `.revision` from the repository
+  checkout (read from its `.git` directory without running anything;
+  credentials in URLs are dropped). Git labels are off by default because they
+  change the image ID on every commit even when the files are identical, and
+  finding the checkout reads outside the build context. Build-arg values
+  are never written. The config, manifest and index are canonical JSON (sorted
+  keys, no whitespace), so the same build always yields the same manifest digest.
+  `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
+  layout, below); any other `--out` with `--format oci` is an *OCI layout
+  directory*: `oci-layout`, `index.json` (one manifest entry, annotated
+  `org.opencontainers.image.ref.name` when you pass `-t`) and
+  `blobs/sha256/<hex>`. **The image contains only files**: it has no
+  entrypoint and is not runnable on its own. Use it as a source of files, e.g.
+  `COPY --from=<image> /srv/www /usr/share/nginx/html` in a Dockerfile; a
+  future `BASE` could use it once registries are supported.
 - **wbn**: an **unsigned Web Bundle**, format version `b2`
   (draft-ietf-wpack-bundled-responses): top-level CBOR array
   `[magic "🌐📦", version "b2\0\0", section lengths, [index, primary?, responses], 8-byte length]`,

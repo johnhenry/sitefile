@@ -3,10 +3,11 @@ import type { ExportFormat } from './language/ast.js';
 import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
 
-export type ArchiveFormat = Exclude<ExportFormat, 'directory'>;
+export type ArchiveFormat = Exclude<ExportFormat, 'directory' | 'oci'>;
 
+/** Single-file formats encoded by {@link encodeTree}. `oci` is handled separately (layout directory or OCI archive). */
 export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
-  return f !== 'directory';
+  return f !== 'directory' && f !== 'oci';
 }
 
 /** Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`. */
@@ -22,6 +23,8 @@ export function defaultOutName(format: ExportFormat): string {
       return 'dist.tar.gz';
     case 'wbn':
       return 'dist.wbn';
+    case 'oci':
+      return 'dist.oci.tar';
   }
 }
 
@@ -42,4 +45,15 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
     case 'wbn':
       return writeWebBundle(tree, options.baseUrl);
   }
+}
+
+/** The export format implied by an output file name, if it has an archive extension. */
+export function formatFromExtension(out: string): ExportFormat | undefined {
+  const name = out.toLowerCase();
+  if (name.endsWith('.oci.tar')) return 'oci';
+  if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) return 'tgz';
+  if (name.endsWith('.tar')) return 'tar';
+  if (name.endsWith('.zip')) return 'zip';
+  if (name.endsWith('.wbn')) return 'wbn';
+  return undefined;
 }

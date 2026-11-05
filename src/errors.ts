@@ -52,6 +52,9 @@ export type ErrorCode =
   // export
   | 'E_EXPORT'
   | 'E_EXPORT_UNSAFE'
+  // local image store and site servers
+  | 'E_STORE'
+  | 'E_SERVER'
   // cli
   | 'E_USAGE';
 

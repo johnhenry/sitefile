@@ -93,6 +93,8 @@ export interface Plan {
   readonly exportFormat: ExportFormat;
   /** Evaluated `BASE` clause of EXPORT, if any (raw string; validated when the export is written). */
   readonly exportBase: string | undefined;
+  /** Evaluated `AT` clause of EXPORT ... AS oci: the root directory inside the image layer. */
+  readonly exportRoot: string | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -112,6 +114,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportPath: string | undefined;
   let exportFormat: ExportFormat = 'directory';
   let exportBase: string | undefined;
+  let exportRoot: string | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -226,6 +229,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportPath = normalizeVirtual(evaluateOperand(ins.path, vars), ins.path.span, 'EXPORT path').path;
         exportFormat = ins.format;
         exportBase = ins.base ? evaluateOperand(ins.base, vars) : undefined;
+        if (ins.at && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... AT applies only to AS oci', ins.at.span);
+        exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
         break;
     }
   }
@@ -237,7 +242,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, exportPath, exportFormat, exportBase, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, exportPath, exportFormat, exportBase, exportRoot, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
