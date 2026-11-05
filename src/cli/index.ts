@@ -1,6 +1,7 @@
 import { runCommand, usageError, type Command } from './common.js';
 import { imageCommands, imageSubcommands } from './images.js';
 import { serverCommands, serverSubcommands } from './servers.js';
+import { cacheSubcommands } from './cache.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
@@ -8,7 +9,7 @@ import { serverCommands, serverSubcommands } from './servers.js';
  */
 const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands].filter(([k]) => !k.includes(' ')));
 
-export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server'];
+export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache'];
 
 export const EXTRA_HELP = `
 Images (local store: $SITEFILE_HOME or ~/.sitefile):
@@ -20,6 +21,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile tag <src> <dst>                         add a name:tag
   sitefile rmi [-f] <ref|id>...                    remove tags / images
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
+
+Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
+  sitefile cache info [--json]                     location, entries, size
+  sitefile cache prune [--older-than <days>]       delete cached results
 
 Serving sites (detached servers are tracked by name):
   sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
@@ -36,6 +41,7 @@ export function isExtraCommand(name: string | undefined): boolean {
 const GROUPS: ReadonlyMap<string, { subs: ReadonlyMap<string, Command>; usage: string }> = new Map([
   ['image', { subs: imageSubcommands, usage: 'image <ls|inspect|tag|rm|save|prune|diff>' }],
   ['server', { subs: serverSubcommands, usage: 'server <ls|stop|rm|logs|restart>' }],
+  ['cache', { subs: cacheSubcommands, usage: 'cache <info|prune>' }],
 ]);
 
 export async function runExtraCommand(argv: readonly string[]): Promise<number> {

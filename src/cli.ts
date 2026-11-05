@@ -10,6 +10,7 @@ import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
+import { transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 
 const VERSION = '0.1.0';
@@ -40,7 +41,11 @@ Options:
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
-      --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins (default 60000)
+      --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
+                               the absolute path (repeatable); programs run with your privileges
+      --no-cache               do not read or write the TRANSFORM result cache
+                               ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
       --force                  replace a non-empty --out outside the context
@@ -77,6 +82,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
+        'allow-exec': { type: 'string', multiple: true },
+        'no-cache': { type: 'boolean' },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
@@ -147,7 +154,12 @@ export async function main(argv: readonly string[]): Promise<number> {
         ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
       },
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
-      ...(o['plugin-timeout'] ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
+      ...(o['plugin-timeout']
+        ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
+        : {}),
+      ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
+      ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
+      onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],

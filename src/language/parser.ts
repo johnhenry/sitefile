@@ -45,6 +45,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseExport(c, span);
     case 'PLUGIN':
       return parsePlugin(c, span);
+    case 'TOOL':
+      return parseTool(c, span);
     case 'TRANSFORM':
       return parseTransform(c, span);
     case 'RUN':
@@ -216,6 +218,12 @@ function parsePlugin(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'PLUGIN', span, name, uri, ...(integrity !== undefined && { integrity }) };
 }
 
+function parseTool(c: Cursor, span: SourceSpan): Instruction {
+  const name = c.ident('tool name');
+  c.expectEnd();
+  return { kind: 'TOOL', span, name };
+}
+
 function parseTransform(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
   // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
@@ -228,6 +236,12 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
   const options: Array<{ key: string; value: Operand; span: SourceSpan }> = [];
   let each: { as: string; list: string; span: SourceSpan } | undefined;
   let sawOptions = false;
+  let args: Operand[] | undefined;
+  const parseArgs = (): void => {
+    // ARGS takes the rest of the line: every word is one argv entry.
+    args = [];
+    while (!c.atEnd()) args.push(c.operand('argument'));
+  };
   while (!c.atEnd()) {
     const at = c.span;
     if (c.keyword('OPTIONS')) {
@@ -240,6 +254,10 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
           each = parseFor(c, keyAt);
           break;
         }
+        if (c.keyword('ARGS')) {
+          parseArgs();
+          break;
+        }
         const key = c.ident('option name', '=');
         if (!c.eat('=')) throw c.error('E_SYNTAX', `expected ${key}=value`, keyAt);
         if (options.some((o) => o.key === key)) throw c.error('E_SYNTAX', `option '${key}' given twice`, keyAt);
@@ -248,8 +266,10 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
     } else if (c.keyword('FOR')) {
       if (each) throw c.error('E_SYNTAX', 'FOR given twice', at);
       each = parseFor(c, at);
+    } else if (c.keyword('ARGS')) {
+      parseArgs();
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected OPTIONS or FOR)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected OPTIONS, FOR or ARGS)`, at);
     }
   }
   c.expectEnd();
@@ -266,6 +286,7 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
     dest,
     options,
     ...(each && { each }),
+    ...(args && { args }),
     overwrite: flags.has('overwrite'),
   };
 }
