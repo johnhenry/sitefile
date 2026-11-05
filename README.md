@@ -39,6 +39,7 @@ no runtime dependencies.
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `PLUGIN name FROM ./plugins/x.mjs [INTEGRITY sha256:…]` | yes; a custom renderer, run sandboxed (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
+| `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -74,19 +75,33 @@ TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter
 TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
 ```
 
+External programs are explicit opt-ins: declare a `TOOL`, and allow it on the command line.
+
+```
+TOOL ffmpeg
+TRANSFORM WITH ffmpeg TO /intro.mp4 ARGS -f lavfi -i "color=c=black:s=1280x720:d=3" -fflags +bitexact -map_metadata -1 {output}
+```
+
+```
+sitefile build --allow-exec ffmpeg
+```
+
+TRANSFORM results are cached in `$SITEFILE_HOME/cache/transform` (`--no-cache` to skip; `sitefile cache info|prune`).
+
 ## CLI
 
 ```
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
-               [--allow-hardlinks]
+               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
 sitefile images | image inspect|diff|prune | tag | rmi | save
+sitefile cache info | cache prune [--older-than days]   # TRANSFORM result cache
 sitefile run [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
 sitefile ps [-a] | stop | rm [-f] | restart | logs [-f]
 ```

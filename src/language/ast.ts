@@ -140,6 +140,13 @@ export interface PluginInstruction {
   readonly integrity?: string;
 }
 
+/** `TOOL name`: declare an external program (run only when the CLI allows it with `--allow-exec name`). */
+export interface ToolInstruction {
+  readonly kind: 'TOOL';
+  readonly span: SourceSpan;
+  readonly name: string;
+}
+
 /** One `key=value` of a TRANSFORM's `OPTIONS` clause. */
 export interface TransformOption {
   readonly key: string;
@@ -149,7 +156,8 @@ export interface TransformOption {
 
 /**
  * `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH <plugin> TO <dest>
- *   [OPTIONS key=value …] [FOR item IN list]`
+ *   [OPTIONS key=value …] [FOR item IN list] [ARGS <argument> …]`
+ * ARGS (last on the line) is the argv template when `<plugin>` is a TOOL.
  */
 export interface TransformInstruction {
   readonly kind: 'TRANSFORM';
@@ -162,6 +170,8 @@ export interface TransformInstruction {
   readonly dest: Operand;
   readonly options: readonly TransformOption[];
   readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
+  /** argv template of a TOOL: `{input}`, `{output}` and `{option.key}` are replaced by the host. */
+  readonly args?: readonly Operand[];
   readonly overwrite: boolean;
 }
 
@@ -173,6 +183,7 @@ export type Instruction =
   | CopyInstruction
   | RenderInstruction
   | PluginInstruction
+  | ToolInstruction
   | TransformInstruction
   | ExportInstruction;
 

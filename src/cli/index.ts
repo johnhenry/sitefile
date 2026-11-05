@@ -1,6 +1,7 @@
 import { runCommand, usageError, type Command } from './common.js';
 import { imageCommands, imageSubcommands } from './images.js';
 import { serverCommands } from './servers.js';
+import { cacheSubcommands } from './cache.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
@@ -8,7 +9,7 @@ import { serverCommands } from './servers.js';
  */
 const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands].filter(([k]) => !k.includes(' ')));
 
-export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image'];
+export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'cache'];
 
 export const EXTRA_HELP = `
 Images (local store: $SITEFILE_HOME or ~/.sitefile):
@@ -20,6 +21,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile tag <src> <dst>                         add a name:tag
   sitefile rmi [-f] <ref|id>...                    remove tags / images
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
+
+Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
+  sitefile cache info [--json]                     location, entries, size
+  sitefile cache prune [--older-than <days>]       delete cached results
 
 Servers (detached ones are tracked like containers):
   sitefile run [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
@@ -45,6 +50,19 @@ export async function runExtraCommand(argv: readonly string[]): Promise<number> 
         return sub === undefined ? 2 : 0;
       }
       return usageError(`unknown image command '${sub}'`);
+    }
+    return runCommand(cmd, args);
+  }
+  if (name === 'cache') {
+    const [sub, ...args] = rest;
+    const cmd = sub === undefined ? undefined : cacheSubcommands.get(sub);
+    if (!cmd) {
+      if (sub === undefined || sub === '--help' || sub === '-h') {
+        const lines = [...cacheSubcommands.values()].map((c) => `  ${c.usage.padEnd(44)} ${c.summary}`);
+        process.stdout.write(`Usage: sitefile cache <info|prune> ...\n\n${lines.join('\n')}\n`);
+        return sub === undefined ? 2 : 0;
+      }
+      return usageError(`unknown cache command '${sub}'`);
     }
     return runCommand(cmd, args);
   }

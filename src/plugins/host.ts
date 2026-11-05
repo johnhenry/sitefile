@@ -72,7 +72,9 @@ async function handle(msg) {
       if (typeof api.transform !== 'function') throw new Error('the module must export transform(request), or a default object with transform');
       if (version !== 1) throw new Error('unsupported plugin apiVersion ' + JSON.stringify(version) + ' (this Sitefile supports 1)');
       transform = api.transform;
-      send({ type: 'ready' });
+      // 'export const cache = false' opts a (non-deterministic) plugin out of the result cache.
+      const cache = api.cache ?? mod.cache;
+      send({ type: 'ready', cache: cache !== false });
     } catch (e) {
       send({ type: 'load-error', message: e && e.message ? e.message : String(e) });
     }
@@ -114,6 +116,8 @@ class PluginProcess {
   private stderr = '';
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
+  /** False when the module exports `cache = false`; known once it has loaded. */
+  cacheable = true;
   private ready: Promise<void>;
   private exited: string | undefined;
 
@@ -181,6 +185,7 @@ class PluginProcess {
   private onMessage(msg: Record<string, unknown>): void {
     switch (msg['type']) {
       case 'ready':
+        this.cacheable = msg['cache'] !== false;
         this.onReadyMsg();
         return;
       case 'load-error':
@@ -253,29 +258,57 @@ class PluginProcess {
   }
 }
 
-/** Starts plugin processes on first use and stops them all when the build ends. */
+/** Counters a build reports (see BuildResult.transformStats). */
+export interface HostStats {
+  /** Plugin processes started. */
+  spawned: number;
+  /** transform() calls sent to a plugin process. */
+  calls: number;
+}
+
+/** Starts a plugin's process on its first call (not at registration) and stops them all when the build ends. */
 export class PluginHost {
+  private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined }>();
   private readonly procs = new Map<string, PluginProcess>();
+  readonly stats: HostStats = { spawned: 0, calls: 0 };
 
   constructor(
     private readonly policy: PluginPolicy = DEFAULT_PLUGIN_POLICY,
     private readonly log: (line: string) => void = () => {},
   ) {}
 
-  /** `file` is the plugin's absolute real path (already sandbox- and integrity-checked). */
+  /** `file` is the plugin's absolute real path (already sandbox- and integrity-checked). The process starts lazily. */
   register(name: string, file: string, span?: SourceSpan): void {
-    if (this.procs.has(name)) return;
-    this.procs.set(name, new PluginProcess(name, file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), span));
+    if (!this.registered.has(name)) this.registered.set(name, { file, span });
   }
 
-  call(name: string, request: PluginRequest, span?: SourceSpan): Promise<PluginResult> {
-    const p = this.procs.get(name);
-    if (!p) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
+  async call(name: string, request: PluginRequest, span?: SourceSpan): Promise<PluginResult> {
+    let p = this.procs.get(name);
+    if (!p) {
+      const reg = this.registered.get(name);
+      if (!reg) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
+      p = new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
+      this.procs.set(name, p);
+      this.stats.spawned++;
+    }
+    this.stats.calls++;
     return p.call(request, span);
+  }
+
+  /** The folder a registered plugin lives in. */
+  folderOf(name: string): string | undefined {
+    const f = this.registered.get(name)?.file;
+    return f === undefined ? undefined : path.dirname(f);
+  }
+
+  /** Whether results of this plugin may be cached (false after it exported `cache = false`). */
+  cacheable(name: string): boolean {
+    return this.procs.get(name)?.cacheable ?? true;
   }
 
   close(): void {
     for (const p of this.procs.values()) p.close();
     this.procs.clear();
+    this.registered.clear();
   }
 }

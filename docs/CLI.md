@@ -22,6 +22,24 @@ sitefile inspect  [context] [--json]
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
 | `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
 
+`build`, `validate` and `inspect` also accept:
+
+| Option | Meaning |
+| --- | --- |
+| `--allow-exec name[=/abs/path]` | allow a `TOOL name` (an external program) to run; repeatable. A bare name is looked up on `PATH` when the build starts and the resolved real path is printed (`tool ffmpeg -> /opt/homebrew/bin/ffmpeg`). A `TOOL` that is not allowed fails with `E_UNSUPPORTED` naming the flag to add. The program runs **with your privileges**: allow only what you trust. |
+| `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
+
+## Transform cache
+
+TRANSFORM results (plugins and `TOOL`s) are cached in `$SITEFILE_HOME/cache/transform` (default `~/.sitefile/cache/transform`),
+beside the image store but separate from it (`image prune` does not touch it). See [PLUGINS.md](PLUGINS.md#caching).
+
+```
+sitefile cache info [--json]              location, entries, blobs, size
+sitefile cache prune [--older-than days]  delete every cached result, or only entries unused for N days
+```
+
 ## Image store
 
 The store lives in `$SITEFILE_HOME`, or `~/.sitefile`. Tests and scripts should always set `SITEFILE_HOME`.
