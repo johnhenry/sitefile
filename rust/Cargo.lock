@@ -878,6 +878,7 @@ dependencies = [
  "sha2",
  "ureq",
  "wasmtime",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
