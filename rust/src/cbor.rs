@@ -117,7 +117,7 @@ pub fn decode(b: &[u8], limits: &Limits) -> Result<(Cbor, usize), CborError> {
 }
 
 fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> Result<(Cbor, usize), CborError> {
-    if depth >= l.max_depth {
+    if depth > l.max_depth {
         return Err(CborError { message: "nested too deeply".into(), offset: pos });
     }
     *items += 1;
@@ -160,15 +160,13 @@ fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> R
                 return Err(CborError { message: "map length exceeds input".into(), offset: pos });
             }
             let mut v: Vec<(Cbor, Cbor)> = Vec::with_capacity(arg as usize);
-            // Keys are compared by their encoded bytes, which is exact for CBOR.
-            let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::with_capacity(arg as usize);
             let mut p = next;
             for _ in 0..arg {
                 let (k, np) = decode_at(b, p, depth + 1, l, items)?;
-                if !seen.insert(&b[p..np]) {
+                let (val, np2) = decode_at(b, np, depth + 1, l, items)?;
+                if v.iter().any(|(ek, _)| *ek == k) {
                     return Err(CborError { message: "duplicate map key".into(), offset: p });
                 }
-                let (val, np2) = decode_at(b, np, depth + 1, l, items)?;
                 v.push((k, val));
                 p = np2;
             }
