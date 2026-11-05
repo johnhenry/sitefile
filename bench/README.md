@@ -22,12 +22,13 @@ use the same features).
 
 | | TypeScript | Rust |
 | --- | --- | --- |
-| Start-up (`--version`) | 72 ms | 4 ms |
-| Small site (examples/blog) | 79 ms | 7 ms |
-| 1000-post blog | 791 ms | 623 ms |
-| 5000 static files | 1267 ms | 603 ms |
-| 1000-post blog → OCI image | 2267 ms | 1675 ms |
-| Peak memory, 1000-post blog | 189 MB | 78 MB |
+| Start-up (`--version`) | 74 ms | 4 ms |
+| Small site (examples/blog) | 77 ms | 7 ms |
+| 1000-post blog | 806 ms | 614 ms |
+| 5000 static files | 1298 ms | 662 ms |
+| 1000-post blog → OCI image | 2025 ms | 1410 ms |
+| 1000-post blog → OCI image, uncompressed layer | 623 ms | 536 ms |
+| Peak memory, 1000-post blog | 188 MB | 78 MB |
 
 - **Small builds are 11–16× faster**, almost entirely because the Rust binary
   starts in ~4 ms while Node needs ~70 ms before running any code. For
@@ -44,11 +45,22 @@ use the same features).
   Rust binary starts at ~2 MB and shares file bytes between trees
   (`Arc<[u8]>`) instead of copying them.
 - **Compressed exports (zip, tar.gz, OCI) are bounded by deflate.** Both
-  implementations compress at level 9 (the TypeScript writers' choice, kept for
-  a like-for-like comparison); about 1 s of each export is compression.
-  Their compressed bytes differ (zlib vs zlib-rs), so OCI image IDs differ
-  between the two implementations even though layer contents and configs are
-  identical.
+  implementations use the same deterministic encoder (`src/deflate.ts`,
+  `rust/src/deflate.rs`), so their bytes, and OCI image IDs, are identical.
+  Against the zlib level 9 the writers used before, on the 1000-post blog
+  (63 MB tar): output is 0.9% (zip) to 1.4% (tar.gz, OCI) larger, and export
+  is faster in both implementations (TypeScript 7-9%, Rust 15-20%; table
+  below). `--oci-compression none` skips compression entirely: 3× faster in
+  TypeScript, 6.2× larger (63 MB).
+
+  | 1000-post blog | TS zlib-9 | TS shared | Rust zlib-rs-9 | Rust shared | size before (TS) | size now |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | zip | 1990 ms | 1816 ms | 1564 ms | 1254 ms | 10 571 300 | 10 667 343 (+0.9%) |
+  | tar.gz | 2139 ms | 1963 ms | 1624 ms | 1383 ms | 10 009 839 | 10 146 124 (+1.4%) |
+  | OCI archive | 2180 ms | 1992 ms | 1651 ms | 1411 ms | 10 025 984 | 10 162 176 (+1.4%) |
+
+  (A/B run interleaving `origin/main` and this encoder, median of 5, whole
+  process.)
 - **The wasm example is only 1.4× faster** because the Rust build compiles the
   wasm module with Cranelift on every run (~55 ms). Caching the compiled
   module would remove most of that.
@@ -68,7 +80,9 @@ The first Rust measurements were *slower* than TypeScript on large sites
    from the borrowed value, and the output buffer is pre-sized.
 3. **Sequential filesystem calls.** Export now writes files and removes the
    replaced output across a few threads.
-4. **Deflate backend.** `flate2` uses `zlib-rs` instead of `miniz_oxide`.
+4. **Deflate backend.** `flate2` used `zlib-rs` instead of `miniz_oxide`
+   (both implementations now write with their own shared encoder; flate2 only
+   decompresses).
 
 After these, the 1000-post blog went from 924 ms to 623 ms, and every scenario
 is faster in Rust.

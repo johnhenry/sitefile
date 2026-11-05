@@ -1,6 +1,6 @@
 {
   "meta": {
-    "date": "2026-11-05T10:33:36.249Z",
+    "date": "2026-11-05T16:13:12.323Z",
     "runs": 5,
     "node": "v26.11.1",
     "platform": "darwin arm64",
@@ -12,226 +12,240 @@
     {
       "name": "startup (--version)",
       "typescript": {
-        "medianMs": 71.828917,
-        "minMs": 70.014416,
-        "maxRssMb": 73.25
+        "medianMs": 73.504459,
+        "minMs": 71.194334,
+        "maxRssMb": 78.15625
       },
       "rust": {
-        "medianMs": 4.45875,
-        "minMs": 4.149917,
-        "maxRssMb": 2.1875
+        "medianMs": 4.104375,
+        "minMs": 3.898042,
+        "maxRssMb": 2.21875
       },
-      "speedup": 16.109653378188955
+      "speedup": 17.90880682198873
     },
     {
       "name": "validate hello",
       "typescript": {
-        "medianMs": 75.394209,
-        "minMs": 70.741291,
-        "maxRssMb": 73.765625
+        "medianMs": 72.0005,
+        "minMs": 70.820584,
+        "maxRssMb": 79.25
       },
       "rust": {
-        "medianMs": 4.635875,
-        "minMs": 4.163125,
-        "maxRssMb": 2.875
+        "medianMs": 4.333917,
+        "minMs": 4.278834,
+        "maxRssMb": 2.90625
       },
-      "speedup": 16.263210073610697
+      "speedup": 16.61326232135964
     },
     {
       "name": "build hello",
       "typescript": {
-        "medianMs": 72.279041,
-        "minMs": 71.307375,
-        "maxRssMb": 79.1875
+        "medianMs": 71.76075,
+        "minMs": 70.8895,
+        "maxRssMb": 80.734375
       },
       "rust": {
-        "medianMs": 5.380208,
-        "minMs": 4.922833,
-        "maxRssMb": 3.4375
+        "medianMs": 5.511459,
+        "minMs": 5.23425,
+        "maxRssMb": 3.390625
       },
-      "speedup": 13.43424659418372
+      "speedup": 13.020281925348623
     },
     {
       "name": "build examples/blog",
       "typescript": {
-        "medianMs": 78.632209,
-        "minMs": 76.679833,
-        "maxRssMb": 82.59375
+        "medianMs": 77.19975,
+        "minMs": 76.781542,
+        "maxRssMb": 83.625
       },
       "rust": {
-        "medianMs": 7.122042,
-        "minMs": 6.9395,
-        "maxRssMb": 4.0625
+        "medianMs": 6.81725,
+        "minMs": 6.595,
+        "maxRssMb": 4.09375
       },
-      "speedup": 11.040683135538936
+      "speedup": 11.324177637610473
     },
     {
       "name": "build examples/data (yaml, csv, wbn)",
       "typescript": {
-        "medianMs": 86.014166,
-        "minMs": 81.967375,
-        "maxRssMb": 80.40625
+        "medianMs": 75.710458,
+        "minMs": 74.078875,
+        "maxRssMb": 81.78125
       },
       "rust": {
-        "medianMs": 7.713916,
-        "minMs": 7.26575,
-        "maxRssMb": 4.21875
+        "medianMs": 6.774583,
+        "minMs": 6.546208,
+        "maxRssMb": 4.265625
       },
-      "speedup": 11.15051888042338
+      "speedup": 11.175663210562186
     },
     {
       "name": "build examples/wasm (wasm plugin)",
       "typescript": {
-        "medianMs": 87.29125,
-        "minMs": 84.827084,
-        "maxRssMb": 86.390625
+        "medianMs": 84.040292,
+        "minMs": 83.028291,
+        "maxRssMb": 88.5
       },
       "rust": {
-        "medianMs": 61.559875,
-        "minMs": 61.439334,
-        "maxRssMb": 13.453125
+        "medianMs": 61.948875,
+        "minMs": 61.691291,
+        "maxRssMb": 13.640625
       },
-      "speedup": 1.417989396502186
+      "speedup": 1.3566072345946556
     },
     {
       "name": "blog: 100 posts",
       "typescript": {
-        "medianMs": 124.000667,
-        "minMs": 121.193291,
-        "maxRssMb": 93.1875
+        "medianMs": 123.502958,
+        "minMs": 120.993375,
+        "maxRssMb": 93.484375
       },
       "rust": {
-        "medianMs": 37.995042,
-        "minMs": 37.136541,
+        "medianMs": 38.28525,
+        "minMs": 38.007709,
         "maxRssMb": 6.3125
       },
-      "speedup": 3.263601261448797
+      "speedup": 3.225862649453772
     },
     {
       "name": "blog: 1000 posts",
       "typescript": {
-        "medianMs": 790.529958,
-        "minMs": 785.459041,
-        "maxRssMb": 188.609375
+        "medianMs": 806.452292,
+        "minMs": 764.135083,
+        "maxRssMb": 188.15625
       },
       "rust": {
-        "medianMs": 623.440333,
-        "minMs": 616.550417,
-        "maxRssMb": 77.53125
+        "medianMs": 614.485208,
+        "minMs": 612.355958,
+        "maxRssMb": 77.65625
       },
-      "speedup": 1.2680122156934623
+      "speedup": 1.3124031001898424
     },
     {
       "name": "blog: 5000 posts",
       "typescript": {
-        "medianMs": 1840.526833,
-        "minMs": 1806.506834,
-        "maxRssMb": 207.34375
+        "medianMs": 1851.080667,
+        "minMs": 1759.054583,
+        "maxRssMb": 206.71875
       },
       "rust": {
-        "medianMs": 1448.172084,
-        "minMs": 1404.408083,
-        "maxRssMb": 64.109375
+        "medianMs": 1414.636167,
+        "minMs": 1406.090709,
+        "maxRssMb": 64.421875
       },
-      "speedup": 1.2709310263157922
+      "speedup": 1.3085206713791024
     },
     {
       "name": "static copy: 5000 files",
       "typescript": {
-        "medianMs": 1266.626625,
-        "minMs": 1230.615959,
-        "maxRssMb": 189.46875
+        "medianMs": 1298.281416,
+        "minMs": 1242.286666,
+        "maxRssMb": 187.78125
       },
       "rust": {
-        "medianMs": 602.719959,
-        "minMs": 569.857542,
-        "maxRssMb": 68.25
+        "medianMs": 661.726042,
+        "minMs": 628.026375,
+        "maxRssMb": 68.28125
       },
-      "speedup": 2.1015176386418624
+      "speedup": 1.9619621015308326
     },
     {
       "name": "csv: 2000 rows → pages",
       "typescript": {
-        "medianMs": 435.078708,
-        "minMs": 411.53225,
-        "maxRssMb": 105.09375
+        "medianMs": 408.737291,
+        "minMs": 391.272042,
+        "maxRssMb": 104.953125
       },
       "rust": {
-        "medianMs": 259.592917,
-        "minMs": 213.437083,
-        "maxRssMb": 10.53125
+        "medianMs": 202.373208,
+        "minMs": 199.84325,
+        "maxRssMb": 10.5
       },
-      "speedup": 1.6760037717053737
+      "speedup": 2.0197203722737846
     },
     {
       "name": "import tar.gz: 2000 files",
       "typescript": {
-        "medianMs": 416.773583,
-        "minMs": 396.551583,
-        "maxRssMb": 103.515625
+        "medianMs": 412.195083,
+        "minMs": 405.711041,
+        "maxRssMb": 103.0625
       },
       "rust": {
-        "medianMs": 193.585459,
-        "minMs": 187.334375,
-        "maxRssMb": 9.265625
+        "medianMs": 197.668,
+        "minMs": 193.998708,
+        "maxRssMb": 9.25
       },
-      "speedup": 2.152917812902466
+      "speedup": 2.0852898951777727
     },
     {
       "name": "export zip: blog 1000",
       "typescript": {
-        "medianMs": 1993.259417,
-        "minMs": 1981.628458,
-        "maxRssMb": 218.140625
+        "medianMs": 1815.473541,
+        "minMs": 1783.306167,
+        "maxRssMb": 214.125
       },
       "rust": {
-        "medianMs": 1576.843667,
-        "minMs": 1571.110875,
-        "maxRssMb": 89.734375
+        "medianMs": 1259.960667,
+        "minMs": 1246.332709,
+        "maxRssMb": 89.6875
       },
-      "speedup": 1.2640818228938606
+      "speedup": 1.4408969966679126
     },
     {
       "name": "export tar.gz: blog 1000",
       "typescript": {
-        "medianMs": 2166.296334,
-        "minMs": 2132.051209,
-        "maxRssMb": 277.34375
+        "medianMs": 1959.456458,
+        "minMs": 1947.401167,
+        "maxRssMb": 280.328125
       },
       "rust": {
-        "medianMs": 1659.671125,
-        "minMs": 1633.552208,
-        "maxRssMb": 147.375
+        "medianMs": 1372.181292,
+        "minMs": 1361.979459,
+        "maxRssMb": 157.15625
       },
-      "speedup": 1.3052563856589359
+      "speedup": 1.427986571033939
     },
     {
       "name": "export wbn: blog 1000",
       "typescript": {
-        "medianMs": 629.911542,
-        "minMs": 619.787709,
-        "maxRssMb": 465.03125
+        "medianMs": 623.906708,
+        "minMs": 621.46575,
+        "maxRssMb": 464.5
       },
       "rust": {
-        "medianMs": 469.304833,
-        "minMs": 464.869667,
-        "maxRssMb": 198.53125
+        "medianMs": 440.657292,
+        "minMs": 436.018667,
+        "maxRssMb": 198.609375
       },
-      "speedup": 1.3422225762588729
+      "speedup": 1.4158547227671885
     },
     {
       "name": "export oci: blog 1000",
       "typescript": {
-        "medianMs": 2266.576208,
-        "minMs": 2212.157041,
-        "maxRssMb": 287.203125
+        "medianMs": 2024.764,
+        "minMs": 1984.091958,
+        "maxRssMb": 288.28125
       },
       "rust": {
-        "medianMs": 1674.615583,
-        "minMs": 1663.731625,
-        "maxRssMb": 166.828125
+        "medianMs": 1409.744917,
+        "minMs": 1395.948958,
+        "maxRssMb": 186.6875
       },
-      "speedup": 1.3534904553673917
+      "speedup": 1.436262671057391
+    },
+    {
+      "name": "export oci, uncompressed layer: blog 1000",
+      "typescript": {
+        "medianMs": 622.642667,
+        "minMs": 613.405875,
+        "maxRssMb": 309.046875
+      },
+      "rust": {
+        "medianMs": 536.237083,
+        "minMs": 523.519708,
+        "maxRssMb": 318.734375
+      },
+      "speedup": 1.1611331754913339
     }
   ]
 }
