@@ -1,0 +1,5 @@
+FROM ./base AS b
+COPY ./extra.txt /
+FROM b
+COPY --from=b /index.html /copy.html
+EXPORT /

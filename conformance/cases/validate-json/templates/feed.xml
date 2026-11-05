@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>${SITE_TITLE}</title>
+  <link href="${SITE_URL}/"/>
+  <link rel="self" href="${SITE_URL}/feed.xml"/>
+  <id>${SITE_URL}/</id>
+  <updated>${posts.0.date}T00:00:00Z</updated>
+  ${#each posts as post}
+  <entry>
+    <title>${post.title}</title>
+    <link href="${SITE_URL}/posts/${post.slug}/"/>
+    <id>${SITE_URL}/posts/${post.slug}/</id>
+    <updated>${post.date}T00:00:00Z</updated>
+    <summary>${post.excerpt}</summary>
+    <content type="html">${post.content}</content>
+  </entry>
+  ${/each}
+</feed>

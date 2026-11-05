@@ -1,0 +1,3 @@
+FROM scratch
+IMPORT d FROM ./d AS text
+EXPORT /

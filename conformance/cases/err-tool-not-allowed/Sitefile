@@ -1,0 +1,4 @@
+FROM scratch
+TOOL cp
+TRANSFORM ./a.txt WITH cp TO /b.txt ARGS {input} {output}
+EXPORT /

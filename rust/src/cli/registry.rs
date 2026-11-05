@@ -1,14 +1,14 @@
 //! `push` / `pull` (port of `src/cli/registry.ts`).
 //!
-//! REGISTRY-HOOK: the registry client (`registry.rs`, `base_image.rs`) is ported
-//! on the `port-registry` branch. Until it is merged both commands check their
-//! arguments exactly like the TypeScript CLI and then fail with E_UNSUPPORTED;
-//! connect them in `push_image` / `pull_image` below.
+//! The CLI owns argument checks, the `--username`/`--password-stdin` rules and
+//! reading stdin; `crate::registry::{push, pull}` do the work and print events.
 
 use super::args::{flag, string, strings, OptSpec, Parsed};
-use super::common::{js_to_number, is_safe_integer, require_args, usage, Command};
-use crate::error::{ErrorCode, Result, SitefileError};
-use crate::refs::{parse_ref, with_default_registry, ImageRef};
+use super::common::{is_safe_integer, js_to_number, require_args, usage, Command};
+use crate::error::Result;
+use crate::refs::parse_ref;
+use crate::registry::{pull, push, Credentials, PullOptions, PushOptions, RegistryLimits, RegistryOptions};
+use crate::store::Store;
 
 const COMMON_FLAGS_PUSH: &[&str] = &[
     "--insecure-registry <host[:port]>   allow plain http to this registry (repeatable; localhost always may;",
@@ -45,14 +45,7 @@ const PULL_OPTS: &[OptSpec] = &[
 
 /// Registries reachable over plain http: `--insecure-registry` flags plus $SITEFILE_INSECURE_REGISTRIES.
 pub fn insecure_registries_from_env(extra: &[String]) -> Vec<String> {
-    let env = std::env::var("SITEFILE_INSECURE_REGISTRIES").unwrap_or_default();
-    let mut out: Vec<String> = Vec::new();
-    for s in extra.iter().cloned().chain(env.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty())) {
-        if !out.contains(&s) {
-            out.push(s);
-        }
-    }
-    out
+    crate::registry::insecure_registries_from_env(extra, &crate::registry::process_env())
 }
 
 fn positive(raw: Option<&str>, flag: &str) -> Result<Option<u64>> {
@@ -64,23 +57,48 @@ fn positive(raw: Option<&str>, flag: &str) -> Result<Option<u64>> {
     Ok(Some(n as u64))
 }
 
-/// Check the credential and limit flags like `clientOptions` in registry.ts.
-fn check_client_options(v: &Parsed) -> Result<()> {
-    let username = v.str("username");
-    if v.flag("password-stdin") {
-        if username.is_none_or(str::is_empty) {
-            return usage("--password-stdin needs --username");
-        }
-    } else if username.is_some_and(|u| !u.is_empty()) {
-        return usage("--username needs --password-stdin (passwords are not accepted on the command line)");
+fn read_stdin() -> Result<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let _ = std::io::stdin().take(64 * 1024 + 1).read_to_end(&mut buf);
+    if buf.len() > 64 * 1024 {
+        return usage("--password-stdin: input is too long");
     }
-    positive(v.str("timeout"), "--timeout")?;
-    positive(v.str("max-download-bytes"), "--max-download-bytes")?;
-    Ok(())
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    let s = s.strip_suffix('\n').map(|t| t.strip_suffix('\r').unwrap_or(t)).unwrap_or(&s).to_string();
+    Ok(s)
 }
 
-fn not_yet(what: &str) -> SitefileError {
-    SitefileError::plain(ErrorCode::E_UNSUPPORTED, format!("{what} is not yet available in the Rust build"))
+/// The client options and explicit credentials, like `clientOptions` in registry.ts.
+fn client_options(v: &Parsed) -> Result<(RegistryOptions, Option<Credentials>)> {
+    let username = v.str("username").filter(|u| !u.is_empty());
+    let mut explicit = None;
+    if v.flag("password-stdin") {
+        let Some(user) = username else { return usage("--password-stdin needs --username") };
+        explicit = Some(Credentials::basic(user, read_stdin()?));
+    } else if username.is_some() {
+        return usage("--username needs --password-stdin (passwords are not accepted on the command line)");
+    }
+    let timeout = positive(v.str("timeout"), "--timeout")?;
+    let max_blob = positive(v.str("max-download-bytes"), "--max-download-bytes")?;
+    let mut limits = RegistryLimits::default();
+    if let Some(t) = timeout {
+        limits.timeout_ms = t;
+    }
+    if let Some(m) = max_blob {
+        limits.max_blob_bytes = m;
+    }
+    let options = RegistryOptions {
+        insecure_registries: insecure_registries_from_env(&v.strs("insecure-registry")),
+        allow_private_network: v.flag("allow-private-network"),
+        limits,
+        ..Default::default()
+    };
+    Ok((options, explicit))
+}
+
+fn print_line(l: &str) {
+    super::common::out(&format!("{l}\n"));
 }
 
 pub const PUSH: Command = Command {
@@ -100,13 +118,10 @@ fn run_push(v: &Parsed) -> Result<i32> {
     if r.registry.is_none() {
         return usage(format!("'{input}' has no registry host; tag the image first, e.g. sitefile tag {input} localhost:5000/{input}"));
     }
-    check_client_options(v)?;
-    push_image(&r, v)
-}
-
-/// REGISTRY-HOOK: push the local image named `r` (see src/cli/registry.ts).
-fn push_image(_r: &ImageRef, _v: &Parsed) -> Result<i32> {
-    Err(not_yet("push"))
+    let (registry, explicit_credentials) = client_options(v)?;
+    let store = Store::open_default()?;
+    push(&store, input, &PushOptions { registry, explicit_credentials, env: None, on_event: Some(&print_line) })?;
+    Ok(0)
 }
 
 pub const PULL: Command = Command {
@@ -121,12 +136,14 @@ pub const PULL: Command = Command {
 
 fn run_pull(v: &Parsed) -> Result<i32> {
     require_args(&v.positionals, 1, 1, "an image reference")?;
-    let r = with_default_registry(&parse_ref(&v.positionals[0])?);
-    check_client_options(v)?;
-    pull_image(&r, v)
-}
-
-/// REGISTRY-HOOK: pull `r` into the local store (see src/cli/registry.ts).
-fn pull_image(_r: &ImageRef, _v: &Parsed) -> Result<i32> {
-    Err(not_yet("pull"))
+    let input = &v.positionals[0];
+    parse_ref(input)?;
+    let store = Store::open_default()?;
+    let (registry, explicit_credentials) = client_options(v)?;
+    pull(
+        &store,
+        input,
+        &PullOptions { registry, platform: v.str("platform").map(str::to_string), explicit_credentials, env: None, on_event: Some(&print_line) },
+    )?;
+    Ok(0)
 }

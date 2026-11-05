@@ -1,0 +1,1 @@
+{ "out": "site.oci.tar", "compare": "oci", "args": ["--label", "org.example.team=web", "--oci-root", "/usr/share/nginx/html", "--platform", "linux/arm64"] }

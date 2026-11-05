@@ -4,7 +4,10 @@
 //! Messages and warnings match the TypeScript implementation word for word;
 //! `../conformance` checks it.
 
+use crate::base_image::{read_layer_blobs, resolve_base, ResolveBaseOptions};
 use crate::build_args::BuildArgs;
+use crate::registry::RegistryOptions;
+use crate::store::Store;
 use crate::digest::sha256;
 use crate::documents::{data_collection, markdown_collection, sort_documents, DataKind};
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
@@ -388,34 +391,35 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     } else {
         options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
     };
+    let mut lock = lock.into_inner().unwrap_or(None);
     let base = match base_ref {
-        Some(r) => Some(resolve_base_image(&r, options)?),
+        Some(r) => {
+            let store = Store::open_default()?;
+            let w = warn.clone();
+            let warn_fn = move |m: &str| w(m);
+            let o = ResolveBaseOptions {
+                platform: options.platform.clone(),
+                frozen: options.frozen_lockfile,
+                update: options.update_lock,
+                registry: RegistryOptions {
+                    insecure_registries: options.insecure_registries.clone(),
+                    allow_private_network: options.fetch_policy.allow_private_network,
+                    ..Default::default()
+                },
+                warn: Some(&warn_fn),
+                ..ResolveBaseOptions::new(&store)
+            };
+            Some(resolve_base(&r, lock.as_mut(), &o)?)
+        }
         None => None,
     };
 
-    let mut lock = lock.into_inner().unwrap_or(None);
     let lockfile_written = match lock.as_mut() {
         Some(l) if !options.frozen_lockfile => l.save()?,
         _ => false,
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
     Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats })
-}
-
-// ---------------------------------------------------------------- registry glue
-//
-// REGISTRY-HOOK: BASE images (src/base-image.ts resolveBase / readLayerBlobs) are
-// ported on the `port-registry` branch. Until they are merged, any build that
-// needs a BASE fails here, and `read_base_layer_blobs` is never reached.
-
-/// Resolve `EXPORT ... AS oci BASE <image>` / `--base` to an image whose blobs are in the store.
-fn resolve_base_image(_input: &str, _options: &BuildOptions) -> Result<BaseImage> {
-    Err(SitefileError::plain(E_UNSUPPORTED, "BASE images are not yet available in the Rust build"))
-}
-
-/// The blobs of a BASE image's layers (digest, bytes), to make an export self-contained.
-fn read_base_layer_blobs(_base: &BaseImage) -> Result<Vec<(String, Vec<u8>)>> {
-    Err(SitefileError::plain(E_UNSUPPORTED, "BASE images are not yet available in the Rust build"))
 }
 
 // ---------------------------------------------------------------- export
@@ -478,8 +482,9 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
     if format == ExportFormat::Oci {
         let opts = oci_options(&result, &options.context_dir, target.oci_root.as_deref(), options.platform.as_deref(), &target.image_labels, target.git_labels)?;
         let img = build_oci_image(&result.output, &opts)?;
+        // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {
-            Some(b) => read_base_layer_blobs(b)?,
+            Some(_) => read_layer_blobs(&Store::open_default()?, &img.base_layers)?,
             None => Vec::new(),
         };
         let ref_name = target.oci_ref_name.as_deref();

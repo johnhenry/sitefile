@@ -22,6 +22,8 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::paths::normalize_virtual;
 use crate::refs::parse_ref;
+use crate::resources::archive::extract_archive;
+use crate::resources::types::ArchiveLimits;
 use crate::tree::{make_file, Node, Tree};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -568,176 +570,9 @@ pub fn extract_image_files(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: 
         return Err(SitefileError::plain(E_STORE, format!("{origin}: layer content does not match the config diff_id")));
     }
     let root = cfg.labels.get(ann::ROOT).map(String::as_str).unwrap_or("/");
-    let all = read_tar(&tar, origin, MAX_LAYER_ENTRIES, MAX_LAYER_BYTES)?;
+    let limits = ArchiveLimits { max_entries: MAX_LAYER_ENTRIES as u64, max_total_bytes: MAX_LAYER_BYTES, max_ratio: u64::MAX };
+    let all = extract_archive(&tar, origin, &limits, None)?;
     Ok(all.subtree(&normalize_virtual(root, None, "path")?.path))
-}
-
-// --------------------------------------------------------- layer tar reader
-//
-// The same rules as resources/archive.ts `readTar` (ustar prefixes, GNU `L`
-// names, pax path/size; symlinks, hard links and devices rejected; unsafe
-// paths rejected), kept here so the store does not depend on the resource
-// importers. Only tar is needed: layers are gunzipped above.
-
-fn tar_checksum_ok(h: &[u8]) -> bool {
-    let sum: u64 = h.iter().enumerate().map(|(i, &b)| if (148..156).contains(&i) { 32 } else { b as u64 }).sum();
-    let s: String = h[148..156].iter().filter(|&&c| c != 0 && c != b' ').map(|&c| c as char).collect();
-    u64::from_str_radix(&s, 8).ok() == Some(sum)
-}
-
-fn tar_number(b: &[u8]) -> Option<u64> {
-    if b[0] & 0x80 != 0 {
-        let mut n: u64 = (b[0] & 0x7f) as u64;
-        for &x in &b[1..] {
-            n = n.checked_mul(256)?.checked_add(x as u64)?;
-        }
-        return Some(n);
-    }
-    let s: String = b.iter().filter(|&&c| c != 0 && c != b' ').map(|&c| c as char).collect();
-    if s.is_empty() {
-        return Some(0);
-    }
-    // parseInt(s, 8): leading octal digits
-    let digits: String = s.chars().take_while(|c| ('0'..='7').contains(c)).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    u64::from_str_radix(&digits, 8).ok()
-}
-
-fn c_string(b: &[u8]) -> String {
-    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-    String::from_utf8_lossy(&b[..end]).into_owned()
-}
-
-fn archive_path(name: &str) -> Result<String> {
-    let bad = |why: &str| SitefileError::plain(E_ARCHIVE_UNSAFE, format!("unsafe archive entry '{}': {why}", name.replace('\0', "\\0")));
-    if name.contains('\0') {
-        return Err(bad("NUL byte"));
-    }
-    if name.contains('\\') {
-        return Err(bad("backslash in path"));
-    }
-    let b = name.as_bytes();
-    if name.starts_with('/') || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
-        return Err(bad("absolute path"));
-    }
-    if name.split('/').any(|s| s == "..") {
-        return Err(bad("'..' segment"));
-    }
-    Ok(normalize_virtual(&format!("/{name}"), None, "archive entry")?.path)
-}
-
-fn parse_pax(data: &[u8], origin: &str) -> Result<(Option<String>, Option<u64>)> {
-    let bad = |why: String| SitefileError::plain(E_ARCHIVE, format!("{origin}: {why}"));
-    let (mut path, mut size) = (None, None);
-    let mut pos = 0;
-    while pos < data.len() {
-        let Some(sp) = data[pos..].iter().position(|&c| c == b' ').map(|i| pos + i) else { break };
-        let len: usize = std::str::from_utf8(&data[pos..sp]).ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-        if len <= sp - pos || pos + len > data.len() {
-            break;
-        }
-        let kv = String::from_utf8_lossy(&data[sp + 1..pos + len - 1]).into_owned();
-        let Some(eq) = kv.find('=').filter(|&i| i > 0) else { return Err(bad("malformed pax header record".into())) };
-        let (key, value) = (&kv[..eq], &kv[eq + 1..]);
-        if key == "path" {
-            path = Some(value.to_string());
-        }
-        if key == "size" {
-            if value.is_empty() || !value.bytes().all(|c| c.is_ascii_digit()) {
-                return Err(bad(format!("malformed pax size '{value}'")));
-            }
-            size = Some(value.parse().map_err(|_| bad(format!("malformed pax size '{value}'")))?);
-        }
-        pos += len;
-    }
-    Ok((path, size))
-}
-
-pub(crate) fn read_tar(b: &[u8], origin: &str, max_entries: usize, max_total: u64) -> Result<Tree> {
-    let bad = |why: &str| SitefileError::plain(E_ARCHIVE, format!("{origin}: {why}"));
-    let mut files: BTreeMap<String, Node> = BTreeMap::new();
-    let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut total: u64 = 0;
-    let mut off = 0usize;
-    let mut next_name: Option<String> = None;
-    let mut next_size: Option<u64> = None;
-    let mut entries = 0usize;
-    while off + 512 <= b.len() {
-        let h = &b[off..off + 512];
-        if h.iter().all(|&x| x == 0) {
-            break;
-        }
-        if !tar_checksum_ok(h) {
-            return Err(bad("invalid tar header checksum"));
-        }
-        let typ = h[156];
-        let size = match next_size.or_else(|| tar_number(&h[124..136])) {
-            Some(s) if s <= max_total => s as usize,
-            _ => return Err(SitefileError::plain(E_ARCHIVE_LIMIT, format!("{origin}: archive entry larger than {max_total} bytes"))),
-        };
-        if off + 512 + size > b.len() {
-            return Err(bad("truncated tar archive"));
-        }
-        let data = &b[off + 512..off + 512 + size];
-        off += 512 + size.div_ceil(512) * 512;
-        match typ {
-            b'L' => {
-                next_name = Some(c_string(data));
-                continue;
-            }
-            b'x' => {
-                (next_name, next_size) = parse_pax(data, origin)?;
-                continue;
-            }
-            b'g' | b'K' => continue,
-            _ => {}
-        }
-        entries += 1;
-        if entries > max_entries {
-            return Err(SitefileError::plain(E_ARCHIVE_LIMIT, format!("{origin}: archive has more than {max_entries} entries")));
-        }
-        let name = match next_name.take() {
-            Some(n) => n,
-            None => {
-                let n = c_string(&h[0..100]);
-                let prefix = if &h[257..263] == b"ustar\0" { c_string(&h[345..500]) } else { String::new() };
-                if prefix.is_empty() { n } else { format!("{prefix}/{n}") }
-            }
-        };
-        next_size = None;
-        let kind_file = matches!(typ, b'0' | 0 | b'7');
-        if !kind_file && typ != b'5' {
-            let what = match typ {
-                b'1' => "hard link",
-                b'2' => "symlink",
-                _ => "special file",
-            };
-            return Err(SitefileError::plain(E_ARCHIVE_UNSAFE, format!("unsafe archive entry '{name}': {what} entries are not allowed")));
-        }
-        let path = archive_path(&name)?;
-        if path == "/" {
-            continue;
-        }
-        if files.contains_key(&path) || (kind_file && dirs.contains(&path)) {
-            return Err(SitefileError::plain(E_CONFLICT, format!("{origin}: duplicate archive entry '{name}'")));
-        }
-        if !kind_file {
-            dirs.insert(path);
-            continue;
-        }
-        if files.len() + 1 > max_entries {
-            return Err(SitefileError::plain(E_ARCHIVE_LIMIT, format!("{origin}: archive has more than {max_entries} entries")));
-        }
-        total += data.len() as u64;
-        if total > max_total {
-            return Err(SitefileError::plain(E_ARCHIVE_LIMIT, format!("{origin}: archive expands beyond {max_total} bytes")));
-        }
-        let mode = tar_number(&h[100..108]).unwrap_or(0o644) as u32;
-        files.insert(path, make_file(data.to_vec(), format!("{origin}:{name}"), mode));
-    }
-    Tree::from_files(files)
 }
 
 // ------------------------------------------------------------ metadata
@@ -921,6 +756,20 @@ mod tests {
             ("/bin/run.sh".to_string(), make_file(b"#!/bin/sh\n".to_vec(), "t", 0o755)),
         ])
         .unwrap()
+    }
+
+    /// Layers are read with the resource importer's tar reader (as oci.ts does).
+    fn read_tar(b: &[u8], origin: &str, max_entries: u64, max_total: u64) -> Result<Tree> {
+        extract_archive(b, origin, &ArchiveLimits { max_entries, max_total_bytes: max_total, max_ratio: u64::MAX }, None)
+    }
+
+    fn tar_number(b: &[u8]) -> Option<u64> {
+        let s: String = b.iter().take_while(|&&c| c != 0 && c != b' ').map(|&c| c as char).collect();
+        u64::from_str_radix(s.trim(), 8).ok()
+    }
+
+    fn c_string(b: &[u8]) -> String {
+        String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned()
     }
 
     fn tar_names(tar: &[u8]) -> Vec<(String, u8)> {
@@ -1118,9 +967,6 @@ mod tests {
         assert_eq!(read_tar(&bad, "t", 10, 1 << 20).unwrap_err().code, E_ARCHIVE);
         assert_eq!(read_tar(&ok, "t", 2, 1 << 20).unwrap_err().code, E_ARCHIVE_LIMIT);
         assert_eq!(read_tar(&ok[..515], "t", 10, 1 << 20).unwrap_err().code, E_ARCHIVE);
-        assert_eq!(archive_path("../x").unwrap_err().code, E_ARCHIVE_UNSAFE);
-        assert_eq!(archive_path("/x").unwrap_err().code, E_ARCHIVE_UNSAFE);
-        assert_eq!(archive_path("a\\b").unwrap_err().code, E_ARCHIVE_UNSAFE);
     }
 
     /// The config and manifest JSON are byte-identical to the TypeScript writer

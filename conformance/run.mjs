@@ -10,6 +10,14 @@
 // the two deflate implementations may compress differently; uncompressed
 // formats (wbn) must match byte for byte.
 //
+// OCI outputs (compare: 'oci') are compared by their config blob, which holds
+// the uncompressed layer digests (diff_ids), labels and platform.
+//
+// A case directory may hold case.json: { args, env, out, compare, command, links }.
+// `command` ("validate" or "inspect") runs that command instead of build and
+// compares exit code and stdout. `links` lists [existing, new] hard links to
+// create before the case runs and remove after it.
+//
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 
 import { execFile } from 'node:child_process';
@@ -101,6 +109,17 @@ async function outputOf(kind, outPath) {
   const bytes = await fs.readFile(outPath);
   if (kind === 'bytes') return { digest: 'sha256:' + createHash('sha256').update(bytes).digest('hex'), files: 1 };
   const tree = await extractArchive(new Uint8Array(bytes), 'conformance');
+  if (kind === 'oci') {
+    // Layers are gzip, whose bytes differ between deflate implementations. The
+    // config holds each layer's diff_id (sha256 of the uncompressed tar) and the
+    // labels/platform/root, so equal configs mean equal images.
+    const text = (p) => new TextDecoder().decode(tree.get(p).bytes);
+    const blob = (d) => `/blobs/sha256/${d.slice(7)}`;
+    const index = JSON.parse(text('/index.json'));
+    const manifest = JSON.parse(text(blob(index.manifests[0].digest)));
+    const refName = index.manifests[0].annotations?.['org.opencontainers.image.ref.name'] ?? '';
+    return { digest: `${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}`, files: tree.size };
+  }
   return { digest: tree.digest(), files: tree.size };
 }
 
@@ -111,19 +130,43 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
 try {
   for (const c of [...cases(), ...(await caseDirs())]) {
     if (only && !c.name.includes(only)) continue;
-    const compare = c.compare ?? 'tree';
+    const command = c.command ?? 'build';
+    const compare = command === 'build' ? (c.compare ?? 'tree') : 'stdout';
     const r = {};
-    for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
-      const out = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'), c.out ?? 'dist');
-      await fs.mkdir(path.dirname(out), { recursive: true });
-      const res = await run(cmd, ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])], c.env ?? {});
-      r[impl] = { code: res.code, error: errorLine(res.stderr), ms: res.ms, spawnError: res.spawnError };
-      if (res.code === 0) r[impl].output = await outputOf(compare, out).catch((e) => ({ digest: `unreadable: ${e.message}` }));
+    // Hard links are created here: git does not keep them.
+    const links = (c.links ?? []).map(([from, to]) => [path.join(c.context, from), path.join(c.context, to)]);
+    for (const [from, to] of links) await fs.link(from, to).catch(() => undefined);
+    try {
+      for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
+        const out = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'), c.out ?? 'dist');
+        await fs.mkdir(path.dirname(out), { recursive: true });
+        const argv =
+          command === 'build'
+            ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
+            : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
+        const res = await run(cmd, argv, c.env ?? {});
+        r[impl] = { code: res.code, error: errorLine(res.stderr), ms: res.ms, spawnError: res.spawnError };
+        if (res.code === 0) {
+          r[impl].output =
+            compare === 'stdout'
+              ? { digest: 'sha256:' + createHash('sha256').update(res.stdout).digest('hex'), files: res.stdout.split('\n').length - 1, stdout: res.stdout }
+              : await outputOf(compare, out).catch((e) => ({ digest: `unreadable: ${e.message}` }));
+        }
+      }
+    } finally {
+      for (const [, to] of links) await fs.rm(to, { force: true });
     }
     const same =
       !r.rust.spawnError &&
       r.ts.code === r.rust.code &&
       (r.ts.code === 0 ? r.ts.output?.digest === r.rust.output?.digest : r.ts.error === r.rust.error);
+    if (!same && compare === 'stdout' && r.ts.output?.stdout !== undefined && r.rust.output?.stdout !== undefined) {
+      const a = r.ts.output.stdout.split('\n');
+      const b = r.rust.output.stdout.split('\n');
+      const i = a.findIndex((l, k) => l !== b[k]);
+      console.log(`        first difference at stdout line ${i + 1}:\n        ts   ${a[i]}\n        rust ${b[i]}`);
+    }
+    for (const impl of ['ts', 'rust']) delete r[impl].output?.stdout;
     results.push({ name: c.name, compare, pass: same, ...r });
     const tag = same ? 'PASS' : 'FAIL';
     console.log(`${tag}  ${c.name}`);

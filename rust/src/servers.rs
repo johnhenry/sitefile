@@ -12,14 +12,15 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
+use crate::resources::local::{LocalContext, LocalContextOptions};
+use crate::resources::types::Resource;
 use crate::store::Store;
-use crate::tree::{make_file, Node, Tree};
+use crate::tree::Tree;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -252,109 +253,17 @@ pub fn is_running(s: &ServerState) -> bool {
     })
 }
 
-fn display(rel: &str) -> String {
-    if rel.is_empty() { ".".into() } else { format!("./{rel}") }
-}
-
-struct Walker {
-    root: PathBuf,
-}
-
-impl Walker {
-    fn inside(&self, real: &Path) -> bool {
-        real == self.root || real.starts_with(&self.root)
-    }
-
-    fn walk(&self, real_dir: &Path, ctx_rel: &str, ancestors: &mut BTreeSet<PathBuf>, out: &mut Vec<(String, Node)>) -> Result<()> {
-        let io_err = |p: &Path, e: io::Error| SitefileError::plain(E_NOT_FOUND, format!("cannot read '{}': {e}", p.display()));
-        let mut names: Vec<String> = fs::read_dir(real_dir)
-            .map_err(|e| io_err(real_dir, e))?
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        for name in names {
-            let child_ctx = if ctx_rel.is_empty() { name.clone() } else { format!("{ctx_rel}/{name}") };
-            if child_ctx == ".git" || child_ctx.starts_with(".git/") {
-                continue;
-            }
-            let mut child_real = real_dir.join(&name);
-            let lst = fs::symlink_metadata(&child_real).map_err(|e| io_err(&child_real, e))?;
-            let st = if lst.file_type().is_symlink() {
-                let link = display(&child_ctx);
-                let real = match fs::canonicalize(&child_real) {
-                    Ok(r) => r,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        return Err(SitefileError::plain(E_NOT_FOUND, format!("symlink '{link}' is dangling")));
-                    }
-                    Err(e) if e.raw_os_error() == Some(62) || e.raw_os_error() == Some(40) => {
-                        return Err(SitefileError::plain(E_UNSUPPORTED_FILE, format!("'{link}' is a symlink loop")));
-                    }
-                    Err(e) => return Err(SitefileError::plain(E_NOT_FOUND, format!("cannot resolve '{link}': {e}"))),
-                };
-                if !self.inside(&real) {
-                    return Err(SitefileError::plain(E_PATH_ESCAPE, format!("symlink '{link}' points outside the build context")));
-                }
-                let rel = real.strip_prefix(&self.root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                if rel == ".git" || rel.starts_with(".git/") {
-                    continue;
-                }
-                child_real = real;
-                fs::metadata(&child_real).map_err(|e| io_err(&child_real, e))?
-            } else {
-                lst
-            };
-            if st.is_file() {
-                if st.nlink() > 1 {
-                    return Err(SitefileError::plain(
-                        E_HARDLINK,
-                        format!(
-                            "'{}' has {} hard links and may alias a file outside the build context (--allow-hardlinks permits this)",
-                            display(&child_ctx),
-                            st.nlink()
-                        ),
-                    ));
-                }
-                let bytes = fs::read(&child_real).map_err(|e| io_err(&child_real, e))?;
-                out.push((format!("/{child_ctx}"), make_file(bytes, "serve", st.mode())));
-            } else if st.is_dir() {
-                if ancestors.contains(&child_real) {
-                    continue; // directory symlink cycle
-                }
-                ancestors.insert(child_real.clone());
-                let r = self.walk(&child_real, &child_ctx, ancestors, out);
-                ancestors.remove(&child_real);
-                r?;
-            } else {
-                return Err(SitefileError::plain(
-                    E_UNSUPPORTED_FILE,
-                    format!("'{}' is not a regular file or directory (sockets, fifos and devices are not supported)", display(&child_ctx)),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Load a directory into a Tree with the build context's sandbox rules
-/// (symlinks must stay inside, hard-linked files and special files are
-/// refused, `.git` is skipped); hidden files (except `.well-known`) are not served.
+/// Load a directory into a Tree through the sandboxed local reader (symlinks
+/// must stay inside, hard-linked and special files are refused, `.git` is
+/// skipped, `.sitefileignore` is not read); hidden files (except `.well-known`) are not served.
 pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
-    let root = match fs::canonicalize(dir) {
-        Ok(r) => r,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", dir.display())));
-        }
-        Err(e) => return Err(SitefileError::plain(E_NOT_FOUND, format!("cannot resolve '{}': {e}", dir.display()))),
-    };
-    if !fs::metadata(&root).map(|m| m.is_dir()).unwrap_or(false) {
-        return Err(SitefileError::plain(E_UNSUPPORTED_FILE, format!("build context '{}' is not a directory", dir.display())));
-    }
-    let w = Walker { root: root.clone() };
-    let mut files = Vec::new();
-    let mut ancestors = BTreeSet::from([root.clone()]);
-    w.walk(&root, "", &mut ancestors, &mut files)?;
-    let visible = files.into_iter().filter(|(p, _)| p.split('/').all(|seg| !seg.starts_with('.') || seg.is_empty() || seg == ".well-known"));
+    let ctx = LocalContext::open(dir, &LocalContextOptions { sitefileignore: false, ..Default::default() })?;
+    let Resource::Tree { tree, .. } = ctx.read_tree("", "serve", None)? else { unreachable!("read_tree returns a tree") };
+    let visible = tree
+        .entries()
+        .filter(|(p, _)| p.split('/').all(|seg| !seg.starts_with('.') || seg.is_empty() || seg == ".well-known"))
+        .map(|(p, n)| (p.clone(), n.clone()))
+        .collect::<Vec<_>>();
     Tree::from_files(visible)
 }
 
@@ -372,6 +281,7 @@ mod tests {
     use crate::export::exporter::tests::TmpDir;
     use crate::server::{listen, SiteServerOptions};
     use std::sync::Arc;
+    use crate::tree::make_file;
 
     fn state(reg: &ServerRegistry, id: &str, name: &str, started: &str) -> ServerState {
         ServerState {

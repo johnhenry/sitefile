@@ -1,0 +1,6 @@
+FROM scratch
+COPY ./a.txt /x.txt
+COPY --overwrite ./b.txt /x.txt
+COPY ./a.txt /y.txt
+COPY ./a.txt /y.txt
+EXPORT /

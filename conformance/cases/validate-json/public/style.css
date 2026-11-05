@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; --muted: #6b7280; --accent: #0f766e; }
+body { font: 1.05rem/1.65 system-ui, sans-serif; max-width: 42rem; margin: 0 auto; padding: 2rem 1rem; }
+a { color: var(--accent); }
+header .site { font-weight: 700; text-decoration: none; font-size: 1.2rem; }
+.summary { margin: 2rem 0; }
+.summary h2 { margin-bottom: 0; }
+.meta { color: var(--muted); margin-top: 0.25rem; font-size: 0.9rem; }
+pre { overflow-x: auto; padding: 0.75rem 1rem; background: rgba(127, 127, 127, 0.12); border-radius: 6px; }
+code { font: 0.9em ui-monospace, monospace; }
+blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--accent); color: var(--muted); }
+.tags { display: flex; gap: 0.5rem; list-style: none; padding: 0; }
+.tags li { font-size: 0.85rem; padding: 0.1rem 0.6rem; border-radius: 999px; background: rgba(127, 127, 127, 0.15); }
+nav { margin-top: 3rem; border-top: 1px solid rgba(127, 127, 127, 0.3); }
+footer { margin-top: 3rem; color: var(--muted); }
