@@ -113,14 +113,15 @@ export async function main(argv: readonly string[]): Promise<number> {
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
-              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, operations: p.operations, export: p.exportPath },
+              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
               null,
               2,
             ) + '\n',
           );
         } else {
+          const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
           process.stdout.write(
-            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${p.operations.length} operation${p.operations.length === 1 ? '' : 's'})\n`,
+            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
           );
         }
         return 0;

@@ -235,7 +235,7 @@ test('COPY forms', () => {
   assert.deepEqual([a.span.column, (a as { dest: Operand }).dest.span.column], [1, 16]);
   const b = one('COPY --overwrite site: /');
   assert.ok(b.kind === 'COPY' && b.overwrite && literalText(b.source) === 'site:');
-  parseErr('COPY --from=build /a /b', 'E_UNSUPPORTED', 1, 6, /M2/);
+  assert.ok(one('COPY --from=build /a /b').kind === 'COPY');
   parseErr('COPY --chown=1 /a /b', 'E_SYNTAX', 1, 6, /unknown flag/);
   parseErr('COPY --overwrite=yes /a /b', 'E_SYNTAX', 1, 6);
   parseErr('COPY --overwrite --overwrite /a /b', 'E_SYNTAX', 1, 18, /twice/);
@@ -254,7 +254,7 @@ test('RENDER forms', () => {
   parseErr('RENDER --escape t TO /x', 'E_SYNTAX', 1, 8, /requires a value/);
   parseErr('RENDER t /x', 'E_SYNTAX', 1, 10, /TO/);
   parseErr('RENDER t TO', 'E_SYNTAX', 1, 12);
-  parseErr('RENDER --from=a t TO /x', 'E_UNSUPPORTED', 1, 8);
+  assert.ok(one('RENDER --from=a t TO /x').kind === 'RENDER');
 });
 
 test('EXPORT forms', () => {
@@ -315,8 +315,8 @@ test('empty Sitefile', () => {
 test('FROM rules', () => {
   progErr('COPY a /b\nEXPORT /', 'E_VALIDATION', 1, 1, /before FROM/);
   progErr('ARG X\nLET Y = 1\nFROM scratch\nEXPORT /', 'E_VALIDATION', 2, 1, /before FROM/);
-  progErr('FROM ./base\nEXPORT /', 'E_UNSUPPORTED', 1, 1, /M2/);
-  progErr('FROM scratch\nFROM scratch AS b\nEXPORT /', 'E_UNSUPPORTED', 2, 1, /multi-stage/);
+  assert.ok(parseProgram('FROM ./base\nEXPORT /'));
+  assert.ok(parseProgram('FROM scratch\nFROM scratch AS b\nEXPORT /'));
   assert.equal(parseProgram('ARG X\nFROM scratch\nEXPORT /').instructions.length, 3);
 });
 
@@ -357,4 +357,47 @@ test('import references in COPY/RENDER sources', () => {
 test('URL sources are rejected', () => {
   progErr(HEAD + 'COPY https://example.com/a.css /' + TAIL, 'E_VALIDATION', 2, 6, /IMPORT then COPY/);
   progErr(HEAD + 'RENDER "http://x/t.html" TO /t' + TAIL, 'E_VALIDATION', 2, 8, /IMPORT/);
+});
+
+// ---- stages and --from ---------------------------------------------------------
+
+test('multiple FROM stages validate; bindings stay global', () => {
+  const p = parseProgram(
+    'ARG A = 1\nFROM scratch AS one\nLET B = 2\nFROM ./dir AS two\nIMPORT i FROM ./x\nCOPY --from=one /a /b\nFROM two\nCOPY ${A}${B} /c\nEXPORT /',
+  );
+  assert.equal(p.instructions.filter((i) => i.kind === 'FROM').length, 3);
+});
+
+test('COPY and RENDER parse --from', () => {
+  const c = one('COPY --from=build /out/ /');
+  assert.ok(c.kind === 'COPY' && c.from?.name === 'build' && c.from.span.column === 6);
+  const r = one('RENDER --from=build --escape=html /t.html TO /x');
+  assert.ok(r.kind === 'RENDER' && r.from?.name === 'build');
+  assert.equal((one('COPY a b') as { from?: unknown }).from, undefined);
+  parseErr('COPY --from a b', 'E_SYNTAX', 1, 6, /requires a value/);
+  parseErr('COPY --from=a-b x y', 'E_SYNTAX', 1, 6, /stage name/);
+  parseErr('COPY --from=a --from=b x y', 'E_SYNTAX', 1, 15, /twice/);
+});
+
+test('stage names are separate from ARG/LET/IMPORT names', () => {
+  progErr('FROM scratch AS a\nFROM scratch AS a' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('ARG a\nFROM scratch AS a' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('FROM scratch\nIMPORT a FROM ./x\nFROM scratch AS a' + TAIL, 'E_DUPLICATE', 3, 1);
+  progErr('FROM scratch AS a\nLET a = 1' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('FROM scratch AS a\nIMPORT a FROM ./x' + TAIL, 'E_DUPLICATE', 2, 1);
+});
+
+test('forward and self references to stages are errors', () => {
+  progErr('FROM scratch AS a\nCOPY --from=a /x /y' + TAIL, 'E_UNDEFINED', 2, 6, /not complete/);
+  progErr('FROM scratch AS a\nCOPY --from=b /x /y\nFROM scratch AS b' + TAIL, 'E_UNDEFINED', 2, 6, /not complete/);
+  progErr('FROM scratch\nRENDER --from=nope /t TO /x' + TAIL, 'E_UNDEFINED', 2, 8, /not defined/);
+  progErr('FROM a AS a' + TAIL, 'E_UNDEFINED', 1, 6, /not defined before/);
+  progErr('FROM b\nFROM scratch AS b' + TAIL, 'E_UNDEFINED', 1, 6);
+  // a bare word that names no stage is a local directory; ./name always is
+  assert.ok(parseProgram('FROM dir\nFROM ./a AS a\nFROM ./a' + TAIL));
+});
+
+test('EXPORT must still be last with several stages', () => {
+  progErr('FROM scratch AS a\nEXPORT /\nFROM scratch', 'E_VALIDATION', 3, 1, /EXPORT must be the last/);
+  progErr('FROM scratch AS a\nFROM scratch', 'E_VALIDATION', 2, 1, /missing EXPORT/);
 });

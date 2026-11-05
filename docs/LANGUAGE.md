@@ -3,11 +3,11 @@
 Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quoted strings, comments, and backslash continuations. No implicit shell.
 
 Instructions:
-- `FROM scratch [AS name]` or `FROM <tree-uri> [AS name]`
+- `FROM scratch|<local dir>|<stage> [AS name]`
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
-- `COPY <source> <destination>`; source can be local path or `name:/path`
+- `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> AS directory` (CLI specifies destination)
 - Future: REMOVE, TRANSFORM, GENERATE, ASSERT, META, EXEC, OCI output.
@@ -56,8 +56,27 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - A `$` not followed by `{` is literal.
 
 ### Instructions
-- `FROM scratch [AS name]` must come before every instruction except `ARG`, and
-  exactly once. Other bases and multi-stage builds are M2 (`E_UNSUPPORTED`).
+- `FROM scratch|<base> [AS name]` starts a **stage**. Every instruction except
+  `ARG` must come after the first `FROM`; each `FROM` after that starts a new
+  stage, and COPY/RENDER apply to the most recent one.
+  - `scratch` (bare word; `"scratch"` is a path) is an empty tree.
+  - `<base>` that is a bare identifier naming an *earlier* stage starts from a
+    copy of that stage's final tree (Docker-like). Anything else is a
+    context-relative directory, with COPY's sandbox rules (`E_PATH_ESCAPE`,
+    symlinks inside the context only, `.git`/export dir skipped); a file is
+    `E_TYPE`, a missing path `E_NOT_FOUND`. A stage name wins over a same-named
+    directory; write `./name` to force the directory. Files seeded from a
+    directory get the origin `Sitefile:<line> FROM`; files inherited from a
+    stage keep their original origin.
+  - Stage names are identifiers, unique, and share no namespace with
+    ARG/LET/IMPORT: a collision in either order is `E_DUPLICATE`. A name used
+    before its stage is complete (itself or a later stage) is `E_UNDEFINED`, so
+    there are no cycles.
+  - **Scope:** stages scope only the tree. ARG, LET and IMPORT stay one global
+    namespace in source order, wherever they appear, and an IMPORT is usable
+    from any later stage.
+  - **EXPORT** is still exactly one and last, and exports from the **last
+    stage**. Earlier stages exist only to feed later ones.
 - `ARG NAME[: string|number|boolean] [= value]`. No default means required;
   `--build-arg NAME=value` overrides. Unknown `--build-arg` names are warnings.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
@@ -71,8 +90,13 @@ These pin down what the draft above leaves open. Tests cover each rule.
     they can be read by RENDER templates but not copied (`E_TYPE`).
   - Remote `tree` imports are M2.
   - Import names must not equal an ARG/LET name or another import.
-- `COPY [--overwrite] <source> <dest>`
-  - `<source>` is a context-relative path, or `name:` / `name:/inner/path` for
+- `COPY [--overwrite] [--from=<stage>] <source> <dest>`
+  - With `--from=<stage>`, `<source>` is an absolute path (starts with `/`, no
+    `..`) inside the final tree of an earlier, completed stage: `/out/` or
+    `/a.txt`. File, directory, trailing-slash and conflict rules below apply
+    unchanged. A missing path is `E_NOT_FOUND`; an unknown, current or later
+    stage is `E_UNDEFINED` (at the flag).
+  - Otherwise `<source>` is a context-relative path, or `name:` / `name:/inner/path` for
     an import. Write `./foo:bar` for a local file whose name contains `:`.
     A URL source fails: use IMPORT then COPY.
   - `<dest>` must be absolute.
@@ -81,14 +105,15 @@ These pin down what the draft above leaves open. Tests cover each rule.
     new file's path.
   - **Directory source:** its *contents* are placed under `<dest>`. A trailing
     slash on either side makes no difference.
-- `RENDER [--escape=none|html] [--overwrite] <template> TO <dest>`
-  - `<template>` is a source like COPY's and must be a UTF-8 file. `<dest>` is
+- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest>`
+  - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
   - Templates use `${NAME}` for ARG/LET, `${name}` for a text import, and
     `${name.key.0.key}` for a scalar in a JSON import. `$${` writes a literal
     `${`. Unknown names fail with the template's line and column.
   - `--escape=html` escapes `& < > " '` in every substituted value.
-- `EXPORT <path> [AS directory]` must be the last instruction, exactly once.
+- `EXPORT <path> [AS directory]` must be the last instruction, exactly once;
+  it exports from the last stage.
   The CLI's `--out` picks the host destination.
 - `RUN` is rejected: the MVP never runs shell commands.
 

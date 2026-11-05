@@ -102,3 +102,18 @@ test('refuses to replace a non-empty directory outside the context without --for
   assert.equal(unsafe.code, 1);
   assert.match(unsafe.stderr, /E_EXPORT_UNSAFE/);
 });
+
+test('examples/multistage builds from a local stage and COPY --from', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'multistage');
+  await cp(path.join(root, 'examples', 'multistage'), ctx, { recursive: true });
+  const v = await sitefile(['validate', ctx]);
+  assert.equal(v.code, 0, v.stderr);
+  assert.match(v.stdout, /3 stages/);
+  const r = await sitefile(['build', ctx, '--build-arg', 'TITLE=Staged']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Exported 3 files/);
+  assert.equal(await readFile(path.join(ctx, 'dist', 'static', 'site.css'), 'utf8'), 'body { font-family: sans-serif; }\n');
+  assert.equal(await readFile(path.join(ctx, 'dist', 'raw-index.html'), 'utf8'), '<h1>Home</h1>\n');
+  assert.match(await readFile(path.join(ctx, 'dist', 'about.html'), 'utf8'), /<title>Staged<\/title>/);
+});

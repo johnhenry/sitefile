@@ -284,3 +284,87 @@ test('build refuses a hard link into the context unless allowHardlinks', async (
   const ok = await build({ contextDir: dir, lockfile: false, allowHardlinks: true });
   assert.ok(ok.output.entries().some(([p]) => p === '/leak.txt'));
 });
+
+// ---- stages ---------------------------------------------------------------------
+
+const paths = (t: { entries(): Array<[string, unknown]> }): string[] => t.entries().map(([p]) => p);
+
+test('multi-stage build: COPY --from, RENDER --from and FROM <stage>', async () => {
+  const { result } = await run({
+    Sitefile: [
+      'FROM scratch AS build',
+      'COPY ./src/ /out/',
+      'COPY ./src/a.txt /top.txt',
+      'FROM scratch AS site',
+      'COPY --from=build /out/ /',
+      'COPY --from=build /top.txt /files/',
+      'COPY --from=build /out/a.txt /single.txt',
+      'FROM site',
+      'RENDER --from=build /out/a.txt TO /rendered.txt',
+      'COPY ./extra.txt /extra.txt',
+      'EXPORT /',
+    ].join('\n'),
+    'src/a.txt': 'A',
+    'extra.txt': 'X',
+  });
+  assert.deepEqual(paths(result.output), ['/a.txt', '/extra.txt', '/files/top.txt', '/rendered.txt', '/single.txt']);
+  assert.equal(text(result.output.get('/files/top.txt')?.bytes), 'A');
+  assert.match(result.output.get('/a.txt')?.origin ?? '', /Sitefile:5 COPY$/);
+  assert.equal(result.plan.stages.length, 3);
+});
+
+test('stages do not leak into each other', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch AS a\nCOPY ./x /x\nFROM scratch\nCOPY ./y /y\nEXPORT /',
+    x: 'x',
+    y: 'y',
+  });
+  assert.deepEqual(paths(result.output), ['/y']);
+});
+
+test('FROM <stage> copies the tree and can be changed independently', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch AS a\nCOPY ./x /x\nFROM a AS b\nCOPY ./y /y\nFROM a\nCOPY --from=b /y /z\nEXPORT /',
+    x: 'x',
+    y: 'y',
+  });
+  assert.deepEqual(paths(result.output), ['/x', '/z']);
+});
+
+test('FROM <local dir> seeds a stage, with sandbox rules', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM ./base\nCOPY ./extra.txt /extra.txt\nEXPORT /',
+    'base/index.html': 'hi',
+    'base/css/a.css': 'a',
+    'extra.txt': 'e',
+  });
+  assert.deepEqual(paths(result.output), ['/css/a.css', '/extra.txt', '/index.html']);
+  assert.match(result.output.get('/index.html')?.origin ?? '', /Sitefile:1 FROM$/);
+
+  const sub = await run({ Sitefile: 'FROM base/css\nEXPORT /', 'base/css/a.css': 'a' });
+  assert.deepEqual(paths(sub.result.output), ['/a.css']);
+
+  await rejectsWith(run({ Sitefile: 'FROM ../etc\nEXPORT /' }).then((r) => r.result), 'E_PATH_ESCAPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM /etc\nEXPORT /' }).then((r) => r.result), 'E_PATH_ESCAPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM ./f.txt\nEXPORT /', 'f.txt': 'x' }).then((r) => r.result), 'E_TYPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM ./missing\nEXPORT /' }).then((r) => r.result), 'E_NOT_FOUND', 1);
+  const dir = await project({ Sitefile: 'FROM ./link\nEXPORT /' });
+  await symlink(os.tmpdir(), path.join(dir, 'link'));
+  await rejectsWith(build({ contextDir: dir, lockfile: false }), 'E_PATH_ESCAPE', 1);
+});
+
+test('COPY --from errors and conflicts', async () => {
+  const base = 'FROM scratch AS a\nCOPY ./x /x\nFROM scratch\n';
+  const files = { x: 'x' };
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a /nope /\nEXPORT /' }).then((r) => r.result), 'E_NOT_FOUND', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a x /\nEXPORT /' }).then((r) => r.result), 'E_PATH', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a /../x /\nEXPORT /' }).then((r) => r.result), 'E_PATH', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=zz /x /\nEXPORT /' }).then((r) => r.result), 'E_UNDEFINED', 4);
+  await rejectsWith(
+    run({ ...files, y: 'y', Sitefile: base + 'COPY ./y /x\nCOPY --from=a /x /x\nEXPORT /' }).then((r) => r.result),
+    'E_CONFLICT',
+    5,
+  );
+  const ok = await run({ ...files, y: 'y', Sitefile: base + 'COPY ./y /x\nCOPY --overwrite --from=a /x /x\nEXPORT /' });
+  assert.equal(text(ok.result.output.get('/x')?.bytes), 'x');
+});

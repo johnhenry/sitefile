@@ -6,6 +6,7 @@ import {
   type ImportKind,
   type Instruction,
   type Operand,
+  type StageRef,
   type ValueType,
 } from './ast.js';
 import { Cursor, logicalLines } from './scanner.js';
@@ -114,7 +115,6 @@ interface Flag {
 function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value'>): Map<string, Flag> {
   const out = new Map<string, Flag>();
   for (let f = c.flag(); f; f = c.flag()) {
-    if (f.name === 'from') throw c.error('E_UNSUPPORTED', '--from is not supported: multi-stage builds arrive in M2', f.span);
     const shape = allowed[f.name];
     if (shape === undefined) throw c.error('E_SYNTAX', `unknown flag --${f.name}`, f.span);
     if (out.has(f.name)) throw c.error('E_SYNTAX', `--${f.name} given twice`, f.span);
@@ -125,16 +125,25 @@ function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value'>): Map<s
   return out;
 }
 
+const STAGE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function stageRef(c: Cursor, flags: Map<string, Flag>): { from?: StageRef } {
+  const f = flags.get('from');
+  if (!f) return {};
+  if (!STAGE_NAME_RE.test(f.value)) throw c.error('E_SYNTAX', `--from needs a stage name, got '${f.value}'`, f.span);
+  return { from: { name: f.value, span: f.span } };
+}
+
 function parseCopy(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { overwrite: 'bare' });
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
   const source = c.operand('source');
   const dest = c.operand('destination');
   c.expectEnd();
-  return { kind: 'COPY', span, source, dest, overwrite: flags.has('overwrite') };
+  return { kind: 'COPY', span, source, dest, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
 }
 
 function parseRender(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { escape: 'value', overwrite: 'bare' });
+  const flags = parseFlags(c, { escape: 'value', overwrite: 'bare', from: 'value' });
   const escapeFlag = flags.get('escape');
   const escape = (escapeFlag?.value ?? 'none').toLowerCase();
   if (escapeFlag && escape !== 'none' && escape !== 'html') {
@@ -144,7 +153,7 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
   c.expectKeyword('TO');
   const dest = c.operand('destination');
   c.expectEnd();
-  return { kind: 'RENDER', span, template, dest, escape: escape as EscapeMode, overwrite: flags.has('overwrite') };
+  return { kind: 'RENDER', span, template, dest, escape: escape as EscapeMode, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {
