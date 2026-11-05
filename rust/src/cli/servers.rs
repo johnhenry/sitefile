@@ -1,0 +1,577 @@
+//! `serve`, `servers`, `server stop|rm|logs|restart` and the hidden detached
+//! worker (port of `src/cli/servers.ts` and `src/cli/serve-worker.ts`).
+//!
+//! `serve -d` re-runs this executable as `sitefile __serve-worker <id>`; the
+//! worker shares the TypeScript version's state files in `$SITEFILE_HOME/servers`.
+
+use super::args::{flag, flag_s, string, string_s, OptSpec, Parsed};
+use super::common::{err, js_to_number, out, pretty_json, require_args, table, usage, Command};
+use crate::error::{ErrorCode::*, Result, SitefileError};
+use crate::server::{format_url, listen, SiteServerOptions};
+use crate::servers::{is_running, load_served_tree, pid_alive, Bind, ServerRegistry, ServerSource, ServerState};
+use crate::store::{now_iso, Store};
+use serde_json::{Map, Value};
+use std::net::IpAddr;
+use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+// ------------------------------------------------------------ signals
+
+const SIGINT: i32 = 2;
+const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
+
+extern "C" {
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+static RECEIVED: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: i32) {
+    RECEIVED.store(sig, Ordering::SeqCst);
+}
+
+/// Catch SIGINT and SIGTERM; [`received`] then returns the signal's name.
+fn catch_signals() {
+    // SAFETY: the handler only stores into an atomic, which is async-signal-safe.
+    unsafe {
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+    }
+}
+
+fn received() -> Option<&'static str> {
+    match RECEIVED.load(Ordering::SeqCst) {
+        SIGINT => Some("SIGINT"),
+        SIGTERM => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
+fn wait_for_signal() -> &'static str {
+    loop {
+        if let Some(s) = received() {
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn send(pid: i64, sig: i32) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    // SAFETY: plain syscall wrapper.
+    unsafe { kill(pid as i32, sig) == 0 }
+}
+
+// ------------------------------------------------------------ helpers
+
+/// `-p` value: `port`, `host:port` or `[v6]:port`. Default bind is 127.0.0.1 with a free port.
+pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
+    let Some(spec) = spec else { return Ok(Bind { host: "127.0.0.1".into(), port: 0 }) };
+    let bad = || usage(format!("-p expects [host:]port, got '{spec}'"));
+    let is_port = |s: &str| (1..=5).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    let (host, port) = if is_port(spec) {
+        (None, spec)
+    } else if let Some(rest) = spec.strip_prefix('[') {
+        let Some((h, p)) = rest.split_once("]:") else { return bad() };
+        if h.is_empty() || !h.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') || !is_port(p) {
+            return bad();
+        }
+        (Some(h), p)
+    } else {
+        let Some((h, p)) = spec.split_once(':') else { return bad() };
+        if h.is_empty() || h.contains(['[', ']']) || !is_port(p) {
+            return bad();
+        }
+        (Some(h), p)
+    };
+    let port: u32 = port.parse().unwrap_or(0);
+    if port > 65535 {
+        return usage(format!("-p: port {port} is out of range"));
+    }
+    let mut host = host.unwrap_or("127.0.0.1").to_string();
+    if host == "localhost" {
+        host = "127.0.0.1".into();
+    }
+    if host.parse::<IpAddr>().is_err() {
+        return usage(format!("-p: host must be an IP address or 'localhost', got '{host}'"));
+    }
+    Ok(Bind { host, port: port as u16 })
+}
+
+fn is_wildcard(h: &str) -> bool {
+    h == "0.0.0.0" || h == "::"
+}
+
+/// `^(\.\.?|~.*|\.\.?\/.*|\/.*|.*\/)$`: an argument that names a directory.
+fn looks_like_dir(arg: &str) -> bool {
+    arg == "." || arg == ".." || arg.starts_with('~') || arg.starts_with("./") || arg.starts_with("../") || arg.starts_with('/') || arg.ends_with('/')
+}
+
+fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)> {
+    if looks_like_dir(arg) {
+        let dir = crate::export::exporter::resolve_path(Path::new(arg));
+        if !std::fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false) {
+            return Err(SitefileError::plain(E_NOT_FOUND, format!("'{arg}' is not a directory")));
+        }
+        let real = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+        return Ok((dir.display().to_string(), ServerSource::Dir { path: real.display().to_string() }));
+    }
+    match store.resolve(arg) {
+        Ok(id) => Ok((arg.to_string(), ServerSource::Image { image_id: id })),
+        Err(e) => {
+            if e.code == E_NOT_FOUND && std::fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false) {
+                return Err(SitefileError::plain(E_NOT_FOUND, format!("{} (to serve the directory, write ./{arg})", e.message())));
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Spawn the detached worker for `state` and wait until it listens (or fails).
+fn start_detached(reg: &ServerRegistry, state: &ServerState) -> Result<ServerState> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::process::CommandExt;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&state.log_file)
+        .map_err(|e| SitefileError::plain(E_SERVER, format!("cannot open '{}': {e}", state.log_file)))?;
+    let exe = std::env::current_exe().map_err(|e| SitefileError::plain(E_SERVER, format!("cannot find the sitefile executable: {e}")))?;
+    let log2 = log.try_clone().map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
+    let mut child = std::process::Command::new(exe)
+        .arg("__serve-worker")
+        .arg(&state.id)
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(log2)
+        .env("SITEFILE_HOME", &reg.store.home)
+        .process_group(0)
+        .spawn()
+        .map_err(|e| SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}")))?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let cur = reg.read(&state.id)?;
+        if let Some(c) = cur.as_ref().filter(|c| c.ready) {
+            return Ok(c.clone());
+        }
+        let exited = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+        let error = cur.as_ref().and_then(|c| c.error.clone());
+        if exited || error.is_some() || Instant::now() > deadline {
+            if !exited {
+                let _ = child.kill();
+            }
+            let why = error.unwrap_or_else(|| {
+                if exited { "the server process exited before it was ready".into() } else { "timed out waiting for the server to start".into() }
+            });
+            return Err(SitefileError::plain(E_SERVER, why.strip_prefix("error[E_SERVER]: ").unwrap_or(&why).to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+// ------------------------------------------------------------ serve
+
+const SERVE_OPTS: &[OptSpec] = &[string("name"), string_s("publish", 'p'), flag_s("detach", 'd'), flag("spa")];
+pub const SERVE: Command = Command {
+    name: "serve",
+    summary: "serve an image or directory over HTTP",
+    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>",
+    description: "Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.",
+    flags: &[
+        "--name <n>        name for the server (-d only; default site-<6 hex>)",
+        "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
+        "-d, --detach      run in the background and print the server ID",
+        "--spa             serve /index.html for unknown paths without a file extension",
+    ],
+    options: SERVE_OPTS,
+    run: run_serve,
+};
+
+fn run_serve(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 1, 1, "an image reference or ./directory")?;
+    let bind = parse_publish(v.str("publish"))?;
+    let name = v.str("name");
+    if name.is_some() && !v.flag("detach") {
+        return usage("--name needs -d (only detached servers are tracked)");
+    }
+    let store = Store::open_default()?;
+    let (label, source) = resolve_source(&store, &v.positionals[0])?;
+    if is_wildcard(&bind.host) {
+        err(&format!("warning: binding {}: the site will be reachable from other machines\n", bind.host));
+    }
+
+    if !v.flag("detach") {
+        let tree = load_served_tree(&store, &source)?;
+        let n = tree.len();
+        catch_signals();
+        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
+        let server = listen(Arc::new(tree), SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None }, &bind.host, bind.port)?;
+        out(&format!("Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n", format_url(&server.host, server.port)));
+        wait_for_signal();
+        server.close();
+        return Ok(0);
+    }
+
+    load_served_tree(&store, &source)?; // fail fast on a bad image or directory
+    let reg = ServerRegistry::open(Some(store))?;
+    let (id, final_name) = reg.allocate(name)?;
+    let state = ServerState {
+        id: id.clone(),
+        name: final_name,
+        image: label.clone(),
+        source,
+        spa: v.flag("spa"),
+        host: bind.host.clone(),
+        port: bind.port,
+        bind,
+        pid: 0,
+        started: now_iso(),
+        log_file: reg.log_path(&id).display().to_string(),
+        ready: false,
+        error: None,
+    };
+    reg.write(&state)?;
+    match start_detached(&reg, &state) {
+        Ok(up) => {
+            out(&format!("Started {} ({}) serving {label} at {}\n", up.name, up.id, format_url(&up.host, up.port)));
+            Ok(0)
+        }
+        Err(e) => {
+            reg.remove(&id)?;
+            Err(e)
+        }
+    }
+}
+
+/// `sitefile __serve-worker <id>`: the detached server process.
+pub fn serve_worker(id: &str) -> i32 {
+    let stamp = |m: &str| out(&format!("{} {m}\n", now_iso()));
+    let reg = match ServerRegistry::open(None) {
+        Ok(r) => r,
+        Err(e) => {
+            err(&format!("{e}\n"));
+            return 1;
+        }
+    };
+    let state = match reg.read(id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            err(&format!("error[E_SERVER]: no state for server '{id}'\n"));
+            return 1;
+        }
+        Err(e) => {
+            err(&format!("{e}\n"));
+            return 1;
+        }
+    };
+    catch_signals();
+    let started = (|| -> Result<crate::server::ListeningServer> {
+        let tree = load_served_tree(&reg.store, &state.source)?;
+        let n = tree.len();
+        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
+        let server = listen(Arc::new(tree), SiteServerOptions { spa: state.spa, log: Some(log), server_id: Some(id.to_string()) }, &state.bind.host, state.bind.port)?;
+        let (host, port) = (server.host.clone(), server.port);
+        reg.update(id, |s| {
+            s.pid = std::process::id() as i64;
+            s.host = host.clone();
+            s.port = port;
+            s.ready = true;
+            s.error = None;
+        })?;
+        stamp(&format!("serving {} ({n} files) at {}", state.image, format_url(&host, port)));
+        Ok(server)
+    })();
+    match started {
+        Ok(server) => {
+            let sig = wait_for_signal();
+            stamp(&format!("received {sig}, shutting down"));
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                server.close();
+                let _ = tx.send(());
+            });
+            let _ = rx.recv_timeout(Duration::from_secs(3));
+            let _ = reg.update(id, |s| s.ready = false);
+            0
+        }
+        Err(e) => {
+            let message = format!("error[{}]: {}", e.code, e.message());
+            err(&format!("{} {message}\n", now_iso()));
+            let _ = reg.update(id, |s| {
+                s.pid = 0;
+                s.ready = false;
+                s.error = Some(message.clone());
+            });
+            1
+        }
+    }
+}
+
+// ------------------------------------------------------------ servers
+
+const PS_OPTS: &[OptSpec] = &[flag_s("all", 'a'), flag("json")];
+pub const PS: Command = Command {
+    name: "servers",
+    summary: "list site servers (also: server ls)",
+    usage: "servers [-a] [--json]",
+    description: "List running site servers (-a: also exited ones). A server is running only if its process is alive\nand its port answers; stale entries show as exited.",
+    flags: &["-a, --all   include exited servers", "--json      machine-readable output"],
+    options: PS_OPTS,
+    run: run_ps,
+};
+
+fn run_ps(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 0, 0, "no arguments")?;
+    let reg = ServerRegistry::open(None)?;
+    let views: Vec<_> = reg.all()?.iter().map(|s| reg.view(s)).filter(|s| v.flag("all") || s.status == "running").collect();
+    if v.flag("json") {
+        // 'site' is the image reference or directory being served.
+        let arr: Vec<Value> = views
+            .iter()
+            .map(|s| {
+                let mut m = Map::new();
+                if let Ok(Value::Object(st)) = serde_json::to_value(&s.state) {
+                    for (k, val) in st {
+                        if k != "image" {
+                            m.insert(k, val);
+                        }
+                    }
+                }
+                m.insert("status".into(), Value::String(s.status.into()));
+                m.insert("url".into(), Value::String(s.url.clone()));
+                m.insert("site".into(), Value::String(s.state.image.clone()));
+                Value::Object(m)
+            })
+            .collect();
+        out(&(pretty_json(&Value::Array(arr)) + "\n"));
+        return Ok(0);
+    }
+    let mut rows = vec![["NAME", "SITE", "URL", "STATUS", "ID"].iter().map(|s| s.to_string()).collect::<Vec<_>>()];
+    for s in &views {
+        rows.push(vec![
+            s.state.name.clone(),
+            s.state.image.clone(),
+            if s.url.is_empty() { "-".into() } else { s.url.clone() },
+            s.status.to_string(),
+            s.state.id.clone(),
+        ]);
+    }
+    out(&table(&rows));
+    Ok(0)
+}
+
+/// SIGTERM, wait, then SIGKILL. Returns false if the server was not running.
+pub fn stop_server(reg: &ServerRegistry, s: &ServerState, grace: Duration) -> Result<bool> {
+    if !is_running(s) {
+        return Ok(false);
+    }
+    let gone = |d: Duration| {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            if !pid_alive(s.pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        !pid_alive(s.pid)
+    };
+    if !send(s.pid, SIGTERM) {
+        return Ok(false);
+    }
+    if !gone(grace) {
+        send(s.pid, SIGKILL);
+        if !gone(Duration::from_secs(2)) {
+            return Err(SitefileError::plain(E_SERVER, format!("could not stop {} (pid {})", s.name, s.pid)));
+        }
+    }
+    let _ = reg.update(&s.id, |x| x.ready = false);
+    Ok(true)
+}
+
+fn grace_of(v: &Parsed) -> Result<Duration> {
+    let Some(t) = v.str("time") else { return Ok(Duration::from_secs(5)) };
+    let n = js_to_number(t);
+    if !n.is_finite() || n < 0.0 {
+        return usage("--time expects a number of seconds");
+    }
+    Ok(Duration::from_secs_f64(n))
+}
+
+/// Run `f` for each target; print each failure and keep going.
+fn each_target(reg: &ServerRegistry, keys: &[String], f: impl Fn(&ServerState) -> Result<String>) -> Result<i32> {
+    let mut failed = false;
+    for key in keys {
+        match reg.find(key).and_then(|s| f(&s)) {
+            Ok(line) => out(&format!("{line}\n")),
+            Err(e) => {
+                err(&format!("error[{}]: {}\n", e.code, e.message()));
+                failed = true;
+            }
+        }
+    }
+    Ok(if failed { 1 } else { 0 })
+}
+
+const TIME_OPTS: &[OptSpec] = &[string("time")];
+pub const STOP: Command = Command {
+    name: "stop",
+    summary: "stop running site servers",
+    usage: "server stop [--time secs] <name|id>...",
+    description: "Send SIGTERM, wait up to --time seconds (default 5), then SIGKILL. Stopping an exited server is a no-op.",
+    flags: &["--time <secs>   grace period before SIGKILL (default 5)"],
+    options: TIME_OPTS,
+    run: run_stop,
+};
+
+fn run_stop(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 1, usize::MAX, "a server id or name")?;
+    let reg = ServerRegistry::open(None)?;
+    let grace = grace_of(v)?;
+    each_target(&reg, &v.positionals, |s| {
+        stop_server(&reg, s, grace)?;
+        Ok(s.name.clone())
+    })
+}
+
+const RM_OPTS: &[OptSpec] = &[flag_s("force", 'f')];
+pub const RM: Command = Command {
+    name: "rm",
+    summary: "remove site servers",
+    usage: "server rm [-f] <name|id>...",
+    description: "Delete the record and log of exited servers. Running servers are refused unless -f, which stops them first.",
+    flags: &["-f, --force   stop and remove running servers"],
+    options: RM_OPTS,
+    run: run_rm,
+};
+
+fn run_rm(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 1, usize::MAX, "a server id or name")?;
+    let reg = ServerRegistry::open(None)?;
+    let force = v.flag("force");
+    each_target(&reg, &v.positionals, |s| {
+        if is_running(s) {
+            if !force {
+                return Err(SitefileError::plain(E_SERVER, format!("{} is running; stop it first or use -f", s.name)));
+            }
+            stop_server(&reg, s, Duration::from_secs(5))?;
+        }
+        reg.remove(&s.id)?;
+        Ok(s.name.clone())
+    })
+}
+
+const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n')];
+pub const LOGS: Command = Command {
+    name: "logs",
+    summary: "show a server's access log",
+    usage: "server logs [-f] [-n lines] <name|id>",
+    description: "Print the log of a detached server: one line per request (\"METHOD /path STATUS BYTES MSms\").",
+    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines"],
+    options: LOGS_OPTS,
+    run: run_logs,
+};
+
+fn run_logs(v: &Parsed) -> Result<i32> {
+    use std::io::{Read, Seek, SeekFrom};
+    require_args(&v.positionals, 1, 1, "a server id or name")?;
+    let reg = ServerRegistry::open(None)?;
+    let s = reg.find(&v.positionals[0])?;
+    let raw = std::fs::read(&s.log_file).unwrap_or_default();
+    let offset = raw.len() as u64;
+    let mut text = String::from_utf8_lossy(&raw).into_owned();
+    if let Some(tail) = v.str("tail") {
+        let n = js_to_number(tail);
+        if !super::common::is_safe_integer(n) || n < 0.0 {
+            return usage("--tail expects a non-negative integer");
+        }
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        lines.pop();
+        let n = n as usize;
+        let keep = if n == 0 { &[][..] } else { &lines[lines.len().saturating_sub(n)..] };
+        text = keep.iter().map(|l| format!("{l}\n")).collect();
+    }
+    out(&text);
+    if !v.flag("follow") {
+        return Ok(0);
+    }
+    catch_signals();
+    let mut pos = offset;
+    while received().is_none() {
+        std::thread::sleep(Duration::from_millis(150));
+        let Ok(mut f) = std::fs::File::open(&s.log_file) else { continue };
+        let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+        if size < pos {
+            pos = 0;
+        }
+        if size > pos {
+            let mut buf = vec![0u8; (size - pos) as usize];
+            if f.seek(SeekFrom::Start(pos)).is_ok() && f.read_exact(&mut buf).is_ok() {
+                pos = size;
+                use std::io::Write;
+                let mut o = std::io::stdout().lock();
+                let _ = o.write_all(&buf);
+                let _ = o.flush();
+            }
+        }
+    }
+    Ok(0)
+}
+
+pub const RESTART: Command = Command {
+    name: "restart",
+    summary: "restart a site server",
+    usage: "server restart [--time secs] <name|id>",
+    description: "Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory is re-read.",
+    flags: &["--time <secs>   grace period before SIGKILL (default 5)"],
+    options: TIME_OPTS,
+    run: run_restart,
+};
+
+fn run_restart(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 1, 1, "a server id or name")?;
+    let reg = ServerRegistry::open(None)?;
+    let s = reg.find(&v.positionals[0])?;
+    stop_server(&reg, &s, grace_of(v)?)?;
+    load_served_tree(&reg.store, &s.source)?;
+    let mut fresh = s.clone();
+    fresh.host = s.bind.host.clone();
+    fresh.port = s.bind.port;
+    fresh.pid = 0;
+    fresh.ready = false;
+    fresh.started = now_iso();
+    fresh.error = None;
+    reg.write(&fresh)?;
+    let up = match start_detached(&reg, &fresh) {
+        Ok(u) => u,
+        Err(e) => {
+            reg.update(&s.id, |x| x.ready = false)?;
+            return Err(e);
+        }
+    };
+    out(&format!("Restarted {} ({}) serving {} at {}\n", up.name, up.id, up.image, format_url(&up.host, up.port)));
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publish_specs() {
+        assert_eq!(parse_publish(None).unwrap(), Bind { host: "127.0.0.1".into(), port: 0 });
+        assert_eq!(parse_publish(Some("8080")).unwrap().port, 8080);
+        assert_eq!(parse_publish(Some("localhost:80")).unwrap().host, "127.0.0.1");
+        assert_eq!(parse_publish(Some("[::1]:80")).unwrap().host, "::1");
+        assert_eq!(parse_publish(Some("0.0.0.0:1")).unwrap().host, "0.0.0.0");
+        assert!(parse_publish(Some("99999")).unwrap_err().detail.contains("out of range"));
+        assert!(parse_publish(Some("example.com:80")).unwrap_err().detail.contains("must be an IP"));
+        assert!(parse_publish(Some("::1:80")).is_err());
+    }
+}
