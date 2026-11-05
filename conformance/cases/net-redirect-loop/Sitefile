@@ -1,0 +1,5 @@
+# More than 5 redirects.
+FROM scratch
+IMPORT css FROM ${HTTPS}/loop
+COPY css: /style.css
+EXPORT /

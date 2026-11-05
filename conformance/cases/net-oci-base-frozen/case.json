@@ -1,0 +1,15 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site.oci.tar",
+      "--label",
+      "org.example.team=web",
+      "--frozen-lockfile"
+    ]
+  ],
+  "lock": true
+}

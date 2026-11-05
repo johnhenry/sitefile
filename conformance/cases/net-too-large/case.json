@@ -1,0 +1,15 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--allow-private-network",
+      "--max-download-bytes",
+      "100"
+    ]
+  ],
+  "lock": true
+}

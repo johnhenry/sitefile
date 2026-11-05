@@ -1,0 +1,5 @@
+# A 404 response.
+FROM scratch
+IMPORT css FROM ${HTTPS}/missing.css
+COPY css: /style.css
+EXPORT /

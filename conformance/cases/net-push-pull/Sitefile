@@ -1,0 +1,8 @@
+# build -t, push to the mock registry, pull into a fresh store, save it back out.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c
+COPY css: /style.css
+RENDER --escape=html <<HTML TO /index.html
+<h1>pushed and pulled</h1>
+HTML
+EXPORT /
