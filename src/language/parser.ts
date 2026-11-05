@@ -32,6 +32,8 @@ function parseInstruction(c: Cursor): Instruction {
   switch (kw) {
     case 'FROM':
       return parseFrom(c, span);
+    case 'STAGE':
+      return parseStage(c, span);
     case 'ARG':
     case 'LET':
       return parseBinding(c, span, kw);
@@ -61,6 +63,15 @@ function parseFrom(c: Cursor, span: SourceSpan): Instruction {
   const alias = c.keyword('AS') ? c.ident('stage name') : undefined;
   c.expectEnd();
   return alias === undefined ? { kind: 'FROM', span, base } : { kind: 'FROM', span, base, alias };
+}
+
+/** `STAGE name [FROM base]`: the same IR as `FROM base AS name` (an omitted base is `scratch`). */
+function parseStage(c: Cursor, span: SourceSpan): Instruction {
+  const alias = c.ident('stage name');
+  let base: 'scratch' | Operand = 'scratch';
+  if (c.keyword('FROM')) base = c.keyword('scratch') ? 'scratch' : c.operand('base');
+  c.expectEnd();
+  return { kind: 'FROM', span, base, alias, keyword: 'STAGE' };
 }
 
 function parseBinding(c: Cursor, span: SourceSpan, kind: 'ARG' | 'LET'): Instruction {

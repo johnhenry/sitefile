@@ -1,0 +1,4 @@
+STAGE a
+COPY ./src/a.txt /a.txt
+STAGE b FROM a
+EXPORT /

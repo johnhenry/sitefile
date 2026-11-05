@@ -4,6 +4,7 @@ Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quote
 
 Instructions:
 - `FROM scratch|<local dir>|<stage> [AS name]` (optional for a single-stage build: the first instruction other than `ARG` starts an implicit `FROM scratch`)
+- `STAGE <name> [FROM scratch|<local dir>|<stage>]` starts a named stage; same as `FROM <base> AS <name>` (base defaults to `scratch`)
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
@@ -71,6 +72,26 @@ These pin down what the draft above leaves open. Tests cover each rule.
     is exported, so its output can never be used. The build prints
     `warning: <file>:<line>: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>`
     (stderr, from `build`, `validate` and `inspect`; the build still succeeds).
+  - **`STAGE name [FROM base]`** is a more readable way to start a named
+    stage (like an Earthly or Make target). It is exactly `FROM base AS name`,
+    and `STAGE name` alone is `FROM scratch AS name`. The name is required and
+    follows the stage-name rules below; `<base>` is anything `FROM` accepts
+    (`scratch`, an earlier stage, a context directory). `STAGE` and `FROM` mix
+    freely, and a `STAGE` counts as a stage start for the implicit-`FROM` rule.
+    A bare `FROM` with no base is still a syntax error. Errors about a `STAGE`
+    line say `STAGE`, e.g. `STAGE b FROM a: stage 'a' is not defined before this line`.
+
+    ```
+    STAGE assets
+    COPY ./static/ /static/
+
+    STAGE site FROM assets
+    RENDER ./index.html TO /index.html
+
+    FROM scratch
+    COPY --from=site / /
+    EXPORT /
+    ```
   - `scratch` (bare word; `"scratch"` is a path) is an empty tree.
   - `<base>` that is a bare identifier naming an *earlier* stage starts from a
     copy of that stage's final tree (Docker-like). Anything else is a

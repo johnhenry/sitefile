@@ -28,6 +28,8 @@ export interface FromInstruction {
    */
   readonly base: 'scratch' | Operand;
   readonly alias?: string;
+  /** Set when written as `STAGE <name> [FROM <base>]`; otherwise the instruction is `FROM … [AS name]`. Only used in error messages. */
+  readonly keyword?: 'STAGE';
 }
 
 export interface ArgInstruction {

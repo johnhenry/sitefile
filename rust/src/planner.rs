@@ -231,10 +231,10 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
 
     for ins in &program.instructions {
         match ins {
-            Instruction::From { span, base, alias } => {
+            Instruction::From { span, base, alias, stage_kw } => {
                 let base = match base {
                     FromBase::Scratch => StageBase::Scratch,
-                    FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names)?,
+                    FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
                 };
                 stages.push(Stage { name: alias.clone(), base, operations: Vec::new(), span: span.clone() });
             }
@@ -442,7 +442,7 @@ fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
 }
 
 /// A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory.
-fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>) -> Result<StageBase> {
+fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>, lead: &str) -> Result<StageBase> {
     let raw = evaluate_operand(op, vars)?;
     if earlier.iter().any(|s| s.name.as_deref() == Some(raw.as_str())) {
         return Ok(StageBase::Stage { name: raw });
@@ -450,7 +450,7 @@ fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String
     if all.contains(&raw) {
         return Err(SitefileError::at(
             E_UNDEFINED,
-            format!("FROM {raw}: stage '{raw}' is not defined before this line (write ./{raw} for a local directory)"),
+            format!("{lead} {raw}: stage '{raw}' is not defined before this line (write ./{raw} for a local directory)"),
             &op.span,
         ));
     }
@@ -795,6 +795,9 @@ mod tests {
         assert!(matches!(&p.stages[1].operations[0], Operation::Copy { source: SourceRef::Stage { name, path, .. }, .. } if name == "a" && path == "/x"));
         // a stage name reached through a variable is still checked
         plan_err("ARG S = later\nFROM ${S}\nFROM scratch AS later\nEXPORT /", &[], E_UNDEFINED, 2, "FROM later: stage 'later' is not defined before this line");
+        plan_err("ARG S = later\nSTAGE x FROM ${S}\nSTAGE later\nEXPORT /", &[], E_UNDEFINED, 2, "STAGE x FROM later: stage 'later' is not defined before this line");
+        let p = plan_of("STAGE a\nSTAGE b FROM a\nFROM scratch\nEXPORT /", &[]).unwrap();
+        assert_eq!(p.stages.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), [Some("a".to_string()), Some("b".to_string()), None]);
         let p = plan_of("ARG D = .\nFROM ${D}\nEXPORT /", &[]).unwrap();
         assert_eq!(p.stages[0].base, StageBase::Local { path: "".into() });
     }

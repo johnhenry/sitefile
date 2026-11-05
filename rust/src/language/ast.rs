@@ -172,7 +172,8 @@ pub enum FromBase {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
-    From { span: SourceSpan, base: FromBase, alias: Option<String> },
+    /// `stage_kw` is set for `STAGE name [FROM base]` (same meaning as `FROM base AS name`); used only in error messages.
+    From { span: SourceSpan, base: FromBase, alias: Option<String>, stage_kw: bool },
     Arg { span: SourceSpan, name: String, ty: ValueType, default_value: Option<Operand> },
     Let { span: SourceSpan, name: String, ty: ValueType, value: Operand },
     Import {

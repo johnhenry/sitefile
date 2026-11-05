@@ -383,6 +383,16 @@ test('multi-stage build: COPY --from, RENDER --from and FROM <stage>', async () 
   assert.equal(result.plan.stages.length, 3);
 });
 
+test('STAGE builds the same stages as FROM … AS', async () => {
+  const { result } = await run({
+    Sitefile: 'STAGE a\nCOPY ./x /x\nSTAGE b FROM a\nCOPY ./y /y\nFROM scratch\nCOPY --from=b /x /x\nCOPY --from=b /y /y\nEXPORT /',
+    x: 'x',
+    y: 'y',
+  });
+  assert.deepEqual(paths(result.output), ['/x', '/y']);
+  assert.deepEqual(result.plan.stages.map((s) => s.name), ['a', 'b', undefined]);
+});
+
 test('stages do not leak into each other', async () => {
   const { result } = await run({
     Sitefile: 'FROM scratch AS a\nCOPY ./x /x\nFROM scratch\nCOPY ./y /y\nEXPORT /',

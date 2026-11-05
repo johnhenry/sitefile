@@ -2,11 +2,11 @@
 ARG TITLE = "Multi-stage"
 
 # Stage 1: seed a stage from a context directory.
-FROM ./theme AS theme
+STAGE theme FROM ./theme
 COPY ./pages/index.html /vendor/index.html
 
 # Stage 2: start empty, pull in an earlier stage's files.
-FROM scratch AS assets
+STAGE assets
 COPY --from=theme /css/ /static/
 
 # Final stage: a copy of "assets", plus rendered and copied files.

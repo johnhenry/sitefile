@@ -173,6 +173,48 @@ test('FROM forms', () => {
   parseErr('FROM scratch extra', 'E_SYNTAX', 1, 14);
 });
 
+test('STAGE forms', () => {
+  // STAGE name == FROM scratch AS name; STAGE name FROM base == FROM base AS name (same IR, plus a keyword marker).
+  assert.deepEqual(one('STAGE site'), { kind: 'FROM', span: { file: 'Sitefile', line: 1, column: 1 }, base: 'scratch', alias: 'site', keyword: 'STAGE' });
+  assert.deepEqual(one('stage site from scratch'), one('STAGE site'));
+  const g = one('STAGE site FROM ./base');
+  assert.ok(g.kind === 'FROM' && g.base !== 'scratch' && literalText(g.base) === './base' && g.alias === 'site' && g.keyword === 'STAGE');
+  const h = one('STAGE b FROM a');
+  assert.ok(h.kind === 'FROM' && h.base !== 'scratch' && literalText(h.base) === 'a' && h.alias === 'b');
+  // FROM … AS is unchanged and carries no marker.
+  assert.equal((one('FROM scratch AS site') as { keyword?: string }).keyword, undefined);
+  parseErr('STAGE', 'E_SYNTAX', 1, 6, /expected stage name/);
+  parseErr('STAGE FROM scratch', 'E_SYNTAX', 1, 12, /unexpected 'scratch'/);
+  parseErr('STAGE x FROM', 'E_SYNTAX', 1, 13, /expected base/);
+  parseErr('STAGE x extra', 'E_SYNTAX', 1, 9, /unexpected 'extra'/);
+  parseErr('STAGE x AS y', 'E_SYNTAX', 1, 9, /unexpected 'AS'/);
+  parseErr('STAGE x FROM scratch extra', 'E_SYNTAX', 1, 22, /unexpected 'extra'/);
+  parseErr('STAGE x-y', 'E_SYNTAX', 1, 8, /invalid stage name/);
+  // Bare FROM without a base stays a syntax error.
+  parseErr('FROM', 'E_SYNTAX', 1, 5);
+});
+
+test('STAGE validation', () => {
+  const kinds = (src: string): string[] => parseProgram(src).instructions.map((i) => i.kind);
+  // STAGE starts a stage: no implicit stage is added (also after ARG), and it mixes with FROM.
+  assert.deepEqual(kinds('STAGE s\nCOPY a /b\nEXPORT /'), ['FROM', 'COPY', 'EXPORT']);
+  assert.deepEqual(kinds('ARG X = 1\nSTAGE s\nCOPY a /b\nEXPORT /'), ['ARG', 'FROM', 'COPY', 'EXPORT']);
+  assert.deepEqual(kinds('FROM scratch AS a\nSTAGE b FROM a\nFROM b AS c\nSTAGE d\nEXPORT /'), ['FROM', 'FROM', 'FROM', 'FROM', 'EXPORT']);
+  // COPY --from a STAGE, and STAGE based on an earlier stage or a local directory.
+  assert.ok(parseProgram('STAGE a\nCOPY x /x\nSTAGE b FROM a\nSTAGE c FROM ./dir\nSTAGE d\nCOPY --from=a /x /y' + TAIL));
+  progErr('STAGE a\nCOPY --from=a /x /y' + TAIL, 'E_UNDEFINED', 2, 6, /not complete/);
+  // Same name rules and errors as FROM … AS.
+  progErr('STAGE a\nSTAGE a' + TAIL, 'E_DUPLICATE', 2, 1, /'a' is already defined/);
+  progErr('FROM scratch AS a\nSTAGE a' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('ARG a\nSTAGE a' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('STAGE a\nFROM scratch AS a' + TAIL, 'E_DUPLICATE', 2, 1);
+  progErr('STAGE a FROM a' + TAIL, 'E_UNDEFINED', 1, 14, /^STAGE a FROM a: stage 'a' is not defined before this line/);
+  progErr('STAGE a FROM b\nSTAGE b' + TAIL, 'E_UNDEFINED', 1, 14, /^STAGE a FROM b: stage 'b'/);
+  progErr('FROM b\nSTAGE b' + TAIL, 'E_UNDEFINED', 1, 6, /^FROM b: stage 'b'/);
+  // a bare word naming no stage is a local directory
+  assert.ok(parseProgram('STAGE a FROM dir\nSTAGE b FROM ./b' + TAIL));
+});
+
 test('ARG forms', () => {
   const cases: Array<[string, string, string, string | undefined]> = [
     ['ARG X', 'X', 'string', undefined],

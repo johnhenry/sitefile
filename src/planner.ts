@@ -135,7 +135,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       case 'FROM':
         stages.push({
           ...(ins.alias !== undefined && { name: ins.alias }),
-          base: ins.base === 'scratch' ? { kind: 'scratch' } : stageBase(ins.base, vars, stages, allStageNames),
+          base: ins.base === 'scratch' ? { kind: 'scratch' } : stageBase(ins.base, vars, stages, allStageNames, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'),
           operations: [],
           span: ins.span,
         });
@@ -279,11 +279,11 @@ function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
 }
 
 /** A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory. */
-function stageBase(op: Operand, vars: ReadonlyMap<string, Scalar>, earlier: readonly Stage[], all: ReadonlySet<string>): StageBase {
+function stageBase(op: Operand, vars: ReadonlyMap<string, Scalar>, earlier: readonly Stage[], all: ReadonlySet<string>, lead = 'FROM'): StageBase {
   const raw = evaluateOperand(op, vars);
   if (earlier.some((s) => s.name === raw)) return { kind: 'stage', name: raw };
   if (all.has(raw)) {
-    throw new SitefileError('E_UNDEFINED', `FROM ${raw}: stage '${raw}' is not defined before this line (write ./${raw} for a local directory)`, op.span);
+    throw new SitefileError('E_UNDEFINED', `${lead} ${raw}: stage '${raw}' is not defined before this line (write ./${raw} for a local directory)`, op.span);
   }
   return { kind: 'local', path: normalizeLocal(raw, op.span).path };
 }

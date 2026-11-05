@@ -119,7 +119,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (text !== undefined && IDENT_RE.test(text) && allStages.has(text) && !finishedStages.has(text)) {
           throw new SitefileError(
             'E_UNDEFINED',
-            `FROM ${text}: stage '${text}' is not defined before this line (write ./${text} for a local directory)`,
+            `${ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'} ${text}: stage '${text}' is not defined before this line (write ./${text} for a local directory)`,
             ins.base.span,
           );
         }

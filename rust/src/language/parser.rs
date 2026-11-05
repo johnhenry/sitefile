@@ -22,6 +22,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
     let kw = word.to_uppercase();
     match kw.as_str() {
         "FROM" => parse_from(c, span),
+        "STAGE" => parse_stage(c, span),
         "ARG" => parse_binding(c, span, true),
         "LET" => parse_binding(c, span, false),
         "IMPORT" => parse_import(c, span),
@@ -41,7 +42,18 @@ fn parse_from(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let base = if c.keyword("scratch") { FromBase::Scratch } else { FromBase::Operand(c.operand("base")?) };
     let alias = if c.keyword("AS") { Some(c.ident("stage name", "")?) } else { None };
     c.expect_end()?;
-    Ok(Instruction::From { span, base, alias })
+    Ok(Instruction::From { span, base, alias, stage_kw: false })
+}
+
+/// `STAGE name [FROM base]`: the same IR as `FROM base AS name` (an omitted base is `scratch`).
+fn parse_stage(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let alias = c.ident("stage name", "")?;
+    let mut base = FromBase::Scratch;
+    if c.keyword("FROM") {
+        base = if c.keyword("scratch") { FromBase::Scratch } else { FromBase::Operand(c.operand("base")?) };
+    }
+    c.expect_end()?;
+    Ok(Instruction::From { span, base, alias: Some(alias), stage_kw: true })
 }
 
 fn parse_binding(c: &mut Cursor, span: SourceSpan, is_arg: bool) -> Result<Instruction> {
@@ -543,7 +555,7 @@ mod tests {
         assert_eq!(kinds, ["FROM", "COPY", "RENDER", "IMPORT", "EXPORT"]);
         assert_eq!(
             ins[0],
-            Instruction::From { span: SourceSpan::new("Sitefile", 1, 1), base: FromBase::Scratch, alias: Some("base".into()) }
+            Instruction::From { span: SourceSpan::new("Sitefile", 1, 1), base: FromBase::Scratch, alias: Some("base".into()), stage_kw: false }
         );
         assert!(matches!(ins[3], Instruction::Import { as_kind: Some(ImportKind::Json), .. }));
     }
@@ -555,8 +567,26 @@ mod tests {
     }
 
     #[test]
+    fn stage_forms() {
+        let at = SourceSpan::new("Sitefile", 1, 1);
+        assert_eq!(one("STAGE site"), Instruction::From { span: at.clone(), base: FromBase::Scratch, alias: Some("site".into()), stage_kw: true });
+        assert_eq!(one("stage site from scratch"), one("STAGE site"));
+        assert!(matches!(one("STAGE site FROM ./base"), Instruction::From { base: FromBase::Operand(ref o), alias: Some(ref a), stage_kw: true, .. } if lit(o) == "./base" && a == "site"));
+        assert!(matches!(one("STAGE b FROM a"), Instruction::From { base: FromBase::Operand(ref o), alias: Some(ref a), .. } if lit(o) == "a" && a == "b"));
+        assert!(matches!(one("FROM scratch AS site"), Instruction::From { stage_kw: false, .. }));
+        parse_err("STAGE", E_SYNTAX, 1, 6, "expected stage name");
+        parse_err("STAGE FROM scratch", E_SYNTAX, 1, 12, "unexpected 'scratch'");
+        parse_err("STAGE x FROM", E_SYNTAX, 1, 13, "expected base");
+        parse_err("STAGE x extra", E_SYNTAX, 1, 9, "unexpected 'extra'");
+        parse_err("STAGE x AS y", E_SYNTAX, 1, 9, "unexpected 'AS'");
+        parse_err("STAGE x FROM scratch extra", E_SYNTAX, 1, 22, "unexpected 'extra'");
+        parse_err("STAGE x-y", E_SYNTAX, 1, 8, "invalid stage name");
+        parse_err("FROM", E_SYNTAX, 1, 5, "expected base");
+    }
+
+    #[test]
     fn from_forms() {
-        assert_eq!(one("FROM scratch"), Instruction::From { span: SourceSpan::new("Sitefile", 1, 1), base: FromBase::Scratch, alias: None });
+        assert_eq!(one("FROM scratch"), Instruction::From { span: SourceSpan::new("Sitefile", 1, 1), base: FromBase::Scratch, alias: None, stage_kw: false });
         assert!(matches!(one("FROM \"scratch\""), Instruction::From { base: FromBase::Operand(ref o), .. } if lit(o) == "scratch"));
         assert!(matches!(one("FROM ./base AS site"), Instruction::From { base: FromBase::Operand(_), alias: Some(ref a), .. } if a == "site"));
         parse_err("FROM", E_SYNTAX, 1, 5, "expected base");
