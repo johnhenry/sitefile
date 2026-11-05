@@ -573,8 +573,9 @@ impl PluginProcess {
                 LoadState::Failed(e) => return Err(e.clone()),
                 LoadState::Pending => {}
             }
-            match self.next(deadline) {
-                Ok(msg) => match msg.get("type").and_then(Value::as_str) {
+            // On Err, fail() has already recorded the load error.
+            if let Ok(msg) = self.next(deadline) {
+                match msg.get("type").and_then(Value::as_str) {
                     Some("ready") => {
                         self.cacheable = msg.get("cache") != Some(&Value::Bool(false));
                         self.load = LoadState::Ready;
@@ -588,8 +589,7 @@ impl PluginProcess {
                         self.fail(&m);
                     }
                     _ => {}
-                },
-                Err(_) => {} // fail() recorded the load error
+                }
             }
         }
     }

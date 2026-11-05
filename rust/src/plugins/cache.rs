@@ -54,6 +54,12 @@ pub struct PruneResult {
 
 // ---------------------------------------------------------------------------
 // JSON exactly as JavaScript's JSON.stringify writes it
+//
+// Kept here rather than using `crate::values::js_json_stringify`, which (as of
+// this port) differs from JSON.stringify in three ways the cache-key fixture
+// catches: array-index keys ("9", "10") are not iterated first, `__proto__`
+// is not dropped by canonicalization, and 1.5e-7 prints as "0.00000015"
+// instead of "1.5e-7". Once values.rs matches, these can delegate to it.
 
 /// `Number.prototype.toString()` for a finite double (ECMA-262 Number::toString).
 pub fn js_number(x: f64) -> String {
