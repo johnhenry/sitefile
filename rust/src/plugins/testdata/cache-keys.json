@@ -1,0 +1,160 @@
+{
+  "generatedBy": "cacheKey/canonicalJson from lib/src/plugins/cache.js (npm run build), run with node; checked by rust/src/plugins/cache.rs",
+  "cases": [
+    {
+      "parts": {},
+      "canonical": "{}",
+      "key": "62c0e83d2ee62b0d15f11855a76c4e03a8414e0b5c281238ec20736b4609ef37"
+    },
+    {
+      "parts": {
+        "code": {
+          "plugin": "x"
+        },
+        "request": {
+          "dest": "/a",
+          "options": {
+            "n": "1"
+          }
+        }
+      },
+      "canonical": "{\"code\":{\"plugin\":\"x\"},\"request\":{\"dest\":\"/a\",\"options\":{\"n\":\"1\"}}}",
+      "key": "5c6139e546f97d32b7b2430dfc43d16b852e795131cbb6367b50ce2d0ff43ab6"
+    },
+    {
+      "parts": {
+        "code": {
+          "plugin": "6c1d1f0a3b6e4c2f9b8a7d6e5f4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2"
+        },
+        "request": {
+          "dest": "/p/ada.json",
+          "options": {
+            "who": "Ada",
+            "label": "a b"
+          },
+          "input": {
+            "path": "./notes.txt",
+            "name": "notes.txt",
+            "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          },
+          "data": {
+            "k": 1,
+            "list": [
+              1,
+              2.5,
+              -3,
+              true,
+              false,
+              null
+            ]
+          },
+          "item": {
+            "slug": "ada",
+            "name": "Ada"
+          }
+        }
+      },
+      "canonical": "{\"code\":{\"plugin\":\"6c1d1f0a3b6e4c2f9b8a7d6e5f4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2\"},\"request\":{\"data\":{\"k\":1,\"list\":[1,2.5,-3,true,false,null]},\"dest\":\"/p/ada.json\",\"input\":{\"digest\":\"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"name\":\"notes.txt\",\"path\":\"./notes.txt\"},\"item\":{\"name\":\"Ada\",\"slug\":\"ada\"},\"options\":{\"label\":\"a b\",\"who\":\"Ada\"}}}",
+      "key": "d135d03afd1f4dfef94058ec6a616872b05ea6e0a4163ae42220130c5ddea474"
+    },
+    {
+      "parts": {
+        "code": {
+          "tool": {
+            "path": "/usr/local/bin/ffmpeg",
+            "size": 123456,
+            "mtimeMs": 1730000000123.4568
+          },
+          "args": [
+            "-i",
+            "{input}",
+            "--size={option.size}",
+            "$(whoami)",
+            ";",
+            "%{pts}",
+            "{output}"
+          ]
+        },
+        "request": {
+          "dest": "/clip.mp4",
+          "options": {
+            "size": "640x480"
+          },
+          "input": {
+            "path": "./in.txt",
+            "name": "in.txt",
+            "digest": "sha256:00"
+          }
+        }
+      },
+      "canonical": "{\"code\":{\"args\":[\"-i\",\"{input}\",\"--size={option.size}\",\"$(whoami)\",\";\",\"%{pts}\",\"{output}\"],\"tool\":{\"mtimeMs\":1730000000123.4568,\"path\":\"/usr/local/bin/ffmpeg\",\"size\":123456}},\"request\":{\"dest\":\"/clip.mp4\",\"input\":{\"digest\":\"sha256:00\",\"name\":\"in.txt\",\"path\":\"./in.txt\"},\"options\":{\"size\":\"640x480\"}}}",
+      "key": "1791bed760da49dbfed583a96b428e481bc72c57565cc3d6e736a4c9e61dc237"
+    },
+    {
+      "parts": {
+        "request": {
+          "data": {
+            "9": 3,
+            "10": 2,
+            "4294967294": 7,
+            "b": 1,
+            "a": 4,
+            "01": 5,
+            "4294967295": 6,
+            "__proto__": {
+              "x": 1
+            },
+            "𐀀": "astral",
+            "￿": "bmp",
+            "é": "accent",
+            "": "empty",
+            "s": "quote\" backslash\\ nl\n tab\t cr\r bs\b ff\f nul\u0000 us\u001f del emoji😀 slash/ </script>",
+            "nums": [
+              0,
+              0,
+              1e+21,
+              100000000000000000000,
+              1.5e-7,
+              0.000001,
+              0.1,
+              123.456,
+              -2.5e-10,
+              9007199254740992,
+              1.7976931348623157e+308,
+              5e-324,
+              100,
+              1,
+              2
+            ],
+            "nested": [
+              [],
+              {},
+              [
+                [
+                  {}
+                ]
+              ],
+              {
+                "z": {
+                  "y": {
+                    "x": []
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "canonical": "{\"request\":{\"data\":{\"9\":3,\"10\":2,\"4294967294\":7,\"\":\"empty\",\"01\":5,\"4294967295\":6,\"a\":4,\"b\":1,\"nested\":[[],{},[[{}]],{\"z\":{\"y\":{\"x\":[]}}}],\"nums\":[0,0,1e+21,100000000000000000000,1.5e-7,0.000001,0.1,123.456,-2.5e-10,9007199254740992,1.7976931348623157e+308,5e-324,100,1,2],\"s\":\"quote\\\" backslash\\\\ nl\\n tab\\t cr\\r bs\\b ff\\f nul\\u0000 us\\u001f del emoji😀 slash/ </script>\",\"é\":\"accent\",\"𐀀\":\"astral\",\"￿\":\"bmp\"}}}",
+      "key": "3b26a64dd200055a249008e451f87c1d7938aad97d58d87db00aeff6361ce6bd"
+    },
+    {
+      "parts": {
+        "cacheVersion": 2,
+        "code": null
+      },
+      "canonical": "{\"cacheVersion\":2,\"code\":null}",
+      "key": "669785e91467708e7f35b4f7512821c14fdcc99e6a71fe09681129c357e2f663"
+    }
+  ]
+}
