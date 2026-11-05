@@ -128,7 +128,9 @@ test('interpolation builds var parts with spans', () => {
 });
 
 test('interpolation syntax errors', () => {
-  parseErr('COPY ${a.b} x', 'E_SYNTAX', 1, 6, /RENDER/);
+  // Dotted names parse, but outside a RENDER … FOR destination the validator rejects them.
+  progErr('FROM scratch\nARG a = x\nCOPY ${a.b} /x\nEXPORT /', 'E_SYNTAX', 3, 6, /RENDER/);
+  parseErr('COPY ${a.} x', 'E_SYNTAX', 1, 6);
   parseErr('COPY ${} x', 'E_SYNTAX', 1, 6);
   parseErr('COPY ${1A} x', 'E_SYNTAX', 1, 6);
   parseErr('COPY ab${X x', 'E_SYNTAX', 1, 8);
@@ -226,7 +228,7 @@ test('IMPORT forms', () => {
   parseErr('IMPORT d FROM ./x INTEGRITY sha256:abc', 'E_SYNTAX', 1, 29, /sha256/);
   parseErr(`IMPORT d FROM ./x INTEGRITY ${digest.toUpperCase()}`, 'E_SYNTAX', 1, 29);
   parseErr('IMPORT d FROM ./x INTEGRITY ${X}', 'E_SYNTAX', 1, 29);
-  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS or INTEGRITY/);
+  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS, INTEGRITY or SORT BY/);
 });
 
 test('COPY forms', () => {

@@ -35,3 +35,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #6 Hard links to files outside the context
 - [x] #7 TLS test fixture for `fetchRemote`
 - [x] Inline content: `COPY <<EOF` and `RENDER <<EOF … TO` heredocs (`test/inline.test.ts`, `test/cli.test.ts`, `examples/inline/`)
+- [x] #16 Blog support: `IMPORT … AS markdown` with frontmatter, `SORT BY`, `RENDER … FOR`, template `${#each}` / `${#if}` / `|raw` (`test/blog.test.ts`, `test/markdown.test.ts`, `test/frontmatter.test.ts`, `examples/blog/`)

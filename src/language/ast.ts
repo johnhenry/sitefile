@@ -16,7 +16,7 @@ export interface Operand {
 }
 
 export type ValueType = 'string' | 'number' | 'boolean';
-export type ImportKind = 'file' | 'text' | 'json' | 'tree';
+export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown';
 export type EscapeMode = 'none' | 'html';
 
 export interface FromInstruction {
@@ -56,6 +56,8 @@ export interface ImportInstruction {
   readonly as?: ImportKind;
   /** `sha256:<64 lowercase hex>` */
   readonly integrity?: string;
+  /** `SORT BY key [ASC|DESC]`, for `AS markdown` collections. */
+  readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
 }
 
 /**
@@ -103,6 +105,8 @@ export interface RenderInstruction {
   readonly from?: StageRef;
   /** `--escape=html|none`, default none. */
   readonly escape: EscapeMode;
+  /** `FOR item IN list`: render once per element of an imported list. */
+  readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
   readonly overwrite: boolean;
 }
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${SITE_TITLE}</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="alternate" type="application/atom+xml" title="${SITE_TITLE}" href="/feed.xml">
+</head>
+<body>
+  <header><a class="site" href="/">${SITE_TITLE}</a></header>
+  <main>
+    ${#each posts as post}
+    <article class="summary">
+      <h2><a href="/posts/${post.slug}/">${post.title}</a></h2>
+      <p class="meta"><time datetime="${post.date}">${post.date}</time></p>
+      ${#if post.description}
+      <p>${post.description}</p>
+      ${else}
+      <p>${post.excerpt}</p>
+      ${/if}
+    </article>
+    ${else}
+    <p>No posts yet.</p>
+    ${/each}
+  </main>
+  <footer><a href="/feed.xml">Feed</a></footer>
+</body>
+</html>
