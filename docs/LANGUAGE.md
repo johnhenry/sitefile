@@ -241,8 +241,9 @@ gitignore subset:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn`. The format is never guessed from the `--out` extension; use
-`--format` or `EXPORT ... AS`.
+`dist.wbn`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`), so `-o site.zip` writes a
+zip; then the Sitefile's `EXPORT ... AS`; then `directory`.
 
 All archive writers are deterministic: the same tree gives byte-identical
 output (for the same Node/zlib version), whatever the order files were added.

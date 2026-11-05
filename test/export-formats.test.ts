@@ -570,6 +570,21 @@ test('CLI: -o x.tar.gz with --format tar.gz; defaults dist.tar.gz and dist.tar',
   await expectTree(path.join(ctx, 'dist.tar'), ctx);
 });
 
+test('CLI: the --out extension picks the format when --format is not given', async () => {
+  const ctx = await project('EXPORT / AS directory');
+  for (const [name, label] of [['site.zip', 'zip'], ['site.tar', 'tar'], ['site.tgz', 'tar.gz'], ['site.tar.gz', 'tar.gz']] as const) {
+    const out = path.join(ctx, name);
+    const r = await sitefile(['build', ctx, '-o', out]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`\\(${label.replace('.', '\\.')}, \\d+ bytes`));
+    await expectTree(out, ctx);
+  }
+  // An explicit --format wins over the extension.
+  const d = path.join(ctx, 'odd.zip');
+  assert.equal((await sitefile(['build', ctx, '-o', d, '--format', 'directory'])).code, 0);
+  assert.ok((await fs.stat(d)).isDirectory());
+});
+
 test('CLI: EXPORT AS zip in the Sitefile; --format overrides it', async () => {
   const ctx = await project('EXPORT / AS zip');
   const r = await sitefile(['build', ctx]);

@@ -79,7 +79,7 @@ sitefile inspect  [context] [--json]
 
 ```bash
 node lib/src/cli.js build examples/hello --format zip     # examples/hello/dist.zip
-node lib/src/cli.js build examples/hello --format tgz -o hello.tar.gz
+node lib/src/cli.js build examples/hello -o hello.tar.gz      # format from the extension
 node lib/src/cli.js build examples/hello --format wbn --base-url https://example.com/
 ```
 

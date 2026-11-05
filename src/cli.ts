@@ -20,8 +20,9 @@ Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn; overrides the
-                               Sitefile's EXPORT ... AS <fmt> (build only)
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn (build only).
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn),
+                               else the Sitefile's EXPORT ... AS <fmt>
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable)
@@ -93,6 +94,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       formatOverride = parseExportFormat(o.format);
       if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
     }
+    // No --format: an archive extension on --out picks the format, so `-o site.zip`
+    // writes a zip instead of a directory named site.zip.
+    if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
     // The default destination depends on the format, which the Sitefile may set.
     const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
     const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
@@ -196,3 +200,13 @@ main(process.argv.slice(2)).then(
     process.exitCode = 70;
   },
 );
+
+/** The export format implied by an output file name, if it has an archive extension. */
+function formatFromExtension(out: string): ExportFormat | undefined {
+  const name = out.toLowerCase();
+  if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) return 'tgz';
+  if (name.endsWith('.tar')) return 'tar';
+  if (name.endsWith('.zip')) return 'zip';
+  if (name.endsWith('.wbn')) return 'wbn';
+  return undefined;
+}
