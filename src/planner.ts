@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { isInline, stageNames, type EscapeMode, type InlineBody, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { isInline, stageNames, type EscapeMode, type ExportFormat, type InlineBody, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
@@ -69,6 +69,9 @@ export interface Plan {
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly imports: readonly ImportSpec[];
   readonly exportPath: string;
+  readonly exportFormat: ExportFormat;
+  /** Evaluated `BASE` clause of EXPORT, if any (raw string; validated when the export is written). */
+  readonly exportBase: string | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -85,6 +88,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   // validate() guarantees a FROM precedes every operation.
   const operations = (): Operation[] => stages[stages.length - 1]!.operations;
   let exportPath: string | undefined;
+  let exportFormat: ExportFormat = 'directory';
+  let exportBase: string | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -173,6 +178,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       }
       case 'EXPORT':
         exportPath = normalizeVirtual(evaluateOperand(ins.path, vars), ins.path.span, 'EXPORT path').path;
+        exportFormat = ins.format;
+        exportBase = ins.base ? evaluateOperand(ins.base, vars) : undefined;
         break;
     }
   }
@@ -184,7 +191,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], exportPath, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], exportPath, exportFormat, exportBase, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {

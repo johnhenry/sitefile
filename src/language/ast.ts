@@ -114,7 +114,19 @@ export interface ExportInstruction {
   readonly kind: 'EXPORT';
   readonly span: SourceSpan;
   readonly path: Operand;
-  readonly format: 'directory';
+  readonly format: ExportFormat;
+  /** `BASE <https-url>`: the URL the exported tree is mounted at (required for `wbn`). */
+  readonly base?: Operand;
+}
+
+export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn';
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn'];
+
+/** Parse a format name (`tar.gz` is an alias for `tgz`); undefined if unknown. */
+export function parseExportFormat(name: string): ExportFormat | undefined {
+  const n = name.toLowerCase();
+  if (n === 'tar.gz') return 'tgz';
+  return (EXPORT_FORMATS as readonly string[]).includes(n) ? (n as ExportFormat) : undefined;
 }
 
 export type Instruction =

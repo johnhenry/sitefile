@@ -263,7 +263,8 @@ test('EXPORT forms', () => {
   const a = one('EXPORT /');
   assert.ok(a.kind === 'EXPORT' && a.format === 'directory' && literalText(a.path) === '/');
   assert.ok(one('EXPORT /site AS directory').kind === 'EXPORT');
-  parseErr('EXPORT / AS zip', 'E_UNSUPPORTED', 1, 13, /zip/);
+  assert.ok(one('EXPORT / AS zip').kind === 'EXPORT');
+  parseErr('EXPORT / AS rar', 'E_UNSUPPORTED', 1, 13, /rar/);
   parseErr('EXPORT / AS', 'E_SYNTAX', 1, 12);
   parseErr('EXPORT', 'E_SYNTAX', 1, 7);
   parseErr('EXPORT / AS directory more', 'E_SYNTAX', 1, 23);

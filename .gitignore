@@ -2,6 +2,7 @@ node_modules/
 lib/
 dist/
 examples/*/dist/
+examples/*/dist.*
 
 # Source chat transcripts (local only)
 extracted_conversations/

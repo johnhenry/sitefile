@@ -6,6 +6,8 @@ import {
   type InlineBody,
   literalText,
   type EscapeMode,
+  type ExportFormat,
+  parseExportFormat,
   type ImportKind,
   type Instruction,
   type Operand,
@@ -192,14 +194,21 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {
   const path = c.operand('path');
+  let format: ExportFormat = 'directory';
+  let base: Operand | undefined;
   if (c.keyword('AS')) {
     const at = c.span;
-    const format = c.word();
-    if (format === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
-    if (format.toLowerCase() !== 'directory') {
-      throw c.error('E_UNSUPPORTED', `export format '${format}' is not supported yet (only directory)`, at);
+    const name = c.word();
+    if (name === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
+    const f = parseExportFormat(name);
+    if (f === undefined) {
+      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz or wbn)`, at);
     }
+    format = f;
+  }
+  if (c.keyword('BASE')) {
+    base = c.operand('base URL');
   }
   c.expectEnd();
-  return { kind: 'EXPORT', span, path, format: 'directory' };
+  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}) };
 }
