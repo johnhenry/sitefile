@@ -25,11 +25,38 @@ function operandsOf(ins: Instruction): Operand[] {
       return [ins.uri];
     case 'TRANSFORM': {
       const ops: Operand[] = ins.source && !isInline(ins.source) ? [ins.source] : [];
-      return [...ops, ins.dest, ...ins.options.map((o) => o.value)];
+      return [...ops, ins.dest, ...ins.options.map((o) => o.value), ...(ins.args ?? [])];
     }
+    case 'TOOL':
+      return [];
     case 'EXPORT':
       return [ins.path];
   }
+}
+
+/** The only placeholders the host replaces inside TOOL arguments; any other `{…}` stays literal (e.g. ffmpeg's `%{pts}`). */
+export const TOOL_PLACEHOLDER_RE = /\{(input|output|option\.[A-Za-z_][A-Za-z0-9_-]*)\}/g;
+
+function checkToolArgs(ins: Extract<Instruction, { kind: 'TRANSFORM' }>): void {
+  if (!ins.args || ins.args.length === 0) {
+    throw new SitefileError('E_VALIDATION', `TRANSFORM … WITH ${ins.plugin}: a TOOL needs ARGS (the argument list, e.g. ARGS -i {input} {output})`, ins.span);
+  }
+  let usesOutput = false;
+  for (const arg of ins.args) {
+    for (const part of arg.parts) {
+      if (part.kind !== 'text') continue;
+      for (const m of part.value.matchAll(TOOL_PLACEHOLDER_RE)) {
+        const name = m[1]!;
+        if (name === 'output') usesOutput = true;
+        else if (name === 'input') {
+          if (!ins.source) throw new SitefileError('E_VALIDATION', `{input} needs a TRANSFORM source file`, arg.span);
+        } else if (!ins.options.some((o) => `option.${o.key}` === name)) {
+          throw new SitefileError('E_UNDEFINED', `{${name}}: no OPTIONS ${name.slice(7)}=… on this TRANSFORM`, arg.span);
+        }
+      }
+    }
+  }
+  if (!usesOutput) throw new SitefileError('E_VALIDATION', `TRANSFORM … WITH ${ins.plugin}: ARGS must contain {output}, the file the tool writes`, ins.span);
 }
 
 /** Check semantic rules (see docs/LANGUAGE.md, "v0.1 implementation decisions"). */
@@ -45,8 +72,9 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   const finishedStages = new Set<string>();
   let currentStage: string | undefined;
   const plugins = new Set<string>();
+  const tools = new Set<string>();
   /** One namespace for ARG/LET, IMPORT, stage and PLUGIN names. */
-  const taken = (name: string): boolean => vars.has(name) || imports.has(name) || declaredStages.has(name) || plugins.has(name);
+  const taken = (name: string): boolean => vars.has(name) || imports.has(name) || declaredStages.has(name) || plugins.has(name) || tools.has(name);
   let sawFrom = false;
   let sawExport = false;
 
@@ -59,7 +87,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
     for (const op of operandsOf(ins)) {
       const isDest =
         (ins.kind === 'RENDER' && op === ins.dest) ||
-        (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op)));
+        (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op) || (ins.args?.includes(op) ?? false)));
       for (const part of op.parts) {
         if (part.kind !== 'var') continue;
         if (isDest && part.name === loopVar) continue;
@@ -139,12 +167,19 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (taken(ins.name)) throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
         plugins.add(ins.name);
         break;
+      case 'TOOL':
+        if (taken(ins.name)) throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
+        tools.add(ins.name);
+        break;
       case 'TRANSFORM':
-        if (!plugins.has(ins.plugin)) {
-          throw new SitefileError('E_UNDEFINED', `TRANSFORM … WITH ${ins.plugin}: no PLUGIN ${ins.plugin} is declared on an earlier line`, ins.pluginSpan);
+        if (tools.has(ins.plugin)) checkToolArgs(ins);
+        else if (!plugins.has(ins.plugin)) {
+          throw new SitefileError('E_UNDEFINED', `TRANSFORM … WITH ${ins.plugin}: no PLUGIN or TOOL ${ins.plugin} is declared on an earlier line`, ins.pluginSpan);
+        } else if (ins.args) {
+          throw new SitefileError('E_VALIDATION', `ARGS applies to a TOOL; ${ins.plugin} is a PLUGIN (pass values with OPTIONS)`, ins.span);
         }
         if (ins.source) checkSource(ins.source, imports, ins.from, finishedStages, allStages);
-        else if (!ins.each) {
+        else if (!ins.each && !tools.has(ins.plugin)) {
           throw new SitefileError('E_VALIDATION', 'TRANSFORM needs a source, or FOR item IN list to transform each element', ins.span);
         }
         if (ins.each) {
