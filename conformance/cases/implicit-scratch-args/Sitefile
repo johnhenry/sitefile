@@ -1,0 +1,5 @@
+# global ARG, then the implicit stage
+ARG TITLE = "Hi"
+LET G = "${TITLE}!"
+RENDER ./src/t.html TO /index.html
+EXPORT /

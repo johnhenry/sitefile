@@ -145,18 +145,26 @@ impl Scope<'_> {
 
 /// Check semantic rules and wrap the instructions in a [`Program`].
 pub fn validate(instructions: Vec<Instruction>, file: &str) -> Result<Program> {
-    check(&instructions, file)?;
+    let instructions = check(instructions, file)?;
     Ok(Program { file: file.to_string(), instructions })
 }
 
-fn check(instructions: &[Instruction], file: &str) -> Result<()> {
-    let (Some(first), Some(last)) = (instructions.first(), instructions.last()) else {
+/// Returns the instructions with the implicit `FROM scratch` inserted when the file has no FROM before its first non-ARG instruction.
+fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
+    let implicit_at = input.iter().position(|i| !matches!(i, Instruction::Arg { .. }));
+    let implicit = implicit_at.filter(|_| !matches!(input[implicit_at.unwrap_or(0)], Instruction::From { .. }));
+    let mut instructions = input;
+    if let Some(at) = implicit {
+        let span = instructions[at].span().clone();
+        instructions.insert(at, Instruction::From { span, base: FromBase::Scratch, alias: None });
+    }
+    let instructions = &instructions[..];
+    let Some(last) = instructions.last() else {
         return Err(SitefileError::at(E_VALIDATION, "Sitefile has no instructions", &SourceSpan::new(file, 1, 1)));
     };
     let all_stages = stage_names(instructions);
     let mut scope = Scope::default();
     let mut current_stage: Option<&str> = None;
-    let mut saw_from = false;
     let mut saw_export = false;
 
     for ins in instructions {
@@ -222,17 +230,8 @@ fn check(instructions: &[Instruction], file: &str) -> Result<()> {
                 scope.declared_stages.insert(a);
             }
             current_stage = alias.as_deref();
-            saw_from = true;
             continue;
         }
-        if !saw_from && !matches!(ins, Instruction::Arg { .. }) {
-            return Err(SitefileError::at(
-                E_VALIDATION,
-                format!("{} before FROM: only ARG may come before FROM", ins.keyword()),
-                ins.span(),
-            ));
-        }
-
         match ins {
             Instruction::Arg { name, span, .. } | Instruction::Let { name, span, .. } => {
                 if scope.taken(name) {
@@ -306,13 +305,10 @@ fn check(instructions: &[Instruction], file: &str) -> Result<()> {
         }
     }
 
-    if !saw_from {
-        return Err(SitefileError::at(E_VALIDATION, "missing FROM (start with FROM scratch)", first.span()));
-    }
     if !saw_export {
         return Err(SitefileError::at(E_VALIDATION, "missing EXPORT: the last instruction must be EXPORT", last.span()));
     }
-    Ok(())
+    Ok(instructions.to_vec())
 }
 
 fn loop_var_taken(as_name: &str, span: &SourceSpan) -> SitefileError {
@@ -418,7 +414,7 @@ mod tests {
         let src = std::fs::read_to_string(path).unwrap();
         let p = parse_program(&src, path).unwrap();
         assert_eq!(p.file, path);
-        assert_eq!(kinds(&p), ["FROM", "ARG", "LET", "COPY", "RENDER", "EXPORT"]);
+        assert_eq!(kinds(&p), ["ARG", "FROM", "LET", "COPY", "RENDER", "EXPORT"]);
     }
 
     #[test]
@@ -455,12 +451,31 @@ mod tests {
 
     #[test]
     fn from_rules() {
-        prog_err("COPY a /b\nEXPORT /", E_VALIDATION, 1, 1, "COPY before FROM: only ARG may come before FROM");
-        prog_err("ARG X\nLET Y = 1\nFROM scratch\nEXPORT /", E_VALIDATION, 2, 1, "before FROM");
         prog("FROM ./base\nEXPORT /");
         prog("FROM scratch\nFROM scratch AS b\nEXPORT /");
         assert_eq!(prog("ARG X\nFROM scratch\nEXPORT /").instructions.len(), 3);
-        prog_err("ARG X", E_VALIDATION, 1, 1, "missing FROM (start with FROM scratch)");
+    }
+
+    #[test]
+    fn implicit_from_scratch() {
+        let kinds = |src: &str| prog(src).instructions.iter().map(|i| i.keyword()).collect::<Vec<_>>();
+        // No FROM at all: an implicit stage starts at the first instruction, with that instruction's span.
+        let p = prog("# c\nCOPY a /b\nEXPORT /");
+        assert_eq!(kinds("COPY a /b\nEXPORT /"), ["FROM", "COPY", "EXPORT"]);
+        match &p.instructions[0] {
+            Instruction::From { span, base: FromBase::Scratch, alias: None } => assert_eq!((span.line, span.column), (2, 1)),
+            _ => panic!("expected implicit FROM scratch"),
+        }
+        assert_eq!(kinds("EXPORT /"), ["FROM", "EXPORT"]);
+        // ARG may precede the implicit stage; it stays before it.
+        assert_eq!(kinds("ARG X = 1\nARG Y = 2\nLET Z = 3\nCOPY a /b\nEXPORT /"), ["ARG", "ARG", "FROM", "LET", "COPY", "EXPORT"]);
+        // Followed by named stages, and an explicit FROM scratch is unchanged.
+        assert_eq!(kinds("COPY a /b\nFROM scratch AS two\nEXPORT /"), ["FROM", "COPY", "FROM", "EXPORT"]);
+        assert_eq!(kinds("ARG X = 1\nFROM scratch\nEXPORT /"), ["ARG", "FROM", "EXPORT"]);
+        // Still errors: nothing but ARGs, or no EXPORT.
+        prog_err("ARG X", E_VALIDATION, 1, 1, "missing EXPORT");
+        prog_err("COPY a /b", E_VALIDATION, 1, 1, "missing EXPORT");
+        prog_err("COPY ./${X} /b\nEXPORT /", E_UNDEFINED, 1, 8, "${X}");
     }
 
     #[test]

@@ -1,0 +1,2 @@
+COPY ./src/a.txt /a.txt
+EXPORT /
