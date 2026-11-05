@@ -33,6 +33,7 @@ export async function storeBuildAsImage(
     root: info.ociRoot ?? result.plan.exportRoot,
     platform: info.platform,
     epoch: sourceDateEpoch(),
+    base: result.base,
     ...(await imageMeta(info.contextDir, { git: !!info.gitLabels, ...(info.labels ? { labels: info.labels } : {}) })),
   });
   for (const t of tags) {

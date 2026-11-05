@@ -158,6 +158,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
   tree is mounted at and is required by `wbn` (from here or `--base-url`).
+  With `AS oci`, `BASE` is instead a **container image** to build on (see *oci* below). `--base` overrides it.
   `AT` (an operand) is the directory the files occupy inside an `oci` image
   (default `/srv/www`; `--oci-root` overrides it); with any other format it is
   an error (`E_VALIDATION`).
@@ -408,8 +409,35 @@ and tar timestamps instead.
   `org.opencontainers.image.ref.name` when you pass `-t`) and
   `blobs/sha256/<hex>`. **The image contains only files**: it has no
   entrypoint and is not runnable on its own. Use it as a source of files, e.g.
-  `COPY --from=<image> /srv/www /usr/share/nginx/html` in a Dockerfile; a
-  future `BASE` could use it once registries are supported.
+  `COPY --from=<image> /srv/www /usr/share/nginx/html` in a Dockerfile, **unless
+  you give it a `BASE`**:
+
+  `EXPORT / AS oci BASE docker.io/library/nginx:alpine AT /usr/share/nginx/html`
+  (or `--base`) makes a *runnable* image. The base (a bare name means Docker Hub) is
+  pulled for the target platform (`--platform`, default `linux/amd64`; a base of another
+  platform is `E_REGISTRY`) into the local store, and the result is: the base's layers,
+  then the site layer. The config is the base's (Entrypoint, Cmd, Env, ExposedPorts,
+  WorkingDir, User, ... preserved) with `rootfs.diff_ids` and `history` extended, labels
+  merged (`--label` and sitefile's own win over the base's), and `created` kept from the
+  base unless `SOURCE_DATE_EPOCH` is set. The site layer is added on top, so it overlays
+  same-named files of the base (nginx's default `index.html`) but does not delete the
+  others. Docker layer media types are rewritten to their OCI equivalents (same bytes,
+  same digests). The manifest and config record the base as
+  `org.opencontainers.image.base.name` / `.base.digest`. An OCI archive or layout export
+  contains the base blobs too, so it loads anywhere (`docker load -i site.oci.tar`);
+  `-t` stores the same image in the local store (`save`, `push`, `serve` work: `serve` serves
+  the site layer). Layers are held in memory while exporting an archive.
+
+  **Reproducibility**: the output is a pure function of the files, options and the base's
+  *manifest digest*. Pin the base: `BASE nginx:alpine@sha256:...` (the Sitefile is the
+  record). For a tag, `Sitefile.lock` gets an `images` entry
+  (`"docker.io/library/nginx:alpine": {"digest": "sha256:..."}`, the digest the tag pointed
+  at, an index for multi-platform images) the first time it is resolved, and later builds fetch
+  *by digest* and never re-resolve the tag. `--frozen-lockfile` fails with `E_LOCK_MISSING`
+  for an unpinned, unlocked tag; `--update-lock` re-resolves it; `--no-lockfile` resolves
+  the tag every build and warns. A base already in the store is used without network access.
+  Pulling goes through the same registry client, limits and credentials as `sitefile pull`
+  (docs/CLI.md); `--insecure-registry` applies.
 - **wbn**: an **unsigned Web Bundle**, format version `b2`
   (draft-ietf-wpack-bundled-responses): top-level CBOR array
   `[magic "🌐📦", version "b2\0\0", section lengths, [index, primary?, responses], 8-byte length]`,

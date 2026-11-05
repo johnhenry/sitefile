@@ -1,5 +1,6 @@
-import { randomBytes } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream, promises as fs } from 'node:fs';
+import type { Readable } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
 import { sha256 } from './digest.js';
@@ -15,6 +16,7 @@ import {
   OCI_LAYOUT_BYTES,
   parseConfig,
   parseManifest,
+  siteLayerIndex,
   type IndexEntry,
   type OciOptions,
   type ParsedConfig,
@@ -212,6 +214,82 @@ export class Store {
     await this.writeAtomic(bp, bytes);
   }
 
+  /** True when the blob exists with the given size (content is verified when it was written). */
+  async hasBlob(digest: string, size?: number): Promise<boolean> {
+    const st = await fs.stat(this.blobFile(digest)).catch(() => undefined);
+    return !!st?.isFile() && (size === undefined || st.size === size);
+  }
+
+  /** Stream a stored blob (for upload); write-time verification means no re-hash here. */
+  blobStream(digest: string): Readable {
+    return createReadStream(this.blobFile(digest));
+  }
+
+  /**
+   * Store a blob from a stream, verifying its size and sha256 while it is written (to a temp file
+   * that is renamed into place only when both match). `maxBytes` bounds what is accepted.
+   */
+  async importBlob(digest: string, size: number, source: AsyncIterable<Uint8Array>, maxBytes: number = size): Promise<void> {
+    const dest = this.blobFile(digest);
+    const tmp = path.join(path.dirname(dest), `.tmp-${randomBytes(6).toString('hex')}`);
+    const hash = createHash('sha256');
+    let total = 0;
+    const fh = await fs.open(tmp, 'wx', 0o600);
+    try {
+      for await (const chunk of source) {
+        total += chunk.byteLength;
+        if (total > size || total > maxBytes) throw new SitefileError('E_TOO_LARGE', `blob ${digest} is larger than its declared size (${size} bytes)`);
+        hash.update(chunk);
+        await fh.write(chunk);
+      }
+      await fh.close();
+      if (total !== size) throw new SitefileError('E_INTEGRITY', `blob ${digest} is truncated: got ${total} of ${size} bytes`);
+      if (`sha256:${hash.digest('hex')}` !== digest) throw new SitefileError('E_INTEGRITY', `blob ${digest}: content does not match its digest`);
+      await fs.rename(tmp, dest);
+    } catch (e) {
+      await fh.close().catch(() => undefined);
+      await fs.rm(tmp, { force: true });
+      throw e;
+    }
+  }
+
+  /** Store a small blob (manifest, config, index) given its bytes; the digest is computed. */
+  async putSmallBlob(bytes: Uint8Array): Promise<string> {
+    const digest = sha256(bytes);
+    await this.putBlob(digest, bytes);
+    return digest;
+  }
+
+  /**
+   * Register a pulled image manifest (all its blobs must already be stored): it becomes an index
+   * entry, optionally tagged with `key` (replacing that tag's previous target).
+   */
+  async addManifest(manifestBytes: Uint8Array, tagRef?: ImageRef, now: Date = new Date()): Promise<string> {
+    const id = await this.putSmallBlob(manifestBytes);
+    let parsed: ParsedManifest;
+    try {
+      parsed = parseManifest(manifestBytes);
+    } catch (e) {
+      throw storeError(`manifest ${id} is not a usable image manifest: ${(e as Error).message}`, e);
+    }
+    for (const d of [parsed.config, ...parsed.layers]) {
+      if (!(await this.hasBlob(d.digest, d.size))) throw storeError(`image ${shortId(id)} is incomplete: blob ${d.digest} is missing`);
+    }
+    await this.withLock(async () => {
+      const entries = await this.readIndex();
+      if (!entries.some((e) => e.digest === id)) {
+        await this.writeIndex([...entries, { digest: id, size: manifestBytes.byteLength, stored: now.toISOString() }]);
+      }
+    });
+    if (tagRef) await this.tag(id, tagRef);
+    return id;
+  }
+
+  /** Whether an image with this manifest digest is in the index. */
+  async hasImage(id: string): Promise<boolean> {
+    return (await this.readIndex()).some((e) => e.digest === id);
+  }
+
   // ------------------------------------------------------------ images
 
   /** Store a tree as an OCI image (idempotent: identical content and options give the same ID). Untagged. */
@@ -253,34 +331,40 @@ export class Store {
       manifest,
       config,
       root: config.labels[ANN.root] ?? '/',
-      layerSize: manifest.layers[0]?.size ?? 0,
+      layerSize: manifest.layers[siteLayerIndex(manifest, config)]?.size ?? manifest.layers[0]?.size ?? 0,
     };
   }
 
   /** Load an image's files (under its root), verifying manifest, config, layer digest and diff_id. */
   async loadTree(id: string): Promise<Tree> {
     const d = await this.details(id);
-    const layer = d.manifest.layers[0];
-    if (!layer) throw storeError(`image ${shortId(id)} has no layer`);
+    const layer = d.manifest.layers[siteLayerIndex(d.manifest, d.config)];
+    if (!layer) throw new SitefileError('E_STORE', `image:${shortId(id)}: not a Sitefile image (it has ${d.manifest.layers.length} layers and no site layer)`);
     const bytes = await this.readBlob(layer.digest, layer.size);
     return extractImageFiles(d.manifest, d.config, bytes, `image:${shortId(id)}`);
   }
 
-  /** The image as a standalone OCI layout Tree (for `save`), optionally annotated with a tag. */
+  /**
+   * The image as a standalone OCI layout Tree (for `save`), optionally annotated with a tag.
+   * Includes every layer, so an image built on a BASE is self-contained.
+   */
   async layoutOf(id: string, refName?: string): Promise<Tree> {
     const d = await this.details(id);
-    const layer = d.manifest.layers[0];
-    if (!layer) throw storeError(`image ${shortId(id)} has no layer`);
+    const site = d.manifest.layers[siteLayerIndex(d.manifest, d.config)];
+    if (!site) throw new SitefileError('E_STORE', `image ${shortId(id)} is not a Sitefile image and cannot be saved`);
+    const base = new Map<string, Uint8Array>();
+    for (const l of d.manifest.layers) if (l.digest !== site.digest) base.set(l.digest, await this.readBlob(l.digest, l.size));
     return layoutTree(
       {
         manifestBytes: await this.readBlob(id),
         manifestDigest: id,
         configBytes: await this.readBlob(d.manifest.config.digest),
         configDigest: d.manifest.config.digest,
-        layerBytes: await this.readBlob(layer.digest, layer.size),
-        layerDigest: layer.digest,
+        layerBytes: await this.readBlob(site.digest, site.size),
+        layerDigest: site.digest,
       },
       refName,
+      base,
     );
   }
 
@@ -318,8 +402,8 @@ export class Store {
 
   /** Point `name:tag` at an image (replacing any previous target). Returns the `name:tag` key. */
   async tag(id: string, ref: ImageRef): Promise<string> {
-    if (ref.registry !== undefined || ref.digest !== undefined) {
-      throw new SitefileError('E_USAGE', 'a tag must be a local name[:tag] (no registry host, no digest)');
+    if (ref.digest !== undefined) {
+      throw new SitefileError('E_USAGE', 'a tag must be name[:tag] or registry/name[:tag] (no digest)');
     }
     const key = refKey(ref);
     await this.withLock(async () => {
