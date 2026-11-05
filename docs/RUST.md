@@ -28,7 +28,7 @@ to find in the other:
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 
 Dependencies (rationale in `rust/Cargo.toml`): serde/serde_json, sha2 (with
-hardware SHA-256), base64, flate2 (zlib-rs), ureq (HTTPS with a custom resolver
+hardware SHA-256), base64, flate2 (zlib-rs, for decompression only), ureq (HTTPS with a custom resolver
 for connect-time SSRF checks), wasmtime (WebAssembly plugins). JavaScript
 plugins run in the same Node `--permission` sandbox as the TypeScript version,
 with the same runner, so `node` must be on PATH for them.
@@ -39,20 +39,32 @@ with the same runner, so `node` must be on PATH for them.
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
   line, and identical output trees; `validate`/`inspect` cases compare stdout.
-  Currently 39/39.
+  Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
+  layers) are compared byte for byte, and OCI images by manifest digest.
+  Currently 47/47.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
-  stored-zip and OCI config/index fixtures. The fixture generators are next to
+  zip and OCI config/index fixtures, and 30 deflate/gzip streams
+  (`rust/tests/fixtures/deflate`). The fixture generators are next to
   them (`rust/tests/fixtures/*/generate.mjs`).
 - **Benchmarks**: `bench/` (see [bench/README.md](../bench/README.md)).
 
+## Compression
+
+Both implementations compress with the same deterministic DEFLATE encoder
+(`src/deflate.ts` and `rust/src/deflate.rs`; the specification is at the top
+of the TypeScript file), not with Node's zlib or zlib-rs, so zip entries,
+tar.gz exports and OCI layers are byte-identical and an image has the same
+layer digests, manifest digest and image ID whichever CLI built it. The
+encoder is hash-chain LZ77 with lazy matching and smallest-of
+stored/fixed/dynamic blocks; output is within about 1-2% of zlib level 9.
+Decompression (reading archives and pulled images) still uses `node:zlib` and
+flate2. A change to the encoder must be made in both files; regenerate
+`rust/tests/fixtures/deflate/fixtures.json` with its `generate.mjs`.
+
 ## Known differences
 
-- **Compressed bytes.** Deflate output (zip entries, tar.gz, OCI layers)
-  differs from Node's zlib, so OCI layer digests, manifest digests and therefore
-  image IDs differ between the two implementations for the same build. Layer
-  *contents*, configs and every uncompressed format are identical.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in

@@ -4,6 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import { gzipTar, writeTar } from './archive-writers.js';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
+import type { OciCompression } from './language/ast.js';
 import { normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { extractArchive } from './resources/archive.js';
@@ -28,6 +29,8 @@ export const MEDIA = {
   manifest: 'application/vnd.oci.image.manifest.v1+json',
   config: 'application/vnd.oci.image.config.v1+json',
   layer: 'application/vnd.oci.image.layer.v1.tar+gzip',
+  /** Uncompressed layer (`EXPORT ... COMPRESSION none`): the blob is the tar itself, digest = diff_id. */
+  layerTar: 'application/vnd.oci.image.layer.v1.tar',
   index: 'application/vnd.oci.image.index.v1+json',
   dockerManifest: 'application/vnd.docker.distribution.manifest.v2+json',
   dockerList: 'application/vnd.docker.distribution.manifest.list.v2+json',
@@ -66,6 +69,8 @@ export interface OciOptions {
    * The base's blobs must already be in the store (see base-image.ts).
    */
   readonly base?: BaseImage | undefined;
+  /** Site layer encoding: gzip (default, `tar+gzip`) or none (plain `tar`). Base layers are kept as they are. */
+  readonly compression?: OciCompression | undefined;
 }
 
 /** A resolved base image: one platform manifest, its config and layers. */
@@ -138,9 +143,10 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
   const segs = root === '/' ? [] : root.slice(1).split('/');
   const dirs = segs.map((_, i) => segs.slice(0, i + 1).join('/'));
   const tar = writeTar(layerTree, { epoch: options.epoch ?? 0, dirs });
-  const layerBytes = gzipTar(tar);
+  const uncompressed = options.compression === 'none';
+  const layerBytes = uncompressed ? tar : gzipTar(tar);
   const diffId = sha256(tar);
-  const layerDigest = sha256(layerBytes);
+  const layerDigest = uncompressed ? diffId : sha256(layerBytes);
   const size = tree.entries().reduce((n, [, f]) => n + f.bytes.byteLength, 0);
 
   const base = options.base;
@@ -189,7 +195,7 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
       schemaVersion: 2,
       mediaType: MEDIA.manifest,
       config: { mediaType: MEDIA.config, digest: configDigest, size: configBytes.byteLength },
-      layers: [...baseLayers, { mediaType: MEDIA.layer, digest: layerDigest, size: layerBytes.byteLength }],
+      layers: [...baseLayers, { mediaType: uncompressed ? MEDIA.layerTar : MEDIA.layer, digest: layerDigest, size: layerBytes.byteLength }],
       annotations,
     }),
   );
@@ -356,17 +362,19 @@ export function siteLayerIndex(m: ParsedManifest, cfg: ParsedConfig): number {
 export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, layerBytes: Uint8Array, origin: string): Promise<Tree> {
   const idx = siteLayerIndex(m, cfg);
   const layer = m.layers[idx];
-  if (idx < 0 || !layer || layer.mediaType !== MEDIA.layer) {
-    throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (only single-layer tar+gzip images, or images built with BASE, hold site files)`);
+  if (idx < 0 || !layer || (layer.mediaType !== MEDIA.layer && layer.mediaType !== MEDIA.layerTar)) {
+    throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (only single-layer tar or tar+gzip images, or images built with BASE, hold site files)`);
   }
   if (sha256(layerBytes) !== layer.digest || layerBytes.byteLength !== layer.size) {
     throw new SitefileError('E_STORE', `${origin}: layer blob does not match its digest`);
   }
-  let tar: Uint8Array;
-  try {
-    tar = new Uint8Array(gunzipSync(layerBytes));
-  } catch (e) {
-    throw new SitefileError('E_STORE', `${origin}: layer is not valid gzip`, undefined, { cause: e });
+  let tar: Uint8Array = layerBytes;
+  if (layer.mediaType === MEDIA.layer) {
+    try {
+      tar = new Uint8Array(gunzipSync(layerBytes));
+    } catch (e) {
+      throw new SitefileError('E_STORE', `${origin}: layer is not valid gzip`, undefined, { cause: e });
+    }
   }
   if (sha256(tar) !== cfg.diffIds[idx]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
   const root = cfg.labels[ANN.root] ?? '/';

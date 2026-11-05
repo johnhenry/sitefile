@@ -2,7 +2,7 @@ import { readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
-import type { ExportFormat, Program } from './language/ast.js';
+import type { ExportFormat, OciCompression, Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
@@ -237,6 +237,8 @@ export interface ExportTarget {
   readonly baseUrl?: string;
   /** oci: root directory inside the layer (overrides EXPORT ... AT; default /srv/www). */
   readonly ociRoot?: string;
+  /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
+  readonly ociCompression?: OciCompression;
   /** Extra OCI config labels. */
   readonly imageLabels?: Readonly<Record<string, string>>;
   /** Add org.opencontainers.image.source/revision from the git checkout (opt-in). */
@@ -270,6 +272,7 @@ export async function buildToDirectory(
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
+      compression: options.ociCompression ?? result.plan.exportCompression,
       platform: options.platform,
       epoch: sourceDateEpoch(),
       base: result.base,

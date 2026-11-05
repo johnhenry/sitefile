@@ -119,6 +119,18 @@ export interface ExportInstruction {
   readonly base?: Operand;
   /** `AT </srv/www>`: where the files live inside the layer (`oci` only). */
   readonly at?: Operand;
+  /** `COMPRESSION gzip|none`: how the site layer is stored (`oci` only; default gzip). */
+  readonly compression?: { readonly value: OciCompression; readonly span: SourceSpan };
+}
+
+/** OCI site layer encoding: `gzip` (tar+gzip, the default) or `none` (plain tar). */
+export type OciCompression = 'gzip' | 'none';
+export const OCI_COMPRESSIONS: readonly OciCompression[] = ['gzip', 'none'];
+
+/** Parse a compression name (case-insensitive); undefined if unknown. */
+export function parseOciCompression(name: string): OciCompression | undefined {
+  const n = name.toLowerCase();
+  return (OCI_COMPRESSIONS as readonly string[]).includes(n) ? (n as OciCompression) : undefined;
 }
 
 export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci';

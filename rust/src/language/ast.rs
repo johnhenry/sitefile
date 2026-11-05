@@ -137,6 +137,25 @@ impl ExportFormat {
     }
 }
 
+/// OCI site layer encoding: `gzip` (tar+gzip, the default) or `none` (plain tar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OciCompression {
+    #[default]
+    Gzip,
+    None,
+}
+
+impl OciCompression {
+    /// Case-insensitive.
+    pub fn parse(name: &str) -> Option<OciCompression> {
+        match name.to_ascii_lowercase().as_str() {
+            "gzip" => Some(OciCompression::Gzip),
+            "none" => Some(OciCompression::None),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StageRef {
     pub name: String,
@@ -208,7 +227,15 @@ pub enum Instruction {
         args: Option<Vec<Operand>>,
         overwrite: bool,
     },
-    Export { span: SourceSpan, path: Operand, format: ExportFormat, base: Option<Operand>, at: Option<Operand> },
+    Export {
+        span: SourceSpan,
+        path: Operand,
+        format: ExportFormat,
+        base: Option<Operand>,
+        at: Option<Operand>,
+        /// `COMPRESSION gzip|none` (oci only) and the span of its value.
+        compression: Option<(OciCompression, SourceSpan)>,
+    },
 }
 
 impl Instruction {

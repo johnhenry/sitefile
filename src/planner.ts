@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { isInline, stageNames, type EscapeMode, type ExportFormat, type InlineBody, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { isInline, stageNames, type EscapeMode, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
@@ -104,6 +104,8 @@ export interface Plan {
   readonly exportBase: string | undefined;
   /** Evaluated `AT` clause of EXPORT ... AS oci: the root directory inside the image layer. */
   readonly exportRoot: string | undefined;
+  /** `COMPRESSION` clause of EXPORT ... AS oci (undefined: gzip). */
+  readonly exportCompression: OciCompression | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -125,6 +127,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportFormat: ExportFormat = 'directory';
   let exportBase: string | undefined;
   let exportRoot: string | undefined;
+  let exportCompression: OciCompression | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -245,6 +248,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportBase = ins.base ? evaluateOperand(ins.base, vars) : undefined;
         if (ins.at && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... AT applies only to AS oci', ins.at.span);
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
+        if (ins.compression && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci', ins.compression.span);
+        exportCompression = ins.compression?.value;
         break;
     }
   }
@@ -256,7 +261,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {

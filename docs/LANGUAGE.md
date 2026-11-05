@@ -9,7 +9,7 @@ Instructions:
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
 - `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
-- `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>]` (CLI specifies destination)
+- `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
@@ -153,7 +153,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
   - Only `COPY` and `RENDER` lines are scanned for `<<`; elsewhere it is plain text.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage. The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
@@ -162,6 +162,11 @@ These pin down what the draft above leaves open. Tests cover each rule.
   `AT` (an operand) is the directory the files occupy inside an `oci` image
   (default `/srv/www`; `--oci-root` overrides it); with any other format it is
   an error (`E_VALIDATION`).
+  `COMPRESSION gzip|none` (a word, case-insensitive; `oci` only, otherwise
+  `E_VALIDATION`) chooses how the site layer is stored: `gzip` (the default,
+  `tar+gzip`) or `none` (a plain `tar` layer). Any other value is `E_SYNTAX`.
+  `--oci-compression` overrides it. The clauses come in this order:
+  `AS`, `BASE`, `AT`, `COMPRESSION`.
   The CLI's `--out` picks the host destination and `--format` / `--base-url`
   override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
@@ -367,17 +372,21 @@ extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 
 All archive writers are deterministic: the same tree gives byte-identical
-output (for the same Node/zlib version), whatever the order files were added.
+output, whatever the order files were added, and the TypeScript and Rust
+implementations write the same bytes. Compression uses Sitefile's own
+deterministic DEFLATE encoder (`src/deflate.ts`, ported as `rust/src/deflate.rs`;
+the algorithm is specified at the top of `src/deflate.ts`), not the platform's
+zlib, so the output does not depend on the Node or zlib version. It compresses
+to within about 1-2% of zlib level 9.
 Entries are sorted by path; there are no directory entries (directories are
 implicit); uid/gid are 0 with no user/group names; modes are the tree's
 `0644`/`0755`. Timestamps are fixed: zip uses the DOS epoch 1980-01-01 00:00,
-tar uses mtime 0, and the gzip header mtime is 0 (OS byte fixed to Unix). If
+tar uses mtime 0, and the gzip header is fixed (mtime 0, no name, XFL 0, OS byte Unix). If
 the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: `node:zlib` raw deflate (stored when deflate does not shrink the
-  entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
+- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
   the external attributes (version made by = 3 << 8). No zip64: more than
   65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
   with `E_EXPORT`.
@@ -390,9 +399,16 @@ and tar timestamps instead.
   the site's files. The image has one layer: a deterministic tar of the tree
   placed under the root (default `/srv/www`, `AT`/`--oci-root`; the parent
   directory entries `srv` and `srv/www` are emitted so runtimes can unpack
-  it), gzip-compressed (`application/vnd.oci.image.layer.v1.tar+gzip`). The
-  config's `rootfs.diff_ids` is the sha256 of the *uncompressed* tar; the
-  layer descriptor is the sha256 of the gzip. `created` is `SOURCE_DATE_EPOCH`
+  it), gzip-compressed (`application/vnd.oci.image.layer.v1.tar+gzip`), or,
+  with `COMPRESSION none` / `--oci-compression none`, stored as the plain tar
+  (`application/vnd.oci.image.layer.v1.tar`: larger, but nothing to decompress,
+  and the layer digest equals the diff_id). The config's `rootfs.diff_ids` is
+  the sha256 of the *uncompressed* tar; the layer descriptor is the sha256 of
+  the layer blob (the gzip, or the tar itself). The same build gives the same
+  layer digest, manifest digest and image ID from both implementations. With a
+  `BASE`, only the site layer follows `COMPRESSION`; the base's layers keep
+  their own media type. The store, `save`, `serve`, `push` and `pull` read both
+  layer types. `created` is `SOURCE_DATE_EPOCH`
   or `1970-01-01T00:00:00Z`; `architecture`/`os` default to `amd64`/`linux`
   (`--platform os/arch`; metadata only). Labels: `org.opencontainers.image.title`
   (the context directory name), `dev.sitefile.root`, any `--label key=value`,

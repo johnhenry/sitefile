@@ -2,7 +2,7 @@
 //! `src/deflate.ts`. Both must produce the same bytes for every input, so
 //! zip entries, tar.gz exports and OCI layers (and therefore image IDs) are
 //! identical between the two implementations. The full specification is at
-//! the top of `src/deflate.ts` (and in docs/DEFLATE.md); any change must be
+//! the top of `src/deflate.ts`; any change must be
 //! made in both files and the fixtures regenerated with
 //! `node rust/tests/fixtures/deflate/generate.mjs`.
 //!

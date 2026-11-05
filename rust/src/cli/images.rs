@@ -7,7 +7,7 @@ use crate::executor::relative_path;
 use crate::export::archive_writers::{source_date_epoch, write_tar, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, random_hex, ExportOptions};
 use crate::export::formats::{encode_tree, format_from_extension, is_archive_format, EncodeOptions};
-use crate::export::oci::Descriptor;
+use crate::export::oci::{media, site_layer_index, Descriptor};
 use crate::language::ast::ExportFormat;
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key};
 use crate::store::{diff_trees, short_id, Store};
@@ -169,7 +169,15 @@ fn run_inspect(v: &Parsed) -> Result<i32> {
         format!("Stored:      {} ({})", d.created, relative_time(&d.created, now_ms())),
         format!("Platform:    {}/{}", d.config.os, d.config.architecture),
         format!("Root:        {}", d.root),
-        format!("Layer:       {} ({} gzip)", layer.map(|l| l.digest.as_str()).unwrap_or("-"), human_size(d.layer_size)),
+        format!(
+            "Layer:       {} ({} {})",
+            layer.map(|l| l.digest.as_str()).unwrap_or("-"),
+            human_size(d.layer_size),
+            match site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i)) {
+                Some(l) if l.media_type == media::LAYER_TAR => "tar",
+                _ => "gzip",
+            }
+        ),
         format!("Diff ID:     {}", d.config.diff_ids.first().map(String::as_str).unwrap_or("-")),
         format!("Config:      {}", d.manifest.config.digest),
         "Labels:".to_string(),

@@ -1,6 +1,7 @@
 import { sourceDateEpoch } from '../archive-writers.js';
 import { SitefileError } from '../errors.js';
 import type { BuildResult } from '../executor.js';
+import type { OciCompression } from '../language/ast.js';
 import { imageMeta } from '../oci.js';
 import { parseLocalRef } from '../ref.js';
 import { shortId, Store } from '../store.js';
@@ -23,6 +24,7 @@ export async function storeBuildAsImage(
   info: {
     readonly contextDir: string;
     readonly ociRoot?: string | undefined;
+    readonly ociCompression?: OciCompression | undefined;
     readonly platform?: string | undefined;
     readonly labels?: Readonly<Record<string, string>> | undefined;
     readonly gitLabels?: boolean | undefined;
@@ -31,6 +33,7 @@ export async function storeBuildAsImage(
   const store = await Store.open();
   const { id } = await store.addImage(result.output, {
     root: info.ociRoot ?? result.plan.exportRoot,
+    compression: info.ociCompression ?? result.plan.exportCompression,
     platform: info.platform,
     epoch: sourceDateEpoch(),
     base: result.base,

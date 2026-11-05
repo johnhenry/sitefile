@@ -21,7 +21,9 @@ path = "src/main.rs"
 #   serde/serde_json  JSON data, plugin and OCI documents (preserve_order keeps
 #                     JS object key order, which output can depend on)
 #   sha2, base64      digests and plugin payloads
-#   flate2            gzip/deflate (zip, tar.gz, OCI layers)
+#   flate2            gzip/deflate *decompression* (archive imports, pulled
+#                     layers); writing uses src/deflate.rs, which must match
+#                     the TypeScript encoder byte for byte
 #   ureq              blocking HTTPS client with a pluggable resolver, so the
 #                     SSRF address check happens at connect time
 #   wasmtime          WebAssembly plugins (fuel-limited, no imports)

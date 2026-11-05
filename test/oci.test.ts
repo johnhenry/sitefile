@@ -6,7 +6,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { sha256 } from '../src/digest.js';
 import { isSitefileError } from '../src/errors.js';
-import { ANN, buildOciImage, canonicalJson, decodeIndex, exportNameAnnotations, gitInfo, imageMeta, layoutTree, MEDIA, ociArchive, parseConfig, parseLabels, parseManifest } from '../src/oci.js';
+import { ANN, buildOciImage, canonicalJson, decodeIndex, exportNameAnnotations, extractImageFiles, gitInfo, imageMeta, layoutTree, MEDIA, ociArchive, parseConfig, parseLabels, parseManifest } from '../src/oci.js';
 import { extractArchive } from '../src/resources/archive.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -150,6 +150,57 @@ test('EXPORT ... AT with a non-oci format is rejected when planned', async () =>
   const r = await runCli(await tmpDir(), ['validate', ctx]);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /E_VALIDATION.*AT applies only to AS oci/);
+});
+
+test('COMPRESSION none: the site layer is the plain tar (digest = diff_id) and still extracts', async () => {
+  const gz = buildOciImage(tree, {});
+  const img = buildOciImage(tree, { compression: 'none' });
+  assert.equal(img.diffId, gz.diffId, 'same layer content');
+  assert.equal(img.layerDigest, img.diffId);
+  assert.equal(sha256(img.layerBytes), img.diffId);
+  const m = parseManifest(img.manifestBytes);
+  assert.equal(m.layers[0]!.mediaType, MEDIA.layerTar);
+  assert.equal(m.layers[0]!.size, img.layerBytes.byteLength);
+  assert.notEqual(img.manifestDigest, gz.manifestDigest);
+  assert.equal(img.configDigest, gz.configDigest, 'the config only records the diff_id');
+  const cfg = parseConfig(img.configBytes);
+  assert.equal((await extractImageFiles(m, cfg, img.layerBytes, 'x')).digest(), tree.digest());
+  // a tar layer whose bytes do not match its digest is still refused
+  const bad = img.layerBytes.slice();
+  bad[600] = bad[600]! ^ 1;
+  await assert.rejects(extractImageFiles(m, cfg, bad, 'x'), (e) => isSitefileError(e, 'E_STORE'));
+});
+
+test('EXPORT ... COMPRESSION: parsed for oci, rejected elsewhere or for unknown values; --oci-compression overrides', async () => {
+  const home = await tmpDir();
+  const bad = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS oci COMPRESSION zstd\n');
+  const r1 = await runCli(home, ['validate', bad]);
+  assert.equal(r1.code, 1);
+  assert.match(r1.stderr, /E_SYNTAX.*:3:29: unknown compression 'zstd' \(expected gzip or none\)/);
+  const zip = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS zip COMPRESSION none\n');
+  assert.match((await runCli(home, ['validate', zip])).stderr, /E_VALIDATION.*COMPRESSION applies only to AS oci/);
+  const ok = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS oci AT /srv/site COMPRESSION None\n');
+  const out = path.join(await tmpDir(), 'site.oci.tar');
+  const layerType = async (args: string[]) => {
+    const b = await runCli(home, ['build', ok, '-o', out, '--force', ...args]);
+    assert.equal(b.code, 0, b.stderr);
+    const f = await extractArchive(new Uint8Array(await fs.readFile(out)), 'x');
+    const e = decodeIndex(f.get('/index.json')!.bytes)[0]!;
+    return parseManifest(f.get(`/blobs/sha256/${e.digest.slice(7)}`)!.bytes).layers[0]!.mediaType;
+  };
+  assert.equal(await layerType([]), MEDIA.layerTar);
+  assert.equal(await layerType(['--oci-compression', 'gzip']), MEDIA.layer);
+  const u = await runCli(home, ['build', ok, '-o', out, '--force', '--oci-compression', 'lz4']);
+  assert.equal(u.code, 2);
+  assert.match(u.stderr, /--oci-compression expects gzip or none, got 'lz4'/);
+  // -t stores the uncompressed image; the store reads it back (images, inspect, save, serve all use loadTree)
+  const t = await runCli(home, ['build', ok, '-t', 'plain:1']);
+  assert.equal(t.code, 0, t.stderr);
+  const insp = await runCli(home, ['image', 'inspect', 'plain:1']);
+  assert.match(insp.stdout, /Layer: +sha256:[0-9a-f]{64} \(.* tar\)/);
+  const saved = path.join(await tmpDir(), 'o');
+  assert.equal((await runCli(home, ['save', 'plain:1', '-o', saved])).code, 0);
+  assert.ok(await fs.stat(path.join(saved, 'index.html')));
 });
 
 test('external OCI validators (skopeo, crane, oras, umoci, podman) when installed', async (t) => {

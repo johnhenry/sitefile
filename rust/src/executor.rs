@@ -15,7 +15,7 @@ use crate::export::archive_writers::{source_date_epoch, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions};
 use crate::export::formats::{encode_tree, is_archive_format, EncodeOptions};
 use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions};
-use crate::language::ast::{ExportFormat, ImportKind, Operand, Program, TemplatePart};
+use crate::language::ast::{ExportFormat, ImportKind, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
 use crate::planner::{plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
@@ -433,6 +433,8 @@ pub struct ExportTarget {
     pub base_url: Option<String>,
     /// oci: root directory inside the layer (overrides EXPORT ... AT).
     pub oci_root: Option<String>,
+    /// oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip).
+    pub oci_compression: Option<OciCompression>,
     /// Extra OCI config labels.
     pub image_labels: std::collections::BTreeMap<String, String>,
     /// Add org.opencontainers.image.source/revision from the git checkout.
@@ -457,7 +459,15 @@ pub struct ExportedBuild {
 }
 
 /// OCI options for the build's exported tree (shared by `-t` image storage).
-pub fn oci_options(result: &BuildResult, context_dir: &str, root: Option<&str>, platform: Option<&str>, labels: &std::collections::BTreeMap<String, String>, git: bool) -> Result<OciOptions> {
+pub fn oci_options(
+    result: &BuildResult,
+    context_dir: &str,
+    root: Option<&str>,
+    compression: Option<OciCompression>,
+    platform: Option<&str>,
+    labels: &std::collections::BTreeMap<String, String>,
+    git: bool,
+) -> Result<OciOptions> {
     let meta = image_meta(Path::new(context_dir), git, labels.clone());
     Ok(OciOptions {
         root: root.map(str::to_string).or_else(|| result.plan.export_root.clone()),
@@ -468,6 +478,7 @@ pub fn oci_options(result: &BuildResult, context_dir: &str, root: Option<&str>, 
         revision: meta.revision,
         labels: meta.labels,
         base: result.base.clone(),
+        compression: compression.or(result.plan.export_compression).unwrap_or_default(),
     })
 }
 
@@ -480,7 +491,7 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
-        let opts = oci_options(&result, &options.context_dir, target.oci_root.as_deref(), options.platform.as_deref(), &target.image_labels, target.git_labels)?;
+        let opts = oci_options(&result, &options.context_dir, target.oci_root.as_deref(), target.oci_compression, options.platform.as_deref(), &target.image_labels, target.git_labels)?;
         let img = build_oci_image(&result.output, &opts)?;
         // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {

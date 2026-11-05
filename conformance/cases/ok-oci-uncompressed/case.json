@@ -1,0 +1,1 @@
+{ "out": "site.oci.tar", "compare": "bytes", "args": ["--label", "org.example.team=web"] }
