@@ -1,0 +1,158 @@
+<h1>CLI reference</h1>
+<p><code>sitefile &lt;command&gt; --help</code> prints the options of each command. Exit codes: <code>0</code> success, <code>1</code> an error
+(<code>error[E_CODE]: message</code>), <code>2</code> a usage error.</p>
+<h2>Building</h2>
+<pre><code>sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [options]
+sitefile validate [context] [--json]
+sitefile inspect  [context] [--json]
+</code></pre>
+<p><code>build</code> accepts these image-related options on top of the ones in the README:</p>
+<p>| Option | Meaning |
+| --- | --- |
+| <code>-t, --tag name[:tag]</code> | also store the build as an image in the local store (repeatable). <strong>With <code>-t</code> and no <code>-o</code>, only the store is written and nothing is created in the context; with both, both happen.</strong> |
+| <code>--format oci</code> / <code>-o x.oci.tar</code> | write an OCI image: an OCI archive for a <code>.tar</code> destination, an OCI layout directory otherwise (<code>dist.oci.tar</code> by default) |
+| <code>--base &lt;image&gt;</code> | build the oci image on <code>&lt;image&gt;</code> (runnable; overrides <code>EXPORT ... AS oci BASE</code>); a bare name means Docker Hub. Pin it: <code>nginx:alpine@sha256:...</code> |
+| <code>--insecure-registry host[:port]</code> | allow plain http to that registry (repeatable) |
+| <code>--oci-root /path</code> | directory of the files inside the image layer (default <code>/srv/www</code>; overrides <code>EXPORT ... AT</code>) |
+| <code>--platform os/arch</code> | image platform metadata (default <code>linux/amd64</code>) |
+| <code>--label key=value</code> | add an OCI image config label (repeatable; overrides defaults such as <code>org.opencontainers.image.title</code>) |
+| <code>--git-labels</code> | add <code>org.opencontainers.image.source</code>/<code>.revision</code> from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |</p>
+<p><code>build</code>, <code>validate</code> and <code>inspect</code> also accept:</p>
+<p>| Option | Meaning |
+| --- | --- |
+| <code>--allow-exec name[=/abs/path]</code> | allow a <code>TOOL name</code> (an external program) to run; repeatable. A bare name is looked up on <code>PATH</code> when the build starts and the resolved real path is printed (<code>tool ffmpeg -&gt; /opt/homebrew/bin/ffmpeg</code>). A <code>TOOL</code> that is not allowed fails with <code>E_UNSUPPORTED</code> naming the flag to add. The program runs <strong>with your privileges</strong>: allow only what you trust. |
+| <code>--no-cache</code> | do not read or write the TRANSFORM result cache for this build |
+| <code>--plugin-timeout ms</code> | per-call time limit for TRANSFORM plugins and tools (default 60000) |</p>
+<h2>Transform cache</h2>
+<p>TRANSFORM results (plugins and <code>TOOL</code>s) are cached in <code>$SITEFILE_HOME/cache/transform</code> (default <code>~/.sitefile/cache/transform</code>),
+beside the image store but separate from it (<code>image prune</code> does not touch it). See <a href="PLUGINS.md#caching">PLUGINS.md</a>.</p>
+<pre><code>sitefile cache info [--json]              location, entries, blobs, size
+sitefile cache prune [--older-than days]  delete every cached result, or only entries unused for N days
+</code></pre>
+<h2>Image store</h2>
+<p>The store lives in <code>$SITEFILE_HOME</code>, or <code>~/.sitefile</code>. Tests and scripts should always set <code>SITEFILE_HOME</code>.
+It <strong>is an <a href="https://github.com/opencontainers/image-spec/blob/main/image-layout.md">OCI image layout</a></strong>
+(image-spec v1.1):</p>
+<pre><code>$SITEFILE_HOME/
+  oci-layout            {&quot;imageLayoutVersion&quot;:&quot;1.0.0&quot;}
+  index.json            image index; tags are entries annotated org.opencontainers.image.ref.name = &quot;name:tag&quot;
+  blobs/sha256/&lt;hex&gt;    manifest, config and layer blobs (identical blobs are stored once)
+  servers/&lt;id&gt;.json     site server state (see below)
+  servers/&lt;id&gt;.log      site server log
+  lock                  lock file held while the store is modified
+</code></pre>
+<ul>
+<li>An <strong>image</strong> is one manifest, one config and one layer. The layer is a deterministic tar.gz of the site&#39;s files
+under a root directory (<code>/srv/www</code> by default). See <em>Export formats &gt; oci</em> in <a href="LANGUAGE.md#export-formats">LANGUAGE.md</a>.
+The image holds <strong>files only</strong>: it has no entrypoint and is not runnable on its own.</li>
+<li>The <strong>image ID is the manifest digest</strong> (<code>sha256:&lt;hex&gt;</code>; shown as the first 12 hex digits). The same files, root,
+platform and labels give the same ID, so rebuilding identical output does not create a new image.</li>
+<li>An image without a tag is <em>dangling</em> (an <code>index.json</code> entry without a ref name); it shows as <code>&lt;none&gt;</code>. Building a
+tag again with different content leaves the old image dangling until <code>image prune</code>.</li>
+<li><code>index.json</code> also records, per entry, <code>dev.sitefile.created</code>: when the image was first stored (bookkeeping only; it
+is not part of any digest, and is what <code>CREATED</code> shows).</li>
+<li>Writes are temp file + rename; modifications hold the lock file (stale locks of dead processes are broken), so
+concurrent <code>sitefile</code> calls do not corrupt the index. Every blob is digest-checked when read; a mismatch, a missing
+blob or a bad diff_id is <code>E_STORE</code>. Build-arg values are never stored.</li>
+</ul>
+<h3>Reference grammar</h3>
+<pre><code>[registry-host[:port]/]name[:tag][@sha256:&lt;64 hex&gt;]
+name = component (&#39;/&#39; component)*      component = [a-z0-9]+([._-][a-z0-9]+)*
+tag  = [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}        (default: latest)
+</code></pre>
+<p>The first path component is a registry host when it contains <code>.</code> or <code>:</code> or is <code>localhost</code>. References are validated
+everywhere (<code>E_USAGE</code> for a bad one). Locally a registry-qualified name is just a tag
+(<code>sitefile tag blog:1 localhost:5000/blog:1</code>), stored as <code>registry/name:tag</code>. Docker Hub aliases (<code>docker.io</code>,
+<code>index.docker.io</code>, <code>registry-1.docker.io</code>) are one registry (<code>docker.io</code>; its API host is <code>registry-1.docker.io</code>), and a
+Hub name without a namespace lives in <code>library/</code>. <strong>A name without a registry host defaults to Docker Hub only for
+<code>pull</code> and <code>BASE</code></strong> (<code>nginx:alpine</code> is <code>docker.io/library/nginx:alpine</code>); everywhere else, and for <code>push</code>, it is a
+local name. A <strong>short image ID</strong> (12 to 64 hex digits, optionally <code>sha256:</code>-prefixed) resolves when it is unique.</p>
+<h3>Registries: <code>push</code> and <code>pull</code></h3>
+<pre><code>sitefile tag blog:1 localhost:5000/team/blog:1
+sitefile push localhost:5000/team/blog:1
+sitefile pull localhost:5000/team/blog:1          # or name@sha256:... ; nginx:alpine means Docker Hub
+sitefile pull --platform linux/arm64 nginx:alpine
+</code></pre>
+<p>The client speaks the <a href="https://github.com/opencontainers/distribution-spec">OCI distribution spec</a> v1.1: a <code>/v2/</code>
+probe, then Bearer-token auth (the <code>WWW-Authenticate</code> realm/service/scope; an anonymous token first for pulls, credentials
+when the registry rejects it, and straight away for pushes) or Basic auth.</p>
+<ul>
+<li><strong>push</strong> HEADs every blob and uploads only the missing ones (monolithic <code>POST</code> + <code>PUT</code>); layers of a <code>BASE</code>
+image are <em>mounted</em> from the base&#39;s repository when it is on the same registry; then the manifest is <code>PUT</code> and the
+digest the registry returns is checked against ours. The pushed manifest digest equals the local image ID.</li>
+<li><strong>pull</strong> accepts OCI and Docker v2 manifests and indexes/manifest lists (for an index the <code>--platform</code> variant,
+default <code>linux/amd64</code>), checks every blob&#39;s sha256 and size <em>while streaming</em> into a temp file (nothing unverified is
+ever stored), and a manifest fetched by digest must hash to it. The platform manifest is stored unchanged (its digest
+is the image ID) and tagged as written. Pulled third-party images are listed, pushed and used as <code>BASE</code>; only images
+built by sitefile can be <code>serve</code>d or <code>save</code>d as a site.</li>
+<li><strong>Limits</strong>: <code>--max-download-bytes</code> per blob (default 2 GiB), 8 GiB per image, 4 MiB per manifest or token response,
+<code>--timeout</code> idle time per request (default 30 s), 30 minutes per blob transfer.</li>
+<li><strong>Transport</strong>: https. Plain http only for loopback registries (<code>localhost</code>, <code>127.0.0.0/8</code>, <code>::1</code>) and hosts named with
+<code>--insecure-registry host[:port]</code> (repeatable; or <code>$SITEFILE_INSECURE_REGISTRIES</code>, comma separated); those try https
+first and fall back to http. The registry host itself may be a private address (you named it). Redirects (registries
+send blob downloads to a CDN) are followed manually, at most 5, each hop re-checked: a target on another origin must be
+https and have no credentials in its URL, and must resolve to public addresses (checked at connect time) unless
+<code>--allow-private-network</code>; the <code>Authorization</code> header is <strong>never</strong> sent to another origin. Token-endpoint realms
+obey the same rules. Compressed transfer encodings are refused.</li>
+<li><strong>Credentials</strong>, first match wins: <code>--username</code> with <code>--password-stdin</code> (never a password on the command line);
+<code>$SITEFILE_REGISTRY_AUTH</code>, a JSON object such as <code>{&quot;ghcr.io&quot;:&quot;user:token&quot;,&quot;reg.example.com&quot;:{&quot;username&quot;:&quot;u&quot;,&quot;password&quot;:&quot;p&quot;}}</code>;
+then the Docker config (<code>$DOCKER_CONFIG/config.json</code>, else <code>~/.docker/config.json</code>): <code>credHelpers[host]</code>, then
+<code>auths[host]</code> (<code>auth</code> base64 <code>user:pass</code>, <code>username</code>/<code>password</code>, or an <code>identitytoken</code> exchanged at the token
+endpoint), then <code>credsStore</code>. Docker Hub is found under <code>docker.io</code>, <code>index.docker.io</code> or <code>https://index.docker.io/v1/</code>.
+<strong>Credential helpers execute a program</strong>: only when the Docker config names one, as <code>docker-credential-&lt;name&gt; get</code>
+found on <code>PATH</code> (the name must be a plain word, no shell is involved), with the server address on stdin and nothing
+secret on argv. Credentials are fetched only when a registry asks for authentication, and tokens/passwords are kept in
+memory and never printed or put in an error message.</li>
+<li>Errors: <code>E_AUTH</code> (credentials missing/rejected), <code>E_NOT_FOUND</code> (404), <code>E_INTEGRITY</code> (digest mismatch), <code>E_TOO_LARGE</code>,
+<code>E_PROTOCOL</code>/<code>E_SSRF_BLOCKED</code> (transport policy), <code>E_REGISTRY</code> (anything else the registry says).</li>
+</ul>
+<p>To run a pushed or pulled site image, use it as <code>COPY --from=</code> source or serve it with <code>sitefile serve</code>; for a runnable
+container image, build on a base with <code>BASE</code> (see <a href="LANGUAGE.md#export-formats">LANGUAGE.md</a>).
+The default platform of images is <code>linux/amd64</code> (reproducible, metadata only for files-only images); on an arm64 host
+Docker warns about the mismatch. Use <code>--platform linux/arm64</code> to label them for arm64.</p>
+<h3>Commands</h3>
+<p>| Command | Description |
+| --- | --- |
+| <code>images [--json] [--digests] [-q]</code> | <code>REPOSITORY TAG IMAGE ID CREATED FILES SIZE</code>, one row per tag. <code>--digests</code> adds the full ID, <code>-q</code> prints short IDs only. Alias: <code>image ls</code>. |
+| <code>image inspect &lt;ref\|id&gt; [--json]</code> | ID, tags, platform, root, layer/config digests, labels, and the files (the layer is fully verified). |
+| <code>tag &lt;src&gt; &lt;dst&gt;</code> | add or move the local tag <code>&lt;dst&gt;</code> to image <code>&lt;src&gt;</code>. |
+| <code>rmi [-f] &lt;ref\|id&gt;...</code> | remove tags. The image leaves the index when no tag is left. An ID with several tags needs <code>-f</code>. Alias: <code>image rm</code>. |
+| <code>image prune</code> | drop untagged images, delete unreferenced blobs, print the space reclaimed. |
+| <code>save &lt;ref\|id&gt; -o out [--format fmt] [--base-url url] [--force]</code> | export an image. Formats as in <code>build -o</code>: a directory, <code>.zip</code>, <code>.tar</code>, <code>.tar.gz</code>/<code>.tgz</code>, <code>.wbn</code>; <strong><code>.oci.tar</code> (or <code>--format oci</code> with a <code>.tar</code> destination) writes the stored image itself as an OCI archive, and <code>--format oci</code> with any other destination as an OCI layout directory</strong> (same digests as the store). A non-empty destination needs <code>--force</code>. |
+| <code>image diff &lt;a&gt; &lt;b&gt;</code> | <code>A</code>/<code>D</code>/<code>C</code> lines for added, removed and changed paths. |</p>
+<h2>Site servers</h2>
+<pre><code>sitefile serve [--name n] [-p [host:]port] [-d] [--spa] &lt;ref|id|./dir&gt;
+sitefile servers [-a] [--json]                   # also: sitefile server ls
+sitefile server stop [--time secs] &lt;name|id&gt;...
+sitefile server rm [-f] &lt;name|id&gt;...
+sitefile server logs [-f] [-n lines] &lt;name|id&gt;
+sitefile server restart &lt;name|id&gt;
+</code></pre>
+<p><code>servers</code> lists <code>NAME SITE URL STATUS ID</code>, where SITE is the image reference or directory being served
+(<code>--json</code> calls it <code>site</code>).</p>
+<p><code>serve</code> serves an image from the store (the files under its root), or a directory (an argument starting with <code>./</code>,
+<code>../</code> or <code>/</code>, or ending in <code>/</code>) read once at start through the sandboxed local reader: a symlink leaving the
+directory is an error, and hidden files (<code>.git</code>, <code>.env</code>, ... except <code>.well-known</code>) are not served.</p>
+<ul>
+<li>Binds <code>127.0.0.1</code> and a free port unless <code>-p</code> is given. <code>-p 8080</code>, <code>-p 127.0.0.1:8080</code>, <code>-p [::1]:8080</code>.
+<strong><code>0.0.0.0</code> (or <code>::</code>) is bound only when you write it in <code>-p</code></strong> (a warning is printed). A port in use is
+<code>error[E_SERVER]</code>.</li>
+<li>Foreground by default: prints the URL and one access-log line per request (<code>GET /path 200 1234 1.2ms</code>); Ctrl-C
+stops it. Foreground servers are not listed by <code>servers</code>; <code>--name</code> needs <code>-d</code>.</li>
+<li>Behaviour: <code>GET</code> and <code>HEAD</code> only (<code>405</code> with <code>Allow</code> otherwise); <code>/</code> and <code>/dir/</code> serve <code>index.html</code>; <code>/dir</code>
+redirects (<code>301</code>) to <code>/dir/</code>; no directory listings; <code>404</code> with a small page; <code>content-type</code> from the extension;
+<code>ETag</code> is the file digest and <code>If-None-Match</code> gives <code>304</code>; <code>cache-control: no-cache</code>;
+<code>x-content-type-options: nosniff</code>. Paths are percent-decoded per segment; <code>..</code>, an encoded <code>/</code>, NUL, control
+characters and backslashes are <code>400</code>. <code>--spa</code> serves <code>/index.html</code> for unknown paths whose last segment has no
+file extension (a missing <code>/app.js</code> stays <code>404</code>).</li>
+<li><code>-d</code> detaches. A server is tracked by <code>$SITEFILE_HOME/servers/&lt;id&gt;.json</code> (<code>id</code>, <code>name</code>, <code>image</code>, <code>source</code>, <code>spa</code>,
+requested <code>bind</code>, <code>host</code>, <code>port</code>, <code>pid</code>, <code>started</code>, <code>logFile</code>, <code>ready</code>) and <code>&lt;id&gt;.log</code>. <code>serve -d</code> writes the
+state, spawns a detached <code>node serve-worker.js &lt;id&gt;</code> with stdout/stderr on the log, and waits until the worker
+has recorded its pid and port (a failure to start is reported with the worker&#39;s error and leaves no entry).
+<code>servers</code> never trusts the file alone: <strong>running</strong> means the pid is alive <em>and</em> the port answers with this server&#39;s
+<code>x-sitefile-server: &lt;id&gt;</code> header; anything else shows as <strong>exited</strong>. IDs are 12 hex digits, names are unique
+(auto names look like <code>site-1a2b3c</code>).</li>
+<li><code>stop</code> sends <code>SIGTERM</code>, waits <code>--time</code> seconds (default 5), then <code>SIGKILL</code>; stopping an exited server is a no-op.
+<code>rm</code> refuses a running server unless <code>-f</code>. <code>restart</code> stops and starts it again with the same name and bind
+address, serving the same image ID (a directory is re-read). <code>logs -f</code> follows the log until Ctrl-C.</li>
+</ul>

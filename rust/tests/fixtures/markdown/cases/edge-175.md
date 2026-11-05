@@ -1,0 +1,1 @@
+[x](<jav&#x09;ascript:alert(1)>)

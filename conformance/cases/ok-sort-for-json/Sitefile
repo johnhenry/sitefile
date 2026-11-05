@@ -1,0 +1,13 @@
+FROM scratch
+ARG SITE = "People & <Co>"
+LET COUNT: number = 4
+IMPORT people FROM ./people.json AS json SORT BY age DESC
+RENDER --escape=html <<HTML TO /index.html
+<h1>${SITE} (${COUNT})</h1>
+<ul>${#each people as p}<li>${p.name}: ${#if p.age}${p.age}${else}?${/if} ${#each p.tags as t}[${t}]${else}(no tags)${/each}</li>${/each}</ul>
+<p>${people.0.name|raw}</p>
+HTML
+RENDER --escape=html <<HTML TO /people/${p.name}.html FOR p IN people
+<title>${p.name}</title>${#if !p.age}unknown age${/if}
+HTML
+EXPORT /

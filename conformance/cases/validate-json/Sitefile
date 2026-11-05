@@ -1,0 +1,18 @@
+# A blog from Markdown posts with frontmatter.
+#
+#   posts/2026-01-05-hello-world.md  ->  /posts/hello-world/index.html
+#
+# Each post's frontmatter (title, description, tags, ...) is available to the
+# templates, alongside slug, date, content (rendered HTML) and excerpt.
+FROM scratch
+ARG SITE_TITLE = "Field Notes"
+ARG SITE_URL = "https://blog.example.com"
+
+# Newest first, for the index, every post page and the feed.
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+
+COPY ./public/ /
+RENDER --escape=html ./templates/index.html TO /index.html
+RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+RENDER --escape=html ./templates/feed.xml TO /feed.xml
+EXPORT /

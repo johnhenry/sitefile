@@ -1,0 +1,1 @@
+Docker-inspired static artifact builder. Compose immutable filesystem trees from local and remote sources, render templates, and export a deployable directory — no container runtime, no shell.

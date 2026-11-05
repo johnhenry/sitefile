@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${site.title}</title>
+</head>
+<body>
+  <nav>
+    ${#each site.nav as link}
+    <a href="${link.url}">${link.title}</a>
+    ${/each}
+  </nav>
+  <h1>${site.title}</h1>
+  <p>${site.tagline}</p>
+
+  <h2>Team (from team.csv, oldest first)</h2>
+  <ul>
+    ${#each team as person}
+    <li><a href="/team/${person.slug}/">${person.name}</a> — ${person.role} (${person.joined})</li>
+    ${/each}
+  </ul>
+
+  <h2>Bundle contents (from hello.wbn, version ${bundle.version})</h2>
+  <p>Primary URL: <code>${bundle.primaryUrl}</code></p>
+  <table>
+    <tr><th>URL</th><th>Type</th><th>Bytes</th></tr>
+    ${#each bundle.entries as e}
+    <tr><td>${e.url}</td><td>${e.contentType}</td><td>${e.size}</td></tr>
+    ${/each}
+  </table>
+
+  <footer>${site.footer.note}</footer>
+</body>
+</html>

@@ -1,0 +1,7 @@
+<hr>
+<h2>title: Writing one in Rust</h2>
+<p>Build a <code>cdylib</code> for <code>wasm32-unknown-unknown</code> that exports <code>memory</code>, <code>sitefile_alloc</code>
+and <code>sitefile_transform</code>. The request and result are JSON. This site&#39;s badge plugin is
+about two hundred lines of standard-library Rust, including its own tiny JSON parser,
+so it needs no crates at all and builds offline. Any language that targets WebAssembly
+without imports can do the same: C with clang, Zig, AssemblyScript or hand-written WAT.</p>

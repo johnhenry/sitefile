@@ -1,0 +1,4 @@
+FROM scratch
+COPY ./site/ /
+COPY ./site/drafts/wip.html /explicit.html
+EXPORT /

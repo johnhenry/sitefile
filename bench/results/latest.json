@@ -1,0 +1,237 @@
+{
+  "meta": {
+    "date": "2026-11-05T10:33:36.249Z",
+    "runs": 5,
+    "node": "v26.11.1",
+    "platform": "darwin arm64",
+    "cpu": "Apple M2",
+    "cpus": 8,
+    "memoryGb": 24
+  },
+  "results": [
+    {
+      "name": "startup (--version)",
+      "typescript": {
+        "medianMs": 71.828917,
+        "minMs": 70.014416,
+        "maxRssMb": 73.25
+      },
+      "rust": {
+        "medianMs": 4.45875,
+        "minMs": 4.149917,
+        "maxRssMb": 2.1875
+      },
+      "speedup": 16.109653378188955
+    },
+    {
+      "name": "validate hello",
+      "typescript": {
+        "medianMs": 75.394209,
+        "minMs": 70.741291,
+        "maxRssMb": 73.765625
+      },
+      "rust": {
+        "medianMs": 4.635875,
+        "minMs": 4.163125,
+        "maxRssMb": 2.875
+      },
+      "speedup": 16.263210073610697
+    },
+    {
+      "name": "build hello",
+      "typescript": {
+        "medianMs": 72.279041,
+        "minMs": 71.307375,
+        "maxRssMb": 79.1875
+      },
+      "rust": {
+        "medianMs": 5.380208,
+        "minMs": 4.922833,
+        "maxRssMb": 3.4375
+      },
+      "speedup": 13.43424659418372
+    },
+    {
+      "name": "build examples/blog",
+      "typescript": {
+        "medianMs": 78.632209,
+        "minMs": 76.679833,
+        "maxRssMb": 82.59375
+      },
+      "rust": {
+        "medianMs": 7.122042,
+        "minMs": 6.9395,
+        "maxRssMb": 4.0625
+      },
+      "speedup": 11.040683135538936
+    },
+    {
+      "name": "build examples/data (yaml, csv, wbn)",
+      "typescript": {
+        "medianMs": 86.014166,
+        "minMs": 81.967375,
+        "maxRssMb": 80.40625
+      },
+      "rust": {
+        "medianMs": 7.713916,
+        "minMs": 7.26575,
+        "maxRssMb": 4.21875
+      },
+      "speedup": 11.15051888042338
+    },
+    {
+      "name": "build examples/wasm (wasm plugin)",
+      "typescript": {
+        "medianMs": 87.29125,
+        "minMs": 84.827084,
+        "maxRssMb": 86.390625
+      },
+      "rust": {
+        "medianMs": 61.559875,
+        "minMs": 61.439334,
+        "maxRssMb": 13.453125
+      },
+      "speedup": 1.417989396502186
+    },
+    {
+      "name": "blog: 100 posts",
+      "typescript": {
+        "medianMs": 124.000667,
+        "minMs": 121.193291,
+        "maxRssMb": 93.1875
+      },
+      "rust": {
+        "medianMs": 37.995042,
+        "minMs": 37.136541,
+        "maxRssMb": 6.3125
+      },
+      "speedup": 3.263601261448797
+    },
+    {
+      "name": "blog: 1000 posts",
+      "typescript": {
+        "medianMs": 790.529958,
+        "minMs": 785.459041,
+        "maxRssMb": 188.609375
+      },
+      "rust": {
+        "medianMs": 623.440333,
+        "minMs": 616.550417,
+        "maxRssMb": 77.53125
+      },
+      "speedup": 1.2680122156934623
+    },
+    {
+      "name": "blog: 5000 posts",
+      "typescript": {
+        "medianMs": 1840.526833,
+        "minMs": 1806.506834,
+        "maxRssMb": 207.34375
+      },
+      "rust": {
+        "medianMs": 1448.172084,
+        "minMs": 1404.408083,
+        "maxRssMb": 64.109375
+      },
+      "speedup": 1.2709310263157922
+    },
+    {
+      "name": "static copy: 5000 files",
+      "typescript": {
+        "medianMs": 1266.626625,
+        "minMs": 1230.615959,
+        "maxRssMb": 189.46875
+      },
+      "rust": {
+        "medianMs": 602.719959,
+        "minMs": 569.857542,
+        "maxRssMb": 68.25
+      },
+      "speedup": 2.1015176386418624
+    },
+    {
+      "name": "csv: 2000 rows → pages",
+      "typescript": {
+        "medianMs": 435.078708,
+        "minMs": 411.53225,
+        "maxRssMb": 105.09375
+      },
+      "rust": {
+        "medianMs": 259.592917,
+        "minMs": 213.437083,
+        "maxRssMb": 10.53125
+      },
+      "speedup": 1.6760037717053737
+    },
+    {
+      "name": "import tar.gz: 2000 files",
+      "typescript": {
+        "medianMs": 416.773583,
+        "minMs": 396.551583,
+        "maxRssMb": 103.515625
+      },
+      "rust": {
+        "medianMs": 193.585459,
+        "minMs": 187.334375,
+        "maxRssMb": 9.265625
+      },
+      "speedup": 2.152917812902466
+    },
+    {
+      "name": "export zip: blog 1000",
+      "typescript": {
+        "medianMs": 1993.259417,
+        "minMs": 1981.628458,
+        "maxRssMb": 218.140625
+      },
+      "rust": {
+        "medianMs": 1576.843667,
+        "minMs": 1571.110875,
+        "maxRssMb": 89.734375
+      },
+      "speedup": 1.2640818228938606
+    },
+    {
+      "name": "export tar.gz: blog 1000",
+      "typescript": {
+        "medianMs": 2166.296334,
+        "minMs": 2132.051209,
+        "maxRssMb": 277.34375
+      },
+      "rust": {
+        "medianMs": 1659.671125,
+        "minMs": 1633.552208,
+        "maxRssMb": 147.375
+      },
+      "speedup": 1.3052563856589359
+    },
+    {
+      "name": "export wbn: blog 1000",
+      "typescript": {
+        "medianMs": 629.911542,
+        "minMs": 619.787709,
+        "maxRssMb": 465.03125
+      },
+      "rust": {
+        "medianMs": 469.304833,
+        "minMs": 464.869667,
+        "maxRssMb": 198.53125
+      },
+      "speedup": 1.3422225762588729
+    },
+    {
+      "name": "export oci: blog 1000",
+      "typescript": {
+        "medianMs": 2266.576208,
+        "minMs": 2212.157041,
+        "maxRssMb": 287.203125
+      },
+      "rust": {
+        "medianMs": 1674.615583,
+        "minMs": 1663.731625,
+        "maxRssMb": 166.828125
+      },
+      "speedup": 1.3534904553673917
+    }
+  ]
+}

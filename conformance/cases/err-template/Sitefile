@@ -1,0 +1,6 @@
+FROM scratch
+RENDER <<T TO /a.html
+line
+  ${#each nope}
+T
+EXPORT /

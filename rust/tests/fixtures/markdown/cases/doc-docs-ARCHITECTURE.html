@@ -1,0 +1,50 @@
+<h1>Architecture specification v0.1</h1>
+<h2>Purpose</h2>
+<p>A general-purpose static artifact composer, initially optimized for websites. Dockerfile-inspired syntax, not Dockerfile compatibility.</p>
+<h2>Core invariants</h2>
+<ul>
+<li>Build output is a filesystem tree, not a running container.</li>
+<li>Resources may be files, trees, or structured values; do not coerce values into trees implicitly.</li>
+<li>Stages are immutable snapshots. Operations return new snapshots.</li>
+<li>Imports are named, immutable inputs. Importing alone never changes output.</li>
+<li>Every output path has a deterministic owner; conflicting writes fail unless an explicit override is declared.</li>
+<li>Acquisition, transformation, and placement are distinct operations internally.</li>
+<li>No implicit network access during rendering.</li>
+<li>Paths are POSIX-style within virtual trees; host paths are restricted to declared context.</li>
+<li>Build args are public; secrets never become part of artifact metadata or cache keys in plaintext.</li>
+</ul>
+<h2>Logical modules</h2>
+<ol>
+<li>language: lexer/parser, spans, typed AST, semantic validator.</li>
+<li>planner: stage graph, dependencies, cycle detection, cache keys.</li>
+<li>resources: protocol registry and local/HTTPS resolvers.</li>
+<li>artifacts: file/tree/value types, digests, metadata.</li>
+<li>composer: copy, overlay, remove, conflict policies.</li>
+<li>render: safe variable interpolation with explicit escaping modes.</li>
+<li>executor: bounded concurrent graph scheduling.</li>
+<li>cache: content-addressed blobs, tree manifests, lockfile.</li>
+<li>exporter: atomic directory materialization.</li>
+<li>cli: build, validate, inspect.</li>
+</ol>
+<h2>Resource types</h2>
+<p>File {digest, bytes, mode, mediaType?}
+Tree {digest, entries}
+Value {digest, format, value}
+URI resolution returns one of these, with provenance.</p>
+<h2>Security</h2>
+<ul>
+<li>Local source sandbox; reject absolute escapes and <code>..</code> traversal.</li>
+<li>Restrict remote redirects and DNS/address targets; SSRF protections configurable.</li>
+<li>Bound download size, decompression ratio, timeouts, and recursion.</li>
+<li>Verify expected digests; do not execute fetched content.</li>
+<li>Symlink policy explicit; avoid following links outside context.</li>
+<li>Atomic export and safe destination replacement.</li>
+<li>No arbitrary shell execution in MVP.</li>
+<li>Renderer plugins (<code>PLUGIN</code>/<code>TRANSFORM</code>) are user-declared local modules run in a separate Node process under <code>--permission</code> (own-folder reads only; no writes, processes, network or environment). This is a seat belt for trusted code, not a sandbox for hostile code; see docs/PLUGINS.md.</li>
+</ul>
+<h2>Execution</h2>
+<p>Parse -&gt; validate -&gt; resolve imports -&gt; plan -&gt; execute operations -&gt; export.
+Instruction order defines write precedence; independent reads may execute concurrently.
+Initial executor: local Node.js. BuildKit and OCI are future adapters, not dependencies.</p>
+<h2>Non-goals for MVP</h2>
+<p>Dockerfile compatibility, Docker daemon, OCI publishing, plugin execution, <code>EXEC</code>, multi-protocol breadth, dynamic server hosting.</p>

@@ -156,10 +156,23 @@ node lib/src/cli.js build examples/hello --format wbn --base-url https://example
 Archives are reproducible: sorted entries, fixed timestamps (or `SOURCE_DATE_EPOCH`),
 uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-formats).
 
+## Rust implementation
+
+`rust/` is a full port, maintained alongside the TypeScript version and checked
+against it by `node conformance/run.mjs` (identical output on every example and
+case). It starts in ~4 ms instead of ~70 ms and is 1.3–2× faster on large
+sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
+[bench/README.md](bench/README.md).
+
+```bash
+(cd rust && cargo build --release) && rust/target/release/sitefile build examples/blog
+```
+
 ## Docs
 
 - [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — syntax and the exact semantics chosen for v0.1
+- [docs/RUST.md](docs/RUST.md) — the Rust port: layout, parity checks, known differences
 - [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)

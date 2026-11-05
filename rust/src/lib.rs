@@ -1,0 +1,44 @@
+//! Sitefile: a Docker-inspired static artifact builder.
+//!
+//! This crate is a port of the TypeScript reference implementation in `../src`.
+//! Both are maintained; `../conformance` checks that they produce identical
+//! output, and `../bench` compares their speed. Module names mirror the
+//! TypeScript files they port.
+
+// Core (shared by every module)
+pub mod cbor;
+pub mod digest;
+pub mod error;
+pub mod paths;
+pub mod tree;
+pub mod values;
+
+// Language
+pub mod build_args;
+pub mod language;
+pub mod planner;
+
+// Templates and data formats
+pub mod csv;
+pub mod documents;
+pub mod frontmatter;
+pub mod markdown;
+pub mod render;
+pub mod yaml;
+
+// Inputs
+pub mod resources;
+
+// Outputs, store and servers
+pub mod export;
+pub mod refs;
+pub mod server;
+pub mod servers;
+pub mod store;
+
+// Build, plugins, registry and CLI
+pub mod base_image;
+pub mod cli;
+pub mod executor;
+pub mod plugins;
+pub mod registry;

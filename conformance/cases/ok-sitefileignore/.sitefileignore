@@ -1,0 +1,4 @@
+# comment
+drafts/
+*.tmp
+!keep.tmp

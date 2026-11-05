@@ -1,0 +1,191 @@
+<h1>Writing renderer plugins</h1>
+<p>A plugin turns an input (a file, a value, or one element of a list) into one
+or more output files. Use one when templates aren&#39;t enough: rendering text to
+a motion graphic, generating OpenGraph cards, minifying, syntax highlighting,
+converting formats.</p>
+<pre><code>PLUGIN motion FROM ./plugins/motion.mjs [INTEGRITY sha256:…]
+TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter duration=2
+TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
+</code></pre>
+<p>See <code>examples/motion/</code> for a complete plugin (text → animated SVG).</p>
+<h2>The module</h2>
+<p>A JavaScript plugin is one ES module file ending in <code>.mjs</code>, <strong>in its own folder</strong> (for
+example <code>./plugins/motion.mjs</code>). Export <code>transform</code>, or a default object with
+it:</p>
+<pre><code class="language-js">export const apiVersion = 1;
+
+export async function transform(request) {
+  const text = request.input?.text ?? request.options.text ?? &#39;&#39;;
+  return { bytes: `&lt;svg xmlns=&quot;http://www.w3.org/2000/svg&quot;&gt;&lt;text y=&quot;20&quot;&gt;${escape(text)}&lt;/text&gt;&lt;/svg&gt;` };
+}
+</code></pre>
+<h3>The request</h3>
+<pre><code class="language-ts">{
+  apiVersion: 1,
+  dest: string,                       // artifact path being written, e.g. &quot;/title.svg&quot;
+  options: Record&lt;string, string&gt;,    // OPTIONS key=value … (always strings; ${ARG} and ${item.key} are interpolated)
+  input?: {                           // when the TRANSFORM has a file source
+    path: string,                     // &quot;./title.txt&quot;, &quot;name:/path&quot;, &quot;&lt;&lt;EOF&quot; …
+    name: string,                     // file name
+    bytes: Uint8Array,
+    text?: string,                    // set when the bytes are valid UTF-8
+  },
+  data?: unknown,                     // when the source is a value import (json, yaml, csv, markdown, wbn)
+  item?: unknown,                     // the current element, with FOR item IN list
+}
+</code></pre>
+<p>Sources work like COPY&#39;s: a local path, <code>name:</code> / <code>name:/path</code> for an import,
+<code>--from=stage /path</code>, or an inline <code>&lt;&lt;EOF</code> body. With <code>FOR … IN …</code> the source
+is optional.</p>
+<h3>The result</h3>
+<p>Return one of:</p>
+<ul>
+<li>a <code>string</code> or <code>Uint8Array</code>, or <code>{ bytes }</code>: one file written to <code>dest</code></li>
+<li><code>{ files: { &quot;a.svg&quot;: …, &quot;sub/b.png&quot;: … } }</code>: several files under <code>dest</code>,
+which should end in <code>/</code>; keys are relative POSIX paths (no <code>..</code>)</li>
+</ul>
+<p>Throwing an <code>Error</code> fails the build with <code>E_PLUGIN</code> and your message.
+<code>console.log</code> output appears as build warnings prefixed <code>[plugin name]</code>.</p>
+<p>Writes follow the usual conflict rules: different content at an existing path
+fails unless the TRANSFORM has <code>--overwrite</code>.</p>
+<h2>The sandbox</h2>
+<p>Each plugin runs in its own Node process started with Node&#39;s permission model:</p>
+<pre><code>node --permission --allow-fs-read=&lt;the plugin&#39;s folder&gt; …
+</code></pre>
+<p>| A plugin can | A plugin cannot |
+| --- | --- |
+| read files in its own folder (helpers, fonts, data) | read other files, including your project |
+| import <code>node:</code> built-ins and files in its folder | write files, spawn processes, use workers or native addons |
+| use CPU and memory | open network connections |
+| | see environment variables (it gets an empty environment) |</p>
+<p>Each call has a time limit (<code>--plugin-timeout</code>, default 60 s) and results are
+capped at 64 MiB. Processes are stopped when the build ends.</p>
+<p><strong>Trust model.</strong> Node describes its permission model as a &quot;seat belt&quot; for
+trusted code, not a defence against deliberately malicious code. Treat a
+plugin like any dependency: run plugins you trust, keep them in your
+repository, and pin them with <code>INTEGRITY</code> (which covers the module file
+itself; other files in its folder are not hashed). Because a plugin can read
+its whole folder, Sitefile refuses a plugin placed directly in the build
+context root.</p>
+<h2>Determinism</h2>
+<p>Sitefile builds are reproducible, so plugins should be too: produce the same
+bytes for the same request. Avoid <code>Date.now()</code>, <code>Math.random()</code> and anything
+that depends on the machine. (Reading the clock is not blocked; it is just a
+bad idea.)</p>
+<h2>WebAssembly plugins</h2>
+<p><code>PLUGIN name FROM ./plugins/x.wasm</code> loads a WebAssembly module instead of a
+JavaScript one. Everything else (TRANSFORM, OPTIONS, FOR, INTEGRITY, caching)
+works the same. See <code>examples/wasm/</code> for a plugin written in Rust
+(<code>plugins/badge-src</code>, built with <code>./build.sh</code>).</p>
+<p><strong>The module imports nothing.</strong> That is checked when the build starts, and
+it&#39;s what makes wasm plugins the strongest sandbox Sitefile offers: with no
+imports a module can&#39;t open files, use the network, read the clock or get
+randomness. It can only compute. So a wasm plugin may live anywhere in the
+context (it can&#39;t read its folder), and its results are always cacheable.</p>
+<h3>ABI v1</h3>
+<p>Build for <code>wasm32-unknown-unknown</code> (Rust: a <code>cdylib</code>; C: <code>clang --target=wasm32 -nostdlib -Wl,--no-entry -Wl,--export-all</code>; or hand-written
+WAT) and export:</p>
+<p>| Export | Signature | Meaning |
+| --- | --- | --- |
+| <code>memory</code> | memory | the module&#39;s linear memory |
+| <code>sitefile_alloc</code> | <code>(len: i32) -&gt; i32</code> | reserve <code>len</code> bytes for the request; return a pointer |
+| <code>sitefile_transform</code> | <code>(ptr: i32, len: i32) -&gt; i64</code> | read the request at <code>ptr</code>, return <code>(resultPtr &lt;&lt; 32) \| resultLen</code> |
+| <code>sitefile_api_version</code> | <code>() -&gt; i32</code> | optional; must return <code>1</code> |</p>
+<p>The <strong>request</strong> is UTF-8 JSON: the same object JS plugins receive, with
+<code>input.bytes</code> base64-encoded. The <strong>result</strong> is UTF-8 JSON, one of:</p>
+<pre><code class="language-json">{ &quot;text&quot;: &quot;&lt;svg …&gt;&quot; }
+{ &quot;bytes&quot;: &quot;&lt;base64&gt;&quot; }
+{ &quot;files&quot;: { &quot;a.svg&quot;: &quot;&lt;base64&gt;&quot;, &quot;sub/b.png&quot;: &quot;&lt;base64&gt;&quot; } }
+{ &quot;error&quot;: &quot;option \&quot;color\&quot; must be #rgb&quot; }
+</code></pre>
+<p>Each call gets a <strong>fresh instance</strong>, so nothing carries over between calls
+and the module may simply leak its allocations. Calls run in a worker thread
+that is terminated after <code>--plugin-timeout</code>; linear memory is capped at 1 GiB
+and results at 64 MiB. Traps, out-of-range results, invalid JSON and
+<code>{&quot;error&quot;}</code> all fail the build with <code>E_PLUGIN</code>.</p>
+<h2>External tools: <code>TOOL</code> and <code>--allow-exec</code></h2>
+<p>Plugins cannot run programs. For real media output (video, audio, images) a
+build can instead call an external program such as <code>ffmpeg</code>, but only through
+an explicit, command-line allow-list:</p>
+<pre><code>TOOL ffmpeg
+TRANSFORM --overwrite WITH ffmpeg TO /intro.mp4 OPTIONS size=1280x720 \
+  ARGS -hide_banner -loglevel error -f lavfi -i &quot;color=c=black:s={option.size}:d=3:r=30&quot; \
+       -c:v mpeg4 -fflags +bitexact -flags:v +bitexact -map_metadata -1 {output}
+</code></pre>
+<pre><code>sitefile build --allow-exec ffmpeg                 # looked up on PATH
+sitefile build --allow-exec ffmpeg=/opt/bin/ffmpeg # or an absolute path
+</code></pre>
+<ul>
+<li><code>TOOL name</code> only <em>declares</em> the need. Without <code>--allow-exec name</code> the build
+stops with <code>E_UNSUPPORTED</code> and the exact flag to add. The program is resolved
+to an absolute real path when the build starts, and printed.</li>
+<li>A TRANSFORM that names a tool takes a source file as for plugins (or none),
+<code>OPTIONS</code>, <code>FOR</code>, and last <code>ARGS …</code>: the argv template. Placeholders:
+<code>{input}</code> (the source, copied to a file in a per-call temp directory),
+<code>{output}</code> (required; the single file the tool must write; its extension
+comes from <code>&lt;dest&gt;</code> so tools can pick a format), and <code>{option.key}</code>. Both
+file placeholders are <em>relative</em> names (<code>input.txt</code>, <code>output.mp4</code>) because the
+tool&#39;s working directory is that temp directory, so filter syntaxes that
+treat <code>:</code> or <code>,</code> specially need no escaping. Any other <code>{…}</code> is literal.</li>
+<li><strong>No shell, ever.</strong> The program is started with an argv array
+(<code>spawn(path, argv, { shell: false })</code>). <code>;</code>, <code>$(…)</code>, backticks, <code>*</code>, <code>|</code> in
+arguments or option values reach the program as plain text. Values are
+substituted once and never re-scanned. (An argument that <em>starts with</em> <code>-</code> is
+still an option to the tool: do not put untrusted <code>${…}</code> values in option
+position.)</li>
+<li>Per call: a fresh temp directory (removed afterwards) holding the input;
+working directory = that directory; environment = <code>PATH=/usr/bin:/bin</code> only
+(none of your variables or secrets; the OS may add its own); stdin closed;
+killed after <code>--plugin-timeout</code> (default 60 s); output larger than 64 MiB (or
+not a regular file, or missing) is rejected. stdout/stderr are kept to their
+tail and shown as build warnings (<code>[tool ffmpeg] …</code>, at most 20 lines each);
+use <code>-hide_banner -loglevel error</code> to keep that quiet. A non-zero exit is
+<code>E_PLUGIN</code> with the last stderr lines.</li>
+</ul>
+<p><strong>Trust model, honestly.</strong> Node&#39;s <code>--permission</code> sandbox only governs Node
+code: it cannot confine a native binary. A tool runs <strong>with your user&#39;s
+privileges</strong> and can read or write anything you can, and the network too. The
+allow-list (you name each program on the command line, the Sitefile cannot
+widen it) and the missing shell are the controls, not a sandbox. Allow
+programs you trust, with arguments you have reviewed; a Sitefile from someone
+else can still make an allowed program do what its arguments permit. Prefer
+<code>name=/absolute/path</code> when <code>PATH</code> is not trustworthy.</p>
+<p><strong>Determinism.</strong> Reproducible builds need reproducible tools. ffmpeg embeds
+its encoder name, timestamps and metadata by default; use
+<code>-fflags +bitexact -flags:v +bitexact -map_metadata -1</code> (the test suite checks
+this gives identical bytes). Multi-threaded encoders can still differ between
+versions or CPUs. Caching (below) makes repeated builds stable by reusing the
+first result.</p>
+<h2>Caching</h2>
+<p>TRANSFORM results are cached between builds in
+<code>$SITEFILE_HOME/cache/transform</code> (default <code>~/.sitefile/cache/transform</code>): an
+unchanged TRANSFORM is not run again, and <strong>the plugin process is not even
+started</strong> (plugins start lazily, on their first cache miss).</p>
+<p>The key is the SHA-256 of a canonical JSON (sorted keys) of:</p>
+<ul>
+<li>the cache format version;</li>
+<li>the code: for a plugin, a digest of every file in its folder (it can read
+them all, so any may matter; folders over 2000 files or 128 MiB are not
+cached, with a warning); for a tool, its resolved real path, size and mtime,
+and the interpolated ARGS;</li>
+<li>the request: <code>dest</code>, <code>options</code>, the input (path, name, content digest), the
+value-import <code>data</code>, and the <code>FOR</code> <code>item</code>.</li>
+</ul>
+<p>Results are stored by content hash (<code>entries/&lt;key&gt;.json</code> pointing at
+<code>blobs/&lt;sha256&gt;</code>). Every read re-verifies each blob&#39;s digest and size, so a
+corrupt or truncated entry is ignored, removed, and rewritten after the rebuild;
+a cache that cannot be written never fails the build.</p>
+<p><strong>Caching assumes deterministic code.</strong> A plugin that depends on the clock,
+randomness, the network or the machine should opt out by exporting <code>cache</code>:</p>
+<pre><code class="language-js">export const cache = false;         // or: export default { apiVersion: 1, cache: false, transform }
+</code></pre>
+<p>Its results are then never stored or reused (it is started on every build).
+Anything not in the key is invisible to the cache: a tool that reads files
+other than <code>{input}</code>, or a different version of a tool installed at the same
+path with the same size and mtime. Use <code>--no-cache</code> to bypass (no reads, no
+writes), and <code>sitefile cache info|prune</code> to inspect or clear it. The cache
+neither reads nor changes <code>Sitefile.lock</code>, so <code>--frozen-lockfile</code> is unaffected.</p>
+<h2>Not yet</h2>
+<ul>
+<li>Plugins from URLs or npm packages (local files only for now)</li>
+</ul>
