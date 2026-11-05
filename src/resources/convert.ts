@@ -2,6 +2,10 @@ import { SitefileError, type SourceSpan } from '../errors.js';
 import { sha256 } from '../digest.js';
 import { extractArchive } from './archive.js';
 import { markdownDocument } from './documents.js';
+import { bundleValue } from './bundle-data.js';
+import { readWebBundle } from './wbn-reader.js';
+import { parseYaml } from '../yaml.js';
+import { parseCsvRecords } from '../csv.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits, type Provenance, type Resource } from './types.js';
 
 export interface BytesInfo {
@@ -22,7 +26,7 @@ function decodeUtf8(bytes: Uint8Array, uri: string, span?: SourceSpan): string {
 /** Turn fetched or read bytes into a resource of the requested kind. */
 export async function bytesToResource(
   bytes: Uint8Array,
-  kind: 'file' | 'text' | 'json' | 'tree' | 'markdown',
+  kind: 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn',
   info: BytesInfo,
   span?: SourceSpan,
   archiveLimits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
@@ -37,12 +41,17 @@ export async function bytesToResource(
   if (kind === 'markdown') {
     return { kind: 'value', format: 'markdown', value: markdownDocument(bytes, '/' + info.basename, info.uri, span), provenance };
   }
+  if (kind === 'wbn') {
+    return { kind: 'value', format: 'wbn', value: bundleValue(readWebBundle(bytes, info.uri, archiveLimits, span)), provenance };
+  }
   if (kind === 'file') {
     const mode = (info.mode ?? 0o644) & 0o111 ? 0o755 : 0o644;
     return { kind: 'file', bytes, mode, basename: info.basename, provenance };
   }
   const text = decodeUtf8(bytes, info.uri, span);
   if (kind === 'text') return { kind: 'value', format: 'text', value: text, provenance };
+  if (kind === 'yaml') return { kind: 'value', format: 'yaml', value: parseYaml(text, info.uri), provenance };
+  if (kind === 'csv') return { kind: 'value', format: 'csv', value: parseCsvRecords(text, info.uri), provenance };
   let value: unknown;
   try {
     // TextDecoder already strips a leading BOM.

@@ -16,7 +16,7 @@ export interface Operand {
 }
 
 export type ValueType = 'string' | 'number' | 'boolean';
-export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown';
+export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn';
 export type EscapeMode = 'none' | 'html';
 
 export interface FromInstruction {

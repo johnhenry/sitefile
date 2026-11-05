@@ -106,23 +106,33 @@ test('duplicate keys', () => {
   fails('---\na: 1\nb: 2\na: 3\n---\n', 4, 1, /duplicate key 'a'/);
 });
 
-test('nested maps and indentation', () => {
-  fails('---\na:\n  b: 1\n---\n', 3, 3, /nested maps|indentation/);
+test('nested maps, flow maps, block scalars and nested lists parse', () => {
+  assert.deepEqual(fm('---\na:\n  b: 1\n  c: [x, {y: 2}]\n---\n').data, { a: { b: 1, c: ['x', { y: 2 }] } });
+  assert.deepEqual(fm('---\na: {b: 1}\nl:\n  - [1]\n  - n: 1\n    m: 2\nt: [1, [2]]\n---\n').data, {
+    a: { b: 1 },
+    l: [[1], { n: 1, m: 2 }],
+    t: [1, [2]],
+  });
+  assert.deepEqual(fm('---\na: |\n  x\n  y\nb: >-\n  p\n  q\n1bad: x\n---\n').data, { a: 'x\ny\n', b: 'p q', '1bad': 'x' });
+});
+
+test('errors inside nested structures carry file line numbers', () => {
+  fails('---\na:\n  b: 1\n  b: 2\n---\n', 4, 3, /duplicate key 'b'/);
+  fails('---\na:\n\tb: 1\n---\n', 3, 1, /tab/);
+});
+
+test('indentation and nested maps on one line', () => {
   fails('---\na: b: c\n---\n', 2, 4, /nested maps/);
   fails('---\n  x: 1\n---\n', 2, 3, /indentation/);
 });
 
-test('multi-line strings, anchors, flow maps', () => {
-  fails('---\na: |\n  x\n---\n', 2, 4, /multi-line/);
-  fails('---\na: >\n  x\n---\n', 2, 4, /multi-line/);
+test('anchors and tags', () => {
   fails('---\na: &x 1\n---\n', 2, 4, /anchors/);
   fails('---\na: *x\n---\n', 2, 4, /anchors/);
-  fails('---\na: {b: 1}\n---\n', 2, 4, /maps/);
 });
 
 test('invalid lines', () => {
   fails('---\njust text\n---\n', 2, 1, /key: value/);
-  fails('---\n1bad: x\n---\n', 2, 1, /invalid key/);
   fails('---\n- orphan\n---\n', 2, 1, /without a preceding key/);
   fails('---\na: x\n- y\n---\n', 3, 1, /without a preceding key|list/);
 });
@@ -132,8 +142,6 @@ test('bad quotes and lists', () => {
   fails('---\na: "x" y\n---\n', 2, 8, /unexpected text/);
   fails('---\na: "bad \\q"\n---\n', 2, 9, /escape/);
   fails('---\na: [1, 2\n---\n', 2, 4, /unterminated list/);
-  fails('---\na: [1, [2]]\n---\n', 2, 8, /nested/);
   fails('---\na: [1,,2]\n---\n', 2, 7, /empty list item/);
   fails('---\na: [1] x\n---\n', 2, 8, /unexpected text/);
-  fails('---\na:\n  - [1]\n---\n', 4 - 1, 5, /nested lists/);
 });

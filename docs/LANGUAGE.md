@@ -79,11 +79,22 @@ These pin down what the draft above leaves open. Tests cover each rule.
     stage**. Earlier stages exist only to feed later ones.
 - `ARG NAME[: string|number|boolean] [= value]`. No default means required;
   `--build-arg NAME=value` overrides. Unknown `--build-arg` names are warnings.
+- **Build args from files and the environment** (CLI):
+  - `--build-arg-file <path>` (repeatable) reads a flat `.json` object, a flat
+    `.yaml`/`.yml` mapping, or a `.env` file (`KEY=value` lines, `export`
+    prefix, `#` comments, `'literal'` or `"escaped"` quotes). Values must be
+    strings, numbers or booleans. `.env` files are **parsed, never executed**:
+    no `$VAR` or `$(…)` expansion.
+  - `--build-arg NAME` (no `=`) takes the value from the environment variable
+    `NAME`; an unset variable is a usage error.
+  - Precedence: Sitefile default < files (later files win) < `--build-arg`.
+    Each ARG's declared type still applies.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|tree|markdown] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
-  - `AS markdown` and `SORT BY`: see Markdown and template blocks below.
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
+  - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
+    `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
   - `<uri>` is a context-relative path or an `https://` URL (`http://` only with
     `--allow-http`). Other schemes fail with `E_PROTOCOL`.
   - Default kind: `tree` for a local directory, otherwise `file`.
@@ -171,9 +182,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
   autolinks. Not supported: tables, footnotes, reference links, task lists.
   **Raw HTML is always escaped**, and links or images with schemes other than
   `http`, `https`, `mailto`, relative or `#` lose their URL.
-- `SORT BY key [ASC|DESC]` (markdown directories only) orders documents by a
-  field: numbers numerically, everything else as strings, so ISO dates sort
-  correctly. Documents without the field come last; ties keep path order.
+- `SORT BY key [ASC|DESC]` orders documents by a field: numbers and numeric
+  strings numerically, everything else as strings, so ISO dates sort
+  correctly (it also works on other list imports, see Data files). Documents without the field come last; ties keep path order.
 - `RENDER … TO <dest> FOR item IN list` renders the template once per element
   of an imported list (markdown documents or a JSON array). The destination
   may use `${item}` / `${item.key}`; every resulting path is normalized like any
@@ -190,6 +201,36 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - A block tag alone on its line removes that whole line from the output.
   - Unbalanced blocks, a second `${else}` or an unknown `|filter` fail with
     `E_TEMPLATE` at the tag.
+
+### Data files: YAML, CSV and Web Bundles (see `examples/data/`)
+All of these are **values**: templates read them, `FOR` iterates over them,
+and they can't be COPY'd (`E_TYPE`). Parse errors are `E_DATA` with the file's
+line and column.
+- `AS yaml`: a safe YAML subset: nested block mappings and sequences
+  (including lists of mappings), flow `[…]` / `{…}`, block scalars `|` / `>`
+  with chomping, comments, and the same scalars as frontmatter (dates stay
+  strings). Not supported: anchors/aliases, tags, multiple documents, complex
+  keys, merge keys. An empty document is `null`.
+- `AS csv`: RFC 4180 (quoted fields, `""` escapes, embedded commas and
+  newlines, CRLF, BOM). The header row gives the keys; every row is an object
+  of **strings**; a row with the wrong number of fields is an error.
+- `AS wbn`: a Web Bundle (`b1` or `b2`) as data:
+  `{ version, primaryUrl, entries: [{ url, path, status, contentType, headers, size, content? }] }`,
+  entries in URL order. `content` is the body as text for textual responses
+  (text/*, JSON, XML, JavaScript, SVG) that are valid UTF-8.
+- `AS tree` on a `.wbn` file unpacks the bundle into files (detected by its
+  magic bytes, like tar and zip): URL pathnames become paths (`…/` →
+  `…/index.html`), percent-decoded; if the bundle mixes origins each path is
+  prefixed with `/<host>`. Only status-200 responses become files. Unsafe
+  paths are `E_ARCHIVE_UNSAFE`; the archive limits apply.
+- A **directory** imported `AS json` or `AS yaml` is a list with one entry per
+  `.json` / `.yaml` / `.yml` file, in path order. An object becomes
+  `{ slug, date?, path, ...fields }` (slug and date from the file name as for
+  Markdown; fields can override them); any other value becomes
+  `{ slug, path, value }`.
+- `SORT BY` applies to any list import (markdown, json, yaml, csv); the value
+  must be a list of objects. Numbers **and numeric strings** (such as CSV
+  cells) compare numerically.
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that

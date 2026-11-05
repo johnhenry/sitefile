@@ -7,7 +7,7 @@ import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
-import { markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
+import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { LocalContext } from './resources/local.js';
@@ -203,6 +203,12 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
         const value = markdownCollection(tree.tree, spec.uri.replace(/\/+$/, ''), spec.span);
         return { kind: 'value', format: 'markdown', value, provenance: tree.provenance };
       }
+      if (spec.as === 'json' || spec.as === 'yaml') {
+        if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
+        const tree = await env.local.readTree(rel, origin, spec.span);
+        const value = dataCollection(tree.tree, spec.as, spec.uri.replace(/\/+$/, ''), spec.span);
+        return { kind: 'value', format: spec.as, value, provenance: tree.provenance };
+      }
       if (spec.as && spec.as !== 'tree') {
         throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a directory and cannot be imported AS ${spec.as}`, spec.span);
       }
@@ -349,9 +355,12 @@ async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
 
 /** Apply an import's SORT BY to a markdown collection. */
 function sorted(spec: ImportSpec, res: Resource): Resource {
-  if (!spec.sort || res.kind !== 'value' || res.format !== 'markdown') return res;
+  if (!spec.sort || res.kind !== 'value') return res;
   if (!Array.isArray(res.value)) {
-    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: SORT BY needs a directory of documents, not a single file`, spec.span);
+    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: SORT BY needs a list (a directory of documents, a CSV file or a JSON/YAML array), not a single value`, spec.span);
+  }
+  if (!res.value.every((d) => d !== null && typeof d === 'object' && !Array.isArray(d))) {
+    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: SORT BY needs a list of objects with a '${spec.sort.key}' field`, spec.span);
   }
   return { ...res, value: sortDocuments(res.value as MarkdownDocument[], spec.sort.key, spec.sort.descending) };
 }
@@ -412,10 +421,10 @@ function lookup(name: string, p: readonly string[], span: SourceSpan, env: ExecE
   const res = env.resources.get(name);
   if (!res) throw new SitefileError('E_UNDEFINED', `'${name}' is not an ARG, LET or IMPORT`, span);
   if (res.kind !== 'value') {
-    throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read text and json imports`, span);
+    throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read value imports (text, json, yaml, csv, markdown, wbn)`, span);
   }
-  if (res.format === 'json' || res.format === 'markdown') return resolveJsonPath(res.value, p, name, span);
-  if (p.length) throw new SitefileError('E_TYPE', `import '${name}' is text; dotted access only works on JSON and markdown imports`, span);
+  if (res.format !== 'text') return resolveJsonPath(res.value, p, name, span);
+  if (p.length) throw new SitefileError('E_TYPE', `import '${name}' is text; dotted access only works on structured imports (json, yaml, csv, markdown, wbn)`, span);
   return res.value as string;
 }
 
@@ -430,7 +439,7 @@ function valueOf(name: string, p: readonly string[], span: SourceSpan, loose: bo
     throw new SitefileError('E_UNDEFINED', `'${name}' is not an ARG, LET or IMPORT`, span);
   }
   if (res.kind !== 'value') {
-    throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read text, json and markdown imports`, span);
+    throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read value imports (text, json, yaml, csv, markdown, wbn)`, span);
   }
   return walk(res.value, p, name, span, loose);
 }
