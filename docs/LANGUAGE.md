@@ -82,7 +82,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|tree] [INTEGRITY sha256:<hex>]`
+- `IMPORT name FROM <uri> [AS file|text|json|tree|markdown] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
+  - `AS markdown` and `SORT BY`: see Markdown and template blocks below.
   - `<uri>` is a context-relative path or an `https://` URL (`http://` only with
     `--allow-http`). Other schemes fail with `E_PROTOCOL`.
   - Default kind: `tree` for a local directory, otherwise `file`.
@@ -107,7 +108,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     new file's path.
   - **Directory source:** its *contents* are placed under `<dest>`. A trailing
     slash on either side makes no difference.
-- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest>`
+- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]`
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
   - Templates use `${NAME}` for ARG/LET, `${name}` for a text import, and
@@ -148,6 +149,47 @@ These pin down what the draft above leaves open. Tests cover each rule.
   The CLI's `--out` picks the host destination and `--format` / `--base-url`
   override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
+
+### Markdown and template blocks (see `examples/blog/`)
+- `IMPORT posts FROM ./posts AS markdown` reads every `.md`/`.markdown` file in
+  a directory (other files are ignored) as a **list of documents**, in path
+  order; a single file gives **one document**. A document is its frontmatter
+  fields plus:
+  - `slug`: the file name without the extension and without a leading
+    `YYYY-MM-DD-`, unless the frontmatter sets `slug` (letters, digits, `.`,
+    `_`, `~`, `-` only, `E_VALIDATION` otherwise)
+  - `date`: that leading `YYYY-MM-DD`, unless the frontmatter sets `date`
+  - `path`, `content` (the body as HTML) and `excerpt` (plain text of the
+    first paragraph, about 200 characters), which frontmatter cannot override
+- Frontmatter is a YAML subset between `---` lines: `key: value` scalars
+  (quoted or plain strings, numbers, `true`/`false`, `null`), inline `[a, b]`
+  and block `- a` lists. Dates stay strings. Anything else (nested maps,
+  multi-line strings) fails with `E_FRONTMATTER` at its line.
+- Markdown is a dependency-free subset: ATX/setext headings, paragraphs, hard
+  breaks, fenced and indented code, blockquotes, nested lists, thematic
+  breaks, emphasis, strong, `~~del~~`, code spans, links, images and
+  autolinks. Not supported: tables, footnotes, reference links, task lists.
+  **Raw HTML is always escaped**, and links or images with schemes other than
+  `http`, `https`, `mailto`, relative or `#` lose their URL.
+- `SORT BY key [ASC|DESC]` (markdown directories only) orders documents by a
+  field: numbers numerically, everything else as strings, so ISO dates sort
+  correctly. Documents without the field come last; ties keep path order.
+- `RENDER … TO <dest> FOR item IN list` renders the template once per element
+  of an imported list (markdown documents or a JSON array). The destination
+  may use `${item}` / `${item.key}`; every resulting path is normalized like any
+  destination, and two elements writing one path fail with `E_CONFLICT`.
+  The template sees `item` plus every ARG, LET and IMPORT.
+- Templates support blocks (in addition to `${name}` and `${name.key}`):
+  - `${#each list as item}…${else}…${/each}` repeats for each element; the
+    `${else}` part renders for an empty list. A missing key such as
+    `${#each post.tags as t}` on a post without tags counts as empty.
+  - `${#if value}…${else}…${/if}` and `${#if !value}`: missing, `null`,
+    `false`, `''`, `0` and empty lists are false.
+  - `${value|raw}` inserts a value without escaping, for `${post.content|raw}`
+    under `--escape=html`. Every other value is still escaped.
+  - A block tag alone on its line removes that whole line from the output.
+  - Unbalanced blocks, a second `${else}` or an unknown `|filter` fail with
+    `E_TEMPLATE` at the tag.
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that

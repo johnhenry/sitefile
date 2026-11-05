@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${post.title} · ${SITE_TITLE}</title>
+  ${#if post.description}
+  <meta name="description" content="${post.description}">
+  ${/if}
+  <link rel="stylesheet" href="/style.css">
+  <link rel="alternate" type="application/atom+xml" title="${SITE_TITLE}" href="/feed.xml">
+</head>
+<body>
+  <header><a class="site" href="/">${SITE_TITLE}</a></header>
+  <main>
+    <article>
+      <h1>${post.title}</h1>
+      <p class="meta"><time datetime="${post.date}">${post.date}</time></p>
+      ${post.content|raw}
+      ${#if post.tags}
+      <ul class="tags">
+        ${#each post.tags as tag}
+        <li>${tag}</li>
+        ${/each}
+      </ul>
+      ${/if}
+    </article>
+    <nav>
+      <h2>All posts</h2>
+      <ul>
+        ${#each posts as other}
+        <li><a href="/posts/${other.slug}/">${other.title}</a></li>
+        ${/each}
+      </ul>
+    </nav>
+  </main>
+</body>
+</html>

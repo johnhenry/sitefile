@@ -41,9 +41,21 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   for (const ins of instructions) {
     if (sawExport) throw new SitefileError('E_VALIDATION', 'EXPORT must be the last instruction', ins.span);
 
+    // RENDER … FOR item IN list: the destination may use ${item} / ${item.key}.
+    const loopVar = ins.kind === 'RENDER' ? ins.each?.as : undefined;
     for (const op of operandsOf(ins)) {
+      const isDest = ins.kind === 'RENDER' && op === ins.dest;
       for (const part of op.parts) {
-        if (part.kind !== 'var' || vars.has(part.name)) continue;
+        if (part.kind !== 'var') continue;
+        if (isDest && part.name === loopVar) continue;
+        if (part.path.length > 0) {
+          throw new SitefileError(
+            'E_SYNTAX',
+            `dotted access \${${[part.name, ...part.path].join('.')}} is only allowed in RENDER templates and for a RENDER … FOR loop variable`,
+            part.span,
+          );
+        }
+        if (vars.has(part.name)) continue;
         const hint = imports.has(part.name) ? ` ('${part.name}' is an import; use it in a RENDER template)` : '';
         throw new SitefileError('E_UNDEFINED', `undefined variable \${${part.name}}: declare it with ARG or LET on an earlier line${hint}`, part.span);
       }
@@ -88,6 +100,9 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (vars.has(ins.name) || imports.has(ins.name) || declaredStages.has(ins.name)) {
           throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
         }
+        if (ins.sort && ins.as !== 'markdown') {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY only applies to AS markdown imports`, ins.sort.span);
+        }
         imports.add(ins.name);
         break;
       case 'COPY':
@@ -95,6 +110,15 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         break;
       case 'RENDER':
         checkSource(ins.template, imports, ins.from, finishedStages, allStages);
+        if (ins.each) {
+          const { as, list, span } = ins.each;
+          if (!imports.has(list)) {
+            throw new SitefileError('E_UNDEFINED', `FOR ${as} IN ${list}: '${list}' is not an IMPORT declared on an earlier line`, span);
+          }
+          if (vars.has(as) || imports.has(as) || allStages.has(as)) {
+            throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
+          }
+        }
         break;
       case 'EXPORT':
         sawExport = true;

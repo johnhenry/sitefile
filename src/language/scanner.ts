@@ -336,11 +336,17 @@ export class Cursor {
     const nameStart = this.i;
     while (IDENT_CHAR.test(t[this.i] ?? '')) this.i++;
     const name = t.slice(nameStart, this.i);
-    if (t[this.i] === '.') {
-      throw this.error('E_SYNTAX', `dotted access \${${name}.…} is only allowed inside RENDER templates`, at);
+    // Dotted paths are parsed here; the validator allows them only for a RENDER … FOR loop variable.
+    const path: string[] = [];
+    while (t[this.i] === '.') {
+      this.i++;
+      const segStart = this.i;
+      while (/[A-Za-z0-9_-]/.test(t[this.i] ?? '')) this.i++;
+      if (this.i === segStart) throw this.error('E_SYNTAX', `expected a key after '.' in \${${name}…}`, at);
+      path.push(t.slice(segStart, this.i));
     }
     if (t[this.i] !== '}') throw this.error('E_SYNTAX', 'unterminated ${...}: expected }', at);
     this.i++;
-    return { kind: 'var', name, path: [], span: this.spanAt(at) };
+    return { kind: 'var', name, path, span: this.spanAt(at) };
   }
 }

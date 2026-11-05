@@ -20,6 +20,7 @@ export interface ImportSpec {
   readonly location: { readonly kind: 'local'; readonly path: string } | { readonly kind: 'remote'; readonly url: string };
   readonly as?: ImportKind;
   readonly integrity?: string;
+  readonly sort?: { readonly key: string; readonly descending: boolean };
   readonly span: SourceSpan;
 }
 
@@ -35,7 +36,10 @@ export type Operation =
   | {
       readonly kind: 'RENDER';
       readonly template: SourceRef;
+      /** Normalized destination; '' when `each` is set (computed per element). */
       readonly dest: string;
+      /** `FOR as IN list`: render once per element; `dest` is interpolated per element. */
+      readonly each?: { readonly as: string; readonly list: string; readonly dest: Operand };
       readonly escape: EscapeMode;
       readonly overwrite: boolean;
       readonly span: SourceSpan;
@@ -120,6 +124,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           location: classifyUri(uri, ins.uri.span),
           ...(ins.as ? { as: ins.as } : {}),
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
+          ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
           span: ins.span,
         };
         if (spec.location.kind === 'local' && spec.integrity) {
@@ -144,6 +149,18 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         break;
       }
       case 'RENDER': {
+        if (ins.each) {
+          operations().push({
+            kind: 'RENDER',
+            template: sourceRef(ins.template, vars, imports, ins.from),
+            dest: '',
+            each: { as: ins.each.as, list: ins.each.list, dest: ins.dest },
+            escape: ins.escape,
+            overwrite: ins.overwrite,
+            span: ins.span,
+          });
+          break;
+        }
         const raw = evaluateOperand(ins.dest, vars);
         const dest = normalizeVirtual(raw, ins.dest.span, 'RENDER destination');
         if (dest.trailingSlash) {

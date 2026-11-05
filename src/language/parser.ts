@@ -17,7 +17,7 @@ import {
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
-const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree'];
+const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown'];
 const NOT_YET = new Set(['REMOVE', 'TRANSFORM', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
@@ -81,13 +81,14 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   const uri = c.operand('URI');
   let as: ImportKind | undefined;
   let integrity: string | undefined;
+  let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
   while (!c.atEnd()) {
     const at = c.span;
     if (c.keyword('AS')) {
       if (as !== undefined) throw c.error('E_SYNTAX', 'AS given twice', at);
       const kindAt = c.span;
       const k = c.ident('import kind').toLowerCase();
-      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json or tree)`, kindAt);
+      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, tree or markdown)`, kindAt);
       as = k as ImportKind;
     } else if (c.keyword('INTEGRITY')) {
       if (integrity !== undefined) throw c.error('E_SYNTAX', 'INTEGRITY given twice', at);
@@ -97,8 +98,14 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
         throw c.error('E_SYNTAX', 'INTEGRITY must be sha256:<64 lowercase hex digits>', op.span);
       }
       integrity = text;
+    } else if (c.keyword('SORT')) {
+      if (sort !== undefined) throw c.error('E_SYNTAX', 'SORT given twice', at);
+      c.expectKeyword('BY');
+      const key = c.ident('sort key');
+      const descending = c.keyword('DESC') ? true : (c.keyword('ASC'), false);
+      sort = { key, descending, span: at };
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS or INTEGRITY)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY or SORT BY)`, at);
     }
   }
   return {
@@ -108,6 +115,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     uri,
     ...(as !== undefined && { as }),
     ...(integrity !== undefined && { integrity }),
+    ...(sort !== undefined && { sort }),
   };
 }
 
@@ -162,10 +170,26 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
   const template = c.inline() ?? c.operand('template');
   c.expectKeyword('TO');
   const dest = c.operand('destination');
+  let each: { as: string; list: string; span: SourceSpan } | undefined;
+  const forAt = c.span;
+  if (c.keyword('FOR')) {
+    const as = c.ident('loop variable');
+    c.expectKeyword('IN');
+    each = { as, list: c.ident('list name'), span: forAt };
+  }
   c.expectEnd();
   c.expectInlineUsed('the RENDER template');
   noInlineFrom(c, template, flags);
-  return { kind: 'RENDER', span, template, dest, escape: escape as EscapeMode, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
+  return {
+    kind: 'RENDER',
+    span,
+    template,
+    dest,
+    escape: escape as EscapeMode,
+    overwrite: flags.has('overwrite'),
+    ...stageRef(c, flags),
+    ...(each && { each }),
+  };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {

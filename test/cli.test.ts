@@ -129,3 +129,22 @@ test('examples/inline builds a site whose template and CSS live in the Sitefile'
   assert.match(html, /<code>\$\{TITLE\}<\/code>/);
   assert.match(await readFile(path.join(ctx, 'dist', 'style.css'), 'utf8'), /\$\{not substituted\}/);
 });
+
+test('examples/blog builds an index, one page per post and an Atom feed', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'blog');
+  await cp(path.join(root, 'examples', 'blog'), ctx, { recursive: true });
+  const r = await sitefile(['build', ctx]);
+  assert.equal(r.code, 0, r.stderr);
+  const out = path.join(ctx, 'dist');
+  const index = await readFile(path.join(out, 'index.html'), 'utf8');
+  // newest first
+  assert.ok(index.indexOf('Markdown that stays safe') < index.indexOf('Hello, world'));
+  const post = await readFile(path.join(out, 'posts', 'markdown-that-stays-safe', 'index.html'), 'utf8');
+  assert.match(post, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(post, /href="javascript:/i);
+  assert.match(post, /<li>security<\/li>/);
+  const feed = await readFile(path.join(out, 'feed.xml'), 'utf8');
+  assert.match(feed, /<updated>2026-03-01T00:00:00Z<\/updated>/);
+  assert.equal((feed.match(/<entry>/g) ?? []).length, 3);
+});
