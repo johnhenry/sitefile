@@ -117,3 +117,15 @@ test('examples/multistage builds from a local stage and COPY --from', async () =
   assert.equal(await readFile(path.join(ctx, 'dist', 'raw-index.html'), 'utf8'), '<h1>Home</h1>\n');
   assert.match(await readFile(path.join(ctx, 'dist', 'about.html'), 'utf8'), /<title>Staged<\/title>/);
 });
+
+test('examples/inline builds a site whose template and CSS live in the Sitefile', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'inline');
+  await cp(path.join(root, 'examples', 'inline'), ctx, { recursive: true });
+  const r = await sitefile(['build', ctx, '--build-arg', 'TITLE=A & B']);
+  assert.equal(r.code, 0, r.stderr);
+  const html = await readFile(path.join(ctx, 'dist', 'index.html'), 'utf8');
+  assert.match(html, /<title>A &amp; B<\/title>/);
+  assert.match(html, /<code>\$\{TITLE\}<\/code>/);
+  assert.match(await readFile(path.join(ctx, 'dist', 'style.css'), 'utf8'), /\$\{not substituted\}/);
+});

@@ -1,10 +1,12 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { stageNames, type EscapeMode, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { isInline, stageNames, type EscapeMode, type InlineBody, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
 /** Where a COPY/RENDER reads from. */
 export type SourceRef =
+  /** Content written in the Sitefile itself (heredoc); `bodyLine` is its first Sitefile line. */
+  | { readonly kind: 'inline'; readonly text: string; readonly delimiter: string; readonly bodyLine: number; readonly span: SourceSpan }
   /** `path` is a normalized virtual path inside an earlier stage's final tree (`--from=name`). */
   | { readonly kind: 'stage'; readonly name: string; readonly path: string; readonly span: SourceSpan }
   | { readonly kind: 'local'; readonly path: string; readonly span: SourceSpan }
@@ -123,6 +125,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       }
       case 'COPY': {
         const dest = normalizeVirtual(evaluateOperand(ins.dest, vars), ins.dest.span, 'COPY destination');
+        if (isInline(ins.source) && dest.trailingSlash) {
+          throw new SitefileError('E_PATH', `COPY of an inline body needs a file destination, not a directory`, ins.dest.span);
+        }
         operations().push({
           kind: 'COPY',
           source: sourceRef(ins.source, vars, imports, ins.from),
@@ -189,11 +194,12 @@ function stageBase(op: Operand, vars: ReadonlyMap<string, Scalar>, earlier: read
 }
 
 function sourceRef(
-  op: Operand,
+  op: Operand | InlineBody,
   vars: ReadonlyMap<string, Scalar>,
   imports: ReadonlyMap<string, ImportSpec>,
   from?: StageRef,
 ): SourceRef {
+  if (isInline(op)) return { kind: 'inline', text: op.text, delimiter: op.delimiter, bodyLine: op.bodyLine, span: op.span };
   const raw = evaluateOperand(op, vars);
   if (from) return { kind: 'stage', name: from.name, path: normalizeVirtual(raw, op.span, `path inside stage '${from.name}'`).path, span: op.span };
   if (URL_RE.test(raw)) {

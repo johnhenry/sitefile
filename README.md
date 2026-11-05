@@ -35,9 +35,17 @@ no runtime dependencies.
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`) |
-| `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, or with `--from` an absolute path in an earlier stage |
-| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest>` | yes; `${NAME}`, `${json.path}` |
+| `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
+| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest>` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}` |
 | `EXPORT <path> [AS directory]` | yes |
+
+Templates can also live in the Sitefile itself (see `examples/inline/`):
+
+```
+RENDER --escape=html <<HTML TO /index.html
+<h1>${TITLE}</h1>
+HTML
+```
 
 ## CLI
 

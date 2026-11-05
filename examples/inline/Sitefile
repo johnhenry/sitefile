@@ -1,0 +1,30 @@
+# A whole site in one file: the page template and the stylesheet are written
+# inline with heredocs, so there are no other files to keep next to it.
+FROM scratch
+ARG TITLE = "Inline"
+LET TAGLINE = "Everything on this page lives in the Sitefile."
+
+# RENDER: the body is a template, exactly like a template file.
+RENDER --escape=html <<HTML TO /index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${TITLE}</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <h1>${TITLE}</h1>
+  <p>${TAGLINE}</p>
+  <p><code>$${TITLE}</code> is replaced at build time.</p>
+</body>
+</html>
+HTML
+
+# COPY: the body is written byte for byte (no ${} substitution).
+COPY <<CSS /style.css
+body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }
+h1::after { content: " ${not substituted}"; color: #999; }
+CSS
+
+EXPORT /

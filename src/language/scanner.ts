@@ -1,5 +1,5 @@
 import { SitefileError, type ErrorCode, type SourceSpan } from '../errors.js';
-import type { Operand, TemplatePart } from './ast.js';
+import type { InlineBody, Operand, TemplatePart } from './ast.js';
 
 export interface Pos {
   readonly line: number;
@@ -12,6 +12,41 @@ export interface LogicalLine {
   readonly positions: readonly Pos[];
   /** Position just after the last character (for "expected X" errors at end of line). */
   readonly end: Pos;
+  /** A heredoc body that followed this line (COPY and RENDER only). */
+  readonly heredoc?: Heredoc;
+}
+
+export interface Heredoc {
+  /** Index in `text` of the `<<` marker. */
+  readonly at: number;
+  /** Length of the marker text (`<<-NAME`). */
+  readonly length: number;
+  readonly delimiter: string;
+  readonly text: string;
+  readonly bodyLine: number;
+}
+
+/** Instructions whose source may be a heredoc. */
+const HEREDOC_INSTRUCTIONS = new Set(['COPY', 'RENDER']);
+
+/** `<<NAME` / `<<-NAME` markers that start a word outside quotes. */
+function heredocMarkers(text: string): Array<{ at: number; length: number; strip: boolean; delimiter: string }> {
+  const out: Array<{ at: number; length: number; strip: boolean; delimiter: string }> = [];
+  let quote: string | undefined;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === '\\' && quote === '"') i++;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '\\') { i++; continue; }
+    if (ch !== '<' || (i > 0 && !WS.test(text[i - 1]!))) continue;
+    const m = /^<<(-?)([A-Za-z_][A-Za-z0-9_]*)(?=\s|$)/.exec(text.slice(i));
+    if (m) out.push({ at: i, length: m[0].length, strip: m[1] === '-', delimiter: m[2]! });
+  }
+  return out;
 }
 
 const IDENT_START = /[A-Za-z_]/;
@@ -29,15 +64,37 @@ function trailingBackslashes(s: string): number {
  * char `#`) are skipped, also inside continuations. A line ending in an odd number
  * of `\` continues; pieces are trimmed at the join and joined with one space.
  */
-export function logicalLines(source: string): LogicalLine[] {
+export function logicalLines(source: string, file = 'Sitefile'): LogicalLine[] {
   const out: LogicalLine[] = [];
   let text = '';
   let positions: Pos[] = [];
   let end: Pos = { line: 1, column: 1 };
   let continuing = false;
+  // Set while reading a heredoc body: lines are taken verbatim until the delimiter.
+  let heredocBody: { marker: { at: number; length: number; strip: boolean; delimiter: string }; lines: string[]; start: number; owner: LogicalLine } | undefined;
 
-  source.split(/\r?\n/).forEach((raw, index) => {
+  const physical = source.split(/\r?\n/);
+  // A trailing newline is not an extra (empty) line of a heredoc body.
+  if (physical.length > 1 && physical[physical.length - 1] === '') physical.pop();
+  physical.forEach((raw, index) => {
     const line = index + 1;
+    if (heredocBody) {
+      const candidate = heredocBody.marker.strip ? raw.replace(/^\t+/, '') : raw;
+      if (candidate === heredocBody.marker.delimiter) {
+        const heredoc: Heredoc = {
+          at: heredocBody.marker.at,
+          length: heredocBody.marker.length,
+          delimiter: heredocBody.marker.delimiter,
+          text: heredocBody.lines.map((l) => l + '\n').join(''),
+          bodyLine: heredocBody.start,
+        };
+        out[out.length - 1] = { ...heredocBody.owner, heredoc };
+        heredocBody = undefined;
+      } else {
+        heredocBody.lines.push(candidate);
+      }
+      return;
+    }
     const trimmed = raw.trim();
     if (trimmed === '' || trimmed.startsWith('#')) return;
     const cont = trailingBackslashes(raw) % 2 === 1;
@@ -58,12 +115,26 @@ export function logicalLines(source: string): LogicalLine[] {
     if (cont) {
       continuing = true;
     } else {
-      out.push({ text, positions, end });
+      const logical: LogicalLine = { text, positions, end };
+      out.push(logical);
+      const keyword = /^\S+/.exec(text)?.[0]?.toUpperCase() ?? '';
+      if (HEREDOC_INSTRUCTIONS.has(keyword)) {
+        const markers = heredocMarkers(text);
+        if (markers.length > 1) {
+          const p = positions[markers[1]!.at]!;
+          throw new SitefileError('E_SYNTAX', 'only one inline (<<) body is allowed per instruction', { file, ...p });
+        }
+        if (markers[0]) heredocBody = { marker: markers[0], lines: [], start: line + 1, owner: logical };
+      }
       text = '';
       positions = [];
       continuing = false;
     }
   });
+  if (heredocBody) {
+    const p = heredocBody.owner.positions[heredocBody.marker.at]!;
+    throw new SitefileError('E_SYNTAX', `inline body is missing its closing '${heredocBody.marker.delimiter}' line`, { file, ...p });
+  }
   if (continuing && text.trim() !== '') out.push({ text, positions, end });
   return out;
 }
@@ -71,6 +142,7 @@ export function logicalLines(source: string): LogicalLine[] {
 /** Reads tokens from one logical line. All methods skip leading whitespace. */
 export class Cursor {
   private i = 0;
+  private inlineUsed = false;
   private readonly text: string;
 
   constructor(
@@ -171,6 +243,25 @@ export class Cursor {
     if (this.atEnd()) return;
     const at = this.i;
     throw this.error('E_SYNTAX', `unexpected '${this.word()}'`, at);
+  }
+
+  /** Consume this line's heredoc marker if it is the next word. */
+  inline(): InlineBody | undefined {
+    this.skipWs();
+    const h = this.line.heredoc;
+    if (!h || h.at !== this.i) return undefined;
+    const span = this.spanAt(this.i);
+    this.i += h.length;
+    this.inlineUsed = true;
+    return { kind: 'inline', delimiter: h.delimiter, text: h.text, span, bodyLine: h.bodyLine };
+  }
+
+  /** Fail if the line has a heredoc that was not used as the source. */
+  expectInlineUsed(where: string): void {
+    const h = this.line.heredoc;
+    if (h && !this.inlineUsed) {
+      throw this.error('E_SYNTAX', `an inline <<${h.delimiter} body can only be ${where}`, h.at);
+    }
   }
 
   /** Read a bare, "double-quoted" or 'single-quoted' operand. */
