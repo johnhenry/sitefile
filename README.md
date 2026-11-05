@@ -106,7 +106,7 @@ sitefile serve -d --name site -p 8080 hello:1      # serve it, in the background
 sitefile servers; sitefile server logs site; sitefile server stop site; sitefile server rm site
 ```
 
-`run` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,
+`serve` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,
 correct MIME types and no directory listings. `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
 same OCI image without the store; it contains files only and is not runnable by itself. See
 [docs/CLI.md](docs/CLI.md).
