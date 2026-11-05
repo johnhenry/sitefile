@@ -8,10 +8,9 @@ use crate::resources::bundle_data::bundle_value;
 use crate::resources::types::{ArchiveLimits, Provenance, Resource, ValueFormat};
 use crate::resources::wbn_reader::read_web_bundle;
 
-// TODO(port): switch these to `crate::yaml::parse_yaml`, `crate::csv::parse_csv_records`
-// and `crate::documents::markdown_document` once those modules are ported (they
-// are stubs on this branch). The shims keep the same signatures.
-use shims::{markdown_document, parse_csv_records, parse_yaml};
+use crate::csv::parse_csv_records;
+use crate::documents::markdown_document;
+use crate::yaml::parse_yaml;
 
 #[derive(Debug, Clone, Default)]
 pub struct BytesInfo {
@@ -82,24 +81,6 @@ pub fn verify_integrity(bytes: &[u8], expected: &str, uri: &str, span: Option<&S
         ));
     }
     Ok(())
-}
-
-/// TODO(port): temporary stand-ins until `crate::yaml`, `crate::csv` and
-/// `crate::documents` are ported. They fail with E_UNSUPPORTED instead of
-/// guessing at the formats.
-mod shims {
-    use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-    use serde_json::Value;
-
-    pub fn parse_yaml(_text: &str, file: &str) -> Result<Value> {
-        Err(SitefileError::plain(E_UNSUPPORTED, format!("{file}: YAML is not yet supported by the Rust port")))
-    }
-    pub fn parse_csv_records(_text: &str, file: &str) -> Result<Value> {
-        Err(SitefileError::plain(E_UNSUPPORTED, format!("{file}: CSV is not yet supported by the Rust port")))
-    }
-    pub fn markdown_document(_bytes: &[u8], _path: &str, label: &str, span: Option<&SourceSpan>) -> Result<Value> {
-        Err(SitefileError::new(E_UNSUPPORTED, format!("'{label}': Markdown documents are not yet supported by the Rust port"), span.cloned()))
-    }
 }
 
 #[cfg(test)]

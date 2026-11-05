@@ -49,7 +49,18 @@ pub fn js_number(n: f64) -> String {
     // ECMAScript Number::toString: plain decimal for 1e-6 <= |n| < 1e21.
     if (1e-6..1e21).contains(&abs) {
         if n.fract() == 0.0 {
-            return format!("{}", n as i128);
+            if abs < 9_007_199_254_740_992.0 {
+                return format!("{}", n as i64);
+            }
+            // Beyond 2^53 JS prints the shortest round-trip digits, padded with zeros.
+            let e = format!("{abs:e}");
+            let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
+            let digits: String = mant.chars().filter(|c| *c != '.').collect();
+            let exp: usize = exp.parse().unwrap_or(0);
+            let mut out = String::from(if n < 0.0 { "-" } else { "" });
+            out.push_str(&digits);
+            out.push_str(&"0".repeat((exp + 1).saturating_sub(digits.len())));
+            return out;
         }
         return format!("{n}");
     }
@@ -252,6 +263,10 @@ mod tests {
         assert_eq!(js_number(0.1), "0.1");
         assert_eq!(js_number(1e21), "1e+21");
         assert_eq!(js_number(123456789.0), "123456789");
+        // Reference values from node: String(n) beyond 2^53.
+        assert_eq!(js_number(12345678901234567890.0), "12345678901234567000");
+        assert_eq!(js_number(2f64.powi(53)), "9007199254740992");
+        assert_eq!(js_number(2f64.powi(60)), "1152921504606847000");
     }
     #[test]
     fn json_stringify_like_js() {

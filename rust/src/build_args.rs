@@ -7,16 +7,7 @@ use crate::values::js_string_of;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
-// TODO(port): `crate::yaml::parse_yaml` is still a stub; switch this import to
-// `use crate::yaml::parse_yaml;` and delete `yaml_shim` once yaml.rs lands.
-use self::yaml_shim::parse_yaml;
-mod yaml_shim {
-    use crate::error::{ErrorCode::E_UNSUPPORTED, Result, SitefileError};
-    /// Temporary stand-in with the expected signature of `crate::yaml::parse_yaml`.
-    pub fn parse_yaml(_text: &str, file: &str) -> Result<serde_json::Value> {
-        Err(SitefileError::plain(E_UNSUPPORTED, format!("{file}: YAML is not available yet in this build")))
-    }
-}
+use crate::yaml::parse_yaml;
 
 /// Build-arg values by name, in JavaScript object key order: integer-like keys
 /// first (ascending), then the rest in insertion order. Setting an existing name
