@@ -1,0 +1,8 @@
+STAGE one
+COPY ./src/a.txt /one.txt
+FROM one AS two
+COPY ./src/a.txt /two.txt
+STAGE three FROM two
+FROM scratch
+COPY --from=three / /
+EXPORT /

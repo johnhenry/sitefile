@@ -1,0 +1,5 @@
+STAGE build
+COPY ./src/a.txt /out/a.txt
+STAGE site
+COPY --from=build /out/ /site/
+EXPORT /

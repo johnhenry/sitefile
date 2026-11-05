@@ -1,0 +1,4 @@
+ARG S = later
+STAGE x FROM ${S}
+STAGE later
+EXPORT /

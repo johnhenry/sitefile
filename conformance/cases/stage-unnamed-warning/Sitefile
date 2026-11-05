@@ -1,0 +1,6 @@
+STAGE a
+COPY ./src/a.txt /a.txt
+FROM scratch
+COPY ./src/a.txt /b.txt
+FROM a
+EXPORT /

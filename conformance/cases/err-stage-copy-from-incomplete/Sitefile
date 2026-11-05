@@ -1,0 +1,3 @@
+STAGE a
+COPY --from=a /x /y
+EXPORT /

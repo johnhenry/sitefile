@@ -149,6 +149,14 @@ pub fn validate(instructions: Vec<Instruction>, file: &str) -> Result<Program> {
     Ok(Program { file: file.to_string(), instructions })
 }
 
+/// How an undefined-base error names the instruction: `FROM` or `STAGE <name> FROM`.
+pub fn from_lead(stage_kw: bool, alias: Option<&str>) -> String {
+    match (stage_kw, alias) {
+        (true, Some(a)) => format!("STAGE {a} FROM"),
+        _ => "FROM".to_string(),
+    }
+}
+
 /// Returns the instructions with the implicit `FROM scratch` inserted when the file has no FROM before its first non-ARG instruction.
 fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
     let implicit_at = input.iter().position(|i| !matches!(i, Instruction::Arg { .. }));
@@ -156,7 +164,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
     let mut instructions = input;
     if let Some(at) = implicit {
         let span = instructions[at].span().clone();
-        instructions.insert(at, Instruction::From { span, base: FromBase::Scratch, alias: None });
+        instructions.insert(at, Instruction::From { span, base: FromBase::Scratch, alias: None, stage_kw: false });
     }
     let instructions = &instructions[..];
     let Some(last) = instructions.last() else {
@@ -207,7 +215,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             }
         }
 
-        if let Instruction::From { span, base, alias } = ins {
+        if let Instruction::From { span, base, alias, stage_kw } = ins {
             if let Some(cur) = current_stage {
                 scope.finished_stages.insert(cur);
             }
@@ -217,7 +225,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     if is_ident(&text) && all_stages.contains(&text) && !scope.finished_stages.contains(text.as_str()) {
                         return Err(SitefileError::at(
                             E_UNDEFINED,
-                            format!("FROM {text}: stage '{text}' is not defined before this line (write ./{text} for a local directory)"),
+                            format!("{} {text}: stage '{text}' is not defined before this line (write ./{text} for a local directory)", from_lead(*stage_kw, alias.as_deref())),
                             &op.span,
                         ));
                     }
@@ -463,7 +471,7 @@ mod tests {
         let p = prog("# c\nCOPY a /b\nEXPORT /");
         assert_eq!(kinds("COPY a /b\nEXPORT /"), ["FROM", "COPY", "EXPORT"]);
         match &p.instructions[0] {
-            Instruction::From { span, base: FromBase::Scratch, alias: None } => assert_eq!((span.line, span.column), (2, 1)),
+            Instruction::From { span, base: FromBase::Scratch, alias: None, .. } => assert_eq!((span.line, span.column), (2, 1)),
             _ => panic!("expected implicit FROM scratch"),
         }
         assert_eq!(kinds("EXPORT /"), ["FROM", "EXPORT"]);
@@ -476,6 +484,28 @@ mod tests {
         prog_err("ARG X", E_VALIDATION, 1, 1, "missing EXPORT");
         prog_err("COPY a /b", E_VALIDATION, 1, 1, "missing EXPORT");
         prog_err("COPY ./${X} /b\nEXPORT /", E_UNDEFINED, 1, 8, "${X}");
+    }
+
+    #[test]
+    fn stage_keyword() {
+        let kinds = |src: &str| prog(src).instructions.iter().map(|i| i.keyword()).collect::<Vec<_>>();
+        // STAGE starts a stage: no implicit stage is added (also after ARG), and it mixes with FROM.
+        assert_eq!(kinds("STAGE s\nCOPY a /b\nEXPORT /"), ["FROM", "COPY", "EXPORT"]);
+        assert_eq!(kinds("ARG X = 1\nSTAGE s\nCOPY a /b\nEXPORT /"), ["ARG", "FROM", "COPY", "EXPORT"]);
+        assert_eq!(kinds("FROM scratch AS a\nSTAGE b FROM a\nFROM b AS c\nSTAGE d\nEXPORT /"), ["FROM", "FROM", "FROM", "FROM", "EXPORT"]);
+        // COPY --from a STAGE, and STAGE based on an earlier stage or a local directory.
+        prog(&format!("STAGE a\nCOPY x /x\nSTAGE b FROM a\nSTAGE c FROM ./dir\nSTAGE d\nCOPY --from=a /x /y{TAIL}"));
+        prog_err(&format!("STAGE a\nCOPY --from=a /x /y{TAIL}"), E_UNDEFINED, 2, 6, "not complete");
+        // Same name rules and errors as FROM … AS.
+        prog_err(&format!("STAGE a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "'a' is already defined");
+        prog_err(&format!("FROM scratch AS a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "");
+        prog_err(&format!("ARG a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "");
+        prog_err(&format!("STAGE a\nFROM scratch AS a{TAIL}"), E_DUPLICATE, 2, 1, "");
+        prog_err(&format!("STAGE a FROM a{TAIL}"), E_UNDEFINED, 1, 14, "STAGE a FROM a: stage 'a' is not defined before this line");
+        prog_err(&format!("STAGE a FROM b\nSTAGE b{TAIL}"), E_UNDEFINED, 1, 14, "STAGE a FROM b: stage 'b'");
+        prog_err(&format!("FROM b\nSTAGE b{TAIL}"), E_UNDEFINED, 1, 6, "FROM b: stage 'b'");
+        // a bare word naming no stage is a local directory
+        prog(&format!("STAGE a FROM dir\nSTAGE b FROM ./b{TAIL}"));
     }
 
     #[test]
