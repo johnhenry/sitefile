@@ -33,6 +33,21 @@ for connect-time SSRF checks), wasmtime (WebAssembly plugins). JavaScript
 plugins run in the same Node `--permission` sandbox as the TypeScript version,
 with the same runner, so `node` must be on PATH for them.
 
+## Wasm module cache
+
+Compiling a wasm plugin with Cranelift costs ~55 ms, so the Rust build keeps
+compiled modules in `$SITEFILE_HOME/cache/wasm/<key>.cwasm` (default
+`~/.sitefile/cache/wasm`). The key is a SHA-256 over the wasm bytes, the
+wasmtime version, the target and the codegen settings. Entries are loaded with
+wasmtime's `deserialize_file`, which trusts the file, so the directory is
+created `0700`, entries are written `0600` through a temp file and rename, and a
+directory that is a symlink or group/world-writable is not used. A corrupt or
+stale entry is recompiled and replaced; import and export checks run on every
+load, hits included. Any cache failure (read-only home, etc.) is ignored and
+the build compiles as before. Within one process each plugin is compiled once.
+Set `SITEFILE_NO_WASM_CACHE=1` to turn the disk cache off. The TypeScript
+version has no equivalent (V8 compiles wasm quickly).
+
 ## How parity is checked
 
 - **Conformance** (`node conformance/run.mjs`): builds every example (and zip,
