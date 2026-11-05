@@ -157,6 +157,10 @@ export interface ExportTarget {
   readonly baseUrl?: string;
   /** oci: root directory inside the layer (overrides EXPORT ... AT; default /srv/www). */
   readonly ociRoot?: string;
+  /** Extra OCI config labels. */
+  readonly imageLabels?: Readonly<Record<string, string>>;
+  /** Add org.opencontainers.image.source/revision from the git checkout (opt-in). */
+  readonly gitLabels?: boolean;
   /** oci: `os/arch` metadata (default linux/amd64). */
   readonly platform?: string;
   /** oci: `name:tag` recorded as org.opencontainers.image.ref.name in index.json. */
@@ -190,7 +194,7 @@ export async function buildToDirectory(
       root: options.ociRoot ?? result.plan.exportRoot,
       platform: options.platform,
       epoch: sourceDateEpoch(),
-      ...(await imageMeta(options.contextDir)),
+      ...(await imageMeta(options.contextDir, { git: !!options.gitLabels, ...(options.imageLabels ? { labels: options.imageLabels } : {}) })),
     });
     // A .tar destination gets an OCI archive; anything else a layout directory.
     if (options.outDir.toLowerCase().endsWith('.tar')) {

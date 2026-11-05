@@ -20,14 +20,20 @@ export function validateImageTags(tags: readonly string[]): void {
 export async function storeBuildAsImage(
   result: BuildResult,
   tags: readonly string[],
-  info: { readonly contextDir: string; readonly ociRoot?: string | undefined; readonly platform?: string | undefined },
+  info: {
+    readonly contextDir: string;
+    readonly ociRoot?: string | undefined;
+    readonly platform?: string | undefined;
+    readonly labels?: Readonly<Record<string, string>> | undefined;
+    readonly gitLabels?: boolean | undefined;
+  },
 ): Promise<string> {
   const store = await Store.open();
   const { id } = await store.addImage(result.output, {
     root: info.ociRoot ?? result.plan.exportRoot,
     platform: info.platform,
     epoch: sourceDateEpoch(),
-    ...(await imageMeta(info.contextDir)),
+    ...(await imageMeta(info.contextDir, { git: !!info.gitLabels, ...(info.labels ? { labels: info.labels } : {}) })),
   });
   for (const t of tags) {
     const key = await store.tag(id, parseLocalRef(t));

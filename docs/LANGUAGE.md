@@ -377,9 +377,12 @@ and tar timestamps instead.
   layer descriptor is the sha256 of the gzip. `created` is `SOURCE_DATE_EPOCH`
   or `1970-01-01T00:00:00Z`; `architecture`/`os` default to `amd64`/`linux`
   (`--platform os/arch`; metadata only). Labels: `org.opencontainers.image.title`
-  (the context directory name), `.source` and `.revision` when a repository
-  checkout is found (read from its `.git` directory without running anything;
-  credentials in URLs are dropped), and `dev.sitefile.root`. Build-arg values
+  (the context directory name), `dev.sitefile.root`, any `--label key=value`,
+  and, only with `--git-labels`, `.source` and `.revision` from the repository
+  checkout (read from its `.git` directory without running anything;
+  credentials in URLs are dropped). Git labels are off by default because they
+  change the image ID on every commit even when the files are identical, and
+  finding the checkout reads outside the build context. Build-arg values
   are never written. The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the

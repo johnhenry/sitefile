@@ -6,7 +6,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { sha256 } from '../src/digest.js';
 import { isSitefileError } from '../src/errors.js';
-import { ANN, buildOciImage, canonicalJson, decodeIndex, layoutTree, MEDIA, ociArchive, parseConfig, parseManifest } from '../src/oci.js';
+import { ANN, buildOciImage, canonicalJson, decodeIndex, gitInfo, imageMeta, layoutTree, MEDIA, ociArchive, parseConfig, parseLabels, parseManifest } from '../src/oci.js';
 import { extractArchive } from '../src/resources/archive.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -165,4 +165,33 @@ test('external OCI validators (skopeo, crane, oras, umoci, podman) when installe
     run('podman', ['load', '-i', tarPath]);
   }
   if (ran.length === 0) t.skip('none of skopeo, crane, oras, umoci or a running podman is available');
+});
+
+test('git labels are opt-in; when on, credentials in the remote URL are dropped', async () => {
+  const dir = await tmpDir();
+  await fs.mkdir(path.join(dir, '.git', 'refs', 'heads'), { recursive: true });
+  await fs.writeFile(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  await fs.writeFile(path.join(dir, '.git', 'refs', 'heads', 'main'), 'b'.repeat(40) + '\n');
+  await fs.writeFile(path.join(dir, '.git', 'config'), '[remote "origin"]\n\turl = https://alice:ghp_SECRET@github.com/acme/site.git?x=1\n');
+
+  const off = await imageMeta(dir);
+  assert.equal(off.source, undefined);
+  assert.equal(off.revision, undefined);
+
+  const on = await imageMeta(dir, { git: true });
+  assert.equal(on.revision, 'b'.repeat(40));
+  assert.equal(on.source, 'https://github.com/acme/site.git');
+  assert.doesNotMatch(JSON.stringify(await gitInfo(dir)), /SECRET|alice/);
+});
+
+test('--label adds config labels and validates keys', () => {
+  assert.deepEqual({ ...parseLabels(['org.example.team=web', 'empty=']) }, { 'org.example.team': 'web', empty: '' });
+  for (const bad of ['novalue', '=x', 'has space=x']) {
+    assert.throws(() => parseLabels([bad]), (e: unknown) => isSitefileError(e, 'E_USAGE'), bad);
+  }
+  const tree = Tree.fromFiles([['/index.html', makeFile(new TextEncoder().encode('hi'), 't')]]);
+  const img = buildOciImage(tree, { title: 'demo', labels: { 'org.example.team': 'web', [ANN.title]: 'override' } });
+  const cfg = parseConfig(img.configBytes);
+  assert.equal(cfg.labels['org.example.team'], 'web');
+  assert.equal(cfg.labels[ANN.title], 'override');
 });

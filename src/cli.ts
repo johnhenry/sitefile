@@ -5,6 +5,7 @@ import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { loadBuildArgFile } from './build-args.js';
+import { parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
@@ -32,6 +33,9 @@ Options:
                                Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
+      --label <key=value>      add an OCI image config label (repeatable)
+      --git-labels             add org.opencontainers.image.source/revision from the git checkout
+                               (off by default: they change the image ID on every commit)
       --platform <os/arch>     oci image platform metadata (default linux/amd64)
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
@@ -67,6 +71,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         format: { type: 'string' },
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
+        label: { type: 'string', multiple: true },
+        'git-labels': { type: 'boolean' },
         platform: { type: 'string' },
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
@@ -152,7 +158,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       case 'build': {
         const tags = o.tag ?? [];
         validateImageTags(tags);
-        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], platform: o.platform };
+        const labels = parseLabels(o.label ?? []);
+        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], platform: o.platform, labels, gitLabels: !!o['git-labels'] };
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
           await storeBuildAsImage(await build(options), tags, imageInfo);
@@ -166,6 +173,8 @@ export async function main(argv: readonly string[]): Promise<number> {
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
+          imageLabels: labels,
+          gitLabels: !!o['git-labels'],
           ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';

@@ -51,6 +51,8 @@ export interface OciOptions {
   readonly title?: string | undefined;
   readonly source?: string | undefined;
   readonly revision?: string | undefined;
+  /** Extra config labels (`--label key=value`); they override the defaults above. */
+  readonly labels?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface Descriptor {
@@ -119,6 +121,7 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
   if (options.title) labels[ANN.title] = options.title;
   if (options.source) labels[ANN.source] = options.source;
   if (options.revision) labels[ANN.revision] = options.revision;
+  for (const [k, v] of Object.entries(options.labels ?? {})) labels[k] = v;
   const created = isoOf(options.epoch);
   const configBytes = enc.encode(
     canonicalJson({
@@ -270,10 +273,35 @@ export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, la
   return all.subtree(normalizeVirtual(root).path);
 }
 
-/** Label values for an image built from `contextDir`: title (directory name) plus source/revision when a checkout is found. */
-export async function imageMeta(contextDir: string): Promise<Pick<OciOptions, 'title' | 'source' | 'revision'>> {
-  const info = await gitInfo(contextDir);
-  return { title: path.basename(path.resolve(contextDir)), ...info };
+/**
+ * Label values for an image built from `contextDir`: the title (directory name),
+ * extra `--label`s, and, only with `--git-labels`, source/revision from a git
+ * checkout. Git labels are opt-in because they make the image ID change with
+ * every commit even when the files don't, and because finding the checkout
+ * reads outside the build context.
+ */
+export async function imageMeta(
+  contextDir: string,
+  opts: { readonly git?: boolean; readonly labels?: Readonly<Record<string, string>> } = {},
+): Promise<Pick<OciOptions, 'title' | 'source' | 'revision' | 'labels'>> {
+  const info = opts.git ? await gitInfo(contextDir) : {};
+  return { title: path.basename(path.resolve(contextDir)), ...info, ...(opts.labels ? { labels: opts.labels } : {}) };
+}
+
+const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,254}$/;
+
+/** Parse `--label key=value` flags. */
+export function parseLabels(flags: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const f of flags) {
+    const eq = f.indexOf('=');
+    const key = eq === -1 ? f : f.slice(0, eq);
+    if (eq === -1 || !LABEL_KEY.test(key)) {
+      throw new SitefileError('E_USAGE', `--label expects key=value with a key like org.example.team, got '${f}'`);
+    }
+    out[key] = f.slice(eq + 1);
+  }
+  return out;
 }
 
 /** Best-effort `org.opencontainers.image.{source,revision}` from a git checkout (never runs git; credentials in URLs are dropped). */

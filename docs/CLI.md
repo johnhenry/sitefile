@@ -19,6 +19,8 @@ sitefile inspect  [context] [--json]
 | `--format oci` / `-o x.oci.tar` | write an OCI image: an OCI archive for a `.tar` destination, an OCI layout directory otherwise (`dist.oci.tar` by default) |
 | `--oci-root /path` | directory of the files inside the image layer (default `/srv/www`; overrides `EXPORT ... AT`) |
 | `--platform os/arch` | image platform metadata (default `linux/amd64`) |
+| `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
+| `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
 
 ## Image store
 
