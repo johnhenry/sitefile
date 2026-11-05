@@ -52,6 +52,7 @@ const SCENARIOS = [
   { name: 'export tar.gz: blog 1000', args: build(s('blog-1000'), 'site.tar.gz') },
   { name: 'export wbn: blog 1000', args: build(s('blog-1000'), 'site.wbn', ['--base-url', 'https://bench.example/']) },
   { name: 'export oci: blog 1000', args: build(s('blog-1000'), 'site.oci.tar') },
+  { name: 'export oci, uncompressed layer: blog 1000', args: build(s('blog-1000'), 'site.oci.tar', ['--oci-compression', 'none']) },
 ];
 
 const timeFlag = process.platform === 'darwin' ? '-l' : '-v';

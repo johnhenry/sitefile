@@ -448,28 +448,11 @@ impl<'a> Encoder<'a> {
         self.lit_freq[256] = 1;
         let lf = self.lit_freq;
         let df = self.dist_freq;
-        let mut extra = 0u64;
-        for c in 0..29 {
-            extra += lf[257 + c] as u64 * LENGTH_EXTRA[c] as u64;
-        }
-        for c in 0..30 {
-            extra += df[c] as u64 * DIST_EXTRA[c] as u64;
-        }
-        let mut fixed_bits = 3 + extra;
-        for s in 0..286 {
-            fixed_bits += lf[s] as u64 * self.fixed_lit_len[s] as u64;
-        }
-        for s in 0..30 {
-            fixed_bits += df[s] as u64 * 5;
-        }
+        // Extra bits cost the same in every Huffman variant.
+        let extra = dot(&lf[257..], &LENGTH_EXTRA) + dot(&df, &DIST_EXTRA);
+        let fixed_bits = 3 + extra + dot(&lf, &self.fixed_lit_len) + dot(&df, &self.fixed_dist_len);
         let dynh = dynamic_header(&lf, &df);
-        let mut dyn_bits = 3 + dynh.bits + extra;
-        for s in 0..286 {
-            dyn_bits += lf[s] as u64 * dynh.lit_lens[s] as u64;
-        }
-        for s in 0..30 {
-            dyn_bits += df[s] as u64 * dynh.dist_lens[s] as u64;
-        }
+        let dyn_bits = 3 + dynh.bits + extra + dot(&lf, &dynh.lit_lens) + dot(&df, &dynh.dist_lens);
         let stored_bits = if span <= STORED_MAX {
             let pos = self.out.bit_pos();
             (3 + ((8 - ((pos + 3) % 8)) % 8) + 32 + 8 * span) as u64
@@ -555,6 +538,11 @@ impl<'a> Encoder<'a> {
         }
         out.put(lit_code[256] as u32, lit_len[256] as u32);
     }
+}
+
+/// Total bits: sum of frequency x length over the shorter of the two tables.
+fn dot(freq: &[u32], lens: &[u8]) -> u64 {
+    freq.iter().zip(lens).map(|(&f, &l)| f as u64 * l as u64).sum()
 }
 
 /// Length of the common prefix of two equal-length slices, 8 bytes at a time.
