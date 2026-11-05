@@ -41,5 +41,5 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] `--build-arg-file` (.json, .yaml, .env) and `--build-arg NAME` from the environment (`test/build-args.test.ts`)
 - [x] #22 Custom renderers: `PLUGIN` + `TRANSFORM` in a `--permission` sandbox (`test/plugins.test.ts`, `test/motion-plugin.test.ts`, `examples/motion/`)
 - [x] #23 Local image store (an OCI image layout): `build -t`, `images`, `image inspect|diff|prune`, `tag`, `rmi`, `save`, reference grammar, lock file, digest verification (`test/store.test.ts`)
-- [x] #24 Site servers: `run [-d]`, `ps`, `stop`, `rm`, `logs`, `restart`; `node:http` server with ETag/304, SPA fallback, traversal rejection (`test/server.test.ts`)
+- [x] #24 Site servers: `serve [-d]`, `servers`, `server stop|rm|logs|restart`; `node:http` server with ETag/304, SPA fallback, traversal rejection (`test/server.test.ts`)
 - [x] `EXPORT ... AS oci [AT root]`, `--oci-root`, `--platform`: reproducible single-layer OCI image, archive and layout (`test/oci.test.ts`)

@@ -284,11 +284,11 @@ test('concurrent CLI calls do not corrupt the index', async () => {
 
 test('per-command --help and unknown subcommands', async () => {
   const home = await tmpDir();
-  for (const cmd of [['images'], ['tag'], ['rmi'], ['save'], ['run'], ['ps'], ['stop'], ['rm'], ['logs'], ['restart'], ['image', 'inspect'], ['image', 'prune'], ['image', 'diff']]) {
+  for (const cmd of [['images'], ['tag'], ['rmi'], ['save'], ['serve'], ['servers'], ['server', 'ls'], ['server', 'stop'], ['server', 'rm'], ['server', 'logs'], ['server', 'restart'], ['image', 'inspect'], ['image', 'prune'], ['image', 'diff']]) {
     const r = await runCli(home, [...cmd, '--help']);
     assert.equal(r.code, 0, cmd.join(' '));
     assert.match(r.stdout, /^Usage: sitefile /, cmd.join(' '));
   }
   assert.equal((await runCli(home, ['image', 'bogus'])).code, 2);
-  assert.match((await runCli(home, ['--help'])).stdout, /sitefile run /);
+  assert.match((await runCli(home, ['--help'])).stdout, /sitefile serve /);
 });
