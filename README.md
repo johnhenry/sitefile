@@ -43,6 +43,7 @@ no runtime dependencies.
 ```
 sitefile build [context] [-o dist] [--build-arg K=V] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
+               [--allow-hardlinks]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 ```
@@ -50,6 +51,10 @@ sitefile inspect  [context] [--json]
 ## Safety defaults
 
 - Local reads stay inside the build context (no `..`, absolute paths or symlinks out).
+  Hard-linked files are refused (`E_HARDLINK`) unless `--allow-hardlinks`, since a
+  hard link can alias a file outside the context.
+- A `.sitefileignore` (gitignore-style subset) at the context root excludes files
+  from directory copies; explicitly named files are never ignored.
 - Remote imports are `https:` only, to public addresses only (checked at connect
   time and on every redirect), size- and time-limited, never decompressed or executed.
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.

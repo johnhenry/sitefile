@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, symlink, chmod, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, symlink, link, chmod, realpath } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -214,3 +214,110 @@ test('bytesToResource and verifyIntegrity', () => {
     return true;
   });
 });
+
+// ------------------------------------------------------------ .sitefileignore
+
+const treePaths = async (c: LocalContext): Promise<string[]> => (await c.readTree('', 'test')).tree.entries().map(([p]) => p);
+
+test('.sitefileignore filters directory walks', () =>
+  withTemp(async (ctx) => {
+    await mkdir(join(ctx, 'src/cache'), { recursive: true });
+    await mkdir(join(ctx, 'node_modules/x'), { recursive: true });
+    await writeFile(join(ctx, '.sitefileignore'), '# c\nnode_modules/\n*.log\n/notes.txt\nsrc/cache/\n');
+    await writeFile(join(ctx, 'a.html'), 'a');
+    await writeFile(join(ctx, 'a.log'), 'l');
+    await writeFile(join(ctx, 'notes.txt'), 'n');
+    await writeFile(join(ctx, 'src/notes.txt'), 'n');
+    await writeFile(join(ctx, 'src/b.log'), 'l');
+    await writeFile(join(ctx, 'src/cache/c'), 'c');
+    await writeFile(join(ctx, 'node_modules/x/i.js'), 'i');
+    const c = await LocalContext.open(ctx);
+    assert.deepEqual(await treePaths(c), ['/.sitefileignore', '/a.html', '/src/notes.txt']);
+  }));
+
+test('.sitefileignore cannot re-include a file under an excluded directory', () =>
+  withTemp(async (ctx) => {
+    await mkdir(join(ctx, 'build'));
+    await writeFile(join(ctx, 'build/keep.txt'), 'k');
+    await writeFile(join(ctx, 'ok.txt'), 'o');
+    await writeFile(join(ctx, '.sitefileignore'), 'build/\n!build/keep.txt\n');
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx)), ['/.sitefileignore', '/ok.txt']);
+  }));
+
+test('.sitefileignore negation re-includes within a non-excluded directory', () =>
+  withTemp(async (ctx) => {
+    await writeFile(join(ctx, 'a.md'), 'a');
+    await writeFile(join(ctx, 'keep.md'), 'k');
+    await writeFile(join(ctx, '.sitefileignore'), '*.md\n!keep.md\n');
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx)), ['/.sitefileignore', '/keep.md']);
+  }));
+
+test('.sitefileignore never hides an explicitly named file or directory root', () =>
+  withTemp(async (ctx) => {
+    await mkdir(join(ctx, 'build'));
+    await writeFile(join(ctx, 'build/x.txt'), 'x');
+    await writeFile(join(ctx, 'secret.log'), 's');
+    await writeFile(join(ctx, '.sitefileignore'), 'build/\n*.log\n');
+    const c = await LocalContext.open(ctx);
+    assert.equal(text((await c.readFile('secret.log')).bytes), 's');
+    assert.deepEqual((await c.readTree('build', 'test')).tree.entries().map(([p]) => p), ['/x.txt']);
+  }));
+
+test('.sitefileignore can be disabled and is optional', () =>
+  withTemp(async (ctx) => {
+    await writeFile(join(ctx, 'a.log'), 'l');
+    await writeFile(join(ctx, '.sitefileignore'), '*.log\n');
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx, { sitefileignore: false })), ['/.sitefileignore', '/a.log']);
+    await rm(join(ctx, '.sitefileignore'));
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx)), ['/a.log']);
+  }));
+
+test('.sitefileignore symlinked outside the context is refused', () =>
+  withTemp(async (ctx, outside) => {
+    await writeFile(join(outside, 'rules'), '*.log\n');
+    await symlink(join(outside, 'rules'), join(ctx, '.sitefileignore'));
+    await rejectsWith(LocalContext.open(ctx), 'E_PATH_ESCAPE');
+  }));
+
+test('built-in ignores still apply with .sitefileignore present', () =>
+  withTemp(async (ctx) => {
+    await mkdir(join(ctx, '.git'));
+    await writeFile(join(ctx, '.git/HEAD'), 'ref');
+    await writeFile(join(ctx, '.sitefileignore'), '!.git\n');
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx)), ['/.sitefileignore']);
+  }));
+
+// ------------------------------------------------------------ hard links
+
+test('hard link to a file outside the context is refused (readFile, readTree, symlink to it)', () =>
+  withTemp(async (ctx, outside) => {
+    await link(join(outside, 'secret.txt'), join(ctx, 'innocent.txt'));
+    const c = await LocalContext.open(ctx);
+    await rejectsWith(c.readFile('innocent.txt'), 'E_HARDLINK');
+    await rejectsWith(c.readTree('', 'test'), 'E_HARDLINK');
+    await symlink('innocent.txt', join(ctx, 'alias.txt'));
+    await rejectsWith(c.readFile('alias.txt'), 'E_HARDLINK');
+  }));
+
+test('hard links are allowed with allowHardlinks', () =>
+  withTemp(async (ctx, outside) => {
+    await link(join(outside, 'secret.txt'), join(ctx, 'innocent.txt'));
+    const c = await LocalContext.open(ctx, { allowHardlinks: true });
+    assert.equal(text((await c.readFile('innocent.txt')).bytes), 'secret');
+    assert.deepEqual(await treePaths(c), ['/innocent.txt']);
+  }));
+
+test('hard-linked files excluded by .sitefileignore are not reported', () =>
+  withTemp(async (ctx, outside) => {
+    await link(join(outside, 'secret.txt'), join(ctx, 'innocent.txt'));
+    await writeFile(join(ctx, '.sitefileignore'), 'innocent.txt\n');
+    assert.deepEqual(await treePaths(await LocalContext.open(ctx)), ['/.sitefileignore']);
+  }));
+
+test('regular files and directories are unaffected by the hard link check', () =>
+  withTemp(async (ctx) => {
+    await mkdir(join(ctx, 'd/e'), { recursive: true });
+    await writeFile(join(ctx, 'd/e/f.txt'), 'f');
+    const c = await LocalContext.open(ctx);
+    assert.deepEqual(await treePaths(c), ['/d/e/f.txt']);
+  }));

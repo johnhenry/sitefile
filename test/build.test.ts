@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -258,4 +258,29 @@ test('buildToDirectory writes files and skips its own output when copying the co
   );
   assert.equal(await readFile(path.join(out, 'a.txt'), 'utf8'), 'A');
   assert.ok((await stat(path.join(out, 'Sitefile'))).isFile());
+});
+
+// ------------------------------------------------------------ .sitefileignore and hard links
+
+test('.sitefileignore filters COPY of a directory but not a named file', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch\nCOPY ./ /\nCOPY ./drafts/a.txt /named.txt\nEXPORT /',
+    '.sitefileignore': 'drafts/\n*.tmp\n',
+    'drafts/a.txt': 'A',
+    'x.tmp': 'T',
+    'index.html': 'hi',
+  });
+  assert.deepEqual(
+    result.output.entries().map(([p]) => p),
+    ['/.sitefileignore', '/Sitefile', '/index.html', '/named.txt'],
+  );
+});
+
+test('build refuses a hard link into the context unless allowHardlinks', async () => {
+  const outside = await project({ 'secret.txt': 'S' });
+  const dir = await project({ Sitefile: 'FROM scratch\nCOPY ./ /\nEXPORT /' });
+  await link(path.join(outside, 'secret.txt'), path.join(dir, 'leak.txt'));
+  await rejectsWith(build({ contextDir: dir, lockfile: false }), 'E_HARDLINK');
+  const ok = await build({ contextDir: dir, lockfile: false, allowHardlinks: true });
+  assert.ok(ok.output.entries().some(([p]) => p === '/leak.txt'));
 });

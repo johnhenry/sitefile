@@ -30,7 +30,7 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [ ] #1 `FROM <local tree>` and multi-stage `FROM … AS name` (M2)
 - [ ] #2 `COPY --from=<stage>` (M2)
 - [ ] #3 Remote tree imports (archives, with decompression-ratio limits) (M2)
-- [ ] #4 `.sitefileignore`
+- [x] #4 `.sitefileignore`
 - [x] #5 Export check-then-swap race: parent and destination dev/ino re-validated before and after the swap (`test/exporter.test.ts`)
-- [ ] #6 Hard links to files outside the context
+- [x] #6 Hard links to files outside the context
 - [x] #7 TLS test fixture for `fetchRemote`

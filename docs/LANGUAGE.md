@@ -104,8 +104,38 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - Symlinks are followed only when their real target stays inside the context;
   otherwise `E_PATH_ESCAPE`. Directory symlink cycles are skipped.
 - When copying directories, `.git` and the export directory (if it is inside
-  the context) are skipped.
+  the context) are always skipped.
+- Regular files with more than one hard link are refused with `E_HARDLINK`:
+  `realpath` cannot tell whether a hard link aliases a file outside the
+  context. `--allow-hardlinks` (`allowHardlinks`) permits them; by passing it
+  you assert that every hard-linked file in the context is safe to publish.
+  pnpm hard-links packages from its store into `node_modules`, so a context
+  that includes a pnpm `node_modules` needs either `.sitefileignore` to exclude
+  it (preferred) or `--allow-hardlinks`. The check applies to files that are
+  actually read (explicit sources and the non-ignored files of a directory
+  walk), so ignored hard links never trigger it.
 - File modes are reduced to `0644` or `0755`.
+
+#### `.sitefileignore`
+An optional file at the context root filters directory walks (`COPY ./dir`,
+`IMPORT ./dir`, ...). It is never applied to a source named explicitly
+(`COPY ./drafts/a.txt /a.txt` works even if `drafts/` is listed). Syntax is a
+gitignore subset:
+- Blank lines and `#` comments are skipped; `\#` and `\!` match literal
+  leading characters.
+- `!pattern` re-includes; the last matching rule wins.
+- A trailing `/` matches directories only.
+- A leading `/` or a `/` in the middle anchors the pattern to the context root;
+  otherwise it matches at any depth.
+- `*` and `?` match within one path segment; a `**` segment matches any number
+  of directories. Character classes (`[abc]`) are not supported.
+- As in gitignore, a file cannot be re-included when a parent directory is
+  excluded: excluded directories are not descended into.
+- Rules do not affect `.git` and the export directory, which are always
+  skipped. `.sitefileignore`, `Sitefile` and `Sitefile.lock` are not
+  auto-ignored (explicit is better); add them to the file to keep them out of
+  your output. A `.sitefileignore` that is a symlink must stay inside the
+  context.
 
 ### Remote sources and the lockfile
 - Only `https:` by default. Credentials in URLs are rejected. Every resolved

@@ -25,6 +25,7 @@ export type ErrorCode =
   | 'E_PATH_ESCAPE'
   | 'E_NOT_FOUND'
   | 'E_UNSUPPORTED_FILE'
+  | 'E_HARDLINK'
   // composition
   | 'E_CONFLICT'
   // remote resources
