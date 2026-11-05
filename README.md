@@ -123,7 +123,9 @@ sitefile servers; sitefile server logs site; sitefile server stop site; sitefile
 
 `serve` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,
 correct MIME types and no directory listings. `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
-same OCI image without the store; it contains files only and is not runnable by itself. See
+same OCI image without the store; on its own it contains files only, but `EXPORT / AS oci BASE nginx:alpine
+AT /usr/share/nginx/html` (or `--base`) builds a runnable image on top of a pulled base, and `sitefile push` / `pull`
+move images to and from any OCI registry. See
 [docs/CLI.md](docs/CLI.md).
 
 ## Safety defaults

@@ -22,7 +22,11 @@ import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
-import { buildOciImage, imageMeta, layoutTree, ociArchive } from './oci.js';
+import { buildOciImage, imageMeta, layoutTree, ociArchive, type BaseImage } from './oci.js';
+import { readLayerBlobs, resolveBase } from './base-image.js';
+import type { Credentials } from './registry-auth.js';
+import type { RegistryOptions } from './registry.js';
+import { Store } from './store.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -57,6 +61,16 @@ export interface BuildOptions {
   /** Directory of the TRANSFORM result cache. Omit to disable caching (the CLI sets `$SITEFILE_HOME/cache/transform`). */
   readonly cacheDir?: string;
   readonly onWarning?: (message: string) => void;
+  /** oci: `os/arch` of the image (and of the BASE to pull); default linux/amd64. */
+  readonly platform?: string;
+  /** `--base`: build the oci image on this image, overriding the Sitefile's `AS oci BASE`. */
+  readonly baseImage?: string;
+  /** Do not resolve a BASE (the output will not be an oci image). */
+  readonly skipBase?: boolean;
+  /** Registry transport/auth options for pulling the BASE. */
+  readonly registry?: RegistryOptions & { readonly explicitCredentials?: Credentials };
+  /** The image store used for BASE pulls (default: $SITEFILE_HOME). */
+  readonly store?: Store;
   /** Informational lines (e.g. the path each allowed tool resolved to). */
   readonly onNotice?: (message: string) => void;
 }
@@ -70,6 +84,8 @@ export interface BuildResult {
   readonly resources: ReadonlyMap<string, Resource>;
   readonly warnings: readonly string[];
   readonly lockfileWritten: boolean;
+  /** The resolved BASE image (EXPORT ... AS oci BASE <image> or --base), whose blobs are in the store. */
+  readonly base?: BaseImage;
   /** Allow-listed tools this build resolved. */
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
@@ -191,8 +207,26 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(`EXPORT ${p.exportPath} contains no files`);
 
+  // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
+  // lockfile entry is saved together with the imports'.
+  const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
+  const base = baseRef
+    ? await resolveBase(baseRef, {
+        store: options.store ?? (await Store.open()),
+        platform: options.platform,
+        lock,
+        frozen: !!options.frozenLockfile,
+        update: !!options.updateLock,
+        registry: {
+          ...options.registry,
+          allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork,
+        },
+        warn,
+      })
+    : undefined;
+
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}) };
 }
 
 export interface ExportTarget {
@@ -206,8 +240,6 @@ export interface ExportTarget {
   readonly imageLabels?: Readonly<Record<string, string>>;
   /** Add org.opencontainers.image.source/revision from the git checkout (opt-in). */
   readonly gitLabels?: boolean;
-  /** oci: `os/arch` metadata (default linux/amd64). */
-  readonly platform?: string;
   /** oci: `name:tag` recorded as org.opencontainers.image.ref.name in index.json. */
   readonly ociRefName?: string;
 }
@@ -239,15 +271,18 @@ export async function buildToDirectory(
       root: options.ociRoot ?? result.plan.exportRoot,
       platform: options.platform,
       epoch: sourceDateEpoch(),
+      base: result.base,
       ...(await imageMeta(options.contextDir, { git: !!options.gitLabels, ...(options.imageLabels ? { labels: options.imageLabels } : {}) })),
     });
+    // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
+    const baseBlobs = result.base ? await readLayerBlobs(options.store ?? (await Store.open()), img.baseLayers) : undefined;
     // A .tar destination gets an OCI archive; anything else a layout directory.
     if (options.outDir.toLowerCase().endsWith('.tar')) {
-      const data = ociArchive(img, options.ociRefName, sourceDateEpoch());
+      const data = ociArchive(img, options.ociRefName, sourceDateEpoch(), baseBlobs);
       const written = await exportFile(data, options.outDir, exportOptions);
       return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data), manifestDigest: img.manifestDigest };
     }
-    const written = await exportDirectory(layoutTree(img, options.ociRefName), options.outDir, exportOptions);
+    const written = await exportDirectory(layoutTree(img, options.ociRefName, baseBlobs), options.outDir, exportOptions);
     return { ...result, format, outDir: written.outDir, manifestDigest: img.manifestDigest };
   }
   if (!isArchiveFormat(format)) {

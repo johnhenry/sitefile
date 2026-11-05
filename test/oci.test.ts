@@ -6,7 +6,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { sha256 } from '../src/digest.js';
 import { isSitefileError } from '../src/errors.js';
-import { ANN, buildOciImage, canonicalJson, decodeIndex, gitInfo, imageMeta, layoutTree, MEDIA, ociArchive, parseConfig, parseLabels, parseManifest } from '../src/oci.js';
+import { ANN, buildOciImage, canonicalJson, decodeIndex, exportNameAnnotations, gitInfo, imageMeta, layoutTree, MEDIA, ociArchive, parseConfig, parseLabels, parseManifest } from '../src/oci.js';
 import { extractArchive } from '../src/resources/archive.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -39,7 +39,16 @@ test('an image parses back: index -> manifest -> config and layer digests, diff_
   const layout = layoutTree(img, 'demo:latest');
   assert.equal(new TextDecoder().decode(layout.get('/oci-layout')!.bytes), '{"imageLayoutVersion":"1.0.0"}');
   const [entry] = decodeIndex(layout.get('/index.json')!.bytes);
-  assert.equal(entry!.refName, 'demo:latest');
+  assert.equal(entry!.refName, 'latest');
+  assert.equal(JSON.parse(new TextDecoder().decode(layout.get('/index.json')!.bytes)).manifests[0].annotations['io.containerd.image.name'], 'docker.io/library/demo:latest');
+  for (const [given, full, tag] of [
+    ['blog:1', 'docker.io/library/blog:1', '1'],
+    ['team/blog', 'docker.io/team/blog:latest', 'latest'],
+    ['localhost:5000/blog:2', 'localhost:5000/blog:2', '2'],
+    ['docker.io/library/nginx:alpine', 'docker.io/library/nginx:alpine', 'alpine'],
+  ] as const) {
+    assert.deepEqual(exportNameAnnotations(given), { 'io.containerd.image.name': full, 'org.opencontainers.image.ref.name': tag });
+  }
   const blob = (d: string) => layout.get(`/blobs/sha256/${d.slice(7)}`)!.bytes;
   // every blob is stored under its own digest
   for (const [p, n] of layout.entries()) if (p.startsWith('/blobs/')) assert.equal(`sha256:${p.split('/').pop()}`, n.digest);

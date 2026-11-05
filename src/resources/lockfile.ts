@@ -11,9 +11,16 @@ export interface LockEntry {
   readonly resolved: string;
 }
 
+/** A container image reference (`BASE`) pinned to the digest its tag resolved to. */
+export interface ImageLockEntry {
+  /** `sha256:<hex>` of what the tag pointed at: an image index or a manifest. */
+  readonly digest: string;
+}
+
 interface LockfileJson {
   version: 1;
   resources: Record<string, LockEntry>;
+  images?: Record<string, ImageLockEntry>;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -24,6 +31,8 @@ function isObject(v: unknown): v is Record<string, unknown> {
 export class Lockfile {
   private readonly entries: Map<string, LockEntry>;
   private readonly used = new Set<string>();
+  private readonly images = new Map<string, ImageLockEntry>();
+  private readonly usedImages = new Set<string>();
 
   private constructor(
     readonly path: string,
@@ -67,7 +76,30 @@ export class Lockfile {
       if (typeof resolved !== 'string') throw bad(`entry for ${url} has an invalid "resolved"`);
       entries.set(url, { integrity, size, resolved });
     }
-    return new Lockfile(path, entries, true, text);
+    const lock = new Lockfile(path, entries, true, text);
+    const images = data.images ?? {};
+    if (!isObject(images)) throw bad('"images" must be an object');
+    for (const [ref, raw] of Object.entries(images)) {
+      if (!isObject(raw) || typeof raw.digest !== 'string' || !INTEGRITY_RE.test(raw.digest)) {
+        throw bad(`image entry for ${ref} needs a "digest" (sha256:<64 hex>)`);
+      }
+      lock.images.set(ref, { digest: raw.digest });
+    }
+    return lock;
+  }
+
+  /** The pinned digest for a canonical image reference (`docker.io/library/nginx:alpine`). */
+  getImage(ref: string): ImageLockEntry | undefined {
+    return this.images.get(ref);
+  }
+
+  recordImage(ref: string, entry: ImageLockEntry): void {
+    this.images.set(ref, { digest: entry.digest });
+    this.usedImages.add(ref);
+  }
+
+  markImageUsed(ref: string): void {
+    if (this.images.has(ref)) this.usedImages.add(ref);
   }
 
   get(url: string): LockEntry | undefined {
@@ -93,6 +125,14 @@ export class Lockfile {
       if (e) resources[url] = { integrity: e.integrity, size: e.size, resolved: e.resolved };
     }
     const data: LockfileJson = { version: 1, resources };
+    if (this.usedImages.size > 0) {
+      const images: Record<string, ImageLockEntry> = {};
+      for (const ref of [...this.usedImages].sort()) {
+        const e = this.images.get(ref);
+        if (e) images[ref] = { digest: e.digest };
+      }
+      data.images = images;
+    }
     return JSON.stringify(data, null, 2) + '\n';
   }
 
@@ -103,7 +143,7 @@ export class Lockfile {
    */
   async save(): Promise<boolean> {
     const text = this.serialize();
-    if (!this.existed && this.used.size === 0) return false;
+    if (!this.existed && this.used.size === 0 && this.usedImages.size === 0) return false;
     if (this.existed && text === this.originalText) return false;
     const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
     try {

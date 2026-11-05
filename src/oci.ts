@@ -5,6 +5,7 @@ import { gzipTar, writeTar } from './archive-writers.js';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import { normalizeVirtual } from './paths.js';
+import { parseRef } from './ref.js';
 import { extractArchive } from './resources/archive.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 
@@ -28,7 +29,13 @@ export const MEDIA = {
   config: 'application/vnd.oci.image.config.v1+json',
   layer: 'application/vnd.oci.image.layer.v1.tar+gzip',
   index: 'application/vnd.oci.image.index.v1+json',
+  dockerManifest: 'application/vnd.docker.distribution.manifest.v2+json',
+  dockerList: 'application/vnd.docker.distribution.manifest.list.v2+json',
+  dockerConfig: 'application/vnd.docker.container.image.v1+json',
+  dockerLayer: 'application/vnd.docker.image.rootfs.diff.tar.gzip',
 } as const;
+export const ANN_BASE_NAME = 'org.opencontainers.image.base.name';
+export const ANN_BASE_DIGEST = 'org.opencontainers.image.base.digest';
 export const ANN = {
   refName: 'org.opencontainers.image.ref.name',
   title: 'org.opencontainers.image.title',
@@ -53,6 +60,23 @@ export interface OciOptions {
   readonly revision?: string | undefined;
   /** Extra config labels (`--label key=value`); they override the defaults above. */
   readonly labels?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Build on top of this image (`EXPORT ... AS oci BASE <image>`): its layers come first, its config
+   * (Entrypoint, Cmd, Env, ExposedPorts, WorkingDir, ...) is kept, and the site layer is appended.
+   * The base's blobs must already be in the store (see base-image.ts).
+   */
+  readonly base?: BaseImage | undefined;
+}
+
+/** A resolved base image: one platform manifest, its config and layers. */
+export interface BaseImage {
+  /** Canonical reference as written (`docker.io/library/nginx:alpine`), without any digest. */
+  readonly name: string;
+  /** Digest of the platform manifest the layers come from (recorded in the image). */
+  readonly manifestDigest: string;
+  readonly layers: readonly Descriptor[];
+  /** The base's parsed config JSON. */
+  readonly config: Readonly<Record<string, unknown>>;
 }
 
 export interface Descriptor {
@@ -72,6 +96,8 @@ export interface OciImage {
   /** sha256 of the uncompressed tar. */
   readonly diffId: string;
   readonly root: string;
+  /** Layers below the site layer (from BASE), already normalized to OCI media types. Empty otherwise. */
+  readonly baseLayers: readonly Descriptor[];
 }
 
 /** JSON with sorted keys and no whitespace. */
@@ -117,35 +143,67 @@ export function buildOciImage(tree: Tree, options: OciOptions = {}): OciImage {
   const layerDigest = sha256(layerBytes);
   const size = tree.entries().reduce((n, [, f]) => n + f.bytes.byteLength, 0);
 
-  const labels: Record<string, string> = { [ANN.root]: root };
+  const base = options.base;
+  const baseCfg = base?.config ?? {};
+  const baseInner = (isRecord(baseCfg.config) ? baseCfg.config : {}) as Record<string, unknown>;
+  const labels: Record<string, string> = {};
+  if (isRecord(baseInner.Labels)) for (const [k, v] of Object.entries(baseInner.Labels)) if (typeof v === 'string') labels[k] = v;
+  labels[ANN.root] = root;
   if (options.title) labels[ANN.title] = options.title;
   if (options.source) labels[ANN.source] = options.source;
   if (options.revision) labels[ANN.revision] = options.revision;
+  if (base) {
+    labels[ANN_BASE_NAME] = base.name;
+    labels[ANN_BASE_DIGEST] = base.manifestDigest;
+  }
   for (const [k, v] of Object.entries(options.labels ?? {})) labels[k] = v;
-  const created = isoOf(options.epoch);
+  // created: SOURCE_DATE_EPOCH when set; else the base's own timestamp (deterministic given the base
+  // digest) or the fixed epoch when there is no base.
+  const baseCreated = typeof baseCfg.created === 'string' ? baseCfg.created : undefined;
+  const created = options.epoch === undefined && baseCreated !== undefined ? baseCreated : isoOf(options.epoch);
+  const baseRootfs = isRecord(baseCfg.rootfs) ? baseCfg.rootfs : {};
+  const baseDiffIds = Array.isArray(baseRootfs.diff_ids) ? (baseRootfs.diff_ids as unknown[]) : [];
+  const baseHistory = Array.isArray(baseCfg.history) ? (baseCfg.history as unknown[]) : [];
+  const baseLayers = (base?.layers ?? []).map(normalizeLayer);
+  if (base && baseDiffIds.length !== baseLayers.length) throw new SitefileError('E_STORE', `base image ${base.name}: config diff_ids do not match its layers`);
   const configBytes = enc.encode(
     canonicalJson({
-      architecture: arch,
-      os,
+      ...baseCfg,
+      architecture: base && typeof baseCfg.architecture === 'string' ? baseCfg.architecture : arch,
+      os: base && typeof baseCfg.os === 'string' ? baseCfg.os : os,
       created,
-      config: { Labels: labels },
-      rootfs: { type: 'layers', diff_ids: [diffId] },
-      history: [{ created, created_by: 'sitefile', comment: 'static site files', author: 'sitefile' }],
+      config: { ...baseInner, Labels: labels },
+      rootfs: { type: 'layers', diff_ids: [...baseDiffIds, diffId] },
+      history: [...baseHistory, { created: isoOf(options.epoch), created_by: 'sitefile', comment: 'static site files', author: 'sitefile' }],
     }),
   );
   const configDigest = sha256(configBytes);
   const annotations: Record<string, string> = { [ANN.files]: String(tree.size), [ANN.size]: String(size) };
   if (options.title) annotations[ANN.title] = options.title;
+  if (base) {
+    annotations[ANN_BASE_NAME] = base.name;
+    annotations[ANN_BASE_DIGEST] = base.manifestDigest;
+  }
   const manifestBytes = enc.encode(
     canonicalJson({
       schemaVersion: 2,
       mediaType: MEDIA.manifest,
       config: { mediaType: MEDIA.config, digest: configDigest, size: configBytes.byteLength },
-      layers: [{ mediaType: MEDIA.layer, digest: layerDigest, size: layerBytes.byteLength }],
+      layers: [...baseLayers, { mediaType: MEDIA.layer, digest: layerDigest, size: layerBytes.byteLength }],
       annotations,
     }),
   );
-  return { manifestBytes, manifestDigest: sha256(manifestBytes), configBytes, configDigest, layerBytes, layerDigest, diffId, root };
+  return { manifestBytes, manifestDigest: sha256(manifestBytes), configBytes, configDigest, layerBytes, layerDigest, diffId, root, baseLayers };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Docker layer media types become their OCI equivalents (same bytes, same digest). */
+function normalizeLayer(d: Descriptor): Descriptor {
+  const mediaType = d.mediaType === MEDIA.dockerLayer ? MEDIA.layer : d.mediaType;
+  return { mediaType, digest: d.digest, size: d.size };
 }
 
 export interface IndexEntry {
@@ -154,6 +212,24 @@ export interface IndexEntry {
   readonly refName?: string | undefined;
   /** When the image was first stored locally (store bookkeeping; not part of any digest). */
   readonly stored?: string | undefined;
+  /** Extra annotations written verbatim (exports only). */
+  readonly extra?: Readonly<Record<string, string>> | undefined;
+}
+
+export const ANN_CONTAINERD_NAME = 'io.containerd.image.name';
+
+/**
+ * Index annotations for an exported image named `refName` (`blog:1`, `localhost:5000/blog:1`), in the
+ * convention `docker save` uses so Docker's containerd store finds the image by name after `docker load`:
+ * `io.containerd.image.name` is the full normalized reference and `org.opencontainers.image.ref.name` the tag.
+ * Single-component names live in docker.io/library/, other names without a registry host in docker.io/.
+ */
+export function exportNameAnnotations(refName: string): Record<string, string> {
+  const r = parseRef(refName);
+  const tag = r.tag ?? 'latest';
+  const full = r.registry !== undefined ? r.name : r.name.includes('/') ? r.name : `library/${r.name}`;
+  const host = r.registry ?? 'docker.io';
+  return { [ANN_CONTAINERD_NAME]: `${host}/${full}:${tag}`, [ANN.refName]: tag };
 }
 
 export function encodeIndex(entries: readonly IndexEntry[]): Uint8Array {
@@ -161,6 +237,7 @@ export function encodeIndex(entries: readonly IndexEntry[]): Uint8Array {
     const annotations: Record<string, string> = {};
     if (e.refName) annotations[ANN.refName] = e.refName;
     if (e.stored) annotations[ANN.stored] = e.stored;
+    Object.assign(annotations, e.extra);
     return { mediaType: MEDIA.manifest, digest: e.digest, size: e.size, ...(Object.keys(annotations).length ? { annotations } : {}) };
   });
   return enc.encode(canonicalJson({ schemaVersion: 2, mediaType: MEDIA.index, manifests }));
@@ -188,20 +265,31 @@ export function blobPathOf(digest: string): string {
 }
 
 /** A standalone OCI image layout holding one image, as a Tree (write it as a directory or tar it). */
-export function layoutTree(img: Pick<OciImage, 'manifestBytes' | 'manifestDigest' | 'configBytes' | 'configDigest' | 'layerBytes' | 'layerDigest'>, refName?: string): Tree {
+export function layoutTree(
+  img: Pick<OciImage, 'manifestBytes' | 'manifestDigest' | 'configBytes' | 'configDigest' | 'layerBytes' | 'layerDigest'>,
+  refName?: string,
+  /** Blobs of the layers below the site layer (digest -> bytes), for images built on a BASE. */
+  baseBlobs: ReadonlyMap<string, Uint8Array> = new Map(),
+): Tree {
   const files: Array<[string, FileNode]> = [
     ['/oci-layout', makeFile(OCI_LAYOUT_BYTES, 'oci')],
-    ['/index.json', makeFile(encodeIndex([{ digest: img.manifestDigest, size: img.manifestBytes.byteLength, refName }]), 'oci')],
+    ['/index.json', makeFile(encodeIndex([{ digest: img.manifestDigest, size: img.manifestBytes.byteLength, ...(refName ? { extra: exportNameAnnotations(refName) } : {}) }]), 'oci')],
     [blobPathOf(img.manifestDigest), makeFile(img.manifestBytes, 'oci')],
     [blobPathOf(img.configDigest), makeFile(img.configBytes, 'oci')],
     [blobPathOf(img.layerDigest), makeFile(img.layerBytes, 'oci')],
+    ...[...baseBlobs].map(([d, b]) => [blobPathOf(d), makeFile(b, 'oci')] as [string, FileNode]),
   ];
   return Tree.fromFiles(files);
 }
 
 /** Deterministic tar of {@link layoutTree}: an "OCI archive" (`.oci.tar`). */
-export function ociArchive(img: Parameters<typeof layoutTree>[0], refName: string | undefined, epoch: number | undefined): Uint8Array {
-  return writeTar(layoutTree(img, refName), { epoch: epoch ?? 0 });
+export function ociArchive(
+  img: Parameters<typeof layoutTree>[0],
+  refName: string | undefined,
+  epoch: number | undefined,
+  baseBlobs?: ReadonlyMap<string, Uint8Array>,
+): Uint8Array {
+  return writeTar(layoutTree(img, refName, baseBlobs), { epoch: epoch ?? 0 });
 }
 
 export interface ParsedManifest {
@@ -220,7 +308,10 @@ function desc(d: unknown, what: string): Descriptor {
 
 export function parseManifest(bytes: Uint8Array): ParsedManifest {
   const m = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
-  if (m.schemaVersion !== 2 || m.mediaType !== MEDIA.manifest || !Array.isArray(m.layers)) throw new Error('not an OCI image manifest');
+  // OCI manifests may omit mediaType; Docker v2 manifests (pulled images) are read as-is.
+  if (m.schemaVersion !== 2 || (m.mediaType !== undefined && m.mediaType !== MEDIA.manifest && m.mediaType !== MEDIA.dockerManifest) || !Array.isArray(m.layers)) {
+    throw new Error('not an image manifest (OCI or Docker v2)');
+  }
   const annotations: Record<string, string> = {};
   for (const [k, v] of Object.entries((m.annotations ?? {}) as Record<string, unknown>)) if (typeof v === 'string') annotations[k] = v;
   return { config: desc(m.config, 'config'), layers: m.layers.map((l) => desc(l, 'layer')), annotations };
@@ -250,13 +341,23 @@ export function parseConfig(bytes: Uint8Array): ParsedConfig {
 }
 
 /**
- * Decode a single-layer image's files, verifying the layer digest and diff_id.
+ * Index of the layer holding the site's files: the only layer, or the last one of an image that
+ * carries the `dev.sitefile.root` label (built with BASE). -1 when the image is not a Sitefile image.
+ */
+export function siteLayerIndex(m: ParsedManifest, cfg: ParsedConfig): number {
+  if (m.layers.length === 1) return 0;
+  return m.layers.length > 1 && cfg.labels[ANN.root] !== undefined ? m.layers.length - 1 : -1;
+}
+
+/**
+ * Decode a site image's files, verifying the layer digest and diff_id.
  * `layerBytes` are the compressed blob bytes. Returns the tree under the image's root.
  */
 export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, layerBytes: Uint8Array, origin: string): Promise<Tree> {
-  const layer = m.layers[0];
-  if (m.layers.length !== 1 || !layer || layer.mediaType !== MEDIA.layer) {
-    throw new SitefileError('E_STORE', `${origin}: only single-layer tar+gzip images are supported`);
+  const idx = siteLayerIndex(m, cfg);
+  const layer = m.layers[idx];
+  if (idx < 0 || !layer || layer.mediaType !== MEDIA.layer) {
+    throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (only single-layer tar+gzip images, or images built with BASE, hold site files)`);
   }
   if (sha256(layerBytes) !== layer.digest || layerBytes.byteLength !== layer.size) {
     throw new SitefileError('E_STORE', `${origin}: layer blob does not match its digest`);
@@ -267,7 +368,7 @@ export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, la
   } catch (e) {
     throw new SitefileError('E_STORE', `${origin}: layer is not valid gzip`, undefined, { cause: e });
   }
-  if (sha256(tar) !== cfg.diffIds[0]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
+  if (sha256(tar) !== cfg.diffIds[idx]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
   const root = cfg.labels[ANN.root] ?? '/';
   const all = await extractArchive(tar, origin, { maxEntries: 1_000_000, maxTotalBytes: 8 * 2 ** 30, maxRatio: Number.MAX_SAFE_INTEGER });
   return all.subtree(normalizeVirtual(root).path);
