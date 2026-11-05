@@ -1,0 +1,40 @@
+[package]
+name = "sitefile"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Docker-inspired static artifact builder (Rust port of the TypeScript reference implementation)"
+license = "MIT"
+publish = false
+
+[lib]
+name = "sitefile"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sitefile"
+path = "src/main.rs"
+
+# Dependency rationale (AGENTS.md asks for one): the TypeScript version leans on
+# Node's standard library (zlib, crypto, http, https, worker WebAssembly). Rust's
+# std has none of those, so these crates stand in for them:
+#   serde/serde_json  JSON data, plugin and OCI documents (preserve_order keeps
+#                     JS object key order, which output can depend on)
+#   sha2, base64      digests and plugin payloads
+#   flate2            gzip/deflate (zip, tar.gz, OCI layers)
+#   ureq              blocking HTTPS client with a pluggable resolver, so the
+#                     SSRF address check happens at connect time
+#   wasmtime          WebAssembly plugins (fuel-limited, no imports)
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
