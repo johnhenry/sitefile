@@ -61,9 +61,10 @@ with the same runner, so `node` must be on PATH for them.
   *contents*, configs and every uncompressed format are identical.
 - **Extra CAs.** Both CLIs trust the PEM file named by `NODE_EXTRA_CA_CERTS`
   (Node reads it at startup; the Rust CLI reads the same variable for imports
-  and registries, and ignores an unreadable file with Node's warning). When it
-  (or `FetchPolicy.ca`) is set, the Rust roots are the system CA bundle plus
-  the extra CAs rather than its built-in webpki roots (#50).
+  and registries, and ignores an unreadable file with Node's warning). As in
+  Node (default store plus extra), it and `FetchPolicy.ca` are added on top of
+  the default roots, which for Rust are the Mozilla roots of webpki-roots
+  rather than Node's bundled copy.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in
