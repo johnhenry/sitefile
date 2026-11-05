@@ -27,7 +27,7 @@ export interface Heredoc {
 }
 
 /** Instructions whose source may be a heredoc. */
-const HEREDOC_INSTRUCTIONS = new Set(['COPY', 'RENDER']);
+const HEREDOC_INSTRUCTIONS = new Set(['COPY', 'RENDER', 'TRANSFORM']);
 
 /** `<<NAME` / `<<-NAME` markers that start a word outside quotes. */
 function heredocMarkers(text: string): Array<{ at: number; length: number; strip: boolean; delimiter: string }> {

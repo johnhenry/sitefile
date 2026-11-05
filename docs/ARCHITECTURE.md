@@ -40,6 +40,7 @@ URI resolution returns one of these, with provenance.
 - Symlink policy explicit; avoid following links outside context.
 - Atomic export and safe destination replacement.
 - No arbitrary shell execution in MVP.
+- Renderer plugins (`PLUGIN`/`TRANSFORM`) are user-declared local modules run in a separate Node process under `--permission` (own-folder reads only; no writes, processes, network or environment). This is a seat belt for trusted code, not a sandbox for hostile code; see docs/PLUGINS.md.
 
 ## Execution
 Parse -> validate -> resolve imports -> plan -> execute operations -> export.

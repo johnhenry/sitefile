@@ -48,6 +48,7 @@ export type ErrorCode =
   | 'E_TEMPLATE'
   | 'E_FRONTMATTER'
   | 'E_DATA'
+  | 'E_PLUGIN'
   // export
   | 'E_EXPORT'
   | 'E_EXPORT_UNSAFE'

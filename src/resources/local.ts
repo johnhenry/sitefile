@@ -106,6 +106,13 @@ export class LocalContext {
   }
 
   /** Resolve a context-relative path to its real path and stats, enforcing the sandbox. */
+  /** A context file's real path and bytes, with the usual sandbox, symlink and hard-link rules. */
+  async realFile(rel: string, span?: SourceSpan): Promise<{ real: string; bytes: Uint8Array }> {
+    const { real } = await this.resolve(rel, span);
+    const f = await this.readFile(rel, span);
+    return { real, bytes: f.bytes };
+  }
+
   private async resolve(rel: string, span?: SourceSpan, linkName?: string): Promise<{ real: string; st: Stats }> {
     const abs = rel === '' ? this.root : join(this.root, ...rel.split('/'));
     let real: string;
