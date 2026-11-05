@@ -22,7 +22,10 @@ export type EscapeMode = 'none' | 'html';
 export interface FromInstruction {
   readonly kind: 'FROM';
   readonly span: SourceSpan;
-  /** `scratch` keyword, or an operand naming a tree (not supported until M2). */
+  /**
+   * `scratch` keyword, or an operand: an earlier stage name or a context-relative
+   * directory (the planner decides, see docs/LANGUAGE.md).
+   */
   readonly base: 'scratch' | Operand;
   readonly alias?: string;
 }
@@ -55,11 +58,18 @@ export interface ImportInstruction {
   readonly integrity?: string;
 }
 
+/** `--from=<stage>`: read the source from an earlier stage's final tree. */
+export interface StageRef {
+  readonly name: string;
+  readonly span: SourceSpan;
+}
+
 export interface CopyInstruction {
   readonly kind: 'COPY';
   readonly span: SourceSpan;
   readonly source: Operand;
   readonly dest: Operand;
+  readonly from?: StageRef;
   /** `--overwrite`: replace files that differ instead of failing. */
   readonly overwrite: boolean;
 }
@@ -69,6 +79,7 @@ export interface RenderInstruction {
   readonly span: SourceSpan;
   readonly template: Operand;
   readonly dest: Operand;
+  readonly from?: StageRef;
   /** `--escape=html|none`, default none. */
   readonly escape: EscapeMode;
   readonly overwrite: boolean;

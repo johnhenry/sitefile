@@ -5,7 +5,7 @@ import { sha256 } from './digest.js';
 import type { Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type SourceRef } from './planner.js';
+import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath } from './render.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
@@ -38,7 +38,7 @@ export interface BuildOptions {
 
 export interface BuildResult {
   readonly plan: Plan;
-  /** The whole stage tree. */
+  /** The final stage's whole tree. */
   readonly tree: Tree;
   /** The exported subtree. */
   readonly output: Tree;
@@ -112,8 +112,14 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, resolved[i]!]));
 
+  const stageTrees = new Map<string, Tree>();
+  const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn };
   let tree = Tree.empty;
-  for (const op of p.operations) tree = await execute(op, tree, { local, resources, vars: p.vars, label, warn });
+  for (const stage of p.stages) {
+    tree = await startStage(stage, execEnv);
+    for (const op of stage.operations) tree = await execute(op, tree, execEnv);
+    if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+  }
 
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
@@ -203,9 +209,33 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
 interface ExecEnv {
   readonly local: LocalContext;
   readonly resources: ReadonlyMap<string, Resource>;
+  /** Final trees of the stages finished so far, by name. */
+  readonly stages: ReadonlyMap<string, Tree>;
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly label: string;
   readonly warn: (m: string) => void;
+}
+
+/** The tree a stage starts from. */
+async function startStage(stage: Stage, env: ExecEnv): Promise<Tree> {
+  const base = stage.base;
+  switch (base.kind) {
+    case 'scratch':
+      return Tree.empty;
+    case 'stage':
+      return env.stages.get(base.name) ?? fail(base.name, stage.span);
+    case 'local': {
+      const display = base.path === '' ? './' : './' + base.path;
+      if ((await env.local.stat(base.path, stage.span)) !== 'directory') {
+        throw new SitefileError('E_TYPE', `FROM '${display}' is a file; FROM needs a directory`, stage.span);
+      }
+      return (await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span)).tree;
+    }
+  }
+}
+
+function fail(name: string, span: SourceSpan): never {
+  throw new SitefileError('E_UNDEFINED', `unknown stage '${name}'`, span);
 }
 
 type Source =
@@ -245,6 +275,15 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
     }
     const f = await env.local.readFile(ref.path, ref.span);
     return { kind: 'file', bytes: f.bytes, mode: f.mode, basename: f.basename, label };
+  }
+
+  if (ref.kind === 'stage') {
+    const tree = env.stages.get(ref.name) ?? fail(ref.name, ref.span);
+    const label = `--from=${ref.name} ${ref.path}`;
+    const node = tree.get(ref.path);
+    if (node) return { kind: 'file', bytes: node.bytes, mode: node.mode, basename: basenameVirtual(ref.path), label };
+    if (tree.isDirectory(ref.path)) return { kind: 'tree', tree: tree.subtree(ref.path), label };
+    throw new SitefileError('E_NOT_FOUND', `'${ref.path}' does not exist in stage '${ref.name}'`, ref.span);
   }
 
   const label = ref.path === '/' ? `${ref.name}:` : `${ref.name}:${ref.path}`;
