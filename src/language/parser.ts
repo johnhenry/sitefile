@@ -18,7 +18,7 @@ import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
 const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'];
-const NOT_YET = new Set(['REMOVE', 'TRANSFORM', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
+const NOT_YET = new Set(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
 export function parseSitefile(source: string, file = 'Sitefile'): Instruction[] {
@@ -43,6 +43,10 @@ function parseInstruction(c: Cursor): Instruction {
       return parseRender(c, span);
     case 'EXPORT':
       return parseExport(c, span);
+    case 'PLUGIN':
+      return parsePlugin(c, span);
+    case 'TRANSFORM':
+      return parseTransform(c, span);
     case 'RUN':
       throw c.error('E_UNSUPPORTED', 'RUN is not supported: Sitefile never runs shell commands', span);
   }
@@ -190,6 +194,86 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
     ...stageRef(c, flags),
     ...(each && { each }),
   };
+}
+
+function parsePlugin(c: Cursor, span: SourceSpan): Instruction {
+  const name = c.ident('plugin name');
+  c.expectKeyword('FROM');
+  const uri = c.operand('plugin path');
+  let integrity: string | undefined;
+  const at = c.span;
+  if (c.keyword('INTEGRITY')) {
+    const op = c.operand('integrity digest');
+    const text = literalText(op);
+    if (text === undefined || !INTEGRITY_RE.test(text)) {
+      throw c.error('E_SYNTAX', 'INTEGRITY must be sha256:<64 lowercase hex digits>', op.span);
+    }
+    integrity = text;
+  } else if (!c.atEnd()) {
+    throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected INTEGRITY)`, at);
+  }
+  c.expectEnd();
+  return { kind: 'PLUGIN', span, name, uri, ...(integrity !== undefined && { integrity }) };
+}
+
+function parseTransform(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
+  // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
+  const source = c.keyword('WITH') ? undefined : (c.inline() ?? c.operand('source'));
+  if (source !== undefined) c.expectKeyword('WITH');
+  const pluginSpan = c.span;
+  const plugin = c.ident('plugin name');
+  c.expectKeyword('TO');
+  const dest = c.operand('destination');
+  const options: Array<{ key: string; value: Operand; span: SourceSpan }> = [];
+  let each: { as: string; list: string; span: SourceSpan } | undefined;
+  let sawOptions = false;
+  while (!c.atEnd()) {
+    const at = c.span;
+    if (c.keyword('OPTIONS')) {
+      if (sawOptions) throw c.error('E_SYNTAX', 'OPTIONS given twice', at);
+      sawOptions = true;
+      // key=value pairs until FOR or the end of the line.
+      while (!c.atEnd()) {
+        const keyAt = c.span;
+        if (c.keyword('FOR')) {
+          each = parseFor(c, keyAt);
+          break;
+        }
+        const key = c.ident('option name', '=');
+        if (!c.eat('=')) throw c.error('E_SYNTAX', `expected ${key}=value`, keyAt);
+        if (options.some((o) => o.key === key)) throw c.error('E_SYNTAX', `option '${key}' given twice`, keyAt);
+        options.push({ key, value: c.operand(`value of ${key}`), span: keyAt });
+      }
+    } else if (c.keyword('FOR')) {
+      if (each) throw c.error('E_SYNTAX', 'FOR given twice', at);
+      each = parseFor(c, at);
+    } else {
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected OPTIONS or FOR)`, at);
+    }
+  }
+  c.expectEnd();
+  c.expectInlineUsed('the TRANSFORM source');
+  if (source !== undefined) noInlineFrom(c, source, flags);
+  if (source === undefined && flags.has('from')) throw c.error('E_SYNTAX', '--from needs a source path', flags.get('from')!.span);
+  return {
+    kind: 'TRANSFORM',
+    span,
+    ...(source !== undefined && { source }),
+    ...stageRef(c, flags),
+    plugin,
+    pluginSpan,
+    dest,
+    options,
+    ...(each && { each }),
+    overwrite: flags.has('overwrite'),
+  };
+}
+
+function parseFor(c: Cursor, span: SourceSpan): { as: string; list: string; span: SourceSpan } {
+  const as = c.ident('loop variable');
+  c.expectKeyword('IN');
+  return { as, list: c.ident('list name'), span };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {

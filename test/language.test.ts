@@ -272,7 +272,7 @@ test('EXPORT forms', () => {
 
 test('RUN and future instructions are unsupported; others unknown', () => {
   parseErr('RUN npm build', 'E_UNSUPPORTED', 1, 1, /never runs shell commands/);
-  for (const kw of ['REMOVE', 'TRANSFORM', 'GENERATE', 'ASSERT', 'META', 'exec']) {
+  for (const kw of ['REMOVE', 'GENERATE', 'ASSERT', 'META', 'exec']) {
     parseErr(`  ${kw} x`, 'E_UNSUPPORTED', 1, 3, /not supported yet/);
   }
   parseErr('\nWORKDIR /x', 'E_UNKNOWN_INSTRUCTION', 2, 1, /WORKDIR/);

@@ -10,7 +10,8 @@ Instructions:
 - `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>]` (CLI specifies destination)
-- Future: REMOVE, TRANSFORM, GENERATE, ASSERT, META, EXEC, OCI output.
+- `PLUGIN` and `TRANSFORM` (custom renderers): see Plugins below.
+- Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
 
@@ -234,6 +235,22 @@ line and column.
 - `SORT BY` applies to any list import (markdown, json, yaml, csv); the value
   must be a list of objects. Numbers **and numeric strings** (such as CSV
   cells) compare numerically.
+
+### Plugins: PLUGIN and TRANSFORM (see `docs/PLUGINS.md`, `examples/motion/`)
+- `PLUGIN name FROM ./plugins/x.mjs [INTEGRITY sha256:…]` declares a renderer:
+  a local `.mjs` module in its own folder (not the context root). URLs fail
+  with `E_PROTOCOL`. Plugin names share the ARG/LET/IMPORT/stage namespace.
+- `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH name TO <dest>
+  [OPTIONS key=value …] [FOR item IN list]` sends the source (a file, an
+  inline body, or a value import) and the options to the plugin and writes
+  what it returns: one file at `<dest>`, or several under `<dest>/`. Without a
+  source, `FOR` is required and the plugin gets just the element. `<dest>` and
+  option values may use `${item.key}`.
+- Plugins run in a separate Node process with `--permission`: read access to
+  their own folder only; no writes, processes, workers, network or
+  environment; a per-call time limit (`--plugin-timeout`). Failures are
+  `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
+  pin plugins with `INTEGRITY`.
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that

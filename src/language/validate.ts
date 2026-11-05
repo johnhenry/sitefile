@@ -21,6 +21,12 @@ function operandsOf(ins: Instruction): Operand[] {
       return isInline(ins.source) ? [ins.dest] : [ins.source, ins.dest];
     case 'RENDER':
       return isInline(ins.template) ? [ins.dest] : [ins.template, ins.dest];
+    case 'PLUGIN':
+      return [ins.uri];
+    case 'TRANSFORM': {
+      const ops: Operand[] = ins.source && !isInline(ins.source) ? [ins.source] : [];
+      return [...ops, ins.dest, ...ins.options.map((o) => o.value)];
+    }
     case 'EXPORT':
       return [ins.path];
   }
@@ -38,6 +44,9 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   const declaredStages = new Set<string>();
   const finishedStages = new Set<string>();
   let currentStage: string | undefined;
+  const plugins = new Set<string>();
+  /** One namespace for ARG/LET, IMPORT, stage and PLUGIN names. */
+  const taken = (name: string): boolean => vars.has(name) || imports.has(name) || declaredStages.has(name) || plugins.has(name);
   let sawFrom = false;
   let sawExport = false;
 
@@ -45,9 +54,12 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
     if (sawExport) throw new SitefileError('E_VALIDATION', 'EXPORT must be the last instruction', ins.span);
 
     // RENDER … FOR item IN list: the destination may use ${item} / ${item.key}.
-    const loopVar = ins.kind === 'RENDER' ? ins.each?.as : undefined;
+    // RENDER/TRANSFORM … FOR item IN list: the destination (and TRANSFORM options) may use ${item.key}.
+    const loopVar = ins.kind === 'RENDER' || ins.kind === 'TRANSFORM' ? ins.each?.as : undefined;
     for (const op of operandsOf(ins)) {
-      const isDest = ins.kind === 'RENDER' && op === ins.dest;
+      const isDest =
+        (ins.kind === 'RENDER' && op === ins.dest) ||
+        (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op)));
       for (const part of op.parts) {
         if (part.kind !== 'var') continue;
         if (isDest && part.name === loopVar) continue;
@@ -78,7 +90,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         }
       }
       if (ins.alias !== undefined) {
-        if (vars.has(ins.alias) || imports.has(ins.alias) || declaredStages.has(ins.alias)) {
+        if (taken(ins.alias)) {
           throw new SitefileError('E_DUPLICATE', `'${ins.alias}' is already defined`, ins.span);
         }
         declaredStages.add(ins.alias);
@@ -94,13 +106,13 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
     switch (ins.kind) {
       case 'ARG':
       case 'LET':
-        if (vars.has(ins.name) || imports.has(ins.name) || declaredStages.has(ins.name)) {
+        if (taken(ins.name)) {
           throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
         }
         vars.add(ins.name);
         break;
       case 'IMPORT':
-        if (vars.has(ins.name) || imports.has(ins.name) || declaredStages.has(ins.name)) {
+        if (taken(ins.name)) {
           throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
         }
         if (ins.sort && !SORTABLE.has(ins.as ?? '')) {
@@ -118,9 +130,29 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
           if (!imports.has(list)) {
             throw new SitefileError('E_UNDEFINED', `FOR ${as} IN ${list}: '${list}' is not an IMPORT declared on an earlier line`, span);
           }
-          if (vars.has(as) || imports.has(as) || allStages.has(as)) {
+          if (taken(as) || allStages.has(as)) {
             throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
           }
+        }
+        break;
+      case 'PLUGIN':
+        if (taken(ins.name)) throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
+        plugins.add(ins.name);
+        break;
+      case 'TRANSFORM':
+        if (!plugins.has(ins.plugin)) {
+          throw new SitefileError('E_UNDEFINED', `TRANSFORM … WITH ${ins.plugin}: no PLUGIN ${ins.plugin} is declared on an earlier line`, ins.pluginSpan);
+        }
+        if (ins.source) checkSource(ins.source, imports, ins.from, finishedStages, allStages);
+        else if (!ins.each) {
+          throw new SitefileError('E_VALIDATION', 'TRANSFORM needs a source, or FOR item IN list to transform each element', ins.span);
+        }
+        if (ins.each) {
+          const { as, list, span } = ins.each;
+          if (!imports.has(list)) {
+            throw new SitefileError('E_UNDEFINED', `FOR ${as} IN ${list}: '${list}' is not an IMPORT declared on an earlier line`, span);
+          }
+          if (taken(as)) throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
         }
         break;
       case 'EXPORT':

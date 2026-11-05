@@ -37,6 +37,8 @@ no runtime dependencies.
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
+| `PLUGIN name FROM ./plugins/x.mjs [INTEGRITY sha256:…]` | yes; a custom renderer, run sandboxed (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
+| `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -62,6 +64,14 @@ IMPORT site FROM ./site.yaml AS yaml                 # ${site.nav.0.title}
 IMPORT team FROM ./team.csv AS csv SORT BY joined    # FOR person IN team
 IMPORT bundle FROM ./vendor/hello.wbn AS wbn         # ${#each bundle.entries as e}
 IMPORT hello FROM ./vendor/hello.wbn AS tree         # COPY hello:/ /hello/
+```
+
+Custom renderers are plugins that run in a sandboxed Node process (see `examples/motion/`):
+
+```
+PLUGIN motion FROM ./plugins/motion.mjs
+TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter
+TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
 ```
 
 ## CLI
@@ -133,6 +143,7 @@ uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-forma
 
 - [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — syntax and the exact semantics chosen for v0.1
+- [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)
 - [AGENTS.md](AGENTS.md) — rules for coding agents working on this repo

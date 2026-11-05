@@ -131,6 +131,40 @@ export function parseExportFormat(name: string): ExportFormat | undefined {
   return (EXPORT_FORMATS as readonly string[]).includes(n) ? (n as ExportFormat) : undefined;
 }
 
+/** `PLUGIN name FROM ./plugins/x.mjs [INTEGRITY sha256:…]`: declare a renderer. */
+export interface PluginInstruction {
+  readonly kind: 'PLUGIN';
+  readonly span: SourceSpan;
+  readonly name: string;
+  readonly uri: Operand;
+  readonly integrity?: string;
+}
+
+/** One `key=value` of a TRANSFORM's `OPTIONS` clause. */
+export interface TransformOption {
+  readonly key: string;
+  readonly value: Operand;
+  readonly span: SourceSpan;
+}
+
+/**
+ * `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH <plugin> TO <dest>
+ *   [OPTIONS key=value …] [FOR item IN list]`
+ */
+export interface TransformInstruction {
+  readonly kind: 'TRANSFORM';
+  readonly span: SourceSpan;
+  /** Omitted only with FOR: the plugin then gets just the element. */
+  readonly source?: Operand | InlineBody;
+  readonly from?: StageRef;
+  readonly plugin: string;
+  readonly pluginSpan: SourceSpan;
+  readonly dest: Operand;
+  readonly options: readonly TransformOption[];
+  readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
+  readonly overwrite: boolean;
+}
+
 export type Instruction =
   | FromInstruction
   | ArgInstruction
@@ -138,6 +172,8 @@ export type Instruction =
   | ImportInstruction
   | CopyInstruction
   | RenderInstruction
+  | PluginInstruction
+  | TransformInstruction
   | ExportInstruction;
 
 /** A parsed and semantically validated Sitefile. */

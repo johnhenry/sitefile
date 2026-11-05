@@ -36,6 +36,7 @@ Options:
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
+      --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins (default 60000)
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
       --force                  replace a non-empty --out outside the context
@@ -69,6 +70,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         platform: { type: 'string' },
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
+        'plugin-timeout': { type: 'string' },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
@@ -139,6 +141,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
       },
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
+      ...(o['plugin-timeout'] ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
       allowHardlinks: !!o['allow-hardlinks'],
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],

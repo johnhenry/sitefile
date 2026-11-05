@@ -166,3 +166,18 @@ test('examples/data reads YAML, CSV and a Web Bundle', async () => {
   assert.match(await readFile(path.join(out, 'team', 'ada', 'index.html'), 'utf8'), /<h1>Ada Lovelace<\/h1>/);
   assert.match(await readFile(path.join(out, 'hello', 'index.html'), 'utf8'), /<title>Hello<\/title>/);
 });
+
+test('examples/motion renders animated SVGs through a sandboxed plugin', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'motion');
+  await cp(path.join(root, 'examples', 'motion'), ctx, { recursive: true });
+  const r = await sitefile(['build', ctx]);
+  assert.equal(r.code, 0, r.stderr);
+  const title = await readFile(path.join(ctx, 'dist', 'title.svg'), 'utf8');
+  assert.match(title, /^<\?xml[\s\S]*<svg[\s\S]*@keyframes[\s\S]*<\/svg>\s*$/);
+  assert.match(title, /prefers-reduced-motion/);
+  const index = await readFile(path.join(ctx, 'dist', 'index.html'), 'utf8');
+  for (const m of index.matchAll(/src="\/cards\/([^"]+)\.svg"/g)) {
+    assert.match(await readFile(path.join(ctx, 'dist', 'cards', `${m[1]}.svg`), 'utf8'), /<svg/);
+  }
+});
