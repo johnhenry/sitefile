@@ -1,0 +1,492 @@
+{
+ "cases": [
+  {
+   "name": "empty",
+   "input": [],
+   "length": 0,
+   "inputDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "rawLength": 2,
+   "raw": "sha256:9b4fb24edd6d1d8830e272398263cdbf026b97392cc35387b991dc0248a628f9",
+   "gzip": "sha256:59869db34853933b239f1e2219cf7d431da006aa919635478511fabbfc8849d2"
+  },
+  {
+   "name": "one byte 00",
+   "input": [
+    [
+     "hex",
+     "00"
+    ]
+   ],
+   "length": 1,
+   "inputDigest": "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+   "rawLength": 3,
+   "raw": "sha256:e9238ddb2b450e586127f0c74344099c6803b19375718f54f3f2056089002fc8",
+   "gzip": "sha256:8ea776040e798cccdd5f0ffedc911b2e95ed69633fad99ef56c8fbb0d2096df3"
+  },
+  {
+   "name": "one byte ff",
+   "input": [
+    [
+     "hex",
+     "ff"
+    ]
+   ],
+   "length": 1,
+   "inputDigest": "sha256:a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89",
+   "rawLength": 3,
+   "raw": "sha256:77199df8966d4f1980bf3d254d2e80040bd57c596f2aa47921e35864dc8aeda0",
+   "gzip": "sha256:dc391b360e31f24ff5354209f5b03bf84ae6f7b53254ce0a304f02e1348fb6ff"
+  },
+  {
+   "name": "two bytes",
+   "input": [
+    [
+     "hex",
+     "6162"
+    ]
+   ],
+   "length": 2,
+   "inputDigest": "sha256:fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603",
+   "rawLength": 4,
+   "raw": "sha256:c56b491f83efe08007a87b2d5846a56ca06f4a4dfc421ec8d2dcbfb944579f5e",
+   "gzip": "sha256:775326792edaf9edc4a40014740b0103eb96ed1b1b99df2adb4ed628fcc7f9e9"
+  },
+  {
+   "name": "three bytes",
+   "input": [
+    [
+     "hex",
+     "616263"
+    ]
+   ],
+   "length": 3,
+   "inputDigest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+   "rawLength": 5,
+   "raw": "sha256:7ce573d21753aedbe7d6d1f5893e3f1265a35b9b51e42a154174a4ce9602ae39",
+   "gzip": "sha256:a058a4f3405f909f3a49df0cb75d96198d371ae7913e5ef6b8114a382746ee5a"
+  },
+  {
+   "name": "aaaa",
+   "input": [
+    [
+     "text",
+     "a",
+     4
+    ]
+   ],
+   "length": 4,
+   "inputDigest": "sha256:61be55a8e2f6b4e172338bddf184d6dbee29c98853e0a0485ecee7f27b9af0b4",
+   "rawLength": 4,
+   "raw": "sha256:b02c908162e0798ac0dc525aab085c34481020a9c6a6992826d7ee7a0e7e1567",
+   "gzip": "sha256:c5f89bb91b5d1687db99d981ea09ed253e8f4dadaf22c235f692d4408dc193aa"
+  },
+  {
+   "name": "abcabc",
+   "input": [
+    [
+     "text",
+     "abc",
+     100
+    ]
+   ],
+   "length": 300,
+   "inputDigest": "sha256:d9f5aeb06abebb3be3f38adec9a2e3b94228d52193be923eb4e24c9b56ee0930",
+   "rawLength": 8,
+   "raw": "sha256:1b2bb0dd928bd121a0b2392416fc1d656e9ad10d01f0e06e76810fee38528b02",
+   "gzip": "sha256:52ed998bdeeb131dbe59d271acd676583591f11fc0fc8f696aee55dd395dacd6"
+  },
+  {
+   "name": "zeros 100k",
+   "input": [
+    [
+     "fill",
+     0,
+     100000
+    ]
+   ],
+   "length": 100000,
+   "inputDigest": "sha256:9192c25b734fcbadbe32dadc28089c60db0e39f90cc20ce2e5733f57261acc0c",
+   "rawLength": 114,
+   "raw": "sha256:6fcfa597f24d085427a0d075c5c2ed2ced4f1e6a61a5248279d751219b97f3e1",
+   "gzip": "sha256:927347789dddf51d8d644a8cc703fb0c4982825e3b8ccac878ca9ed6b8bc1fc5"
+  },
+  {
+   "name": "run 775",
+   "input": [
+    [
+     "fill",
+     7,
+     775
+    ]
+   ],
+   "length": 775,
+   "inputDigest": "sha256:7dc31d195ca8dd052738a03da54d5e7b66f21e049acd8b8cdf16d163b9bbe6f3",
+   "rawLength": 8,
+   "raw": "sha256:45aeeafc5e9268a9d7e5323b021ba6217f64af4311872cd178981d1fe01b80ea",
+   "gzip": "sha256:a43e78853601aeceef3b09fe4d638cda3dd8b63c987da0539468b9f3e4f790c4"
+  },
+  {
+   "name": "random 1",
+   "input": [
+    [
+     "random",
+     1,
+     1
+    ]
+   ],
+   "length": 1,
+   "inputDigest": "sha256:c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a0",
+   "rawLength": 3,
+   "raw": "sha256:e10659e3d7573dd743f1d4c60b8a7d363f27527d97dd5cd10489729e4ef22c07",
+   "gzip": "sha256:64cda14dcad1134ce8aea70072f5d2dc0e099f04d23c02966f04e7a307910806"
+  },
+  {
+   "name": "random 1000",
+   "input": [
+    [
+     "random",
+     1000,
+     2
+    ]
+   ],
+   "length": 1000,
+   "inputDigest": "sha256:9a8ad5abd4bfbcd6041a3138b7db2c90bfb09d64eb5e0d4f77705e5c38d67a88",
+   "rawLength": 1005,
+   "raw": "sha256:97669cba97f2c986584826c1866cccc9a362bab204b2a35323b5e2eac5f9222e",
+   "gzip": "sha256:83af938aee8762fe50ac2d1f941e0f9922f23d47c536b2f9854dd0ce118520f6"
+  },
+  {
+   "name": "random 70000",
+   "input": [
+    [
+     "random",
+     70000,
+     3
+    ]
+   ],
+   "length": 70000,
+   "inputDigest": "sha256:cd7e4b6b3366f6db7a37034994299e2e0323975f643d347f9e5df2105ab2615a",
+   "rawLength": 70025,
+   "raw": "sha256:ed7dd8a37d2d35711d55eb67f343fcd653b2239275af3bd38de075bdf63c4e01",
+   "gzip": "sha256:3e7cbb15b2dcc8df7f4e98a7b36d2fd5234b1bcc379f558f734e3ce273c6e121"
+  },
+  {
+   "name": "html repeated",
+   "input": [
+    [
+     "text",
+     "<!doctype html><html><head><title>Post</title><link rel=\"stylesheet\" href=\"/css/site.css\"></head><body><article class=\"post\">\n",
+     3000
+    ]
+   ],
+   "length": 378000,
+   "inputDigest": "sha256:5153e967071ca811d99a0aa436c87b8b524ca331b091696842a57fd3aa5ece02",
+   "rawLength": 1402,
+   "raw": "sha256:dce4ef0038ff08e29a9a49bd770d7a923b4cb969cc31a4b5c56e1778781d5896",
+   "gzip": "sha256:2246e8b867661a34919a3a0aa351b4565770f6fb969b0017e753a2c7b64ed1b3"
+  },
+  {
+   "name": "mod 251",
+   "input": [
+    [
+     "mod",
+     200000,
+     251,
+     1
+    ]
+   ],
+   "length": 200000,
+   "inputDigest": "sha256:e24bc62381f1224fbbb74688663f8f9743b9680b193edd666835e97b06e730eb",
+   "rawLength": 1092,
+   "raw": "sha256:bff943ec3793f35b36778a6c802f19261b038aa39885d6d309bb33a7440bc54c",
+   "gzip": "sha256:4bb701691d5557de1bd44cf125be3d74c83e7b08c16d359dd600ebbe1c9ddc77"
+  },
+  {
+   "name": "mod 3 slow",
+   "input": [
+    [
+     "mod",
+     300000,
+     3,
+     7
+    ]
+   ],
+   "length": 300000,
+   "inputDigest": "sha256:a18e62fad8ca6308c42d0bb939b4d753fb40a5f238891ba959a7e8b4cc475a3f",
+   "rawLength": 749,
+   "raw": "sha256:420c307b634b44d662fc4686c9d94113785cdf4d3c1c50bc946063cacbfa92be",
+   "gzip": "sha256:0b34c8519455fcffb4d6306f597904521d7745ed5baa82986074a983ec46767d"
+  },
+  {
+   "name": "words 20k",
+   "input": [
+    [
+     "words",
+     20000,
+     5
+    ]
+   ],
+   "length": 105824,
+   "inputDigest": "sha256:555f00d30e6b263a04e08ff6dc36e639376b411b30a915f3f91c78188a61d1dd",
+   "rawLength": 20738,
+   "raw": "sha256:a801b54941820367db2886363559bcb97ee51e40ba4f860fa74b1449e60b0f35",
+   "gzip": "sha256:30c75765b9d5b40fc5aeab4eda6528a34cb5374a6abf01c38145d2a3407caac1"
+  },
+  {
+   "name": "words 300k (>1 MB)",
+   "input": [
+    [
+     "words",
+     300000,
+     6
+    ]
+   ],
+   "length": 1595053,
+   "inputDigest": "sha256:97d1a46c10c98fd3c098a0af77e83ac5e33af9627b3093da1e36b0471b77b0a4",
+   "rawLength": 307019,
+   "raw": "sha256:1eddd8b99a9a27cf00a78217856a152903a4ecba3bbf3ef460bff3df2be0d0ad",
+   "gzip": "sha256:a98340951c1be06382b6512e268ca92e622122f74b033ab71bebd7cd6d70f725"
+  },
+  {
+   "name": "text then noise",
+   "input": [
+    [
+     "text",
+     "<!doctype html><html><head><title>Post</title><link rel=\"stylesheet\" href=\"/css/site.css\"></head><body><article class=\"post\">\n",
+     8000
+    ],
+    [
+     "random",
+     200000,
+     4
+    ],
+    [
+     "words",
+     50000,
+     7
+    ]
+   ],
+   "length": 1474075,
+   "inputDigest": "sha256:c0c479bc2eb03a0e61bceafd677541533e8b0578223c4756d89568e1bfe68b2e",
+   "rawLength": 258090,
+   "raw": "sha256:12f03fc0007daf926021782f51c0c407d2b170c07882b9cf0cecaff65098b28b",
+   "gzip": "sha256:77a2bd611cbb0f129cb8d33a41f158a04b8d115b423633bdd30e7212ba0f531e"
+  },
+  {
+   "name": "noise then text",
+   "input": [
+    [
+     "random",
+     40000,
+     8
+    ],
+    [
+     "text",
+     "abcdefgh",
+     5000
+    ]
+   ],
+   "length": 80000,
+   "inputDigest": "sha256:641199906b525bf185f3229bf41d9865d1543959c4b9b80b1f738504fdd7d046",
+   "rawLength": 40243,
+   "raw": "sha256:a6d752c68b4a8f5af72babe451f5b4c6c57bce9ea24a4cc16ebbf0b413b0dbe7",
+   "gzip": "sha256:5f9cad223aa33514e995d06f2c63f8dfa7c65b21165358fa46c6ef80abef0d12"
+  },
+  {
+   "name": "far 3-byte matches",
+   "input": [
+    [
+     "text",
+     "xyz",
+     1
+    ],
+    [
+     "random",
+     5000,
+     10
+    ],
+    [
+     "text",
+     "xyz",
+     1
+    ],
+    [
+     "random",
+     40000,
+     11
+    ],
+    [
+     "text",
+     "xyzw",
+     3
+    ]
+   ],
+   "length": 45018,
+   "inputDigest": "sha256:61f7048fa2892db4593085c1618b98084b19a0fe60907b50a9b6d8989c6b8a16",
+   "rawLength": 45033,
+   "raw": "sha256:7c90089f4856196caa6d21fc2f3018050f10c81da3cd4439af964c248ce43456",
+   "gzip": "sha256:2847a2adb56057d6a6e2c919e35089f7e3697bd5784653014a3e5686d5be1537"
+  },
+  {
+   "name": "random 16383 (block boundary)",
+   "input": [
+    [
+     "random",
+     16383,
+     16383
+    ]
+   ],
+   "length": 16383,
+   "inputDigest": "sha256:48d99956a89d0aa17a13bbde057ba86c89db0a7a5b2e2516ef9bf0843f99b38a",
+   "rawLength": 16388,
+   "raw": "sha256:7d76f7f367ab50337ba1d6ab1849f429eb5c5aa639818e7c26e955224f375cba",
+   "gzip": "sha256:ad502ad207a7f6515652d2ccb9da6ddd6d969a9ca807649cc7b92c5fdc0d9160"
+  },
+  {
+   "name": "random 16384 (block boundary)",
+   "input": [
+    [
+     "random",
+     16384,
+     16384
+    ]
+   ],
+   "length": 16384,
+   "inputDigest": "sha256:abdda9ade3fc8982e0b517f4326b7a6510ea642cd6d5d1a524269e072b300d42",
+   "rawLength": 16389,
+   "raw": "sha256:ae68f5299039c70cd87c6676803ad16257e20526de31b1d5754034f23e656838",
+   "gzip": "sha256:bb5fddd4738b1198b901836b02fae406f551cccccd64d101d09cc16dd0eed45c"
+  },
+  {
+   "name": "random 16385 (block boundary)",
+   "input": [
+    [
+     "random",
+     16385,
+     16385
+    ]
+   ],
+   "length": 16385,
+   "inputDigest": "sha256:927907f5f51fe059c1d90202efad265b857a4de4e747a67a9f64b9d6ca7975ba",
+   "rawLength": 16390,
+   "raw": "sha256:00f4525b221e7067205348ad2704770ad13bce4d593eba5ed4e33e68411d17e7",
+   "gzip": "sha256:934b100668e8020b51fcbe596f2088e08a8e52e4001bfa5fedd03e54aad6e001"
+  },
+  {
+   "name": "random 32769 (block boundary)",
+   "input": [
+    [
+     "random",
+     32769,
+     32769
+    ]
+   ],
+   "length": 32769,
+   "inputDigest": "sha256:f9eb91b03f05ca5902fa55bd752762a12ddefd6c196f55e3f52fa5dacd717b9b",
+   "rawLength": 32779,
+   "raw": "sha256:40a18954830451cc57af52d52cb03acb3ab34e006bc7fb7ca4932dc7f6102925",
+   "gzip": "sha256:90f7ca3c80a3929a02269bc1f3beffb2cb1eb93e8205e52917f530189e99034d"
+  },
+  {
+   "name": "random 65535 (block boundary)",
+   "input": [
+    [
+     "random",
+     65535,
+     65535
+    ]
+   ],
+   "length": 65535,
+   "inputDigest": "sha256:d443ae624abc7576f4e89714363f79b3c94f92c9fb51d71e93de02b49a6900d0",
+   "rawLength": 65555,
+   "raw": "sha256:d3fffda7a75902fddd3818f0fe0e2c6435f24643cf8a91895c8e3fbc91c39a8f",
+   "gzip": "sha256:a6276cd3f46862b159d05fdbb7e88a3beac049ba25f7c612ea7e0e6bafffae28"
+  },
+  {
+   "name": "random 65536 (block boundary)",
+   "input": [
+    [
+     "random",
+     65536,
+     65536
+    ]
+   ],
+   "length": 65536,
+   "inputDigest": "sha256:ac6520a169007b8f3698bc00c76959daa6d28780fd1e0f487717f8071eb140aa",
+   "rawLength": 65556,
+   "raw": "sha256:1f896e3a4364060d20027f25fd783f4b5893afc3f632b76417c27a6e4a3b199a",
+   "gzip": "sha256:336d976e469e65c5bbb7452f7dc9f30d00d78d16dd07fee46cd20f0b8b826ec0"
+  },
+  {
+   "name": "words 16383",
+   "input": [
+    [
+     "words",
+     16383,
+     16383
+    ]
+   ],
+   "length": 86884,
+   "inputDigest": "sha256:19d4bc0cad30ca220fb64f0b9c41f38962fe1c27142dcc9b1fec71cf5454d0e0",
+   "rawLength": 17057,
+   "raw": "sha256:dce2293fd5a53d573c015f3dc34c76c6f9de01ef5903fdd481695427d28ee70b",
+   "gzip": "sha256:b24ce0ec74ea02bf4f218a5555950da42d85a81a1900151003e6f8c2436540f3"
+  },
+  {
+   "name": "words 16384",
+   "input": [
+    [
+     "words",
+     16384,
+     16384
+    ]
+   ],
+   "length": 87080,
+   "inputDigest": "sha256:125b53f028d68d960f9ba6ba2027ca20e6dedcb4f5019d4496f8f2f12b019e00",
+   "rawLength": 17070,
+   "raw": "sha256:d4e491919f6c7f7c3b6f45fc31618bbdb496d337f3fb6adb28387b32dd439c06",
+   "gzip": "sha256:d8e5b10329913996a3b9d6630890e00fb6cea6569189c4c011a4e268bb59f110"
+  },
+  {
+   "name": "words 16385",
+   "input": [
+    [
+     "words",
+     16385,
+     16385
+    ]
+   ],
+   "length": 87108,
+   "inputDigest": "sha256:5475a68e28a0b3bf8d434191decad4f7d1866ba8aba9bd571e4f02d86c0ad1be",
+   "rawLength": 17034,
+   "raw": "sha256:00bdf01aaf16776f77aad7f81c62a32ab01bd80b0036fbe7dadab5ebba76ae57",
+   "gzip": "sha256:b8077e0935e1c18daa7fce9164a9c6b96010060cc6724a6d10435e19c85988f5"
+  },
+  {
+   "name": "skewed alphabet",
+   "input": [
+    [
+     "words",
+     1000,
+     12
+    ],
+    [
+     "fill",
+     255,
+     3
+    ],
+    [
+     "mod",
+     5000,
+     2,
+     13
+    ]
+   ],
+   "length": 10227,
+   "inputDigest": "sha256:3e88df0dc3423b32035199bb1cd56cfe9dfe4b4e2c13b2ffb02962d87feb928d",
+   "rawLength": 1287,
+   "raw": "sha256:9e2a996bf9a85fb8dc3f1676c133209606cea21b5b0552213c8e4ccd6d7bab38",
+   "gzip": "sha256:d048af79dac44c9a4fc91ff1117c00bc0ecdb7dfd60cb8fcff9cc580b85fcbcc"
+  }
+ ]
+}

@@ -2230,6 +2230,23 @@ mod tests {
     }
 
     #[test]
+    fn uncompressed_images_push_and_pull() {
+        use crate::language::ast::OciCompression;
+        let reg = MockRegistry::start(MockOptions::default());
+        let store1 = new_store();
+        let id = store1.add_image(&blog_tree(), &OciOptions { compression: OciCompression::None, ..Default::default() }).unwrap().id;
+        let remote = format!("{}/team/plain:1", reg.host);
+        store1.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
+        push_with(&store1, &remote, clean_env()).unwrap();
+        let store2 = new_store();
+        pull_with(&store2, &remote, clean_env()).unwrap();
+        assert_eq!(store2.resolve(&remote).unwrap(), id);
+        let d = store2.details(&id).unwrap();
+        assert_eq!(d.manifest.layers[0].media_type, media::LAYER_TAR);
+        assert!(store2.load_tree(&id).unwrap().get("/index.html").is_some());
+    }
+
+    #[test]
     fn push_needs_a_registry_host_and_an_existing_local_image() {
         let store = new_store();
         build_blog(&store, "blog:1");

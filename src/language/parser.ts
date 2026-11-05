@@ -8,6 +8,8 @@ import {
   type EscapeMode,
   type ExportFormat,
   parseExportFormat,
+  type OciCompression,
+  parseOciCompression,
   type ImportKind,
   type Instruction,
   type Operand,
@@ -318,6 +320,16 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
   if (c.keyword('AT')) {
     at = c.operand('image root path');
   }
+  let compression: { value: OciCompression; span: SourceSpan } | undefined;
+  if (c.keyword('COMPRESSION')) {
+    const cspan = c.span;
+    const name = c.word();
+    const value = parseOciCompression(name);
+    if (value === undefined) {
+      throw c.error('E_SYNTAX', name === '' ? 'expected gzip or none after COMPRESSION' : `unknown compression '${name}' (expected gzip or none)`, cspan);
+    }
+    compression = { value, span: cspan };
+  }
   c.expectEnd();
-  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}), ...(at ? { at } : {}) };
+  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}), ...(at ? { at } : {}), ...(compression ? { compression } : {}) };
 }

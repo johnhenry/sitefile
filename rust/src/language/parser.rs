@@ -4,7 +4,7 @@
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    is_ident, literal_text, EscapeMode, ExportFormat, ForEach, FromBase, ImportKind, Instruction, Operand,
+    is_ident, literal_text, EscapeMode, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
@@ -380,8 +380,18 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     }
     let base = if c.keyword("BASE") { Some(c.operand("base URL")?) } else { None };
     let at = if c.keyword("AT") { Some(c.operand("image root path")?) } else { None };
+    let mut compression = None;
+    if c.keyword("COMPRESSION") {
+        let cspan = c.span();
+        let name = c.word();
+        let Some(v) = OciCompression::parse(&name) else {
+            let msg = if name.is_empty() { "expected gzip or none after COMPRESSION".to_string() } else { format!("unknown compression '{name}' (expected gzip or none)") };
+            return Err(SitefileError::at(E_SYNTAX, msg, &cspan));
+        };
+        compression = Some((v, cspan));
+    }
     c.expect_end()?;
-    Ok(Instruction::Export { span, path, format, base, at })
+    Ok(Instruction::Export { span, path, format, base, at, compression })
 }
 
 #[cfg(test)]
@@ -674,6 +684,12 @@ mod tests {
         }
         let Instruction::Export { base, at, .. } = one("EXPORT / AS oci BASE https://x/ AT /srv/www") else { panic!() };
         assert!(base.is_some() && at.is_some());
+        let Instruction::Export { compression, .. } = one("EXPORT / AS oci AT /srv COMPRESSION None") else { panic!() };
+        assert_eq!(compression.map(|(v, s)| (v, s.column)), Some((OciCompression::None, 37)));
+        let Instruction::Export { compression, .. } = one("EXPORT / AS oci COMPRESSION gzip") else { panic!() };
+        assert_eq!(compression.map(|c| c.0), Some(OciCompression::Gzip));
+        parse_err("EXPORT / AS oci COMPRESSION zstd", E_SYNTAX, 1, 29, "unknown compression 'zstd' (expected gzip or none)");
+        parse_err("EXPORT / AS oci COMPRESSION", E_SYNTAX, 1, 28, "expected gzip or none after COMPRESSION");
         parse_err("EXPORT / AS rar", E_UNSUPPORTED, 1, 13, "export format 'rar' is not supported");
         parse_err("EXPORT / AS", E_SYNTAX, 1, 12, "expected export format after AS");
         parse_err("EXPORT", E_SYNTAX, 1, 7, "expected path");

@@ -1,0 +1,7 @@
+# Uncompressed OCI site layer (plain tar); compared byte for byte.
+FROM scratch
+COPY ./public/ /
+COPY <<HTML /index.html
+<!doctype html><title>plain</title><p>uncompressed layer</p>
+HTML
+EXPORT / AS oci AT /usr/share/nginx/html COMPRESSION none

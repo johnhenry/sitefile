@@ -4,7 +4,7 @@
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, Operand, Program, Source, StageRef,
+    stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, OciCompression, Operand, Program, Source, StageRef,
     TemplatePart, ValueType,
 };
 use crate::paths::{normalize_local, normalize_virtual};
@@ -177,6 +177,8 @@ pub struct Plan {
     pub export_base: Option<String>,
     /// Evaluated `AT` clause of `EXPORT … AS oci`: the root directory inside the image layer.
     pub export_root: Option<String>,
+    /// `COMPRESSION` clause of EXPORT ... AS oci (None: gzip).
+    pub export_compression: Option<OciCompression>,
     pub warnings: Vec<String>,
 }
 
@@ -212,6 +214,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
     let mut export_format = ExportFormat::Directory;
     let mut export_base = None;
     let mut export_root = None;
+    let mut export_compression = None;
 
     fn bind(vars: &mut Env, order: &mut Vec<String>, name: &str, raw: &str, ty: ValueType, span: &SourceSpan, what: &str) -> Result<()> {
         let v = coerce(raw, ty, Some(span), what)?;
@@ -367,7 +370,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     span: span.clone(),
                 });
             }
-            Instruction::Export { path, format, base, at, .. } => {
+            Instruction::Export { path, format, base, at, compression, .. } => {
                 export_path = Some(normalize_virtual(&evaluate_operand(path, &vars)?, Some(&path.span), "EXPORT path")?.path);
                 export_format = *format;
                 export_base = match base {
@@ -382,6 +385,14 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     export_root = Some(normalize_virtual(&raw, Some(&at.span), "EXPORT AT path")?.path);
                 } else {
                     export_root = None;
+                }
+                if let Some((v, cspan)) = compression {
+                    if *format != ExportFormat::Oci {
+                        return Err(SitefileError::at(E_VALIDATION, "EXPORT ... COMPRESSION applies only to AS oci", cspan));
+                    }
+                    export_compression = Some(*v);
+                } else {
+                    export_compression = None;
                 }
             }
         }
@@ -417,6 +428,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
         export_format,
         export_base,
         export_root,
+        export_compression,
         warnings,
     })
 }
@@ -771,6 +783,10 @@ mod tests {
         plan_err("FROM scratch\nRENDER ./t TO /d/\nEXPORT /", &[], E_PATH, 2, "RENDER destination '/d/' must be a file path, not a directory");
         plan_err("FROM scratch\nCOPY <<E /dir/\nx\nE\nEXPORT /", &[], E_PATH, 2, "COPY of an inline body needs a file destination");
         plan_err("FROM scratch\nEXPORT / AT /srv", &[], E_VALIDATION, 2, "EXPORT ... AT applies only to AS oci");
+        plan_err("FROM scratch\nEXPORT / AS zip COMPRESSION none", &[], E_VALIDATION, 2, "EXPORT ... COMPRESSION applies only to AS oci");
+        let p = plan_of("FROM scratch\nEXPORT / AS oci COMPRESSION none", &[]).unwrap();
+        assert_eq!(p.export_compression, Some(OciCompression::None));
+        assert_eq!(plan_of("FROM scratch\nEXPORT / AS oci", &[]).unwrap().export_compression, None);
     }
 
     #[test]

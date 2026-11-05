@@ -5,13 +5,14 @@
 //   node conformance/run.mjs [--rust path/to/sitefile] [--only name] [--json out.json]
 //
 // For each case: same exit code; for failures the same `error[CODE]: …` line;
-// for successes an identical output tree (paths, modes, file digests). Archive
-// outputs are compared by content (unpacked with the TypeScript reader), since
-// the two deflate implementations may compress differently; uncompressed
-// formats (wbn) must match byte for byte.
+// for successes an identical output tree (paths, modes, file digests).
+// 'archive' compares an archive's content (unpacked with the TypeScript
+// reader); 'bytes' compares the file itself. Both implementations share one
+// deterministic deflate encoder (src/deflate.ts, rust/src/deflate.rs), so
+// compressed formats (zip, tar.gz, OCI layers) are checked byte for byte too.
 //
-// OCI outputs (compare: 'oci') are compared by their config blob, which holds
-// the uncompressed layer digests (diff_ids), labels and platform.
+// OCI outputs (compare: 'oci') are compared by manifest digest (the image ID)
+// and config digest (diff_ids, labels, platform).
 //
 // A case directory may hold case.json: { args, env, out, compare, command, links }.
 // `command` ("validate" or "inspect") runs that command instead of build and
@@ -67,6 +68,12 @@ function cases() {
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
     ex('hello', { suffix: ':tar', out: 'site.tar', compare: 'archive' }),
     ex('hello', { suffix: ':tgz', out: 'site.tar.gz', compare: 'archive' }),
+    ex('hello', { suffix: ':zip-bytes', out: 'site.zip', compare: 'bytes' }),
+    ex('hello', { suffix: ':tgz-bytes', out: 'site.tar.gz', compare: 'bytes' }),
+    ex('blog', { suffix: ':tgz-bytes', out: 'site.tar.gz', compare: 'bytes' }),
+    ex('hello', { suffix: ':oci-id', out: 'site.oci.tar', compare: 'oci' }),
+    ex('blog', { suffix: ':oci-bytes', out: 'site.oci.tar', compare: 'bytes' }),
+    ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
   ];
@@ -123,15 +130,14 @@ async function outputOf(kind, outPath) {
   if (kind === 'bytes') return { digest: 'sha256:' + createHash('sha256').update(bytes).digest('hex'), files: 1 };
   const tree = await extractArchive(new Uint8Array(bytes), 'conformance');
   if (kind === 'oci') {
-    // Layers are gzip, whose bytes differ between deflate implementations. The
-    // config holds each layer's diff_id (sha256 of the uncompressed tar) and the
-    // labels/platform/root, so equal configs mean equal images.
+    // The manifest digest is the image ID: equal IDs mean byte-identical layers.
+    // The config holds each layer's diff_id and the labels/platform/root.
     const text = (p) => new TextDecoder().decode(tree.get(p).bytes);
     const blob = (d) => `/blobs/sha256/${d.slice(7)}`;
     const index = JSON.parse(text('/index.json'));
     const manifest = JSON.parse(text(blob(index.manifests[0].digest)));
     const refName = index.manifests[0].annotations?.['org.opencontainers.image.ref.name'] ?? '';
-    return { digest: `${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}`, files: tree.size };
+    return { digest: `id ${index.manifests[0].digest} config ${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}`, files: tree.size };
   }
   return { digest: tree.digest(), files: tree.size };
 }

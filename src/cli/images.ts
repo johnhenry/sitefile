@@ -6,6 +6,7 @@ import { SitefileError } from '../errors.js';
 import { exportDirectory, exportFile } from '../exporter.js';
 import { encodeTree, formatFromExtension, isArchiveFormat } from '../export-formats.js';
 import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from '../language/ast.js';
+import { MEDIA, siteLayerIndex } from '../oci.js';
 import { looksLikeImageId, parseLocalRef, refKey } from '../ref.js';
 import { shortId, Store, type ImageSummary } from '../store.js';
 import { humanSize, relativeTime, requireArgs, str, table, usage, type Command } from './common.js';
@@ -96,7 +97,7 @@ const inspect: Command = {
       `Stored:      ${d.created} (${relativeTime(d.created)})`,
       `Platform:    ${d.config.os}/${d.config.architecture}`,
       `Root:        ${d.root}`,
-      `Layer:       ${layer?.digest ?? '-'} (${humanSize(d.layerSize)} gzip)`,
+      `Layer:       ${layer?.digest ?? '-'} (${humanSize(d.layerSize)} ${d.manifest.layers[siteLayerIndex(d.manifest, d.config)]?.mediaType === MEDIA.layerTar ? 'tar' : 'gzip'})`,
       `Diff ID:     ${d.config.diffIds[0] ?? '-'}`,
       `Config:      ${d.manifest.config.digest}`,
       'Labels:',

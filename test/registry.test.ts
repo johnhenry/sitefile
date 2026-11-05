@@ -419,6 +419,39 @@ test('EXPORT AS oci BASE: layers = base + site, base config preserved, labels me
   });
 });
 
+test('uncompressed site layers: push/pull round trip; with BASE the base layers keep their media type', async () => {
+  await withRegistry({}, async (reg) => {
+    const home1 = await tmpDir();
+    const ctx = await makeSite();
+    assert.equal((await runCli(home1, ['build', ctx, '-t', 'plain:1', '--oci-compression', 'none'])).code, 0);
+    const id = await (await Store.open(home1)).resolve('plain:1');
+    const remote = `${reg.host}/team/plain:1`;
+    assert.equal((await runCli(home1, ['tag', 'plain:1', remote])).code, 0);
+    const p = await runCli(home1, ['push', remote]);
+    assert.equal(p.code, 0, p.stderr);
+    const home2 = await tmpDir();
+    const pl = await runCli(home2, ['pull', remote]);
+    assert.equal(pl.code, 0, pl.stderr);
+    const store2 = await Store.open(home2);
+    assert.equal(await store2.resolve(remote), id);
+    const d = await store2.details(id);
+    assert.equal(d.manifest.layers[0]!.mediaType, MEDIA.layerTar);
+    assert.ok((await store2.loadTree(id)).get('/index.html'));
+
+    seedBase(reg);
+    const bctx = await baseSite(`${reg.host}/lib/base:1`);
+    const out = path.join(await tmpDir(), 'out.oci.tar');
+    const b = await runCli(home1, ['build', bctx, '-o', out, '--oci-compression', 'none']);
+    assert.equal(b.code, 0, b.stderr);
+    const files = await extractArchive(new Uint8Array(await fs.readFile(out)), 'x');
+    const index = JSON.parse(dec.decode(files.get('/index.json')!.bytes)) as { manifests: Array<{ digest: string }> };
+    const manifest = parseManifest(files.get(`/blobs/sha256/${index.manifests[0]!.digest.slice(7)}`)!.bytes);
+    assert.deepEqual(manifest.layers.map((l) => l.mediaType), [MEDIA.layer, MEDIA.layer, MEDIA.layerTar]);
+    const site = await extractArchive(files.get(`/blobs/sha256/${manifest.layers[2]!.digest.slice(7)}`)!.bytes, 'layer');
+    assert.ok(site.get('/usr/share/nginx/html/index.html'));
+  });
+});
+
 test('BASE images in the store: -t, inspect, save and run use the site layer', async () => {
   await withRegistry({}, async (reg) => {
     seedBase(reg);

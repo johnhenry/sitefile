@@ -14,7 +14,7 @@ use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{build, build_to_directory, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
 use crate::export::formats::{default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
-use crate::language::ast::ExportFormat;
+use crate::language::ast::{ExportFormat, OciCompression};
 use crate::refs::{parse_local_ref, ref_key};
 use crate::resources::types::FetchPolicy;
 use crate::store::{short_id, Store};
@@ -73,6 +73,7 @@ Options:
                                Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
+      --oci-compression <c>    oci site layer: gzip (default) or none (plain tar; overrides EXPORT ... COMPRESSION)
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -114,6 +115,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("format"),
     string("base-url"),
     string("oci-root"),
+    string("oci-compression"),
     strings("label"),
     flag("git-labels"),
     string("platform"),
@@ -244,6 +246,7 @@ fn validate_image_tags(tags: &[String]) -> Result<()> {
 struct ImageInfo<'a> {
     context_dir: &'a str,
     oci_root: Option<&'a str>,
+    oci_compression: Option<OciCompression>,
     platform: Option<&'a str>,
     labels: &'a BTreeMap<String, String>,
     git_labels: bool,
@@ -252,7 +255,7 @@ struct ImageInfo<'a> {
 /// Store a build's exported tree as an OCI image in the local store and point each tag at it.
 fn store_build_as_image(result: &BuildResult, tags: &[String], info: &ImageInfo<'_>) -> Result<String> {
     let store = Store::open_default()?;
-    let opts = oci_options(result, info.context_dir, info.oci_root, info.platform, info.labels, info.git_labels)?;
+    let opts = oci_options(result, info.context_dir, info.oci_root, info.oci_compression, info.platform, info.labels, info.git_labels)?;
     let added = store.add_image(&result.output, &opts)?;
     let n = result.output.len();
     for t in tags {
@@ -323,6 +326,13 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
             return Ok(usage_error(&format!("--format expects one of {} (or tar.gz), got '{f}'", images::EXPORT_FORMATS)));
         }
     }
+    let mut oci_compression = None;
+    if let Some(c) = o.str("oci-compression") {
+        oci_compression = OciCompression::parse(c);
+        if oci_compression.is_none() {
+            return Ok(usage_error(&format!("--oci-compression expects gzip or none, got '{c}'")));
+        }
+    }
     // No --format: an archive extension on --out picks the format.
     let out_flag = o.str("out").filter(|s| !s.is_empty());
     if format_override.is_none() {
@@ -377,7 +387,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
         "build" => {
             validate_image_tags(&tags)?;
             let labels = parse_labels(&o.strs("label"))?;
-            let info = ImageInfo { context_dir: context, oci_root: o.str("oci-root"), platform: o.str("platform"), labels: &labels, git_labels: o.flag("git-labels") };
+            let info = ImageInfo { context_dir: context, oci_root: o.str("oci-root"), oci_compression, platform: o.str("platform"), labels: &labels, git_labels: o.flag("git-labels") };
             if !tags.is_empty() && out_flag.is_none() {
                 // -t without -o: store the image only; nothing is written to the context.
                 store_build_as_image(&build(&options)?, &tags, &info)?;
@@ -387,6 +397,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
                 format: format_override,
                 base_url: o.str("base-url").map(str::to_string),
                 oci_root: o.str("oci-root").map(str::to_string),
+                oci_compression,
                 image_labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
                 oci_ref_name: match tags.first() {

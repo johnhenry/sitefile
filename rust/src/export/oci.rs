@@ -19,6 +19,7 @@
 
 use super::archive_writers::{gzip_tar, iso_millis, write_tar, WriterOptions};
 use crate::digest::sha256;
+use crate::language::ast::OciCompression;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::paths::normalize_virtual;
 use crate::refs::parse_ref;
@@ -36,6 +37,8 @@ pub mod media {
     pub const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
     pub const CONFIG: &str = "application/vnd.oci.image.config.v1+json";
     pub const LAYER: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
+    /// Uncompressed layer (`EXPORT ... COMPRESSION none`): the blob is the tar itself, digest = diff_id.
+    pub const LAYER_TAR: &str = "application/vnd.oci.image.layer.v1.tar";
     pub const INDEX: &str = "application/vnd.oci.image.index.v1+json";
     pub const DOCKER_MANIFEST: &str = "application/vnd.docker.distribution.manifest.v2+json";
     pub const DOCKER_LIST: &str = "application/vnd.docker.distribution.manifest.list.v2+json";
@@ -74,6 +77,8 @@ pub struct OciOptions {
     pub labels: BTreeMap<String, String>,
     /// Build on top of this image (`EXPORT ... AS oci BASE <image>`).
     pub base: Option<BaseImage>,
+    /// Site layer encoding (default gzip). Base layers are kept as they are.
+    pub compression: OciCompression,
 }
 
 /// A resolved base image: one platform manifest, its config and layers.
@@ -212,9 +217,15 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
     let segs: Vec<&str> = if root == "/" { vec![] } else { root[1..].split('/').collect() };
     let dirs: Vec<String> = (0..segs.len()).map(|i| segs[..=i].join("/")).collect();
     let tar = write_tar(&layer_tree, &WriterOptions { epoch: Some(options.epoch.unwrap_or(0)), dirs })?;
-    let layer_bytes = gzip_tar(&tar);
+    let uncompressed = options.compression == OciCompression::None;
     let diff_id = sha256(&tar);
-    let layer_digest = sha256(&layer_bytes);
+    let (layer_bytes, layer_digest) = if uncompressed {
+        (tar, diff_id.clone())
+    } else {
+        let gz = gzip_tar(&tar);
+        let d = sha256(&gz);
+        (gz, d)
+    };
     let size: u64 = tree.entries().map(|(_, f)| f.bytes.len() as u64).sum();
 
     let empty = Map::new();
@@ -299,7 +310,8 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
         annotations.insert(ann::BASE_DIGEST.to_string(), b.manifest_digest.clone());
     }
     let mut layers: Vec<Value> = base_layers.iter().map(Descriptor::to_json).collect();
-    layers.push(serde_json::json!({ "mediaType": media::LAYER, "digest": layer_digest, "size": layer_bytes.len() }));
+    let layer_type = if uncompressed { media::LAYER_TAR } else { media::LAYER };
+    layers.push(serde_json::json!({ "mediaType": layer_type, "digest": layer_digest, "size": layer_bytes.len() }));
     let manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": media::MANIFEST,
@@ -548,10 +560,10 @@ const MAX_LAYER_BYTES: u64 = 8 * (1 << 30);
 pub fn extract_image_files(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: &[u8], origin: &str) -> Result<Tree> {
     let idx = site_layer_index(m, cfg);
     let layer = idx.and_then(|i| m.layers.get(i));
-    let (Some(idx), Some(layer)) = (idx, layer.filter(|l| l.media_type == media::LAYER)) else {
+    let (Some(idx), Some(layer)) = (idx, layer.filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)) else {
         return Err(SitefileError::plain(
             E_STORE,
-            format!("{origin}: not a Sitefile image (only single-layer tar+gzip images, or images built with BASE, hold site files)"),
+            format!("{origin}: not a Sitefile image (only single-layer tar or tar+gzip images, or images built with BASE, hold site files)"),
         ));
     };
     if sha256(layer_bytes) != layer.digest || layer_bytes.len() as u64 != layer.size {
@@ -559,9 +571,13 @@ pub fn extract_image_files(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: 
     }
     let limit = MAX_LAYER_BYTES + (MAX_LAYER_ENTRIES as u64 + 2) * 4 * 512;
     let mut tar = Vec::new();
-    let mut dec = flate2::read::GzDecoder::new(layer_bytes).take(limit + 1);
-    if dec.read_to_end(&mut tar).is_err() {
-        return Err(SitefileError::plain(E_STORE, format!("{origin}: layer is not valid gzip")));
+    if layer.media_type == media::LAYER_TAR {
+        tar.extend_from_slice(&layer_bytes[..layer_bytes.len().min(limit as usize + 1)]);
+    } else {
+        let mut dec = flate2::read::GzDecoder::new(layer_bytes).take(limit + 1);
+        if dec.read_to_end(&mut tar).is_err() {
+            return Err(SitefileError::plain(E_STORE, format!("{origin}: layer is not valid gzip")));
+        }
     }
     if tar.len() as u64 > limit {
         return Err(SitefileError::plain(E_ARCHIVE_LIMIT, format!("{origin}: archive expands beyond {MAX_LAYER_BYTES} bytes")));
@@ -915,6 +931,35 @@ mod tests {
         std::fs::remove_file(dir.join(".git/refs/heads/main")).unwrap();
         std::fs::write(dir.join(".git/packed-refs"), format!("# pack-refs\n{} refs/heads/main\n", "c".repeat(40))).unwrap();
         assert_eq!(git_info(dir).revision.as_deref(), Some("c".repeat(40).as_str()));
+    }
+
+    #[test]
+    fn uncompressed_layer_is_the_tar_itself() {
+        let gz = build_oci_image(&tree(), &OciOptions::default()).unwrap();
+        let img = build_oci_image(&tree(), &OciOptions { compression: OciCompression::None, ..Default::default() }).unwrap();
+        assert_eq!(img.diff_id, gz.diff_id);
+        assert_eq!(img.layer_digest, img.diff_id);
+        assert_eq!(sha256(&img.layer_bytes), img.diff_id);
+        assert_eq!(img.config_digest, gz.config_digest);
+        assert_ne!(img.manifest_digest, gz.manifest_digest);
+        let m = parse_manifest(&img.manifest_bytes).unwrap();
+        assert_eq!(m.layers[0].media_type, media::LAYER_TAR);
+        assert_eq!(m.layers[0].size, img.layer_bytes.len() as u64);
+        let cfg = parse_config(&img.config_bytes).unwrap();
+        assert_eq!(extract_image_files(&m, &cfg, &img.layer_bytes, "x").unwrap().digest(), tree().digest());
+        let mut bad = img.layer_bytes.clone();
+        bad[600] ^= 1;
+        assert_eq!(extract_image_files(&m, &cfg, &bad, "x").unwrap_err().code, E_STORE);
+        // with a BASE, base layers keep their (normalized) media type
+        let base = BaseImage {
+            name: "docker.io/library/nginx:alpine".into(),
+            manifest_digest: format!("sha256:{}", "2".repeat(64)),
+            layers: vec![Descriptor { media_type: media::DOCKER_LAYER.into(), digest: format!("sha256:{}", "3".repeat(64)), size: 10, annotations: None }],
+            config: serde_json::json!({ "rootfs": { "type": "layers", "diff_ids": [format!("sha256:{}", "1".repeat(64))] } }).as_object().unwrap().clone(),
+        };
+        let img = build_oci_image(&tree(), &OciOptions { compression: OciCompression::None, base: Some(base), ..Default::default() }).unwrap();
+        let types: Vec<String> = parse_manifest(&img.manifest_bytes).unwrap().layers.into_iter().map(|l| l.media_type).collect();
+        assert_eq!(types, [media::LAYER, media::LAYER_TAR]);
     }
 
     #[test]

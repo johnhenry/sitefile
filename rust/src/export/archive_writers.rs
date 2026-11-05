@@ -4,15 +4,13 @@
 //! there are no user/group names, modes are the tree's 0644/0755, and every
 //! timestamp is fixed.
 //!
-//! Tar output, stored zip entries and every header field match the TypeScript
-//! writer byte for byte. Deflated zip entries and gzip streams come from
-//! flate2 instead of Node's zlib, so their compressed bytes can differ.
+//! Every format matches the TypeScript writer byte for byte, compressed ones
+//! included: deflated zip entries and gzip streams come from `crate::deflate`,
+//! the same deterministic encoder as `src/deflate.ts`.
 
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::tree::Tree;
-use flate2::write::{DeflateEncoder, GzEncoder};
-use flate2::{Compression, GzBuilder};
-use std::io::Write;
+pub use crate::deflate::crc32;
 
 #[derive(Debug, Clone, Default)]
 pub struct WriterOptions {
@@ -61,33 +59,6 @@ fn entries_of(tree: &Tree) -> Result<Vec<Entry<'_>>> {
         .collect()
 }
 
-// ------------------------------------------------------------------ CRC-32
-
-const fn crc_table() -> [u32; 256] {
-    let mut t = [0u32; 256];
-    let mut n = 0;
-    while n < 256 {
-        let mut c = n as u32;
-        let mut k = 0;
-        while k < 8 {
-            c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 };
-            k += 1;
-        }
-        t[n] = c;
-        n += 1;
-    }
-    t
-}
-static CRC_TABLE: [u32; 256] = crc_table();
-
-pub fn crc32(data: &[u8]) -> u32 {
-    let mut c = 0xffff_ffffu32;
-    for &b in data {
-        c = CRC_TABLE[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8);
-    }
-    c ^ 0xffff_ffff
-}
-
 // ------------------------------------------------------------------- dates
 
 /// (year, month 1-12, day, hour, minute, second) of a Unix time, UTC.
@@ -130,12 +101,7 @@ fn dos_date_time(epoch: Option<u64>) -> (u16, u16) {
     (time, date)
 }
 
-fn deflate_raw(data: &[u8]) -> Vec<u8> {
-    let mut e = DeflateEncoder::new(Vec::with_capacity(data.len() / 2 + 16), Compression::best());
-    // Writing to a Vec cannot fail.
-    let _ = e.write_all(data);
-    e.finish().unwrap_or_default()
-}
+use crate::deflate::deflate_raw;
 
 /// Zip (no zip64). Deflate when it shrinks the data, otherwise stored.
 pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
@@ -335,15 +301,9 @@ pub fn write_tgz(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
     Ok(gzip_tar(&write_tar(tree, options)?))
 }
 
-/// Reproducible gzip of an already-written tar.
+/// Reproducible gzip of an already-written tar (format: `crate::deflate`).
 pub fn gzip_tar(tar: &[u8]) -> Vec<u8> {
-    let mut e: GzEncoder<Vec<u8>> = GzBuilder::new().mtime(0).write(Vec::with_capacity(tar.len() / 3 + 64), Compression::best());
-    let _ = e.write_all(tar);
-    let mut gz = e.finish().unwrap_or_default();
-    if gz.len() > 9 {
-        gz[9] = 3; // OS = Unix, whatever platform zlib was built for
-    }
-    gz
+    crate::deflate::gzip(tar)
 }
 
 #[cfg(test)]

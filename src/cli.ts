@@ -7,7 +7,7 @@ import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { loadBuildArgFile } from './build-args.js';
 import { insecureRegistriesFromEnv } from './base-image.js';
 import { parseLabels } from './oci.js';
-import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
+import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
@@ -35,6 +35,7 @@ Options:
                                Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
+      --oci-compression <c>    oci site layer: gzip (default) or none (plain tar; overrides EXPORT ... COMPRESSION)
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -80,6 +81,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         format: { type: 'string' },
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
+        'oci-compression': { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
         platform: { type: 'string' },
@@ -142,6 +144,11 @@ export async function main(argv: readonly string[]): Promise<number> {
       formatOverride = parseExportFormat(o.format);
       if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
     }
+    let ociCompression: OciCompression | undefined;
+    if (o['oci-compression'] !== undefined) {
+      ociCompression = parseOciCompression(o['oci-compression']);
+      if (!ociCompression) return usageError(`--oci-compression expects gzip or none, got '${o['oci-compression']}'`);
+    }
     // No --format: an archive extension on --out picks the format, so `-o site.zip`
     // writes a zip instead of a directory named site.zip.
     if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
@@ -182,7 +189,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         const tags = o.tag ?? [];
         validateImageTags(tags);
         const labels = parseLabels(o.label ?? []);
-        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], platform: o.platform, labels, gitLabels: !!o['git-labels'] };
+        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
           await storeBuildAsImage(await build(options), tags, imageInfo);
@@ -195,6 +202,7 @@ export async function main(argv: readonly string[]): Promise<number> {
           ...(formatOverride ? { format: formatOverride } : {}),
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
+          ...(ociCompression !== undefined ? { ociCompression } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
           imageLabels: labels,
           gitLabels: !!o['git-labels'],

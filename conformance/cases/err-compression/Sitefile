@@ -1,0 +1,2 @@
+FROM scratch
+EXPORT / AS oci COMPRESSION zstd
