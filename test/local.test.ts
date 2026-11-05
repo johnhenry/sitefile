@@ -188,23 +188,23 @@ test('fifos and sockets are unsupported', () =>
     }
   }));
 
-test('bytesToResource and verifyIntegrity', () => {
+test('bytesToResource and verifyIntegrity', async () => {
   const info = { uri: 'https://x/a.json', resolvedUrl: 'https://cdn/a.json', basename: 'a.json' };
   const bytes = new TextEncoder().encode('{"a":[1,2]}');
-  const f = bytesToResource(bytes, 'file', { ...info, mode: 0o700 });
+  const f = await bytesToResource(bytes, 'file', { ...info, mode: 0o700 });
   assert.equal(f.kind, 'file');
   assert.ok(f.kind === 'file' && f.mode === 0o755 && f.basename === 'a.json');
   assert.equal(f.provenance.resolvedUrl, 'https://cdn/a.json');
   assert.equal(f.provenance.digest, sha256(bytes));
-  const j = bytesToResource(bytes, 'json', info);
+  const j = await bytesToResource(bytes, 'json', info);
   assert.ok(j.kind === 'value' && j.format === 'json');
   assert.deepEqual(j.value, { a: [1, 2] });
-  const t = bytesToResource(bytes, 'text', { uri: './a', basename: 'a' });
+  const t = await bytesToResource(bytes, 'text', { uri: './a', basename: 'a' });
   assert.ok(t.kind === 'value' && t.format === 'text' && t.value === '{"a":[1,2]}');
   assert.equal('resolvedUrl' in t.provenance, false);
-  assert.throws(() => bytesToResource(new Uint8Array([0xff, 0xfe]), 'text', info), (e) => isSitefileError(e, 'E_ENCODING'));
-  assert.throws(() => bytesToResource(new Uint8Array([0xc3]), 'json', info), (e) => isSitefileError(e, 'E_ENCODING'));
-  assert.throws(() => bytesToResource(new TextEncoder().encode('{nope'), 'json', info), (e) => isSitefileError(e, 'E_TYPE'));
+  await assert.rejects(() => bytesToResource(new Uint8Array([0xff, 0xfe]), 'text', info), (e) => isSitefileError(e, 'E_ENCODING'));
+  await assert.rejects(() => bytesToResource(new Uint8Array([0xc3]), 'json', info), (e) => isSitefileError(e, 'E_ENCODING'));
+  await assert.rejects(() => bytesToResource(new TextEncoder().encode('{nope'), 'json', info), (e) => isSitefileError(e, 'E_TYPE'));
 
   verifyIntegrity(bytes, sha256(bytes), info.uri);
   const wrong = 'sha256:' + '0'.repeat(64);
@@ -320,4 +320,11 @@ test('regular files and directories are unaffected by the hard link check', () =
     await writeFile(join(ctx, 'd/e/f.txt'), 'f');
     const c = await LocalContext.open(ctx);
     assert.deepEqual(await treePaths(c), ['/d/e/f.txt']);
+  }));
+
+test('a dangling .sitefileignore symlink fails clearly instead of being skipped', () =>
+  withTemp(async (ctx) => {
+    await symlink(join(ctx, 'missing-ignore'), join(ctx, '.sitefileignore'));
+    await assert.rejects(LocalContext.open(ctx), (e: unknown) => isSitefileError(e, 'E_NOT_FOUND') && /symlink to a missing file/.test(e.message));
+    await LocalContext.open(ctx, { sitefileignore: false });
   }));

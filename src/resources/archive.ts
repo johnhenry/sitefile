@@ -1,4 +1,5 @@
-import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { gunzip as gunzipCb, inflateRaw as inflateRawCb, type ZlibOptions } from 'node:zlib';
+import { promisify } from 'node:util';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { normalizeVirtual } from '../paths.js';
 import { makeFile, Tree, type FileNode } from '../tree.js';
@@ -6,6 +7,12 @@ import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './types.js';
 
 /** Below this many output bytes the ratio limit is not enforced (tar block padding compresses extremely well). */
 const RATIO_FLOOR = 1024 * 1024;
+
+const gunzipAsync = promisify<Uint8Array, ZlibOptions, Buffer>(gunzipCb);
+const inflateRawAsync = promisify<Uint8Array, ZlibOptions, Buffer>(inflateRawCb);
+
+/** Tar framing per entry, worst case: header + padding + a pax/GNU long-name header and its padding. */
+const TAR_OVERHEAD_PER_ENTRY = 4 * 512;
 
 type Add = (name: string, kind: 'file' | 'dir', bytes: Uint8Array, mode: number) => void;
 
@@ -16,12 +23,12 @@ type Add = (name: string, kind: 'file' | 'dir', bytes: Uint8Array, mode: number)
  * links, devices) are rejected, not skipped. A single top-level directory is
  * kept as-is.
  */
-export function extractArchive(
+export async function extractArchive(
   bytes: Uint8Array,
   origin: string,
   limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
   span?: SourceSpan,
-): Tree {
+): Promise<Tree> {
   const files = new Map<string, FileNode>();
   const dirs = new Set<string>();
   let total = 0;
@@ -46,11 +53,11 @@ export function extractArchive(
   };
 
   if (isGzip(bytes)) {
-    const tar = gunzip(bytes, origin, limits, span);
+    const tar = await gunzip(bytes, origin, limits, span);
     if (!isTar(tar)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
     readTar(tar, origin, limits, span, add);
   } else if (isZip(bytes)) {
-    readZip(bytes, origin, limits, span, add);
+    await readZip(bytes, origin, limits, span, add);
   } else if (isTar(bytes)) {
     readTar(bytes, origin, limits, span, add);
   } else {
@@ -85,11 +92,13 @@ function archivePath(name: string, span?: SourceSpan): string {
 
 // ------------------------------------------------------------------ gzip
 
-function gunzip(bytes: Uint8Array, origin: string, limits: ArchiveLimits, span?: SourceSpan): Uint8Array {
+async function gunzip(bytes: Uint8Array, origin: string, limits: ArchiveLimits, span?: SourceSpan): Promise<Uint8Array> {
   const byRatio = Math.max(bytes.length * limits.maxRatio, RATIO_FLOOR);
-  const byTotal = limits.maxTotalBytes + 1024 * 1024; // headroom for tar headers and padding
+  // The inflated stream is tar: file data plus headers and padding for every entry.
+  const byTotal = limits.maxTotalBytes + (limits.maxEntries + 2) * TAR_OVERHEAD_PER_ENTRY;
   try {
-    return gunzipSync(bytes, { maxOutputLength: Math.min(byRatio, byTotal) });
+    // Async so a large archive doesn't stall other imports' sockets and timers.
+    return await gunzipAsync(bytes, { maxOutputLength: Math.min(byRatio, byTotal) });
   } catch (e) {
     throw inflateError(e, origin, byRatio <= byTotal, limits, span);
   }
@@ -150,7 +159,7 @@ function readTar(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
     off = h + 512 + Math.ceil(size / 512) * 512;
 
     if (type === 'L') { nextName = cString(data, 0, data.length); continue; }
-    if (type === 'x') { ({ path: nextName, size: nextSize } = parsePax(data)); continue; }
+    if (type === 'x') { ({ path: nextName, size: nextSize } = parsePax(data, bad)); continue; }
     if (type === 'g' || type === 'K') continue; // global pax header / GNU long link name: unused
     if (++entries > limits.maxEntries) {
       throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive has more than ${limits.maxEntries} entries`, span);
@@ -158,7 +167,8 @@ function readTar(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
     let name = nextName;
     if (name === undefined) {
       name = cString(b, h, h + 100);
-      const prefix = ascii(b, h + 257, h + 262) === 'ustar' ? cString(b, h + 345, h + 500) : '';
+      // Only POSIX ustar ('ustar\0') has a name prefix; old GNU ('ustar ') keeps atime/ctime there.
+      const prefix = ascii(b, h + 257, h + 263) === 'ustar\0' ? cString(b, h + 345, h + 500) : '';
       if (prefix) name = `${prefix}/${name}`;
     }
     nextName = nextSize = undefined;
@@ -171,7 +181,7 @@ function readTar(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
   }
 }
 
-function parsePax(data: Uint8Array): { path: string | undefined; size: number | undefined } {
+function parsePax(data: Uint8Array, bad: (why: string) => SitefileError): { path: string | undefined; size: number | undefined } {
   const out: { path: string | undefined; size: number | undefined } = { path: undefined, size: undefined };
   const buf = Buffer.from(data);
   let pos = 0;
@@ -181,8 +191,14 @@ function parsePax(data: Uint8Array): { path: string | undefined; size: number | 
     if (!(len > sp - pos) || pos + len > buf.length) break;
     const kv = buf.toString('utf8', sp + 1, pos + len - 1); // drop trailing newline
     const eq = kv.indexOf('=');
-    if (kv.slice(0, eq) === 'path') out.path = kv.slice(eq + 1);
-    if (kv.slice(0, eq) === 'size') out.size = parseInt(kv.slice(eq + 1), 10);
+    if (eq <= 0) throw bad('malformed pax header record');
+    const key = kv.slice(0, eq);
+    const value = kv.slice(eq + 1);
+    if (key === 'path') out.path = value;
+    if (key === 'size') {
+      if (!/^\d+$/.test(value)) throw bad(`malformed pax size '${value}'`);
+      out.size = Number(value);
+    }
     pos += len;
   }
   return out;
@@ -197,9 +213,10 @@ interface ZipEntry {
   usize: number;
   local: number;
   mode: number;
+  isDir: boolean;
 }
 
-function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): void {
+async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): Promise<void> {
   const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`, span);
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   let eocd = -1;
@@ -223,17 +240,20 @@ function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
     if (p + advance > b.length) throw bad('corrupt zip central directory');
     const unix = v.getUint16(p + 4, true) >> 8 === 3;
     const attr = v.getUint32(p + 38, true) >>> 16;
+    const fileType = attr & 0o170000;
+    const name = Buffer.from(b.subarray(p + 46, p + 46 + nameLen)).toString('utf8');
     const e: ZipEntry = {
-      name: Buffer.from(b.subarray(p + 46, p + 46 + nameLen)).toString('utf8'),
+      name,
       method: v.getUint16(p + 10, true),
       csize: v.getUint32(p + 20, true),
       usize: v.getUint32(p + 24, true),
       local: v.getUint32(p + 42, true),
       mode: unix ? attr & 0o7777 : 0o644,
+      // Some tools mark directories only by mode, without a trailing slash.
+      isDir: name.endsWith('/') || (unix && fileType === 0o040000),
     };
     if (v.getUint16(p + 8, true) & 1) throw bad(`encrypted zip entry '${e.name}' is not supported`);
     if (e.csize === 0xffffffff || e.usize === 0xffffffff) throw bad('zip64 archives are not supported');
-    const fileType = attr & 0o170000;
     if (unix && fileType !== 0 && fileType !== 0o100000 && fileType !== 0o040000) {
       throw new SitefileError('E_ARCHIVE_UNSAFE', `unsafe archive entry '${e.name}': symlink or special file entries are not allowed`, span);
     }
@@ -249,7 +269,7 @@ function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
   }
 
   for (const e of list) {
-    if (e.name.endsWith('/')) { add(e.name, 'dir', new Uint8Array(0), 0o755); continue; }
+    if (e.isDir) { add(e.name, 'dir', new Uint8Array(0), 0o755); continue; }
     const h = e.local;
     if (h + 30 > b.length || v.getUint32(h, true) !== 0x04034b50) throw bad(`corrupt zip local header for '${e.name}'`);
     const start = h + 30 + v.getUint16(h + 26, true) + v.getUint16(h + 28, true);
@@ -261,7 +281,7 @@ function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: Sou
     } else if (e.method === 8) {
       try {
         // Headers can lie: never inflate more than the declared size.
-        data = inflateRawSync(raw, { maxOutputLength: Math.max(e.usize, 1) });
+        data = await inflateRawAsync(raw, { maxOutputLength: Math.max(e.usize, 1) });
       } catch (err) {
         throw inflateError(err, origin, false, limits, span);
       }

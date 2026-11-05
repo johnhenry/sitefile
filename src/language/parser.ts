@@ -1,6 +1,7 @@
 import { INTEGRITY_RE } from '../digest.js';
 import type { SourceSpan } from '../errors.js';
 import {
+  IDENT_RE,
   literalText,
   type EscapeMode,
   type ImportKind,
@@ -125,12 +126,10 @@ function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value'>): Map<s
   return out;
 }
 
-const STAGE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 function stageRef(c: Cursor, flags: Map<string, Flag>): { from?: StageRef } {
   const f = flags.get('from');
   if (!f) return {};
-  if (!STAGE_NAME_RE.test(f.value)) throw c.error('E_SYNTAX', `--from needs a stage name, got '${f.value}'`, f.span);
+  if (!IDENT_RE.test(f.value)) throw c.error('E_SYNTAX', `--from needs a stage name, got '${f.value}'`, f.span);
   return { from: { name: f.value, span: f.span } };
 }
 

@@ -1,9 +1,8 @@
 import { SitefileError } from '../errors.js';
-import { literalText, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
+import { IDENT_RE, literalText, stageNames, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
 const IMPORT_REF = /^([A-Za-z_][A-Za-z0-9_]*):/;
-const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function operandsOf(ins: Instruction): Operand[] {
   switch (ins.kind) {
@@ -32,8 +31,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   const vars = new Set<string>();
   const imports = new Set<string>();
   // Stage names: every alias in the file, those already declared, and those whose stage is complete.
-  const allStages = new Set<string>();
-  for (const ins of instructions) if (ins.kind === 'FROM' && ins.alias !== undefined) allStages.add(ins.alias);
+  const allStages = stageNames(instructions);
   const declaredStages = new Set<string>();
   const finishedStages = new Set<string>();
   let currentStage: string | undefined;
@@ -56,7 +54,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       if (ins.base !== 'scratch') {
         // A bare word naming a stage must name an earlier one; './name' always means a directory.
         const text = literalText(ins.base);
-        if (text !== undefined && IDENT.test(text) && allStages.has(text) && !finishedStages.has(text)) {
+        if (text !== undefined && IDENT_RE.test(text) && allStages.has(text) && !finishedStages.has(text)) {
           throw new SitefileError(
             'E_UNDEFINED',
             `FROM ${text}: stage '${text}' is not defined before this line (write ./${text} for a local directory)`,

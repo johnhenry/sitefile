@@ -1,7 +1,7 @@
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { request as httpRequest, type IncomingMessage, type ClientRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest, type RequestOptions as HttpsRequestOptions } from 'node:https';
-import { rootCertificates } from 'node:tls';
+import * as tls from 'node:tls';
 import { isIP, type LookupFunction } from 'node:net';
 import { SitefileError, isSitefileError, type SourceSpan } from '../errors.js';
 import type { FetchPolicy } from './types.js';
@@ -264,8 +264,10 @@ function openHop(
       signal,
     };
     if (url.protocol === 'https:' && policy.ca !== undefined) {
-      // Additive: keep the default roots and trust the extra CA(s) too.
-      (options as HttpsRequestOptions).ca = [...rootCertificates, policy.ca];
+      // Additive: setting `ca` replaces Node's whole default store, so start from
+      // that store (bundled roots plus NODE_EXTRA_CA_CERTS / --use-system-ca),
+      // not just the bundled roots, and add the extra CA(s).
+      (options as HttpsRequestOptions).ca = [...defaultCaCertificates(), policy.ca];
     }
     const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
     let req: ClientRequest;
@@ -295,4 +297,10 @@ function openHop(
     });
     req.end();
   });
+}
+
+/** Node's default CA store; `tls.getCACertificates` exists from Node 22.15/23.5. */
+function defaultCaCertificates(): readonly string[] {
+  const get = (tls as { getCACertificates?: (type?: string) => string[] }).getCACertificates;
+  return get ? get('default') : tls.rootCertificates;
 }

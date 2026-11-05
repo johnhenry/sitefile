@@ -19,19 +19,19 @@ function decodeUtf8(bytes: Uint8Array, uri: string, span?: SourceSpan): string {
 }
 
 /** Turn fetched or read bytes into a resource of the requested kind. */
-export function bytesToResource(
+export async function bytesToResource(
   bytes: Uint8Array,
   kind: 'file' | 'text' | 'json' | 'tree',
   info: BytesInfo,
   span?: SourceSpan,
   archiveLimits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
-): Resource {
+): Promise<Resource> {
   const digest = sha256(bytes);
   const provenance: Provenance =
     info.resolvedUrl === undefined ? { uri: info.uri, digest } : { uri: info.uri, resolvedUrl: info.resolvedUrl, digest };
   if (kind === 'tree') {
     // The provenance digest is that of the archive bytes, which is what pins and the lockfile cover.
-    return { kind: 'tree', tree: extractArchive(bytes, info.uri, archiveLimits, span), provenance };
+    return { kind: 'tree', tree: await extractArchive(bytes, info.uri, archiveLimits, span), provenance };
   }
   if (kind === 'file') {
     const mode = (info.mode ?? 0o644) & 0o111 ? 0o755 : 0o644;

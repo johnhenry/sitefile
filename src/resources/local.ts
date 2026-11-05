@@ -66,7 +66,16 @@ export class LocalContext {
     if (options?.sitefileignore !== false && (await exists(join(root, SITEFILEIGNORE)))) {
       // Read through the sandbox: a symlinked .sitefileignore must stay inside the context.
       const probe = new LocalContext(root, [], IgnoreRules.empty, true);
-      const { real, st } = await probe.resolve(SITEFILEIGNORE);
+      // A broken ignore file fails the build: skipping it could publish files it was meant to exclude.
+      const { real, st } = await probe.resolve(SITEFILEIGNORE).catch((e: unknown) => {
+        if (!(e instanceof SitefileError) || e.code !== 'E_NOT_FOUND') throw e;
+        throw new SitefileError(
+          'E_NOT_FOUND',
+          `'${SITEFILEIGNORE}' is a symlink to a missing file; fix or remove it (its rules would otherwise be skipped)`,
+          undefined,
+          { cause: e },
+        );
+      });
       if (!st.isFile()) throw new SitefileError('E_UNSUPPORTED_FILE', `'${SITEFILEIGNORE}' is not a regular file`);
       rules = IgnoreRules.parse(await fs.readFile(real, 'utf8'));
     }

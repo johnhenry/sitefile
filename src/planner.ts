@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import type { EscapeMode, ImportKind, Operand, Program, StageRef, ValueType } from './language/ast.js';
+import { stageNames, type EscapeMode, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
@@ -75,8 +75,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const stages: Stage[] = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
-  const allStageNames = new Set<string>();
-  for (const ins of program.instructions) if (ins.kind === 'FROM' && ins.alias !== undefined) allStageNames.add(ins.alias);
+  const allStageNames = stageNames(program.instructions);
   // validate() guarantees a FROM precedes every operation.
   const operations = (): Operation[] => stages[stages.length - 1]!.operations;
   let exportPath: string | undefined;

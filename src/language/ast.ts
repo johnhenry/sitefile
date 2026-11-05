@@ -115,3 +115,13 @@ export function literalText(op: Operand): string | undefined {
   }
   return out;
 }
+
+/** Names of ARG, LET, IMPORT and stages (`FROM … AS name`, `--from=name`). */
+export const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Every stage alias declared anywhere in the file. */
+export function stageNames(instructions: readonly Instruction[]): Set<string> {
+  const names = new Set<string>();
+  for (const ins of instructions) if (ins.kind === 'FROM' && ins.alias !== undefined) names.add(ins.alias);
+  return names;
+}

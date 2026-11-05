@@ -162,7 +162,8 @@ gitignore subset:
   skipped. `.sitefileignore`, `Sitefile` and `Sitefile.lock` are not
   auto-ignored (explicit is better); add them to the file to keep them out of
   your output. A `.sitefileignore` that is a symlink must stay inside the
-  context.
+  context; a dangling one fails the build (`E_NOT_FOUND`) rather than being
+  skipped, since skipping it could publish files it was meant to exclude.
 
 ### Remote sources and the lockfile
 - Only `https:` by default. Credentials in URLs are rejected. Every resolved
@@ -177,15 +178,19 @@ gitignore subset:
   (`E_LOCK_MISMATCH`; rerun with `--update-lock`). `--frozen-lockfile` fails
   instead of adding entries (`E_LOCK_MISSING`).
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
-  for https in addition to the built-in roots, for tests and enterprise private
+  for https in addition to Node's default store (bundled roots plus
+  `NODE_EXTRA_CA_CERTS` / `--use-system-ca`), for tests and enterprise private
   CAs. Certificate and hostname verification are never disabled; there is no
   CLI flag for it.
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
   tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
-  else fails with `E_TYPE`. Supported tar extras: ustar prefix, GNU long names,
-  pax `path`/`size`. Other pax keys are ignored.
+  else fails with `E_TYPE`. Supported tar extras: POSIX ustar prefix (old GNU
+  headers keep timestamps there and are read without it), GNU long names, pax
+  `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
+  Zip directories are recognized by a trailing `/` or by a directory mode.
+  Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
 - Directories are implicit. Modes are reduced to `0644`/`0755`. A single
