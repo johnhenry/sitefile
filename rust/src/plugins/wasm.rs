@@ -18,16 +18,33 @@
 //! fresh Store and Instance (no state carries over), linear memory is capped at
 //! 1 GiB, and the call is interrupted when it runs past `policy.timeout_ms` of
 //! wall-clock time (epoch interruption driven by a ticker thread).
+//!
+//! Compiling with Cranelift costs ~55 ms, so compiled modules are cached in
+//! memory (one compile per plugin per process) and on disk at
+//! `$SITEFILE_HOME/cache/wasm/<key>.cwasm` (`SITEFILE_NO_WASM_CACHE=1` turns the
+//! disk cache off). The key covers the wasm bytes, wasmtime version, target and
+//! codegen settings. Cache files are trusted by `Module::deserialize_file`, so
+//! they live in a 0700 directory, are written 0600 via temp file + rename, and a
+//! file that fails to load is recompiled and replaced. Import/export checks run
+//! on every load, hits included. No cache failure ever fails a build.
 
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use wasmtime::{Config, Engine, ExternType, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline, Val};
 
 use crate::error::{ErrorCode, Result, SitefileError, SourceSpan};
+use crate::store::resolve_store_home;
 use crate::plugins::host::{b64_decode_lenient, PluginPolicy, PluginRequest, PluginResult};
 
 /// Largest linear memory a wasm plugin may use (1 GiB).
@@ -61,7 +78,139 @@ fn kind_name(t: &ExternType) -> &'static str {
 }
 
 fn compile(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<Module> {
+    COMPILES.with(|c| c.set(c.get() + 1));
     Module::new(engine(), bytes).map_err(|e| plugin_err(name, format!("not a valid WebAssembly module ({})", first_line(&e)), span))
+}
+
+thread_local! {
+    /// How many times this thread ran Cranelift (tests use it to see cache hits).
+    static COMPILES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Set to a non-empty value other than `0` to skip the on-disk compiled-module cache.
+pub const NO_CACHE_ENV: &str = "SITEFILE_NO_WASM_CACHE";
+
+/// `$SITEFILE_HOME/cache/wasm`, or `None` when the disk cache is switched off.
+/// (Unit tests never touch the real home: they pass their own directory.)
+fn disk_cache_dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    match std::env::var(NO_CACHE_ENV) {
+        Ok(v) if !v.is_empty() && v != "0" => None,
+        _ => Some(resolve_store_home().join("cache").join("wasm")),
+    }
+}
+
+/// Cache key: wasm bytes + everything that changes generated code (wasmtime
+/// version, target, codegen settings via the engine's compatibility hash, and
+/// the epoch-interruption setting this crate turns on).
+fn cache_key(bytes: &[u8]) -> String {
+    struct H(Sha256);
+    impl Hasher for H {
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.update(bytes);
+        }
+        fn finish(&self) -> u64 {
+            0
+        }
+    }
+    let mut h = H(Sha256::new());
+    h.0.update(b"sitefile-wasm-cache-v1\0");
+    h.0.update(format!("wasmtime {WASMTIME_VERSION}\0{}-{}\0epoch_interruption=true\0", std::env::consts::ARCH, std::env::consts::OS).as_bytes());
+    engine().precompile_compatibility_hash().hash(&mut h);
+    h.0.update((bytes.len() as u64).to_le_bytes());
+    h.0.update(bytes);
+    h.0.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Keep in step with the `wasmtime` requirement in Cargo.toml (belt and braces:
+/// the engine compatibility hash already includes the real version).
+const WASMTIME_VERSION: &str = "29";
+
+/// Make sure `dir` is a private directory we may trust `deserialize_file` on.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    if !dir.exists() && std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).is_err() {
+        return false;
+    }
+    match std::fs::symlink_metadata(dir) {
+        // A real directory (not a symlink) that nobody else can write into.
+        Ok(m) => m.is_dir() && m.mode() & 0o022 == 0,
+        Err(_) => false,
+    }
+}
+#[cfg(not(unix))]
+fn private_dir(dir: &Path) -> bool {
+    std::fs::create_dir_all(dir).is_ok()
+}
+
+/// Atomic write (temp file + rename), mode 0600.
+fn write_entry(dir: &Path, key: &str, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let tmp = dir.join(format!(".{key}.{}.{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let res = (|| {
+        let mut f = o.open(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, dir.join(format!("{key}.cwasm")))
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Disk,
+    Compiled,
+}
+
+/// Load from `dir` when possible, else compile (and try to store). Imports and
+/// exports are checked every time, and before anything is written to the cache.
+fn load_with_dir(dir: Option<&Path>, name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<(Module, Origin)> {
+    let entry = dir.filter(|d| private_dir(d)).map(|d| (d, cache_key(bytes)));
+    if let Some((d, key)) = &entry {
+        let path = d.join(format!("{key}.cwasm"));
+        if std::fs::symlink_metadata(&path).map(|m| m.is_file()).unwrap_or(false) {
+            // SAFETY: the file is a regular file in a private (not group/world-writable)
+            // directory, under a key covering the engine settings; wasmtime also rejects
+            // artifacts from another version/config. Any failure falls back to compiling.
+            if let Ok(module) = unsafe { Module::deserialize_file(engine(), &path) } {
+                check_module(name, &module, span)?;
+                return Ok((module, Origin::Disk));
+            }
+        }
+    }
+    let module = compile(name, bytes, span)?;
+    check_module(name, &module, span)?;
+    if let Some((d, key)) = &entry {
+        if let Ok(data) = module.serialize() {
+            let _ = write_entry(d, key, &data);
+        }
+    }
+    Ok((module, Origin::Compiled))
+}
+
+/// One compile per distinct plugin per process; later loads clone the handle.
+fn load_module(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<Module> {
+    static MEMO: Mutex<Option<HashMap<String, Module>>> = Mutex::new(None);
+    let key = crate::digest::sha256(bytes);
+    if let Some(m) = MEMO.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&key).cloned())) {
+        return Ok(m);
+    }
+    let (module, _) = load_with_dir(disk_cache_dir().as_deref(), name, bytes, span)?;
+    if let Ok(mut g) = MEMO.lock() {
+        g.get_or_insert_with(HashMap::new).insert(key, module.clone());
+    }
+    Ok(module)
 }
 
 fn first_line(e: &wasmtime::Error) -> String {
@@ -93,8 +242,7 @@ fn check_module(name: &str, module: &Module, span: Option<&SourceSpan>) -> Resul
 
 /// Compile and check a module against ABI v1; E_PLUGIN with a precise reason.
 pub fn check_wasm_plugin(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<()> {
-    let module = compile(name, bytes, span)?;
-    check_module(name, &module, span)
+    load_module(name, bytes, span).map(|_| ())
 }
 
 struct Ctx {
@@ -123,9 +271,7 @@ impl WasmPlugin {
     pub fn call(&mut self, request: &PluginRequest, span: Option<&SourceSpan>) -> Result<PluginResult> {
         let json = request.to_wire_string().into_bytes();
         if self.module.is_none() {
-            let m = compile(&self.name, &self.bytes, span)?;
-            check_module(&self.name, &m, span)?;
-            self.module = Some(m);
+            self.module = Some(load_module(&self.name, &self.bytes, span)?);
         }
         let module = self.module.as_ref().expect("compiled above");
         let out = run(module, &json, &self.policy).map_err(|why| plugin_err(&self.name, why, span))?;
@@ -273,7 +419,6 @@ fn call_abi(store: &mut Store<Ctx>, module: &Module, request: &[u8]) -> wasmtime
 mod tests {
     use super::*;
     use crate::plugins::host::{PluginHost, PluginInput};
-    use std::path::{Path, PathBuf};
 
     fn root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
@@ -393,5 +538,100 @@ mod tests {
         let e = host.call("nope", &req("/o", &[]), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_UNDEFINED);
         host.close();
+    }
+
+    fn tmp(prefix: &str) -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let d = std::env::temp_dir().join(format!("sitefile-wasm-{prefix}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+    fn compiles() -> usize {
+        COMPILES.with(|c| c.get())
+    }
+
+    #[test]
+    fn disk_cache_miss_then_hit_then_corrupt_fallback() {
+        let dir = tmp("hit").join("cache");
+        let bytes = fixture("const");
+        let c0 = compiles();
+        let (_, o) = load_with_dir(Some(&dir), "p", &bytes, None).unwrap();
+        assert_eq!((o, compiles() - c0), (Origin::Compiled, 1));
+        let file = dir.join(format!("{}.cwasm", cache_key(&bytes)));
+        assert!(file.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let (m, o) = load_with_dir(Some(&dir), "p", &bytes, None).unwrap();
+        assert_eq!((o, compiles() - c0), (Origin::Disk, 1), "a hit must not compile");
+        let out = run(&m, b"{}", &PluginPolicy::default()).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("hello from wasm"));
+        // Corrupt entry: falls back to compiling and rewrites a good file.
+        std::fs::write(&file, b"garbage").unwrap();
+        let (_, o) = load_with_dir(Some(&dir), "p", &bytes, None).unwrap();
+        assert_eq!((o, compiles() - c0), (Origin::Compiled, 2));
+        assert_eq!(load_with_dir(Some(&dir), "p", &bytes, None).unwrap().1, Origin::Disk);
+        assert_ne!(cache_key(&bytes), cache_key(&fixture("trap")));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn disk_hits_still_check_the_module_and_bad_modules_are_never_cached() {
+        let dir = tmp("check").join("cache");
+        let e = load_with_dir(Some(&dir), "p", &fixture("imports"), None).unwrap_err();
+        assert!(e.message().contains("can't import anything"), "{}", e.message());
+        assert!(load_with_dir(Some(&dir), "p", b"not wasm", None).is_err());
+        assert_eq!(std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0), 0, "invalid modules must not be cached");
+        // Even a planted entry for a bad module is checked on the hit.
+        let bytes = fixture("imports");
+        let m = Module::new(engine(), &bytes).unwrap();
+        write_entry(&dir, &cache_key(&bytes), &m.serialize().unwrap()).unwrap();
+        let e = load_with_dir(Some(&dir), "p", &bytes, None).unwrap_err();
+        assert!(e.message().contains("can't import anything"), "{}", e.message());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn an_unusable_cache_dir_never_fails_the_build() {
+        let base = tmp("ro");
+        std::fs::create_dir_all(&base).unwrap();
+        let blocker = base.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let (_, o) = load_with_dir(Some(&blocker.join("cache")), "p", &fixture("const"), None).unwrap();
+        assert_eq!(o, Origin::Compiled);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = base.join("ro");
+            std::fs::create_dir(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let (_, o) = load_with_dir(Some(&ro.join("cache")), "p", &fixture("const"), None).unwrap();
+            assert_eq!(o, Origin::Compiled);
+            // A group/world-writable cache dir is not trusted, so nothing is read or written.
+            let open = base.join("open");
+            std::fs::create_dir(&open).unwrap();
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+            load_with_dir(Some(&open), "p", &fixture("const"), None).unwrap();
+            assert_eq!(std::fs::read_dir(&open).unwrap().count(), 0);
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(load_with_dir(None, "p", &fixture("const"), None).unwrap().1, Origin::Compiled);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn one_compile_per_plugin_per_process() {
+        let bytes = fixture("echo-len");
+        let c0 = compiles();
+        check_wasm_plugin("p", &bytes, None).unwrap();
+        let mut a = WasmPlugin::new("p", bytes.clone(), PluginPolicy::default());
+        let mut b = WasmPlugin::new("p", bytes, PluginPolicy::default());
+        a.call(&req("/o", &[]), None).unwrap();
+        b.call(&req("/o", &[]), None).unwrap();
+        // Other tests on other threads may have loaded the same fixture first.
+        assert!(compiles() - c0 <= 1, "compiled {} times", compiles() - c0);
     }
 }
