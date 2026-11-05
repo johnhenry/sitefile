@@ -46,6 +46,7 @@ export type ErrorCode =
   // rendering
   | 'E_ENCODING'
   | 'E_TEMPLATE'
+  | 'E_FRONTMATTER'
   // export
   | 'E_EXPORT'
   | 'E_EXPORT_UNSAFE'

@@ -4,9 +4,10 @@ import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
 import type { Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
-import { joinVirtual, basenameVirtual } from './paths.js';
+import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
-import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath } from './render.js';
+import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
+import { markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { LocalContext } from './resources/local.js';
@@ -115,7 +116,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const env: ImportEnv = { local, policy, archiveLimits, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
   const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
-  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, resolved[i]!]));
+  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!)]));
 
   const stageTrees = new Map<string, Tree>();
   const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn };
@@ -167,6 +168,12 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
     const rel = spec.location.path;
     const kind = await env.local.stat(rel, spec.span);
     if (kind === 'directory') {
+      if (spec.as === 'markdown') {
+        if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
+        const tree = await env.local.readTree(rel, origin, spec.span);
+        const value = markdownCollection(tree.tree, spec.uri.replace(/\/+$/, ''), spec.span);
+        return { kind: 'value', format: 'markdown', value, provenance: tree.provenance };
+      }
       if (spec.as && spec.as !== 'tree') {
         throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a directory and cannot be imported AS ${spec.as}`, spec.span);
       }
@@ -216,6 +223,8 @@ interface ExecEnv {
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly label: string;
   readonly warn: (m: string) => void;
+  /** The current element of a RENDER … FOR loop. */
+  readonly loop?: { readonly name: string; readonly value: unknown };
 }
 
 /** The tree a stage starts from. */
@@ -279,8 +288,43 @@ async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
   const parts = src.inline
     ? parseRenderTemplate(text, src.inline.file, src.inline.firstLine)
     : parseRenderTemplate(text, src.label);
-  const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape);
-  return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(out), origin)]], policy, op.span);
+  if (!op.each) {
+    const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env));
+    return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(out), origin)]], policy, op.span);
+  }
+
+  // RENDER … FOR item IN list: one file per element, the destination interpolated per element.
+  const { as, list, dest } = op.each;
+  const items = valueOf(list, [], op.span, false, env);
+  if (!Array.isArray(items)) {
+    throw new SitefileError('E_TYPE', `FOR ${as} IN ${list}: '${list}' is not a list (import a directory AS markdown, or a JSON array)`, op.span);
+  }
+  if (items.length === 0) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+  const files: Array<[string, FileNode]> = [];
+  for (const item of items) {
+    const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
+    let raw = '';
+    for (const part of dest.parts) {
+      if (part.kind === 'text') raw += part.value;
+      else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
+    }
+    const target = normalizeVirtual(raw, dest.span, `RENDER destination for ${as}`);
+    if (target.trailingSlash) {
+      throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
+    }
+    const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv));
+    files.push([target.path, makeFile(new TextEncoder().encode(out), origin)]);
+  }
+  return tree.withFiles(files, policy, op.span);
+}
+
+/** Apply an import's SORT BY to a markdown collection. */
+function sorted(spec: ImportSpec, res: Resource): Resource {
+  if (!spec.sort || res.kind !== 'value' || res.format !== 'markdown') return res;
+  if (!Array.isArray(res.value)) {
+    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: SORT BY needs a directory of documents, not a single file`, spec.span);
+  }
+  return { ...res, value: sortDocuments(res.value as MarkdownDocument[], spec.sort.key, spec.sort.descending) };
 }
 
 async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise<Source> {
@@ -330,6 +374,7 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
 }
 
 function lookup(name: string, p: readonly string[], span: SourceSpan, env: ExecEnv): Scalar {
+  if (env.loop && env.loop.name === name) return resolveJsonPath(env.loop.value, p, name, span);
   const v = env.vars.get(name);
   if (v !== undefined) {
     if (p.length) throw new SitefileError('E_TYPE', `'${name}' is an ARG/LET value; dotted access only works on JSON imports`, span);
@@ -340,9 +385,25 @@ function lookup(name: string, p: readonly string[], span: SourceSpan, env: ExecE
   if (res.kind !== 'value') {
     throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read text and json imports`, span);
   }
-  if (res.format === 'json') return resolveJsonPath(res.value, p, name, span);
-  if (p.length) throw new SitefileError('E_TYPE', `import '${name}' is text; dotted access only works on JSON imports`, span);
+  if (res.format === 'json' || res.format === 'markdown') return resolveJsonPath(res.value, p, name, span);
+  if (p.length) throw new SitefileError('E_TYPE', `import '${name}' is text; dotted access only works on JSON and markdown imports`, span);
   return res.value as string;
+}
+
+/** Any value (lists, documents, scalars) for template blocks and FOR. `loose`: missing → undefined. */
+function valueOf(name: string, p: readonly string[], span: SourceSpan, loose: boolean, env: ExecEnv): unknown {
+  if (env.loop && env.loop.name === name) return walk(env.loop.value, p, name, span, loose);
+  const v = env.vars.get(name);
+  if (v !== undefined) return walk(v, p, name, span, loose);
+  const res = env.resources.get(name);
+  if (!res) {
+    if (loose) return undefined;
+    throw new SitefileError('E_UNDEFINED', `'${name}' is not an ARG, LET or IMPORT`, span);
+  }
+  if (res.kind !== 'value') {
+    throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read text, json and markdown imports`, span);
+  }
+  return walk(res.value, p, name, span, loose);
 }
 
 // ---------------------------------------------------------------- helpers

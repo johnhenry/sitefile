@@ -34,9 +34,9 @@ no runtime dependencies.
 | `FROM scratch\|<dir>\|<stage> [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`) |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree\|markdown] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`; `AS markdown` reads posts with frontmatter) |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
-| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest>` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}` |
+| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `EXPORT <path> [AS directory]` | yes |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -45,6 +45,14 @@ Templates can also live in the Sitefile itself (see `examples/inline/`):
 RENDER --escape=html <<HTML TO /index.html
 <h1>${TITLE}</h1>
 HTML
+```
+
+A blog from Markdown posts with frontmatter (see `examples/blog/`):
+
+```
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+RENDER --escape=html ./templates/index.html TO /index.html
+RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
 ```
 
 ## CLI
