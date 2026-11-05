@@ -6,6 +6,7 @@ import type { ExportFormat, Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
@@ -425,7 +426,14 @@ type Source =
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
 async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost): Promise<void> {
   const { real, bytes } = await local.realFile(spec.path, spec.span);
-  // The plugin may read its whole folder, so that folder must not be the context itself.
+  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
+  if (real.endsWith('.wasm')) {
+    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+    checkWasmPlugin(spec.name, bytes, spec.span);
+    host.register(spec.name, real, spec.span, bytes);
+    return;
+  }
+  // A JS plugin may read its whole folder, so that folder must not be the context itself.
   if (path.dirname(real) === local.root) {
     throw new SitefileError(
       'E_VALIDATION',
@@ -433,7 +441,6 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
       spec.span,
     );
   }
-  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
   host.register(spec.name, real, spec.span);
 }
 
@@ -520,8 +527,10 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
   let pluginDigest: string | undefined;
   if (env.cache && !tool) {
     if (!env.pluginDigests.has(op.plugin)) {
+      // A wasm plugin is just its module; a JS plugin can read its whole folder.
+      const wasm = env.plugins.wasmBytes(op.plugin);
       const dir = env.plugins.folderOf(op.plugin);
-      const digest = dir ? await digestFolder(dir) : undefined;
+      const digest = wasm ? sha256(wasm) : dir ? await digestFolder(dir) : undefined;
       env.pluginDigests.set(op.plugin, digest);
       if (digest === undefined) env.warn(`${origin}: PLUGIN ${op.plugin}'s folder is too large to hash; its results are not cached`);
     }

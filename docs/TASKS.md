@@ -48,3 +48,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #28 Registry `push` / `pull` over the OCI distribution spec: token/Basic auth, Docker config + credential helpers, digest-verified streaming pulls, blob existence checks and mounts, redirect/SSRF policy (`test/registry.test.ts`, `test/engine.test.ts`)
 - [x] #29 Runnable images: `EXPORT / AS oci BASE <image>` / `--base`, base config and layers preserved, base digest in `Sitefile.lock` `images` (`test/registry.test.ts`, `test/engine.test.ts`)
 - [x] OCI exports name the image the way `docker save` does (`io.containerd.image.name` + tag in `ref.name`) so `docker load` finds it by name (`test/oci.test.ts`, `test/engine.test.ts`)
+- [x] #34 WebAssembly plugins: `PLUGIN x FROM ./x.wasm`, import-free ABI v1, worker + timeout, Rust example (`test/wasm-plugins.test.ts`, `examples/wasm/`)

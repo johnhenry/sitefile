@@ -178,10 +178,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         } else if (ins.args) {
           throw new SitefileError('E_VALIDATION', `ARGS applies to a TOOL; ${ins.plugin} is a PLUGIN (pass values with OPTIONS)`, ins.span);
         }
+        // With no source and no FOR the plugin gets only its OPTIONS (e.g. a badge or a generated file).
         if (ins.source) checkSource(ins.source, imports, ins.from, finishedStages, allStages);
-        else if (!ins.each && !tools.has(ins.plugin)) {
-          throw new SitefileError('E_VALIDATION', 'TRANSFORM needs a source, or FOR item IN list to transform each element', ins.span);
-        }
         if (ins.each) {
           const { as, list, span } = ins.each;
           if (!imports.has(list)) {

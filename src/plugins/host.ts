@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
+import { WasmPlugin } from './wasm.js';
 
 /**
  * Plugins run one Node process each, under Node's permission model:
@@ -267,9 +268,16 @@ export interface HostStats {
 }
 
 /** Starts a plugin's process on its first call (not at registration) and stops them all when the build ends. */
+/** What a plugin runs as: a sandboxed Node process (.mjs) or a WebAssembly worker (.wasm). */
+interface PluginRunner {
+  readonly cacheable: boolean;
+  call(request: PluginRequest, span?: SourceSpan): Promise<PluginResult>;
+  close(): void;
+}
+
 export class PluginHost {
-  private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined }>();
-  private readonly procs = new Map<string, PluginProcess>();
+  private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined; wasm?: Uint8Array }>();
+  private readonly procs = new Map<string, PluginRunner>();
   readonly stats: HostStats = { spawned: 0, calls: 0 };
 
   constructor(
@@ -277,9 +285,22 @@ export class PluginHost {
     private readonly log: (line: string) => void = () => {},
   ) {}
 
-  /** `file` is the plugin's absolute real path (already sandbox- and integrity-checked). The process starts lazily. */
-  register(name: string, file: string, span?: SourceSpan): void {
-    if (!this.registered.has(name)) this.registered.set(name, { file, span });
+  /**
+   * `file` is the plugin's absolute real path (already sandbox- and integrity-checked).
+   * For a `.wasm` plugin, pass the checked module bytes. Runners start lazily.
+   */
+  register(name: string, file: string, span?: SourceSpan, wasm?: Uint8Array): void {
+    if (!this.registered.has(name)) this.registered.set(name, { file, span, ...(wasm ? { wasm } : {}) });
+  }
+
+  /** Whether a registered plugin is a WebAssembly module. */
+  isWasm(name: string): boolean {
+    return this.registered.get(name)?.wasm !== undefined;
+  }
+
+  /** A registered wasm plugin's module bytes. */
+  wasmBytes(name: string): Uint8Array | undefined {
+    return this.registered.get(name)?.wasm;
   }
 
   async call(name: string, request: PluginRequest, span?: SourceSpan): Promise<PluginResult> {
@@ -287,7 +308,9 @@ export class PluginHost {
     if (!p) {
       const reg = this.registered.get(name);
       if (!reg) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
-      p = new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
+      p = reg.wasm
+        ? new WasmPlugin(name, reg.wasm, this.policy)
+        : new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
       this.procs.set(name, p);
       this.stats.spawned++;
     }

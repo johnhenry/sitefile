@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WebAssembly plugins</title></head>
+<body>
+  <h1>WebAssembly plugins</h1>
+  <p><img src="/badges/built-with.svg" alt="built with sitefile + wasm"></p>
+  ${#each posts as post}
+  <article>
+    <h2>${post.title}</h2>
+    <p><img src="/badges/${post.slug}.svg" alt="reading time"></p>
+    ${post.content|raw}
+  </article>
+  ${/each}
+</body>
+</html>

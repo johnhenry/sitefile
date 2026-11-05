@@ -24,7 +24,7 @@ export interface ImportSpec {
   readonly span: SourceSpan;
 }
 
-/** A declared renderer plugin: a local `.mjs` file in its own folder. */
+/** A declared renderer plugin: a local `.mjs` file in its own folder, or a `.wasm` module. */
 export interface PluginSpec {
   readonly name: string;
   /** Context-relative path of the module. */
@@ -217,8 +217,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           throw new SitefileError('E_PROTOCOL', `PLUGIN ${ins.name}: plugins must be local files in the build context, not URLs`, ins.uri.span);
         }
         const rel = normalizeLocal(raw, ins.uri.span).path;
-        if (!/\.mjs$/.test(rel)) {
-          throw new SitefileError('E_VALIDATION', `PLUGIN ${ins.name}: '${raw}' must be an ES module file ending in .mjs`, ins.uri.span);
+        if (!/\.(mjs|wasm)$/.test(rel)) {
+          throw new SitefileError('E_VALIDATION', `PLUGIN ${ins.name}: '${raw}' must be an ES module (.mjs) or a WebAssembly module (.wasm)`, ins.uri.span);
         }
         plugins.push({ name: ins.name, path: rel, ...(ins.integrity ? { integrity: ins.integrity } : {}), span: ins.span });
         break;
