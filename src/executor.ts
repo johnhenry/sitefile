@@ -241,7 +241,15 @@ function fail(name: string, span: SourceSpan): never {
 }
 
 type Source =
-  | { readonly kind: 'file'; readonly bytes: Uint8Array; readonly mode: number; readonly basename: string; readonly label: string }
+  | {
+      readonly kind: 'file';
+      readonly bytes: Uint8Array;
+      readonly mode: number;
+      readonly basename: string;
+      readonly label: string;
+      /** Set for heredoc bodies: where the content sits in the Sitefile, for template error positions. */
+      readonly inline?: { readonly file: string; readonly firstLine: number };
+    }
   | { readonly kind: 'tree'; readonly tree: Tree; readonly label: string };
 
 async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
@@ -251,7 +259,11 @@ async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
   if (op.kind === 'COPY') {
     const src = await readSource(op.source, origin, env);
     if (src.kind === 'file') {
-      const dest = op.destIsDir || tree.isDirectory(op.dest) ? joinVirtual(op.dest, src.basename) : op.dest;
+      const intoDir = op.destIsDir || tree.isDirectory(op.dest);
+      if (intoDir && src.inline) {
+        throw new SitefileError('E_PATH', `'${op.dest}' is a directory; an inline ${src.label} body needs a file destination`, op.span);
+      }
+      const dest = intoDir ? joinVirtual(op.dest, src.basename) : op.dest;
       return tree.withFiles([[dest, makeFile(src.bytes, origin, src.mode)]], policy, op.span);
     }
     if (src.tree.size === 0) env.warn(`${origin}: '${src.label}' contains no files`);
@@ -264,12 +276,19 @@ async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
     throw new SitefileError('E_TYPE', `RENDER template '${src.label}' is a directory, not a file`, op.template.span);
   }
   const text = decodeUtf8(src.bytes, `template '${src.label}'`, op.template.span);
-  const parts = parseRenderTemplate(text, src.label);
+  const parts = src.inline
+    ? parseRenderTemplate(text, src.inline.file, src.inline.firstLine)
+    : parseRenderTemplate(text, src.label);
   const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape);
   return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(out), origin)]], policy, op.span);
 }
 
 async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise<Source> {
+  if (ref.kind === 'inline') {
+    const bytes = new TextEncoder().encode(ref.text);
+    const inline = { file: env.label, firstLine: ref.bodyLine };
+    return { kind: 'file', bytes, mode: 0o644, basename: '', label: `<<${ref.delimiter}`, inline };
+  }
   if (ref.kind === 'local') {
     const label = './' + ref.path;
     if ((await env.local.stat(ref.path, ref.span)) === 'directory') {

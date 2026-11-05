@@ -19,10 +19,11 @@ const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
  * - A `$` not followed by `{` is literal.
  * - Any other `${` (invalid or unterminated) fails with E_TEMPLATE at the `$`.
  */
-export function parseRenderTemplate(text: string, file: string): TemplatePart[] {
+export function parseRenderTemplate(text: string, file: string, firstLine = 1): TemplatePart[] {
   const parts: TemplatePart[] = [];
   let buf = '';
-  let line = 1;
+  // firstLine > 1 when the template is a heredoc body inside the Sitefile.
+  let line = firstLine;
   let lineStart = 0;
   let i = 0;
   const spanAt = (idx: number): SourceSpan => ({ file, line, column: idx - lineStart + 1 });

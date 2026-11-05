@@ -58,6 +58,27 @@ export interface ImportInstruction {
   readonly integrity?: string;
 }
 
+/**
+ * Content written inline in the Sitefile with a heredoc (`COPY <<CSS /a.css`,
+ * `RENDER <<HTML TO /index.html`): the lines after the instruction, up to a line
+ * that is exactly the delimiter.
+ */
+export interface InlineBody {
+  readonly kind: 'inline';
+  /** The delimiter word, e.g. `HTML`. */
+  readonly delimiter: string;
+  /** The body, each line ending in `\n` (empty string for an empty body). */
+  readonly text: string;
+  /** Span of the `<<` marker. */
+  readonly span: SourceSpan;
+  /** 1-based Sitefile line of the body's first line. */
+  readonly bodyLine: number;
+}
+
+export function isInline(x: Operand | InlineBody): x is InlineBody {
+  return 'kind' in x && x.kind === 'inline';
+}
+
 /** `--from=<stage>`: read the source from an earlier stage's final tree. */
 export interface StageRef {
   readonly name: string;
@@ -67,7 +88,7 @@ export interface StageRef {
 export interface CopyInstruction {
   readonly kind: 'COPY';
   readonly span: SourceSpan;
-  readonly source: Operand;
+  readonly source: Operand | InlineBody;
   readonly dest: Operand;
   readonly from?: StageRef;
   /** `--overwrite`: replace files that differ instead of failing. */
@@ -77,7 +98,7 @@ export interface CopyInstruction {
 export interface RenderInstruction {
   readonly kind: 'RENDER';
   readonly span: SourceSpan;
-  readonly template: Operand;
+  readonly template: Operand | InlineBody;
   readonly dest: Operand;
   readonly from?: StageRef;
   /** `--escape=html|none`, default none. */
@@ -107,7 +128,8 @@ export interface Program {
   readonly instructions: readonly Instruction[];
 }
 
-export function literalText(op: Operand): string | undefined {
+export function literalText(op: Operand | InlineBody): string | undefined {
+  if (isInline(op)) return undefined;
   let out = '';
   for (const p of op.parts) {
     if (p.kind !== 'text') return undefined;

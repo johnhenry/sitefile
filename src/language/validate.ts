@@ -1,5 +1,5 @@
 import { SitefileError } from '../errors.js';
-import { IDENT_RE, literalText, stageNames, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
+import { IDENT_RE, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
 const IMPORT_REF = /^([A-Za-z_][A-Za-z0-9_]*):/;
@@ -15,9 +15,9 @@ function operandsOf(ins: Instruction): Operand[] {
     case 'IMPORT':
       return [ins.uri];
     case 'COPY':
-      return [ins.source, ins.dest];
+      return isInline(ins.source) ? [ins.dest] : [ins.source, ins.dest];
     case 'RENDER':
-      return [ins.template, ins.dest];
+      return isInline(ins.template) ? [ins.dest] : [ins.template, ins.dest];
     case 'EXPORT':
       return [ins.path];
   }
@@ -109,12 +109,13 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
 }
 
 function checkSource(
-  op: Operand,
+  op: Operand | InlineBody,
   imports: ReadonlySet<string>,
   from: StageRef | undefined,
   finished: ReadonlySet<string>,
   all: ReadonlySet<string>,
 ): void {
+  if (isInline(op)) return; // content is in the Sitefile itself
   if (from) {
     // The source is a path inside the stage, not an import ref or local path.
     if (!finished.has(from.name)) {

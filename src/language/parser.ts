@@ -2,6 +2,8 @@ import { INTEGRITY_RE } from '../digest.js';
 import type { SourceSpan } from '../errors.js';
 import {
   IDENT_RE,
+  isInline,
+  type InlineBody,
   literalText,
   type EscapeMode,
   type ImportKind,
@@ -18,7 +20,7 @@ const NOT_YET = new Set(['REMOVE', 'TRANSFORM', 'GENERATE', 'ASSERT', 'META', 'E
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
 export function parseSitefile(source: string, file = 'Sitefile'): Instruction[] {
-  return logicalLines(source).map((line) => parseInstruction(new Cursor(line, file)));
+  return logicalLines(source, file).map((line) => parseInstruction(new Cursor(line, file)));
 }
 
 function parseInstruction(c: Cursor): Instruction {
@@ -133,11 +135,18 @@ function stageRef(c: Cursor, flags: Map<string, Flag>): { from?: StageRef } {
   return { from: { name: f.value, span: f.span } };
 }
 
+function noInlineFrom(c: Cursor, source: Operand | InlineBody, flags: Map<string, Flag>): void {
+  const from = flags.get('from');
+  if (from && isInline(source)) throw c.error('E_SYNTAX', '--from cannot be combined with an inline (<<) body', from.span);
+}
+
 function parseCopy(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
-  const source = c.operand('source');
+  const source = c.inline() ?? c.operand('source');
   const dest = c.operand('destination');
   c.expectEnd();
+  c.expectInlineUsed('the COPY source');
+  noInlineFrom(c, source, flags);
   return { kind: 'COPY', span, source, dest, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
 }
 
@@ -148,10 +157,12 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
   if (escapeFlag && escape !== 'none' && escape !== 'html') {
     throw c.error('E_SYNTAX', `--escape must be none or html, got '${escapeFlag.value}'`, escapeFlag.span);
   }
-  const template: Operand = c.operand('template');
+  const template = c.inline() ?? c.operand('template');
   c.expectKeyword('TO');
   const dest = c.operand('destination');
   c.expectEnd();
+  c.expectInlineUsed('the RENDER template');
+  noInlineFrom(c, template, flags);
   return { kind: 'RENDER', span, template, dest, escape: escape as EscapeMode, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
 }
 

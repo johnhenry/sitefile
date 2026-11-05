@@ -20,7 +20,7 @@ function one(line: string): Instruction {
 function op(line: string, field: 'source' | 'dest' = 'source'): Operand {
   const ins = one(line);
   assert.equal(ins.kind, 'COPY');
-  return ins.kind === 'COPY' ? ins[field] : assert.fail();
+  return ins.kind === 'COPY' ? (ins[field] as Operand) : assert.fail();
 }
 
 function parts(o: Operand): unknown[] {

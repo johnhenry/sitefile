@@ -114,6 +114,32 @@ These pin down what the draft above leaves open. Tests cover each rule.
     `${name.key.0.key}` for a scalar in a JSON import. `$${` writes a literal
     `${`. Unknown names fail with the template's line and column.
   - `--escape=html` escapes `& < > " '` in every substituted value.
+- **Inline content (heredocs).** The source of `COPY` and the template of
+  `RENDER` can be written in the Sitefile itself:
+
+  ```
+  RENDER --escape=html <<HTML TO /index.html
+  <h1>${TITLE}</h1>
+  HTML
+  COPY <<CSS /style.css
+  h1 { color: teal }
+  CSS
+  ```
+
+  - `<<NAME` (an identifier) must start a word outside quotes, in place of the
+    source operand. The body is every following line up to a line that is
+    exactly `NAME`; each body line keeps its `\n`. `<<-NAME` strips leading
+    tabs from body lines and the closing line.
+  - The body is raw: no comments, blank-line skipping, continuations or
+    escapes. A missing closing line, a second `<<` on one instruction, or `<<`
+    anywhere but the source fails with `E_SYNTAX`; so does combining it with
+    `--from`.
+  - `RENDER` bodies are templates with the same rules as template files, and
+    errors report the Sitefile line and column. `COPY` bodies are written byte
+    for byte (no `${}` substitution) with mode `0644`, to a file destination
+    (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
+  - Only `COPY` and `RENDER` lines are scanned for `<<`; elsewhere it is plain text.
+  - See `examples/inline/`.
 - `EXPORT <path> [AS directory]` must be the last instruction, exactly once;
   it exports from the last stage.
   The CLI's `--out` picks the host destination.
