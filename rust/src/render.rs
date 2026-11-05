@@ -464,7 +464,8 @@ pub fn render_template<'v>(
     values: Option<&TemplateValueLookup<'v>>,
 ) -> Result<String> {
     let ctx = Ctx { lookup, values, escape };
-    let mut out = String::new();
+    // Pages are usually kilobytes; start there to avoid repeated regrowth.
+    let mut out = String::with_capacity(16 * 1024);
     run(&ctx, nodes, None, &mut out)?;
     Ok(out)
 }
@@ -485,7 +486,20 @@ fn run<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, list: &[TemplateNode], scope: Option<&Scop
             TemplateNode::Text(v) => out.push_str(v),
             TemplateNode::Var { name, path, span, raw } => {
                 let v = match Scope::get(scope, name) {
-                    Some(item) => resolve_json_path(item, path, name, span)?,
+                    Some(item) => {
+                        // Fast path: a loop variable whose path leads to a string is
+                        // written straight from the borrowed value (no copy). Anything
+                        // else goes through resolve_json_path, which owns the errors.
+                        if let Ok(Some(Value::String(s))) = walk(item, path, name, span, true) {
+                            if *raw || ctx.escape != EscapeMode::Html {
+                                out.push_str(s);
+                            } else {
+                                escape_html_into(s, out);
+                            }
+                            continue;
+                        }
+                        resolve_json_path(item, path, name, span)?
+                    }
                     None => (ctx.lookup)(name, path, span)?,
                 };
                 let s = v.to_js_string();

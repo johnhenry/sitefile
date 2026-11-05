@@ -226,6 +226,44 @@ fn assert_parent_unchanged(parent: &Path, expected: FileId) -> Result<()> {
     Ok(())
 }
 
+/// Threads used for writing and removing many files (filesystem calls dominate
+/// large exports; the TypeScript version makes them one at a time).
+fn io_threads(n: usize) -> usize {
+    let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(4);
+    cores.min(8).min(n.max(1))
+}
+
+/// `remove_dir_all(p)`, with p's top-level entries removed in parallel.
+/// `remove_dir_all` never follows symlinks, so only `p`'s own entries go.
+fn remove_tree_parallel(p: &Path) {
+    let entries: Vec<PathBuf> = match fs::read_dir(p) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(_) => return,
+    };
+    let threads = io_threads(entries.len());
+    if threads > 1 {
+        let chunk = entries.len().div_ceil(threads);
+        std::thread::scope(|sc| {
+            for part in entries.chunks(chunk) {
+                sc.spawn(move || {
+                    for e in part {
+                        match fs::symlink_metadata(e) {
+                            Ok(m) if m.is_dir() => {
+                                let _ = fs::remove_dir_all(e);
+                            }
+                            Ok(_) => {
+                                let _ = fs::remove_file(e);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                });
+            }
+        });
+    }
+    let _ = fs::remove_dir_all(p);
+}
+
 /// Recursively remove `p` only if it is a real directory with identity
 /// `expected`; with no `expected`, only an empty real directory. Best effort.
 fn remove_if_same(p: &Path, expected: Option<FileId>) {
@@ -238,7 +276,7 @@ fn remove_if_same(p: &Path, expected: Option<FileId>) {
             let _ = fs::remove_dir(p);
         }
         Some(id) if id == id_of(&st) => {
-            let _ = fs::remove_dir_all(p);
+            remove_tree_parallel(p);
         }
         Some(_) => {}
     }
@@ -355,20 +393,52 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
     let mut swapped = false;
     let io_fail = |e: io::Error| SitefileError::plain(E_EXPORT, format!("failed to export to '{}': {e}", show(&out_real)));
     let result = (|| -> Result<()> {
-        let mut made: Option<PathBuf> = None;
-        for (segments, bytes, mode) in &planned {
-            let mut target = tmp.clone();
-            for s in segments {
-                target.push(s);
-            }
-            let dir = target.parent().unwrap_or(&tmp).to_path_buf();
-            if made.as_ref() != Some(&dir) {
-                fs::create_dir_all(&dir).map_err(io_fail)?;
+        // Directories first, in order; then the files, in parallel.
+        let targets: Vec<PathBuf> = planned
+            .iter()
+            .map(|(segments, _, _)| {
+                let mut t = tmp.clone();
+                for s in segments {
+                    t.push(s);
+                }
+                t
+            })
+            .collect();
+        let mut made: Option<&Path> = None;
+        for t in &targets {
+            let dir = t.parent().unwrap_or(&tmp);
+            if made != Some(dir) {
+                fs::create_dir_all(dir).map_err(io_fail)?;
                 made = Some(dir);
             }
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&target).map_err(io_fail)?;
-            f.write_all(bytes).map_err(io_fail)?;
-            f.set_permissions(fs::Permissions::from_mode(*mode)).map_err(io_fail)?;
+        }
+        let write_one = |target: &Path, bytes: &[u8], mode: u32| -> io::Result<()> {
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(target)?;
+            f.write_all(bytes)?;
+            f.set_permissions(fs::Permissions::from_mode(mode))
+        };
+        let jobs: Vec<(&Path, &[u8], u32)> = targets.iter().zip(planned.iter()).map(|(t, (_, bytes, mode))| (t.as_path(), *bytes, *mode)).collect();
+        let threads = io_threads(jobs.len());
+        let first_error: std::sync::Mutex<Option<io::Error>> = std::sync::Mutex::new(None);
+        std::thread::scope(|sc| {
+            for part in jobs.chunks(jobs.len().div_ceil(threads).max(1)) {
+                let (write_one, first_error) = (&write_one, &first_error);
+                sc.spawn(move || {
+                    for &(target, bytes, mode) in part {
+                        if first_error.lock().map(|e| e.is_some()).unwrap_or(true) {
+                            return;
+                        }
+                        if let Err(e) = write_one(target, bytes, mode) {
+                            let mut slot = first_error.lock().unwrap_or_else(|p| p.into_inner());
+                            slot.get_or_insert(e);
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = first_error.into_inner().unwrap_or_else(|p| p.into_inner()) {
+            return Err(io_fail(e));
         }
         if let Some(hook) = &options.before_swap {
             hook();
