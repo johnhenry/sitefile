@@ -478,6 +478,16 @@ pub const LOGS: Command = Command {
     run: run_logs,
 };
 
+/// The last n lines of text, each newline-terminated; a trailing newline is not an extra empty line.
+pub fn tail_lines(text: &str, n: usize) -> String {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let keep = if n == 0 { &[][..] } else { &lines[lines.len().saturating_sub(n)..] };
+    keep.iter().map(|l| format!("{l}\n")).collect()
+}
+
 fn run_logs(v: &Parsed) -> Result<i32> {
     use std::io::{Read, Seek, SeekFrom};
     require_args(&v.positionals, 1, 1, "a server id or name")?;
@@ -491,11 +501,7 @@ fn run_logs(v: &Parsed) -> Result<i32> {
         if !super::common::is_safe_integer(n) || n < 0.0 {
             return usage("--tail expects a non-negative integer");
         }
-        let mut lines: Vec<&str> = text.split('\n').collect();
-        lines.pop();
-        let n = n as usize;
-        let keep = if n == 0 { &[][..] } else { &lines[lines.len().saturating_sub(n)..] };
-        text = keep.iter().map(|l| format!("{l}\n")).collect();
+        text = tail_lines(&text, n as usize);
     }
     out(&text);
     if !v.flag("follow") {
@@ -573,5 +579,20 @@ mod tests {
         assert!(parse_publish(Some("99999")).unwrap_err().detail.contains("out of range"));
         assert!(parse_publish(Some("example.com:80")).unwrap_err().detail.contains("must be an IP"));
         assert!(parse_publish(Some("::1:80")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::tail_lines;
+
+    #[test]
+    fn tail_with_and_without_trailing_newline() {
+        assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc\n");
+        assert_eq!(tail_lines("a\nb\nc", 2), "b\nc\n");
+        assert_eq!(tail_lines("a\nb\nc", 10), "a\nb\nc\n");
+        assert_eq!(tail_lines("a\nb\nc\n", 0), "");
+        assert_eq!(tail_lines("", 3), "");
+        assert_eq!(tail_lines("a\n\n", 1), "\n");
     }
 }

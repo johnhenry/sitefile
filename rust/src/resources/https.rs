@@ -146,11 +146,57 @@ pub struct GuardedResolver {
     allow_private_network: bool,
     span: Option<SourceSpan>,
     last_error: Arc<Mutex<Option<SitefileError>>>,
+    /// Bounds the DNS lookup: the fetch deadline and the E_FETCH_TIMEOUT message.
+    deadline: Option<(Instant, String)>,
+    lookup: Lookup,
+}
+
+/// Name lookup for `host:port`; swappable so tests can simulate a slow resolver.
+type Lookup = fn(&str) -> io::Result<Vec<SocketAddr>>;
+
+fn system_lookup(netloc: &str) -> io::Result<Vec<SocketAddr>> {
+    netloc.to_socket_addrs().map(|a| a.collect())
 }
 
 impl GuardedResolver {
     pub fn new(policy: &FetchPolicy, span: Option<&SourceSpan>) -> GuardedResolver {
-        GuardedResolver { allow_private_network: policy.allow_private_network, span: span.cloned(), last_error: Arc::new(Mutex::new(None)) }
+        GuardedResolver {
+            allow_private_network: policy.allow_private_network,
+            span: span.cloned(),
+            last_error: Arc::new(Mutex::new(None)),
+            deadline: None,
+            lookup: system_lookup,
+        }
+    }
+
+    /// Make lookups give up at `deadline` with E_FETCH_TIMEOUT carrying `message`.
+    pub fn with_deadline(mut self, deadline: Instant, message: String) -> GuardedResolver {
+        self.deadline = Some((deadline, message));
+        self
+    }
+
+    /// `getaddrinfo` cannot be interrupted, so with a deadline the lookup runs
+    /// on a helper thread and is abandoned (it finishes on its own) on timeout.
+    fn lookup_bounded(&self, netloc: &str, hostname: &str) -> Result<Vec<SocketAddr>> {
+        let cannot = |e: io::Error| SitefileError::new(E_FETCH, format!("cannot resolve {hostname}: {e}"), self.span.clone());
+        let Some((deadline, message)) = &self.deadline else {
+            return (self.lookup)(netloc).map_err(cannot);
+        };
+        let timeout = || SitefileError::new(E_FETCH_TIMEOUT, message.clone(), self.span.clone());
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(timeout());
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lookup = self.lookup;
+        let owned = netloc.to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(lookup(&owned));
+        });
+        match rx.recv_timeout(remaining) {
+            Ok(r) => r.map_err(cannot),
+            Err(_) => Err(timeout()),
+        }
     }
 
     /// Resolve `host:port` (`[v6]:port` for IPv6) and apply the policy.
@@ -159,10 +205,7 @@ impl GuardedResolver {
             Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) => strip_brackets(h),
             _ => strip_brackets(netloc),
         };
-        let addrs: Vec<SocketAddr> = netloc
-            .to_socket_addrs()
-            .map_err(|e| SitefileError::new(E_FETCH, format!("cannot resolve {hostname}: {e}"), self.span.clone()))?
-            .collect();
+        let addrs = self.lookup_bounded(netloc, &hostname)?;
         if addrs.is_empty() {
             return Err(SitefileError::new(E_FETCH, format!("no addresses found for {hostname}"), self.span.clone()));
         }
@@ -200,14 +243,6 @@ impl ureq::Resolver for GuardedResolver {
 
 // ------------------------------------------------------------------ TLS
 
-/// Well-known system CA bundles, consulted only when an extra CA is configured.
-const SYSTEM_CA_BUNDLES: &[&str] = &[
-    "/etc/ssl/cert.pem",                  // macOS, Alpine, BSDs
-    "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
-    "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
-    "/etc/ssl/ca-bundle.pem",             // openSUSE
-];
-
 /// DER certificates from PEM text (`-----BEGIN CERTIFICATE-----` blocks).
 pub(crate) fn pem_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
     use base64::Engine;
@@ -228,23 +263,13 @@ pub(crate) fn pem_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-/// The default roots plus `ca`. ureq's own roots (webpki-roots) are not
-/// reachable without a direct dependency, so with an extra CA the defaults are
-/// the system bundle (`SSL_CERT_FILE`, else the first well-known bundle found).
+/// The default roots plus `ca`. The defaults are the same Mozilla roots
+/// (webpki-roots) ureq uses when no extra CA is set, so `ca` is purely additive.
 fn tls_config_with_extra_ca(ca: &[u8], span: Option<&SourceSpan>) -> Result<Arc<ureq::rustls::ClientConfig>> {
     use ureq::rustls;
     let fail = |why: String| SitefileError::new(E_FETCH, why, span.cloned());
     let mut roots = rustls::RootCertStore::empty();
-    let env = std::env::var("SSL_CERT_FILE").ok();
-    for path in env.iter().map(String::as_str).chain(SYSTEM_CA_BUNDLES.iter().copied()) {
-        if let Ok(pem) = std::fs::read(path) {
-            let certs = pem_certificates(&pem);
-            if !certs.is_empty() {
-                roots.add_parsable_certificates(certs.into_iter().map(rustls::pki_types::CertificateDer::from));
-                break;
-            }
-        }
-    }
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let extra = pem_certificates(ca);
     if extra.is_empty() {
         return Err(fail("the extra CA certificate is not PEM (no 'BEGIN CERTIFICATE' block found)".into()));
@@ -292,7 +317,7 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         || SitefileError::new(E_FETCH_TIMEOUT, format!("fetching {} timed out after {} ms", redact_url(url), policy.timeout_ms), span.cloned());
 
     let mut current = checked_hop(url, policy, span)?;
-    let resolver = GuardedResolver::new(policy, span);
+    let resolver = GuardedResolver::new(policy, span).with_deadline(deadline, timeout_error().detail);
     let mut builder = ureq::AgentBuilder::new()
         .redirects(0)
         .max_idle_connections(0)
@@ -640,6 +665,25 @@ mod tests {
         assert_eq!(c("https://93.184.216.34/", p), Ok(()));
         assert_eq!(c("https://example.com/", p), Ok(()));
         assert_eq!(c("https://10.255.255.1/", &FetchPolicy { allow_private_network: true, ..DEFAULT_FETCH_POLICY }), Ok(()));
+    }
+
+    #[test]
+    fn dns_lookup_is_bounded_by_the_fetch_timeout() {
+        fn slow(_: &str) -> io::Result<Vec<SocketAddr>> {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(vec!["93.184.216.34:443".parse().unwrap()])
+        }
+        let msg = "fetching https://slow.test/ timed out after 150 ms".to_string();
+        let mut r = GuardedResolver::new(&DEFAULT_FETCH_POLICY, None).with_deadline(Instant::now() + Duration::from_millis(150), msg.clone());
+        r.lookup = slow;
+        let t = Instant::now();
+        let e = r.resolve_checked("slow.test:443").unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(2), "lookup was not abandoned");
+        assert_eq!(e.code, E_FETCH_TIMEOUT);
+        assert_eq!(e.detail, msg);
+        // Through the ureq trait the error is kept for the fetch to report.
+        assert!(ureq::Resolver::resolve(&r, "slow.test:443").is_err());
+        assert_eq!(r.take_error().map(|e| e.code), Some(E_FETCH_TIMEOUT));
     }
 
     #[test]

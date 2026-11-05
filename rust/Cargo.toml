@@ -24,6 +24,9 @@ path = "src/main.rs"
 #   flate2            gzip/deflate (zip, tar.gz, OCI layers)
 #   ureq              blocking HTTPS client with a pluggable resolver, so the
 #                     SSRF address check happens at connect time
+#   webpki-roots      the Mozilla root set ureq already uses by default; named
+#                     directly so an extra CA (FetchPolicy.ca) is added to
+#                     exactly those roots (same version as ureq 2's, one copy)
 #   wasmtime          WebAssembly plugins (fuel-limited, no imports)
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +35,7 @@ sha2 = { version = "0.10", features = ["asm"] }
 base64 = "0.22"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
+webpki-roots = "0.26"
 wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "std"] }
 
 [profile.release]

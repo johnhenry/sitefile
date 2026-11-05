@@ -68,6 +68,11 @@ export function table(rows: readonly (readonly string[])[]): string {
   return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(widths[i] ?? 0))).join('  ').trimEnd()).join('\n') + '\n';
 }
 
+/** Drop trailing zeros only after a decimal point ("1.50" -> "1.5", "100" stays). */
+function stripDecimalZeros(s: string): string {
+  return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
+}
+
 /** 1.2kB, 34.5MB (decimal units, as Docker prints them). */
 export function humanSize(bytes: number): string {
   if (bytes < 1000) return `${bytes}B`;
@@ -78,7 +83,7 @@ export function humanSize(bytes: number): string {
     v /= 1000;
     i++;
   } while (v >= 1000 && i < units.length - 1);
-  return `${v >= 100 ? v.toFixed(0) : v.toPrecision(3).replace(/\.?0+$/, '')}${units[i]}`;
+  return `${v >= 100 ? v.toFixed(0) : stripDecimalZeros(v.toPrecision(3))}${units[i]}`;
 }
 
 export function relativeTime(iso: string, now: number = Date.now()): string {
