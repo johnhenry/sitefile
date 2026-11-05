@@ -5,7 +5,9 @@ import { sha256 } from './digest.js';
 import type { ExportFormat, Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
+import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest } from './plugins/host.js';
+import type { Operand } from './language/ast.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
@@ -38,6 +40,8 @@ export interface BuildOptions {
   readonly updateLock?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
+  /** Plugin process limits (per-call timeout, maximum result size). */
+  readonly pluginPolicy?: Partial<PluginPolicy>;
   /** Permit hard-linked files in the context (you assert they are safe). Default false. */
   readonly allowHardlinks?: boolean;
   readonly onWarning?: (message: string) => void;
@@ -121,12 +125,18 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!)]));
 
   const stageTrees = new Map<string, Tree>();
-  const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn };
+  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
+  const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn, plugins };
   let tree = Tree.empty;
-  for (const stage of p.stages) {
-    tree = await startStage(stage, execEnv);
-    for (const op of stage.operations) tree = await execute(op, tree, execEnv);
-    if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+  try {
+    for (const spec of p.plugins) await registerPlugin(spec, local, plugins);
+    for (const stage of p.stages) {
+      tree = await startStage(stage, execEnv);
+      for (const op of stage.operations) tree = await execute(op, tree, execEnv);
+      if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+    }
+  } finally {
+    plugins.close();
   }
 
   if (tree.isFile(p.exportPath)) {
@@ -258,6 +268,7 @@ interface ExecEnv {
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly label: string;
   readonly warn: (m: string) => void;
+  readonly plugins: PluginHost;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
 }
@@ -296,7 +307,105 @@ type Source =
     }
   | { readonly kind: 'tree'; readonly tree: Tree; readonly label: string };
 
+/** Check a plugin file (sandbox, own folder, integrity) and start its process. */
+async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost): Promise<void> {
+  const { real, bytes } = await local.realFile(spec.path, spec.span);
+  // The plugin may read its whole folder, so that folder must not be the context itself.
+  if (path.dirname(real) === local.root) {
+    throw new SitefileError(
+      'E_VALIDATION',
+      `PLUGIN ${spec.name}: put the plugin in its own folder (e.g. ./plugins/${path.basename(real)}); a plugin can read every file next to it`,
+      spec.span,
+    );
+  }
+  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
+  host.register(spec.name, real, spec.span);
+}
+
+/** Interpolate an operand with ARG/LET values and, inside FOR, the loop element. */
+function interpolate(op: Operand, env: ExecEnv): string {
+  let out = '';
+  for (const part of op.parts) {
+    if (part.kind === 'text') out += part.value;
+    else out += String(lookup(part.name, part.path, part.span, env));
+  }
+  return out;
+}
+
+async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, tree: Tree, env: ExecEnv): Promise<Tree> {
+  const origin = `${env.label}:${op.span.line} TRANSFORM`;
+  const policy = op.overwrite ? 'overwrite' : 'error';
+  let items: unknown[] = [undefined];
+  if (op.each) {
+    const list = valueOf(op.each.list, [], op.span, false, env);
+    if (!Array.isArray(list)) {
+      throw new SitefileError('E_TYPE', `FOR ${op.each.as} IN ${op.each.list}: '${op.each.list}' is not a list`, op.span);
+    }
+    if (list.length === 0) env.warn(`${origin}: FOR ${op.each.as} IN ${op.each.list} produces nothing: the list is empty`);
+    items = list;
+  }
+
+  // The source is the same for every element; read it once.
+  let input: PluginRequest['input'];
+  let data: unknown;
+  if (op.source) {
+    const ref = op.source;
+    const res = ref.kind === 'import' ? env.resources.get(ref.name) : undefined;
+    if (ref.kind === 'import' && res?.kind === 'value') {
+      if (ref.path !== '/') throw new SitefileError('E_PATH', `import '${ref.name}' is a value; use '${ref.name}:'`, ref.span);
+      data = res.value;
+    } else {
+      const src = await readSource(op.source, origin, env);
+      if (src.kind !== 'file') {
+        throw new SitefileError('E_TYPE', `TRANSFORM source '${src.label}' is a directory; plugins take one file`, op.source.span);
+      }
+      let text: string | undefined;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(src.bytes);
+      } catch {
+        text = undefined;
+      }
+      input = { path: src.label, name: src.basename || src.label, bytes: src.bytes, ...(text !== undefined ? { text } : {}) };
+    }
+  }
+
+  const files: Array<[string, FileNode]> = [];
+  for (const item of items) {
+    const itemEnv: ExecEnv = op.each ? { ...env, loop: { name: op.each.as, value: item } } : env;
+    const rawDest = interpolate(op.dest, itemEnv);
+    const dest = normalizeVirtual(rawDest, op.dest.span, 'TRANSFORM destination');
+    const options: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const o of op.options) options[o.key] = interpolate(o.value, itemEnv);
+    const request: PluginRequest = {
+      apiVersion: 1,
+      dest: dest.path,
+      options,
+      ...(input ? { input } : {}),
+      ...(data !== undefined ? { data } : {}),
+      ...(op.each ? { item } : {}),
+    };
+    const result = await env.plugins.call(op.plugin, request, op.span);
+    if (result.kind === 'file') {
+      if (dest.trailingSlash) {
+        throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned one file, but '${rawDest}' is a directory destination`, op.dest.span);
+      }
+      files.push([dest.path, makeFile(result.bytes, origin)]);
+    } else {
+      // { files }: placed under the destination directory.
+      for (const [rel, bytes] of result.files) {
+        const p = normalizeVirtual(`${dest.path === '/' ? '' : dest.path}/${rel}`, op.dest.span, `file '${rel}' returned by PLUGIN ${op.plugin}`).path;
+        if (rel.includes('..') || rel.startsWith('/')) {
+          throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned an unsafe path '${rel}'`, op.span);
+        }
+        files.push([p, makeFile(bytes, origin)]);
+      }
+    }
+  }
+  return tree.withFiles(files, policy, op.span);
+}
+
 async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
+  if (op.kind === 'TRANSFORM') return executeTransform(op, tree, env);
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
   const policy = op.overwrite ? 'overwrite' : 'error';
 

@@ -24,7 +24,27 @@ export interface ImportSpec {
   readonly span: SourceSpan;
 }
 
+/** A declared renderer plugin: a local `.mjs` file in its own folder. */
+export interface PluginSpec {
+  readonly name: string;
+  /** Context-relative path of the module. */
+  readonly path: string;
+  readonly integrity?: string;
+  readonly span: SourceSpan;
+}
+
 export type Operation =
+  | {
+      /** Run a plugin; `dest` and option values are interpolated per FOR element at execution. */
+      readonly kind: 'TRANSFORM';
+      readonly source?: SourceRef;
+      readonly plugin: string;
+      readonly dest: Operand;
+      readonly options: ReadonlyArray<{ readonly key: string; readonly value: Operand }>;
+      readonly each?: { readonly as: string; readonly list: string };
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
   | {
       readonly kind: 'COPY';
       readonly source: SourceRef;
@@ -68,6 +88,7 @@ export interface Plan {
   readonly stages: readonly Stage[];
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly imports: readonly ImportSpec[];
+  readonly plugins: readonly PluginSpec[];
   readonly exportPath: string;
   readonly exportFormat: ExportFormat;
   /** Evaluated `BASE` clause of EXPORT, if any (raw string; validated when the export is written). */
@@ -82,6 +103,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const vars = new Map<string, Scalar>();
   const imports = new Map<string, ImportSpec>();
   const stages: Stage[] = [];
+  const plugins: PluginSpec[] = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -176,6 +198,30 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         });
         break;
       }
+      case 'PLUGIN': {
+        const raw = evaluateOperand(ins.uri, vars);
+        if (URL_RE.test(raw)) {
+          throw new SitefileError('E_PROTOCOL', `PLUGIN ${ins.name}: plugins must be local files in the build context, not URLs`, ins.uri.span);
+        }
+        const rel = normalizeLocal(raw, ins.uri.span).path;
+        if (!/\.mjs$/.test(rel)) {
+          throw new SitefileError('E_VALIDATION', `PLUGIN ${ins.name}: '${raw}' must be an ES module file ending in .mjs`, ins.uri.span);
+        }
+        plugins.push({ name: ins.name, path: rel, ...(ins.integrity ? { integrity: ins.integrity } : {}), span: ins.span });
+        break;
+      }
+      case 'TRANSFORM':
+        operations().push({
+          kind: 'TRANSFORM',
+          ...(ins.source ? { source: sourceRef(ins.source, vars, imports, ins.from) } : {}),
+          plugin: ins.plugin,
+          dest: ins.dest,
+          options: ins.options.map((o) => ({ key: o.key, value: o.value })),
+          ...(ins.each ? { each: { as: ins.each.as, list: ins.each.list } } : {}),
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        break;
       case 'EXPORT':
         exportPath = normalizeVirtual(evaluateOperand(ins.path, vars), ins.path.span, 'EXPORT path').path;
         exportFormat = ins.format;
@@ -191,7 +237,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], exportPath, exportFormat, exportBase, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, exportPath, exportFormat, exportBase, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {

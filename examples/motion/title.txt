@@ -1,0 +1,3 @@
+Build static sites
+like you build images.
+No runtime required.

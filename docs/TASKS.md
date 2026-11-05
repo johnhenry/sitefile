@@ -39,3 +39,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #16 Blog support: `IMPORT … AS markdown` with frontmatter, `SORT BY`, `RENDER … FOR`, template `${#each}` / `${#if}` / `|raw` (`test/blog.test.ts`, `test/markdown.test.ts`, `test/frontmatter.test.ts`, `examples/blog/`)
 - [x] #20 Data imports: `AS yaml`, `AS csv`, `AS wbn`, Web Bundles via `AS tree`, JSON/YAML directory collections, `SORT BY` on any list (`test/data-imports.test.ts`, `test/yaml.test.ts`, `test/csv.test.ts`, `test/wbn-reader.test.ts`, `examples/data/`)
 - [x] `--build-arg-file` (.json, .yaml, .env) and `--build-arg NAME` from the environment (`test/build-args.test.ts`)
+- [x] #22 Custom renderers: `PLUGIN` + `TRANSFORM` in a `--permission` sandbox (`test/plugins.test.ts`, `test/motion-plugin.test.ts`, `examples/motion/`)
