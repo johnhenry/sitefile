@@ -46,7 +46,8 @@ pub fn js_number(n: f64) -> String {
         return "0".into();
     }
     let abs = n.abs();
-    if (1e-7..1e21).contains(&abs) {
+    // ECMAScript Number::toString: plain decimal for 1e-6 <= |n| < 1e21.
+    if (1e-6..1e21).contains(&abs) {
         if n.fract() == 0.0 {
             return format!("{}", n as i128);
         }
@@ -194,7 +195,11 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool) {
             out.push('{');
             let mut keys: Vec<&String> = map.keys().collect();
             if sort {
+                // Object.keys(v).sort(): a plain UTF-16 string sort.
                 keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+            } else {
+                // JS property order: array-index keys first, ascending, then the rest in insertion order.
+                keys.sort_by_key(|k| array_index(k).map_or((1, 0), |i| (0, i)));
             }
             for (i, k) in keys.into_iter().enumerate() {
                 if i > 0 {
@@ -207,6 +212,14 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool) {
             out.push('}');
         }
     }
+}
+
+/// A canonical array index ("0", "9", "10" … "4294967294"), as ECMAScript defines one.
+fn array_index(k: &str) -> Option<u32> {
+    if k.is_empty() || (k.len() > 1 && k.starts_with('0')) || !k.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    k.parse::<u64>().ok().filter(|&n| n < 4_294_967_295).map(|n| n as u32)
 }
 
 /// JSON string escaping exactly as JSON.stringify does (including lone
@@ -246,6 +259,12 @@ mod tests {
         assert_eq!(js_json_stringify(&v, false), r#"{"b":[1,2.5,1e+21,true,null],"a":"q\"\n\u0001"}"#);
         assert_eq!(js_json_stringify(&v, true), r#"{"a":"q\"\n\u0001","b":[1,2.5,1e+21,true,null]}"#);
         assert_eq!(js_json_stringify(&js_number_json(3.0), false), "3");
+        // Reference values from node: String(n) and JSON.stringify key order.
+        for (n, js) in [(1.5e-7, "1.5e-7"), (1e-6, "0.000001"), (1e-7, "1e-7"), (123e-20, "1.23e-18"), (1e21, "1e+21"), (-0.000001, "-0.000001")] {
+            assert_eq!(js_number(n), js, "{n}");
+        }
+        let o: Value = serde_json::from_str(r#"{"b":1,"10":2,"9":3,"a":4,"4294967295":5,"01":6}"#).unwrap();
+        assert_eq!(js_json_stringify(&o, false), r#"{"9":3,"10":2,"b":1,"a":4,"4294967295":5,"01":6}"#);
     }
     #[test]
     fn coercion() {
