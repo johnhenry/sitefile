@@ -1,0 +1,19 @@
+<hr>
+<p>title: One template, many pages
+tags:</p>
+<ul>
+<li>sitefile</li>
+<li>templates</li>
+</ul>
+<hr>
+<p><code>RENDER … FOR post IN posts</code> renders the same template once per post, and the
+destination can use the post&#39;s fields:</p>
+<pre><code>RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+</code></pre>
+<p>Inside a template you get loops and conditionals:</p>
+<ul>
+<li><code>${#each posts as post}</code> … <code>${/each}</code> repeats a block</li>
+<li><code>${#if post.description}</code> … <code>${else}</code> … <code>${/if}</code> picks one</li>
+<li><code>${post.content|raw}</code> inserts the rendered HTML without escaping it</li>
+</ul>
+<p>Everything else is escaped, so a title like <code>Tom &amp; Jerry &lt;3</code> is safe.</p>

@@ -1,0 +1,51 @@
+<h1>Tasks</h1>
+<p>Checked items are implemented and covered by tests (<code>npm test</code>).</p>
+<h2>M0 — Executable vertical slice</h2>
+<ul>
+<li>[x] Logical-line scanner: continuations, comments, quoting, escapes, <code>${NAME}</code> interpolation, accurate line/column spans (<code>test/language.test.ts</code>)</li>
+<li>[x] Parser to a typed AST for FROM, ARG, LET, IMPORT, COPY, RENDER, EXPORT; <code>RUN</code> and future instructions rejected (<code>test/language.test.ts</code>)</li>
+<li>[x] Semantic validator: FROM/EXPORT placement, definitions before use, duplicate names, unknown import refs (<code>test/language.test.ts</code>)</li>
+<li>[x] Planner: evaluate ARG (typed, <code>--build-arg</code>) and LET, normalize paths, classify sources (<code>test/build.test.ts</code>)</li>
+<li>[x] Immutable <code>Tree</code> with deterministic owners and conflict policy (<code>--overwrite</code>) (<code>test/build.test.ts</code>)</li>
+<li>[x] Local context sandbox: traversal, absolute paths, symlink escapes, cycles, ignore list (<code>test/local.test.ts</code>, <code>test/build.test.ts</code>)</li>
+<li>[x] COPY file/directory and trailing-slash semantics (<code>test/build.test.ts</code>)</li>
+<li>[x] RENDER with <code>--escape=html|none</code>, template error positions (<code>test/render.test.ts</code>, <code>test/build.test.ts</code>)</li>
+<li>[x] Atomic directory export with safe replacement rules (<code>test/exporter.test.ts</code>, <code>test/cli.test.ts</code>)</li>
+<li>[x] CLI: <code>build</code>, <code>validate</code>, <code>inspect</code> (<code>test/cli.test.ts</code>)</li>
+<li>[x] Acceptance: <code>examples/hello</code> → <code>dist/index.html</code> + <code>dist/style.css</code> (<code>test/cli.test.ts</code>)</li>
+</ul>
+<h2>M1 — Remote inputs</h2>
+<ul>
+<li>[x] IMPORT local files and directories, <code>AS file|text|json|tree</code> (<code>test/build.test.ts</code>)</li>
+<li>[x] HTTPS fetcher: https-only default, credential rejection, connect-time SSRF checks, manual redirects re-checked per hop, size limit, timeout, no decompression (<code>test/https.test.ts</code>, <code>test/netpolicy.test.ts</code>)</li>
+<li>[x] <code>INTEGRITY sha256:</code> pins (<code>test/build.test.ts</code>)</li>
+<li>[x] <code>Sitefile.lock</code>: record, drift detection, <code>--frozen-lockfile</code>, <code>--update-lock</code> (<code>test/lockfile.test.ts</code>, <code>test/build.test.ts</code>)</li>
+<li>[x] Acceptance: pinned remote fixture copied into output (<code>test/build.test.ts</code>, served from a local test server)</li>
+<li>[x] Text and JSON imports readable from templates (<code>${name}</code>, <code>${name.a.0.b}</code>) — an early slice of M3</li>
+</ul>
+<h2>Next</h2>
+<p>Open work is tracked as GitHub issues in <code>johnhenry/sitefile</code>:</p>
+<ul>
+<li>[x] #1 <code>FROM &lt;local tree&gt;</code> and multi-stage <code>FROM … AS name</code> (M2) (<code>test/language.test.ts</code>, <code>test/build.test.ts</code>, <code>test/cli.test.ts</code>)</li>
+<li>[x] #2 <code>COPY --from=&lt;stage&gt;</code> (M2), also <code>RENDER --from</code> (<code>test/build.test.ts</code>)</li>
+<li>[x] #3 Remote tree imports (archives, with decompression-ratio limits) (<code>test/archive.test.ts</code>, <code>test/build.test.ts</code>)</li>
+<li>[x] #4 <code>.sitefileignore</code></li>
+<li>[x] #5 Export check-then-swap race: parent and destination dev/ino re-validated before and after the swap (<code>test/exporter.test.ts</code>)</li>
+<li>[x] #6 Hard links to files outside the context</li>
+<li>[x] #7 TLS test fixture for <code>fetchRemote</code></li>
+<li>[x] #17 Export formats: <code>EXPORT ... AS zip|tar|tgz|wbn [BASE url]</code>, <code>--format</code>, <code>--base-url</code>; deterministic archives and an unsigned Web Bundle (<code>test/export-formats.test.ts</code>)</li>
+<li>[x] Inline content: <code>COPY &lt;&lt;EOF</code> and <code>RENDER &lt;&lt;EOF … TO</code> heredocs (<code>test/inline.test.ts</code>, <code>test/cli.test.ts</code>, <code>examples/inline/</code>)</li>
+<li>[x] #16 Blog support: <code>IMPORT … AS markdown</code> with frontmatter, <code>SORT BY</code>, <code>RENDER … FOR</code>, template <code>${#each}</code> / <code>${#if}</code> / <code>|raw</code> (<code>test/blog.test.ts</code>, <code>test/markdown.test.ts</code>, <code>test/frontmatter.test.ts</code>, <code>examples/blog/</code>)</li>
+<li>[x] #20 Data imports: <code>AS yaml</code>, <code>AS csv</code>, <code>AS wbn</code>, Web Bundles via <code>AS tree</code>, JSON/YAML directory collections, <code>SORT BY</code> on any list (<code>test/data-imports.test.ts</code>, <code>test/yaml.test.ts</code>, <code>test/csv.test.ts</code>, <code>test/wbn-reader.test.ts</code>, <code>examples/data/</code>)</li>
+<li>[x] <code>--build-arg-file</code> (.json, .yaml, .env) and <code>--build-arg NAME</code> from the environment (<code>test/build-args.test.ts</code>)</li>
+<li>[x] #22 Custom renderers: <code>PLUGIN</code> + <code>TRANSFORM</code> in a <code>--permission</code> sandbox (<code>test/plugins.test.ts</code>, <code>test/motion-plugin.test.ts</code>, <code>examples/motion/</code>)</li>
+<li>[x] #30 Allow-listed exec adapter: <code>TOOL</code> + <code>TRANSFORM … ARGS</code>, <code>--allow-exec</code> (<code>test/exec-tool.test.ts</code>, incl. an ffmpeg clip when ffmpeg is installed)</li>
+<li>[x] #31 TRANSFORM result cache in <code>$SITEFILE_HOME/cache/transform</code>, lazy plugin start, <code>--no-cache</code>, <code>cache info|prune</code>, <code>export const cache = false</code> (<code>test/transform-cache.test.ts</code>)</li>
+<li>[x] #23 Local image store (an OCI image layout): <code>build -t</code>, <code>images</code>, <code>image inspect|diff|prune</code>, <code>tag</code>, <code>rmi</code>, <code>save</code>, reference grammar, lock file, digest verification (<code>test/store.test.ts</code>)</li>
+<li>[x] #24 Site servers: <code>serve [-d]</code>, <code>servers</code>, <code>server stop|rm|logs|restart</code>; <code>node:http</code> server with ETag/304, SPA fallback, traversal rejection (<code>test/server.test.ts</code>)</li>
+<li>[x] <code>EXPORT ... AS oci [AT root]</code>, <code>--oci-root</code>, <code>--platform</code>: reproducible single-layer OCI image, archive and layout (<code>test/oci.test.ts</code>)</li>
+<li>[x] #28 Registry <code>push</code> / <code>pull</code> over the OCI distribution spec: token/Basic auth, Docker config + credential helpers, digest-verified streaming pulls, blob existence checks and mounts, redirect/SSRF policy (<code>test/registry.test.ts</code>, <code>test/engine.test.ts</code>)</li>
+<li>[x] #29 Runnable images: <code>EXPORT / AS oci BASE &lt;image&gt;</code> / <code>--base</code>, base config and layers preserved, base digest in <code>Sitefile.lock</code> <code>images</code> (<code>test/registry.test.ts</code>, <code>test/engine.test.ts</code>)</li>
+<li>[x] OCI exports name the image the way <code>docker save</code> does (<code>io.containerd.image.name</code> + tag in <code>ref.name</code>) so <code>docker load</code> finds it by name (<code>test/oci.test.ts</code>, <code>test/engine.test.ts</code>)</li>
+<li>[x] #34 WebAssembly plugins: <code>PLUGIN x FROM ./x.wasm</code>, import-free ABI v1, worker + timeout, Rust example (<code>test/wasm-plugins.test.ts</code>, <code>examples/wasm/</code>)</li>
+</ul>

@@ -1,1 +1,1180 @@
-//! Port of `src/render.ts`. TODO(port)
+//! RENDER templates (port of `src/render.ts`): parsing `${…}` substitutions and
+//! `${#each}` / `${#if}` blocks, rendering them against data, HTML escaping,
+//! strict UTF-8 decoding and JSON path walking.
+//!
+//! # Lookup interface
+//!
+//! [`render_template`] does not know where names come from; the caller passes
+//! two callbacks:
+//!
+//! - [`TemplateLookup`] resolves `${name}` / `${name.a.b}` to a [`Scalar`]. It
+//!   reports E_UNDEFINED / E_TYPE itself for unknown names or non-scalar values
+//!   (typically by calling [`resolve_json_path`]).
+//! - [`TemplateValueLookup`] resolves any value for `${#each}` and `${#if}`
+//!   (lists, documents, scalars). `loose == true` (used by `#if`, and by
+//!   `#each` on a dotted path) means a missing name or key yields `Ok(None)`
+//!   (JavaScript `undefined`) instead of an error. It returns a [`Cow`] so
+//!   values owned by the caller's environment are borrowed, not cloned (a FOR
+//!   loop over many documents would otherwise copy the whole list per page);
+//!   [`walk`] does the path walking and returns a borrow.
+//!
+//! Loop variables are resolved by the renderer itself and shadow every other
+//! name, so the callbacks never see them.
+//!
+//! The [`js`] module holds the JavaScript string semantics (UTF-16 code units,
+//! `/\s/` whitespace, own-property key order) that the data-format ports share.
+
+use crate::error::{err, ErrorCode::*, Result, SitefileError, SourceSpan};
+use crate::language::ast::EscapeMode;
+use crate::values::Scalar;
+use serde_json::Value;
+use std::borrow::Cow;
+
+/// Resolves a template variable to a scalar: `(name, path, span)`.
+pub type TemplateLookup<'a> = dyn Fn(&str, &[String], &SourceSpan) -> Result<Scalar> + 'a;
+
+/// Resolves any value for blocks: `(name, path, span, loose)`. `Ok(None)` is
+/// JavaScript `undefined` (only returned when `loose`).
+pub type TemplateValueLookup<'v> = dyn Fn(&str, &[String], &SourceSpan, bool) -> Result<Option<Cow<'v, Value>>> + 'v;
+
+/// A name with a dotted path, as used by blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ref {
+    pub name: String,
+    pub path: Vec<String>,
+    pub span: SourceSpan,
+}
+
+/// A parsed RENDER template: text, substitutions and blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemplateNode {
+    Text(String),
+    /// `raw` is true only for `${x|raw}`, which is never escaped.
+    Var { name: String, path: Vec<String>, span: SourceSpan, raw: bool },
+    Each { list: Ref, as_name: String, body: Vec<TemplateNode>, empty: Vec<TemplateNode>, span: SourceSpan },
+    If { cond: Ref, negate: bool, then: Vec<TemplateNode>, otherwise: Vec<TemplateNode>, span: SourceSpan },
+}
+
+enum Token {
+    Text(String),
+    Var { name: String, path: Vec<String>, span: SourceSpan, raw: bool },
+    OpenEach { list: Ref, as_name: String, span: SourceSpan },
+    OpenIf { cond: Ref, negate: bool, span: SourceSpan },
+    Else(SourceSpan),
+    CloseEach(SourceSpan),
+    CloseIf(SourceSpan),
+}
+
+// ------------------------------------------------------------ small matchers
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+fn is_seg_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// Length of the longest `REF` (`[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_-]+)*`)
+/// at the start of `s`, or 0.
+fn match_ref(s: &[u8]) -> usize {
+    if s.is_empty() || !is_ident_start(s[0]) {
+        return 0;
+    }
+    let mut i = 1;
+    while i < s.len() && is_ident_char(s[i]) {
+        i += 1;
+    }
+    while i < s.len() && s[i] == b'.' {
+        let mut j = i + 1;
+        while j < s.len() && is_seg_char(s[j]) {
+            j += 1;
+        }
+        if j == i + 1 {
+            break;
+        }
+        i = j;
+    }
+    i
+}
+
+/// Length of an identifier at the start of `s`, or 0.
+fn match_ident(s: &[u8]) -> usize {
+    if s.is_empty() || !is_ident_start(s[0]) {
+        return 0;
+    }
+    let mut i = 1;
+    while i < s.len() && is_ident_char(s[i]) {
+        i += 1;
+    }
+    i
+}
+
+/// Byte length of the JavaScript `/\s*/` run at the start of `s`.
+fn ws_len(s: &str) -> usize {
+    s.len() - s.trim_start_matches(js::is_ws_char).len()
+}
+
+fn split_ref(text: &str, span: &SourceSpan) -> Ref {
+    let mut it = text.split('.');
+    let name = it.next().unwrap_or("").to_string();
+    Ref { name, path: it.map(str::to_string).collect(), span: span.clone() }
+}
+
+/// `^(#each|#if|else|/each|/if)(?![A-Za-z0-9_.])`
+fn block_word(expr: &str) -> Option<&'static str> {
+    for w in ["#each", "#if", "else", "/each", "/if"] {
+        if let Some(rest) = expr.strip_prefix(w) {
+            let next = rest.as_bytes().first().copied();
+            if !matches!(next, Some(b) if b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
+                return Some(w);
+            }
+        }
+    }
+    None
+}
+
+/// `^#each\s+(REF)\s+as\s+(IDENT)\s*$`
+fn match_each(expr: &str) -> Option<(&str, &str)> {
+    let rest = expr.strip_prefix("#each")?;
+    let w = ws_len(rest);
+    if w == 0 {
+        return None;
+    }
+    let rest = &rest[w..];
+    let r = match_ref(rest.as_bytes());
+    if r == 0 {
+        return None;
+    }
+    let (list, rest) = rest.split_at(r);
+    let w = ws_len(rest);
+    if w == 0 {
+        return None;
+    }
+    let rest = rest[w..].strip_prefix("as")?;
+    let w = ws_len(rest);
+    if w == 0 {
+        return None;
+    }
+    let rest = &rest[w..];
+    let n = match_ident(rest.as_bytes());
+    if n == 0 {
+        return None;
+    }
+    let (name, rest) = rest.split_at(n);
+    if ws_len(rest) != rest.len() {
+        return None;
+    }
+    Some((list, name))
+}
+
+/// `^#if\s+(!?)\s*(REF)\s*$`
+fn match_if(expr: &str) -> Option<(bool, &str)> {
+    let rest = expr.strip_prefix("#if")?;
+    let w = ws_len(rest);
+    if w == 0 {
+        return None;
+    }
+    let mut rest = &rest[w..];
+    let negate = rest.starts_with('!');
+    if negate {
+        rest = &rest[1..];
+    }
+    rest = &rest[ws_len(rest)..];
+    let r = match_ref(rest.as_bytes());
+    if r == 0 {
+        return None;
+    }
+    let (cond, tail) = rest.split_at(r);
+    if ws_len(tail) != tail.len() {
+        return None;
+    }
+    Some((negate, cond))
+}
+
+/// `^(REF)(?:\|(raw))?$`
+fn match_var(expr: &str) -> Option<(&str, bool)> {
+    let r = match_ref(expr.as_bytes());
+    if r == 0 {
+        return None;
+    }
+    match &expr[r..] {
+        "" => Some((&expr[..r], false)),
+        "|raw" => Some((&expr[..r], true)),
+        _ => None,
+    }
+}
+
+fn block_token(expr: &str, span: &SourceSpan) -> Result<Token> {
+    let word = block_word(expr).unwrap_or("");
+    if word == "#each" {
+        let Some((list, as_name)) = match_each(expr) else {
+            return err(E_TEMPLATE, format!("expected ${{#each list as item}}, got '${{{expr}}}'"), Some(span));
+        };
+        return Ok(Token::OpenEach { list: split_ref(list, span), as_name: as_name.to_string(), span: span.clone() });
+    }
+    if word == "#if" {
+        let Some((negate, cond)) = match_if(expr) else {
+            return err(E_TEMPLATE, format!("expected ${{#if value}} or ${{#if !value}}, got '${{{expr}}}'"), Some(span));
+        };
+        return Ok(Token::OpenIf { cond: split_ref(cond, span), negate, span: span.clone() });
+    }
+    if js::trim_str(expr) != word {
+        return err(E_TEMPLATE, format!("unexpected text in '${{{expr}}}'"), Some(span));
+    }
+    Ok(match word {
+        "else" => Token::Else(span.clone()),
+        "/each" => Token::CloseEach(span.clone()),
+        _ => Token::CloseIf(span.clone()),
+    })
+}
+
+/// Parse a RENDER template.
+///
+/// - `${name}` / `${name.seg.seg}` substitutes a value (segments may be array
+///   indexes); `${name|raw}` substitutes it without escaping.
+/// - `${#each list as item}…${else}…${/each}` repeats for each element of a list
+///   (the `${else}` part renders when the list is empty). A missing key such as
+///   `post.tags` counts as an empty list; an unknown top-level name is an error.
+/// - `${#if x}…${else}…${/if}` / `${#if !x}`: false, null, missing, '', 0 and
+///   empty lists are falsy.
+/// - A block tag alone on its line removes that whole line from the output.
+/// - `$${` writes a literal `${`; a `$` not followed by `{` is literal.
+/// - Anything else inside `${…}`, or unbalanced blocks, fails with E_TEMPLATE.
+///
+/// `first_line` > 1 when the template is a heredoc body inside the Sitefile.
+pub fn parse_render_template(text: &str, file: &str, first_line: u32) -> Result<Vec<TemplateNode>> {
+    let b = text.as_bytes();
+    let n = b.len();
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut buf = String::new();
+    let mut line = first_line;
+    let mut line_start = 0usize;
+    let mut i = 0usize;
+    let span_at = |idx: usize, line: u32, line_start: usize| -> SourceSpan {
+        SourceSpan::new(file, line, js::utf16_len(&text[line_start..idx]) as u32 + 1)
+    };
+    fn flush(buf: &mut String, tokens: &mut Vec<Token>) {
+        if !buf.is_empty() {
+            tokens.push(Token::Text(std::mem::take(buf)));
+        }
+    }
+
+    while i < n {
+        // Copy a run of ordinary bytes (everything except `\n` and `$`) at once;
+        // both are ASCII, so the run boundaries are char boundaries.
+        if b[i] != b'\n' && b[i] != b'$' {
+            let s = i;
+            while i < n && b[i] != b'\n' && b[i] != b'$' {
+                i += 1;
+            }
+            buf.push_str(&text[s..i]);
+            continue;
+        }
+        if b[i] == b'\n' {
+            buf.push('\n');
+            i += 1;
+            line += 1;
+            line_start = i;
+            continue;
+        }
+        // b[i] == '$'
+        if b.get(i + 1) == Some(&b'$') && b.get(i + 2) == Some(&b'{') {
+            buf.push_str("${");
+            i += 3;
+            continue;
+        }
+        if b.get(i + 1) != Some(&b'{') {
+            buf.push('$');
+            i += 1;
+            continue;
+        }
+        let span = span_at(i, line, line_start);
+        let close = text[i + 2..].find('}').map(|k| k + i + 2);
+        let nl = text[i + 2..].find('\n').map(|k| k + i + 2);
+        let close = match close {
+            Some(c) if !matches!(nl, Some(l) if l < c) => c,
+            _ => return err(E_TEMPLATE, "unterminated '${' in template", Some(&span)),
+        };
+        let expr = &text[i + 2..close];
+
+        if block_word(expr).is_some() {
+            let tok = block_token(expr, &span)?;
+            // A block tag alone on its line: drop the line's indentation and newline.
+            let before = &text[line_start..i];
+            let line_end = nl.unwrap_or(n);
+            let after = &text[close + 1..line_end];
+            if before.bytes().all(|c| c == b' ' || c == b'\t') && after.bytes().all(|c| c == b' ' || c == b'\t' || c == b'\r') {
+                if buf.ends_with(before) {
+                    buf.truncate(buf.len() - before.len());
+                }
+                flush(&mut buf, &mut tokens);
+                tokens.push(tok);
+                i = line_end;
+                if i < n {
+                    i += 1; // the newline
+                    line += 1;
+                    line_start = i;
+                }
+                continue;
+            }
+            flush(&mut buf, &mut tokens);
+            tokens.push(tok);
+            i = close + 1;
+            continue;
+        }
+
+        let Some((reference, raw)) = match_var(expr) else {
+            return err(
+                E_TEMPLATE,
+                format!(
+                    "invalid template expression '${{{expr}}}' (expected ${{name}}, ${{name.key}}, ${{name|raw}} or a block like ${{#each list as item}}; write $${{ for a literal '${{')"
+                ),
+                Some(&span),
+            );
+        };
+        flush(&mut buf, &mut tokens);
+        let r = split_ref(reference, &span);
+        tokens.push(Token::Var { name: r.name, path: r.path, span, raw });
+        i = close + 1;
+    }
+    flush(&mut buf, &mut tokens);
+    build_tree(tokens, file, line)
+}
+
+struct Frame {
+    open: Token,
+    first: Vec<TemplateNode>,
+    second: Option<Vec<TemplateNode>>,
+}
+
+fn build_tree(tokens: Vec<Token>, file: &str, end_line: u32) -> Result<Vec<TemplateNode>> {
+    let mut root: Vec<TemplateNode> = Vec::new();
+    let mut stack: Vec<Frame> = Vec::new();
+    fn target<'a>(root: &'a mut Vec<TemplateNode>, stack: &'a mut [Frame]) -> &'a mut Vec<TemplateNode> {
+        match stack.last_mut() {
+            Some(f) => match f.second.as_mut() {
+                Some(s) => s,
+                None => &mut f.first,
+            },
+            None => root,
+        }
+    }
+    for t in tokens {
+        let closing_each = matches!(t, Token::CloseEach(_));
+        match t {
+            Token::Text(v) => target(&mut root, &mut stack).push(TemplateNode::Text(v)),
+            Token::Var { name, path, span, raw } => target(&mut root, &mut stack).push(TemplateNode::Var { name, path, span, raw }),
+            open @ (Token::OpenEach { .. } | Token::OpenIf { .. }) => stack.push(Frame { open, first: Vec::new(), second: None }),
+            Token::Else(span) => {
+                let Some(f) = stack.last_mut() else {
+                    return err(E_TEMPLATE, "${else} outside of ${#if} or ${#each}", Some(&span));
+                };
+                if f.second.is_some() {
+                    return err(E_TEMPLATE, "a block can have only one ${else}", Some(&span));
+                }
+                f.second = Some(Vec::new());
+            }
+            Token::CloseEach(span) | Token::CloseIf(span) => {
+                let is_each = matches!(stack.last().map(|f| &f.open), Some(Token::OpenEach { .. }));
+                let is_if = matches!(stack.last().map(|f| &f.open), Some(Token::OpenIf { .. }));
+                let want_each = closing_each;
+                if !(if want_each { is_each } else { is_if }) {
+                    // The TS version pops before checking; an error ends parsing either way.
+                    return err(
+                        E_TEMPLATE,
+                        format!("${{{}}} without a matching opening tag", if want_each { "/each" } else { "/if" }),
+                        Some(&span),
+                    );
+                }
+                let node = match stack.pop() {
+                    Some(Frame { open: Token::OpenEach { list, as_name, span }, first, second }) => {
+                        TemplateNode::Each { list, as_name, body: first, empty: second.unwrap_or_default(), span }
+                    }
+                    Some(Frame { open: Token::OpenIf { cond, negate, span }, first, second }) => {
+                        TemplateNode::If { cond, negate, then: first, otherwise: second.unwrap_or_default(), span }
+                    }
+                    _ => continue, // checked above
+                };
+                target(&mut root, &mut stack).push(node);
+            }
+        }
+    }
+    if let Some(open) = stack.pop() {
+        let (tag, span) = match &open.open {
+            Token::OpenEach { span, .. } => ("${#each}", span),
+            Token::OpenIf { span, .. } | Token::Else(span) | Token::CloseEach(span) | Token::CloseIf(span) => ("${#if}", span),
+            Token::Text(_) | Token::Var { .. } => return Ok(merge_text(root)),
+        };
+        return err(E_TEMPLATE, format!("{tag} opened here is never closed (template ends at {file}:{end_line})"), Some(span));
+    }
+    Ok(merge_text(root))
+}
+
+fn merge_text(nodes: Vec<TemplateNode>) -> Vec<TemplateNode> {
+    let mut out: Vec<TemplateNode> = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        match (n, out.last_mut()) {
+            (TemplateNode::Text(v), Some(TemplateNode::Text(prev))) => prev.push_str(&v),
+            (TemplateNode::Text(v), _) if v.is_empty() => {}
+            (n, _) => out.push(n),
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------------ render
+
+/// Loop variables, innermost first.
+struct Scope<'a> {
+    name: &'a str,
+    value: &'a Value,
+    parent: Option<&'a Scope<'a>>,
+}
+
+impl<'a> Scope<'a> {
+    fn get(scope: Option<&Scope<'a>>, name: &str) -> Option<&'a Value> {
+        let mut cur = scope;
+        while let Some(s) = cur {
+            if s.name == name {
+                return Some(s.value);
+            }
+            cur = s.parent;
+        }
+        None
+    }
+}
+
+struct Ctx<'c, 'v> {
+    lookup: &'c TemplateLookup<'c>,
+    values: Option<&'c TemplateValueLookup<'v>>,
+    escape: EscapeMode,
+}
+
+/// Render a parsed template. `lookup` resolves scalars; `values` resolves lists
+/// and conditions for blocks (needed only if the template has blocks). Loop
+/// variables are resolved here and shadow every other name. Escaping applies to
+/// substituted values only, never to template text or `|raw` values.
+pub fn render_template<'v>(
+    nodes: &[TemplateNode],
+    lookup: &TemplateLookup<'_>,
+    escape: EscapeMode,
+    values: Option<&TemplateValueLookup<'v>>,
+) -> Result<String> {
+    let ctx = Ctx { lookup, values, escape };
+    let mut out = String::new();
+    run(&ctx, nodes, None, &mut out)?;
+    Ok(out)
+}
+
+fn value_of<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, r: &Ref, loose: bool, scope: Option<&Scope<'s>>) -> Result<Option<Cow<'s, Value>>> {
+    if let Some(v) = Scope::get(scope, &r.name) {
+        return Ok(walk(v, &r.path, &r.name, &r.span, loose)?.map(Cow::Borrowed));
+    }
+    match ctx.values {
+        None => err(E_TEMPLATE, "this template uses blocks, which need list values", Some(&r.span)),
+        Some(values) => values(&r.name, &r.path, &r.span, loose),
+    }
+}
+
+fn run<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, list: &[TemplateNode], scope: Option<&Scope<'s>>, out: &mut String) -> Result<()> {
+    for n in list {
+        match n {
+            TemplateNode::Text(v) => out.push_str(v),
+            TemplateNode::Var { name, path, span, raw } => {
+                let v = match Scope::get(scope, name) {
+                    Some(item) => resolve_json_path(item, path, name, span)?,
+                    None => (ctx.lookup)(name, path, span)?,
+                };
+                let s = v.to_js_string();
+                if *raw || ctx.escape != EscapeMode::Html {
+                    out.push_str(&s);
+                } else {
+                    escape_html_into(&s, out);
+                }
+            }
+            TemplateNode::Each { list, as_name, body, empty, .. } => {
+                // A missing key (post.tags on a post without tags) is an empty list;
+                // an unknown top-level name is still an error, so typos are caught.
+                let found = value_of(ctx, list, !list.path.is_empty(), scope)?;
+                let items: &[Value] = match found.as_deref() {
+                    None | Some(Value::Null) => &[],
+                    Some(Value::Array(a)) => a,
+                    Some(other) => {
+                        return err(
+                            E_TYPE,
+                            format!("{} is {}, not a list; ${{#each}} needs a list", dotted(list), describe(Some(other))),
+                            Some(&list.span),
+                        )
+                    }
+                };
+                if items.is_empty() {
+                    run(ctx, empty, scope, out)?;
+                    continue;
+                }
+                for item in items {
+                    let child = Scope { name: as_name, value: item, parent: scope };
+                    run(ctx, body, Some(&child), out)?;
+                }
+            }
+            TemplateNode::If { cond, negate, then, otherwise, .. } => {
+                let v = value_of(ctx, cond, true, scope)?;
+                let truthy = is_truthy(v.as_deref());
+                run(ctx, if truthy != *negate { then } else { otherwise }, scope, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dotted(r: &Ref) -> String {
+    let mut s = format!("'{}", r.name);
+    for p in &r.path {
+        s.push('.');
+        s.push_str(p);
+    }
+    s.push('\'');
+    s
+}
+
+/// JavaScript truthiness for template conditions; `None` is `undefined`.
+/// Arrays are truthy when non-empty, objects always.
+pub fn is_truthy(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+        Some(Value::Object(_)) => true,
+    }
+}
+
+/// `/^(0|[1-9][0-9]*)$/` and below `len`.
+fn array_index(seg: &str, len: usize) -> Option<usize> {
+    let b = seg.as_bytes();
+    if b.is_empty() || !b.iter().all(u8::is_ascii_digit) || (b.len() > 1 && b[0] == b'0') {
+        return None;
+    }
+    // Too many digits to be an index of any real array.
+    seg.parse::<usize>().ok().filter(|&i| i < len)
+}
+
+/// Walk `value` along `path`. Strict mode fails like [`resolve_json_path`] on a
+/// missing key; loose mode returns `None`. Any value type may be returned.
+pub fn walk<'a>(value: &'a Value, path: &[String], name: &str, span: &SourceSpan, loose: bool) -> Result<Option<&'a Value>> {
+    let mut cur = value;
+    let mut walked = name.to_string();
+    for seg in path {
+        let parent = walked.clone();
+        walked.push('.');
+        walked.push_str(seg);
+        let next = match cur {
+            Value::Array(a) => array_index(seg, a.len()).map(|i| &a[i]),
+            Value::Object(m) => m.get(seg.as_str()),
+            _ => None,
+        };
+        match next {
+            Some(v) => cur = v,
+            None => {
+                if loose {
+                    return Ok(None);
+                }
+                return err(E_UNDEFINED, format!("'{walked}' is undefined ('{parent}' is {})", describe(Some(cur))), Some(span));
+            }
+        }
+    }
+    Ok(Some(cur))
+}
+
+/// HTML-escape `& < > " '`.
+pub fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    escape_html_into(s, &mut out);
+    out
+}
+
+pub(crate) fn escape_html_into(s: &str, out: &mut String) {
+    let mut last = 0;
+    for (i, b) in s.bytes().enumerate() {
+        let rep = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&#39;",
+            _ => continue,
+        };
+        out.push_str(&s[last..i]);
+        out.push_str(rep);
+        last = i + 1;
+    }
+    out.push_str(&s[last..]);
+}
+
+/// Decode strict UTF-8 (E_ENCODING on invalid bytes), stripping a leading BOM.
+pub fn decode_utf8(bytes: &[u8], what: &str, span: Option<&SourceSpan>) -> Result<String> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(s.strip_prefix('\u{feff}').unwrap_or(s).to_string()),
+        Err(_) => Err(SitefileError::new(E_ENCODING, format!("{what} is not valid UTF-8"), span.cloned())),
+    }
+}
+
+/// Walk a parsed JSON value along `path` and return the scalar found there.
+/// Missing keys/indexes fail with E_UNDEFINED; null, objects and arrays fail
+/// with E_TYPE. Messages name the full dotted path.
+pub fn resolve_json_path(value: &Value, path: &[String], name: &str, span: &SourceSpan) -> Result<Scalar> {
+    let mut cur = value;
+    let mut walked = name.to_string();
+    for seg in path {
+        let parent = walked.clone();
+        walked.push('.');
+        walked.push_str(seg);
+        match cur {
+            Value::Array(a) => match array_index(seg, a.len()) {
+                Some(i) => cur = &a[i],
+                None => {
+                    return err(
+                        E_UNDEFINED,
+                        format!("'{walked}' is undefined: '{parent}' is an array of length {}", a.len()),
+                        Some(span),
+                    )
+                }
+            },
+            Value::Object(m) => match m.get(seg.as_str()) {
+                Some(v) => cur = v,
+                None => return err(E_UNDEFINED, format!("'{walked}' is undefined: '{parent}' has no key '{seg}'"), Some(span)),
+            },
+            other => {
+                return err(
+                    E_UNDEFINED,
+                    format!("'{walked}' is undefined: '{parent}' is {}, not an object or array", describe(Some(other))),
+                    Some(span),
+                )
+            }
+        }
+    }
+    match cur {
+        Value::String(s) => Ok(Scalar::Str(s.clone())),
+        Value::Number(n) => Ok(Scalar::Num(n.as_f64().unwrap_or(f64::NAN))),
+        Value::Bool(b) => Ok(Scalar::Bool(*b)),
+        other => err(
+            E_TYPE,
+            format!("'{walked}' is {}; templates can only substitute strings, numbers and booleans", describe(Some(other))),
+            Some(span),
+        ),
+    }
+}
+
+/// `describe()` from the TS version; `None` is `undefined`.
+pub(crate) fn describe(v: Option<&Value>) -> &'static str {
+    match v {
+        None => "undefined",
+        Some(Value::Null) => "null",
+        Some(Value::Array(_)) => "an array",
+        Some(Value::Object(_)) => "an object",
+        Some(Value::String(_)) => "a string",
+        Some(Value::Number(_)) => "a number",
+        Some(Value::Bool(_)) => "a boolean",
+    }
+}
+
+/// JavaScript string semantics shared by the data-format ports.
+pub mod js {
+    use serde_json::{Map, Number, Value};
+    use std::cmp::Ordering;
+
+    /// JavaScript `WhiteSpace` and `LineTerminator` (what `/\s/` and `trim()` use).
+    pub fn is_ws(c: u16) -> bool {
+        matches!(
+            c,
+            0x09..=0x0d | 0x20 | 0xa0 | 0x1680 | 0x2000..=0x200a | 0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000 | 0xfeff
+        )
+    }
+    pub fn is_ws_char(c: char) -> bool {
+        (c as u32) < 0x10000 && is_ws(c as u32 as u16)
+    }
+    /// `String.prototype.trim()` on a `&str`.
+    pub fn trim_str(s: &str) -> &str {
+        s.trim_matches(is_ws_char)
+    }
+    pub fn u16s(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+    /// UTF-16 to a Rust string (a lone surrogate becomes U+FFFD, as when Node
+    /// encodes such a string as UTF-8).
+    pub fn string(v: &[u16]) -> String {
+        String::from_utf16_lossy(v)
+    }
+    pub fn utf16_len(s: &str) -> usize {
+        if s.is_ascii() {
+            s.len()
+        } else {
+            s.encode_utf16().count()
+        }
+    }
+    pub fn trim(v: &[u16]) -> &[u16] {
+        trim_end(trim_start(v))
+    }
+    pub fn trim_start(v: &[u16]) -> &[u16] {
+        let i = v.iter().position(|&c| !is_ws(c)).unwrap_or(v.len());
+        &v[i..]
+    }
+    pub fn trim_end(v: &[u16]) -> &[u16] {
+        let i = v.iter().rposition(|&c| !is_ws(c)).map(|p| p + 1).unwrap_or(0);
+        &v[..i]
+    }
+    /// `indexOf(needle, from)`.
+    pub fn index_of(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(from.min(hay.len()));
+        }
+        if from >= hay.len() || needle.len() > hay.len() {
+            return None;
+        }
+        (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
+    }
+    pub fn index_of_unit(hay: &[u16], c: u16, from: usize) -> Option<usize> {
+        if from >= hay.len() {
+            return None;
+        }
+        hay[from..].iter().position(|&x| x == c).map(|p| p + from)
+    }
+    /// JavaScript `<` on strings: UTF-16 code unit order.
+    pub fn cmp_utf16(a: &str, b: &str) -> Ordering {
+        if a.is_ascii() && b.is_ascii() {
+            return a.cmp(b);
+        }
+        a.encode_utf16().cmp(b.encode_utf16())
+    }
+
+    /// Is `k` an array index (canonical decimal below 2^32 - 1)? Such keys come
+    /// first, ascending, in a JavaScript object's own-key order.
+    fn array_index_key(k: &str) -> Option<u32> {
+        let b = k.as_bytes();
+        if b.is_empty() || b.len() > 10 || !b.iter().all(u8::is_ascii_digit) || (b.len() > 1 && b[0] == b'0') {
+            return None;
+        }
+        k.parse::<u64>().ok().filter(|&n| n < u32::MAX as u64).map(|n| n as u32)
+    }
+
+    /// Reorder a map's keys as a JavaScript object would enumerate them:
+    /// integer-like keys ascending, then the rest in insertion order.
+    pub fn object_order(map: Map<String, Value>) -> Map<String, Value> {
+        if !map.keys().any(|k| array_index_key(k).is_some()) {
+            return map;
+        }
+        let mut ints: Vec<(u32, String, Value)> = Vec::new();
+        let mut rest: Vec<(String, Value)> = Vec::new();
+        for (k, v) in map {
+            match array_index_key(&k) {
+                Some(n) => ints.push((n, k, v)),
+                None => rest.push((k, v)),
+            }
+        }
+        ints.sort_by_key(|e| e.0);
+        let mut out = Map::with_capacity(ints.len() + rest.len());
+        for (_, k, v) in ints {
+            out.insert(k, v);
+        }
+        for (k, v) in rest {
+            out.insert(k, v);
+        }
+        out
+    }
+
+    /// A JavaScript number as JSON: integral values in the safe range become
+    /// integers (so they print as `1`, not `1.0`), others stay floats. NaN and
+    /// infinities (not representable) become null, as `JSON.stringify` does.
+    pub fn number(f: f64) -> Value {
+        if f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0 {
+            return Value::Number(Number::from(f as i64));
+        }
+        Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
+    }
+
+    /// Make a value parsed by serde_json look like the result of `JSON.parse`:
+    /// numbers are JS doubles, objects use JS key order.
+    pub fn from_json_parse(v: Value) -> Value {
+        match v {
+            Value::Number(n) => {
+                if n.is_i64() && n.as_i64().is_some_and(|i| i.unsigned_abs() <= 9_007_199_254_740_991) {
+                    Value::Number(n)
+                } else {
+                    number(n.as_f64().unwrap_or(f64::NAN))
+                }
+            }
+            Value::Array(a) => Value::Array(a.into_iter().map(from_json_parse).collect()),
+            Value::Object(m) => Value::Object(object_order(m.into_iter().map(|(k, v)| (k, from_json_parse(v))).collect())),
+            other => other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn vars(name: &str) -> Option<Scalar> {
+        Some(match name {
+            "TITLE" => Scalar::Str("Hello".into()),
+            "N" => Scalar::Num(3.0),
+            "B" => Scalar::Bool(true),
+            "X" => Scalar::Str("<a href=\"x\">&'</a>".into()),
+            _ => return None,
+        })
+    }
+    fn lookup(name: &str, path: &[String], span: &SourceSpan) -> Result<Scalar> {
+        if !path.is_empty() {
+            return Ok(Scalar::Str(format!("{name}.{}", path.join("."))));
+        }
+        vars(name).ok_or_else(|| SitefileError::at(E_UNDEFINED, format!("undefined {name}"), span))
+    }
+    fn render(t: &str, escape: EscapeMode) -> Result<String> {
+        render_template(&parse_render_template(t, "t.html", 1)?, &lookup, escape, None)
+    }
+    fn r(t: &str) -> String {
+        render(t, EscapeMode::None).unwrap()
+    }
+    fn error_at(t: &str, code: crate::error::ErrorCode, line: u32, column: u32) {
+        let e = parse_render_template(t, "t.html", 1).unwrap_err();
+        assert_eq!(e.code, code, "{t}");
+        assert_eq!(e.span, Some(SourceSpan::new("t.html", line, column)), "{t}: {e}");
+    }
+    fn sp(f: &str, l: u32, c: u32) -> SourceSpan {
+        SourceSpan::new(f, l, c)
+    }
+
+    #[test]
+    fn substitutes_variables() {
+        assert_eq!(r("<h1>${TITLE}</h1> ${N} ${B}"), "<h1>Hello</h1> 3 true");
+        assert_eq!(r("${TITLE}${TITLE}"), "HelloHello");
+        assert_eq!(r(""), "");
+    }
+
+    #[test]
+    fn parses_dotted_paths_with_spans_and_merges_text() {
+        let parts = parse_render_template("a\n  ${data.site.0.my-key} b", "f", 1).unwrap();
+        assert_eq!(
+            parts,
+            vec![
+                TemplateNode::Text("a\n  ".into()),
+                TemplateNode::Var {
+                    name: "data".into(),
+                    path: vec!["site".into(), "0".into(), "my-key".into()],
+                    span: sp("f", 2, 3),
+                    raw: false
+                },
+                TemplateNode::Text(" b".into()),
+            ]
+        );
+        assert_eq!(parse_render_template("x $ $${y} z", "f", 1).unwrap(), vec![TemplateNode::Text("x $ ${y} z".into())]);
+    }
+
+    #[test]
+    fn literal_dollar() {
+        assert_eq!(r("$${TITLE}"), "${TITLE}");
+        assert_eq!(r("cost: $5, $ $a $}"), "cost: $5, $ $a $}");
+        assert_eq!(r("end$"), "end$");
+        assert_eq!(r("$$${TITLE}"), "$${TITLE}");
+    }
+
+    #[test]
+    fn invalid_or_unterminated_expressions_report_line_and_column() {
+        error_at("ok\nab ${1bad}", E_TEMPLATE, 2, 4);
+        error_at("ok\r\nline\r\n  ${a b}", E_TEMPLATE, 3, 3);
+        error_at("x\r\n${unterminated", E_TEMPLATE, 2, 1);
+        error_at("${a\n}", E_TEMPLATE, 1, 1);
+        error_at("${}", E_TEMPLATE, 1, 1);
+        error_at("${a.}", E_TEMPLATE, 1, 1);
+        error_at("${a..b}", E_TEMPLATE, 1, 1);
+        error_at("${ a }", E_TEMPLATE, 1, 1);
+        // Columns count UTF-16 code units.
+        error_at("é😀${bad bad}", E_TEMPLATE, 1, 4);
+    }
+
+    #[test]
+    fn var_spans_on_crlf_templates() {
+        let parts = parse_render_template("a\r\nb\r\n xx${V}", "f", 1).unwrap();
+        let span = parts.iter().find_map(|p| match p {
+            TemplateNode::Var { span, .. } => Some(span.clone()),
+            _ => None,
+        });
+        assert_eq!(span, Some(sp("f", 3, 4)));
+        let parts = parse_render_template("${V}", "Sitefile", 7).unwrap();
+        assert!(matches!(&parts[0], TemplateNode::Var { span, .. } if *span == sp("Sitefile", 7, 1)));
+    }
+
+    #[test]
+    fn html_escaping_applies_to_values_only() {
+        assert_eq!(
+            render("<p title=\"${X}\">&amp;</p>", EscapeMode::Html).unwrap(),
+            "<p title=\"&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;\">&amp;</p>"
+        );
+        assert_eq!(r("<p>${X}</p>"), "<p><a href=\"x\">&'</a></p>");
+        assert_eq!(escape_html("&<>\"'x"), "&amp;&lt;&gt;&quot;&#39;x");
+    }
+
+    #[test]
+    fn lookup_errors_propagate() {
+        let e = render("${MISSING}", EscapeMode::None).unwrap_err();
+        assert!(e.detail.contains("undefined MISSING"));
+    }
+
+    #[test]
+    fn decode_utf8_strips_bom_and_rejects_invalid() {
+        assert_eq!(decode_utf8(&[0xef, 0xbb, 0xbf, 0x68, 0x69], "tpl", None).unwrap(), "hi");
+        assert_eq!(decode_utf8("héllo ✓".as_bytes(), "tpl", None).unwrap(), "héllo ✓");
+        let span = sp("Sitefile", 4, 1);
+        let e = decode_utf8(&[0x68, 0xff, 0x69], "template './x.html'", Some(&span)).unwrap_err();
+        assert_eq!(e.code, E_ENCODING);
+        assert_eq!(e.span, Some(span));
+        assert!(e.message().contains("x.html"));
+        assert_eq!(decode_utf8(&[0xc3], "tpl", None).unwrap_err().code, E_ENCODING);
+    }
+
+    #[test]
+    fn resolve_json_path_cases() {
+        let span = sp("Sitefile", 1, 1);
+        let data = json!({ "site": { "title": "T", "n": 2, "ok": false, "tags": ["a", "b"], "nil": null, "obj": {} }, "my-key": "k" });
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(resolve_json_path(&data, &p(&["site", "title"]), "data", &span).unwrap(), Scalar::Str("T".into()));
+        assert_eq!(resolve_json_path(&data, &p(&["site", "n"]), "data", &span).unwrap(), Scalar::Num(2.0));
+        assert_eq!(resolve_json_path(&data, &p(&["site", "ok"]), "data", &span).unwrap(), Scalar::Bool(false));
+        assert_eq!(resolve_json_path(&data, &p(&["site", "tags", "1"]), "data", &span).unwrap(), Scalar::Str("b".into()));
+        assert_eq!(resolve_json_path(&data, &p(&["my-key"]), "data", &span).unwrap(), Scalar::Str("k".into()));
+        assert_eq!(resolve_json_path(&json!("plain"), &[], "data", &span).unwrap(), Scalar::Str("plain".into()));
+        let fails = |path: &[&str], code, needle: &str| {
+            let e = resolve_json_path(&data, &p(path), "data", &span).unwrap_err();
+            assert_eq!(e.code, code, "{path:?}");
+            assert!(e.message().contains(needle), "{}", e.message());
+            assert_eq!(e.span.as_ref(), Some(&span));
+        };
+        fails(&["site", "missing"], E_UNDEFINED, "data.site.missing");
+        fails(&["site", "tags", "5"], E_UNDEFINED, "data.site.tags.5");
+        fails(&["site", "tags", "x"], E_UNDEFINED, "data.site.tags.x");
+        fails(&["site", "tags", "01"], E_UNDEFINED, "data.site.tags.01");
+        fails(&["site", "title", "x"], E_UNDEFINED, "data.site.title.x");
+        fails(&["site", "toString"], E_UNDEFINED, "data.site.toString");
+        fails(&["site", "nil"], E_TYPE, "data.site.nil");
+        fails(&["site", "obj"], E_TYPE, "data.site.obj");
+        fails(&["site", "tags"], E_TYPE, "data.site.tags");
+        fails(&["site", "nil", "x"], E_UNDEFINED, "data.site.nil.x");
+        assert_eq!(resolve_json_path(&data, &[], "data", &span).unwrap_err().code, E_TYPE);
+        let e = resolve_json_path(&data, &p(&["site", "missing"]), "data", &span).unwrap_err();
+        assert_eq!(e.detail, "'data.site.missing' is undefined: 'data.site' has no key 'missing'");
+        let e = resolve_json_path(&data, &p(&["site", "tags", "5"]), "data", &span).unwrap_err();
+        assert_eq!(e.detail, "'data.site.tags.5' is undefined: 'data.site.tags' is an array of length 2");
+    }
+
+    // ------------------------------------------------- blocks (test/blog.test.ts)
+
+    fn blog_data() -> Value {
+        json!({
+            "T": "Blog",
+            "posts": [
+                { "title": "A & B", "tags": ["x", "y"], "html": "<p>a</p>" },
+                { "title": "C", "tags": [], "draft": true }
+            ],
+            "none": []
+        })
+    }
+    fn get<'a>(data: &'a Value, name: &str, p: &[String]) -> Option<&'a Value> {
+        let mut v = data.get(name)?;
+        for s in p {
+            v = match v {
+                Value::Array(a) => a.get(s.parse::<usize>().ok()?)?,
+                Value::Object(m) => m.get(s)?,
+                _ => return None,
+            };
+        }
+        Some(v)
+    }
+    fn blog(t: &str, escape: EscapeMode) -> Result<String> {
+        let data = blog_data();
+        let lookup = |name: &str, p: &[String], span: &SourceSpan| -> Result<Scalar> {
+            match get(&data, name, p) {
+                Some(Value::String(s)) => Ok(Scalar::Str(s.clone())),
+                Some(Value::Number(n)) => Ok(Scalar::Num(n.as_f64().unwrap())),
+                Some(Value::Bool(b)) => Ok(Scalar::Bool(*b)),
+                _ => Err(SitefileError::at(E_UNDEFINED, format!("undefined {name}"), span)),
+            }
+        };
+        let values = |name: &str, p: &[String], span: &SourceSpan, loose: bool| -> Result<Option<Cow<'_, Value>>> {
+            match get(&data, name, p) {
+                Some(v) => Ok(Some(Cow::Borrowed(v))),
+                None if loose => Ok(None),
+                None => Err(SitefileError::at(E_UNDEFINED, format!("undefined {name}"), span)),
+            }
+        };
+        render_template(&parse_render_template(t, "t.html", 1)?, &lookup, escape, Some(&values))
+    }
+    fn b(t: &str) -> String {
+        blog(t, EscapeMode::Html).unwrap()
+    }
+
+    #[test]
+    fn each_repeats_shadows_and_else() {
+        assert_eq!(b("${#each posts as p}[${p.title}]${/each}"), "[A &amp; B][C]");
+        assert_eq!(b("${#each posts as T}${T.title}${/each} ${T}"), "A &amp; BC Blog");
+        assert_eq!(b("${#each none as p}x${else}empty${/each}"), "empty");
+        assert_eq!(b("${#each posts as p}${#each p.tags as t}${t},${/each};${/each}"), "x,y,;;");
+        assert_eq!(b("${#each posts as p}${#each p.missing as t}${t}${else}-${/each}${/each}"), "--");
+        assert!(blog("${#each nope as p}${/each}", EscapeMode::Html).unwrap_err().detail.contains("undefined nope"));
+        // nested loops with the same name restore the outer binding
+        assert_eq!(b("${#each posts as p}${#each p.tags as p}${p}${/each}${p.title}${/each}"), "xyA &amp; BC");
+    }
+
+    #[test]
+    fn if_else_negation_and_loose_keys() {
+        assert_eq!(b("${#each posts as p}${#if p.draft}D${else}P${/if}${/each}"), "PD");
+        assert_eq!(blog("${#each posts as p}${#if !p.draft}${p.title}${/if}${/each}", EscapeMode::None).unwrap(), "A & B");
+        assert_eq!(b("${#if missing.key}yes${else}no${/if}"), "no");
+        assert_eq!(b("${#each posts as p}${#if p.tags}T${else}-${/if}${/each}"), "T-");
+    }
+
+    #[test]
+    fn raw_skips_escaping() {
+        assert_eq!(b("${posts.0.html|raw} ${posts.0.html}"), "<p>a</p> &lt;p&gt;a&lt;/p&gt;");
+    }
+
+    #[test]
+    fn block_tag_alone_on_line_removes_line() {
+        let t = "<ul>\n  ${#each posts as p}\n  <li>${p.title}</li>\n  ${/each}\n</ul>\n";
+        assert_eq!(blog(t, EscapeMode::None).unwrap(), "<ul>\n  <li>A & B</li>\n  <li>C</li>\n</ul>\n");
+        let t = "a\r\n  ${#if T}  \r\nb\r\n${/if}\r\n";
+        assert_eq!(blog(t, EscapeMode::None).unwrap(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn template_block_errors() {
+        let at = |t: &str, line: u32, column: u32| {
+            let e = blog(t, EscapeMode::Html).unwrap_err();
+            assert_eq!(e.code, E_TEMPLATE, "{t}");
+            assert_eq!(e.span, Some(sp("t.html", line, column)), "{t}");
+        };
+        at("${#each posts}x${/each}", 1, 1);
+        at("a\n${#if T}x", 2, 1);
+        at("${/each}", 1, 1);
+        at("${#if T}x${/each}", 1, 10);
+        at("${#if T}a${else}b${else}c${/if}", 1, 18);
+        at("${T|upper}", 1, 1);
+        assert_eq!(blog("${#each T as x}${/each}", EscapeMode::Html).unwrap_err().code, E_TYPE);
+        let e = blog("a\n${#if T}x", EscapeMode::Html).unwrap_err();
+        assert_eq!(e.detail, "${#if} opened here is never closed (template ends at t.html:2)");
+        let e = blog("${#each T as x}${/each}", EscapeMode::Html).unwrap_err();
+        assert_eq!(e.detail, "'T' is a string, not a list; ${#each} needs a list");
+        // blocks without a values callback
+        let e = render("${#if T}x${/if}", EscapeMode::None).unwrap_err();
+        assert_eq!(e.code, E_TEMPLATE);
+    }
+
+    #[test]
+    fn truthiness_and_walk() {
+        assert!(!is_truthy(None));
+        for v in [json!(null), json!(false), json!(""), json!(0), json!(-0.0), json!([])] {
+            assert!(!is_truthy(Some(&v)), "{v}");
+        }
+        for v in [json!(true), json!("0"), json!(1), json!([0]), json!({})] {
+            assert!(is_truthy(Some(&v)), "{v}");
+        }
+        let span = sp("f", 1, 1);
+        let v = json!({"a": [1, {"b": 2}]});
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(walk(&v, &p(&["a", "1", "b"]), "x", &span, false).unwrap(), Some(&json!(2)));
+        assert_eq!(walk(&v, &p(&["a", "9"]), "x", &span, true).unwrap(), None);
+        let e = walk(&v, &p(&["a", "9"]), "x", &span, false).unwrap_err();
+        assert_eq!(e.detail, "'x.a.9' is undefined ('x.a' is an array)");
+    }
+
+    #[test]
+    fn js_object_order() {
+        let m: serde_json::Map<String, Value> =
+            [("b", 1), ("10", 2), ("a", 3), ("2", 4), ("01", 5)].iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        let keys: Vec<String> = js::object_order(m).keys().cloned().collect();
+        assert_eq!(keys, ["2", "10", "b", "a", "01"]);
+        assert_eq!(js::from_json_parse(serde_json::from_str("[1.0, 2.5, 12345678901234567890]").unwrap()).to_string(), "[1,2.5,1.2345678901234567e+19]");
+    }
+
+    #[test]
+    fn differential_fixtures() {
+        let data = json!({
+            "T": "A & <b>", "N": 3, "F": 1.5, "Z": 0, "B": false, "E": "", "nil": null,
+            "list": [{ "t": "x", "tags": ["a", "b"] }, { "t": "y", "tags": [] }, { "t": "z" }], "empty": [], "obj": { "k": "v", "n": [1, 2] }
+        });
+        let lookup = |name: &str, p: &[String], span: &SourceSpan| -> Result<Scalar> {
+            match data.get(name) {
+                Some(v) => resolve_json_path(v, p, name, span),
+                None => err(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), Some(span)),
+            }
+        };
+        let values = |name: &str, p: &[String], span: &SourceSpan, loose: bool| -> Result<Option<Cow<'_, Value>>> {
+            match data.get(name) {
+                Some(v) => Ok(walk(v, p, name, span, loose)?.map(Cow::Borrowed)),
+                None if loose => Ok(None),
+                None => err(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), Some(span)),
+            }
+        };
+        fixtures::check("template.json", |t| {
+            let nodes = parse_render_template(t, "t.html", 3)?;
+            let html = render_template(&nodes, &lookup, EscapeMode::Html, Some(&values))?;
+            let none = render_template(&nodes, &lookup, EscapeMode::None, Some(&values))?;
+            Ok(json!([html, none]))
+        });
+    }
+}
+
+/// Differential fixtures generated from the TypeScript implementation by
+/// `tests/fixtures/data/generate.mjs`.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::js;
+    use crate::error::Result;
+    use serde_json::Value;
+
+    /// Run `f` on every fixture input of `name` and compare the value (as JSON
+    /// text, so key order counts) or the error (code, detail, line, column).
+    pub(crate) fn check(name: &str, f: impl Fn(&str) -> Result<Value>) {
+        // SITEFILE_DATA_FIXTURES points at a larger, locally generated set
+        // (FUZZ_DIR=… FUZZ_COUNT=… node tests/fixtures/data/generate.mjs).
+        let dir = std::env::var_os("SITEFILE_DATA_FIXTURES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data"));
+        let path = dir.join(name);
+        let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture file")).expect("fixture JSON");
+        let mut failures = Vec::new();
+        for case in &cases {
+            let input = case["input"].as_str().unwrap_or_default();
+            let got = f(input);
+            let ok = match (&case["ok"], &case["error"], &got) {
+                (Value::String(text), _, Ok(v)) => {
+                    let want = js::from_json_parse(serde_json::from_str(text).unwrap_or(Value::Null)).to_string();
+                    let got = v.to_string();
+                    (want == got).then_some(()).ok_or(format!("want {want}\n  got  {got}"))
+                }
+                (_, Value::Object(e), Err(g)) => {
+                    let span = g.span.as_ref().map_or((0, 0), |s| (s.line, s.column));
+                    let want = (e["code"].as_str().unwrap_or(""), e["detail"].as_str().unwrap_or(""), e["line"].as_u64(), e["column"].as_u64());
+                    let have = (g.code.as_str(), g.detail.as_str(), Some(span.0 as u64), Some(span.1 as u64));
+                    (want == have).then_some(()).ok_or(format!("want {want:?}\n  got  {have:?}"))
+                }
+                (_, _, Ok(v)) => Err(format!("want error {}\n  got  {v}", case["error"])),
+                (_, _, Err(g)) => Err(format!("want {}\n  got  error {} {:?}", case["ok"], g.message(), g.code)),
+            };
+            if let Err(msg) = ok {
+                failures.push(format!("{input:?}\n  {msg}"));
+            }
+        }
+        assert!(cases.len() >= 1000, "{name}: only {} fixtures", cases.len());
+        assert!(
+            failures.is_empty(),
+            "{name}: {} of {} differ:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+}

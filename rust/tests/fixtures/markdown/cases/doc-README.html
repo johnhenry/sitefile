@@ -1,0 +1,130 @@
+<h1>Sitefile</h1>
+<p>Docker-inspired static artifact builder. Compose immutable filesystem trees from
+local and remote sources, render templates, and export a deployable directory —
+no container runtime, no shell.</p>
+<pre><code># examples/hello/Sitefile
+FROM scratch
+ARG TITLE = &quot;Hello&quot;
+LET GREETING = &quot;Welcome to ${TITLE}.&quot;
+COPY ./public/ /
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT / AS directory
+</code></pre>
+<pre><code class="language-bash">npm install &amp;&amp; npm run build
+node lib/src/cli.js build examples/hello --build-arg TITLE=&quot;My site&quot;
+</code></pre>
+<p>This writes <code>examples/hello/dist/index.html</code> (with the title substituted) and
+<code>examples/hello/dist/style.css</code>.</p>
+<h2>Status</h2>
+<p>Milestones <strong>M0</strong> (local vertical slice), <strong>M1</strong> (remote inputs) and <strong>M2</strong>
+(trees and stages: multi-stage builds, <code>COPY --from</code>, archive imports,
+<code>.sitefileignore</code>; see <code>examples/multistage</code>) are implemented and tested; see <a href="docs/TASKS.md">docs/TASKS.md</a>. Requires Node.js 22+,
+no runtime dependencies.</p>
+<p>| Instruction | Supported |
+| --- | --- |
+| <code>FROM scratch\|&lt;dir&gt;\|&lt;stage&gt; [AS name]</code> | yes; several FROMs make a multi-stage build, the last stage is exported |
+| <code>ARG NAME[: type] [= value]</code> | yes, <code>string</code>/<code>number</code>/<code>boolean</code>, <code>--build-arg</code> |
+| <code>LET NAME[: type] = value</code> | yes |
+| <code>IMPORT name FROM &lt;path or https URL&gt; [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]</code> | yes; <code>AS tree</code> unpacks tar, tar.gz, zip and Web Bundles; <code>AS markdown</code> reads posts with frontmatter; <code>AS yaml</code>/<code>csv</code>/<code>wbn</code> give data for templates |
+| <code>COPY [--overwrite] [--from=&lt;stage&gt;] &lt;source&gt; &lt;dest&gt;</code> | yes; source is a local path, <code>name:/path</code>, <code>&lt;&lt;EOF</code> inline content, or with <code>--from</code> an absolute path in an earlier stage |
+| <code>RENDER [--escape=html] [--overwrite] [--from=&lt;stage&gt;] &lt;template&gt; TO &lt;dest&gt; [FOR item IN list]</code> | yes; template is a file or <code>&lt;&lt;EOF</code> inline body; <code>${NAME}</code>, <code>${json.path}</code>, <code>${#each}</code>, <code>${#if}</code>, <code>${x\|raw}</code>; <code>FOR</code> renders one page per element |
+| <code>PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]</code> | yes; a custom renderer: a sandboxed JS module or an import-free WebAssembly module (see <a href="docs/PLUGINS.md">docs/PLUGINS.md</a>, <code>examples/wasm/</code>) |
+| <code>TRANSFORM [&lt;source&gt;] WITH name TO &lt;dest&gt; [OPTIONS k=v …] [FOR item IN list]</code> | yes; e.g. text → animated SVG (<code>examples/motion/</code>) |
+| <code>TOOL name</code> + <code>TRANSFORM … WITH name TO &lt;dest&gt; [OPTIONS …] [FOR …] ARGS …</code> | yes; run an external program (e.g. <code>ffmpeg</code>) you allow with <code>--allow-exec name</code>: argv only, no shell, temp files, scrubbed environment (see <a href="docs/PLUGINS.md">docs/PLUGINS.md</a>) |
+| <code>EXPORT &lt;path&gt; [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE &lt;https-url&gt;] [AT &lt;root&gt;]</code> | yes; archives are deterministic, <code>wbn</code> is an unsigned Web Bundle (needs <code>BASE</code> or <code>--base-url</code>), <code>oci</code> is a single-layer OCI image of the files (under <code>AT</code>, default <code>/srv/www</code>) |</p>
+<p>Templates can also live in the Sitefile itself (see <code>examples/inline/</code>):</p>
+<pre><code>RENDER --escape=html &lt;&lt;HTML TO /index.html
+&lt;h1&gt;${TITLE}&lt;/h1&gt;
+HTML
+</code></pre>
+<p>A blog from Markdown posts with frontmatter (see <code>examples/blog/</code>):</p>
+<pre><code>IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+RENDER --escape=html ./templates/index.html TO /index.html
+RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+</code></pre>
+<p>Data files are readable too (see <code>examples/data/</code>):</p>
+<pre><code>IMPORT site FROM ./site.yaml AS yaml                 # ${site.nav.0.title}
+IMPORT team FROM ./team.csv AS csv SORT BY joined    # FOR person IN team
+IMPORT bundle FROM ./vendor/hello.wbn AS wbn         # ${#each bundle.entries as e}
+IMPORT hello FROM ./vendor/hello.wbn AS tree         # COPY hello:/ /hello/
+</code></pre>
+<p>Custom renderers are plugins that run in a sandboxed Node process (see <code>examples/motion/</code>):</p>
+<pre><code>PLUGIN motion FROM ./plugins/motion.mjs
+TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter
+TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
+</code></pre>
+<p>External programs are explicit opt-ins: declare a <code>TOOL</code>, and allow it on the command line.</p>
+<pre><code>TOOL ffmpeg
+TRANSFORM WITH ffmpeg TO /intro.mp4 ARGS -f lavfi -i &quot;color=c=black:s=1280x720:d=3&quot; -fflags +bitexact -map_metadata -1 {output}
+</code></pre>
+<pre><code>sitefile build --allow-exec ffmpeg
+</code></pre>
+<p>TRANSFORM results are cached in <code>$SITEFILE_HOME/cache/transform</code> (<code>--no-cache</code> to skip; <code>sitefile cache info|prune</code>).</p>
+<h2>CLI</h2>
+<pre><code>sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
+               [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
+               [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
+               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache]
+sitefile validate [context] [--json]
+sitefile inspect  [context] [--json]
+
+# images and servers (see below and docs/CLI.md)
+sitefile build [context] -t name[:tag]        # also store the build as an image
+sitefile images | image inspect|diff|prune | tag | rmi | save
+sitefile cache info | cache prune [--older-than days]   # TRANSFORM result cache
+sitefile serve [-d] [--name n] [-p [host:]port] [--spa] &lt;image|./dir&gt;
+sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] &lt;name&gt;
+</code></pre>
+<h2>Images and servers</h2>
+<p>Builds can be kept in a local, Docker-like <strong>image store</strong>, which is a standard
+<a href="https://github.com/opencontainers/image-spec/blob/main/image-layout.md">OCI image layout</a>
+in <code>$SITEFILE_HOME</code> (default <code>~/.sitefile</code>). An image is the site&#39;s files as one
+layer; its ID is the manifest digest, and building identical output gives the same ID.</p>
+<pre><code class="language-bash">sitefile build examples/hello -t hello:1          # no -o: stored only, nothing written to the context
+sitefile images                                    # REPOSITORY TAG IMAGE ID CREATED FILES SIZE
+sitefile save hello:1 -o hello.oci.tar             # or .zip / .tar.gz / .wbn / a directory
+sitefile serve -d --name site -p 8080 hello:1      # serve it, in the background
+sitefile servers; sitefile server logs site; sitefile server stop site; sitefile server rm site
+</code></pre>
+<p><code>serve</code> serves GET/HEAD only on <code>127.0.0.1</code> (never <code>0.0.0.0</code> unless you ask for it in <code>-p</code>), with ETags,
+correct MIME types and no directory listings. <code>EXPORT / AS oci</code> (or <code>build -o site.oci.tar</code>) writes the
+same OCI image without the store; on its own it contains files only, but <code>EXPORT / AS oci BASE nginx:alpine AT /usr/share/nginx/html</code> (or <code>--base</code>) builds a runnable image on top of a pulled base, and <code>sitefile push</code> / <code>pull</code>
+move images to and from any OCI registry. See
+<a href="docs/CLI.md">docs/CLI.md</a>.</p>
+<h2>Safety defaults</h2>
+<ul>
+<li>Local reads stay inside the build context (no <code>..</code>, absolute paths or symlinks out).
+Hard-linked files are refused (<code>E_HARDLINK</code>) unless <code>--allow-hardlinks</code>, since a
+hard link can alias a file outside the context.</li>
+<li>A <code>.sitefileignore</code> (gitignore-style subset) at the context root excludes files
+from directory copies; explicitly named files are never ignored.</li>
+<li>Remote imports are <code>https:</code> only, to public addresses only (checked at connect
+time and on every redirect), size- and time-limited, never decompressed or executed.</li>
+<li>Unpinned URLs are recorded in <code>Sitefile.lock</code> and must match on later builds.</li>
+<li>Writing different content to an existing path fails unless <code>--overwrite</code> is given.</li>
+<li>Export is staged in a temporary sibling and swapped in; a non-empty destination
+outside the context is only replaced with <code>--force</code>.</li>
+<li>Archive exports (<code>zip</code>, <code>tar</code>, <code>tgz</code>, <code>wbn</code>) write one file via a temporary sibling and
+rename; <code>--out</code> may not be the context, its parent, root or home, nor a directory or
+symlink, and an existing file outside the context needs <code>--force</code>.</li>
+</ul>
+<h2>Export formats</h2>
+<pre><code class="language-bash">node lib/src/cli.js build examples/hello --format zip     # examples/hello/dist.zip
+node lib/src/cli.js build examples/hello -o hello.tar.gz      # format from the extension
+node lib/src/cli.js build examples/hello --format wbn --base-url https://example.com/
+</code></pre>
+<p>Archives are reproducible: sorted entries, fixed timestamps (or <code>SOURCE_DATE_EPOCH</code>),
+uid/gid 0, modes 0644/0755. See <a href="docs/LANGUAGE.md#export-formats">docs/LANGUAGE.md</a>.</p>
+<h2>Docs</h2>
+<ul>
+<li><a href="docs/CLI.md">docs/CLI.md</a> — every command, the image store layout, reference grammar</li>
+<li><a href="docs/LANGUAGE.md">docs/LANGUAGE.md</a> — syntax and the exact semantics chosen for v0.1</li>
+<li><a href="docs/PLUGINS.md">docs/PLUGINS.md</a> — writing renderer plugins, and the sandbox</li>
+<li><a href="docs/ARCHITECTURE.md">docs/ARCHITECTURE.md</a> — invariants and module layout</li>
+<li><a href="docs/MILESTONES.md">docs/MILESTONES.md</a>, <a href="docs/TASKS.md">docs/TASKS.md</a></li>
+<li><a href="AGENTS.md">AGENTS.md</a> — rules for coding agents working on this repo</li>
+</ul>
+<h2>Development</h2>
+<pre><code class="language-bash">npm test        # compile with tsc, then run node:test suites
+npm run typecheck
+</code></pre>

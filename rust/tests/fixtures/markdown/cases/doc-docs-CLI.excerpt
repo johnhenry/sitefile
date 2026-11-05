@@ -1,0 +1,1 @@
+sitefile <command> --help prints the options of each command. Exit codes: 0 success, 1 an error (error[E_CODE]: message), 2 a usage error.

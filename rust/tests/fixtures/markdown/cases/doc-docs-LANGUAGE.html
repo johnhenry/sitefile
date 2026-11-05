@@ -1,0 +1,562 @@
+<h1>Sitefile language draft v0.1</h1>
+<p>Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quoted strings, comments, and backslash continuations. No implicit shell.</p>
+<p>Instructions:</p>
+<ul>
+<li><code>FROM scratch|&lt;local dir&gt;|&lt;stage&gt; [AS name]</code></li>
+<li><code>ARG NAME[: type] [= value]</code> external build parameter</li>
+<li><code>LET NAME = value</code> local immutable binding</li>
+<li><code>IMPORT name FROM &lt;uri&gt; [AS json|text|tree|file] [INTEGRITY sha256:&lt;hex&gt;]</code></li>
+<li><code>COPY [--from=&lt;stage&gt;] &lt;source&gt; &lt;destination&gt;</code>; source can be local path or <code>name:/path</code></li>
+<li><code>RENDER &lt;template&gt; TO &lt;destination&gt;</code>; interpolation <code>${NAME}</code> only in MVP</li>
+<li><code>EXPORT &lt;tree-path&gt; [AS directory|zip|tar|tgz|wbn|oci] [BASE &lt;https-url&gt;] [AT &lt;/srv/www&gt;]</code> (CLI specifies destination)</li>
+<li><code>PLUGIN</code>, <code>TOOL</code> and <code>TRANSFORM</code> (custom renderers and allow-listed external programs): see Plugins below.</li>
+<li>Future: REMOVE, GENERATE, ASSERT, META, EXEC.</li>
+</ul>
+<p>Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.</p>
+<p>Variables: <code>ARG</code> is externally configurable; <code>LET</code> is local. Missing required values are errors. Escaping is explicit; initial renderer is for text, not automatically HTML-safe.</p>
+<p>Example:</p>
+<pre><code>FROM scratch
+ARG TITLE = &quot;Hello&quot;
+COPY ./public/ /
+RENDER ./templates/index.html TO /index.html
+EXPORT / AS directory
+</code></pre>
+<p>Design decisions still open: typed expression grammar, override syntax, template engine extension API, lockfile format.</p>
+<hr>
+<h2>v0.1 implementation decisions</h2>
+<p>These pin down what the draft above leaves open. Tests cover each rule.</p>
+<h3>Lexical rules</h3>
+<ul>
+<li>One instruction per logical line. A physical line ending in an odd number of
+<code>\</code> continues onto the next line; the pieces are joined with one space.
+Whitespace around the join is trimmed, even inside quotes. Blank lines inside
+a continuation are skipped; a <code>\</code> on the last line just ends the instruction.</li>
+<li>A line whose first non-blank character is <code>#</code> is a comment, also inside a
+continuation. <code>#</code> elsewhere is ordinary text (URLs contain <code>#</code>).</li>
+<li>Flags (<code>--overwrite</code>, <code>--escape=…</code>) come before operands. Unknown or repeated
+flags are syntax errors.</li>
+<li>Value words (ARG/LET types, IMPORT <code>AS</code> kinds, <code>--escape</code> values,
+<code>AS directory</code>) are case-insensitive. Only the bare word <code>scratch</code> (not
+<code>&quot;scratch&quot;</code>) means an empty base.</li>
+<li><code>INTEGRITY</code> must be a literal lowercase <code>sha256:&lt;64 hex&gt;</code>.</li>
+<li>Keywords (<code>FROM</code>, <code>AS</code>, <code>TO</code>, <code>INTEGRITY</code>, …) are case-insensitive. Names are
+case-sensitive identifiers: <code>[A-Za-z_][A-Za-z0-9_]*</code>.</li>
+<li>An operand is a bare word (up to whitespace), a <code>&quot;double-quoted&quot;</code> string, or a
+<code>&#39;single-quoted&#39;</code> string.
+<ul>
+<li>Bare and double-quoted text interpolate <code>${NAME}</code>; <code>\</code> escapes the next
+character (<code>\$</code>, <code>\&quot;</code>, <code>\\</code>; in double quotes also <code>\n</code>, <code>\t</code>).</li>
+<li>Single-quoted text is literal: no escapes, no interpolation.</li>
+<li>A <code>$</code> not followed by <code>{</code> is literal.</li>
+</ul>
+</li>
+</ul>
+<h3>Instructions</h3>
+<ul>
+<li>
+<p><code>FROM scratch|&lt;base&gt; [AS name]</code> starts a <strong>stage</strong>. Every instruction except
+<code>ARG</code> must come after the first <code>FROM</code>; each <code>FROM</code> after that starts a new
+stage, and COPY/RENDER apply to the most recent one.</p>
+<ul>
+<li><code>scratch</code> (bare word; <code>&quot;scratch&quot;</code> is a path) is an empty tree.</li>
+<li><code>&lt;base&gt;</code> that is a bare identifier naming an <em>earlier</em> stage starts from a
+copy of that stage&#39;s final tree (Docker-like). Anything else is a
+context-relative directory, with COPY&#39;s sandbox rules (<code>E_PATH_ESCAPE</code>,
+symlinks inside the context only, <code>.git</code>/export dir skipped); a file is
+<code>E_TYPE</code>, a missing path <code>E_NOT_FOUND</code>. A stage name wins over a same-named
+directory; write <code>./name</code> to force the directory. Files seeded from a
+directory get the origin <code>Sitefile:&lt;line&gt; FROM</code>; files inherited from a
+stage keep their original origin.</li>
+<li>Stage names are identifiers, unique, and share no namespace with
+ARG/LET/IMPORT: a collision in either order is <code>E_DUPLICATE</code>. A name used
+before its stage is complete (itself or a later stage) is <code>E_UNDEFINED</code>, so
+there are no cycles.</li>
+<li><strong>Scope:</strong> stages scope only the tree. ARG, LET and IMPORT stay one global
+namespace in source order, wherever they appear, and an IMPORT is usable
+from any later stage.</li>
+<li><strong>EXPORT</strong> is still exactly one and last, and exports from the <strong>last
+stage</strong>. Earlier stages exist only to feed later ones.</li>
+</ul>
+</li>
+<li>
+<p><code>ARG NAME[: string|number|boolean] [= value]</code>. No default means required;
+<code>--build-arg NAME=value</code> overrides. Unknown <code>--build-arg</code> names are warnings.</p>
+</li>
+<li>
+<p><strong>Build args from files and the environment</strong> (CLI):</p>
+<ul>
+<li><code>--build-arg-file &lt;path&gt;</code> (repeatable) reads a flat <code>.json</code> object, a flat
+<code>.yaml</code>/<code>.yml</code> mapping, or a <code>.env</code> file (<code>KEY=value</code> lines, <code>export</code>
+prefix, <code>#</code> comments, <code>&#39;literal&#39;</code> or <code>&quot;escaped&quot;</code> quotes). Values must be
+strings, numbers or booleans. <code>.env</code> files are <strong>parsed, never executed</strong>:
+no <code>$VAR</code> or <code>$(…)</code> expansion.</li>
+<li><code>--build-arg NAME</code> (no <code>=</code>) takes the value from the environment variable
+<code>NAME</code>; an unset variable is a usage error.</li>
+<li>Precedence: Sitefile default &lt; files (later files win) &lt; <code>--build-arg</code>.
+Each ARG&#39;s declared type still applies.</li>
+</ul>
+</li>
+<li>
+<p><code>LET NAME[: type] = value</code>. ARG and LET share one namespace; rebinding fails.</p>
+</li>
+<li>
+<p>Operands of every instruction can use <code>${NAME}</code> for ARG/LET names defined on
+an earlier line. Dotted access is only allowed inside RENDER templates.</p>
+</li>
+<li>
+<p><code>IMPORT name FROM &lt;uri&gt; [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:&lt;hex&gt;] [SORT BY key [ASC|DESC]]</code></p>
+<ul>
+<li><code>AS markdown</code> and <code>SORT BY</code>: see Markdown and template blocks below;
+<code>AS yaml</code>, <code>AS csv</code>, <code>AS wbn</code> and directories of data files: see Data files.</li>
+<li><code>&lt;uri&gt;</code> is a context-relative path or an <code>https://</code> URL (<code>http://</code> only with
+<code>--allow-http</code>). Other schemes fail with <code>E_PROTOCOL</code>.</li>
+<li>Default kind: <code>tree</code> for a local directory, otherwise <code>file</code>.</li>
+<li><code>text</code> must be valid UTF-8; <code>json</code> must parse. Both produce <strong>values</strong>:
+they can be read by RENDER templates but not copied (<code>E_TYPE</code>).</li>
+<li><code>AS tree</code> on a <strong>file</strong> (local or remote) means &quot;extract this archive&quot;;
+archives are never extracted implicitly. See Archives below. A local
+directory with <code>AS tree</code> imports the directory as before.</li>
+<li>Import names must not equal an ARG/LET name or another import.</li>
+</ul>
+</li>
+<li>
+<p><code>COPY [--overwrite] [--from=&lt;stage&gt;] &lt;source&gt; &lt;dest&gt;</code></p>
+<ul>
+<li>With <code>--from=&lt;stage&gt;</code>, <code>&lt;source&gt;</code> is an absolute path (starts with <code>/</code>, no
+<code>..</code>) inside the final tree of an earlier, completed stage: <code>/out/</code> or
+<code>/a.txt</code>. File, directory, trailing-slash and conflict rules below apply
+unchanged. A missing path is <code>E_NOT_FOUND</code>; an unknown, current or later
+stage is <code>E_UNDEFINED</code> (at the flag).</li>
+<li>Otherwise <code>&lt;source&gt;</code> is a context-relative path, or <code>name:</code> / <code>name:/inner/path</code> for
+an import. Write <code>./foo:bar</code> for a local file whose name contains <code>:</code>.
+A URL source fails: use IMPORT then COPY.</li>
+<li><code>&lt;dest&gt;</code> must be absolute.</li>
+<li><strong>File source:</strong> if <code>&lt;dest&gt;</code> ends with <code>/</code>, or already exists as a directory
+in the tree, the file goes to <code>&lt;dest&gt;/&lt;basename&gt;</code>; otherwise <code>&lt;dest&gt;</code> is the
+new file&#39;s path.</li>
+<li><strong>Directory source:</strong> its <em>contents</em> are placed under <code>&lt;dest&gt;</code>. A trailing
+slash on either side makes no difference.</li>
+</ul>
+</li>
+<li>
+<p><code>RENDER [--escape=none|html] [--overwrite] [--from=&lt;stage&gt;] &lt;template&gt; TO &lt;dest&gt; [FOR item IN list]</code></p>
+<ul>
+<li><code>&lt;template&gt;</code> is a source like COPY&#39;s (including <code>--from</code>, so a template can be produced by an earlier stage) and must be a UTF-8 file. <code>&lt;dest&gt;</code> is
+a file path (no trailing slash).</li>
+<li>Templates use <code>${NAME}</code> for ARG/LET, <code>${name}</code> for a text import, and
+<code>${name.key.0.key}</code> for a scalar in a JSON import. <code>$${</code> writes a literal
+<code>${</code>. Unknown names fail with the template&#39;s line and column.</li>
+<li><code>--escape=html</code> escapes <code>&amp; &lt; &gt; &quot; &#39;</code> in every substituted value.</li>
+</ul>
+</li>
+<li>
+<p><strong>Inline content (heredocs).</strong> The source of <code>COPY</code> and the template of
+<code>RENDER</code> can be written in the Sitefile itself:</p>
+<pre><code>RENDER --escape=html &lt;&lt;HTML TO /index.html
+&lt;h1&gt;${TITLE}&lt;/h1&gt;
+HTML
+COPY &lt;&lt;CSS /style.css
+h1 { color: teal }
+CSS
+</code></pre>
+<ul>
+<li><code>&lt;&lt;NAME</code> (an identifier) must start a word outside quotes, in place of the
+source operand. The body is every following line up to a line that is
+exactly <code>NAME</code>; each body line keeps its <code>\n</code>. <code>&lt;&lt;-NAME</code> strips leading
+tabs from body lines and the closing line.</li>
+<li>The body is raw: no comments, blank-line skipping, continuations or
+escapes. A missing closing line, a second <code>&lt;&lt;</code> on one instruction, or <code>&lt;&lt;</code>
+anywhere but the source fails with <code>E_SYNTAX</code>; so does combining it with
+<code>--from</code>.</li>
+<li><code>RENDER</code> bodies are templates with the same rules as template files, and
+errors report the Sitefile line and column. <code>COPY</code> bodies are written byte
+for byte (no <code>${}</code> substitution) with mode <code>0644</code>, to a file destination
+(<code>E_PATH</code> for a directory). Conflict rules and <code>--overwrite</code> apply as usual.</li>
+<li>Only <code>COPY</code> and <code>RENDER</code> lines are scanned for <code>&lt;&lt;</code>; elsewhere it is plain text.</li>
+<li>See <code>examples/inline/</code>.</li>
+</ul>
+</li>
+<li>
+<p><code>EXPORT &lt;path&gt; [AS directory|zip|tar|tgz|wbn|oci] [BASE &lt;url&gt;] [AT &lt;root&gt;]</code> must be the last
+instruction, exactly once; it exports from the last stage. The format
+defaults to <code>directory</code>; <code>tar.gz</code> is accepted as an alias for <code>tgz</code>; names
+are case-insensitive. <code>BASE</code> (an operand, so <code>${VAR}</code> works) is the URL the
+tree is mounted at and is required by <code>wbn</code> (from here or <code>--base-url</code>).
+With <code>AS oci</code>, <code>BASE</code> is instead a <strong>container image</strong> to build on (see <em>oci</em> below). <code>--base</code> overrides it.
+<code>AT</code> (an operand) is the directory the files occupy inside an <code>oci</code> image
+(default <code>/srv/www</code>; <code>--oci-root</code> overrides it); with any other format it is
+an error (<code>E_VALIDATION</code>).
+The CLI&#39;s <code>--out</code> picks the host destination and <code>--format</code> / <code>--base-url</code>
+override the Sitefile&#39;s <code>AS</code> / <code>BASE</code>.</p>
+</li>
+<li>
+<p><code>RUN</code> is rejected: the MVP never runs shell commands.</p>
+</li>
+</ul>
+<h3>Markdown and template blocks (see <code>examples/blog/</code>)</h3>
+<ul>
+<li><code>IMPORT posts FROM ./posts AS markdown</code> reads every <code>.md</code>/<code>.markdown</code> file in
+a directory (other files are ignored) as a <strong>list of documents</strong>, in path
+order; a single file gives <strong>one document</strong>. A document is its frontmatter
+fields plus:
+<ul>
+<li><code>slug</code>: the file name without the extension and without a leading
+<code>YYYY-MM-DD-</code>, unless the frontmatter sets <code>slug</code> (letters, digits, <code>.</code>,
+<code>_</code>, <code>~</code>, <code>-</code> only, <code>E_VALIDATION</code> otherwise)</li>
+<li><code>date</code>: that leading <code>YYYY-MM-DD</code>, unless the frontmatter sets <code>date</code></li>
+<li><code>path</code>, <code>content</code> (the body as HTML) and <code>excerpt</code> (plain text of the
+first paragraph, about 200 characters), which frontmatter cannot override</li>
+</ul>
+</li>
+<li>Frontmatter is a YAML subset between <code>---</code> lines: <code>key: value</code> scalars
+(quoted or plain strings, numbers, <code>true</code>/<code>false</code>, <code>null</code>), inline <code>[a, b]</code>
+and block <code>- a</code> lists. Dates stay strings. Anything else (nested maps,
+multi-line strings) fails with <code>E_FRONTMATTER</code> at its line.</li>
+<li>Markdown is a dependency-free subset: ATX/setext headings, paragraphs, hard
+breaks, fenced and indented code, blockquotes, nested lists, thematic
+breaks, emphasis, strong, <code>~~del~~</code>, code spans, links, images and
+autolinks. Not supported: tables, footnotes, reference links, task lists.
+<strong>Raw HTML is always escaped</strong>, and links or images with schemes other than
+<code>http</code>, <code>https</code>, <code>mailto</code>, relative or <code>#</code> lose their URL.</li>
+<li><code>SORT BY key [ASC|DESC]</code> orders documents by a field: numbers and numeric
+strings numerically, everything else as strings, so ISO dates sort
+correctly (it also works on other list imports, see Data files). Documents without the field come last; ties keep path order.</li>
+<li><code>RENDER … TO &lt;dest&gt; FOR item IN list</code> renders the template once per element
+of an imported list (markdown documents or a JSON array). The destination
+may use <code>${item}</code> / <code>${item.key}</code>; every resulting path is normalized like any
+destination, and two elements writing one path fail with <code>E_CONFLICT</code>.
+The template sees <code>item</code> plus every ARG, LET and IMPORT.</li>
+<li>Templates support blocks (in addition to <code>${name}</code> and <code>${name.key}</code>):
+<ul>
+<li><code>${#each list as item}…${else}…${/each}</code> repeats for each element; the
+<code>${else}</code> part renders for an empty list. A missing key such as
+<code>${#each post.tags as t}</code> on a post without tags counts as empty.</li>
+<li><code>${#if value}…${else}…${/if}</code> and <code>${#if !value}</code>: missing, <code>null</code>,
+<code>false</code>, <code>&#39;&#39;</code>, <code>0</code> and empty lists are false.</li>
+<li><code>${value|raw}</code> inserts a value without escaping, for <code>${post.content|raw}</code>
+under <code>--escape=html</code>. Every other value is still escaped.</li>
+<li>A block tag alone on its line removes that whole line from the output.</li>
+<li>Unbalanced blocks, a second <code>${else}</code> or an unknown <code>|filter</code> fail with
+<code>E_TEMPLATE</code> at the tag.</li>
+</ul>
+</li>
+</ul>
+<h3>Data files: YAML, CSV and Web Bundles (see <code>examples/data/</code>)</h3>
+<p>All of these are <strong>values</strong>: templates read them, <code>FOR</code> iterates over them,
+and they can&#39;t be COPY&#39;d (<code>E_TYPE</code>). Parse errors are <code>E_DATA</code> with the file&#39;s
+line and column.</p>
+<ul>
+<li><code>AS yaml</code>: a safe YAML subset: nested block mappings and sequences
+(including lists of mappings), flow <code>[…]</code> / <code>{…}</code>, block scalars <code>|</code> / <code>&gt;</code>
+with chomping, comments, and the same scalars as frontmatter (dates stay
+strings). Not supported: anchors/aliases, tags, multiple documents, complex
+keys, merge keys. An empty document is <code>null</code>.</li>
+<li><code>AS csv</code>: RFC 4180 (quoted fields, <code>&quot;&quot;</code> escapes, embedded commas and
+newlines, CRLF, BOM). The header row gives the keys; every row is an object
+of <strong>strings</strong>; a row with the wrong number of fields is an error.</li>
+<li><code>AS wbn</code>: a Web Bundle (<code>b1</code> or <code>b2</code>) as data:
+<code>{ version, primaryUrl, entries: [{ url, path, status, contentType, headers, size, content? }] }</code>,
+entries in URL order. <code>content</code> is the body as text for textual responses
+(text/*, JSON, XML, JavaScript, SVG) that are valid UTF-8.</li>
+<li><code>AS tree</code> on a <code>.wbn</code> file unpacks the bundle into files (detected by its
+magic bytes, like tar and zip): URL pathnames become paths (<code>…/</code> →
+<code>…/index.html</code>), percent-decoded; if the bundle mixes origins each path is
+prefixed with <code>/&lt;host&gt;</code>. Only status-200 responses become files. Unsafe
+paths are <code>E_ARCHIVE_UNSAFE</code>; the archive limits apply.</li>
+<li>A <strong>directory</strong> imported <code>AS json</code> or <code>AS yaml</code> is a list with one entry per
+<code>.json</code> / <code>.yaml</code> / <code>.yml</code> file, in path order. An object becomes
+<code>{ slug, date?, path, ...fields }</code> (slug and date from the file name as for
+Markdown; fields can override them); any other value becomes
+<code>{ slug, path, value }</code>.</li>
+<li><code>SORT BY</code> applies to any list import (markdown, json, yaml, csv); the value
+must be a list of objects. Numbers <strong>and numeric strings</strong> (such as CSV
+cells) compare numerically.</li>
+</ul>
+<h3>Plugins: PLUGIN and TRANSFORM (see <code>docs/PLUGINS.md</code>, <code>examples/motion/</code>)</h3>
+<ul>
+<li>
+<p><code>PLUGIN name FROM ./plugins/x.mjs|x.wasm [INTEGRITY sha256:…]</code> declares a renderer:
+a local <code>.mjs</code> module in its own folder (not the context root), or a
+WebAssembly module with no imports (anywhere; see docs/PLUGINS.md). URLs fail
+with <code>E_PROTOCOL</code>. Plugin names share the ARG/LET/IMPORT/stage namespace.</p>
+</li>
+<li>
+<p><code>TRANSFORM [--overwrite] [--from=stage] [&lt;source&gt;] WITH name TO &lt;dest&gt; [OPTIONS key=value …] [FOR item IN list]</code> sends the source (a file, an
+inline body, or a value import) and the options to the plugin and writes
+what it returns: one file at <code>&lt;dest&gt;</code>, or several under <code>&lt;dest&gt;/</code>. Without a
+source, the plugin gets the <code>FOR</code> element, or only its options. <code>&lt;dest&gt;</code> and
+option values may use <code>${item.key}</code>.</p>
+</li>
+<li>
+<p>Plugins run in a separate Node process with <code>--permission</code>: read access to
+their own folder only; no writes, processes, workers, network or
+environment; a per-call time limit (<code>--plugin-timeout</code>). Failures are
+<code>E_PLUGIN</code>. This protects against accidents, not deliberately malicious code:
+pin plugins with <code>INTEGRITY</code>.</p>
+</li>
+<li>
+<p><code>TOOL name</code> declares an external program (<code>name</code> is an identifier and the
+program&#39;s file name, e.g. <code>ffmpeg</code>). It runs only if the CLI allows it with
+<code>--allow-exec name[=/abs/path]</code>; otherwise the build fails with
+<code>E_UNSUPPORTED</code> naming the flag. Tool names share the namespace above.</p>
+</li>
+<li>
+<p>A TRANSFORM <code>WITH</code> a tool ends with <code>ARGS &lt;argument&gt; …</code> (the rest of the
+line; so <code>OPTIONS</code> and <code>FOR</code> come first). Each word is one argv entry
+(quote words that contain spaces); there is no shell. <code>${…}</code> interpolation
+applies as in other operands. The host replaces <code>{input}</code> (the source file,
+written to a temp dir; needs a source), <code>{output}</code> (required: the one file
+the tool must write, taking its extension from <code>&lt;dest&gt;</code>) and
+<code>{option.key}</code> (an OPTIONS value). Other braces (such as ffmpeg&#39;s <code>%{pts}</code>)
+are literal. A tool takes a file source (or none, with <code>FOR</code> or alone), and
+<code>&lt;dest&gt;</code> is a file, not a directory. Failures, timeouts and oversized
+outputs are <code>E_PLUGIN</code>. See <code>docs/PLUGINS.md</code>.</p>
+</li>
+<li>
+<p>Results are cached between builds (<code>docs/PLUGINS.md</code>, &quot;Caching&quot;).</p>
+</li>
+</ul>
+<h3>Writes and conflicts</h3>
+<ul>
+<li>Writing a path that already holds identical bytes and mode is a no-op that
+keeps the first writer as the owner.</li>
+<li>Writing different content fails with <code>E_CONFLICT</code> naming the first owner,
+unless the instruction has <code>--overwrite</code>.</li>
+<li>A file can never replace a directory or the reverse.</li>
+</ul>
+<h3>Local sources</h3>
+<ul>
+<li>Absolute paths and <code>..</code> that escapes the context fail with <code>E_PATH_ESCAPE</code>.</li>
+<li>Symlinks are followed only when their real target stays inside the context;
+otherwise <code>E_PATH_ESCAPE</code>. Directory symlink cycles are skipped.</li>
+<li>When copying directories, <code>.git</code> and the export directory (if it is inside
+the context) are always skipped.</li>
+<li>Regular files with more than one hard link are refused with <code>E_HARDLINK</code>:
+<code>realpath</code> cannot tell whether a hard link aliases a file outside the
+context. <code>--allow-hardlinks</code> (<code>allowHardlinks</code>) permits them; by passing it
+you assert that every hard-linked file in the context is safe to publish.
+pnpm hard-links packages from its store into <code>node_modules</code>, so a context
+that includes a pnpm <code>node_modules</code> needs either <code>.sitefileignore</code> to exclude
+it (preferred) or <code>--allow-hardlinks</code>. The check applies to files that are
+actually read (explicit sources and the non-ignored files of a directory
+walk), so ignored hard links never trigger it.</li>
+<li>File modes are reduced to <code>0644</code> or <code>0755</code>.</li>
+</ul>
+<h4><code>.sitefileignore</code></h4>
+<p>An optional file at the context root filters directory walks (<code>COPY ./dir</code>,
+<code>IMPORT ./dir</code>, ...). It is never applied to a source named explicitly
+(<code>COPY ./drafts/a.txt /a.txt</code> works even if <code>drafts/</code> is listed). Syntax is a
+gitignore subset:</p>
+<ul>
+<li>Blank lines and <code>#</code> comments are skipped; <code>\#</code> and <code>\!</code> match literal
+leading characters.</li>
+<li><code>!pattern</code> re-includes; the last matching rule wins.</li>
+<li>A trailing <code>/</code> matches directories only.</li>
+<li>A leading <code>/</code> or a <code>/</code> in the middle anchors the pattern to the context root;
+otherwise it matches at any depth.</li>
+<li><code>*</code> and <code>?</code> match within one path segment; a <code>**</code> segment matches any number
+of directories. Character classes (<code>[abc]</code>) are not supported.</li>
+<li>As in gitignore, a file cannot be re-included when a parent directory is
+excluded: excluded directories are not descended into.</li>
+<li>Rules do not affect <code>.git</code> and the export directory, which are always
+skipped. <code>.sitefileignore</code>, <code>Sitefile</code> and <code>Sitefile.lock</code> are not
+auto-ignored (explicit is better); add them to the file to keep them out of
+your output. A <code>.sitefileignore</code> that is a symlink must stay inside the
+context; a dangling one fails the build (<code>E_NOT_FOUND</code>) rather than being
+skipped, since skipping it could publish files it was meant to exclude.</li>
+</ul>
+<h3>Remote sources and the lockfile</h3>
+<ul>
+<li>Only <code>https:</code> by default. Credentials in URLs are rejected. Every resolved
+address must be public unless <code>--allow-private-network</code> (NAT64 addresses are
+judged by the IPv4 address they embed); the check runs at
+connect time, so DNS rebinding cannot slip past it. Redirects are followed
+manually (max 5) and every hop is re-checked.</li>
+<li>Bodies are capped (<code>--max-download-bytes</code>, default 50 MiB), requested with
+<code>accept-encoding: identity</code>, and never decompressed or executed.</li>
+<li><code>Sitefile.lock</code> (JSON, next to the Sitefile) records each remote URL&#39;s
+sha256 and size. An unpinned URL already in the lockfile must match it
+(<code>E_LOCK_MISMATCH</code>; rerun with <code>--update-lock</code>). <code>--frozen-lockfile</code> fails
+instead of adding entries (<code>E_LOCK_MISSING</code>).</li>
+<li>Library option <code>fetchPolicy.ca</code> (PEM string or Buffer) trusts an extra CA
+for https in addition to Node&#39;s default store (bundled roots plus
+<code>NODE_EXTRA_CA_CERTS</code> / <code>--use-system-ca</code>), for tests and enterprise private
+CAs. Certificate and hostname verification are never disabled; there is no
+CLI flag for it.</li>
+</ul>
+<h3>Archives (<code>IMPORT … AS tree</code> on a file)</h3>
+<ul>
+<li>Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
+tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
+else fails with <code>E_TYPE</code>. Supported tar extras: POSIX ustar prefix (old GNU
+headers keep timestamps there and are read without it), GNU long names, pax
+<code>path</code>/<code>size</code> (a malformed record is <code>E_ARCHIVE</code>). Other pax keys are ignored.
+Zip directories are recognized by a trailing <code>/</code> or by a directory mode.
+Decompression is asynchronous, so other imports keep making progress.</li>
+<li><code>INTEGRITY</code> and the lockfile apply to the archive bytes exactly as for file
+imports, and the import&#39;s provenance digest is the archive&#39;s digest.</li>
+<li>Directories are implicit. Modes are reduced to <code>0644</code>/<code>0755</code>. A single
+top-level directory is <strong>not</strong> stripped: <code>COPY name:/top/ /</code> does that.</li>
+<li>Unsafe entries are rejected, never skipped: absolute paths (including <code>C:</code>),
+<code>..</code> segments, backslashes, NUL (<code>E_ARCHIVE_UNSAFE</code>), and symlink, hard link,
+device and fifo entries (<code>E_ARCHIVE_UNSAFE</code>). Duplicate paths, or a file and
+directory at one path, fail with <code>E_CONFLICT</code>. Malformed or truncated
+archives fail with <code>E_ARCHIVE</code>.</li>
+<li>Limits (<code>E_ARCHIVE_LIMIT</code>), configurable through <code>BuildOptions.archiveLimits</code>:
+<code>maxEntries</code> 10 000, <code>maxTotalBytes</code> 500 MiB of uncompressed content, and
+<code>maxRatio</code> 100 (uncompressed:compressed, measured on the gzip stream or the
+whole zip; not enforced below 1 MiB of output, since tar padding compresses
+extremely well). Inflation is bounded with zlib&#39;s <code>maxOutputLength</code>, so a
+bomb is stopped at the limit, never fully inflated; zip entries are never
+inflated beyond their declared size. The download cap still applies first.</li>
+</ul>
+<h3>Export formats</h3>
+<p><code>--out</code> is a directory for <code>directory</code> and a <strong>file</strong> for every other format.
+Default <code>--out</code>: <code>&lt;context&gt;/dist</code>, <code>dist.zip</code>, <code>dist.tar</code>, <code>dist.tar.gz</code>,
+<code>dist.wbn</code>. The format is chosen by, in order: <code>--format</code>; the <code>--out</code>
+extension (<code>.zip</code>, <code>.tar</code>, <code>.tar.gz</code>/<code>.tgz</code>, <code>.wbn</code>), so <code>-o site.zip</code> writes a
+zip; then the Sitefile&#39;s <code>EXPORT ... AS</code>; then <code>directory</code>. <code>.oci.tar</code> selects <code>oci</code>.</p>
+<p>All archive writers are deterministic: the same tree gives byte-identical
+output (for the same Node/zlib version), whatever the order files were added.
+Entries are sorted by path; there are no directory entries (directories are
+implicit); uid/gid are 0 with no user/group names; modes are the tree&#39;s
+<code>0644</code>/<code>0755</code>. Timestamps are fixed: zip uses the DOS epoch 1980-01-01 00:00,
+tar uses mtime 0, and the gzip header mtime is 0 (OS byte fixed to Unix). If
+the <code>SOURCE_DATE_EPOCH</code> environment variable is set (non-negative integer
+seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
+and tar timestamps instead.</p>
+<ul>
+<li>
+<p><strong>zip</strong>: <code>node:zlib</code> raw deflate (stored when deflate does not shrink the
+entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
+the external attributes (version made by = 3 &lt;&lt; 8). No zip64: more than
+65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
+with <code>E_EXPORT</code>.</p>
+</li>
+<li>
+<p><strong>tar</strong>: POSIX ustar. A name over 100 bytes is split into <code>prefix</code>/<code>name</code> at
+a <code>/</code>; if it still does not fit (prefix over 155 bytes, or no usable <code>/</code>), a
+pax <code>x</code> header carries the full <code>path</code>. Files of 8 GiB or more fail with
+<code>E_EXPORT</code>.</p>
+</li>
+<li>
+<p><strong>tgz</strong>: gzip of that tar.</p>
+</li>
+<li>
+<p><strong>oci</strong>: an <a href="https://github.com/opencontainers/image-spec">OCI image</a> (v1.1) of
+the site&#39;s files. The image has one layer: a deterministic tar of the tree
+placed under the root (default <code>/srv/www</code>, <code>AT</code>/<code>--oci-root</code>; the parent
+directory entries <code>srv</code> and <code>srv/www</code> are emitted so runtimes can unpack
+it), gzip-compressed (<code>application/vnd.oci.image.layer.v1.tar+gzip</code>). The
+config&#39;s <code>rootfs.diff_ids</code> is the sha256 of the <em>uncompressed</em> tar; the
+layer descriptor is the sha256 of the gzip. <code>created</code> is <code>SOURCE_DATE_EPOCH</code>
+or <code>1970-01-01T00:00:00Z</code>; <code>architecture</code>/<code>os</code> default to <code>amd64</code>/<code>linux</code>
+(<code>--platform os/arch</code>; metadata only). Labels: <code>org.opencontainers.image.title</code>
+(the context directory name), <code>dev.sitefile.root</code>, any <code>--label key=value</code>,
+and, only with <code>--git-labels</code>, <code>.source</code> and <code>.revision</code> from the repository
+checkout (read from its <code>.git</code> directory without running anything;
+credentials in URLs are dropped). Git labels are off by default because they
+change the image ID on every commit even when the files are identical, and
+finding the checkout reads outside the build context. Build-arg values
+are never written. The config, manifest and index are canonical JSON (sorted
+keys, no whitespace), so the same build always yields the same manifest digest.
+<code>--out</code> ending in <code>.tar</code> (<code>site.oci.tar</code>) is an <em>OCI archive</em> (a tar of the
+layout, below); any other <code>--out</code> with <code>--format oci</code> is an <em>OCI layout
+directory</em>: <code>oci-layout</code>, <code>index.json</code> (one manifest entry, annotated
+<code>org.opencontainers.image.ref.name</code> when you pass <code>-t</code>) and
+<code>blobs/sha256/&lt;hex&gt;</code>. <strong>The image contains only files</strong>: it has no
+entrypoint and is not runnable on its own. Use it as a source of files, e.g.
+<code>COPY --from=&lt;image&gt; /srv/www /usr/share/nginx/html</code> in a Dockerfile, <strong>unless
+you give it a <code>BASE</code></strong>:</p>
+<p><code>EXPORT / AS oci BASE docker.io/library/nginx:alpine AT /usr/share/nginx/html</code>
+(or <code>--base</code>) makes a <em>runnable</em> image. The base (a bare name means Docker Hub) is
+pulled for the target platform (<code>--platform</code>, default <code>linux/amd64</code>; a base of another
+platform is <code>E_REGISTRY</code>) into the local store, and the result is: the base&#39;s layers,
+then the site layer. The config is the base&#39;s (Entrypoint, Cmd, Env, ExposedPorts,
+WorkingDir, User, ... preserved) with <code>rootfs.diff_ids</code> and <code>history</code> extended, labels
+merged (<code>--label</code> and sitefile&#39;s own win over the base&#39;s), and <code>created</code> kept from the
+base unless <code>SOURCE_DATE_EPOCH</code> is set. The site layer is added on top, so it overlays
+same-named files of the base (nginx&#39;s default <code>index.html</code>) but does not delete the
+others. Docker layer media types are rewritten to their OCI equivalents (same bytes,
+same digests). The manifest and config record the base as
+<code>org.opencontainers.image.base.name</code> / <code>.base.digest</code>. An OCI archive or layout export
+contains the base blobs too, so it loads anywhere (<code>docker load -i site.oci.tar</code>);
+<code>-t</code> stores the same image in the local store (<code>save</code>, <code>push</code>, <code>serve</code> work: <code>serve</code> serves
+the site layer). Layers are held in memory while exporting an archive.</p>
+<p><strong>Reproducibility</strong>: the output is a pure function of the files, options and the base&#39;s
+<em>manifest digest</em>. Pin the base: <code>BASE nginx:alpine@sha256:...</code> (the Sitefile is the
+record). For a tag, <code>Sitefile.lock</code> gets an <code>images</code> entry
+(<code>&quot;docker.io/library/nginx:alpine&quot;: {&quot;digest&quot;: &quot;sha256:...&quot;}</code>, the digest the tag pointed
+at, an index for multi-platform images) the first time it is resolved, and later builds fetch
+<em>by digest</em> and never re-resolve the tag. <code>--frozen-lockfile</code> fails with <code>E_LOCK_MISSING</code>
+for an unpinned, unlocked tag; <code>--update-lock</code> re-resolves it; <code>--no-lockfile</code> resolves
+the tag every build and warns. A base already in the store is used without network access.
+Pulling goes through the same registry client, limits and credentials as <code>sitefile pull</code>
+(docs/CLI.md); <code>--insecure-registry</code> applies.</p>
+</li>
+<li>
+<p><strong>wbn</strong>: an <strong>unsigned Web Bundle</strong>, format version <code>b2</code>
+(draft-ietf-wpack-bundled-responses): top-level CBOR array
+<code>[magic &quot;🌐📦&quot;, version &quot;b2\0\0&quot;, section lengths, [index, primary?, responses], 8-byte length]</code>,
+with index entries <code>url =&gt; [offset, length]</code>. Checked against the WICG
+reference reader <code>dump-bundle</code> (a test runs it when it is installed).
+The CBOR is deterministic (map keys in bytewise order). Decisions:</p>
+<ul>
+<li>Base URL: required; an absolute <code>https:</code> URL ending in <code>/</code>, with no
+credentials, query or fragment (<code>E_VALIDATION</code> otherwise). Each file
+<code>/a/b.css</code> is addressed as <code>&lt;base&gt;a/b.css</code> (path segments
+percent-encoded).</li>
+<li>Every <code>index.html</code> is additionally addressed by its directory URL:
+<code>/index.html</code> as <code>&lt;base&gt;</code> and <code>/docs/index.html</code> as <code>&lt;base&gt;docs/</code>. Both
+index entries point at the same response.</li>
+<li>Primary URL: <code>&lt;base&gt;</code>, in a <code>primary</code> section, if <code>/index.html</code> exists;
+otherwise there is no <code>primary</code> section.</li>
+<li>Each response has <code>:status</code> <code>200</code> and <code>content-type</code> (no other headers).
+<code>content-type</code> comes from the extension: html/htm, css, js/mjs, json, svg,
+txt, xml, webmanifest (all with <code>; charset=utf-8</code>), png, jpg/jpeg, gif,
+webp, avif, ico (<code>image/x-icon</code>), wasm, woff, woff2, pdf, mp4, webm, mp3;
+anything else is <code>application/octet-stream</code>.</li>
+<li>Index entries are <code>[variants-value &quot;&quot;, offset, length]</code> where offset is
+counted from the first byte of the responses section.</li>
+<li>Not signed, no integrity block, no variants. Layout follows the b2 draft as
+understood when written; validate with a Web Bundle tool before relying on
+it in a browser.</li>
+</ul>
+</li>
+</ul>
+<p>File output safety (same rules as directories, plus): <code>--out</code> that is, or
+contains, the build context, the filesystem root or the home directory is
+refused (<code>E_EXPORT_UNSAFE</code>); a directory or symlink at <code>--out</code> is <code>E_EXPORT</code>;
+an existing file outside the context is only replaced with <code>--force</code>
+(<code>E_EXPORT_UNSAFE</code>). The bytes are written to a temporary sibling
+(<code>.&lt;name&gt;.sitefile-tmp-&lt;hex&gt;</code>), the parent and destination identity (dev/ino)
+are re-validated, then it is renamed into place. Only the exact temp file
+created is ever deleted. The archive is excluded from the build when it lies
+in the context. Residual risk is the same path-based window as for
+directories (see below); the single rename is atomic.</p>
+<h3>Export</h3>
+<ul>
+<li>Output is written to a temporary sibling directory, then swapped in.</li>
+<li>An existing non-empty destination is replaced only when it is inside the
+build context, or with <code>--force</code>. A destination that is, or contains, the
+context is always refused.</li>
+<li>Race hardening: the exporter records the dev/ino of the destination&#39;s parent
+directory and of the existing destination, creates its temp and backup
+siblings only in that verified parent, and re-checks everything immediately
+before the swap (parent real path and identity unchanged, destination still
+the same real directory and not a symlink, or still absent). Any change
+aborts with <code>E_EXPORT_UNSAFE</code>. After the swap it confirms the new
+destination is the directory it wrote, and it deletes the old directory
+only if its dev/ino matches the one it validated.</li>
+<li>Residual risk: Node has no <code>openat</code>/<code>renameat2</code>, so checks are path-based
+and cannot be bound to a directory handle. The two renames (old aside, new
+into place) are not atomic together, so the destination briefly does not
+exist. An attacker with write access to the parent can still swap a path
+between a check and the next rename; this is detected afterwards (the
+previous output is preserved at the backup path and nothing unvalidated is
+deleted), not prevented. Renaming onto an originally absent destination
+that an attacker just created as an empty directory succeeds on POSIX. If
+the parent directory itself is moved away mid-export, the temp directory
+moves with it and is left behind. Do not export into directories writable
+by untrusted users.</li>
+</ul>

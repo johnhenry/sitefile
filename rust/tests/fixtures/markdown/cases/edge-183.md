@@ -1,0 +1,1 @@
+[a](../x/y.html) [b](/abs) [c](?q=a:b) [d](x/y:z)

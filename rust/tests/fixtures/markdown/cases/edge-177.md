@@ -1,0 +1,1 @@
+![a](data:image/svg+xml;base64,AAAA)
