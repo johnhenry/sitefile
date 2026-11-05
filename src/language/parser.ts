@@ -17,7 +17,7 @@ import {
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
-const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown'];
+const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'];
 const NOT_YET = new Set(['REMOVE', 'TRANSFORM', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
@@ -88,7 +88,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       if (as !== undefined) throw c.error('E_SYNTAX', 'AS given twice', at);
       const kindAt = c.span;
       const k = c.ident('import kind').toLowerCase();
-      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, tree or markdown)`, kindAt);
+      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, yaml, csv, markdown, wbn or tree)`, kindAt);
       as = k as ImportKind;
     } else if (c.keyword('INTEGRITY')) {
       if (integrity !== undefined) throw c.error('E_SYNTAX', 'INTEGRITY given twice', at);

@@ -2,6 +2,9 @@ import { SitefileError } from '../errors.js';
 import { IDENT_RE, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
+/** Import kinds that can produce a list (and so can be sorted). */
+const SORTABLE = new Set(['markdown', 'json', 'yaml', 'csv']);
+
 const IMPORT_REF = /^([A-Za-z_][A-Za-z0-9_]*):/;
 
 function operandsOf(ins: Instruction): Operand[] {
@@ -100,8 +103,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (vars.has(ins.name) || imports.has(ins.name) || declaredStages.has(ins.name)) {
           throw new SitefileError('E_DUPLICATE', `'${ins.name}' is already defined`, ins.span);
         }
-        if (ins.sort && ins.as !== 'markdown') {
-          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY only applies to AS markdown imports`, ins.sort.span);
+        if (ins.sort && !SORTABLE.has(ins.as ?? '')) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY applies to lists: AS markdown, json, yaml or csv`, ins.sort.span);
         }
         imports.add(ins.name);
         break;

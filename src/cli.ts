@@ -4,6 +4,7 @@ import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName } from './export-formats.js';
+import { loadBuildArgFile } from './build-args.js';
 import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 
@@ -25,7 +26,9 @@ Options:
                                else the Sitefile's EXPORT ... AS <fmt>
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
-      --build-arg <NAME=value> set an ARG (repeatable)
+      --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
+      --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
+                               later files win, --build-arg wins over files)
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -52,6 +55,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         format: { type: 'string' },
         'base-url': { type: 'string' },
         'build-arg': { type: 'string', multiple: true },
+        'build-arg-file': { type: 'string', multiple: true },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
@@ -83,10 +87,20 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
 
   try {
+    // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     const buildArgs: Record<string, string> = {};
+    for (const file of o['build-arg-file'] ?? []) Object.assign(buildArgs, await loadBuildArgFile(file));
     for (const kv of o['build-arg'] ?? []) {
       const eq = kv.indexOf('=');
-      if (eq <= 0) return usageError(`--build-arg expects NAME=value, got '${kv}'`);
+      if (eq === -1) {
+        // --build-arg NAME: take the value from the environment, as Docker does.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(kv)) return usageError(`--build-arg expects NAME=value or NAME, got '${kv}'`);
+        const env = process.env[kv];
+        if (env === undefined) return usageError(`--build-arg ${kv}: environment variable ${kv} is not set`);
+        buildArgs[kv] = env;
+        continue;
+      }
+      if (eq === 0) return usageError(`--build-arg expects NAME=value, got '${kv}'`);
       buildArgs[kv.slice(0, eq)] = kv.slice(eq + 1);
     }
     let formatOverride: ExportFormat | undefined;

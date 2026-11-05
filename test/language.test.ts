@@ -222,7 +222,7 @@ test('IMPORT forms', () => {
   parseErr('IMPORT d ./x', 'E_SYNTAX', 1, 10, /FROM/);
   parseErr('IMPORT FROM ./x', 'E_SYNTAX', 1, 13, /FROM/);
   parseErr('IMPORT d FROM', 'E_SYNTAX', 1, 14);
-  parseErr('IMPORT d FROM ./x AS yaml', 'E_SYNTAX', 1, 22, /import kind/);
+  parseErr('IMPORT d FROM ./x AS toml', 'E_SYNTAX', 1, 22, /import kind/);
   parseErr('IMPORT d FROM ./x AS text AS json', 'E_SYNTAX', 1, 27, /twice/);
   parseErr(`IMPORT d FROM ./x INTEGRITY ${digest} INTEGRITY ${digest}`, 'E_SYNTAX', 1, 101, /twice/);
   parseErr('IMPORT d FROM ./x INTEGRITY sha256:abc', 'E_SYNTAX', 1, 29, /sha256/);

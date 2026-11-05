@@ -34,7 +34,7 @@ no runtime dependencies.
 | `FROM scratch\|<dir>\|<stage> [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree\|markdown] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`; `AS markdown` reads posts with frontmatter) |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn] [BASE <https-url>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`) |
@@ -55,11 +55,20 @@ RENDER --escape=html ./templates/index.html TO /index.html
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
 ```
 
+Data files are readable too (see `examples/data/`):
+
+```
+IMPORT site FROM ./site.yaml AS yaml                 # ${site.nav.0.title}
+IMPORT team FROM ./team.csv AS csv SORT BY joined    # FOR person IN team
+IMPORT bundle FROM ./vendor/hello.wbn AS wbn         # ${#each bundle.entries as e}
+IMPORT hello FROM ./vendor/hello.wbn AS tree         # COPY hello:/ /hello/
+```
+
 ## CLI
 
 ```
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
-               [--build-arg K=V] [--force]
+               [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks]
 sitefile validate [context] [--json]

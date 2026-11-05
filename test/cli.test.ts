@@ -148,3 +148,21 @@ test('examples/blog builds an index, one page per post and an Atom feed', async 
   assert.match(feed, /<updated>2026-03-01T00:00:00Z<\/updated>/);
   assert.equal((feed.match(/<entry>/g) ?? []).length, 3);
 });
+
+test('examples/data reads YAML, CSV and a Web Bundle', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'data');
+  await cp(path.join(root, 'examples', 'data'), ctx, { recursive: true });
+  const r = await sitefile(['build', ctx]);
+  assert.equal(r.code, 0, r.stderr);
+  const out = path.join(ctx, 'dist');
+  const index = await readFile(path.join(out, 'index.html'), 'utf8');
+  assert.match(index, /<a href="\/hello\/">Unpacked bundle<\/a>/);
+  // oldest first by the numeric 'joined' column
+  assert.ok(index.indexOf('Ada Lovelace') < index.indexOf('Alan Turing') && index.indexOf('Alan Turing') < index.indexOf('Grace Hopper'));
+  assert.match(index, /Computability &quot;and&quot; cryptanalysis/);
+  assert.match(index, /version b2/);
+  assert.match(index, /<td>https:\/\/hello\.example\/style\.css<\/td><td>text\/css; charset=utf-8<\/td>/);
+  assert.match(await readFile(path.join(out, 'team', 'ada', 'index.html'), 'utf8'), /<h1>Ada Lovelace<\/h1>/);
+  assert.match(await readFile(path.join(out, 'hello', 'index.html'), 'utf8'), /<title>Hello<\/title>/);
+});

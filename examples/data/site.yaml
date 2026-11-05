@@ -1,0 +1,12 @@
+title: Data imports
+tagline: >
+  Everything on this page was read from YAML, CSV
+  and a Web Bundle at build time.
+nav:
+  - title: Home
+    url: /
+  - title: Unpacked bundle
+    url: /hello/
+footer:
+  note: "Built with Sitefile"
+  links: [feed, source]

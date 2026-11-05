@@ -37,3 +37,5 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #17 Export formats: `EXPORT ... AS zip|tar|tgz|wbn [BASE url]`, `--format`, `--base-url`; deterministic archives and an unsigned Web Bundle (`test/export-formats.test.ts`)
 - [x] Inline content: `COPY <<EOF` and `RENDER <<EOF … TO` heredocs (`test/inline.test.ts`, `test/cli.test.ts`, `examples/inline/`)
 - [x] #16 Blog support: `IMPORT … AS markdown` with frontmatter, `SORT BY`, `RENDER … FOR`, template `${#each}` / `${#if}` / `|raw` (`test/blog.test.ts`, `test/markdown.test.ts`, `test/frontmatter.test.ts`, `examples/blog/`)
+- [x] #20 Data imports: `AS yaml`, `AS csv`, `AS wbn`, Web Bundles via `AS tree`, JSON/YAML directory collections, `SORT BY` on any list (`test/data-imports.test.ts`, `test/yaml.test.ts`, `test/csv.test.ts`, `test/wbn-reader.test.ts`, `examples/data/`)
+- [x] `--build-arg-file` (.json, .yaml, .env) and `--build-arg NAME` from the environment (`test/build-args.test.ts`)

@@ -1,0 +1,21 @@
+# Reading data files: YAML config, a CSV table and a Web Bundle.
+#
+# vendor/hello.wbn was made from examples/hello with:
+#   sitefile build examples/hello -o examples/data/vendor/hello.wbn --base-url https://hello.example/
+FROM scratch
+
+# Nested config: ${site.title}, ${#each site.nav as link}
+IMPORT site FROM ./site.yaml AS yaml
+
+# One object per row, keyed by the header row; numeric columns sort numerically.
+IMPORT team FROM ./team.csv AS csv SORT BY joined
+
+# A Web Bundle two ways: as data (URLs, content types, text) ...
+IMPORT bundle FROM ./vendor/hello.wbn AS wbn
+# ... and unpacked into files you can COPY.
+IMPORT hello FROM ./vendor/hello.wbn AS tree
+
+COPY hello:/ /hello/
+RENDER --escape=html ./templates/index.html TO /index.html
+RENDER --escape=html ./templates/person.html TO /team/${person.slug}/index.html FOR person IN team
+EXPORT /

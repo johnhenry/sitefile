@@ -4,6 +4,7 @@ import { SitefileError, type SourceSpan } from '../errors.js';
 import { normalizeVirtual } from '../paths.js';
 import { makeFile, Tree, type FileNode } from '../tree.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './types.js';
+import { isWebBundle, readWebBundle, webBundleToTree } from './wbn-reader.js';
 
 /** Below this many output bytes the ratio limit is not enforced (tar block padding compresses extremely well). */
 const RATIO_FLOOR = 1024 * 1024;
@@ -17,7 +18,7 @@ const TAR_OVERHEAD_PER_ENTRY = 4 * 512;
 type Add = (name: string, kind: 'file' | 'dir', bytes: Uint8Array, mode: number) => void;
 
 /**
- * Extract a tar, tar.gz/tgz or zip archive into a Tree. The format is detected
+ * Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2) archive into a Tree. The format is detected
  * from magic bytes, never from the name. Nothing is inflated beyond the limits,
  * and unsafe entries (absolute or `..` paths, backslashes, NUL, symlinks, hard
  * links, devices) are rejected, not skipped. A single top-level directory is
@@ -29,6 +30,7 @@ export async function extractArchive(
   limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
   span?: SourceSpan,
 ): Promise<Tree> {
+  if (isWebBundle(bytes)) return webBundleToTree(readWebBundle(bytes, origin, limits, span), origin, span);
   const files = new Map<string, FileNode>();
   const dirs = new Set<string>();
   let total = 0;
@@ -61,7 +63,7 @@ export async function extractArchive(
   } else if (isTar(bytes)) {
     readTar(bytes, origin, limits, span, add);
   } else {
-    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (expected tar, tar.gz or zip)`, span);
+    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (expected tar, tar.gz, zip or web bundle)`, span);
   }
   return Tree.fromFiles(files);
 }

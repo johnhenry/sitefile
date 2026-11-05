@@ -89,7 +89,7 @@ test('SORT BY and FOR parse and validate', () => {
 
   const fails = (src: string, code: ErrorCode, line: number): void =>
     assert.throws(() => parseProgram(src), (e: unknown) => isSitefileError(e, code) && e.span?.line === line, src);
-  fails('FROM scratch\nIMPORT d FROM ./d.json AS json SORT BY x\nEXPORT /', 'E_VALIDATION', 2);
+  fails('FROM scratch\nIMPORT d FROM ./d.txt AS text SORT BY x\nEXPORT /', 'E_VALIDATION', 2);
   fails('FROM scratch\nRENDER ./t TO /a FOR p IN nothing\nEXPORT /', 'E_UNDEFINED', 2);
   fails('FROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./t TO /a FOR posts IN posts\nEXPORT /', 'E_DUPLICATE', 3);
   fails('FROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./t TO /${post.slug} \nEXPORT /', 'E_SYNTAX', 3);
@@ -199,7 +199,7 @@ test('FOR and markdown errors', async () => {
   );
   // bad frontmatter is reported with its file and line
   await assert.rejects(
-    run({ 'p/a.md': '---\ntitle: ok\nnested:\n  key: v\n---\n', Sitefile: 'FROM scratch\nIMPORT p FROM ./p AS markdown\nEXPORT /' }),
+    run({ 'p/a.md': '---\ntitle: ok\nalias: &anchor value\n---\n', Sitefile: 'FROM scratch\nIMPORT p FROM ./p AS markdown\nEXPORT /' }),
     (e: unknown) => isSitefileError(e, 'E_FRONTMATTER') && e.span?.file.endsWith('p/a.md') === true && (e.span.line ?? 0) >= 3,
   );
   // markdown values can be read, not copied
