@@ -267,7 +267,9 @@ and tar timestamps instead.
 - **tgz**: gzip of that tar.
 - **wbn**: an **unsigned Web Bundle**, format version `b2`
   (draft-ietf-wpack-bundled-responses): top-level CBOR array
-  `[magic "🌐📦", version "b2\0\0", primary URL, section lengths, [index, responses], 8-byte length]`.
+  `[magic "🌐📦", version "b2\0\0", section lengths, [index, primary?, responses], 8-byte length]`,
+  with index entries `url => [offset, length]`. Checked against the WICG
+  reference reader `dump-bundle` (a test runs it when it is installed).
   The CBOR is deterministic (map keys in bytewise order). Decisions:
   - Base URL: required; an absolute `https:` URL ending in `/`, with no
     credentials, query or fragment (`E_VALIDATION` otherwise). Each file
@@ -276,8 +278,8 @@ and tar timestamps instead.
   - Every `index.html` is additionally addressed by its directory URL:
     `/index.html` as `<base>` and `/docs/index.html` as `<base>docs/`. Both
     index entries point at the same response.
-  - Primary URL: `<base>` if `/index.html` exists, else the empty string. There
-    is no separate "primary" section.
+  - Primary URL: `<base>`, in a `primary` section, if `/index.html` exists;
+    otherwise there is no `primary` section.
   - Each response has `:status` `200` and `content-type` (no other headers).
     `content-type` comes from the extension: html/htm, css, js/mjs, json, svg,
     txt, xml, webmanifest (all with `; charset=utf-8`), png, jpg/jpeg, gif,

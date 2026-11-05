@@ -7,17 +7,20 @@ import type { Tree } from './tree.js';
  * (draft-ietf-wpack-bundled-responses). Layout, as one CBOR array:
  *
  *   [ magic h'F09F8C90F09F93A6' ("🌐📦"), version h'62320000' ("b2\0\0"),
- *     primary-url (text; "" when there is none),
  *     section-lengths (bstr holding a CBOR array of name, length, ...),
- *     sections (array: index, responses),
+ *     sections (array: index, [primary,] responses),
  *     length (8-byte big-endian bstr: size of the whole bundle) ]
  *
- * index    = { url => [ variants-value h'', offset, length ] }; offset/length
+ * (b1 had six items with the primary URL in the header and variants in the
+ * index; b2 has five, so the header starts 0x85.) Verified against the WICG
+ * reference reader `dump-bundle` (see test/export-formats.test.ts).
+ *
+ * index    = { url => [ offset, length ] }; offset/length
  *            locate the response inside the responses section, counted from
  *            the first byte of that section's CBOR encoding.
  * responses = [ [ headers (bstr holding { h':status' => h'200', h'content-type' => ... }), payload bstr ] ... ]
  *
- * No signatures, no "primary" section (the primary URL is the top-level field).
+ * primary  = text URL, present only when /index.html exists. No signatures.
  */
 const MAGIC = Buffer.from('f09f8c90f09f93a6', 'hex');
 const VERSION = Buffer.from([0x62, 0x32, 0x00, 0x00]);
@@ -103,7 +106,8 @@ export function writeWebBundle(tree: Tree, baseUrl: string | undefined): Uint8Ar
       [bstr('content-type'), bstr(mimeTypeFor(p))],
     ]);
     const response = cborArray([cborBytes(headers), cborBytes(node.bytes)]);
-    const loc = [cborBytes(new Uint8Array(0)), cborUint(offset), cborUint(response.length)];
+    // b2 index entries are [offset, length]; b1's leading variants value is gone.
+    const loc = [cborUint(offset), cborUint(response.length)];
     const urls = [base + encodePath(p)];
     if (p === '/index.html' || p.endsWith('/index.html')) urls.push(base + encodePath(p.slice(0, -'index.html'.length)));
     for (const url of urls) index.push([cborText(url), cborArray(loc)]);
@@ -112,24 +116,20 @@ export function writeWebBundle(tree: Tree, baseUrl: string | undefined): Uint8Ar
   }
   const responsesSection = cborArray(responses);
   const indexSection = cborMap(index);
-  const primary = tree.isFile('/index.html') ? base : '';
-  const sectionLengths = cborArray([
-    cborText('index'),
-    cborUint(indexSection.length),
-    cborText('responses'),
-    cborUint(responsesSection.length),
-  ]);
+  // b2 moves the primary URL out of the header into an optional "primary"
+  // section; sections are ordered index, primary, responses (always last).
+  const sections: Array<[string, Uint8Array]> = [['index', indexSection]];
+  if (tree.isFile('/index.html')) sections.push(['primary', cborText(base)]);
+  sections.push(['responses', responsesSection]);
+  const sectionLengths = cborArray(sections.flatMap(([name, bytes]) => [cborText(name), cborUint(bytes.length)]));
 
   // The trailing length field is fixed-size, so the total is computable first.
   const parts = [
-    Buffer.from([0x86]), // array(6)
+    Buffer.from([0x85]), // b2: array(5) = magic, version, section-lengths, sections, length
     cborBytes(MAGIC),
     cborBytes(VERSION),
-    cborText(primary),
     cborBytes(sectionLengths),
-    Buffer.from([0x82]), // sections: array(2)
-    indexSection,
-    responsesSection,
+    cborArray(sections.map(([, bytes]) => bytes)),
   ];
   const lenField = 1 + 8; // bstr(8) head + 8 bytes
   const total = parts.reduce((n, b) => n + b.length, 0) + lenField;

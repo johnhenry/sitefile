@@ -293,33 +293,41 @@ function cborItem(b: Buffer, off: number): { v: Cbor; end: number } {
   }
 }
 
+/** Test-only decoder for the b2 layout: [magic, version, section-lengths, sections, length]. */
 function decodeBundle(bytes: Uint8Array) {
   const b = Buffer.from(bytes);
-  assert.equal(b[0], 0x86, 'top-level array of 6');
+  assert.equal(b[0], 0x85, 'b2: top-level array of 5');
   const items: Array<{ v: Cbor; start: number; end: number }> = [];
   let p = 1;
-  // magic, version, primary, section-lengths
-  for (let i = 0; i < 4; i++) {
+  // magic, version, section-lengths
+  for (let i = 0; i < 3; i++) {
     const r = cborItem(b, p);
     items.push({ v: r.v, start: p, end: r.end });
     p = r.end;
   }
-  assert.equal(b[p], 0x82, 'sections: array of 2');
+  const sectionLengths = cborItem(items[2]!.v as Buffer, 0).v as Cbor[];
+  const names = sectionLengths.filter((_, i) => i % 2 === 0) as string[];
+  assert.equal(b[p], 0x80 + names.length, `sections: array of ${names.length}`);
   p += 1;
-  const indexStart = p;
-  const idx = cborItem(b, p);
-  const respStart = idx.end;
-  const resp = cborItem(b, respStart);
-  const len = cborItem(b, resp.end);
+  const sections = new Map<string, { v: Cbor; start: number; end: number }>();
+  for (const name of names) {
+    const r = cborItem(b, p);
+    sections.set(name, { v: r.v, start: p, end: r.end });
+    p = r.end;
+  }
+  assert.equal(names[names.length - 1], 'responses', 'responses section is last');
+  const len = cborItem(b, p);
   assert.equal(len.end, b.length, 'nothing after the length field');
+  const idx = sections.get('index')!;
+  const resp = sections.get('responses')!;
   return {
     magic: items[0]!.v as Buffer,
     version: items[1]!.v as Buffer,
-    primary: items[2]!.v as string,
-    sectionLengths: cborItem(items[3]!.v as Buffer, 0).v as Cbor[],
+    primary: (sections.get('primary')?.v as string | undefined) ?? '',
+    sectionLengths,
     index: idx.v as Map<string, Cbor>,
-    indexLen: idx.end - indexStart,
-    respBytes: b.subarray(respStart, resp.end),
+    indexLen: idx.end - idx.start,
+    respBytes: b.subarray(resp.start, resp.end),
     responses: resp.v as Cbor[],
     totalLength: (len.v as Buffer).readBigUInt64BE(0),
     size: b.length,
@@ -341,7 +349,8 @@ test('wbn: structure, index, responses, primary URL and exact bytes', () => {
   assert.equal(w.version.toString('latin1'), 'b2\0\0');
   assert.equal(w.primary, 'https://example.com/site/');
   assert.equal(w.totalLength, BigInt(w.size));
-  assert.deepEqual(w.sectionLengths, ['index', w.indexLen, 'responses', w.respBytes.length]);
+  const primaryLen = 2 + 'https://example.com/site/'.length; // text(25): 2-byte CBOR head
+  assert.deepEqual(w.sectionLengths, ['index', w.indexLen, 'primary', primaryLen, 'responses', w.respBytes.length]);
 
   const urls = [...w.index.keys()].sort();
   assert.deepEqual(urls, [
@@ -364,8 +373,9 @@ test('wbn: structure, index, responses, primary URL and exact bytes', () => {
     blob: 'application/octet-stream',
   };
   for (const [url, loc] of w.index) {
-    const [variants, offset, length] = loc as [Buffer, number, number];
-    assert.equal(variants.length, 0);
+    // b2 index entries are [offset, length] (no variants value).
+    assert.equal((loc as Cbor[]).length, 2);
+    const [offset, length] = loc as [number, number];
     const r = cborItem(w.respBytes, offset);
     assert.equal(r.end - offset, length);
     const [headerBytes, payload] = r.v as [Buffer, Buffer];
@@ -396,7 +406,7 @@ test('wbn: many responses use a multi-byte array head and still have correct off
   for (let i = 0; i < 300; i++) files.push([`/f${String(i).padStart(3, '0')}.txt`, makeFile(enc(`file ${i}`), 't')]);
   const w = decodeBundle(writeWebBundle(Tree.fromFiles(files), 'https://example.com/'));
   assert.equal(w.index.size, 300);
-  const [, offset, length] = w.index.get('https://example.com/f299.txt') as [Buffer, number, number];
+  const [offset, length] = w.index.get('https://example.com/f299.txt') as [number, number];
   const r = cborItem(w.respBytes, offset);
   assert.equal(r.end - offset, length);
   assert.equal(((r.v as Cbor[])[1] as Buffer).toString(), 'file 299');
@@ -663,4 +673,28 @@ test('encodeTree dispatches every archive format', () => {
   for (const f of ['zip', 'tar', 'tgz'] as const) assert.ok(encodeTree(t, f).length > 0);
   assert.ok(encodeTree(t, 'wbn', { baseUrl: 'https://example.com/' }).length > 0);
   assert.throws(() => encodeTree(t, 'wbn'), isCode('E_VALIDATION'));
+});
+
+test('wbn: the reference dump-bundle tool reads the bundle (skipped if not installed)', async (t) => {
+  const gopath = spawnSync('go', ['env', 'GOPATH'], { encoding: 'utf8' });
+  const tool = gopath.status === 0 ? path.join(gopath.stdout.trim(), 'bin', 'dump-bundle') : '';
+  if (!tool || !(await fs.stat(tool).then(() => true, () => false))) {
+    t.skip('dump-bundle not installed (go install github.com/WICG/webpackage/go/bundle/cmd/dump-bundle@latest)');
+    return;
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-wbn-'));
+  try {
+    const file = path.join(dir, 'b.wbn');
+    await fs.writeFile(file, writeWebBundle(mk({ '/index.html': '<h1>hi</h1>', '/a.css': 'a{}' }), 'https://example.com/'));
+    const r = spawnSync(tool, ['-i', file], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Version: b2/);
+    assert.match(r.stdout, /Primary URL: https:\/\/example\.com\//);
+    for (const url of ['https://example.com/', 'https://example.com/index.html', 'https://example.com/a.css']) {
+      assert.ok(r.stdout.includes(`> :url: ${url}\n`), url);
+    }
+    assert.match(r.stdout, /Content-Type: \[text\/css; charset=utf-8\]/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
