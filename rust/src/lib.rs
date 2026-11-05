@@ -7,6 +7,7 @@
 
 // Core (shared by every module)
 pub mod cbor;
+pub mod deflate;
 pub mod digest;
 pub mod error;
 pub mod paths;
