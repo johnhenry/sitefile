@@ -1,0 +1,3 @@
+ARG TITLE = "Hi"
+COPY ./src/a.txt /a.txt
+EXPORT /

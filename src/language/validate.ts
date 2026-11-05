@@ -61,8 +61,7 @@ function checkToolArgs(ins: Extract<Instruction, { kind: 'TRANSFORM' }>): void {
 
 /** Check semantic rules (see docs/LANGUAGE.md, "v0.1 implementation decisions"). */
 export function validate(instructions: readonly Instruction[], file: string): Program {
-  const first = instructions[0];
-  if (!first) throw new SitefileError('E_VALIDATION', 'Sitefile has no instructions', { file, line: 1, column: 1 });
+  if (instructions.length === 0) throw new SitefileError('E_VALIDATION', 'Sitefile has no instructions', { file, line: 1, column: 1 });
 
   const vars = new Set<string>();
   const imports = new Set<string>();
@@ -77,8 +76,16 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   const taken = (name: string): boolean => vars.has(name) || imports.has(name) || declaredStages.has(name) || plugins.has(name) || tools.has(name);
   let sawFrom = false;
   let sawExport = false;
+  const out: Instruction[] = [];
 
   for (const ins of instructions) {
+    // The first instruction other than ARG, with no FROM yet, starts an implicit unnamed `FROM scratch`
+    // stage. It has no source line of its own, so it takes that instruction's span.
+    if (!sawFrom && ins.kind !== 'FROM' && ins.kind !== 'ARG') {
+      out.push({ kind: 'FROM', span: ins.span, base: 'scratch' });
+      sawFrom = true;
+    }
+    out.push(ins);
     if (sawExport) throw new SitefileError('E_VALIDATION', 'EXPORT must be the last instruction', ins.span);
 
     // RENDER … FOR item IN list: the destination may use ${item} / ${item.key}.
@@ -127,10 +134,6 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       sawFrom = true;
       continue;
     }
-    if (!sawFrom && ins.kind !== 'ARG') {
-      throw new SitefileError('E_VALIDATION', `${ins.kind} before FROM: only ARG may come before FROM`, ins.span);
-    }
-
     switch (ins.kind) {
       case 'ARG':
       case 'LET':
@@ -195,9 +198,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   }
 
   const last = instructions[instructions.length - 1]!;
-  if (!sawFrom) throw new SitefileError('E_VALIDATION', 'missing FROM (start with FROM scratch)', first.span);
   if (!sawExport) throw new SitefileError('E_VALIDATION', 'missing EXPORT: the last instruction must be EXPORT', last.span);
-  return { file, instructions };
+  return { file, instructions: out };
 }
 
 function checkSource(

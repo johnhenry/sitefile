@@ -3,7 +3,7 @@
 Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quoted strings, comments, and backslash continuations. No implicit shell.
 
 Instructions:
-- `FROM scratch|<local dir>|<stage> [AS name]`
+- `FROM scratch|<local dir>|<stage> [AS name]` (optional for a single-stage build: the first instruction other than `ARG` starts an implicit `FROM scratch`)
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
@@ -19,7 +19,6 @@ Variables: `ARG` is externally configurable; `LET` is local. Missing required va
 
 Example:
 ```
-FROM scratch
 ARG TITLE = "Hello"
 COPY ./public/ /
 RENDER ./templates/index.html TO /index.html
@@ -57,9 +56,21 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - A `$` not followed by `{` is literal.
 
 ### Instructions
-- `FROM scratch|<base> [AS name]` starts a **stage**. Every instruction except
-  `ARG` must come after the first `FROM`; each `FROM` after that starts a new
+- `FROM scratch|<base> [AS name]` starts a **stage**. Each `FROM` starts a new
   stage, and COPY/RENDER apply to the most recent one.
+  - **Implicit `FROM scratch`.** If the first instruction other than `ARG`
+    comes before any `FROM`, an unnamed `FROM scratch` stage starts there, so a
+    single-stage Sitefile needs no `FROM` at all (`ARG`s before it are global
+    build parameters, exactly as before an explicit `FROM scratch`). The
+    implicit stage has no source line; messages about it use that first
+    instruction's line. A file with only `ARG`s and no `EXPORT` is
+    `missing EXPORT`. Write `FROM` for multi-stage builds and for `<dir>` or
+    `<stage>` bases; an explicit `FROM scratch` behaves as it always did.
+  - **Unnamed non-final stages warn.** A stage without `AS name` can be
+    neither a `FROM` base nor a `COPY --from` source, and only the last stage
+    is exported, so its output can never be used. The build prints
+    `warning: <file>:<line>: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>`
+    (stderr, from `build`, `validate` and `inspect`; the build still succeeds).
   - `scratch` (bare word; `"scratch"` is a path) is an empty tree.
   - `<base>` that is a bare identifier naming an *earlier* stage starts from a
     copy of that stage's final tree (Docker-like). Anything else is a
