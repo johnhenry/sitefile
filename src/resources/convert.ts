@@ -1,0 +1,56 @@
+import { SitefileError, type SourceSpan } from '../errors.js';
+import { sha256 } from '../digest.js';
+import type { Provenance, Resource } from './types.js';
+
+export interface BytesInfo {
+  readonly uri: string;
+  readonly resolvedUrl?: string;
+  readonly basename: string;
+  readonly mode?: number;
+}
+
+function decodeUtf8(bytes: Uint8Array, uri: string, span?: SourceSpan): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (e) {
+    throw new SitefileError('E_ENCODING', `${uri} is not valid UTF-8`, span, { cause: e });
+  }
+}
+
+/** Turn fetched or read bytes into a resource of the requested kind. */
+export function bytesToResource(
+  bytes: Uint8Array,
+  kind: 'file' | 'text' | 'json',
+  info: BytesInfo,
+  span?: SourceSpan,
+): Resource {
+  const digest = sha256(bytes);
+  const provenance: Provenance =
+    info.resolvedUrl === undefined ? { uri: info.uri, digest } : { uri: info.uri, resolvedUrl: info.resolvedUrl, digest };
+  if (kind === 'file') {
+    const mode = (info.mode ?? 0o644) & 0o111 ? 0o755 : 0o644;
+    return { kind: 'file', bytes, mode, basename: info.basename, provenance };
+  }
+  const text = decodeUtf8(bytes, info.uri, span);
+  if (kind === 'text') return { kind: 'value', format: 'text', value: text, provenance };
+  let value: unknown;
+  try {
+    // TextDecoder already strips a leading BOM.
+    value = JSON.parse(text);
+  } catch (e) {
+    throw new SitefileError('E_TYPE', `${info.uri} is not valid JSON: ${(e as Error).message}`, span, { cause: e });
+  }
+  return { kind: 'value', format: 'json', value, provenance };
+}
+
+/** Throw E_INTEGRITY unless sha256(bytes) equals `expected` (`sha256:<hex>`). */
+export function verifyIntegrity(bytes: Uint8Array, expected: string, uri: string, span?: SourceSpan): void {
+  const actual = sha256(bytes);
+  if (actual !== expected.toLowerCase()) {
+    throw new SitefileError(
+      'E_INTEGRITY',
+      `integrity mismatch for ${uri}: expected ${expected}, got ${actual}`,
+      span,
+    );
+  }
+}

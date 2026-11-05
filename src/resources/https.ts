@@ -1,0 +1,293 @@
+import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
+import { request as httpRequest, type IncomingMessage, type ClientRequest, type RequestOptions } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { isIP, type LookupFunction } from 'node:net';
+import { SitefileError, isSitefileError, type SourceSpan } from '../errors.js';
+import type { FetchPolicy } from './types.js';
+import { isPublicAddress } from './netpolicy.js';
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const USER_AGENT = 'sitefile/0.1';
+
+export interface FetchResult {
+  readonly bytes: Uint8Array;
+  /** URL of the final hop after redirects. */
+  readonly finalUrl: string;
+  /** Media type essence from `content-type` (lowercase, parameters removed). */
+  readonly mediaType?: string;
+}
+
+/** A URL rendered without any userinfo, safe for error messages. */
+export function redactUrl(url: URL | string): string {
+  try {
+    const u = new URL(String(url));
+    u.username = '';
+    u.password = '';
+    return u.href;
+  } catch {
+    return '<invalid url>';
+  }
+}
+
+function stripBrackets(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+/**
+ * Validate one hop before connecting: scheme, credentials and IP-literal
+ * hosts. Hostnames are checked at connect time by the guarded lookup.
+ */
+export function validateHop(url: URL, policy: FetchPolicy, span?: SourceSpan): void {
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && policy.allowHttp)) {
+    const hint = url.protocol === 'http:' ? ' (plain http requires --allow-http)' : '';
+    throw new SitefileError('E_PROTOCOL', `unsupported protocol '${url.protocol}' for ${redactUrl(url)}${hint}`, span);
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new SitefileError(
+      'E_PROTOCOL',
+      `URL ${redactUrl(url)} contains credentials; credentials in URLs are not allowed`,
+      span,
+    );
+  }
+  const host = stripBrackets(url.hostname);
+  if (host === '') throw new SitefileError('E_PROTOCOL', `URL ${redactUrl(url)} has no host`, span);
+  if (isIP(host) !== 0 && !policy.allowPrivateNetwork && !isPublicAddress(host)) {
+    throw new SitefileError(
+      'E_SSRF_BLOCKED',
+      `refusing to connect to non-public address ${host} (${redactUrl(url)}); use --allow-private-network to permit it`,
+      span,
+    );
+  }
+}
+
+/**
+ * A `lookup` for http(s).request that resolves every address and fails with
+ * E_SSRF_BLOCKED if any is non-public. Runs at connect time, so DNS rebinding
+ * between validation and connection cannot bypass it.
+ */
+export function createGuardedLookup(policy: FetchPolicy, span?: SourceSpan): LookupFunction {
+  return (hostname, options, callback) => {
+    dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
+      if (err) {
+        (callback as (e: Error) => void)(err);
+        return;
+      }
+      const list = addresses as LookupAddress[];
+      if (list.length === 0) {
+        (callback as (e: Error) => void)(new SitefileError('E_FETCH', `no addresses found for ${hostname}`, span));
+        return;
+      }
+      if (!policy.allowPrivateNetwork) {
+        const bad = list.find((a) => !isPublicAddress(a.address));
+        if (bad) {
+          (callback as (e: Error) => void)(
+            new SitefileError(
+              'E_SSRF_BLOCKED',
+              `refusing to connect to ${hostname}: it resolves to non-public address ${bad.address}; use --allow-private-network to permit it`,
+              span,
+            ),
+          );
+          return;
+        }
+      }
+      if (options.all) {
+        (callback as (e: null, a: LookupAddress[]) => void)(null, list);
+      } else {
+        const first = list[0]!;
+        (callback as (e: null, a: string, f: number) => void)(null, first.address, first.family);
+      }
+    });
+  };
+}
+
+/** Find a SitefileError carried by a socket/request error, if any. */
+function findSitefileError(e: unknown, depth = 0): SitefileError | undefined {
+  if (depth > 4 || e === null || typeof e !== 'object') return undefined;
+  if (isSitefileError(e)) return e;
+  const anyE = e as { cause?: unknown; errors?: unknown };
+  if (Array.isArray(anyE.errors)) {
+    for (const inner of anyE.errors) {
+      const found = findSitefileError(inner, depth + 1);
+      if (found) return found;
+    }
+  }
+  return findSitefileError(anyE.cause, depth + 1);
+}
+
+interface HopState {
+  req?: ClientRequest;
+  res?: IncomingMessage;
+}
+
+/**
+ * Fetch a remote resource under the given network policy. Redirects are
+ * followed manually and every hop is re-validated; one deadline covers the
+ * whole fetch.
+ */
+export async function fetchRemote(url: string, policy: FetchPolicy, span?: SourceSpan): Promise<FetchResult> {
+  let current: URL;
+  try {
+    current = new URL(url);
+  } catch (e) {
+    throw new SitefileError('E_PROTOCOL', `invalid URL '${redactUrl(url)}'`, span, { cause: e });
+  }
+
+  const controller = new AbortController();
+  const state: HopState = {};
+  const timer = setTimeout(() => {
+    controller.abort();
+    state.req?.destroy();
+    state.res?.destroy();
+  }, policy.timeoutMs);
+  timer.unref?.();
+  const timeoutError = () =>
+    new SitefileError(
+      'E_FETCH_TIMEOUT',
+      `fetching ${redactUrl(url)} timed out after ${policy.timeoutMs} ms`,
+      span,
+    );
+
+  try {
+    let redirects = 0;
+    for (;;) {
+      validateHop(current, policy, span);
+      if (controller.signal.aborted) throw timeoutError();
+
+      const res = await openHop(current, policy, controller.signal, state, span, timeoutError);
+      const status = res.statusCode ?? 0;
+
+      if (REDIRECT_STATUSES.has(status)) {
+        const location = res.headers.location;
+        res.destroy();
+        state.req?.destroy();
+        if (!location) {
+          throw new SitefileError('E_REDIRECT', `redirect ${status} from ${redactUrl(current)} has no Location header`, span);
+        }
+        redirects++;
+        if (redirects > policy.maxRedirects) {
+          throw new SitefileError(
+            'E_REDIRECT',
+            `too many redirects fetching ${redactUrl(url)} (limit ${policy.maxRedirects})`,
+            span,
+          );
+        }
+        let next: URL;
+        try {
+          next = new URL(location, current);
+        } catch (e) {
+          throw new SitefileError('E_REDIRECT', `invalid redirect Location from ${redactUrl(current)}`, span, { cause: e });
+        }
+        current = next;
+        continue;
+      }
+
+      if (status !== 200) {
+        res.destroy();
+        throw new SitefileError('E_FETCH_STATUS', `GET ${redactUrl(current)} returned HTTP ${status}`, span);
+      }
+
+      const encoding = String(res.headers['content-encoding'] ?? '').trim().toLowerCase();
+      if (encoding !== '' && encoding !== 'identity') {
+        res.destroy();
+        throw new SitefileError(
+          'E_FETCH',
+          `${redactUrl(current)} responded with content-encoding '${encoding}'; only identity is accepted`,
+          span,
+        );
+      }
+
+      const lengthHeader = res.headers['content-length'];
+      if (lengthHeader !== undefined) {
+        const declared = Number(lengthHeader);
+        if (Number.isFinite(declared) && declared > policy.maxBytes) {
+          res.destroy();
+          throw new SitefileError(
+            'E_TOO_LARGE',
+            `${redactUrl(current)} is ${declared} bytes, exceeding the limit of ${policy.maxBytes} bytes`,
+            span,
+          );
+        }
+      }
+
+      const chunks: Buffer[] = [];
+      let total = 0;
+      try {
+        for await (const chunk of res as AsyncIterable<Buffer>) {
+          total += chunk.length;
+          if (total > policy.maxBytes) {
+            res.destroy();
+            throw new SitefileError(
+              'E_TOO_LARGE',
+              `${redactUrl(current)} exceeded the limit of ${policy.maxBytes} bytes`,
+              span,
+            );
+          }
+          chunks.push(chunk);
+        }
+      } catch (e) {
+        if (isSitefileError(e)) throw e;
+        if (controller.signal.aborted) throw timeoutError();
+        throw new SitefileError('E_FETCH', `error reading ${redactUrl(current)}: ${(e as Error).message}`, span, {
+          cause: e,
+        });
+      }
+      if (controller.signal.aborted) throw timeoutError();
+
+      const buf = Buffer.concat(chunks, total);
+      const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const ct = res.headers['content-type'];
+      const mediaType = ct ? ct.split(';')[0]!.trim().toLowerCase() || undefined : undefined;
+      return mediaType === undefined ? { bytes, finalUrl: current.href } : { bytes, finalUrl: current.href, mediaType };
+    }
+  } finally {
+    clearTimeout(timer);
+    state.res?.destroy();
+    state.req?.destroy();
+  }
+}
+
+function openHop(
+  url: URL,
+  policy: FetchPolicy,
+  signal: AbortSignal,
+  state: HopState,
+  span: SourceSpan | undefined,
+  timeoutError: () => SitefileError,
+): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const options: RequestOptions = {
+      method: 'GET',
+      headers: { 'accept-encoding': 'identity', 'user-agent': USER_AGENT, accept: '*/*' },
+      lookup: createGuardedLookup(policy, span),
+      agent: false,
+      signal,
+    };
+    const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    let req: ClientRequest;
+    try {
+      req = requestFn(url, options);
+    } catch (e) {
+      reject(new SitefileError('E_FETCH', `cannot request ${redactUrl(url)}: ${(e as Error).message}`, span, { cause: e }));
+      return;
+    }
+    state.req = req;
+    state.res = undefined;
+    req.on('response', (res) => {
+      state.res = res;
+      resolve(res);
+    });
+    req.on('error', (e) => {
+      if (signal.aborted) {
+        reject(timeoutError());
+        return;
+      }
+      const inner = findSitefileError(e);
+      if (inner) {
+        reject(inner);
+        return;
+      }
+      reject(new SitefileError('E_FETCH', `fetching ${redactUrl(url)} failed: ${e.message}`, span, { cause: e }));
+    });
+    req.end();
+  });
+}

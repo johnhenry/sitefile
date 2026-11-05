@@ -1,0 +1,26 @@
+{
+  "name": "sitefile",
+  "version": "0.1.0",
+  "description": "Docker-inspired static artifact builder",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "sitefile": "./lib/src/cli.js"
+  },
+  "exports": {
+    ".": "./lib/src/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"lib/test/**/*.test.js\""
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
