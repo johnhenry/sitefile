@@ -424,7 +424,7 @@ and tar timestamps instead.
   same digests). The manifest and config record the base as
   `org.opencontainers.image.base.name` / `.base.digest`. An OCI archive or layout export
   contains the base blobs too, so it loads anywhere (`docker load -i site.oci.tar`);
-  `-t` stores the same image in the local store (`save`, `push`, `run` work: `run` serves
+  `-t` stores the same image in the local store (`save`, `push`, `serve` work: `serve` serves
   the site layer). Layers are held in memory while exporting an archive.
 
   **Reproducibility**: the output is a pure function of the files, options and the base's
