@@ -2,7 +2,7 @@ import { readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
-import type { Program } from './language/ast.js';
+import type { ExportFormat, Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
@@ -14,7 +14,9 @@ import { Lockfile } from './resources/lockfile.js';
 import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 import type { Scalar } from './values.js';
-import { exportDirectory, isExporterTempName } from './exporter.js';
+import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
+import { sourceDateEpoch } from './archive-writers.js';
+import { encodeTree, isArchiveFormat } from './export-formats.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -136,16 +138,43 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   return { plan: p, tree, output, resources, warnings, lockfileWritten };
 }
 
-/** Build, then write the exported tree to `outDir`. */
+export interface ExportTarget {
+  /** Overrides the Sitefile's EXPORT format. */
+  readonly format?: ExportFormat;
+  /** Overrides the Sitefile's EXPORT ... BASE (wbn). */
+  readonly baseUrl?: string;
+}
+
+export interface ExportedBuild extends BuildResult {
+  readonly format: ExportFormat;
+  /** Real path written: a directory for `directory`, otherwise the archive file. */
+  readonly outDir: string;
+  /** Archive size in bytes (archive formats only). */
+  readonly bytes?: number;
+  /** `sha256:<hex>` of the archive file (archive formats only). */
+  readonly fileDigest?: string;
+}
+
+/**
+ * Build, then write the exported tree to `outDir`: a directory for the
+ * `directory` format, a single file for zip, tar, tgz and wbn.
+ */
 export async function buildToDirectory(
-  options: BuildOptions & { readonly outDir: string; readonly force?: boolean },
-): Promise<BuildResult & { readonly outDir: string }> {
+  options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
+): Promise<ExportedBuild> {
   const result = await build(options);
-  const written = await exportDirectory(result.output, options.outDir, {
-    contextDir: options.contextDir,
-    ...(options.force ? { force: true } : {}),
+  const format = options.format ?? result.plan.exportFormat;
+  const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
+  if (!isArchiveFormat(format)) {
+    const written = await exportDirectory(result.output, options.outDir, exportOptions);
+    return { ...result, format, outDir: written.outDir };
+  }
+  const data = encodeTree(result.output, format, {
+    epoch: sourceDateEpoch(),
+    baseUrl: options.baseUrl ?? result.plan.exportBase,
   });
-  return { ...result, outDir: written.outDir };
+  const written = await exportFile(data, options.outDir, exportOptions);
+  return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data) };
 }
 
 // ---------------------------------------------------------------- imports

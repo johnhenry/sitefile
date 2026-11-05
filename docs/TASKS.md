@@ -34,4 +34,5 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #5 Export check-then-swap race: parent and destination dev/ino re-validated before and after the swap (`test/exporter.test.ts`)
 - [x] #6 Hard links to files outside the context
 - [x] #7 TLS test fixture for `fetchRemote`
+- [x] #17 Export formats: `EXPORT ... AS zip|tar|tgz|wbn [BASE url]`, `--format`, `--base-url`; deterministic archives and an unsigned Web Bundle (`test/export-formats.test.ts`)
 - [x] Inline content: `COPY <<EOF` and `RENDER <<EOF … TO` heredocs (`test/inline.test.ts`, `test/cli.test.ts`, `examples/inline/`)

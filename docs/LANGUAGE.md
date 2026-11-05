@@ -9,7 +9,7 @@ Instructions:
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
 - `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
-- `EXPORT <tree-path> AS directory` (CLI specifies destination)
+- `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn] [BASE <https-url>]` (CLI specifies destination)
 - Future: REMOVE, TRANSFORM, GENERATE, ASSERT, META, EXEC, OCI output.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -140,9 +140,13 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
   - Only `COPY` and `RENDER` lines are scanned for `<<`; elsewhere it is plain text.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory]` must be the last instruction, exactly once;
-  it exports from the last stage.
-  The CLI's `--out` picks the host destination.
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn] [BASE <url>]` must be the last
+  instruction, exactly once; it exports from the last stage. The format
+  defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
+  are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
+  tree is mounted at and is required by `wbn` (from here or `--base-url`).
+  The CLI's `--out` picks the host destination and `--format` / `--base-url`
+  override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
 
 ### Writes and conflicts
@@ -233,6 +237,67 @@ gitignore subset:
   extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
   bomb is stopped at the limit, never fully inflated; zip entries are never
   inflated beyond their declared size. The download cap still applies first.
+
+### Export formats
+`--out` is a directory for `directory` and a **file** for every other format.
+Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
+`dist.wbn`. The format is never guessed from the `--out` extension; use
+`--format` or `EXPORT ... AS`.
+
+All archive writers are deterministic: the same tree gives byte-identical
+output (for the same Node/zlib version), whatever the order files were added.
+Entries are sorted by path; there are no directory entries (directories are
+implicit); uid/gid are 0 with no user/group names; modes are the tree's
+`0644`/`0755`. Timestamps are fixed: zip uses the DOS epoch 1980-01-01 00:00,
+tar uses mtime 0, and the gzip header mtime is 0 (OS byte fixed to Unix). If
+the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
+seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
+and tar timestamps instead.
+
+- **zip**: `node:zlib` raw deflate (stored when deflate does not shrink the
+  entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
+  the external attributes (version made by = 3 << 8). No zip64: more than
+  65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
+  with `E_EXPORT`.
+- **tar**: POSIX ustar. A name over 100 bytes is split into `prefix`/`name` at
+  a `/`; if it still does not fit (prefix over 155 bytes, or no usable `/`), a
+  pax `x` header carries the full `path`. Files of 8 GiB or more fail with
+  `E_EXPORT`.
+- **tgz**: gzip of that tar.
+- **wbn**: an **unsigned Web Bundle**, format version `b2`
+  (draft-ietf-wpack-bundled-responses): top-level CBOR array
+  `[magic "🌐📦", version "b2\0\0", primary URL, section lengths, [index, responses], 8-byte length]`.
+  The CBOR is deterministic (map keys in bytewise order). Decisions:
+  - Base URL: required; an absolute `https:` URL ending in `/`, with no
+    credentials, query or fragment (`E_VALIDATION` otherwise). Each file
+    `/a/b.css` is addressed as `<base>a/b.css` (path segments
+    percent-encoded).
+  - Every `index.html` is additionally addressed by its directory URL:
+    `/index.html` as `<base>` and `/docs/index.html` as `<base>docs/`. Both
+    index entries point at the same response.
+  - Primary URL: `<base>` if `/index.html` exists, else the empty string. There
+    is no separate "primary" section.
+  - Each response has `:status` `200` and `content-type` (no other headers).
+    `content-type` comes from the extension: html/htm, css, js/mjs, json, svg,
+    txt, xml, webmanifest (all with `; charset=utf-8`), png, jpg/jpeg, gif,
+    webp, avif, ico (`image/x-icon`), wasm, woff, woff2, pdf, mp4, webm, mp3;
+    anything else is `application/octet-stream`.
+  - Index entries are `[variants-value "", offset, length]` where offset is
+    counted from the first byte of the responses section.
+  - Not signed, no integrity block, no variants. Layout follows the b2 draft as
+    understood when written; validate with a Web Bundle tool before relying on
+    it in a browser.
+
+File output safety (same rules as directories, plus): `--out` that is, or
+contains, the build context, the filesystem root or the home directory is
+refused (`E_EXPORT_UNSAFE`); a directory or symlink at `--out` is `E_EXPORT`;
+an existing file outside the context is only replaced with `--force`
+(`E_EXPORT_UNSAFE`). The bytes are written to a temporary sibling
+(`.<name>.sitefile-tmp-<hex>`), the parent and destination identity (dev/ino)
+are re-validated, then it is renamed into place. Only the exact temp file
+created is ever deleted. The archive is excluded from the build when it lies
+in the context. Residual risk is the same path-based window as for
+directories (see below); the single rename is atomic.
 
 ### Export
 - Output is written to a temporary sibling directory, then swapped in.

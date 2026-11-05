@@ -3,6 +3,8 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
+import { defaultOutName } from './export-formats.js';
+import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 
 const VERSION = '0.1.0';
@@ -10,13 +12,18 @@ const VERSION = '0.1.0';
 const HELP = `sitefile ${VERSION} — Docker-inspired static artifact builder
 
 Usage:
-  sitefile build [context] [options]     build and export to --out (default: <context>/dist)
+  sitefile build [context] [options]     build and export to --out (default: <context>/dist, or dist.<ext>)
   sitefile validate [context] [options]  parse, validate and evaluate variables (no IO)
   sitefile inspect [context] [options]   build in memory and list the exported files
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
-  -o, --out <dir>              export directory (build only)
+  -o, --out <path>             export destination (build only): a directory for 'directory',
+                               a file for zip, tar, tgz, wbn
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn; overrides the
+                               Sitefile's EXPORT ... AS <fmt> (build only)
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
+                               overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable)
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
@@ -41,6 +48,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       options: {
         file: { type: 'string', short: 'f' },
         out: { type: 'string', short: 'o' },
+        format: { type: 'string' },
+        'base-url': { type: 'string' },
         'build-arg': { type: 'string', multiple: true },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
@@ -79,7 +88,14 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (eq <= 0) return usageError(`--build-arg expects NAME=value, got '${kv}'`);
       buildArgs[kv.slice(0, eq)] = kv.slice(eq + 1);
     }
-    const out = o.out ?? path.join(context, 'dist');
+    let formatOverride: ExportFormat | undefined;
+    if (o.format !== undefined) {
+      formatOverride = parseExportFormat(o.format);
+      if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
+    }
+    // The default destination depends on the format, which the Sitefile may set.
+    const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
+    const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
     const options: BuildOptions = {
       contextDir: context,
       ...(o.file ? { sitefile: o.file } : {}),
@@ -100,9 +116,19 @@ export async function main(argv: readonly string[]): Promise<number> {
 
     switch (command) {
       case 'build': {
-        const r = await buildToDirectory({ ...options, outDir: out, force: !!o.force });
+        const r = await buildToDirectory({
+          ...options,
+          outDir: out,
+          force: !!o.force,
+          ...(formatOverride ? { format: formatOverride } : {}),
+          ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
+        });
+        const where = path.relative(process.cwd(), r.outDir) || '.';
+        const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
         process.stdout.write(
-          `Exported ${r.output.size} file${r.output.size === 1 ? '' : 's'} to ${path.relative(process.cwd(), r.outDir) || '.'} (${r.output.digest()})\n`,
+          r.format === 'directory'
+            ? `Exported ${n} to ${where} (${r.output.digest()})\n`
+            : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
         );
         if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
         return 0;

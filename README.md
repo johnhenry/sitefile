@@ -37,7 +37,7 @@ no runtime dependencies.
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`) |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest>` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}` |
-| `EXPORT <path> [AS directory]` | yes |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn] [BASE <https-url>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -50,7 +50,8 @@ HTML
 ## CLI
 
 ```
-sitefile build [context] [-o dist] [--build-arg K=V] [--force]
+sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
+               [--build-arg K=V] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks]
 sitefile validate [context] [--json]
@@ -70,6 +71,20 @@ sitefile inspect  [context] [--json]
 - Writing different content to an existing path fails unless `--overwrite` is given.
 - Export is staged in a temporary sibling and swapped in; a non-empty destination
   outside the context is only replaced with `--force`.
+- Archive exports (`zip`, `tar`, `tgz`, `wbn`) write one file via a temporary sibling and
+  rename; `--out` may not be the context, its parent, root or home, nor a directory or
+  symlink, and an existing file outside the context needs `--force`.
+
+## Export formats
+
+```bash
+node lib/src/cli.js build examples/hello --format zip     # examples/hello/dist.zip
+node lib/src/cli.js build examples/hello --format tgz -o hello.tar.gz
+node lib/src/cli.js build examples/hello --format wbn --base-url https://example.com/
+```
+
+Archives are reproducible: sorted entries, fixed timestamps (or `SOURCE_DATE_EPOCH`),
+uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-formats).
 
 ## Docs
 

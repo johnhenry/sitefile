@@ -202,6 +202,112 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
   return { outDir: outReal, files: planned.length };
 }
 
+export interface ExportFileResult {
+  /** Real absolute path of the file that was written. */
+  readonly outFile: string;
+  readonly bytes: number;
+}
+
+/**
+ * Write `data` as a single file at `outFile` (zip, tar, tgz, wbn). Same
+ * destination rules as {@link exportDirectory}: never the filesystem root, the
+ * home directory, the build context or a parent of it; never through a symlink;
+ * a directory is refused; an existing file outside the context needs
+ * `force`. The bytes go to a temporary sibling that is renamed into place after
+ * the parent and destination are re-validated; only that exact temp file (by
+ * dev/ino) is ever deleted, and nothing already at `outFile` is removed except
+ * by the replacing rename.
+ */
+export async function exportFile(data: Uint8Array, outFile: string, options: ExportOptions): Promise<ExportFileResult> {
+  const outAbs = path.resolve(outFile);
+  const outReal = await realpathMissing(outAbs);
+  const contextReal = await realpathOr(path.resolve(options.contextDir), 'build context');
+  const home = await realpathOrRaw(os.homedir());
+  assertSafeDestination(outReal, contextReal, home);
+
+  const st = await lstatOrUndefined(outReal);
+  if (st?.isSymbolicLink()) {
+    const target = await fs.realpath(outReal).catch(() => undefined);
+    if (target !== undefined) assertSafeDestination(target, contextReal, home);
+    throw new SitefileError('E_EXPORT', `export destination '${outReal}' is a symbolic link`);
+  }
+  if (st) {
+    if (st.isDirectory()) {
+      throw new SitefileError('E_EXPORT', `export destination '${outReal}' is a directory; an archive export needs a file path`);
+    }
+    if (!st.isFile()) {
+      throw new SitefileError('E_EXPORT', `export destination '${outReal}' exists and is not a regular file`);
+    }
+    if (!isInside(outReal, contextReal) && !options.force) {
+      throw new SitefileError(
+        'E_EXPORT_UNSAFE',
+        `export destination '${outReal}' already exists outside the build context; pass --force to replace it`,
+      );
+    }
+  }
+
+  const parent = path.dirname(outReal);
+  const base = path.basename(outReal);
+  const tmp = path.join(parent, `.${base}.sitefile-tmp-${randomHex()}`);
+  try {
+    await fs.mkdir(parent, { recursive: true });
+  } catch (e) {
+    throw new SitefileError('E_EXPORT', `cannot create '${parent}': ${(e as Error).message}`, undefined, { cause: e });
+  }
+  const parentId = await verifiedParentId(parent);
+  const outId = st ? idOf(st) : undefined;
+
+  let tmpId: FileId | undefined;
+  let renamed = false;
+  try {
+    const fh = await fs.open(tmp, 'wx', 0o644);
+    try {
+      tmpId = idOf(await fh.stat());
+      await fh.writeFile(data);
+      await fh.chmod(0o644);
+    } finally {
+      await fh.close();
+    }
+    if (options.beforeSwap) await options.beforeSwap();
+
+    await assertParentUnchanged(parent, parentId);
+    const t = await lstatOrUndefined(tmp);
+    if (!t || t.isSymbolicLink() || !t.isFile() || !sameId(idOf(t), tmpId)) {
+      throw unsafe(`temporary file '${tmp}' changed during export; aborting`);
+    }
+    const cur = await lstatOrUndefined(outReal);
+    if (outId) {
+      if (!cur || cur.isSymbolicLink() || !cur.isFile() || !sameId(idOf(cur), outId)) {
+        throw unsafe(`export destination '${outReal}' changed during export; aborting`);
+      }
+    } else if (cur) {
+      throw unsafe(`export destination '${outReal}' appeared during export; aborting`);
+    }
+    await fs.rename(tmp, outReal);
+    renamed = true;
+    const now = await lstatOrUndefined(outReal);
+    if (!now || now.isSymbolicLink() || !now.isFile() || !sameId(idOf(now), tmpId)) {
+      throw unsafe(`export destination '${outReal}' is not the file that was written; inspect it manually`);
+    }
+  } catch (e) {
+    if (!renamed && tmpId) await removeFileIfSame(tmp, tmpId);
+    if (e instanceof SitefileError) throw e;
+    throw new SitefileError('E_EXPORT', `failed to export to '${outReal}': ${(e as Error).message}`, undefined, { cause: e });
+  }
+  return { outFile: outReal, bytes: data.byteLength };
+}
+
+/** Remove `p` only if it is a regular file with the identity we created. */
+async function removeFileIfSame(p: string, expected: FileId): Promise<void> {
+  try {
+    const st = await lstatOrUndefined(p);
+    if (!st || st.isSymbolicLink() || !st.isFile() || !sameId(idOf(st), expected)) return;
+    await fs.unlink(p);
+  } catch {
+    // best effort
+  }
+}
+
 interface FileId {
   readonly dev: number | bigint;
   readonly ino: number | bigint;
