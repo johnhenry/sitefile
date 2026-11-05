@@ -1,0 +1,5 @@
+# A remote tar extracted with AS tree, pinned.
+FROM scratch
+IMPORT site FROM ${HTTPS}/site.tar AS tree INTEGRITY sha256:1fd306c5fe6a8b5c071534f123598f920e0428e2177c744653f934862c563511
+COPY site:/docs/ /docs/
+EXPORT /

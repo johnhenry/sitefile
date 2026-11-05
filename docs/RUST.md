@@ -54,7 +54,13 @@ version has no equivalent (V8 compiles wasm quickly).
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
   line, and identical output trees; `validate`/`inspect` cases compare stdout.
-  Currently 39/39.
+  Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
+  throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
+  and an in-process mock OCI registry, then cover remote `IMPORT` with and
+  without `INTEGRITY`, redirects, SSRF refusal, status and size errors, remote
+  archives, `Sitefile.lock` contents (byte for byte), `--frozen-lockfile`,
+  `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
+  Currently 60/60 (39 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
@@ -68,6 +74,12 @@ version has no equivalent (V8 compiles wasm quickly).
   differs from Node's zlib, so OCI layer digests, manifest digests and therefore
   image IDs differ between the two implementations for the same build. Layer
   *contents*, configs and every uncompressed format are identical.
+- **Extra CAs.** Both CLIs trust the PEM file named by `NODE_EXTRA_CA_CERTS`
+  (Node reads it at startup; the Rust CLI reads the same variable for imports
+  and registries, and ignores an unreadable file with Node's warning). As in
+  Node (default store plus extra), it and `FetchPolicy.ca` are added on top of
+  the default roots, which for Rust are the Mozilla roots of webpki-roots
+  rather than Node's bundled copy.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in

@@ -1,0 +1,4 @@
+# A redirect from https to plain http is refused.
+FROM scratch
+IMPORT data FROM ${HTTPS}/to-http AS json
+EXPORT /

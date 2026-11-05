@@ -1,0 +1,9 @@
+# A runnable image on a base pulled from the local mock registry.
+FROM scratch
+COPY <<CSS /style.css
+body { margin: 0; }
+CSS
+RENDER --escape=html <<HTML TO /index.html
+<h1>site on a base</h1>
+HTML
+EXPORT / AS oci BASE ${REGISTRY}/conf/base:1@sha256:4339e538b564c61d42879b12dd54b7c410545493f0e74c7cb6c5f097fcf2130e AT /srv/www

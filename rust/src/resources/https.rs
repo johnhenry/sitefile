@@ -263,19 +263,52 @@ pub(crate) fn pem_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-/// The default roots plus `ca`. The defaults are the same Mozilla roots
-/// (webpki-roots) ureq uses when no extra CA is set, so `ca` is purely additive.
-fn tls_config_with_extra_ca(ca: &[u8], span: Option<&SourceSpan>) -> Result<Arc<ureq::rustls::ClientConfig>> {
+/// Certificates from the PEM file named by `NODE_EXTRA_CA_CERTS`, read once.
+///
+/// The TypeScript CLI trusts them because Node adds that file to its default
+/// CA store at startup; honoring the same variable keeps the two CLIs' trust
+/// identical (enterprise private CAs, the conformance suite's test CA). Like
+/// Node, a file that cannot be read is ignored with a warning.
+pub(crate) fn node_extra_ca_certs() -> &'static [Vec<u8>] {
+    static EXTRA: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    EXTRA.get_or_init(|| {
+        let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS").filter(|p| !p.is_empty()) else { return Vec::new() };
+        match std::fs::read(&path) {
+            Ok(pem) => pem_certificates(&pem),
+            Err(e) => {
+                eprintln!("Warning: Ignoring extra certs from `{}`, load failed: {e}", path.to_string_lossy());
+                Vec::new()
+            }
+        }
+    })
+}
+
+/// TLS settings for a client: `None` (ureq's defaults) unless extra CAs are
+/// configured through `NODE_EXTRA_CA_CERTS` or `ca`.
+pub(crate) fn tls_config(ca: Option<&[u8]>, span: Option<&SourceSpan>) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
+    tls_config_from(node_extra_ca_certs(), ca, span)
+}
+
+/// The default roots plus `env_extra` (DER) and `ca` (PEM). The defaults are
+/// the same Mozilla roots (webpki-roots) ureq uses when no extra CA is set, so
+/// the extras are purely additive, as in Node (default store plus extra).
+fn tls_config_from(env_extra: &[Vec<u8>], ca: Option<&[u8]>, span: Option<&SourceSpan>) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
     use ureq::rustls;
+    if ca.is_none() && env_extra.is_empty() {
+        return Ok(None);
+    }
     let fail = |why: String| SitefileError::new(E_FETCH, why, span.cloned());
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let extra = pem_certificates(ca);
-    if extra.is_empty() {
-        return Err(fail("the extra CA certificate is not PEM (no 'BEGIN CERTIFICATE' block found)".into()));
-    }
-    for der in extra {
-        roots.add(rustls::pki_types::CertificateDer::from(der)).map_err(|e| fail(format!("invalid extra CA certificate: {e}")))?;
+    roots.add_parsable_certificates(env_extra.iter().cloned().map(rustls::pki_types::CertificateDer::from));
+    if let Some(ca) = ca {
+        let extra = pem_certificates(ca);
+        if extra.is_empty() {
+            return Err(fail("the extra CA certificate is not PEM (no 'BEGIN CERTIFICATE' block found)".into()));
+        }
+        for der in extra {
+            roots.add(rustls::pki_types::CertificateDer::from(der)).map_err(|e| fail(format!("invalid extra CA certificate: {e}")))?;
+        }
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
@@ -283,7 +316,7 @@ fn tls_config_with_extra_ca(ca: &[u8], span: Option<&SourceSpan>) -> Result<Arc<
         .map_err(|e| fail(format!("TLS setup failed: {e}")))?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    Ok(Arc::new(config))
+    Ok(Some(Arc::new(config)))
 }
 
 // ------------------------------------------------------------------ fetch
@@ -325,8 +358,8 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         .try_proxy_from_env(false)
         .user_agent(USER_AGENT)
         .resolver(resolver.clone());
-    if let Some(ca) = &policy.ca {
-        builder = builder.tls_config(tls_config_with_extra_ca(ca, span)?);
+    if let Some(config) = tls_config(policy.ca.as_deref(), span)? {
+        builder = builder.tls_config(config);
     }
     let agent = builder.build();
 
@@ -789,6 +822,14 @@ mod tests {
         let p = FetchPolicy { ca: Some(b"not a certificate".to_vec()), ..DEFAULT_FETCH_POLICY };
         assert_eq!(code(fetch_remote("https://example.com/", &p, None)), E_FETCH);
         assert!(pem_certificates(b"x\n-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n").first() == Some(&vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn tls_defaults_unless_an_extra_ca_is_configured() {
+        assert!(tls_config_from(&[], None, None).unwrap().is_none());
+        // NODE_EXTRA_CA_CERTS entries that do not parse are skipped (as Node does), not fatal.
+        assert!(tls_config_from(&[vec![0, 1, 2]], None, None).unwrap().is_some());
+        assert_eq!(tls_config_from(&[vec![0, 1, 2]], Some(b"not pem"), None).err().map(|e| e.code), Some(E_FETCH));
     }
 
     #[test]

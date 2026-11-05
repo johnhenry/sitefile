@@ -1,0 +1,5 @@
+# A body over --max-download-bytes.
+FROM scratch
+IMPORT big FROM ${HTTPS}/big.bin
+COPY big: /big.bin
+EXPORT /
