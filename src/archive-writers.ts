@@ -15,6 +15,8 @@ export interface WriterOptions {
    * epoch) and 0 for tar. The gzip header mtime is always 0.
    */
   readonly epoch?: number | undefined;
+  /** tar only: directory entries (relative, no slashes at the ends, e.g. `srv`, `srv/www`) written before the files. */
+  readonly dirs?: readonly string[] | undefined;
 }
 
 /** Read `SOURCE_DATE_EPOCH`; undefined if unset, E_USAGE if malformed. */
@@ -206,6 +208,7 @@ export function writeTar(tree: Tree, options: WriterOptions = {}): Uint8Array {
   const mtime = options.epoch ?? 0;
   const chunks: Uint8Array[] = [];
   let n = 0;
+  for (const d of options.dirs ?? []) chunks.push(tarHeader(enc.encode(d + '/'), new Uint8Array(0), 0, 0o755, mtime, '5'));
   for (const e of entriesOf(tree)) {
     if (e.bytes.length > TAR_MAX_SIZE) {
       throw new SitefileError('E_EXPORT', `tar export does not support files of 8 GiB or more: '/${e.name}'`);
@@ -225,7 +228,12 @@ export function writeTar(tree: Tree, options: WriterOptions = {}): Uint8Array {
 
 /** gzip of the tar, header mtime 0 and no filename, so the stream is reproducible. */
 export function writeTgz(tree: Tree, options: WriterOptions = {}): Uint8Array {
-  const gz = Buffer.from(gzipSync(writeTar(tree, options), { level: 9 }));
+  return gzipTar(writeTar(tree, options));
+}
+
+/** Reproducible gzip of an already-written tar. */
+export function gzipTar(tar: Uint8Array): Uint8Array {
+  const gz = Buffer.from(gzipSync(tar, { level: 9 }));
   gz[9] = 3; // OS = Unix, whatever platform zlib was built for
   return gz;
 }

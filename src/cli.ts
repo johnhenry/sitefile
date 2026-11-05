@@ -3,10 +3,13 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
-import { defaultOutName } from './export-formats.js';
+import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { loadBuildArgFile } from './build-args.js';
 import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
+import { parseLocalRef, refKey } from './ref.js';
+import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
+import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 
 const VERSION = '0.1.0';
 
@@ -21,9 +24,15 @@ Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn (build only).
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn),
+  -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
+                               with -t and no -o nothing is written to the context
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci (build only).
+                               oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
+                               OCI image layout directory.
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
+      --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
+      --platform <os/arch>     oci image platform metadata (default linux/amd64)
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
@@ -41,9 +50,10 @@ Options:
       --json                   machine-readable output (validate, inspect)
   -h, --help                   show this help
   -v, --version                show the version
-`;
+${EXTRA_HELP}`;
 
 export async function main(argv: readonly string[]): Promise<number> {
+  if (isExtraCommand(argv[0])) return runExtraCommand(argv);
   let parsed;
   try {
     parsed = parseArgs({
@@ -52,8 +62,11 @@ export async function main(argv: readonly string[]): Promise<number> {
       options: {
         file: { type: 'string', short: 'f' },
         out: { type: 'string', short: 'o' },
+        tag: { type: 'string', short: 't', multiple: true },
         format: { type: 'string' },
         'base-url': { type: 'string' },
+        'oci-root': { type: 'string' },
+        platform: { type: 'string' },
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
         force: { type: 'boolean' },
@@ -134,21 +147,35 @@ export async function main(argv: readonly string[]): Promise<number> {
 
     switch (command) {
       case 'build': {
+        const tags = o.tag ?? [];
+        validateImageTags(tags);
+        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], platform: o.platform };
+        if (tags.length && !o.out) {
+          // -t without -o: store the image only; nothing is written to the context.
+          await storeBuildAsImage(await build(options), tags, imageInfo);
+          return 0;
+        }
         const r = await buildToDirectory({
           ...options,
           outDir: out,
           force: !!o.force,
           ...(formatOverride ? { format: formatOverride } : {}),
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
+          ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
+          ...(o.platform !== undefined ? { platform: o.platform } : {}),
+          ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';
         const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
         process.stdout.write(
           r.format === 'directory'
             ? `Exported ${n} to ${where} (${r.output.digest()})\n`
-            : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
+            : r.format === 'oci'
+              ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
+              : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
         );
         if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
+        if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
         return 0;
       }
       case 'validate': {
@@ -214,13 +241,3 @@ main(process.argv.slice(2)).then(
     process.exitCode = 70;
   },
 );
-
-/** The export format implied by an output file name, if it has an archive extension. */
-function formatFromExtension(out: string): ExportFormat | undefined {
-  const name = out.toLowerCase();
-  if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) return 'tgz';
-  if (name.endsWith('.tar')) return 'tar';
-  if (name.endsWith('.zip')) return 'zip';
-  if (name.endsWith('.wbn')) return 'wbn';
-  return undefined;
-}

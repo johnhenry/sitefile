@@ -117,10 +117,12 @@ export interface ExportInstruction {
   readonly format: ExportFormat;
   /** `BASE <https-url>`: the URL the exported tree is mounted at (required for `wbn`). */
   readonly base?: Operand;
+  /** `AT </srv/www>`: where the files live inside the layer (`oci` only). */
+  readonly at?: Operand;
 }
 
-export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn';
-export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn'];
+export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci';
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci'];
 
 /** Parse a format name (`tar.gz` is an alias for `tgz`); undefined if unknown. */
 export function parseExportFormat(name: string): ExportFormat | undefined {

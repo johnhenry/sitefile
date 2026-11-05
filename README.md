@@ -37,7 +37,7 @@ no runtime dependencies.
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
-| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn] [BASE <https-url>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`) |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -73,7 +73,33 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--allow-hardlinks]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
+
+# images and servers (see below and docs/CLI.md)
+sitefile build [context] -t name[:tag]        # also store the build as an image
+sitefile images | image inspect|diff|prune | tag | rmi | save
+sitefile run [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
+sitefile ps [-a] | stop | rm [-f] | restart | logs [-f]
 ```
+
+## Images and servers
+
+Builds can be kept in a local, Docker-like **image store**, which is a standard
+[OCI image layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
+in `$SITEFILE_HOME` (default `~/.sitefile`). An image is the site's files as one
+layer; its ID is the manifest digest, and building identical output gives the same ID.
+
+```bash
+sitefile build examples/hello -t hello:1          # no -o: stored only, nothing written to the context
+sitefile images                                    # REPOSITORY TAG IMAGE ID CREATED FILES SIZE
+sitefile save hello:1 -o hello.oci.tar             # or .zip / .tar.gz / .wbn / a directory
+sitefile run -d --name site -p 8080 hello:1        # serve it, in the background
+sitefile ps; sitefile logs site; sitefile stop site; sitefile rm site
+```
+
+`run` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,
+correct MIME types and no directory listings. `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
+same OCI image without the store; it contains files only and is not runnable by itself. See
+[docs/CLI.md](docs/CLI.md).
 
 ## Safety defaults
 
@@ -105,6 +131,7 @@ uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-forma
 
 ## Docs
 
+- [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — syntax and the exact semantics chosen for v0.1
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)

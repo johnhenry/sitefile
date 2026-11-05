@@ -196,19 +196,23 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
   const path = c.operand('path');
   let format: ExportFormat = 'directory';
   let base: Operand | undefined;
+  let at: Operand | undefined;
   if (c.keyword('AS')) {
     const at = c.span;
     const name = c.word();
     if (name === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
     const f = parseExportFormat(name);
     if (f === undefined) {
-      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz or wbn)`, at);
+      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn or oci)`, at);
     }
     format = f;
   }
   if (c.keyword('BASE')) {
     base = c.operand('base URL');
   }
+  if (c.keyword('AT')) {
+    at = c.operand('image root path');
+  }
   c.expectEnd();
-  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}) };
+  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}), ...(at ? { at } : {}) };
 }

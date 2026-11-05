@@ -18,6 +18,7 @@ import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
+import { buildOciImage, imageMeta, layoutTree, ociArchive } from './oci.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -144,6 +145,12 @@ export interface ExportTarget {
   readonly format?: ExportFormat;
   /** Overrides the Sitefile's EXPORT ... BASE (wbn). */
   readonly baseUrl?: string;
+  /** oci: root directory inside the layer (overrides EXPORT ... AT; default /srv/www). */
+  readonly ociRoot?: string;
+  /** oci: `os/arch` metadata (default linux/amd64). */
+  readonly platform?: string;
+  /** oci: `name:tag` recorded as org.opencontainers.image.ref.name in index.json. */
+  readonly ociRefName?: string;
 }
 
 export interface ExportedBuild extends BuildResult {
@@ -154,6 +161,8 @@ export interface ExportedBuild extends BuildResult {
   readonly bytes?: number;
   /** `sha256:<hex>` of the archive file (archive formats only). */
   readonly fileDigest?: string;
+  /** oci: the image's manifest digest (its image ID). */
+  readonly manifestDigest?: string;
 }
 
 /**
@@ -166,6 +175,22 @@ export async function buildToDirectory(
   const result = await build(options);
   const format = options.format ?? result.plan.exportFormat;
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
+  if (format === 'oci') {
+    const img = buildOciImage(result.output, {
+      root: options.ociRoot ?? result.plan.exportRoot,
+      platform: options.platform,
+      epoch: sourceDateEpoch(),
+      ...(await imageMeta(options.contextDir)),
+    });
+    // A .tar destination gets an OCI archive; anything else a layout directory.
+    if (options.outDir.toLowerCase().endsWith('.tar')) {
+      const data = ociArchive(img, options.ociRefName, sourceDateEpoch());
+      const written = await exportFile(data, options.outDir, exportOptions);
+      return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data), manifestDigest: img.manifestDigest };
+    }
+    const written = await exportDirectory(layoutTree(img, options.ociRefName), options.outDir, exportOptions);
+    return { ...result, format, outDir: written.outDir, manifestDigest: img.manifestDigest };
+  }
   if (!isArchiveFormat(format)) {
     const written = await exportDirectory(result.output, options.outDir, exportOptions);
     return { ...result, format, outDir: written.outDir };

@@ -39,3 +39,6 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #16 Blog support: `IMPORT … AS markdown` with frontmatter, `SORT BY`, `RENDER … FOR`, template `${#each}` / `${#if}` / `|raw` (`test/blog.test.ts`, `test/markdown.test.ts`, `test/frontmatter.test.ts`, `examples/blog/`)
 - [x] #20 Data imports: `AS yaml`, `AS csv`, `AS wbn`, Web Bundles via `AS tree`, JSON/YAML directory collections, `SORT BY` on any list (`test/data-imports.test.ts`, `test/yaml.test.ts`, `test/csv.test.ts`, `test/wbn-reader.test.ts`, `examples/data/`)
 - [x] `--build-arg-file` (.json, .yaml, .env) and `--build-arg NAME` from the environment (`test/build-args.test.ts`)
+- [x] #23 Local image store (an OCI image layout): `build -t`, `images`, `image inspect|diff|prune`, `tag`, `rmi`, `save`, reference grammar, lock file, digest verification (`test/store.test.ts`)
+- [x] #24 Site servers: `run [-d]`, `ps`, `stop`, `rm`, `logs`, `restart`; `node:http` server with ETag/304, SPA fallback, traversal rejection (`test/server.test.ts`)
+- [x] `EXPORT ... AS oci [AT root]`, `--oci-root`, `--platform`: reproducible single-layer OCI image, archive and layout (`test/oci.test.ts`)

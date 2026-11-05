@@ -1,0 +1,174 @@
+import { randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+import { SitefileError } from './errors.js';
+import { LocalContext } from './resources/local.js';
+import { Store } from './store.js';
+import { Tree } from './tree.js';
+
+/**
+ * Detached site servers ("containers"). One state file per server:
+ *
+ *   $SITEFILE_HOME/servers/<id>.json   state (this interface)
+ *   $SITEFILE_HOME/servers/<id>.log    stdout/stderr of the server process
+ *
+ * `run -d` writes the state, spawns `node serve-worker.js <id>` detached, and the worker
+ * fills in `pid`, `host`, `port` and `ready` once it is listening. `ps` never trusts the
+ * file alone: a server is `running` only when its pid is alive AND the port answers with
+ * this server's `x-sitefile-server` header.
+ */
+export interface ServerState {
+  readonly id: string;
+  readonly name: string;
+  /** What the user asked to serve: the image reference as typed, or the directory. */
+  readonly image: string;
+  readonly source: { readonly kind: 'image'; readonly imageId: string } | { readonly kind: 'dir'; readonly path: string };
+  readonly spa: boolean;
+  /** The requested bind address (port 0 = pick a free port). */
+  readonly bind: { readonly host: string; readonly port: number };
+  readonly host: string;
+  readonly port: number;
+  readonly pid: number;
+  readonly started: string;
+  readonly logFile: string;
+  readonly ready: boolean;
+  readonly error?: string;
+}
+
+export interface ServerView extends ServerState {
+  readonly status: 'running' | 'exited';
+  readonly url: string;
+}
+
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
+
+export class ServerRegistry {
+  readonly dir: string;
+  private constructor(readonly store: Store) {
+    this.dir = path.join(store.home, 'servers');
+  }
+
+  static async open(store?: Store): Promise<ServerRegistry> {
+    const reg = new ServerRegistry(store ?? (await Store.open()));
+    await fs.mkdir(reg.dir, { recursive: true, mode: 0o700 });
+    return reg;
+  }
+
+  statePath(id: string): string {
+    if (!/^[0-9a-f]{12}$/.test(id)) throw new SitefileError('E_SERVER', `invalid server id '${id}'`);
+    return path.join(this.dir, `${id}.json`);
+  }
+
+  logPath(id: string): string {
+    return path.join(this.dir, `${id}.log`);
+  }
+
+  async read(id: string): Promise<ServerState | undefined> {
+    try {
+      return JSON.parse(await fs.readFile(this.statePath(id), 'utf8')) as ServerState;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT' || e instanceof SyntaxError) return undefined;
+      throw e;
+    }
+  }
+
+  async write(state: ServerState): Promise<void> {
+    const dest = this.statePath(state.id);
+    const tmp = `${dest}.${randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+    await fs.rename(tmp, dest);
+  }
+
+  async update(id: string, patch: Partial<ServerState>): Promise<ServerState | undefined> {
+    const cur = await this.read(id);
+    if (!cur) return undefined;
+    const next = { ...cur, ...patch } as ServerState;
+    await this.write(next);
+    return next;
+  }
+
+  async remove(id: string): Promise<void> {
+    await fs.rm(this.statePath(id), { force: true });
+    await fs.rm(this.logPath(id), { force: true });
+  }
+
+  async all(): Promise<ServerState[]> {
+    const out: ServerState[] = [];
+    for (const f of await fs.readdir(this.dir)) {
+      const m = /^([0-9a-f]{12})\.json$/.exec(f);
+      const s = m ? await this.read(m[1] as string) : undefined;
+      if (s) out.push(s);
+    }
+    return out.sort((a, b) => (a.started < b.started ? -1 : a.started > b.started ? 1 : 0));
+  }
+
+  /** Find by exact ID, exact name, or unique ID prefix. */
+  async find(key: string): Promise<ServerState> {
+    const all = await this.all();
+    const hit = all.find((s) => s.id === key) ?? all.find((s) => s.name === key);
+    if (hit) return hit;
+    const pre = key.length >= 3 ? all.filter((s) => s.id.startsWith(key)) : [];
+    if (pre.length === 1) return pre[0] as ServerState;
+    if (pre.length > 1) throw new SitefileError('E_SERVER', `ambiguous server '${key}' matches ${pre.length} servers`);
+    throw new SitefileError('E_NOT_FOUND', `no such server: ${key}`);
+  }
+
+  /** Allocate an ID and validate/choose the name (names are unique among all servers, running or not). */
+  async allocate(name: string | undefined): Promise<{ id: string; name: string }> {
+    const all = await this.all();
+    if (name !== undefined) {
+      if (!NAME_RE.test(name)) throw new SitefileError('E_USAGE', `invalid server name '${name}' (letters, digits, '_', '.', '-')`);
+      if (all.some((s) => s.name === name)) throw new SitefileError('E_SERVER', `a server named '${name}' already exists; remove it with "sitefile rm ${name}"`);
+    }
+    const id = randomBytes(6).toString('hex');
+    return { id, name: name ?? `site-${id.slice(0, 6)}` };
+  }
+
+  async view(s: ServerState): Promise<ServerView> {
+    const running = await isRunning(s);
+    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
+  }
+}
+function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {
+  const shown = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
+  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}/`;
+}
+
+export function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Alive AND answering on its port with its own id header (guards against pid and port reuse). */
+export async function isRunning(s: ServerState): Promise<boolean> {
+  if (!s.ready || !pidAlive(s.pid)) return false;
+  const host = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
+  return new Promise((resolve) => {
+    const req = http.request({ host, port: s.port, method: 'HEAD', path: '/', headers: { 'x-sitefile-probe': s.id }, timeout: 1500, agent: false }, (res) => {
+      res.resume();
+      resolve(res.headers['x-sitefile-server'] === s.id);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+/** Load a directory into a Tree through the sandboxed local reader; hidden files (except .well-known) are not served. */
+export async function loadDirectoryTree(dir: string): Promise<Tree> {
+  const ctx = await LocalContext.open(dir, { sitefileignore: false });
+  const { tree } = await ctx.readTree('', 'serve');
+  const visible = tree.entries().filter(([p]) => p.split('/').every((seg) => !seg.startsWith('.') || seg === '' || seg === '.well-known'));
+  return Tree.fromFiles(visible);
+}
+
+/** The tree a server state serves. */
+export async function loadServedTree(store: Store, source: ServerState['source']): Promise<Tree> {
+  return source.kind === 'image' ? store.loadTree(source.imageId) : loadDirectoryTree(source.path);
+}
