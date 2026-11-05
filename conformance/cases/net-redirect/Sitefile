@@ -1,0 +1,12 @@
+# Redirect chains (301 then 302, relative Location): the lock records the final URL.
+FROM scratch
+IMPORT data FROM ${HTTPS}/r2/data.json AS json
+IMPORT css FROM ${HTTPS}/r/style.css INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c
+IMPORT ver FROM ${HTTPS}/r/version.txt AS text
+COPY css: /style.css
+RENDER --escape=html <<HTML TO /index.html
+<h1>${data.title}</h1>
+<p>${data.items.0.name}=${data.items.0.n}, ${data.items.1.name}=${data.items.1.n}</p>
+<p>${ver}</p>
+HTML
+EXPORT /

@@ -303,3 +303,104 @@ fn tool_needs_allow_exec() {
     assert!(ok.stderr.starts_with("tool cp -> /"), "{}", ok.stderr);
     assert_eq!(read(dir.join("dist/b.txt")), "x\n");
 }
+
+/// DER blocks of one PEM label (`CERTIFICATE`, `PRIVATE KEY`, ...).
+fn pem_blocks(pem: &str, label: &str) -> Vec<Vec<u8>> {
+    use base64::Engine;
+    let (begin, end) = (format!("-----BEGIN {label}-----"), format!("-----END {label}-----"));
+    let mut out = Vec::new();
+    let mut rest = pem;
+    while let Some(b) = rest.find(&begin) {
+        let after = &rest[b + begin.len()..];
+        let e = after.find(&end).unwrap();
+        let body: String = after[..e].chars().filter(|c| !c.is_whitespace()).collect();
+        out.push(base64::engine::general_purpose::STANDARD.decode(body).unwrap());
+        rest = &after[e + end.len()..];
+    }
+    out
+}
+
+/// The TypeScript CLI trusts NODE_EXTRA_CA_CERTS through Node's default CA
+/// store; the Rust CLI must trust the same file (the network conformance cases
+/// rely on it). Needs `openssl` on PATH for a throwaway CA.
+#[test]
+fn node_extra_ca_certs_is_trusted_for_remote_imports() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::Arc;
+    use ureq::rustls;
+    if Command::new("openssl").arg("version").output().map(|o| !o.status.success()).unwrap_or(true) {
+        eprintln!("skipped: openssl not found on PATH");
+        return;
+    }
+    let work = Tmp::new();
+    let d = work.path();
+    let ossl = |args: &[&str]| {
+        let o = Command::new("openssl").args(args).current_dir(d).output().unwrap();
+        assert!(o.status.success(), "openssl {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    ossl(&[
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=Sitefile Test CA",
+        "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    ]);
+    fs::write(d.join("srv.ext"), "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n").unwrap();
+    ossl(&["req", "-newkey", "rsa:2048", "-nodes", "-keyout", "srv.key", "-out", "srv.csr", "-subj", "/CN=sitefile-test-server"]);
+    ossl(&["x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "srv.pem", "-days", "2", "-extfile", "srv.ext"]);
+
+    let certs = pem_blocks(&read(d.join("srv.pem")), "CERTIFICATE").into_iter().map(rustls::pki_types::CertificateDer::from).collect::<Vec<_>>();
+    let key_pem = read(d.join("srv.key"));
+    let key: rustls::pki_types::PrivateKeyDer<'static> = match pem_blocks(&key_pem, "PRIVATE KEY").pop() {
+        Some(k) => rustls::pki_types::PrivatePkcs8KeyDer::from(k).into(),
+        None => rustls::pki_types::PrivatePkcs1KeyDer::from(pem_blocks(&key_pem, "RSA PRIVATE KEY").pop().unwrap()).into(),
+    };
+    let config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap(),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for tcp in listener.incoming().flatten() {
+            let Ok(conn) = rustls::ServerConnection::new(config.clone()) else { continue };
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tls.read(&mut buf) {
+                    Ok(n) if n > 0 => req.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            let body = "body { color: teal; }\n";
+            let _ = write!(tls, "HTTP/1.1 200 OK\r\ncontent-type: text/css\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+    });
+
+    let ctx = d.join("site");
+    fs::create_dir_all(&ctx).unwrap();
+    fs::write(ctx.join("Sitefile"), format!("FROM scratch\nIMPORT css FROM https://127.0.0.1:{port}/style.css\nCOPY css: /style.css\nEXPORT /\n")).unwrap();
+    let build = |extra_ca: Option<&Path>| {
+        let mut cmd = Command::new(BIN);
+        cmd.args(["build", s(&ctx), "--allow-private-network", "--no-lockfile", "--force"]).env("SITEFILE_HOME", d.join(".home")).env_remove("NODE_EXTRA_CA_CERTS");
+        if let Some(ca) = extra_ca {
+            cmd.env("NODE_EXTRA_CA_CERTS", ca);
+        }
+        cmd.output().unwrap()
+    };
+    let text = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    let untrusted = build(None);
+    assert_eq!(untrusted.status.code(), Some(1));
+    assert!(text(&untrusted).contains("error[E_FETCH]"), "{}", text(&untrusted));
+    let trusted = build(Some(&d.join("ca.pem")));
+    assert_eq!(trusted.status.code(), Some(0), "{}", text(&trusted));
+    assert_eq!(read(ctx.join("dist/style.css")), "body { color: teal; }\n");
+    // An unreadable file is ignored with Node's warning, not fatal.
+    let missing = build(Some(&d.join("no-such-ca.pem")));
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(text(&missing).contains("Warning: Ignoring extra certs from"), "{}", text(&missing));
+}

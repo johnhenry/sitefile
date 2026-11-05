@@ -1,0 +1,5 @@
+# A pin that does not match the served bytes.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css INTEGRITY sha256:0000000000000000000000000000000000000000000000000000000000000000
+COPY css: /style.css
+EXPORT /

@@ -1,0 +1,68 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/built.oci.tar",
+      "--allow-private-network",
+      "--no-lockfile",
+      "--label",
+      "org.example.step=push",
+      "-t",
+      "${REGISTRY}/conf/site-${IMPL}:1"
+    ],
+    [
+      "push",
+      "${REGISTRY}/conf/site-${IMPL}:1"
+    ],
+    {
+      "args": [
+        "pull",
+        "${REGISTRY}/conf/site-${IMPL}:1"
+      ],
+      "env": {
+        "SITEFILE_HOME": "${TMP}/home2"
+      }
+    },
+    {
+      "args": [
+        "save",
+        "${REGISTRY}/conf/site-${IMPL}:1",
+        "-o",
+        "${OUT}/pulled.oci.tar",
+        "--format",
+        "oci"
+      ],
+      "env": {
+        "SITEFILE_HOME": "${TMP}/home2"
+      }
+    },
+    {
+      "args": [
+        "save",
+        "${REGISTRY}/conf/site-${IMPL}:1",
+        "-o",
+        "${OUT}/pulled"
+      ],
+      "env": {
+        "SITEFILE_HOME": "${TMP}/home2"
+      }
+    }
+  ],
+  "outputs": [
+    [
+      "built.oci.tar",
+      "oci"
+    ],
+    [
+      "pulled.oci.tar",
+      "oci"
+    ],
+    [
+      "pulled",
+      "tree"
+    ]
+  ]
+}

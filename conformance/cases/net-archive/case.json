@@ -1,0 +1,19 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--allow-private-network"
+    ]
+  ],
+  "outputs": [
+    [
+      "dist",
+      "tree"
+    ]
+  ],
+  "lock": true
+}

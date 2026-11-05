@@ -48,7 +48,7 @@ use crate::digest::{is_integrity, sha256};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::oci::{media, parse_config, parse_manifest, parse_platform, Descriptor, ParsedManifest};
 use crate::refs::{canonical_ref, is_component, is_tag, parse_ref, ref_key, with_default_registry, ImageRef};
-use crate::resources::https::{redact_url, GuardedResolver};
+use crate::resources::https::{redact_url, tls_config, GuardedResolver};
 use crate::resources::netpolicy::is_public_address;
 use crate::resources::types::{FetchPolicy, DEFAULT_FETCH_POLICY};
 use crate::store::{short_id, Store};
@@ -609,7 +609,7 @@ impl Transport {
         let policy = FetchPolicy { allow_private_network: allow_private, ..DEFAULT_FETCH_POLICY };
         let last = Arc::new(Mutex::new(None));
         let guard = Guard { inner: GuardedResolver::new(&policy, None), last: last.clone() };
-        let agent = ureq::AgentBuilder::new()
+        let mut builder = ureq::AgentBuilder::new()
             .redirects(0)
             .max_idle_connections(0)
             .max_idle_connections_per_host(0)
@@ -618,9 +618,13 @@ impl Transport {
             .timeout_connect(timeout)
             .timeout_read(timeout)
             .timeout_write(timeout)
-            .resolver(guard)
-            .build();
-        Transport { agent, last }
+            .resolver(guard);
+        // Trust NODE_EXTRA_CA_CERTS as Node's https (the TypeScript registry client)
+        // does. Without a `ca` argument this cannot fail.
+        if let Ok(Some(config)) = tls_config(None, None) {
+            builder = builder.tls_config(config);
+        }
+        Transport { agent: builder.build(), last }
     }
     fn take_error(&self) -> Option<SitefileError> {
         self.last.lock().ok().and_then(|mut g| g.take())

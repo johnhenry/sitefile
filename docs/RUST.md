@@ -54,9 +54,15 @@ version has no equivalent (V8 compiles wasm quickly).
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
   line, and identical output trees; `validate`/`inspect` cases compare stdout.
-  Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
+  Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
+  throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
+  and an in-process mock OCI registry, then cover remote `IMPORT` with and
+  without `INTEGRITY`, redirects, SSRF refusal, status and size errors, remote
+  archives, `Sitefile.lock` contents (byte for byte), `--frozen-lockfile`,
+  `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
+    Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 47/47.
+  Currently 78/78 (57 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
@@ -80,6 +86,12 @@ flate2. A change to the encoder must be made in both files; regenerate
 
 ## Known differences
 
+- **Extra CAs.** Both CLIs trust the PEM file named by `NODE_EXTRA_CA_CERTS`
+  (Node reads it at startup; the Rust CLI reads the same variable for imports
+  and registries, and ignores an unreadable file with Node's warning). As in
+  Node (default store plus extra), it and `FetchPolicy.ca` are added on top of
+  the default roots, which for Rust are the Mozilla roots of webpki-roots
+  rather than Node's bundled copy.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in

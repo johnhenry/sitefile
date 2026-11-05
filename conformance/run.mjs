@@ -19,6 +19,17 @@
 // compares exit code and stdout. `links` lists [existing, new] hard links to
 // create before the case runs and remove after it.
 //
+// Network cases (case.json "network": true, conformance/cases/net-*; format in
+// conformance/network.mjs) run a list of CLI steps (build, push, pull, save)
+// against local servers started on the first such case (conformance/servers.mjs):
+// an HTTPS server with a throwaway CA trusted through NODE_EXTRA_CA_CERTS, and
+// an in-process mock OCI registry. They compare every step's exit code and
+// error line, output trees/OCI configs and Sitefile.lock byte for byte. Each
+// implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
+// They need `openssl` on PATH.
+//
+// 39 offline + 21 network cases.
+//
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 
 import { execFile } from 'node:child_process';
@@ -27,6 +38,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runNetworkCase } from './network.mjs';
+import { startServers } from './servers.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -133,9 +146,18 @@ const errorLine = (stderr) => stderr.split('\n').find((l) => l.startsWith('error
 
 const results = [];
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
+let servers; // started on the first network case (conformance/servers.mjs)
 try {
   for (const c of [...cases(), ...(await caseDirs())]) {
     if (only && !c.name.includes(only)) continue;
+    if (c.network) {
+      servers ??= await startServers(root, tmp);
+      const res = await runNetworkCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, cwd: root, servers, run, outputOf, errorLine });
+      results.push({ name: res.name, compare: res.compare, pass: res.pass, ts: res.ts, rust: res.rust });
+      console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
+      for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+      continue;
+    }
     const command = c.command ?? 'build';
     const compare = command === 'build' ? (c.compare ?? 'tree') : 'stdout';
     const r = {};
@@ -184,6 +206,7 @@ try {
     }
   }
 } finally {
+  await servers?.close();
   await fs.rm(tmp, { recursive: true, force: true });
 }
 

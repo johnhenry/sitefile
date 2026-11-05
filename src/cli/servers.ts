@@ -255,6 +255,13 @@ const rm: Command = {
   },
 };
 
+/** The last n lines of text, each newline-terminated; a trailing newline is not an extra empty line. */
+export function tailLines(text: string, n: number): string {
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return (n === 0 ? [] : lines.slice(-n)).map((l) => `${l}\n`).join('');
+}
+
 const logs: Command = {
   name: 'logs',
   summary: 'show a server\'s access log',
@@ -272,8 +279,7 @@ const logs: Command = {
     if (tail !== undefined) {
       const n = Number(tail);
       if (!Number.isSafeInteger(n) || n < 0) usage('--tail expects a non-negative integer');
-      const lines = text.split('\n').slice(0, -1);
-      text = (n === 0 ? [] : lines.slice(-n)).map((l) => `${l}\n`).join('');
+      text = tailLines(text, n);
     }
     process.stdout.write(text);
     if (!v.follow) return 0;

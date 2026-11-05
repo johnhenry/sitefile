@@ -1,0 +1,12 @@
+# Unpinned remote imports: Sitefile.lock is written, then a frozen rebuild uses it.
+FROM scratch
+IMPORT data FROM ${HTTPS}/data.json AS json
+IMPORT css FROM ${HTTPS}/style.css
+IMPORT ver FROM ${HTTPS}/version.txt AS text
+COPY css: /style.css
+RENDER --escape=html <<HTML TO /index.html
+<h1>${data.title}</h1>
+<p>${data.items.0.name}=${data.items.0.n}, ${data.items.1.name}=${data.items.1.n}</p>
+<p>${ver}</p>
+HTML
+EXPORT /

@@ -129,8 +129,11 @@ fn to_precision3(v: f64) -> String {
     }
 }
 
-/// `x.replace(/\.?0+$/, '')`.
+/// Drop trailing zeros only after a decimal point ("1.50" -> "1.5", "100" stays).
 fn strip_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
     let t = s.trim_end_matches('0');
     if t.len() == s.len() {
         return s.to_string();
@@ -259,6 +262,12 @@ mod tests {
         assert_eq!(human_size(123_456), "123kB");
         assert_eq!(human_size(1_500_000), "1.5MB");
         assert_eq!(human_size(20_000), "20kB");
+        assert_eq!(human_size(99_995), "100kB");
+        assert_eq!(human_size(0), "0B");
+        assert_eq!(human_size(1023), "1.02kB");
+        assert_eq!(human_size(1500), "1.5kB");
+        assert_eq!(human_size(100_000), "100kB");
+        assert_eq!(human_size(999_999), "1000kB");
     }
 
     #[test]
