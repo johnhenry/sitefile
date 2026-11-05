@@ -10,7 +10,7 @@ Instructions:
 - `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>]` (CLI specifies destination)
-- `PLUGIN` and `TRANSFORM` (custom renderers): see Plugins below.
+- `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -252,6 +252,22 @@ line and column.
   environment; a per-call time limit (`--plugin-timeout`). Failures are
   `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
   pin plugins with `INTEGRITY`.
+
+- `TOOL name` declares an external program (`name` is an identifier and the
+  program's file name, e.g. `ffmpeg`). It runs only if the CLI allows it with
+  `--allow-exec name[=/abs/path]`; otherwise the build fails with
+  `E_UNSUPPORTED` naming the flag. Tool names share the namespace above.
+- A TRANSFORM `WITH` a tool ends with `ARGS <argument> …` (the rest of the
+  line; so `OPTIONS` and `FOR` come first). Each word is one argv entry
+  (quote words that contain spaces); there is no shell. `${…}` interpolation
+  applies as in other operands. The host replaces `{input}` (the source file,
+  written to a temp dir; needs a source), `{output}` (required: the one file
+  the tool must write, taking its extension from `<dest>`) and
+  `{option.key}` (an OPTIONS value). Other braces (such as ffmpeg's `%{pts}`)
+  are literal. A tool takes a file source (or none, with `FOR` or alone), and
+  `<dest>` is a file, not a directory. Failures, timeouts and oversized
+  outputs are `E_PLUGIN`. See `docs/PLUGINS.md`.
+- Results are cached between builds (`docs/PLUGINS.md`, "Caching").
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that

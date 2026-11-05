@@ -81,11 +81,11 @@ async function startDetached(reg: ServerRegistry, state: ServerState): Promise<S
 }
 
 const run: Command = {
-  name: 'run',
+  name: 'serve',
   summary: 'serve an image or directory over HTTP',
-  usage: 'run [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>',
+  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>',
   description:
-    'Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for ps, stop, rm, logs and restart.',
+    'Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
@@ -142,9 +142,9 @@ const run: Command = {
 };
 
 const ps: Command = {
-  name: 'ps',
-  summary: 'list site servers',
-  usage: 'ps [-a] [--json]',
+  name: 'servers',
+  summary: 'list site servers (also: server ls)',
+  usage: 'servers [-a] [--json]',
   description: 'List running site servers (-a: also exited ones). A server is running only if its process is alive\nand its port answers; stale entries show as exited.',
   flags: ['-a, --all   include exited servers', '--json      machine-readable output'],
   options: { all: { type: 'boolean', short: 'a' }, json: { type: 'boolean' } },
@@ -154,13 +154,15 @@ const ps: Command = {
     const views = await Promise.all((await reg.all()).map((s) => reg.view(s)));
     const shown = views.filter((s) => v.all || s.status === 'running');
     if (v.json) {
-      process.stdout.write(JSON.stringify(shown, null, 2) + '\n');
+      // 'site' is the image reference or directory being served.
+      const out = shown.map(({ image, ...rest }) => ({ ...rest, site: image }));
+      process.stdout.write(JSON.stringify(out, null, 2) + '\n');
       return 0;
     }
     process.stdout.write(
       table([
-        ['ID', 'NAME', 'IMAGE', 'URL', 'STATUS'],
-        ...shown.map((s) => [s.id, s.name, s.image, s.url || '-', s.status]),
+        ['NAME', 'SITE', 'URL', 'STATUS', 'ID'],
+        ...shown.map((s) => [s.name, s.image, s.url || '-', s.status, s.id]),
       ]),
     );
     return 0;
@@ -217,7 +219,7 @@ async function eachTarget(reg: ServerRegistry, keys: string[], fn: (s: ServerSta
 const stop: Command = {
   name: 'stop',
   summary: 'stop running site servers',
-  usage: 'stop [--time secs] <id|name>...',
+  usage: 'server stop [--time secs] <name|id>...',
   description: 'Send SIGTERM, wait up to --time seconds (default 5), then SIGKILL. Stopping an exited server is a no-op.',
   flags: ['--time <secs>   grace period before SIGKILL (default 5)'],
   options: { time: { type: 'string' } },
@@ -235,7 +237,7 @@ const stop: Command = {
 const rm: Command = {
   name: 'rm',
   summary: 'remove site servers',
-  usage: 'rm [-f] <id|name>...',
+  usage: 'server rm [-f] <name|id>...',
   description: 'Delete the record and log of exited servers. Running servers are refused unless -f, which stops them first.',
   flags: ['-f, --force   stop and remove running servers'],
   options: { force: { type: 'boolean', short: 'f' } },
@@ -256,7 +258,7 @@ const rm: Command = {
 const logs: Command = {
   name: 'logs',
   summary: 'show a server\'s access log',
-  usage: 'logs [-f] [-n lines] <id|name>',
+  usage: 'server logs [-f] [-n lines] <name|id>',
   description: 'Print the log of a detached server: one line per request ("METHOD /path STATUS BYTES MSms").',
   flags: ['-f, --follow    keep printing new lines until Ctrl-C', '-n, --tail <n>  only the last n lines'],
   options: { follow: { type: 'boolean', short: 'f' }, tail: { type: 'string', short: 'n' } },
@@ -302,7 +304,7 @@ const logs: Command = {
 const restart: Command = {
   name: 'restart',
   summary: 'restart a site server',
-  usage: 'restart [--time secs] <id|name>',
+  usage: 'server restart [--time secs] <name|id>',
   description: 'Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory is re-read.',
   flags: ['--time <secs>   grace period before SIGKILL (default 5)'],
   options: { time: { type: 'string' } },
@@ -324,9 +326,15 @@ const restart: Command = {
   },
 };
 
+/** Top-level: `sitefile serve`, `sitefile servers`. */
 export const serverCommands: ReadonlyMap<string, Command> = new Map([
-  ['run', run],
-  ['ps', ps],
+  ['serve', run],
+  ['servers', ps],
+]);
+
+/** `sitefile server <ls|stop|rm|logs|restart>`. */
+export const serverSubcommands: ReadonlyMap<string, Command> = new Map([
+  ['ls', ps],
   ['stop', stop],
   ['rm', rm],
   ['logs', logs],

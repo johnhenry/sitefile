@@ -33,6 +33,12 @@ export interface PluginSpec {
   readonly span: SourceSpan;
 }
 
+/** A declared external program; it runs only when the CLI allows it (`--allow-exec`). */
+export interface ToolSpec {
+  readonly name: string;
+  readonly span: SourceSpan;
+}
+
 export type Operation =
   | {
       /** Run a plugin; `dest` and option values are interpolated per FOR element at execution. */
@@ -42,6 +48,8 @@ export type Operation =
       readonly dest: Operand;
       readonly options: ReadonlyArray<{ readonly key: string; readonly value: Operand }>;
       readonly each?: { readonly as: string; readonly list: string };
+      /** argv template when `plugin` names a TOOL. */
+      readonly args?: readonly Operand[];
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
@@ -89,6 +97,7 @@ export interface Plan {
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly imports: readonly ImportSpec[];
   readonly plugins: readonly PluginSpec[];
+  readonly tools: readonly ToolSpec[];
   readonly exportPath: string;
   readonly exportFormat: ExportFormat;
   /** Evaluated `BASE` clause of EXPORT, if any (raw string; validated when the export is written). */
@@ -106,6 +115,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const imports = new Map<string, ImportSpec>();
   const stages: Stage[] = [];
   const plugins: PluginSpec[] = [];
+  const tools: ToolSpec[] = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -213,6 +223,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         plugins.push({ name: ins.name, path: rel, ...(ins.integrity ? { integrity: ins.integrity } : {}), span: ins.span });
         break;
       }
+      case 'TOOL':
+        tools.push({ name: ins.name, span: ins.span });
+        break;
       case 'TRANSFORM':
         operations().push({
           kind: 'TRANSFORM',
@@ -221,6 +234,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           dest: ins.dest,
           options: ins.options.map((o) => ({ key: o.key, value: o.value })),
           ...(ins.each ? { each: { as: ins.each.as, list: ins.each.list } } : {}),
+          ...(ins.args ? { args: ins.args } : {}),
           overwrite: ins.overwrite,
           span: ins.span,
         });
@@ -242,7 +256,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, exportPath, exportFormat, exportBase, exportRoot, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {

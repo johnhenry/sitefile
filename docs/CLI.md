@@ -24,6 +24,24 @@ sitefile inspect  [context] [--json]
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
 | `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
 
+`build`, `validate` and `inspect` also accept:
+
+| Option | Meaning |
+| --- | --- |
+| `--allow-exec name[=/abs/path]` | allow a `TOOL name` (an external program) to run; repeatable. A bare name is looked up on `PATH` when the build starts and the resolved real path is printed (`tool ffmpeg -> /opt/homebrew/bin/ffmpeg`). A `TOOL` that is not allowed fails with `E_UNSUPPORTED` naming the flag to add. The program runs **with your privileges**: allow only what you trust. |
+| `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
+
+## Transform cache
+
+TRANSFORM results (plugins and `TOOL`s) are cached in `$SITEFILE_HOME/cache/transform` (default `~/.sitefile/cache/transform`),
+beside the image store but separate from it (`image prune` does not touch it). See [PLUGINS.md](PLUGINS.md#caching).
+
+```
+sitefile cache info [--json]              location, entries, blobs, size
+sitefile cache prune [--older-than days]  delete every cached result, or only entries unused for N days
+```
+
 ## Image store
 
 The store lives in `$SITEFILE_HOME`, or `~/.sitefile`. Tests and scripts should always set `SITEFILE_HOME`.
@@ -89,7 +107,7 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
   default `linux/amd64`), checks every blob's sha256 and size *while streaming* into a temp file (nothing unverified is
   ever stored), and a manifest fetched by digest must hash to it. The platform manifest is stored unchanged (its digest
   is the image ID) and tagged as written. Pulled third-party images are listed, pushed and used as `BASE`; only images
-  built by sitefile can be `run`/`save`d as a site.
+  built by sitefile can be `serve`d or `save`d as a site.
 - **Limits**: `--max-download-bytes` per blob (default 2 GiB), 8 GiB per image, 4 MiB per manifest or token response,
   `--timeout` idle time per request (default 30 s), 30 minutes per blob transfer.
 - **Transport**: https. Plain http only for loopback registries (`localhost`, `127.0.0.0/8`, `::1`) and hosts named with
@@ -111,7 +129,7 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
 - Errors: `E_AUTH` (credentials missing/rejected), `E_NOT_FOUND` (404), `E_INTEGRITY` (digest mismatch), `E_TOO_LARGE`,
   `E_PROTOCOL`/`E_SSRF_BLOCKED` (transport policy), `E_REGISTRY` (anything else the registry says).
 
-To run a pushed or pulled site image, use it as `COPY --from=` source or serve it with `sitefile run`; for a runnable
+To run a pushed or pulled site image, use it as `COPY --from=` source or serve it with `sitefile serve`; for a runnable
 container image, build on a base with `BASE` (see [LANGUAGE.md](LANGUAGE.md#export-formats)).
 The default platform of images is `linux/amd64` (reproducible, metadata only for files-only images); on an arm64 host
 Docker warns about the mismatch. Use `--platform linux/arm64` to label them for arm64.
@@ -131,15 +149,18 @@ Docker warns about the mismatch. Use `--platform linux/arm64` to label them for 
 ## Site servers
 
 ```
-sitefile run [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
-sitefile ps [-a] [--json]
-sitefile stop [--time secs] <id|name>...
-sitefile rm [-f] <id|name>...
-sitefile logs [-f] [-n lines] <id|name>
-sitefile restart <id|name>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
+sitefile servers [-a] [--json]                   # also: sitefile server ls
+sitefile server stop [--time secs] <name|id>...
+sitefile server rm [-f] <name|id>...
+sitefile server logs [-f] [-n lines] <name|id>
+sitefile server restart <name|id>
 ```
 
-`run` serves an image from the store (the files under its root), or a directory (an argument starting with `./`,
+`servers` lists `NAME SITE URL STATUS ID`, where SITE is the image reference or directory being served
+(`--json` calls it `site`).
+
+`serve` serves an image from the store (the files under its root), or a directory (an argument starting with `./`,
 `../` or `/`, or ending in `/`) read once at start through the sandboxed local reader: a symlink leaving the
 directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known`) are not served.
 
@@ -147,7 +168,7 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
-  stops it. Foreground servers are not tracked by `ps`; `--name` needs `-d`.
+  stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; `/dir`
   redirects (`301`) to `/dir/`; no directory listings; `404` with a small page; `content-type` from the extension;
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
@@ -155,10 +176,10 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
   file extension (a missing `/app.js` stays `404`).
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
-  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `run -d` writes the
+  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker
   has recorded its pid and port (a failure to start is reported with the worker's error and leaves no entry).
-  `ps` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
+  `servers` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
   `x-sitefile-server: <id>` header; anything else shows as **exited**. IDs are 12 hex digits, names are unique
   (auto names look like `site-1a2b3c`).
 - `stop` sends `SIGTERM`, waits `--time` seconds (default 5), then `SIGKILL`; stopping an exited server is a no-op.

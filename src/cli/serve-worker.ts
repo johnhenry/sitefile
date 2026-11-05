@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Detached server process spawned by `sitefile run -d` / `restart`.
+// Detached server process spawned by `sitefile serve -d` / `restart`.
 // Usage: node serve-worker.js <server id>. State and logs live in $SITEFILE_HOME/servers.
 import { SitefileError } from '../errors.js';
 import { closeServer, createSiteServer, formatUrl, listen } from '../server.js';

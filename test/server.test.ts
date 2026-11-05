@@ -194,9 +194,9 @@ const homes: string[] = [];
 after(async () => {
   // never leave servers behind, even when an assertion failed
   for (const h of homes) {
-    const r = await runCli(h, ['ps', '-a', '--json']);
+    const r = await runCli(h, ['servers', '-a', '--json']);
     try {
-      for (const s of JSON.parse(r.stdout) as Array<{ id: string }>) await runCli(h, ['rm', '-f', s.id]);
+      for (const s of JSON.parse(r.stdout) as Array<{ id: string }>) await runCli(h, ['server', 'rm', '-f', s.id]);
     } catch {
       /* nothing to clean */
     }
@@ -212,12 +212,12 @@ async function poll<T>(fn: () => Promise<T | undefined>, ms = 8000): Promise<T> 
   }
 }
 
-test('run -d / ps / logs / stop / restart / rm lifecycle with a real port', async () => {
+test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real port', async () => {
   const home = await tmpDir();
   homes.push(home);
   const ctx = await makeSite();
   assert.equal((await runCli(home, ['build', ctx, '-t', 'life'])).code, 0);
-  let r = await runCli(home, ['run', '-d', '--name', 'web', '--spa', 'life']);
+  let r = await runCli(home, ['serve', '-d', '--name', 'web', '--spa', 'life']);
   assert.equal(r.code, 0, r.stderr);
   const m = /Started web \(([0-9a-f]{12})\) serving life at (http:\/\/127\.0\.0\.1:(\d+)\/)/.exec(r.stdout);
   assert.ok(m, r.stdout);
@@ -226,10 +226,13 @@ test('run -d / ps / logs / stop / restart / rm lifecycle with a real port', asyn
   assert.match(await (await fetch(url! + 'about/')).text(), /About/);
   assert.match(await (await fetch(url! + 'client/route')).text(), /Home/, 'spa fallback');
 
-  r = await runCli(home, ['ps']);
-  assert.match(r.stdout, /^ID\s+NAME\s+IMAGE\s+URL\s+STATUS/);
-  assert.match(r.stdout, new RegExp(`${id}\\s+web\\s+life\\s+${url!.replace(/[./]/g, '\\$&')}\\s+running`));
-  const ps = JSON.parse((await runCli(home, ['ps', '--json'])).stdout) as Array<{ id: string; name: string; pid: number; status: string; port: number; host: string }>;
+  r = await runCli(home, ['servers']);
+  assert.match(r.stdout, /^NAME\s+SITE\s+URL\s+STATUS\s+ID/);
+  assert.match(r.stdout, new RegExp(`web\\s+life\\s+${url!.replace(/[./]/g, '\\$&')}\\s+running\\s+${id}`));
+  const listed = JSON.parse((await runCli(home, ['server', 'ls', '--json'])).stdout) as Array<{ site: string; image?: string }>;
+  assert.equal(listed[0]!.site, 'life');
+  assert.equal(listed[0]!.image, undefined);
+  const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as Array<{ id: string; name: string; pid: number; status: string; port: number; host: string }>;
   assert.equal(ps.length, 1);
   assert.equal(ps[0]!.status, 'running');
   assert.equal(ps[0]!.host, '127.0.0.1');
@@ -239,43 +242,43 @@ test('run -d / ps / logs / stop / restart / rm lifecycle with a real port', asyn
   assert.ok(state.logFile.endsWith(`${id}.log`));
 
   // names are unique
-  r = await runCli(home, ['run', '-d', '--name', 'web', 'life']);
+  r = await runCli(home, ['serve', '-d', '--name', 'web', 'life']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /error\[E_SERVER\].*already exists/);
 
   // logs: one line per request
-  r = await runCli(home, ['logs', 'web']);
+  r = await runCli(home, ['server', 'logs', 'web']);
   assert.match(r.stdout, /serving life/);
   assert.match(r.stdout, /GET \/about\/ 200 \d+ \d+\.\d+ms/);
-  assert.match((await runCli(home, ['logs', '-n', '1', id!])).stdout, /^\S+ GET \/client\/route 200/);
+  assert.match((await runCli(home, ['server', 'logs', '-n', '1', id!])).stdout, /^\S+ GET \/client\/route 200/);
 
   // rm refuses a running server
-  r = await runCli(home, ['rm', 'web']);
+  r = await runCli(home, ['server', 'rm', 'web']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /is running/);
 
   // restart keeps name and id
-  r = await runCli(home, ['restart', 'web']);
+  r = await runCli(home, ['server', 'restart', 'web']);
   assert.equal(r.code, 0, r.stderr);
   const url2 = /at (http:\/\/\S+)/.exec(r.stdout)![1]!;
   assert.equal((await fetch(url2)).status, 200);
 
-  r = await runCli(home, ['stop', 'web']);
+  r = await runCli(home, ['server', 'stop', 'web']);
   assert.equal(r.code, 0, r.stderr);
   await assert.rejects(fetch(url2), 'the server is gone after stop');
-  assert.doesNotMatch((await runCli(home, ['ps'])).stdout, /web/);
-  r = await runCli(home, ['ps', '-a']);
+  assert.doesNotMatch((await runCli(home, ['servers'])).stdout, /web/);
+  r = await runCli(home, ['servers', '-a']);
   assert.match(r.stdout, /web\s+life\s+-\s+exited/);
-  assert.equal((await runCli(home, ['stop', 'web'])).code, 0, 'stopping an exited server is a no-op');
+  assert.equal((await runCli(home, ['server', 'stop', 'web'])).code, 0, 'stopping an exited server is a no-op');
 
-  r = await runCli(home, ['rm', 'web']);
+  r = await runCli(home, ['server', 'rm', 'web']);
   assert.equal(r.code, 0, r.stderr);
-  assert.equal((await runCli(home, ['ps', '-a'])).stdout.trim().split('\n').length, 1, 'only the header is left');
+  assert.equal((await runCli(home, ['servers', '-a'])).stdout.trim().split('\n').length, 1, 'only the header is left');
   await assert.rejects(fs.stat(path.join(home, 'servers', `${id}.json`)));
-  assert.equal((await runCli(home, ['stop', 'web'])).code, 1);
+  assert.equal((await runCli(home, ['server', 'stop', 'web'])).code, 1);
 });
 
-test('run -d on a directory, auto names, rm -f of a running server, stale entries show as exited', async () => {
+test('serve -d on a directory, auto names, rm -f of a running server, stale entries show as exited', async () => {
   const home = await tmpDir();
   homes.push(home);
   const dir = await tmpDir('sitefile-serve-');
@@ -283,7 +286,7 @@ test('run -d on a directory, auto names, rm -f of a running server, stale entrie
   await fs.writeFile(path.join(dir, '.secret'), 'hidden');
   await fs.mkdir(path.join(dir, '.git'));
   await fs.writeFile(path.join(dir, '.git', 'config'), 'x');
-  const r = await runCli(home, ['run', '-d', './'], dir);
+  const r = await runCli(home, ['serve', '-d', './'], dir);
   assert.equal(r.code, 0, r.stderr);
   const m = /Started (site-[0-9a-f]{6}) \(([0-9a-f]{12})\) serving \S+ at (http:\/\/\S+)/.exec(r.stdout)!;
   assert.ok(m, r.stdout);
@@ -291,29 +294,29 @@ test('run -d on a directory, auto names, rm -f of a running server, stale entrie
   assert.equal(await (await fetch(url)).text(), 'dir site');
   for (const p of ['.secret', '.git/config']) assert.equal((await fetch(url + p)).status, 404, p);
   // kill -9: the entry is stale and must show as exited
-  const pid = (JSON.parse((await runCli(home, ['ps', '--json'])).stdout) as Array<{ pid: number }>)[0]!.pid;
+  const pid = (JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as Array<{ pid: number }>)[0]!.pid;
   process.kill(pid, 'SIGKILL');
-  await poll(async () => ((await runCli(home, ['ps', '--json'])).stdout.trim() === '[]' ? true : undefined));
-  assert.match((await runCli(home, ['ps', '-a'])).stdout, /exited/);
+  await poll(async () => ((await runCli(home, ['servers', '--json'])).stdout.trim() === '[]' ? true : undefined));
+  assert.match((await runCli(home, ['servers', '-a'])).stdout, /exited/);
   // restart revives it; rm -f stops and removes a running server
-  assert.equal((await runCli(home, ['restart', m[1]!])).code, 0);
-  const again = JSON.parse((await runCli(home, ['ps', '--json'])).stdout) as Array<{ url: string }>;
+  assert.equal((await runCli(home, ['server', 'restart', m[1]!])).code, 0);
+  const again = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as Array<{ url: string }>;
   assert.equal(again.length, 1);
   assert.equal((await fetch(again[0]!.url)).status, 200);
-  assert.equal((await runCli(home, ['rm', '-f', m[2]!])).code, 0);
+  assert.equal((await runCli(home, ['server', 'rm', '-f', m[2]!])).code, 0);
   await assert.rejects(fetch(again[0]!.url));
 });
 
-test('run -d refuses a directory with a symlink that escapes it', async () => {
+test('serve -d refuses a directory with a symlink that escapes it', async () => {
   const home = await tmpDir();
   homes.push(home);
   const dir = await tmpDir('sitefile-serve-');
   await fs.writeFile(path.join(dir, 'index.html'), 'x');
   await fs.symlink('/etc/passwd', path.join(dir, 'leak'));
-  const r = await runCli(home, ['run', '-d', './'], dir);
+  const r = await runCli(home, ['serve', '-d', './'], dir);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /E_PATH_ESCAPE/);
-  assert.doesNotMatch((await runCli(home, ['ps', '-a'])).stdout, /site-/);
+  assert.doesNotMatch((await runCli(home, ['servers', '-a'])).stdout, /site-/);
 });
 
 test('run: bad -p values, unknown images, registries, port in use, foreground --name', async () => {
@@ -321,20 +324,20 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
   homes.push(home);
   const ctx = await makeSite();
   assert.equal((await runCli(home, ['build', ctx, '-t', 'p'])).code, 0);
-  for (const bad of ['99999', 'a:b:c', 'example.com:80', '8080:']) assert.equal((await runCli(home, ['run', '-d', '-p', bad, 'p'])).code, 2, bad);
-  assert.equal((await runCli(home, ['run', '-d', 'nope'])).code, 1);
-  const reg = await runCli(home, ['run', '-d', 'docker.io/x/y']);
+  for (const bad of ['99999', 'a:b:c', 'example.com:80', '8080:']) assert.equal((await runCli(home, ['serve', '-d', '-p', bad, 'p'])).code, 2, bad);
+  assert.equal((await runCli(home, ['serve', '-d', 'nope'])).code, 1);
+  const reg = await runCli(home, ['serve', '-d', 'docker.io/x/y']);
   assert.equal(reg.code, 1);
   assert.match(reg.stderr, /no such image: docker.io\/x\/y/);
-  assert.equal((await runCli(home, ['run', '--name', 'x', 'p'])).code, 2, '--name needs -d');
+  assert.equal((await runCli(home, ['serve', '--name', 'x', 'p'])).code, 2, '--name needs -d');
   const blocker = net.createServer();
   await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', r));
   const port = (blocker.address() as net.AddressInfo).port;
   try {
-    const r = await runCli(home, ['run', '-d', '-p', `127.0.0.1:${port}`, 'p']);
+    const r = await runCli(home, ['serve', '-d', '-p', `127.0.0.1:${port}`, 'p']);
     assert.equal(r.code, 1);
     assert.match(r.stderr, /error\[E_SERVER\].*already in use/);
-    assert.doesNotMatch((await runCli(home, ['ps', '-a'])).stdout, /site-/, 'a failed start leaves no entry behind');
+    assert.doesNotMatch((await runCli(home, ['servers', '-a'])).stdout, /site-/, 'a failed start leaves no entry behind');
   } finally {
     blocker.close();
   }

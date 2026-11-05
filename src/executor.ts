@@ -6,7 +6,9 @@ import type { ExportFormat, Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
-import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest } from './plugins/host.js';
+import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
+import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
+import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
@@ -49,6 +51,15 @@ export interface BuildOptions {
   readonly pluginPolicy?: Partial<PluginPolicy>;
   /** Permit hard-linked files in the context (you assert they are safe). Default false. */
   readonly allowHardlinks?: boolean;
+  /**
+   * External programs TOOL may use: `name` (looked up on PATH) or `name=/absolute/path`,
+   * like the CLI's `--allow-exec`. A TOOL not listed here fails the build.
+   */
+  readonly allowExec?: readonly string[];
+  /** External tool limits (per-call timeout, maximum output size). */
+  readonly toolPolicy?: Partial<ToolPolicy>;
+  /** Directory of the TRANSFORM result cache. Omit to disable caching (the CLI sets `$SITEFILE_HOME/cache/transform`). */
+  readonly cacheDir?: string;
   readonly onWarning?: (message: string) => void;
   /** oci: `os/arch` of the image (and of the BASE to pull); default linux/amd64. */
   readonly platform?: string;
@@ -60,6 +71,8 @@ export interface BuildOptions {
   readonly registry?: RegistryOptions & { readonly explicitCredentials?: Credentials };
   /** The image store used for BASE pulls (default: $SITEFILE_HOME). */
   readonly store?: Store;
+  /** Informational lines (e.g. the path each allowed tool resolved to). */
+  readonly onNotice?: (message: string) => void;
 }
 
 export interface BuildResult {
@@ -73,6 +86,19 @@ export interface BuildResult {
   readonly lockfileWritten: boolean;
   /** The resolved BASE image (EXPORT ... AS oci BASE <image> or --base), whose blobs are in the store. */
   readonly base?: BaseImage;
+  /** Allow-listed tools this build resolved. */
+  readonly tools: readonly ResolvedTool[];
+  /** What the TRANSFORMs did: processes started, calls made, cache activity. */
+  readonly transformStats: TransformStats;
+}
+
+export interface TransformStats extends CacheStats {
+  /** Plugin processes started (0 when every result came from the cache). */
+  pluginsSpawned: number;
+  /** transform() calls made to plugin processes. */
+  pluginCalls: number;
+  /** External tool invocations. */
+  toolRuns: number;
 }
 
 interface Loaded {
@@ -110,6 +136,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     options.onWarning?.(m);
   };
   p.warnings.forEach(warn);
+  const tools = await resolveTools(p, options, warn);
 
   const contextReal = await realpath(options.contextDir).catch((e: unknown) => {
     throw new SitefileError('E_NOT_FOUND', `build context '${options.contextDir}' does not exist`, undefined, { cause: e });
@@ -143,7 +170,22 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const stageTrees = new Map<string, Tree>();
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
-  const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn, plugins };
+  const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir) : undefined;
+  const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
+  const execEnv: ExecEnv = {
+    local,
+    resources,
+    stages: stageTrees,
+    vars: p.vars,
+    label,
+    warn,
+    plugins,
+    tools: new Map(tools.map((t) => [t.name, t])),
+    toolPolicy: { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy },
+    pluginDigests: new Map(),
+    stats,
+    ...(cache ? { cache } : {}),
+  };
   let tree = Tree.empty;
   try {
     for (const spec of p.plugins) await registerPlugin(spec, local, plugins);
@@ -154,6 +196,9 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     }
   } finally {
     plugins.close();
+    stats.pluginsSpawned = plugins.stats.spawned;
+    stats.pluginCalls = plugins.stats.calls;
+    if (cache) Object.assign(stats, cache.stats);
   }
 
   if (tree.isFile(p.exportPath)) {
@@ -181,7 +226,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     : undefined;
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, ...(base ? { base } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}) };
 }
 
 export interface ExportTarget {
@@ -333,6 +378,12 @@ interface ExecEnv {
   readonly label: string;
   readonly warn: (m: string) => void;
   readonly plugins: PluginHost;
+  readonly tools: ReadonlyMap<string, ResolvedTool>;
+  readonly toolPolicy: ToolPolicy;
+  readonly cache?: TransformCache;
+  /** Digest of each plugin's folder (cache key); undefined when the folder was too large to hash. */
+  readonly pluginDigests: Map<string, string | undefined>;
+  readonly stats: TransformStats;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
 }
@@ -386,6 +437,34 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
   host.register(spec.name, real, spec.span);
 }
 
+/** Match each declared TOOL to a `--allow-exec` entry and resolve it to a real path. */
+async function resolveTools(p: Plan, options: BuildOptions, warn: (m: string) => void): Promise<ResolvedTool[]> {
+  const allowed = new Map<string, string | undefined>();
+  for (const spec of options.allowExec ?? []) {
+    const eq = spec.indexOf('=');
+    const name = eq < 0 ? spec : spec.slice(0, eq);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || (eq >= 0 && eq === spec.length - 1)) {
+      throw new SitefileError('E_USAGE', `--allow-exec expects NAME or NAME=/absolute/path (NAME is an identifier), got '${spec}'`);
+    }
+    allowed.set(name, eq < 0 ? undefined : spec.slice(eq + 1));
+  }
+  const out: ResolvedTool[] = [];
+  for (const t of p.tools) {
+    if (!allowed.has(t.name)) {
+      throw new SitefileError(
+        'E_UNSUPPORTED',
+        `TOOL ${t.name} runs an external program, which must be allowed explicitly: add --allow-exec ${t.name} (or --allow-exec ${t.name}=/absolute/path)`,
+        t.span,
+      );
+    }
+    const tool = await resolveTool(t.name, allowed.get(t.name), process.env['PATH'], t.span);
+    options.onNotice?.(`tool ${t.name} -> ${tool.path}`);
+    out.push(tool);
+  }
+  for (const name of allowed.keys()) if (!p.tools.some((t) => t.name === name)) warn(`--allow-exec ${name} does not match any TOOL and was ignored`);
+  return out;
+}
+
 /** Interpolate an operand with ARG/LET values and, inside FOR, the loop element. */
 function interpolate(op: Operand, env: ExecEnv): string {
   let out = '';
@@ -433,6 +512,22 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
     }
   }
 
+  const tool = env.tools.get(op.plugin);
+  if (tool && !input && op.source) {
+    throw new SitefileError('E_TYPE', `TRANSFORM … WITH ${op.plugin}: a TOOL needs a file source, not a value import`, op.source.span);
+  }
+  const inputDigest = input ? sha256(input.bytes) : undefined;
+  let pluginDigest: string | undefined;
+  if (env.cache && !tool) {
+    if (!env.pluginDigests.has(op.plugin)) {
+      const dir = env.plugins.folderOf(op.plugin);
+      const digest = dir ? await digestFolder(dir) : undefined;
+      env.pluginDigests.set(op.plugin, digest);
+      if (digest === undefined) env.warn(`${origin}: PLUGIN ${op.plugin}'s folder is too large to hash; its results are not cached`);
+    }
+    pluginDigest = env.pluginDigests.get(op.plugin);
+  }
+
   const files: Array<[string, FileNode]> = [];
   for (const item of items) {
     const itemEnv: ExecEnv = op.each ? { ...env, loop: { name: op.each.as, value: item } } : env;
@@ -448,7 +543,41 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
       ...(data !== undefined ? { data } : {}),
       ...(op.each ? { item } : {}),
     };
-    const result = await env.plugins.call(op.plugin, request, op.span);
+    let args: string[] | undefined;
+    if (tool) {
+      if (dest.trailingSlash) throw new SitefileError('E_PLUGIN', `TOOL ${op.plugin} writes one file, but '${rawDest}' is a directory destination`, op.dest.span);
+      args = (op.args ?? []).map((a) => interpolate(a, itemEnv));
+    }
+    // Everything the result can depend on: the code (plugin folder digest, or tool binary + argv) and the request.
+    const cacheable = env.cache !== undefined && (tool !== undefined || pluginDigest !== undefined);
+    const key = cacheable
+      ? cacheKey({
+          code: tool ? { tool: { path: tool.path, size: tool.size, mtimeMs: tool.mtimeMs }, args } : { plugin: pluginDigest },
+          request: {
+            dest: dest.path,
+            options,
+            input: input && { path: input.path, name: input.name, digest: inputDigest },
+            data,
+            item,
+          },
+        })
+      : undefined;
+    let result: PluginResult | undefined = key ? await env.cache!.get(key) : undefined;
+    if (!result) {
+      if (tool) {
+        env.stats.toolRuns++;
+        result = await runTool(
+          tool,
+          { args: args!, dest: dest.path, options, ...(input ? { input: { name: input.name, bytes: input.bytes } } : {}) },
+          env.toolPolicy,
+          (l) => env.warn(l),
+          op.span,
+        );
+      } else {
+        result = await env.plugins.call(op.plugin, request, op.span);
+      }
+      if (key && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(key, result);
+    }
     if (result.kind === 'file') {
       if (dest.trailingSlash) {
         throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned one file, but '${rawDest}' is a directory destination`, op.dest.span);

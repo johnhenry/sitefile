@@ -13,8 +13,8 @@ import { Tree } from './tree.js';
  *   $SITEFILE_HOME/servers/<id>.json   state (this interface)
  *   $SITEFILE_HOME/servers/<id>.log    stdout/stderr of the server process
  *
- * `run -d` writes the state, spawns `node serve-worker.js <id>` detached, and the worker
- * fills in `pid`, `host`, `port` and `ready` once it is listening. `ps` never trusts the
+ * `serve -d` writes the state, spawns `node serve-worker.js <id>` detached, and the worker
+ * fills in `pid`, `host`, `port` and `ready` once it is listening. `servers` never trusts the
  * file alone: a server is `running` only when its pid is alive AND the port answers with
  * this server's `x-sitefile-server` header.
  */
