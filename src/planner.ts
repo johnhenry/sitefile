@@ -91,9 +91,6 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
           span: ins.span,
         };
-        if (spec.location.kind === 'remote' && spec.as === 'tree') {
-          throw new SitefileError('E_UNSUPPORTED', 'remote tree imports arrive in M2', ins.span);
-        }
         if (spec.location.kind === 'local' && spec.integrity) {
           warnings.push(`${program.file}:${ins.span.line}: INTEGRITY on a local import is checked but not recorded in the lockfile`);
         }

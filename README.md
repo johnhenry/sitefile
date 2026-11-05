@@ -33,7 +33,7 @@ no runtime dependencies.
 | `FROM scratch [AS name]` | yes (other bases and multi-stage: M2) |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: M2) |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|tree] [INTEGRITY sha256:…]` | yes (remote trees: tar, tar.gz, zip archives with `AS tree`) |
 | `COPY [--overwrite] <source> <dest>` | yes; source is a local path or `name:/path` |
 | `RENDER [--escape=html] [--overwrite] <template> TO <dest>` | yes; `${NAME}`, `${json.path}` |
 | `EXPORT <path> [AS directory]` | yes |
