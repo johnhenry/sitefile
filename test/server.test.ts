@@ -325,7 +325,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
   assert.equal((await runCli(home, ['run', '-d', 'nope'])).code, 1);
   const reg = await runCli(home, ['run', '-d', 'docker.io/x/y']);
   assert.equal(reg.code, 1);
-  assert.match(reg.stderr, /registries are not supported yet/);
+  assert.match(reg.stderr, /no such image: docker.io\/x\/y/);
   assert.equal((await runCli(home, ['run', '--name', 'x', 'p'])).code, 2, '--name needs -d');
   const blocker = net.createServer();
   await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', r));

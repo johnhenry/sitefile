@@ -8,7 +8,14 @@ import { SitefileError } from './errors.js';
  * name   = component ('/' component)*, component = [a-z0-9]+([._-][a-z0-9]+)*
  * tag    = [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}   (default `latest`)
  * The first path component is a registry host when it contains '.' or ':' or is
- * `localhost` and something follows it. Only local references are usable today.
+ * `localhost` and something follows it.
+ *
+ * A reference with a registry host names an image on that registry; locally it is just a tag
+ * (`sitefile tag blog:1 localhost:5000/blog:1`), so the store keys it as `registry/name:tag`.
+ * Docker Hub aliases (`docker.io`, `index.docker.io`, `registry-1.docker.io`) are one registry,
+ * and a Hub name without a namespace lives in `library/`. A reference with NO registry host is
+ * local everywhere except `pull` and `BASE`, which default it to Docker Hub (`nginx` is
+ * `docker.io/library/nginx`); see {@link withDefaultRegistry}.
  */
 export interface ImageRef {
   readonly registry: string | undefined;
@@ -65,18 +72,34 @@ export function parseRef(input: string): ImageRef {
   return { registry, name, tag, digest };
 }
 
-/** A reference that can name a local image: no registry host. */
-export function parseLocalRef(input: string): ImageRef {
-  const ref = parseRef(input);
-  if (ref.registry !== undefined) {
-    throw new SitefileError('E_UNSUPPORTED', `'${input}': registries are not supported yet (registry host '${ref.registry}'); use a local name`);
-  }
-  return ref;
+const DOCKER_HUB_ALIASES = new Set(['docker.io', 'index.docker.io', 'registry-1.docker.io']);
+export const DOCKER_HUB = 'docker.io';
+
+/** Canonical form of a reference with a registry host (Docker Hub aliases and `library/` applied). */
+export function canonicalRef(ref: ImageRef): ImageRef {
+  if (ref.registry === undefined || !DOCKER_HUB_ALIASES.has(ref.registry.toLowerCase())) return ref;
+  return { ...ref, registry: DOCKER_HUB, name: ref.name.includes('/') ? ref.name : `library/${ref.name}` };
 }
 
-/** The refs.json key of a local reference: `name:tag`. */
+/** `pull` / `BASE` semantics: a reference without a registry host means Docker Hub. */
+export function withDefaultRegistry(ref: ImageRef): ImageRef {
+  return canonicalRef(ref.registry === undefined ? { ...ref, registry: DOCKER_HUB } : ref);
+}
+
+/** The host to connect to for a (canonical) registry name. */
+export function registryApiHost(registry: string): string {
+  return registry === DOCKER_HUB ? 'registry-1.docker.io' : registry;
+}
+
+/** Parse a reference that may be used as a local name or tag (a registry host is allowed). */
+export function parseLocalRef(input: string): ImageRef {
+  return canonicalRef(parseRef(input));
+}
+
+/** The refs.json key of a local reference: `[registry/]name:tag`. */
 export function refKey(ref: ImageRef): string {
-  return `${ref.name}:${ref.tag ?? DEFAULT_TAG}`;
+  const c = canonicalRef(ref);
+  return `${c.registry === undefined ? '' : `${c.registry}/`}${c.name}:${c.tag ?? DEFAULT_TAG}`;
 }
 
 /** Hex of at least 12 digits, optionally `sha256:`-prefixed: an image ID (prefix). */

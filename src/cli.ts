@@ -5,6 +5,7 @@ import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { loadBuildArgFile } from './build-args.js';
+import { insecureRegistriesFromEnv } from './base-image.js';
 import { parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, type ExportFormat } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
@@ -36,7 +37,10 @@ Options:
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
-      --platform <os/arch>     oci image platform metadata (default linux/amd64)
+      --platform <os/arch>     oci image platform (default linux/amd64); with a BASE, the platform pulled
+      --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
+                               a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
+      --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
@@ -74,6 +78,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
         platform: { type: 'string' },
+        base: { type: 'string' },
+        'insecure-registry': { type: 'string', multiple: true },
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
@@ -149,6 +155,11 @@ export async function main(argv: readonly string[]): Promise<number> {
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(o['plugin-timeout'] ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
       allowHardlinks: !!o['allow-hardlinks'],
+      ...(o.platform !== undefined ? { platform: o.platform } : {}),
+      ...(o.base !== undefined ? { baseImage: o.base } : {}),
+      // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
+      ...(command === 'inspect' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
+      registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),

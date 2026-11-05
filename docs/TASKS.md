@@ -43,3 +43,6 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #23 Local image store (an OCI image layout): `build -t`, `images`, `image inspect|diff|prune`, `tag`, `rmi`, `save`, reference grammar, lock file, digest verification (`test/store.test.ts`)
 - [x] #24 Site servers: `run [-d]`, `ps`, `stop`, `rm`, `logs`, `restart`; `node:http` server with ETag/304, SPA fallback, traversal rejection (`test/server.test.ts`)
 - [x] `EXPORT ... AS oci [AT root]`, `--oci-root`, `--platform`: reproducible single-layer OCI image, archive and layout (`test/oci.test.ts`)
+- [x] #28 Registry `push` / `pull` over the OCI distribution spec: token/Basic auth, Docker config + credential helpers, digest-verified streaming pulls, blob existence checks and mounts, redirect/SSRF policy (`test/registry.test.ts`, `test/engine.test.ts`)
+- [x] #29 Runnable images: `EXPORT / AS oci BASE <image>` / `--base`, base config and layers preserved, base digest in `Sitefile.lock` `images` (`test/registry.test.ts`, `test/engine.test.ts`)
+- [x] OCI exports name the image the way `docker save` does (`io.containerd.image.name` + tag in `ref.name`) so `docker load` finds it by name (`test/oci.test.ts`, `test/engine.test.ts`)

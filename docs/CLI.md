@@ -17,6 +17,8 @@ sitefile inspect  [context] [--json]
 | --- | --- |
 | `-t, --tag name[:tag]` | also store the build as an image in the local store (repeatable). **With `-t` and no `-o`, only the store is written and nothing is created in the context; with both, both happen.** |
 | `--format oci` / `-o x.oci.tar` | write an OCI image: an OCI archive for a `.tar` destination, an OCI layout directory otherwise (`dist.oci.tar` by default) |
+| `--base <image>` | build the oci image on `<image>` (runnable; overrides `EXPORT ... AS oci BASE`); a bare name means Docker Hub. Pin it: `nginx:alpine@sha256:...` |
+| `--insecure-registry host[:port]` | allow plain http to that registry (repeatable) |
 | `--oci-root /path` | directory of the files inside the image layer (default `/srv/www`; overrides `EXPORT ... AT`) |
 | `--platform os/arch` | image platform metadata (default `linux/amd64`) |
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
@@ -59,10 +61,60 @@ name = component ('/' component)*      component = [a-z0-9]+([._-][a-z0-9]+)*
 tag  = [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}        (default: latest)
 ```
 
-The first path component is a registry host when it contains `.` or `:` or is `localhost`. References are parsed and
-validated everywhere (`E_USAGE` for a bad one), but **only local references are usable**: a registry host fails with
-`E_UNSUPPORTED` ("registries are not supported yet"). A **short image ID** (12 to 64 hex digits, optionally
-`sha256:`-prefixed) resolves when it is unique.
+The first path component is a registry host when it contains `.` or `:` or is `localhost`. References are validated
+everywhere (`E_USAGE` for a bad one). Locally a registry-qualified name is just a tag
+(`sitefile tag blog:1 localhost:5000/blog:1`), stored as `registry/name:tag`. Docker Hub aliases (`docker.io`,
+`index.docker.io`, `registry-1.docker.io`) are one registry (`docker.io`; its API host is `registry-1.docker.io`), and a
+Hub name without a namespace lives in `library/`. **A name without a registry host defaults to Docker Hub only for
+`pull` and `BASE`** (`nginx:alpine` is `docker.io/library/nginx:alpine`); everywhere else, and for `push`, it is a
+local name. A **short image ID** (12 to 64 hex digits, optionally `sha256:`-prefixed) resolves when it is unique.
+
+### Registries: `push` and `pull`
+
+```
+sitefile tag blog:1 localhost:5000/team/blog:1
+sitefile push localhost:5000/team/blog:1
+sitefile pull localhost:5000/team/blog:1          # or name@sha256:... ; nginx:alpine means Docker Hub
+sitefile pull --platform linux/arm64 nginx:alpine
+```
+
+The client speaks the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) v1.1: a `/v2/`
+probe, then Bearer-token auth (the `WWW-Authenticate` realm/service/scope; an anonymous token first for pulls, credentials
+when the registry rejects it, and straight away for pushes) or Basic auth.
+
+- **push** HEADs every blob and uploads only the missing ones (monolithic `POST` + `PUT`); layers of a `BASE`
+  image are *mounted* from the base's repository when it is on the same registry; then the manifest is `PUT` and the
+  digest the registry returns is checked against ours. The pushed manifest digest equals the local image ID.
+- **pull** accepts OCI and Docker v2 manifests and indexes/manifest lists (for an index the `--platform` variant,
+  default `linux/amd64`), checks every blob's sha256 and size *while streaming* into a temp file (nothing unverified is
+  ever stored), and a manifest fetched by digest must hash to it. The platform manifest is stored unchanged (its digest
+  is the image ID) and tagged as written. Pulled third-party images are listed, pushed and used as `BASE`; only images
+  built by sitefile can be `run`/`save`d as a site.
+- **Limits**: `--max-download-bytes` per blob (default 2 GiB), 8 GiB per image, 4 MiB per manifest or token response,
+  `--timeout` idle time per request (default 30 s), 30 minutes per blob transfer.
+- **Transport**: https. Plain http only for loopback registries (`localhost`, `127.0.0.0/8`, `::1`) and hosts named with
+  `--insecure-registry host[:port]` (repeatable; or `$SITEFILE_INSECURE_REGISTRIES`, comma separated); those try https
+  first and fall back to http. The registry host itself may be a private address (you named it). Redirects (registries
+  send blob downloads to a CDN) are followed manually, at most 5, each hop re-checked: a target on another origin must be
+  https and have no credentials in its URL, and must resolve to public addresses (checked at connect time) unless
+  `--allow-private-network`; the `Authorization` header is **never** sent to another origin. Token-endpoint realms
+  obey the same rules. Compressed transfer encodings are refused.
+- **Credentials**, first match wins: `--username` with `--password-stdin` (never a password on the command line);
+  `$SITEFILE_REGISTRY_AUTH`, a JSON object such as `{"ghcr.io":"user:token","reg.example.com":{"username":"u","password":"p"}}`;
+  then the Docker config (`$DOCKER_CONFIG/config.json`, else `~/.docker/config.json`): `credHelpers[host]`, then
+  `auths[host]` (`auth` base64 `user:pass`, `username`/`password`, or an `identitytoken` exchanged at the token
+  endpoint), then `credsStore`. Docker Hub is found under `docker.io`, `index.docker.io` or `https://index.docker.io/v1/`.
+  **Credential helpers execute a program**: only when the Docker config names one, as `docker-credential-<name> get`
+  found on `PATH` (the name must be a plain word, no shell is involved), with the server address on stdin and nothing
+  secret on argv. Credentials are fetched only when a registry asks for authentication, and tokens/passwords are kept in
+  memory and never printed or put in an error message.
+- Errors: `E_AUTH` (credentials missing/rejected), `E_NOT_FOUND` (404), `E_INTEGRITY` (digest mismatch), `E_TOO_LARGE`,
+  `E_PROTOCOL`/`E_SSRF_BLOCKED` (transport policy), `E_REGISTRY` (anything else the registry says).
+
+To run a pushed or pulled site image, use it as `COPY --from=` source or serve it with `sitefile run`; for a runnable
+container image, build on a base with `BASE` (see [LANGUAGE.md](LANGUAGE.md#export-formats)).
+The default platform of images is `linux/amd64` (reproducible, metadata only for files-only images); on an arm64 host
+Docker warns about the mismatch. Use `--platform linux/arm64` to label them for arm64.
 
 ### Commands
 

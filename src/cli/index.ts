@@ -1,12 +1,13 @@
 import { runCommand, usageError, type Command } from './common.js';
 import { imageCommands, imageSubcommands } from './images.js';
+import { registryCommands } from './registry.js';
 import { serverCommands } from './servers.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image'];
 
@@ -20,6 +21,8 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile tag <src> <dst>                         add a name:tag
   sitefile rmi [-f] <ref|id>...                    remove tags / images
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
+  sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
+  sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
 
 Servers (detached ones are tracked like containers):
   sitefile run [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>

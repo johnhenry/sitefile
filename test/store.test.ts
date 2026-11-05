@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isSitefileError } from '../src/errors.js';
-import { parseLocalRef, parseRef, refKey } from '../src/ref.js';
+import { parseLocalRef, parseRef, refKey, registryApiHost, withDefaultRegistry } from '../src/ref.js';
 import { extractArchive } from '../src/resources/archive.js';
 import { shortId, Store } from '../src/store.js';
 import { makeFile, Tree } from '../src/tree.js';
@@ -32,8 +32,13 @@ test('reference grammar: valid and invalid references', () => {
   for (const bad of ['', 'Site', 'a//b', '-a', 'a-', 'a:', 'a:-x', 'a:' + 'x'.repeat(129), 'a b', 'a@sha256:short', 'a/B', '_a', 'a..', 'a/.b']) {
     assert.throws(() => parseRef(bad), (e) => isSitefileError(e, 'E_USAGE'), `'${bad}' should be invalid`);
   }
-  // a registry host is parsed, but only local references are usable
-  assert.throws(() => parseLocalRef('docker.io/library/nginx'), (e) => isSitefileError(e, 'E_UNSUPPORTED') && /registries are not supported yet/.test((e as Error).message));
+  // a registry host is allowed in a local name; Docker Hub aliases collapse to docker.io (+ library/)
+  assert.equal(refKey(parseLocalRef('docker.io/library/nginx')), 'docker.io/library/nginx:latest');
+  assert.equal(refKey(parseLocalRef('index.docker.io/nginx:alpine')), 'docker.io/library/nginx:alpine');
+  assert.equal(refKey(parseLocalRef('localhost:5000/blog:1')), 'localhost:5000/blog:1');
+  assert.equal(refKey(withDefaultRegistry(parseRef('nginx:alpine'))), 'docker.io/library/nginx:alpine');
+  assert.equal(refKey(withDefaultRegistry(parseRef('me/app'))), 'docker.io/me/app:latest');
+  assert.equal(registryApiHost('docker.io'), 'registry-1.docker.io');
 });
 
 test('the store is an OCI image layout; add, tag and list', async () => {
@@ -123,7 +128,7 @@ test('short IDs resolve when unique; refs, full IDs and digests too', async () =
   assert.equal(await store.resolve(`x@${id}`), id);
   await assert.rejects(store.resolve(hex.slice(0, 11)), (e) => isSitefileError(e, 'E_NOT_FOUND')); // too short to be an ID
   await assert.rejects(store.resolve('nope'), (e) => isSitefileError(e, 'E_NOT_FOUND'));
-  await assert.rejects(store.resolve('registry.io/x'), (e) => isSitefileError(e, 'E_UNSUPPORTED'));
+  await assert.rejects(store.resolve('registry.io/x'), (e) => isSitefileError(e, 'E_NOT_FOUND'));
 });
 
 test('corrupt blobs are detected (E_STORE)', async () => {
@@ -180,7 +185,9 @@ test('CLI: build -t stores, images lists, inspect, tag, rmi, prune', async () =>
   assert.match(r.stdout, /Untagged: blog:v1/);
   assert.equal((await runCli(home, ['rmi', 'ghost'])).code, 1);
   assert.equal((await runCli(home, ['tag', 'blog', 'Bad Name'])).code, 2);
-  assert.equal((await runCli(home, ['tag', 'blog', 'docker.io/x/y'])).code, 1);
+  assert.equal((await runCli(home, ['tag', 'blog', 'docker.io/x/y'])).code, 0); // a registry-qualified name is a valid local tag
+  assert.equal((await runCli(home, ['tag', 'blog', `x:1@sha256:${'a'.repeat(64)}`])).code, 2);
+  assert.equal((await runCli(home, ['rmi', 'docker.io/x/y'])).code, 0);
   assert.equal((await runCli(home, ['build', ctx, '-t', 'UPPER'])).code, 2);
   // rebuilding with changed content leaves the old image untagged; prune reclaims it
   await fs.writeFile(path.join(ctx, 'public', 'index.html'), 'changed');
@@ -243,7 +250,9 @@ test('CLI: save as an OCI archive or layout is the stored image, byte for byte',
   const archive = await extractArchive(new Uint8Array(await fs.readFile(path.join(out, 'site.oci.tar'))), 'a');
   const index = JSON.parse(await fs.readFile(path.join(out, 'layout', 'index.json'), 'utf8'));
   assert.equal(index.manifests[0].digest, id);
-  assert.equal(index.manifests[0].annotations['org.opencontainers.image.ref.name'], 'site:latest');
+  // exports follow `docker save`: the tag in ref.name, the normalized full name for containerd's store
+  assert.equal(index.manifests[0].annotations['org.opencontainers.image.ref.name'], 'latest');
+  assert.equal(index.manifests[0].annotations['io.containerd.image.name'], 'docker.io/library/site:latest');
   assert.ok(archive.get(`/blobs/sha256/${id.slice(7)}`));
   for (const [p, n] of archive.entries()) {
     if (p.startsWith('/blobs/')) assert.deepEqual(new Uint8Array(await fs.readFile(path.join(out, 'layout', p))), n.bytes);

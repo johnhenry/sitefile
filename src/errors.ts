@@ -55,6 +55,9 @@ export type ErrorCode =
   // local image store and site servers
   | 'E_STORE'
   | 'E_SERVER'
+  // registries
+  | 'E_REGISTRY'
+  | 'E_AUTH'
   // cli
   | 'E_USAGE';
 
