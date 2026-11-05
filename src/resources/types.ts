@@ -45,6 +45,12 @@ export interface FetchPolicy {
   readonly timeoutMs: number;
   /** Maximum redirects followed (default 5). */
   readonly maxRedirects: number;
+  /**
+   * Extra PEM-encoded CA certificate(s) to trust for https, in addition to
+   * Node's built-in roots (never instead of them). For tests and enterprise
+   * private CAs; certificate and hostname verification stay on.
+   */
+  readonly ca?: string | Buffer | undefined;
 }
 
 export const DEFAULT_FETCH_POLICY: FetchPolicy = {

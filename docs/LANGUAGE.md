@@ -119,6 +119,10 @@ These pin down what the draft above leaves open. Tests cover each rule.
   sha256 and size. An unpinned URL already in the lockfile must match it
   (`E_LOCK_MISMATCH`; rerun with `--update-lock`). `--frozen-lockfile` fails
   instead of adding entries (`E_LOCK_MISSING`).
+- Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
+  for https in addition to the built-in roots, for tests and enterprise private
+  CAs. Certificate and hostname verification are never disabled; there is no
+  CLI flag for it.
 
 ### Export
 - Output is written to a temporary sibling directory, then swapped in.

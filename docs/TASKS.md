@@ -33,4 +33,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [ ] #4 `.sitefileignore`
 - [ ] #5 Export check-then-swap race
 - [ ] #6 Hard links to files outside the context
-- [ ] #7 TLS test fixture for `fetchRemote`
+- [x] #7 TLS test fixture for `fetchRemote`

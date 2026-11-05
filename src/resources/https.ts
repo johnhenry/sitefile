@@ -1,6 +1,7 @@
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { request as httpRequest, type IncomingMessage, type ClientRequest, type RequestOptions } from 'node:http';
-import { request as httpsRequest } from 'node:https';
+import { request as httpsRequest, type RequestOptions as HttpsRequestOptions } from 'node:https';
+import { rootCertificates } from 'node:tls';
 import { isIP, type LookupFunction } from 'node:net';
 import { SitefileError, isSitefileError, type SourceSpan } from '../errors.js';
 import type { FetchPolicy } from './types.js';
@@ -262,6 +263,10 @@ function openHop(
       agent: false,
       signal,
     };
+    if (url.protocol === 'https:' && policy.ca !== undefined) {
+      // Additive: keep the default roots and trust the extra CA(s) too.
+      (options as HttpsRequestOptions).ca = [...rootCertificates, policy.ca];
+    }
     const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
     let req: ClientRequest;
     try {
