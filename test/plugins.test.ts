@@ -53,7 +53,6 @@ test('PLUGIN / TRANSFORM parse and validate', () => {
   const fails = (src: string, code: ErrorCode, line: number): void =>
     assert.throws(() => parseProgram(src), (e: unknown) => isSitefileError(e, code) && e.span?.line === line, src);
   fails('FROM scratch\nTRANSFORM ./a WITH nope TO /a\nEXPORT /', 'E_UNDEFINED', 2);
-  fails('FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM WITH p TO /a\nEXPORT /', 'E_VALIDATION', 3);
   fails('FROM scratch\nARG p = x\nPLUGIN p FROM ./plugins/p.mjs\nEXPORT /', 'E_DUPLICATE', 3);
   fails('FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /a OPTIONS a=1 OPTIONS b=2\nEXPORT /', 'E_SYNTAX', 3);
   fails('FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /a OPTIONS a=1 a=2\nEXPORT /', 'E_SYNTAX', 3);

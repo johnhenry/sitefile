@@ -15,7 +15,7 @@ See `examples/motion/` for a complete plugin (text → animated SVG).
 
 ## The module
 
-A plugin is one ES module file ending in `.mjs`, **in its own folder** (for
+A JavaScript plugin is one ES module file ending in `.mjs`, **in its own folder** (for
 example `./plugins/motion.mjs`). Export `transform`, or a default object with
 it:
 
@@ -96,6 +96,48 @@ Sitefile builds are reproducible, so plugins should be too: produce the same
 bytes for the same request. Avoid `Date.now()`, `Math.random()` and anything
 that depends on the machine. (Reading the clock is not blocked; it is just a
 bad idea.)
+
+## WebAssembly plugins
+
+`PLUGIN name FROM ./plugins/x.wasm` loads a WebAssembly module instead of a
+JavaScript one. Everything else (TRANSFORM, OPTIONS, FOR, INTEGRITY, caching)
+works the same. See `examples/wasm/` for a plugin written in Rust
+(`plugins/badge-src`, built with `./build.sh`).
+
+**The module imports nothing.** That is checked when the build starts, and
+it's what makes wasm plugins the strongest sandbox Sitefile offers: with no
+imports a module can't open files, use the network, read the clock or get
+randomness. It can only compute. So a wasm plugin may live anywhere in the
+context (it can't read its folder), and its results are always cacheable.
+
+### ABI v1
+
+Build for `wasm32-unknown-unknown` (Rust: a `cdylib`; C: `clang
+--target=wasm32 -nostdlib -Wl,--no-entry -Wl,--export-all`; or hand-written
+WAT) and export:
+
+| Export | Signature | Meaning |
+| --- | --- | --- |
+| `memory` | memory | the module's linear memory |
+| `sitefile_alloc` | `(len: i32) -> i32` | reserve `len` bytes for the request; return a pointer |
+| `sitefile_transform` | `(ptr: i32, len: i32) -> i64` | read the request at `ptr`, return `(resultPtr << 32) \| resultLen` |
+| `sitefile_api_version` | `() -> i32` | optional; must return `1` |
+
+The **request** is UTF-8 JSON: the same object JS plugins receive, with
+`input.bytes` base64-encoded. The **result** is UTF-8 JSON, one of:
+
+```json
+{ "text": "<svg …>" }
+{ "bytes": "<base64>" }
+{ "files": { "a.svg": "<base64>", "sub/b.png": "<base64>" } }
+{ "error": "option \"color\" must be #rgb" }
+```
+
+Each call gets a **fresh instance**, so nothing carries over between calls
+and the module may simply leak its allocations. Calls run in a worker thread
+that is terminated after `--plugin-timeout`; linear memory is capped at 1 GiB
+and results at 64 MiB. Traps, out-of-range results, invalid JSON and
+`{"error"}` all fail the build with `E_PLUGIN`.
 
 ## External tools: `TOOL` and `--allow-exec`
 

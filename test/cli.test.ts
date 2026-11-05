@@ -181,3 +181,14 @@ test('examples/motion renders animated SVGs through a sandboxed plugin', async (
     assert.match(await readFile(path.join(ctx, 'dist', 'cards', `${m[1]}.svg`), 'utf8'), /<svg/);
   }
 });
+
+test('examples/wasm draws badges with a WebAssembly plugin built from Rust', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'wasm');
+  await cp(path.join(root, 'examples', 'wasm'), ctx, { recursive: true });
+  const r = await sitefile(['build', ctx]);
+  assert.equal(r.code, 0, r.stderr);
+  const svg = await readFile(path.join(ctx, 'dist', 'badges', 'why-wasm.svg'), 'utf8');
+  assert.match(svg, /^<svg [^>]*aria-label="reading time: 1 min · \d+ words"/);
+  assert.match(await readFile(path.join(ctx, 'dist', 'badges', 'built-with.svg'), 'utf8'), /sitefile \+ wasm/);
+});

@@ -45,3 +45,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #23 Local image store (an OCI image layout): `build -t`, `images`, `image inspect|diff|prune`, `tag`, `rmi`, `save`, reference grammar, lock file, digest verification (`test/store.test.ts`)
 - [x] #24 Site servers: `serve [-d]`, `servers`, `server stop|rm|logs|restart`; `node:http` server with ETag/304, SPA fallback, traversal rejection (`test/server.test.ts`)
 - [x] `EXPORT ... AS oci [AT root]`, `--oci-root`, `--platform`: reproducible single-layer OCI image, archive and layout (`test/oci.test.ts`)
+- [x] #34 WebAssembly plugins: `PLUGIN x FROM ./x.wasm`, import-free ABI v1, worker + timeout, Rust example (`test/wasm-plugins.test.ts`, `examples/wasm/`)

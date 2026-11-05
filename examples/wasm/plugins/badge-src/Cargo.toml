@@ -1,0 +1,19 @@
+[package]
+name = "sitefile-badge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Sitefile WebAssembly plugin: renders an SVG badge (optionally a reading time)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
+
+# Keep this crate out of any parent workspace.
+[workspace]
