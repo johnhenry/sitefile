@@ -10,6 +10,13 @@ export interface ExportOptions {
   readonly contextDir: string;
   /** Replace a non-empty destination outside the context. */
   readonly force?: boolean;
+  /**
+   * TEST-ONLY. Awaited after the temp tree is fully written and immediately
+   * before the final re-validation and swap, so tests can deterministically
+   * simulate a concurrent change to the destination. Not exposed by the CLI.
+   * @internal
+   */
+  readonly beforeSwap?: () => Promise<void>;
 }
 
 export interface ExportResult {
@@ -82,17 +89,54 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
   }
 
   // --- write into a temp sibling, then swap ---------------------------------
+  //
+  // Race hardening (issue #5). Node has no openat/renameat2, so every check
+  // below is path-based and a hostile process with write access to the
+  // destination's parent can still win a window of a few syscalls. What we do
+  // is shrink that window and make it detectable:
+  //   1. capture dev/ino of the parent directory and of the existing `out`;
+  //   2. create tmp/old siblings only in that verified parent;
+  //   3. right before the swap, re-check the parent's real path + identity,
+  //      and that `out` is still the same real directory (or still absent);
+  //   4. after moving `out` aside, confirm what we moved is what we validated;
+  //   5. after moving tmp into place, confirm `out` is the tree we wrote;
+  //   6. only ever recursively delete a path whose dev/ino we verified.
+  // Residual risk: (a) the two renames are not atomic together, so there is a
+  // moment where `out` does not exist; (b) between a check and the following
+  // rename an attacker can still swap a path component, which we only detect
+  // after the fact (steps 4-5) and never silently "fix"; (c) renaming onto an
+  // originally-absent `out` that an attacker just created as an empty
+  // directory succeeds on POSIX; (d) if the parent itself is moved away, the
+  // temp dir moves with it and cannot be located for cleanup.
   const parent = path.dirname(outReal);
   const base = path.basename(outReal);
   const tmp = path.join(parent, `.${base}.sitefile-tmp-${randomHex()}`);
+  const old = path.join(parent, `.${base}.sitefile-old-${randomHex()}`);
   try {
     await fs.mkdir(parent, { recursive: true });
+  } catch (e) {
+    throw new SitefileError('E_EXPORT', `cannot create '${parent}': ${(e as Error).message}`, undefined, { cause: e });
+  }
+  const parentId = await verifiedParentId(parent);
+  const outId = st ? idOf(st) : undefined;
+
+  try {
     await fs.mkdir(tmp);
   } catch (e) {
     throw new SitefileError('E_EXPORT', `cannot create '${tmp}': ${(e as Error).message}`, undefined, { cause: e });
   }
+  let tmpId: FileId;
+  try {
+    const tst = await fs.lstat(tmp);
+    if (!tst.isDirectory() || tst.isSymbolicLink()) throw unsafe(`temporary directory '${tmp}' is not a real directory`);
+    tmpId = idOf(tst);
+    await assertParentUnchanged(parent, parentId);
+  } catch (e) {
+    await removeIfSame(tmp, undefined);
+    throw e;
+  }
 
-  let oldMoved: string | undefined;
+  let oldMoved = false;
   let swapped = false;
   try {
     for (const { segments, bytes, mode } of planned) {
@@ -101,17 +145,48 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
       await fs.writeFile(target, bytes, { flag: 'wx' });
       await fs.chmod(target, mode);
     }
-    if (st) {
-      const old = path.join(parent, `.${base}.sitefile-old-${randomHex()}`);
+    if (options.beforeSwap) await options.beforeSwap();
+
+    // Re-validate immediately before the swap.
+    await assertParentUnchanged(parent, parentId);
+    await assertSameId(tmp, tmpId, 'temporary directory');
+    const cur = await lstatOrUndefined(outReal);
+    if (outId) {
+      if (!cur || cur.isSymbolicLink() || !cur.isDirectory() || !sameId(idOf(cur), outId)) {
+        throw unsafe(`export destination '${outReal}' changed during export; aborting`);
+      }
+    } else if (cur) {
+      throw unsafe(`export destination '${outReal}' appeared during export; aborting`);
+    }
+    if ((await lstatOrUndefined(old)) !== undefined) throw unsafe(`backup path '${old}' already exists; aborting`);
+
+    if (outId) {
       await fs.rename(outReal, old);
-      oldMoved = old;
+      oldMoved = true;
+      // What we moved aside must be the directory we validated.
+      const moved = await lstatOrUndefined(old);
+      if (!moved || moved.isSymbolicLink() || !moved.isDirectory() || !sameId(idOf(moved), outId)) {
+        throw unsafe(`export destination '${outReal}' was replaced during the swap; aborting`);
+      }
     }
     await fs.rename(tmp, outReal);
     swapped = true;
+    const now = await lstatOrUndefined(outReal);
+    if (!now || now.isSymbolicLink() || !now.isDirectory() || !sameId(idOf(now), tmpId)) {
+      throw unsafe(
+        `export destination '${outReal}' is not the directory that was written; ` +
+          (oldMoved ? `previous output preserved at '${old}'` : 'inspect it manually'),
+      );
+    }
   } catch (e) {
-    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
-    if (oldMoved && !swapped) {
-      await fs.rename(oldMoved, outReal).catch(() => {});
+    if (!swapped) {
+      await removeIfSame(tmp, tmpId);
+      if (oldMoved) {
+        // Roll back only if the slot is free and the backup is what we validated.
+        const slot = await lstatOrUndefined(outReal);
+        const bak = await lstatOrUndefined(old);
+        if (!slot && bak && outId && sameId(idOf(bak), outId)) await fs.rename(old, outReal).catch(() => {});
+      }
     }
     if (e instanceof SitefileError) throw e;
     throw new SitefileError('E_EXPORT', `failed to export to '${outReal}': ${(e as Error).message}`, undefined, {
@@ -120,10 +195,75 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
   }
 
   if (oldMoved) {
-    // Best effort: the new output is already in place.
-    await fs.rm(oldMoved, { recursive: true, force: true }).catch(() => {});
+    // Best effort: the new output is already in place. Only delete the exact
+    // directory we validated and moved.
+    await removeIfSame(old, outId);
   }
   return { outDir: outReal, files: planned.length };
+}
+
+interface FileId {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+}
+
+function idOf(st: { dev: number | bigint; ino: number | bigint }): FileId {
+  return { dev: st.dev, ino: st.ino };
+}
+
+function sameId(a: FileId, b: FileId): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function unsafe(message: string): SitefileError {
+  return new SitefileError('E_EXPORT_UNSAFE', message);
+}
+
+/** The parent must be a real directory (no symlink in its path); return its identity. */
+async function verifiedParentId(parent: string): Promise<FileId> {
+  const real = await fs.realpath(parent);
+  if (real !== parent) throw unsafe(`export parent '${parent}' resolves to '${real}'; aborting`);
+  const st = await fs.stat(parent);
+  if (!st.isDirectory()) throw unsafe(`export parent '${parent}' is not a directory`);
+  return idOf(st);
+}
+
+async function assertParentUnchanged(parent: string, expected: FileId): Promise<void> {
+  let now: FileId;
+  try {
+    now = await verifiedParentId(parent);
+  } catch (e) {
+    if (e instanceof SitefileError) throw e;
+    throw unsafe(`export parent '${parent}' changed during export: ${(e as Error).message}`);
+  }
+  if (!sameId(now, expected)) throw unsafe(`export parent '${parent}' was replaced during export; aborting`);
+}
+
+async function assertSameId(p: string, expected: FileId, what: string): Promise<void> {
+  const st = await lstatOrUndefined(p);
+  if (!st || st.isSymbolicLink() || !st.isDirectory() || !sameId(idOf(st), expected)) {
+    throw unsafe(`${what} '${p}' changed during export; aborting`);
+  }
+}
+
+/**
+ * Recursively remove `p` only if it is a real directory whose dev/ino equals
+ * `expected`. With no `expected` (freshly created, still empty), only an empty
+ * real directory is removed. Never follows or deletes through a symlink.
+ */
+async function removeIfSame(p: string, expected: FileId | undefined): Promise<void> {
+  try {
+    const st = await lstatOrUndefined(p);
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return;
+    if (expected === undefined) {
+      await fs.rmdir(p);
+      return;
+    }
+    if (!sameId(idOf(st), expected)) return;
+    await fs.rm(p, { recursive: true, force: true });
+  } catch {
+    // best effort
+  }
 }
 
 function assertSafeDestination(out: string, contextReal: string, home: string): void {

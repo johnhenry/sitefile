@@ -1,10 +1,12 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import type { EscapeMode, ImportKind, Operand, Program, ValueType } from './language/ast.js';
+import { stageNames, type EscapeMode, type ImportKind, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
 /** Where a COPY/RENDER reads from. */
 export type SourceRef =
+  /** `path` is a normalized virtual path inside an earlier stage's final tree (`--from=name`). */
+  | { readonly kind: 'stage'; readonly name: string; readonly path: string; readonly span: SourceSpan }
   | { readonly kind: 'local'; readonly path: string; readonly span: SourceSpan }
   /** `path` is a normalized virtual path inside the import, `/` for the whole import. */
   | { readonly kind: 'import'; readonly name: string; readonly path: string; readonly span: SourceSpan };
@@ -37,13 +39,29 @@ export type Operation =
       readonly span: SourceSpan;
     };
 
+/** What a stage's tree starts as. */
+export type StageBase =
+  | { readonly kind: 'scratch' }
+  /** `path` is context-relative (`''` for the context root). */
+  | { readonly kind: 'local'; readonly path: string }
+  /** A copy of an earlier stage's final tree. */
+  | { readonly kind: 'stage'; readonly name: string };
+
+/** One FROM and the operations that follow it. */
+export interface Stage {
+  readonly name?: string;
+  readonly base: StageBase;
+  readonly operations: Operation[];
+  readonly span: SourceSpan;
+}
+
 /** A fully evaluated build: no variables left, no IO done yet. */
 export interface Plan {
   readonly file: string;
-  readonly stage: { readonly base: 'scratch'; readonly alias?: string };
+  /** In source order; EXPORT reads the last one. */
+  readonly stages: readonly Stage[];
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly imports: readonly ImportSpec[];
-  readonly operations: readonly Operation[];
   readonly exportPath: string;
   readonly warnings: readonly string[];
 }
@@ -54,10 +72,12 @@ const IMPORT_REF_RE = /^([A-Za-z_][A-Za-z0-9_]*):(.*)$/s;
 export function plan(program: Program, buildArgs: Readonly<Record<string, string>> = {}): Plan {
   const vars = new Map<string, Scalar>();
   const imports = new Map<string, ImportSpec>();
-  const operations: Operation[] = [];
+  const stages: Stage[] = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
-  let stage: Plan['stage'] | undefined;
+  const allStageNames = stageNames(program.instructions);
+  // validate() guarantees a FROM precedes every operation.
+  const operations = (): Operation[] => stages[stages.length - 1]!.operations;
   let exportPath: string | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
@@ -67,8 +87,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   for (const ins of program.instructions) {
     switch (ins.kind) {
       case 'FROM':
-        if (ins.base !== 'scratch') throw new SitefileError('E_UNSUPPORTED', 'only FROM scratch is supported until M2', ins.span);
-        stage = ins.alias === undefined ? { base: 'scratch' } : { base: 'scratch', alias: ins.alias };
+        stages.push({
+          ...(ins.alias !== undefined && { name: ins.alias }),
+          base: ins.base === 'scratch' ? { kind: 'scratch' } : stageBase(ins.base, vars, stages, allStageNames),
+          operations: [],
+          span: ins.span,
+        });
         break;
       case 'ARG': {
         declaredArgs.add(ins.name);
@@ -91,9 +115,6 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
           span: ins.span,
         };
-        if (spec.location.kind === 'remote' && spec.as === 'tree') {
-          throw new SitefileError('E_UNSUPPORTED', 'remote tree imports arrive in M2', ins.span);
-        }
         if (spec.location.kind === 'local' && spec.integrity) {
           warnings.push(`${program.file}:${ins.span.line}: INTEGRITY on a local import is checked but not recorded in the lockfile`);
         }
@@ -102,9 +123,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       }
       case 'COPY': {
         const dest = normalizeVirtual(evaluateOperand(ins.dest, vars), ins.dest.span, 'COPY destination');
-        operations.push({
+        operations().push({
           kind: 'COPY',
-          source: sourceRef(ins.source, vars, imports),
+          source: sourceRef(ins.source, vars, imports, ins.from),
           dest: dest.path,
           destIsDir: dest.trailingSlash,
           overwrite: ins.overwrite,
@@ -118,9 +139,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         if (dest.trailingSlash) {
           throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, ins.dest.span);
         }
-        operations.push({
+        operations().push({
           kind: 'RENDER',
-          template: sourceRef(ins.template, vars, imports),
+          template: sourceRef(ins.template, vars, imports, ins.from),
           dest: dest.path,
           escape: ins.escape,
           overwrite: ins.overwrite,
@@ -137,11 +158,11 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   for (const name of Object.keys(buildArgs)) {
     if (!declaredArgs.has(name)) warnings.push(`--build-arg ${name} does not match any ARG and was ignored`);
   }
-  if (!stage || exportPath === undefined) {
+  if (stages.length === 0 || exportPath === undefined) {
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stage, vars, imports: [...imports.values()], operations, exportPath, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], exportPath, warnings };
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
@@ -157,8 +178,24 @@ function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
   return { kind: 'local', path: normalizeLocal(uri, span).path };
 }
 
-function sourceRef(op: Operand, vars: ReadonlyMap<string, Scalar>, imports: ReadonlyMap<string, ImportSpec>): SourceRef {
+/** A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory. */
+function stageBase(op: Operand, vars: ReadonlyMap<string, Scalar>, earlier: readonly Stage[], all: ReadonlySet<string>): StageBase {
   const raw = evaluateOperand(op, vars);
+  if (earlier.some((s) => s.name === raw)) return { kind: 'stage', name: raw };
+  if (all.has(raw)) {
+    throw new SitefileError('E_UNDEFINED', `FROM ${raw}: stage '${raw}' is not defined before this line (write ./${raw} for a local directory)`, op.span);
+  }
+  return { kind: 'local', path: normalizeLocal(raw, op.span).path };
+}
+
+function sourceRef(
+  op: Operand,
+  vars: ReadonlyMap<string, Scalar>,
+  imports: ReadonlyMap<string, ImportSpec>,
+  from?: StageRef,
+): SourceRef {
+  const raw = evaluateOperand(op, vars);
+  if (from) return { kind: 'stage', name: from.name, path: normalizeVirtual(raw, op.span, `path inside stage '${from.name}'`).path, span: op.span };
   if (URL_RE.test(raw)) {
     throw new SitefileError('E_VALIDATION', `cannot read '${raw}' directly; IMPORT it under a name, then COPY name:`, op.span);
   }

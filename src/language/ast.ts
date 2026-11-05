@@ -22,7 +22,10 @@ export type EscapeMode = 'none' | 'html';
 export interface FromInstruction {
   readonly kind: 'FROM';
   readonly span: SourceSpan;
-  /** `scratch` keyword, or an operand naming a tree (not supported until M2). */
+  /**
+   * `scratch` keyword, or an operand: an earlier stage name or a context-relative
+   * directory (the planner decides, see docs/LANGUAGE.md).
+   */
   readonly base: 'scratch' | Operand;
   readonly alias?: string;
 }
@@ -55,11 +58,18 @@ export interface ImportInstruction {
   readonly integrity?: string;
 }
 
+/** `--from=<stage>`: read the source from an earlier stage's final tree. */
+export interface StageRef {
+  readonly name: string;
+  readonly span: SourceSpan;
+}
+
 export interface CopyInstruction {
   readonly kind: 'COPY';
   readonly span: SourceSpan;
   readonly source: Operand;
   readonly dest: Operand;
+  readonly from?: StageRef;
   /** `--overwrite`: replace files that differ instead of failing. */
   readonly overwrite: boolean;
 }
@@ -69,6 +79,7 @@ export interface RenderInstruction {
   readonly span: SourceSpan;
   readonly template: Operand;
   readonly dest: Operand;
+  readonly from?: StageRef;
   /** `--escape=html|none`, default none. */
   readonly escape: EscapeMode;
   readonly overwrite: boolean;
@@ -103,4 +114,14 @@ export function literalText(op: Operand): string | undefined {
     out += p.value;
   }
   return out;
+}
+
+/** Names of ARG, LET, IMPORT and stages (`FROM … AS name`, `--from=name`). */
+export const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Every stage alias declared anywhere in the file. */
+export function stageNames(instructions: readonly Instruction[]): Set<string> {
+  const names = new Set<string>();
+  for (const ins of instructions) if (ins.kind === 'FROM' && ins.alias !== undefined) names.add(ins.alias);
+  return names;
 }

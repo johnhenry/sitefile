@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -8,6 +8,8 @@ import path from 'node:path';
 import { build, buildToDirectory, type BuildOptions } from '../src/executor.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { sha256 } from '../src/digest.js';
+import { gzipSync } from 'node:zlib';
+import { tar, zip } from './archive-fixtures.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -167,12 +169,16 @@ test('remote sources are refused when given as COPY sources or blocked protocols
 let server: Server;
 let base = '';
 let body = 'remote content v1';
+let archive: Buffer = Buffer.alloc(0);
 async function startServer(): Promise<void> {
   if (server) return;
   server = createServer((req, res) => {
     if (req.url === '/lib.js') {
       res.writeHead(200, { 'content-type': 'text/javascript' });
       res.end(body);
+    } else if (req.url === '/site.tgz') {
+      res.writeHead(200, { 'content-type': 'application/gzip' });
+      res.end(archive);
     } else if (req.url === '/moved') {
       res.writeHead(302, { location: '/lib.js' });
       res.end();
@@ -242,6 +248,70 @@ test('lockfile records unpinned URLs, detects drift, and honours --frozen-lockfi
   await rejectsWith(build({ contextDir: fresh, ...permissive, frozenLockfile: true }), 'E_LOCK_MISSING');
 });
 
+// ------------------------------------------------------------ archives
+
+test('IMPORT … AS tree extracts a pinned remote archive; lockfile covers the archive bytes', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: 'site/index.html', data: '<p>hi</p>' }, { name: 'site/a/b.css', data: 'b{}' }]));
+  const pin = sha256(archive);
+  const sitefile = `FROM scratch\nIMPORT site FROM ${base}/site.tgz AS tree INTEGRITY ${pin}\nCOPY site:/site/ /\nEXPORT /`;
+  const dir = await project({ Sitefile: sitefile });
+  const opts: BuildOptions = { contextDir: dir, ...permissive };
+  const r = await build(opts);
+  assert.deepEqual(r.output.entries().map(([p]) => p), ['/a/b.css', '/index.html']);
+  assert.equal(r.resources.get('site')?.provenance.digest, pin);
+  const lock = JSON.parse(await readFile(path.join(dir, 'Sitefile.lock'), 'utf8'));
+  assert.equal(lock.resources[`${base}/site.tgz`].integrity, pin);
+
+  // A wrong pin fails before anything is extracted.
+  await rejectsWith(
+    run({ Sitefile: sitefile.replace(pin, sha256('other')) }, permissive).then((x) => x.result),
+    'E_INTEGRITY',
+  );
+  // A changed archive is caught by the lockfile.
+  archive = gzipSync(tar([{ name: 'site/index.html', data: '<p>changed</p>' }]));
+  await rejectsWith(build({ ...opts, frozenLockfile: true }), 'E_INTEGRITY');
+});
+
+test('unpinned remote archive is locked and drift is detected', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: 'a.txt', data: 'one' }]));
+  const dir = await project({ Sitefile: `FROM scratch\nIMPORT s FROM ${base}/site.tgz AS tree\nCOPY s: /\nEXPORT /` });
+  const opts: BuildOptions = { contextDir: dir, ...permissive };
+  await build(opts);
+  archive = gzipSync(tar([{ name: 'a.txt', data: 'two' }]));
+  await rejectsWith(build(opts), 'E_LOCK_MISMATCH');
+});
+
+test('remote archive limits are enforced and configurable', async () => {
+  await startServer();
+  archive = gzipSync(tar([{ name: '../evil', data: 'x' }]));
+  const sf = { Sitefile: `FROM scratch\nIMPORT s FROM ${base}/site.tgz AS tree\nCOPY s: /\nEXPORT /` };
+  await rejectsWith(run(sf, permissive).then((x) => x.result), 'E_ARCHIVE_UNSAFE', 2);
+  archive = gzipSync(tar([{ name: 'a', data: '1' }, { name: 'b', data: '2' }]));
+  await rejectsWith(run(sf, { ...permissive, archiveLimits: { maxEntries: 1 } }).then((x) => x.result), 'E_ARCHIVE_LIMIT', 2);
+  const ok = await run(sf, permissive);
+  assert.equal(ok.result.output.size, 2);
+});
+
+test('local archive files extract AS tree; a non-archive file is E_TYPE; directories are unchanged', async () => {
+  const dir = await project({
+    Sitefile: 'FROM scratch\nIMPORT z FROM ./site.zip AS tree INTEGRITY ' + sha256(zip([{ name: 'x.txt', data: 'zip!', deflate: true }])) + '\nCOPY z: /\nEXPORT /',
+    'notes.txt': 'plain',
+  });
+  await writeFile(path.join(dir, 'site.zip'), zip([{ name: 'x.txt', data: 'zip!', deflate: true }]));
+  const r = await build({ contextDir: dir, lockfile: false });
+  assert.equal(text(r.output.get('/x.txt')?.bytes), 'zip!');
+
+  await rejectsWith(
+    run({ Sitefile: 'FROM scratch\nIMPORT n FROM ./notes.txt AS tree\nEXPORT /', 'notes.txt': 'plain' }).then((x) => x.result),
+    'E_TYPE',
+    2,
+  );
+  const d = await run({ Sitefile: 'FROM scratch\nIMPORT d FROM ./src AS tree\nCOPY d: /\nEXPORT /', 'src/a.txt': 'a' });
+  assert.deepEqual(d.result.output.entries().map(([p]) => p), ['/a.txt']);
+});
+
 // ------------------------------------------------------------ export
 
 test('buildToDirectory writes files and skips its own output when copying the context', async () => {
@@ -258,4 +328,113 @@ test('buildToDirectory writes files and skips its own output when copying the co
   );
   assert.equal(await readFile(path.join(out, 'a.txt'), 'utf8'), 'A');
   assert.ok((await stat(path.join(out, 'Sitefile'))).isFile());
+});
+
+// ------------------------------------------------------------ .sitefileignore and hard links
+
+test('.sitefileignore filters COPY of a directory but not a named file', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch\nCOPY ./ /\nCOPY ./drafts/a.txt /named.txt\nEXPORT /',
+    '.sitefileignore': 'drafts/\n*.tmp\n',
+    'drafts/a.txt': 'A',
+    'x.tmp': 'T',
+    'index.html': 'hi',
+  });
+  assert.deepEqual(
+    result.output.entries().map(([p]) => p),
+    ['/.sitefileignore', '/Sitefile', '/index.html', '/named.txt'],
+  );
+});
+
+test('build refuses a hard link into the context unless allowHardlinks', async () => {
+  const outside = await project({ 'secret.txt': 'S' });
+  const dir = await project({ Sitefile: 'FROM scratch\nCOPY ./ /\nEXPORT /' });
+  await link(path.join(outside, 'secret.txt'), path.join(dir, 'leak.txt'));
+  await rejectsWith(build({ contextDir: dir, lockfile: false }), 'E_HARDLINK');
+  const ok = await build({ contextDir: dir, lockfile: false, allowHardlinks: true });
+  assert.ok(ok.output.entries().some(([p]) => p === '/leak.txt'));
+});
+
+// ---- stages ---------------------------------------------------------------------
+
+const paths = (t: { entries(): Array<[string, unknown]> }): string[] => t.entries().map(([p]) => p);
+
+test('multi-stage build: COPY --from, RENDER --from and FROM <stage>', async () => {
+  const { result } = await run({
+    Sitefile: [
+      'FROM scratch AS build',
+      'COPY ./src/ /out/',
+      'COPY ./src/a.txt /top.txt',
+      'FROM scratch AS site',
+      'COPY --from=build /out/ /',
+      'COPY --from=build /top.txt /files/',
+      'COPY --from=build /out/a.txt /single.txt',
+      'FROM site',
+      'RENDER --from=build /out/a.txt TO /rendered.txt',
+      'COPY ./extra.txt /extra.txt',
+      'EXPORT /',
+    ].join('\n'),
+    'src/a.txt': 'A',
+    'extra.txt': 'X',
+  });
+  assert.deepEqual(paths(result.output), ['/a.txt', '/extra.txt', '/files/top.txt', '/rendered.txt', '/single.txt']);
+  assert.equal(text(result.output.get('/files/top.txt')?.bytes), 'A');
+  assert.match(result.output.get('/a.txt')?.origin ?? '', /Sitefile:5 COPY$/);
+  assert.equal(result.plan.stages.length, 3);
+});
+
+test('stages do not leak into each other', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch AS a\nCOPY ./x /x\nFROM scratch\nCOPY ./y /y\nEXPORT /',
+    x: 'x',
+    y: 'y',
+  });
+  assert.deepEqual(paths(result.output), ['/y']);
+});
+
+test('FROM <stage> copies the tree and can be changed independently', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM scratch AS a\nCOPY ./x /x\nFROM a AS b\nCOPY ./y /y\nFROM a\nCOPY --from=b /y /z\nEXPORT /',
+    x: 'x',
+    y: 'y',
+  });
+  assert.deepEqual(paths(result.output), ['/x', '/z']);
+});
+
+test('FROM <local dir> seeds a stage, with sandbox rules', async () => {
+  const { result } = await run({
+    Sitefile: 'FROM ./base\nCOPY ./extra.txt /extra.txt\nEXPORT /',
+    'base/index.html': 'hi',
+    'base/css/a.css': 'a',
+    'extra.txt': 'e',
+  });
+  assert.deepEqual(paths(result.output), ['/css/a.css', '/extra.txt', '/index.html']);
+  assert.match(result.output.get('/index.html')?.origin ?? '', /Sitefile:1 FROM$/);
+
+  const sub = await run({ Sitefile: 'FROM base/css\nEXPORT /', 'base/css/a.css': 'a' });
+  assert.deepEqual(paths(sub.result.output), ['/a.css']);
+
+  await rejectsWith(run({ Sitefile: 'FROM ../etc\nEXPORT /' }).then((r) => r.result), 'E_PATH_ESCAPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM /etc\nEXPORT /' }).then((r) => r.result), 'E_PATH_ESCAPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM ./f.txt\nEXPORT /', 'f.txt': 'x' }).then((r) => r.result), 'E_TYPE', 1);
+  await rejectsWith(run({ Sitefile: 'FROM ./missing\nEXPORT /' }).then((r) => r.result), 'E_NOT_FOUND', 1);
+  const dir = await project({ Sitefile: 'FROM ./link\nEXPORT /' });
+  await symlink(os.tmpdir(), path.join(dir, 'link'));
+  await rejectsWith(build({ contextDir: dir, lockfile: false }), 'E_PATH_ESCAPE', 1);
+});
+
+test('COPY --from errors and conflicts', async () => {
+  const base = 'FROM scratch AS a\nCOPY ./x /x\nFROM scratch\n';
+  const files = { x: 'x' };
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a /nope /\nEXPORT /' }).then((r) => r.result), 'E_NOT_FOUND', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a x /\nEXPORT /' }).then((r) => r.result), 'E_PATH', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=a /../x /\nEXPORT /' }).then((r) => r.result), 'E_PATH', 4);
+  await rejectsWith(run({ ...files, Sitefile: base + 'COPY --from=zz /x /\nEXPORT /' }).then((r) => r.result), 'E_UNDEFINED', 4);
+  await rejectsWith(
+    run({ ...files, y: 'y', Sitefile: base + 'COPY ./y /x\nCOPY --from=a /x /x\nEXPORT /' }).then((r) => r.result),
+    'E_CONFLICT',
+    5,
+  );
+  const ok = await run({ ...files, y: 'y', Sitefile: base + 'COPY ./y /x\nCOPY --overwrite --from=a /x /x\nEXPORT /' });
+  assert.equal(text(ok.result.output.get('/x')?.bytes), 'x');
 });

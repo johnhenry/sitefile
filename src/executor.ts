@@ -5,13 +5,13 @@ import { sha256 } from './digest.js';
 import type { Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type SourceRef } from './planner.js';
+import { plan, type ImportSpec, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath } from './render.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
-import { DEFAULT_FETCH_POLICY, type FetchPolicy, type Resource } from './resources/types.js';
+import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 import type { Scalar } from './values.js';
 import { exportDirectory, isExporterTempName } from './exporter.js';
@@ -25,6 +25,8 @@ export interface BuildOptions {
   /** Export destination; skipped when walking the context if it lies inside it. */
   readonly outDir?: string;
   readonly fetchPolicy?: Partial<FetchPolicy>;
+  /** Limits for extracting archives imported AS tree. */
+  readonly archiveLimits?: Partial<ArchiveLimits>;
   /** Lockfile path, or false to disable. Default: `Sitefile.lock` next to the Sitefile. */
   readonly lockfile?: string | false;
   /** Fail instead of adding or changing lockfile entries. */
@@ -33,12 +35,14 @@ export interface BuildOptions {
   readonly updateLock?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
+  /** Permit hard-linked files in the context (you assert they are safe). Default false. */
+  readonly allowHardlinks?: boolean;
   readonly onWarning?: (message: string) => void;
 }
 
 export interface BuildResult {
   readonly plan: Plan;
-  /** The whole stage tree. */
+  /** The final stage's whole tree. */
   readonly tree: Tree;
   /** The exported subtree. */
   readonly output: Tree;
@@ -102,18 +106,25 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       }
     }
   }
-  const local = await LocalContext.open(contextReal, { ignore });
+  const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
+  const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
   const lockPath =
     options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
 
-  const env: ImportEnv = { local, policy, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
+  const env: ImportEnv = { local, policy, archiveLimits, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
   const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, resolved[i]!]));
 
+  const stageTrees = new Map<string, Tree>();
+  const execEnv: ExecEnv = { local, resources, stages: stageTrees, vars: p.vars, label, warn };
   let tree = Tree.empty;
-  for (const op of p.operations) tree = await execute(op, tree, { local, resources, vars: p.vars, label, warn });
+  for (const stage of p.stages) {
+    tree = await startStage(stage, execEnv);
+    for (const op of stage.operations) tree = await execute(op, tree, execEnv);
+    if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+  }
 
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
@@ -142,6 +153,7 @@ export async function buildToDirectory(
 interface ImportEnv {
   readonly local: LocalContext;
   readonly policy: FetchPolicy;
+  readonly archiveLimits: ArchiveLimits;
   readonly lock: Lockfile | undefined;
   readonly label: string;
   readonly warn: (m: string) => void;
@@ -161,18 +173,14 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
       if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
       return env.local.readTree(rel, origin, spec.span);
     }
-    if (spec.as === 'tree') {
-      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a file, not a directory`, spec.span);
-    }
     const file = await env.local.readFile(rel, spec.span);
     if (spec.integrity) verifyIntegrity(file.bytes, spec.integrity, spec.uri, spec.span);
     if (!spec.as || spec.as === 'file') return file;
-    return bytesToResource(file.bytes, spec.as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span);
+    return bytesToResource(file.bytes, spec.as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span, env.archiveLimits);
   }
 
   const url = spec.location.url;
   const as = spec.as ?? 'file';
-  if (as === 'tree') throw new SitefileError('E_UNSUPPORTED', 'remote tree imports arrive in M2', spec.span);
   const entry = env.lock?.get(url);
   if (env.frozen && !entry) {
     throw new SitefileError('E_LOCK_MISSING', `IMPORT ${spec.name}: '${url}' is not in the lockfile (--frozen-lockfile)`, spec.span);
@@ -195,7 +203,7 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
   }
   env.lock?.record(url, { integrity: digest, size: bytes.byteLength, resolved: finalUrl });
   const basename = path.posix.basename(new URL(finalUrl).pathname) || spec.name;
-  return bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span);
+  return bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits);
 }
 
 // ---------------------------------------------------------------- operations
@@ -203,9 +211,33 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
 interface ExecEnv {
   readonly local: LocalContext;
   readonly resources: ReadonlyMap<string, Resource>;
+  /** Final trees of the stages finished so far, by name. */
+  readonly stages: ReadonlyMap<string, Tree>;
   readonly vars: ReadonlyMap<string, Scalar>;
   readonly label: string;
   readonly warn: (m: string) => void;
+}
+
+/** The tree a stage starts from. */
+async function startStage(stage: Stage, env: ExecEnv): Promise<Tree> {
+  const base = stage.base;
+  switch (base.kind) {
+    case 'scratch':
+      return Tree.empty;
+    case 'stage':
+      return env.stages.get(base.name) ?? fail(base.name, stage.span);
+    case 'local': {
+      const display = base.path === '' ? './' : './' + base.path;
+      if ((await env.local.stat(base.path, stage.span)) !== 'directory') {
+        throw new SitefileError('E_TYPE', `FROM '${display}' is a file; FROM needs a directory`, stage.span);
+      }
+      return (await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span)).tree;
+    }
+  }
+}
+
+function fail(name: string, span: SourceSpan): never {
+  throw new SitefileError('E_UNDEFINED', `unknown stage '${name}'`, span);
 }
 
 type Source =
@@ -245,6 +277,15 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
     }
     const f = await env.local.readFile(ref.path, ref.span);
     return { kind: 'file', bytes: f.bytes, mode: f.mode, basename: f.basename, label };
+  }
+
+  if (ref.kind === 'stage') {
+    const tree = env.stages.get(ref.name) ?? fail(ref.name, ref.span);
+    const label = `--from=${ref.name} ${ref.path}`;
+    const node = tree.get(ref.path);
+    if (node) return { kind: 'file', bytes: node.bytes, mode: node.mode, basename: basenameVirtual(ref.path), label };
+    if (tree.isDirectory(ref.path)) return { kind: 'tree', tree: tree.subtree(ref.path), label };
+    throw new SitefileError('E_NOT_FOUND', `'${ref.path}' does not exist in stage '${ref.name}'`, ref.span);
   }
 
   const label = ref.path === '/' ? `${ref.name}:` : `${ref.name}:${ref.path}`;

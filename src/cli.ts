@@ -24,6 +24,7 @@ Options:
       --no-lockfile            do not read or write Sitefile.lock
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
+      --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
       --json                   machine-readable output (validate, inspect)
@@ -47,6 +48,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         'no-lockfile': { type: 'boolean' },
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
+        'allow-hardlinks': { type: 'boolean' },
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
@@ -90,6 +92,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
       },
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
+      allowHardlinks: !!o['allow-hardlinks'],
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
@@ -110,14 +113,15 @@ export async function main(argv: readonly string[]): Promise<number> {
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
-              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, operations: p.operations, export: p.exportPath },
+              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
               null,
               2,
             ) + '\n',
           );
         } else {
+          const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
           process.stdout.write(
-            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${p.operations.length} operation${p.operations.length === 1 ? '' : 's'})\n`,
+            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
           );
         }
         return 0;

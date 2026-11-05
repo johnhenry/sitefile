@@ -1,6 +1,7 @@
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { sha256 } from '../digest.js';
-import type { Provenance, Resource } from './types.js';
+import { extractArchive } from './archive.js';
+import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits, type Provenance, type Resource } from './types.js';
 
 export interface BytesInfo {
   readonly uri: string;
@@ -18,15 +19,20 @@ function decodeUtf8(bytes: Uint8Array, uri: string, span?: SourceSpan): string {
 }
 
 /** Turn fetched or read bytes into a resource of the requested kind. */
-export function bytesToResource(
+export async function bytesToResource(
   bytes: Uint8Array,
-  kind: 'file' | 'text' | 'json',
+  kind: 'file' | 'text' | 'json' | 'tree',
   info: BytesInfo,
   span?: SourceSpan,
-): Resource {
+  archiveLimits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): Promise<Resource> {
   const digest = sha256(bytes);
   const provenance: Provenance =
     info.resolvedUrl === undefined ? { uri: info.uri, digest } : { uri: info.uri, resolvedUrl: info.resolvedUrl, digest };
+  if (kind === 'tree') {
+    // The provenance digest is that of the archive bytes, which is what pins and the lockfile cover.
+    return { kind: 'tree', tree: await extractArchive(bytes, info.uri, archiveLimits, span), provenance };
+  }
   if (kind === 'file') {
     const mode = (info.mode ?? 0o644) & 0o111 ? 0o755 : 0o644;
     return { kind: 'file', bytes, mode, basename: info.basename, provenance };

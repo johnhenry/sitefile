@@ -25,6 +25,7 @@ export type ErrorCode =
   | 'E_PATH_ESCAPE'
   | 'E_NOT_FOUND'
   | 'E_UNSUPPORTED_FILE'
+  | 'E_HARDLINK'
   // composition
   | 'E_CONFLICT'
   // remote resources
@@ -38,6 +39,10 @@ export type ErrorCode =
   | 'E_INTEGRITY'
   | 'E_LOCK_MISMATCH'
   | 'E_LOCK_MISSING'
+  // archives
+  | 'E_ARCHIVE'
+  | 'E_ARCHIVE_UNSAFE'
+  | 'E_ARCHIVE_LIMIT'
   // rendering
   | 'E_ENCODING'
   | 'E_TEMPLATE'

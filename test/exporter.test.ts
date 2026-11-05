@@ -200,3 +200,128 @@ test('isExporterTempName', () => {
   assert.equal(isExporterTempName('dist', 'dist'), false);
   assert.equal(isExporterTempName('.dist.sitefile-new-0a1b2c', 'dist'), false);
 });
+
+// --- check-then-swap race hardening (issue #5) -------------------------------
+
+async function victimDir(root: string): Promise<{ dir: string; file: string }> {
+  const dir = path.join(root, 'victim');
+  await fs.mkdir(dir);
+  const file = path.join(dir, 'precious.txt');
+  await fs.writeFile(file, 'keep me');
+  return { dir, file };
+}
+
+async function assertVictimUntouched(v: { dir: string; file: string }): Promise<void> {
+  assert.deepEqual(await fs.readdir(v.dir), ['precious.txt']);
+  assert.equal(await fs.readFile(v.file, 'utf8'), 'keep me');
+}
+
+test('race: out replaced by a symlink to another dir aborts, victim untouched', async () => {
+  await withTmp(async (root) => {
+    const ctx = path.join(root, 'ctx');
+    await fs.mkdir(ctx);
+    const out = path.join(ctx, 'dist');
+    await fs.mkdir(out);
+    await fs.writeFile(path.join(out, 'old.txt'), 'old');
+    const v = await victimDir(root);
+    await assert.rejects(
+      exportDirectory(tree({ '/new.txt': 'new' }), out, {
+        contextDir: ctx,
+        beforeSwap: async () => {
+          await fs.rm(out, { recursive: true });
+          await fs.symlink(v.dir, out);
+        },
+      }),
+      isCode('E_EXPORT_UNSAFE'),
+    );
+    await assertVictimUntouched(v);
+    assert.equal((await fs.lstat(out)).isSymbolicLink(), true);
+    await siblingsOk(ctx);
+  });
+});
+
+test('race: out parent replaced by a symlink aborts, victim untouched', async () => {
+  await withTmp(async (root) => {
+    const ctx = path.join(root, 'ctx');
+    const sub = path.join(ctx, 'sub');
+    await fs.mkdir(sub, { recursive: true });
+    const out = path.join(sub, 'dist');
+    await fs.mkdir(out);
+    await fs.writeFile(path.join(out, 'old.txt'), 'old');
+    const v = await victimDir(root);
+    const aside = path.join(root, 'sub-aside');
+    await assert.rejects(
+      exportDirectory(tree({ '/new.txt': 'new' }), out, {
+        contextDir: ctx,
+        beforeSwap: async () => {
+          await fs.rename(sub, aside);
+          await fs.symlink(v.dir, sub);
+        },
+      }),
+      isCode('E_EXPORT_UNSAFE'),
+    );
+    await assertVictimUntouched(v);
+    await siblingsOk(v.dir);
+    // The original out was never touched.
+    assert.equal(await fs.readFile(path.join(aside, 'dist', 'old.txt'), 'utf8'), 'old');
+  });
+});
+
+test('race: out replaced by a different directory aborts, that directory untouched', async () => {
+  await withTmp(async (root) => {
+    const ctx = path.join(root, 'ctx');
+    await fs.mkdir(ctx);
+    const out = path.join(ctx, 'dist');
+    await fs.mkdir(out);
+    await fs.writeFile(path.join(out, 'old.txt'), 'old');
+    const keep = path.join(root, 'original-aside');
+    await assert.rejects(
+      exportDirectory(tree({ '/new.txt': 'new' }), out, {
+        contextDir: ctx,
+        beforeSwap: async () => {
+          await fs.rename(out, keep); // keep original alive so its inode is not reused
+          await fs.mkdir(out);
+          await fs.writeFile(path.join(out, 'attacker.txt'), 'theirs');
+        },
+      }),
+      isCode('E_EXPORT_UNSAFE'),
+    );
+    assert.deepEqual(await fs.readdir(out), ['attacker.txt']);
+    assert.equal(await fs.readFile(path.join(out, 'attacker.txt'), 'utf8'), 'theirs');
+    assert.equal(await fs.readFile(path.join(keep, 'old.txt'), 'utf8'), 'old');
+    await siblingsOk(ctx);
+  });
+});
+
+test('race: out appearing where none existed aborts', async () => {
+  await withTmp(async (root) => {
+    const ctx = path.join(root, 'ctx');
+    await fs.mkdir(ctx);
+    const out = path.join(ctx, 'dist');
+    await assert.rejects(
+      exportDirectory(tree({ '/new.txt': 'new' }), out, {
+        contextDir: ctx,
+        beforeSwap: async () => {
+          await fs.mkdir(out);
+          await fs.writeFile(path.join(out, 'attacker.txt'), 'theirs');
+        },
+      }),
+      isCode('E_EXPORT_UNSAFE'),
+    );
+    assert.deepEqual(await fs.readdir(out), ['attacker.txt']);
+    await siblingsOk(ctx);
+  });
+});
+
+test('beforeSwap hook that changes nothing still exports and cleans up', async () => {
+  await withTmp(async (ctx) => {
+    const out = path.join(ctx, 'dist');
+    await fs.mkdir(out);
+    await fs.writeFile(path.join(out, 'old.txt'), 'old');
+    let called = 0;
+    await exportDirectory(tree({ '/new.txt': 'new' }), out, { contextDir: ctx, beforeSwap: async () => void called++ });
+    assert.equal(called, 1);
+    assert.deepEqual(await fs.readdir(out), ['new.txt']);
+    await siblingsOk(ctx);
+  });
+});
