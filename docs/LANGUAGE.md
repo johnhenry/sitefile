@@ -125,3 +125,22 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - An existing non-empty destination is replaced only when it is inside the
   build context, or with `--force`. A destination that is, or contains, the
   context is always refused.
+- Race hardening: the exporter records the dev/ino of the destination's parent
+  directory and of the existing destination, creates its temp and backup
+  siblings only in that verified parent, and re-checks everything immediately
+  before the swap (parent real path and identity unchanged, destination still
+  the same real directory and not a symlink, or still absent). Any change
+  aborts with `E_EXPORT_UNSAFE`. After the swap it confirms the new
+  destination is the directory it wrote, and it deletes the old directory
+  only if its dev/ino matches the one it validated.
+- Residual risk: Node has no `openat`/`renameat2`, so checks are path-based
+  and cannot be bound to a directory handle. The two renames (old aside, new
+  into place) are not atomic together, so the destination briefly does not
+  exist. An attacker with write access to the parent can still swap a path
+  between a check and the next rename; this is detected afterwards (the
+  previous output is preserved at the backup path and nothing unvalidated is
+  deleted), not prevented. Renaming onto an originally absent destination
+  that an attacker just created as an empty directory succeeds on POSIX. If
+  the parent directory itself is moved away mid-export, the temp directory
+  moves with it and is left behind. Do not export into directories writable
+  by untrusted users.
