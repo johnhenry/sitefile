@@ -1,0 +1,13 @@
+FROM scratch
+ARG N: number = 3
+LET L = "n=${N}"
+COPY <<T /deep/a/b/c.txt
+hello
+T
+RENDER <<T TO /n.txt
+${L} ${N}
+T
+COPY --overwrite <<T /deep/a/b/c.txt
+replaced
+T
+EXPORT /

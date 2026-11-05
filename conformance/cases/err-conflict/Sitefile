@@ -1,0 +1,4 @@
+FROM scratch
+COPY ./a.txt /x
+COPY ./b.txt /x
+EXPORT /

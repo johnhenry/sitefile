@@ -1,0 +1,6 @@
+FROM scratch AS build
+COPY ./src/ /out/
+FROM scratch
+COPY --from=build /out/ /site/
+RENDER --from=build /out/t.html TO /index.html
+EXPORT /
