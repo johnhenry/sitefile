@@ -23,8 +23,14 @@ Checked items are implemented and covered by tests (`npm test`).
 - [x] Acceptance: pinned remote fixture copied into output (`test/build.test.ts`, served from a local test server)
 - [x] Text and JSON imports readable from templates (`${name}`, `${name.a.0.b}`) — an early slice of M3
 
-## Next (M2)
-- [ ] `FROM <local tree>` and multi-stage `FROM … AS name`
-- [ ] `COPY --from=<stage>`
-- [ ] Remote tree imports (archives, with decompression-ratio limits)
-- [ ] `.sitefileignore`
+## Next
+
+Open work is tracked as GitHub issues in `johnhenry/sitefile`:
+
+- [ ] #1 `FROM <local tree>` and multi-stage `FROM … AS name` (M2)
+- [ ] #2 `COPY --from=<stage>` (M2)
+- [ ] #3 Remote tree imports (archives, with decompression-ratio limits) (M2)
+- [ ] #4 `.sitefileignore`
+- [ ] #5 Export check-then-swap race
+- [ ] #6 Hard links to files outside the context
+- [ ] #7 TLS test fixture for `fetchRemote`
