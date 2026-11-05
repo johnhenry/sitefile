@@ -79,15 +79,18 @@ validated everywhere (`E_USAGE` for a bad one), but **only local references are 
 ## Site servers
 
 ```
-sitefile run [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
-sitefile ps [-a] [--json]
-sitefile stop [--time secs] <id|name>...
-sitefile rm [-f] <id|name>...
-sitefile logs [-f] [-n lines] <id|name>
-sitefile restart <id|name>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
+sitefile servers [-a] [--json]                   # also: sitefile server ls
+sitefile server stop [--time secs] <name|id>...
+sitefile server rm [-f] <name|id>...
+sitefile server logs [-f] [-n lines] <name|id>
+sitefile server restart <name|id>
 ```
 
-`run` serves an image from the store (the files under its root), or a directory (an argument starting with `./`,
+`servers` lists `NAME SITE URL STATUS ID`, where SITE is the image reference or directory being served
+(`--json` calls it `site`).
+
+`serve` serves an image from the store (the files under its root), or a directory (an argument starting with `./`,
 `../` or `/`, or ending in `/`) read once at start through the sandboxed local reader: a symlink leaving the
 directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known`) are not served.
 
@@ -95,7 +98,7 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
-  stops it. Foreground servers are not tracked by `ps`; `--name` needs `-d`.
+  stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; `/dir`
   redirects (`301`) to `/dir/`; no directory listings; `404` with a small page; `content-type` from the extension;
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
@@ -103,10 +106,10 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
   file extension (a missing `/app.js` stays `404`).
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
-  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `run -d` writes the
+  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker
   has recorded its pid and port (a failure to start is reported with the worker's error and leaves no entry).
-  `ps` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
+  `servers` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
   `x-sitefile-server: <id>` header; anything else shows as **exited**. IDs are 12 hex digits, names are unique
   (auto names look like `site-1a2b3c`).
 - `stop` sends `SIGTERM`, waits `--time` seconds (default 5), then `SIGKILL`; stopping an exited server is a no-op.

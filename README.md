@@ -87,8 +87,8 @@ sitefile inspect  [context] [--json]
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
 sitefile images | image inspect|diff|prune | tag | rmi | save
-sitefile run [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
-sitefile ps [-a] | stop | rm [-f] | restart | logs [-f]
+sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
+sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
 
 ## Images and servers
@@ -102,8 +102,8 @@ layer; its ID is the manifest digest, and building identical output gives the sa
 sitefile build examples/hello -t hello:1          # no -o: stored only, nothing written to the context
 sitefile images                                    # REPOSITORY TAG IMAGE ID CREATED FILES SIZE
 sitefile save hello:1 -o hello.oci.tar             # or .zip / .tar.gz / .wbn / a directory
-sitefile run -d --name site -p 8080 hello:1        # serve it, in the background
-sitefile ps; sitefile logs site; sitefile stop site; sitefile rm site
+sitefile serve -d --name site -p 8080 hello:1      # serve it, in the background
+sitefile servers; sitefile server logs site; sitefile server stop site; sitefile server rm site
 ```
 
 `run` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,

@@ -9,7 +9,7 @@ export interface SiteServerOptions {
   readonly spa?: boolean;
   /** One access-log line per request: `METHOD /path STATUS BYTES MSms`. */
   readonly log?: (line: string) => void;
-  /** Sent as `x-sitefile-server` so `ps` can tell its own servers from a reused port. */
+  /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
   readonly serverId?: string;
 }
 
@@ -69,7 +69,7 @@ export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): h
         res.end();
       }
       const ms = Number((process.hrtime.bigint() - started) / 1000n) / 1000;
-      // `ps` probes carry the server's own id; they would only clutter the access log.
+      // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
       options.log?.(`${method} ${printable(url)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
     };
