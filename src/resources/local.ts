@@ -3,15 +3,33 @@ import { join, sep, relative, posix } from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { sha256 } from '../digest.js';
 import { Tree, makeFile, type FileNode } from '../tree.js';
+import { IgnoreRules } from './ignore.js';
 import type { FileResource, TreeResource } from './types.js';
 
 export interface LocalContextOptions {
   /** Context-relative POSIX paths skipped while walking directories. Default `['.git']`. */
   readonly ignore?: readonly string[];
+  /** Read `.sitefileignore` from the context root (default true). Applies to directory walks only. */
+  readonly sitefileignore?: boolean;
+  /**
+   * Permit regular files with more than one hard link (default false). realpath cannot
+   * tell whether a hard link points outside the context, so by default such files are
+   * refused with `E_HARDLINK`. Allowing them means you assert they are safe.
+   */
+  readonly allowHardlinks?: boolean;
 }
+
+export const SITEFILEIGNORE = '.sitefileignore';
 
 function errCode(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | null)?.code;
+}
+
+async function exists(p: string): Promise<boolean> {
+  return fs.lstat(p).then(
+    () => true,
+    () => false,
+  );
 }
 
 function display(rel: string): string {
@@ -28,6 +46,8 @@ export class LocalContext {
   private constructor(
     readonly root: string,
     ignore: readonly string[],
+    private readonly rules: IgnoreRules,
+    private readonly allowHardlinks: boolean,
   ) {
     this.ignore = ignore.map((p) => posix.normalize(p).replace(/^\.\/+/, '').replace(/\/+$/, '')).filter((p) => p !== '' && p !== '.');
   }
@@ -42,7 +62,15 @@ export class LocalContext {
     }
     const st = await fs.stat(root);
     if (!st.isDirectory()) throw new SitefileError('E_UNSUPPORTED_FILE', `build context '${dir}' is not a directory`);
-    return new LocalContext(root, options?.ignore ?? ['.git']);
+    let rules = IgnoreRules.empty;
+    if (options?.sitefileignore !== false && (await exists(join(root, SITEFILEIGNORE)))) {
+      // Read through the sandbox: a symlinked .sitefileignore must stay inside the context.
+      const probe = new LocalContext(root, [], IgnoreRules.empty, true);
+      const { real, st } = await probe.resolve(SITEFILEIGNORE);
+      if (!st.isFile()) throw new SitefileError('E_UNSUPPORTED_FILE', `'${SITEFILEIGNORE}' is not a regular file`);
+      rules = IgnoreRules.parse(await fs.readFile(real, 'utf8'));
+    }
+    return new LocalContext(root, options?.ignore ?? ['.git'], rules, options?.allowHardlinks ?? false);
   }
 
   private inside(real: string): boolean {
@@ -51,6 +79,16 @@ export class LocalContext {
 
   private isIgnored(rel: string): boolean {
     return this.ignore.some((ig) => rel === ig || rel.startsWith(ig + '/'));
+  }
+
+  /** Hard-linked files may alias files outside the context, which realpath cannot detect. */
+  private checkHardlink(st: Stats, rel: string, span?: SourceSpan): void {
+    if (this.allowHardlinks || !st.isFile() || st.nlink <= 1) return;
+    throw new SitefileError(
+      'E_HARDLINK',
+      `'${display(rel)}' has ${st.nlink} hard links and may alias a file outside the build context (--allow-hardlinks permits this)`,
+      span,
+    );
   }
 
   /** Context-relative POSIX path of a real path inside root. */
@@ -112,6 +150,7 @@ export class LocalContext {
     if (LocalContext.kindOf(st, rel, span) !== 'file') {
       throw new SitefileError('E_UNSUPPORTED_FILE', `'${display(rel)}' is a directory, not a file`, span);
     }
+    this.checkHardlink(st, rel, span);
     const bytes = new Uint8Array(await fs.readFile(real));
     return {
       kind: 'file',
@@ -169,7 +208,10 @@ export class LocalContext {
         st = await fs.lstat(childReal);
       }
 
+      if (this.rules.ignores(childCtx, st.isDirectory())) continue;
+
       if (st.isFile()) {
+        this.checkHardlink(st, childCtx, span);
         const bytes = new Uint8Array(await fs.readFile(childReal));
         out.push(['/' + childTree, makeFile(bytes, origin, st.mode)]);
       } else if (st.isDirectory()) {

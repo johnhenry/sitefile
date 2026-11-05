@@ -33,6 +33,8 @@ export interface BuildOptions {
   readonly updateLock?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
+  /** Permit hard-linked files in the context (you assert they are safe). Default false. */
+  readonly allowHardlinks?: boolean;
   readonly onWarning?: (message: string) => void;
 }
 
@@ -102,7 +104,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       }
     }
   }
-  const local = await LocalContext.open(contextReal, { ignore });
+  const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const lockPath =
     options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
