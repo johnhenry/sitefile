@@ -387,6 +387,15 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
         }
     }
 
+    // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
+    if let Some((_, earlier)) = stages.split_last() {
+        for st in earlier.iter().filter(|st| st.name.is_none()) {
+            warnings.push(format!(
+                "{}:{}: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>",
+                program.file, st.span.line
+            ));
+        }
+    }
     for name in build_args.keys() {
         if !declared_args.contains(name) {
             warnings.push(format!("--build-arg {name} does not match any ARG and was ignored"));
@@ -708,6 +717,28 @@ mod tests {
     fn unknown_build_args_warn() {
         let p = plan_of("FROM scratch\nARG A = 1\nEXPORT /", &[("EXTRA", "x"), ("A", "2")]).unwrap();
         assert_eq!(p.warnings, ["--build-arg EXTRA does not match any ARG and was ignored"]);
+    }
+
+    #[test]
+    fn implicit_from_and_unnamed_stage_warnings() {
+        let p = plan_of("COPY ./a /a\nEXPORT /", &[]).unwrap();
+        assert_eq!(p.stages.len(), 1);
+        assert!(matches!(p.stages[0].base, StageBase::Scratch) && p.stages[0].name.is_none());
+        assert!(p.warnings.is_empty());
+
+        let p = plan_of("ARG T = \"x\"\nLET U = \"${T}!\"\nEXPORT /", &[("T", "y")]).unwrap();
+        assert_eq!(p.vars.get("U"), Some(&Scalar::Str("y!".into())));
+        assert_eq!((p.stages.len(), p.stages[0].span.line), (1, 2));
+
+        let p = plan_of("COPY ./a /a\nFROM scratch AS two\nCOPY ./b /b\nEXPORT /", &[]).unwrap();
+        assert_eq!(p.stages.len(), 2);
+        assert_eq!(p.warnings, ["Sitefile:1: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>"]);
+
+        assert!(plan_of("FROM scratch\nEXPORT /", &[]).unwrap().warnings.is_empty());
+        assert!(plan_of("FROM scratch AS a\nFROM a\nEXPORT /", &[]).unwrap().warnings.is_empty());
+        let w = plan_of("FROM scratch\nFROM scratch\nFROM scratch AS c\nFROM c\nEXPORT /", &[("Z", "1")]).unwrap().warnings;
+        assert_eq!(w.len(), 3);
+        assert!(w[0].starts_with("Sitefile:1: unnamed stage") && w[1].starts_with("Sitefile:2: unnamed stage") && w[2].contains("--build-arg Z"));
     }
 
     #[test]

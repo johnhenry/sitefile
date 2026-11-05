@@ -249,6 +249,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     }
   }
 
+  // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
+  for (const st of stages.slice(0, -1)) {
+    if (st.name === undefined) {
+      warnings.push(`${program.file}:${st.span.line}: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>`);
+    }
+  }
   for (const name of Object.keys(buildArgs)) {
     if (!declaredArgs.has(name)) warnings.push(`--build-arg ${name} does not match any ARG and was ignored`);
   }

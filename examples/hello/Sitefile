@@ -1,5 +1,4 @@
 # Minimal Sitefile: copy static assets, render one page, export the tree.
-FROM scratch
 ARG TITLE = "Hello"
 LET GREETING = "Welcome to ${TITLE}."
 COPY ./public/ /

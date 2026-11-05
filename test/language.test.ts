@@ -284,7 +284,7 @@ test('example Sitefile parses and validates', () => {
   const path = fileURLToPath(new URL('../../examples/hello/Sitefile', import.meta.url));
   const program = parseProgram(readFileSync(path, 'utf8'), path);
   assert.equal(program.file, path);
-  assert.deepEqual(program.instructions.map((i) => i.kind), ['FROM', 'ARG', 'LET', 'COPY', 'RENDER', 'EXPORT']);
+  assert.deepEqual(program.instructions.map((i) => i.kind), ['ARG', 'FROM', 'LET', 'COPY', 'RENDER', 'EXPORT']);
 });
 
 test('full program with imports and variables validates', () => {
@@ -316,11 +316,30 @@ test('empty Sitefile', () => {
 });
 
 test('FROM rules', () => {
-  progErr('COPY a /b\nEXPORT /', 'E_VALIDATION', 1, 1, /before FROM/);
-  progErr('ARG X\nLET Y = 1\nFROM scratch\nEXPORT /', 'E_VALIDATION', 2, 1, /before FROM/);
   assert.ok(parseProgram('FROM ./base\nEXPORT /'));
   assert.ok(parseProgram('FROM scratch\nFROM scratch AS b\nEXPORT /'));
   assert.equal(parseProgram('ARG X\nFROM scratch\nEXPORT /').instructions.length, 3);
+});
+
+test('implicit FROM scratch', () => {
+  const kinds = (src: string): string[] => parseProgram(src).instructions.map((i) => i.kind);
+  // No FROM at all: an implicit stage starts at the first instruction, with that instruction's span.
+  const p = parseProgram('# c\nCOPY a /b\nEXPORT /');
+  assert.deepEqual(kinds('COPY a /b\nEXPORT /'), ['FROM', 'COPY', 'EXPORT']);
+  const f = p.instructions[0]!;
+  assert.ok(f.kind === 'FROM' && f.base === 'scratch' && f.alias === undefined);
+  assert.deepEqual([f.span.line, f.span.column], [2, 1]);
+  assert.deepEqual(kinds('EXPORT /'), ['FROM', 'EXPORT']);
+  // ARG may precede the implicit stage; it stays before it.
+  assert.deepEqual(kinds('ARG X = 1\nARG Y = 2\nLET Z = 3\nCOPY a /b\nEXPORT /'), ['ARG', 'ARG', 'FROM', 'LET', 'COPY', 'EXPORT']);
+  // Followed by named stages, and an explicit FROM scratch is unchanged.
+  assert.deepEqual(kinds('COPY a /b\nFROM scratch AS two\nEXPORT /'), ['FROM', 'COPY', 'FROM', 'EXPORT']);
+  assert.deepEqual(kinds('ARG X = 1\nFROM scratch\nEXPORT /'), ['ARG', 'FROM', 'EXPORT']);
+  // Still errors: nothing but ARGs, or no EXPORT.
+  progErr('ARG X', 'E_VALIDATION', 1, 1, /missing EXPORT/);
+  progErr('COPY a /b', 'E_VALIDATION', 1, 1, /missing EXPORT/);
+  // Variables used by the implicit stage still must be declared earlier.
+  progErr('COPY ./${X} /b\nEXPORT /', 'E_UNDEFINED', 1, 8, /\$\{X\}/);
 });
 
 test('EXPORT rules', () => {

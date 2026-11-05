@@ -1,0 +1,5 @@
+ARG TITLE = "Hi"
+FROM scratch
+LET G = "${TITLE}!"
+RENDER ./src/t.html TO /index.html
+EXPORT /

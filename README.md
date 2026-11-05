@@ -6,7 +6,6 @@ no container runtime, no shell.
 
 ```
 # examples/hello/Sitefile
-FROM scratch
 ARG TITLE = "Hello"
 LET GREETING = "Welcome to ${TITLE}."
 COPY ./public/ /

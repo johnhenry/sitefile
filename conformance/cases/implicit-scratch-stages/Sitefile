@@ -1,0 +1,6 @@
+COPY ./src/a.txt /first.txt
+FROM scratch AS second
+COPY ./src/a.txt /second.txt
+FROM second
+COPY ./src/a.txt /third.txt
+EXPORT /

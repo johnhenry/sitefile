@@ -1,0 +1,5 @@
+FROM scratch
+COPY ./src/a.txt /one.txt
+FROM scratch
+COPY ./src/a.txt /two.txt
+EXPORT /

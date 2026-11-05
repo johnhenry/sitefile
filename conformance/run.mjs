@@ -124,6 +124,7 @@ async function outputOf(kind, outPath) {
 }
 
 const errorLine = (stderr) => stderr.split('\n').find((l) => l.startsWith('error')) ?? '';
+const warningLines = (stderr) => stderr.split('\n').filter((l) => l.startsWith('warning')).join('\n');
 
 const results = [];
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
@@ -145,7 +146,7 @@ try {
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
             : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
         const res = await run(cmd, argv, c.env ?? {});
-        r[impl] = { code: res.code, error: errorLine(res.stderr), ms: res.ms, spawnError: res.spawnError };
+        r[impl] = { code: res.code, error: errorLine(res.stderr), warnings: warningLines(res.stderr), ms: res.ms, spawnError: res.spawnError };
         if (res.code === 0) {
           r[impl].output =
             compare === 'stdout'
@@ -159,6 +160,7 @@ try {
     const same =
       !r.rust.spawnError &&
       r.ts.code === r.rust.code &&
+      r.ts.warnings === r.rust.warnings &&
       (r.ts.code === 0 ? r.ts.output?.digest === r.rust.output?.digest : r.ts.error === r.rust.error);
     if (!same && compare === 'stdout' && r.ts.output?.stdout !== undefined && r.rust.output?.stdout !== undefined) {
       const a = r.ts.output.stdout.split('\n');
@@ -173,7 +175,7 @@ try {
     if (!same) {
       for (const impl of ['ts', 'rust']) {
         const x = r[impl];
-        console.log(`        ${impl.padEnd(4)} exit ${x.code} ${x.spawnError ?? (x.code === 0 ? `${x.output?.files} files ${x.output?.digest}` : x.error)}`);
+        console.log(`        ${impl.padEnd(4)} exit ${x.code} ${x.spawnError ?? (x.code === 0 ? `${x.output?.files} files ${x.output?.digest}` : x.error)}${x.warnings ? ` [${x.warnings.replace(/\n/g, ' | ')}]` : ''}`);
       }
     }
   }
