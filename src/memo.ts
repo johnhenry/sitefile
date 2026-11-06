@@ -1,4 +1,5 @@
 import { sha256 } from './digest.js';
+import { ExportState } from './exporter.js';
 
 /**
  * Incremental rebuilds (watch mode): results of build steps, memoized in memory by
@@ -35,6 +36,8 @@ export class BuildMemo {
   private gen = 0;
   private goodGen = 0;
   stats: MemoStats = { hits: 0, misses: 0 };
+  /** What the session's last directory export wrote, so the next one writes only the changes. */
+  readonly exportState = new ExportState();
 
   /** Start a build: new statistics, a new generation. */
   begin(): void {

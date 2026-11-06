@@ -106,7 +106,9 @@ steps are memoized under the same rules, with the same reuse states in `--profil
 (Rust hashes the `Debug` form of the planned operation and the ARG/LET values sorted by name; TypeScript a JSON form),
 which is fine: they never leave the process, and only outputs must match. The memo is shared behind a `Mutex` because
 imports resolve on threads; nothing is computed while it is locked. `rust/tests/incremental.rs` runs the same
-randomized edit-and-compare test as `test/incremental.test.ts`.
+randomized edit-and-compare test as `test/incremental.test.ts`. The incremental export (`rust/src/export/incremental.rs`)
+follows the same steps and fallbacks as TypeScript's; it checks the recorded file stamps across a few threads, and
+records full-export stamps from the open file handles (`fstat`) while writing in parallel.
 
 ## Unicode paths
 
