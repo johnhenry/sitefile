@@ -370,6 +370,11 @@ line and column.
   `<dest>` is a file, not a directory. Failures, timeouts and oversized
   outputs are `E_PLUGIN`. See `docs/PLUGINS.md`.
 - Results are cached between builds (`docs/PLUGINS.md`, "Caching").
+- Images: the first-party wasm plugin `plugins/image/image.wasm` resizes and
+  converts PNG, JPEG, GIF and WebP (`TRANSFORM ./a.jpg WITH image TO /img/
+  OPTIONS widths=400,800`) and writes a metadata file with each variant's
+  width, height and a `srcset`. See `docs/PLUGINS.md` ("The image plugin")
+  and `examples/image/`.
 
 ### Site files: SITEMAP, FEED, REDIRECT and HEADER (see `examples/blog/`)
 Common files a static host reads, generated from the tree and the imports.

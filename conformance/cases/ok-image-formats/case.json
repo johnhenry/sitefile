@@ -1,0 +1,11 @@
+{
+  "args": ["--no-cache"],
+  "copy": {
+    "plugins/image.wasm": "plugins/image/image.wasm",
+    "in/tiny.png": "plugins/image/testdata/tiny.png",
+    "in/tiny.jpg": "plugins/image/testdata/tiny.jpg",
+    "in/tiny.gif": "plugins/image/testdata/tiny.gif",
+    "in/tiny-lossy.webp": "plugins/image/testdata/tiny-lossy.webp",
+    "in/rotated.jpg": "plugins/image/testdata/rotated.jpg"
+  }
+}
