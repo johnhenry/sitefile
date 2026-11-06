@@ -8,6 +8,9 @@
 
 (comment) @comment
 
+; `# sitefile=1`: the syntax version directive.
+(directive) @preproc
+
 (line_continuation) @punctuation.special
 
 ; Instructions and clauses (case-insensitive in the source).
@@ -15,8 +18,11 @@
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
   "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CHECKLINKS"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE" "MANIFEST"
+  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST"
 ] @keyword
+
+(secret_clause id: (identifier) @variable)
+(secret_clause header: (header_name) @property)
 
 (for_clause [ "FOR" "IN" ] @keyword)
 
@@ -71,6 +77,11 @@
 (flag name: (flag_name) @attribute)
 ((flag name: (flag_name) @_name value: (flag_value) @label)
   (#eq? @_name "from"))
+((flag name: (flag_name) @_name value: (flag_value) @number)
+  (#eq? @_name "chmod")
+  (#any-of? @number "644" "0644" "755" "0755"))
+((flag name: (flag_name) @_name value: (flag_value) @string.special)
+  (#eq? @_name "exclude"))
 ((flag name: (flag_name) @_name value: (flag_value) @constant.builtin)
   (#eq? @_name "escape")
   (#any-of? @constant.builtin "none" "html" "NONE" "HTML"))

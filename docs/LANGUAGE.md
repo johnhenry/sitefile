@@ -8,7 +8,7 @@ Instructions:
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
-- `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
+- `COPY [--from=<stage>] [--exclude=<glob>…] [--chmod=644|755] [--parents] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
@@ -44,6 +44,26 @@ These pin down what the draft above leaves open. Tests cover each rule.
   a continuation are skipped; a `\` on the last line just ends the instruction.
 - A line whose first non-blank character is `#` is a comment, also inside a
   continuation. `#` elsewhere is ordinary text (URLs contain `#`).
+- **Syntax version directive.** A comment `# sitefile=1` (like Dockerfile's
+  `# syntax=`) pins the language version the file is written for, so the
+  syntax can change later without breaking existing files. A file without it
+  is version 1, the only version so far.
+  - It is a comment line that starts `#`, then `sitefile` (ASCII
+    case-insensitive), then `=`, with spaces or tabs allowed around the name and
+    `=`: `# sitefile=1`, `#sitefile = 1`. The rest of the line, trimmed, is the
+    version. Other comments (`# sitefile: 1`, `# sitefile-lint: …`) are ordinary
+    comments.
+  - It must come before the first instruction (blank lines and other comments
+    may precede it) and appear at most once; otherwise `E_SYNTAX`
+    (`the '# sitefile=' directive must come before the first instruction`,
+    `'# sitefile=' given twice`). Inside a heredoc body it is body text.
+  - The version is a whole number without leading zeros (`E_SYNTAX`:
+    `invalid syntax version '1.0' in '# sitefile=' (expected a whole number such as 1)`).
+    A version this sitefile does not read fails with `E_UNSUPPORTED` at the
+    version: `this Sitefile uses syntax version 2; this sitefile supports version 1 (upgrade sitefile)`.
+  - Editors read it too: the language server reports these errors and shows
+    the directive's docs on hover; the TextMate and tree-sitter grammars
+    highlight it as a directive.
 - Flags (`--overwrite`, `--escape=…`) come before operands. Unknown or repeated
   flags are syntax errors.
 - Value words (ARG/LET types, IMPORT `AS` kinds, `--escape` values,
@@ -184,19 +204,22 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
+  - `SECRET`: see Build secrets below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
-  - `<uri>` is a context-relative path or an `https://` URL (`http://` only with
-    `--allow-http`). Other schemes fail with `E_PROTOCOL`.
-  - Default kind: `tree` for a local directory, otherwise `file`.
+  - `<uri>` is a context-relative path, an `https://` URL (`http://` only with
+    `--allow-http`), or a Git URL `git+https://host/repo.git#ref:path` (see
+    Git sources below). Other schemes fail with `E_PROTOCOL`.
+  - Default kind: `tree` for a local directory (or a directory in a Git
+    repository), otherwise `file`.
   - `text` must be valid UTF-8; `json` must parse. Both produce **values**:
     they can be read by RENDER templates but not copied (`E_TYPE`).
   - `AS tree` on a **file** (local or remote) means "extract this archive";
     archives are never extracted implicitly. See Archives below. A local
     directory with `AS tree` imports the directory as before.
   - Import names must not equal an ARG/LET name or another import.
-- `COPY [--overwrite] [--from=<stage>] <source> <dest>`
+- `COPY [--overwrite] [--from=<stage>] [--exclude=<pattern>]… [--chmod=644|755] [--parents] <source> <dest>`
   - With `--from=<stage>`, `<source>` is an absolute path (starts with `/`, no
     `..`) inside the final tree of an earlier, completed stage: `/out/` or
     `/a.txt`. File, directory, trailing-slash and conflict rules below apply
@@ -211,6 +234,36 @@ These pin down what the draft above leaves open. Tests cover each rule.
     new file's path.
   - **Directory source:** its *contents* are placed under `<dest>`. A trailing
     slash on either side makes no difference.
+  - **`--exclude=<pattern>`** (repeatable, like Dockerfile's `COPY --exclude`)
+    leaves out files of a **directory** source. Each pattern is one
+    `.sitefileignore` line (see below: `*`, `?`, `**`, a trailing `/` for
+    directories, a leading or inner `/` to anchor, `!` to re-include, later
+    patterns win, an excluded directory is not re-entered), matched against
+    paths **relative to the source directory**: `COPY --exclude=*.md
+    --exclude=drafts/ ./site /` copies `site/` without its Markdown files and
+    its `drafts` directory. It applies to local directories (excluded
+    directories are not read at all, so a hard-linked `node_modules` excluded
+    this way does not trigger `E_HARDLINK`), `name:` tree imports and `--from`
+    stage directories, in addition to `.sitefileignore`. The value is the rest
+    of the flag word, literal (no quotes, `${…}` or spaces). A value that is no
+    rule (`--exclude=#x`, `--exclude=/`) is `E_SYNTAX`; a file source is
+    `E_TYPE` (`--exclude filters a directory, but './a.txt' is a file`); with an
+    inline body, `E_SYNTAX`. If nothing is left, the build warns
+    (`--exclude leaves no files of './site' to copy`).
+  - **`--chmod=644|755`** (also `0644`, `0755`) sets the mode of every copied
+    file, including an inline body (`COPY --chmod=755 <<SH /run.sh`). Trees only
+    hold `0644` and `0755` files, so any other value is `E_SYNTAX`
+    (`--chmod must be 644 or 755 …`). The mode is part of the write: the same
+    bytes with a different mode at the same path are `E_CONFLICT` without
+    `--overwrite`.
+  - **`--parents`** keeps the source's own path under `<dest>`, which is then
+    always a directory: `COPY --parents ./src/css/a.css /out` writes
+    `/out/src/css/a.css`, `COPY --parents ./src/css /out/` puts the directory's
+    contents under `/out/src/css/`. The kept path is context-relative for a
+    local source and the path inside the import (`site:/css` → `css`) or stage
+    (`--from=s /www/a` → `www/a`) otherwise; a whole context, import or stage
+    keeps nothing. There is no `/./` pivot. Not allowed with an inline body
+    (`E_SYNTAX`).
 - `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]`
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
@@ -692,8 +745,9 @@ gitignore subset:
   Nix's fixed-output derivations: every remote input must already be pinned,
   or the command fails with `E_UNPINNED` **before anything is fetched**. A
   remote `IMPORT` is pinned by `INTEGRITY` or a `Sitefile.lock` entry for its
-  URL; a registry `FROM image` and the `BASE` image of an `oci` export (or
-  `--base`) by `@sha256:` or a lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
+  URL (a Git import by a commit in its URL or its lockfile entry); a registry
+  `FROM image` and the `BASE` image of an `oci` export (or `--base`) by
+  `@sha256:` or a lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
   count. Local imports never need one. `--strict-pins` conflicts with
   `--update-lock` (a usage error), since that would accept changed content.
   `inspect` and non-oci exports never resolve a `BASE`, so it is not checked
@@ -704,14 +758,102 @@ gitignore subset:
   `externalParameters.strictPins: true` and gives each remote dependency an
   annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for an
   image); without `--strict-pins` the provenance is unchanged.
-  There is no Sitefile-level switch yet (the flag needs no new syntax;
-  a future `# sitefile=N` directive may add one). Typical CI use:
+  There is no Sitefile-level switch yet (the flag needs no new syntax; the
+  `# sitefile=N` directive only pins the language version). Typical CI use:
   `sitefile build --frozen-lockfile --strict-pins`.
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
   for https in addition to Node's default store (bundled roots plus
   `NODE_EXTRA_CA_CERTS` / `--use-system-ca`), for tests and enterprise private
   CAs. Certificate and hostname verification are never disabled; there is no
   CLI flag for it.
+
+### Git sources (`git+https://…`)
+`IMPORT name FROM git+https://host/repo.git#ref:path` imports a directory (or one file) of a Git
+repository at a commit, and `sitefile build https://host/repo.git#ref:dir` builds a repository
+(see [CLI.md](CLI.md#building-from-a-git-url)).
+- **The URL.** `git+https://` (`git+http://` only with `--allow-http`); any other transport
+  (`git+ssh:`, `git+file:`, `git://`) is `E_PROTOCOL`, as are credentials in the URL and a query
+  string. After `#` come the **ref** and, after the first `:`, the **path** inside the repository:
+  `#main`, `#v1.2:docs`, `#refs/heads/main:site/`, `#:docs` (the remote's HEAD), or no fragment at
+  all (HEAD, whole repository). The ref follows `git check-ref-format` (`E_VALIDATION` otherwise); a
+  path with `..` is `E_PATH_ESCAPE`. `${NAME}` interpolation works as in any operand.
+- **Refs and commits.** A ref of exactly 40 lowercase hex digits is a **commit** (a pin). Any other ref
+  is resolved on the server: `refs/…` exactly, otherwise `refs/tags/<ref>` then `refs/heads/<ref>`
+  (Git's order); annotated tags are peeled to their commit. An unknown ref is `E_NOT_FOUND`.
+- **Sitefile.lock** records each Git URL (as written) with the commit it resolved to, in a `git`
+  section: `"git": {"git+https://host/r.git#main:docs": {"commit": "<40 hex>"}}`. A locked ref is
+  **not** resolved again: the build fetches the locked commit (like Cargo's git dependencies), so a
+  moving branch does not change the build until `--update-lock` re-resolves it. `--frozen-lockfile`
+  requires the entry (`E_LOCK_MISSING`). An unpinned, unlocked ref warns
+  (`IMPORT x is not pinned; pin commit <hex> (#<hex>:path) for a reproducible build`).
+  A URL whose commit differs from its lockfile entry is `E_LOCK_MISMATCH`.
+- **`--strict-pins`**: a commit in the URL or a lockfile entry pins a Git import (`dev.sitefile.pin`
+  is `commit` or `lockfile` in the provenance). `INTEGRITY` does not apply to Git imports
+  (`E_VALIDATION`): the commit id already names the content.
+- **Kinds.** A directory imports as a tree (`AS tree`, the default), or as a Markdown, JSON or YAML
+  collection (`AS markdown|json|yaml`, `SORT BY` as for local directories). A file imports like a
+  downloaded file (`AS file|text|json|yaml|csv|markdown|wbn`, or `AS tree` to extract an archive).
+  Files keep their executable bit (`0755`), everything else is `0644`. The provenance digest is the
+  tree digest (or the file's sha256) and the commit is recorded as `gitCommit` (`--provenance`:
+  `"digest": {"gitCommit": …, "sha256": …}`, `downloadLocation` = the URL with the commit as ref).
+- **Protocol.** Sitefile speaks Git's smart HTTP **protocol v2** itself; no `git` program runs, so
+  there are no hooks, no Git config, no credential helpers and no filters (`.gitattributes` is just a
+  file; Git LFS files arrive as their pointer files). One capability request
+  (`GET <repo>/info/refs?service=git-upload-pack`, `Git-Protocol: version=2`), an `ls-refs` request
+  when the ref is not a commit, and one shallow `fetch` (`want <commit>`, `deepen 1`) of that commit.
+  Dumb HTTP servers and servers without protocol v2 are refused (`E_GIT`), as are SHA-256
+  repositories. All requests use the HTTPS client of remote imports, so the same network policy
+  applies: public addresses only (checked at connect time) unless `--allow-private-network`, TLS
+  verification, the size cap (`--max-download-bytes`, per request) and the timeout. Redirects are
+  followed (and re-checked) for the capability request only; the repository URL it ends at is used
+  for the rest, and a redirect of a `POST` is `E_REDIRECT`.
+- **Verification.** The packfile is parsed by Sitefile (zlib objects, `OFS_DELTA` and `REF_DELTA`,
+  bases inside the pack only); its trailing SHA-1 is checked, every object's id is recomputed from
+  its content, and the commit must be the one asked for, so the files imported are exactly those the
+  commit names. Inflated objects are bounded by the archive limits (`maxTotalBytes`, and
+  `maxEntries` for the files of the tree; `E_ARCHIVE_LIMIT`). A malformed response is `E_GIT`.
+- **What a tree may contain.** The same rules as a local directory and an archive: names are
+  normalized to NFC (two names with one NFC form are `E_PATH_COLLISION`), names equal under case
+  folding are `E_PATH_COLLISION`, and an entry named `.git` (any case), `.`/`..`, or containing a
+  backslash is `E_ARCHIVE_UNSAFE`. **Symbolic links** are resolved like local symlinks, inside the
+  imported tree only: a relative target that stays inside it is followed (files and directories); an
+  absolute target or one that leaves it is `E_PATH_ESCAPE`; a dangling link is `E_NOT_FOUND`; more
+  than 40 links in a row is a loop (`E_UNSUPPORTED_FILE`); a directory link back to one of its own
+  ancestors is skipped. **Submodules** (gitlinks) are refused (`E_UNSUPPORTED_FILE`): import the
+  submodule's repository with its own `IMPORT`.
+- Private repositories need credentials, which URLs may not carry: use a build secret
+  (`IMPORT … FROM git+https://… SECRET token AS BEARER`, or `AS HEADER Authorization` with a
+  `Basic …` value); it is sent with every Git request to the repository's origin.
+
+### Build secrets (`--secret`, `IMPORT … SECRET`)
+Remote IMPORTs from private APIs and repositories need credentials, which URLs may not carry.
+Like Docker's `--mount=type=secret`, a secret is given on the command line and named in the
+Sitefile; its value is never part of the Sitefile, the output or any record of the build.
+- **CLI**: `--secret id=<id>,env=<VAR>` (an environment variable) or `--secret id=<id>,src=<file>`
+  (a file, relative to the working directory; one trailing newline is dropped), repeatable, on
+  `build`, `inspect`, `why`, `vendor` and `outdated` (`validate` and `graph` accept and ignore it).
+  `<id>` is an identifier. A malformed flag is a usage error that does not echo the flag (it might be
+  the secret); an unset variable, an unreadable or empty file, or a value with characters other than
+  printable ASCII, spaces and tabs is `E_SECRET`. An id no IMPORT names is a warning.
+- **Sitefile**: `SECRET <id> AS HEADER <Name>` sends the value verbatim as the request header `<Name>`
+  (an HTTP token); `SECRET <id> AS BEARER` sends `Authorization: Bearer <value>`. Clauses may be
+  repeated and mixed with `AS`, `INTEGRITY` and `SORT BY` in any order, but a header (compared
+  case-insensitively; `BEARER` is `Authorization`) only once. Headers the client sets itself (`Host`,
+  `Content-Length`, `Content-Type`, `Accept`, `Accept-Encoding`, `User-Agent`, `Git-Protocol`,
+  `Connection`, …) are `E_SYNTAX`. `SECRET` on a local import is `E_VALIDATION`.
+- **Missing**: an IMPORT whose secret was not given fails with `E_SECRET` when it would be fetched. A
+  vendored copy needs no secret (nothing is fetched).
+- **Where the value goes**: only into the request headers of that IMPORT, and only to the origin
+  (scheme, host and port) of its URL: a redirect to another origin is followed without it (a
+  same-origin redirect keeps it). For Git imports it goes with every Git request to the repository.
+- **Where it never goes**: the output, cache and memo keys (they hold the secret's *id* and header
+  name, never the value), `Sitefile.lock` and the vendor manifest (keyed by URL, as before),
+  provenance and SBOM, `--profile` traces, `validate --json` (ids and header names only), warnings and
+  error messages. As a last line of defence, every warning and error of a build, `vendor` or
+  `outdated` run with secrets has each secret value replaced by `***` (for example when a server puts
+  the credential it received into a redirect URL).
+- The content fetched with a secret is ordinary content: it is pinned, locked and vendored like any
+  other import, so commit a vendor directory of private data only where that data may live.
 
 ### Vendoring (`sitefile vendor`)
 `sitefile vendor [context]` (like `cargo vendor`) downloads every remote input so
@@ -733,6 +875,13 @@ later builds work offline and without the network flags:
     resolved}}, "images": {ref: {digest, platform, manifest}}}` with sorted keys,
     so vendoring the same inputs gives the same bytes. `ref` is the lockfile key
     (`registry/name:tag`), or `registry/name[:tag]@sha256:...` for a digest pin.
+    Git imports add `"git": {url: {commit, kind, integrity, size[, mode]}}` (only
+    when there are any): `kind` is `tree`, stored as a deterministic tar of the
+    imported files (mtime 0, modes `644`/`755`), or `file`, stored as its bytes
+    with its `mode`. A build uses a vendored Git import when its commit is the one
+    the build would fetch (the URL's commit, else the lockfile's); a ref with no
+    lockfile entry uses the vendored commit (and records it), and `--update-lock`
+    resolves the ref on the server again.
   A directory that resolves outside the context, a symlink, or an existing
   non-empty directory without `manifest.json` is refused (`E_PATH_ESCAPE`,
   `E_EXPORT_UNSAFE`).
@@ -791,6 +940,9 @@ checked:
   `1.25-alpine` suggests `1.27-alpine`, never `1.27.1-alpine` or `1.28`. This is a
   heuristic over tag names, not semver: tags carry no ordering metadata. A registry
   that refuses to list tags simply gives none.
+- **Git imports**: the ref is resolved again (one `ls-refs`; nothing is downloaded) and compared with
+  the commit in `Sitefile.lock`: `changed` means the ref has moved. A commit in the URL is
+  `digest-only` (pinned by `commit`, nothing is requested); `pin` and `latest` are commits.
 - A failed fetch or registry call is an `error` row (with its code and message),
   not a failure of the command; the exit code is 0 unless the Sitefile itself
   cannot be read or planned. `--no-lockfile` ignores `Sitefile.lock`.
@@ -801,7 +953,7 @@ checked:
   caches, not inputs.
 - `--json` prints `{"inputs": [{kind, name, source, pin, pinnedBy, latest, status,
   newerTag, error}], "summary": {current, changed, unpinned, digest-only, error}}`;
-  `pinnedBy` is `integrity`, `lockfile`, `digest` or `null`, `error` is
+  `pinnedBy` is `integrity`, `lockfile`, `digest`, `commit` or `null`, `error` is
   `{code, message}` or `null`.
 
 ### Archives (`IMPORT … AS tree` on a file)

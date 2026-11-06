@@ -7,6 +7,9 @@ import { MEDIA, parseManifest } from '../oci.js';
 import { selectPlatform } from '../registry-ops.js';
 import type { Store } from '../store.js';
 import type { LocalContext } from './local.js';
+import { extractArchive } from './archive.js';
+import type { GitSelection } from './git.js';
+import type { ArchiveLimits } from './types.js';
 
 /**
  * The vendor directory written by `sitefile vendor` (issue #96): every remote input's bytes under
@@ -39,10 +42,23 @@ export interface VendoredImage {
   readonly manifest: string;
 }
 
+/** A Git IMPORT: the commit it was read from and its content (a file's bytes, or a tree as a tar). */
+export interface VendoredGit {
+  readonly commit: string;
+  readonly kind: 'tree' | 'file';
+  /** `sha256:<hex>` of the stored bytes: also their blob name. */
+  readonly integrity: string;
+  readonly size: number;
+  /** Files only: `644` or `755`. */
+  readonly mode?: string;
+}
+
 export interface VendorManifest {
   readonly version: 1;
   readonly resources: Readonly<Record<string, VendoredResource>>;
   readonly images: Readonly<Record<string, VendoredImage>>;
+  /** Written only when non-empty. */
+  readonly git?: Readonly<Record<string, VendoredGit>>;
 }
 
 /** Validate a vendor directory: a relative path inside the build context. Returns it normalized (POSIX, no trailing slash). */
@@ -106,7 +122,20 @@ export function parseVendorManifest(bytes: Uint8Array, shown: string): VendorMan
     }
     images[ref] = { digest: e.digest, platform: e.platform, manifest: e.manifest };
   }
-  return { version: 1, resources, images };
+  const git: Record<string, VendoredGit> = {};
+  const gs = data.git ?? {};
+  if (!isObject(gs)) throw bad('"git" must be an object');
+  for (const [url, e] of Object.entries(gs)) {
+    if (
+      !isObject(e) || typeof e.commit !== 'string' || !/^[0-9a-f]{40}$/.test(e.commit) || (e.kind !== 'tree' && e.kind !== 'file') ||
+      typeof e.integrity !== 'string' || !INTEGRITY_RE.test(e.integrity) || typeof e.size !== 'number' || !Number.isSafeInteger(e.size) || e.size < 0 ||
+      (e.kind === 'file' ? e.mode !== '644' && e.mode !== '755' : e.mode !== undefined)
+    ) {
+      throw bad(`git entry for ${url} needs "commit", "kind" (tree or file), "integrity", "size" (and "mode" for a file)`);
+    }
+    git[url] = { commit: e.commit, kind: e.kind, integrity: e.integrity, size: e.size, ...(e.kind === 'file' ? { mode: e.mode as string } : {}) };
+  }
+  return { version: 1, resources, images, ...(Object.keys(git).length ? { git } : {}) };
 }
 
 /** The manifest as `sitefile vendor` writes it: sorted keys, two-space indent, trailing newline. */
@@ -121,7 +150,12 @@ export function serializeVendorManifest(m: VendorManifest): string {
     const e = m.images[ref]!;
     images[ref] = { digest: e.digest, platform: e.platform, manifest: e.manifest };
   }
-  return JSON.stringify({ version: 1, resources, images }, null, 2) + '\n';
+  const git: Record<string, VendoredGit> = {};
+  for (const url of Object.keys(m.git ?? {}).sort()) {
+    const e = m.git![url]!;
+    git[url] = { commit: e.commit, kind: e.kind, integrity: e.integrity, size: e.size, ...(e.mode !== undefined ? { mode: e.mode } : {}) };
+  }
+  return JSON.stringify({ version: 1, resources, images, ...(Object.keys(git).length ? { git } : {}) }, null, 2) + '\n';
 }
 
 function isIndex(bytes: Uint8Array): boolean {
@@ -155,6 +189,19 @@ export class Vendor {
 
   image(ref: string): VendoredImage | undefined {
     return Object.hasOwn(this.manifest.images, ref) ? this.manifest.images[ref] : undefined;
+  }
+
+  git(url: string): VendoredGit | undefined {
+    const g = this.manifest.git;
+    return g && Object.hasOwn(g, url) ? g[url] : undefined;
+  }
+
+  /** The vendored content of a Git IMPORT, verified against its digest. */
+  async readGit(url: string, e: VendoredGit, basename: string, limits: ArchiveLimits, span?: SourceSpan): Promise<GitSelection> {
+    const bytes = await this.readBlob(e.integrity, `vendored copy of '${url}'`, span);
+    if (e.kind === 'file') return { kind: 'file', bytes, mode: e.mode === '755' ? 0o755 : 0o644, basename };
+    const tree = await extractArchive(bytes, `vendored copy of '${url}'`, limits, span);
+    return { kind: 'tree', files: tree.entries().map(([p, n]) => [p, { bytes: n.bytes, mode: n.mode }] as const) };
   }
 
   /** The vendored body of `url`, verified against its digest. */

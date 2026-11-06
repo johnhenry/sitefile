@@ -62,6 +62,8 @@ const PATHS = [
 ];
 const NUMBERS = ['0', '1', '-0', '1e3', '1E3', '0x10', '0b1', '0o7', '.5', '5.', '1_000', 'Infinity', '-Infinity', 'NaN', '1e400', '9007199254740993', '+1', '0.1', '1.50', '1e21', '1e-7', '00', '" 5 "', '""', '"\\t1\\n"', 'abc', '123456789012345678901234', '-', '2e-324'];
 const BOOLEANS = ['true', 'false', 'TRUE', 'True', '1', '0', 'yes', '""', '" true"'];
+const EXCLUDES = ['*.md', 'drafts/', '!keep.md', '/css/x.css', '**/*.map', '#c', '/', '!', 'a\\ b', '${x}'];
+const MODES = ['644', '0644', '755', '0755', '600', '0o755', '777', 'x'];
 const VALUES = ['hello', '"Hello world"', "'single'", '"${TITLE} x"', '${x}', '""', 'é', '"tab\\there"', ...NUMBERS.slice(0, 12), ...BOOLEANS.slice(0, 5)];
 
 /** `FROM image <ref> [AT <dir>]` references: registry, local-store, digest-pinned and invalid ones. */
@@ -79,10 +81,15 @@ const INSTRUCTIONS = {
     if (chance(0.6)) clauses.push(`AS ${pick(KINDS)}`);
     if (chance(0.25)) clauses.push(`INTEGRITY ${pick(DIGESTS)}`);
     if (chance(0.25)) clauses.push(`SORT BY ${pick(['date', 'title', 'x-y', '1'])}${maybe(() => ` ${pick(['DESC', 'ASC', 'desc', 'UP'])}`)}`);
+    // Build secrets (issue #85), sometimes twice (the same header twice is E_SYNTAX).
+    for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
+      clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
+    }
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
-  COPY: () => `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus'])}${source()} ${pick(PATHS)}`,
+  COPY: () =>
+    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
     `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
@@ -111,13 +118,15 @@ const INSTRUCTIONS = {
   FINGERPRINT: () =>
     `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}`,
   CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
+  // The syntax version directive (a comment; only valid before the first instruction).
+  DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
   // Rejected keywords.
   RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
   NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
   UNKNOWN: () => `${pick(['WORKDIR', 'ENV', 'ADD', 'Copy', 'copy', 'FROMX', 'É', '--x', 'ſtage', 'İmport', 'ﬁ', 'exec'])} ${pick(PATHS)}`,
 };
 /** Relative weights (instructions not listed get 1). */
-const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4 };
+const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3 };
 /** Keywords mutations may splice in. */
 const WORDS = [
   'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS',
@@ -171,6 +180,7 @@ function generate(k) {
 
 function program() {
   const lines = [];
+  if (chance(0.2)) lines.push(generate('DIRECTIVE'));
   for (let n = int(3); n > 0; n--) lines.push(generate('ARG'));
   if (chance(0.6)) lines.push(generate(pick(['FROM', 'STAGE'])));
   for (let n = int(7); n > 0; n--) lines.push(chance(0.1) ? generate(pick(['FROM', 'STAGE'])) : instruction());
@@ -184,7 +194,7 @@ function program() {
  * they are used, so mutations then exercise the validator and planner too.
  */
 function validProgram() {
-  const lines = ['ARG TITLE = "Hello"'];
+  const lines = [...(chance(0.25) ? [pick(['# sitefile=1', '#sitefile = 1', '# comment\n# sitefile=1'])] : []), 'ARG TITLE = "Hello"'];
   const vars = ['TITLE'];
   const stages = [];
   const lists = [];
@@ -224,6 +234,8 @@ function validProgram() {
   };
   const ops = [
     () => `COPY ${maybe('--overwrite ')}${pick(['./src', 'style.css', './a\\ b', `"./q ${v()}"`, 'site:/x', 'site:'])} ${pick(['/', '/css/', `/${v()}.css`, '"/x y/"'])}`,
+    () => `COPY ${maybe('--exclude=*.md ')}${maybe('--exclude=drafts/ ')}${maybe(() => `--chmod=${pick(['644', '0755'])} `)}${maybe('--parents ')}${pick(['./src', './src/a.css', 'site:/x', 'site:'])} /out/`,
+    () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
     () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
@@ -339,7 +351,23 @@ const EDGE = [
   'COPY 😀 /😀\nEXPORT /x 😀', 'ARG 😀\nEXPORT /', 'ARG a😀\nEXPORT /', 'COPY a /b\u00a0c\nEXPORT /', 'COPY\u3000a /b\nEXPORT /',
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',
   '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
+  '# sitefile=1\nEXPORT /', '# sitefile=2\nEXPORT /', '#sitefile = 1\n#sitefile=1\nEXPORT /', 'EXPORT /\n# sitefile=1', '# sitefile=1.0\nEXPORT /',
+  'COPY --exclude=*.md --exclude=x/ --chmod=755 --parents ./a /b/\nEXPORT /', 'COPY --chmod=600 a /b\nEXPORT /', 'COPY --exclude=#x a /b\nEXPORT /',
+  'COPY --parents <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --chmod=755 <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --exclude=a --exclude=a ./a /b\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
+  // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
+  'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#' + 'ab'.repeat(20) + ':a/b/ AS markdown SORT BY date\nEXPORT /', 'IMPORT d FROM git+http://e.x/r#v1.0:README.md AS text\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#refs/tags/v1\nEXPORT /', 'IMPORT d FROM GIT+HTTPS://e.x/r#:sub\nEXPORT /', 'IMPORT d FROM git+ssh://e.x/r\nEXPORT /',
+  'IMPORT d FROM git+https://u:p@e.x/r\nEXPORT /', 'IMPORT d FROM git+https://e.x/r?x=1\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a..b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main:../x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#-x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#x.lock\nEXPORT /',
+  'IMPORT d FROM "git+https://e.x/r#main:a\\\\b"\nEXPORT /', 'ARG R = main\nIMPORT d FROM git+https://e.x/r#${R}:docs\nEXPORT /', 'IMPORT d FROM git+:x\nEXPORT /',
+  // Build secrets (issue #85).
+  'IMPORT d FROM https://e.x/d SECRET k AS HEADER X-Api-Key AS json SECRET t AS BEARER\nEXPORT /', 'IMPORT d FROM ./d SECRET k AS BEARER\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET k AS HEADER Content-Length\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET k AS HEADER xé\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER AUTHORIZATION\nEXPORT /', 'IMPORT d FROM git+https://e.x/r SECRET k as header Cookie\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET k AS COOKIE\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET k AS HEADER "X-Q"\nEXPORT /',
   'FROM image\nEXPORT /', 'FROM image AS x\nEXPORT /', 'FROM image t:1 AT\nEXPORT /', 'FROM image t:1 AS\nEXPORT /', 'FROM image t:1 extra\nEXPORT /',
   'STAGE s FROM image ghcr.io/a/b:1 AT /srv/www\nEXPORT /', 'STAGE s FROM image\nEXPORT /', 'STAGE s FROM image t:1 AS x\nEXPORT /', 'FROM image Bad:1\nEXPORT /',
   'ARG V=1\nFROM image theme:${V} AS t\nFROM t\nEXPORT /', 'FROM image t:1 AT rel\nEXPORT /', 'FROM image t@sha256:' + 'a'.repeat(64) + ' AT /x/../y\nEXPORT /',

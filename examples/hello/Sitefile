@@ -1,3 +1,4 @@
+# sitefile=1
 # Minimal Sitefile: copy static assets, render one page, export the tree.
 ARG TITLE = "Hello"
 LET GREETING = "Welcome to ${TITLE}."

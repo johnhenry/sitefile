@@ -221,7 +221,9 @@ impl Server {
             }
             "textDocument/hover" => {
                 doc.analysis();
-                features::hover(&doc.index, doc.analysis.as_ref(), line, col).unwrap_or(Value::Null)
+                features::comment_hover(&doc.lines, &doc.index, line, col)
+                    .or_else(|| features::hover(&doc.index, doc.analysis.as_ref(), line, col))
+                    .unwrap_or(Value::Null)
             }
             "textDocument/definition" => features::definition(&doc.index, &uri, line, col).unwrap_or(Value::Null),
             "textDocument/references" => {

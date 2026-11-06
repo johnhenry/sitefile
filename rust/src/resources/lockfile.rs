@@ -26,6 +26,13 @@ pub struct ImageLockEntry {
     pub digest: String,
 }
 
+/// A Git IMPORT (keyed by the URI as written) pinned to the commit its ref resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitLockEntry {
+    /// 40 lowercase hex digits.
+    pub commit: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Lockfile {
     pub path: PathBuf,
@@ -33,6 +40,8 @@ pub struct Lockfile {
     used: BTreeSet<String>,
     images: BTreeMap<String, ImageLockEntry>,
     used_images: BTreeSet<String>,
+    gits: BTreeMap<String, GitLockEntry>,
+    used_gits: BTreeSet<String>,
     existed: bool,
     original_text: Option<String>,
 }
@@ -60,6 +69,8 @@ impl Lockfile {
             used: BTreeSet::new(),
             images: BTreeMap::new(),
             used_images: BTreeSet::new(),
+            gits: BTreeMap::new(),
+            used_gits: BTreeSet::new(),
             existed: false,
             original_text: None,
         };
@@ -111,6 +122,19 @@ impl Lockfile {
                 _ => return Err(bad(format!("image entry for {r} needs a \"digest\" (sha256:<64 hex>)"))),
             }
         }
+        let gits = match obj.get("git") {
+            None | Some(Value::Null) => &empty_obj,
+            Some(Value::Object(m)) => m,
+            Some(_) => return Err(bad("\"git\" must be an object".into())),
+        };
+        for (url, raw) in gits {
+            match raw.get("commit") {
+                Some(Value::String(c)) if raw.is_object() && crate::resources::git::is_commit(c) => {
+                    lock.gits.insert(url.clone(), GitLockEntry { commit: c.clone() });
+                }
+                _ => return Err(bad(format!("git entry for {url} needs a \"commit\" (40 lowercase hex digits)"))),
+            }
+        }
         lock.existed = true;
         lock.original_text = Some(text);
         Ok(lock)
@@ -130,6 +154,16 @@ impl Lockfile {
         if self.images.contains_key(r) {
             self.used_images.insert(r.to_string());
         }
+    }
+
+    /// The commit a Git IMPORT URI was locked to.
+    pub fn get_git(&self, url: &str) -> Option<&GitLockEntry> {
+        self.gits.get(url)
+    }
+
+    pub fn record_git(&mut self, url: &str, entry: GitLockEntry) {
+        self.gits.insert(url.to_string(), entry);
+        self.used_gits.insert(url.to_string());
     }
 
     pub fn get(&self, url: &str) -> Option<&LockEntry> {
@@ -175,6 +209,17 @@ impl Lockfile {
             }
             data.insert("images".into(), Value::Object(images));
         }
+        if !self.used_gits.is_empty() {
+            let mut gits = Map::new();
+            for u in &self.used_gits {
+                if let Some(e) = self.gits.get(u) {
+                    let mut m = Map::new();
+                    m.insert("commit".into(), Value::String(e.commit.clone()));
+                    gits.insert(u.clone(), Value::Object(m));
+                }
+            }
+            data.insert("git".into(), Value::Object(gits));
+        }
         // JSON.stringify(data, null, 2) + '\n'
         let mut s = serde_json::to_string_pretty(&Value::Object(data)).unwrap_or_default();
         s.push('\n');
@@ -186,7 +231,7 @@ impl Lockfile {
     /// a lockfile that would have no entries. The write is atomic (temp file + rename).
     pub fn save(&mut self) -> Result<bool> {
         let text = self.serialize();
-        if !self.existed && self.used.is_empty() && self.used_images.is_empty() {
+        if !self.existed && self.used.is_empty() && self.used_images.is_empty() && self.used_gits.is_empty() {
             return Ok(false);
         }
         if self.existed && self.original_text.as_deref() == Some(text.as_str()) {

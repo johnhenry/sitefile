@@ -14,11 +14,13 @@ import {
   REDIRECT_STATUSES,
   type RedirectStatus,
   type ImportKind,
+  type ImportSecret,
   type Instruction,
   type Operand,
   type StageRef,
   type ValueType,
 } from './ast.js';
+import { isIgnorePattern } from '../resources/ignore.js';
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
@@ -132,6 +134,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   let as: ImportKind | undefined;
   let integrity: string | undefined;
   let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
+  const secrets: ImportSecret[] = [];
   while (!c.atEnd()) {
     const at = c.span;
     if (c.keyword('AS')) {
@@ -154,8 +157,13 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       const key = c.ident('sort key');
       const descending = c.keyword('DESC') ? true : (c.keyword('ASC'), false);
       sort = { key, descending, span: at };
+    } else if (c.keyword('SECRET')) {
+      const s = parseSecretClause(c, at);
+      const prior = secrets.find((p) => p.header.toLowerCase() === s.header.toLowerCase());
+      if (prior) throw c.error('E_SYNTAX', `header '${s.header}' is set by two SECRET clauses`, at);
+      secrets.push(s);
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY or SORT BY)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY or SECRET)`, at);
     }
   }
   return {
@@ -166,7 +174,30 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     ...(as !== undefined && { as }),
     ...(integrity !== undefined && { integrity }),
     ...(sort !== undefined && { sort }),
+    ...(secrets.length > 0 && { secrets }),
   };
+}
+
+const HEADER_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them. */
+const RESERVED_HEADERS = new Set([
+  'accept', 'accept-encoding', 'connection', 'content-encoding', 'content-length', 'content-type', 'git-protocol',
+  'host', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'user-agent',
+]);
+
+/** `SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER` (after the SECRET keyword). */
+function parseSecretClause(c: Cursor, span: SourceSpan): ImportSecret {
+  const id = c.ident('secret id');
+  c.expectKeyword('AS');
+  if (c.keyword('BEARER')) return { id, header: 'Authorization', bearer: true, span };
+  const at = c.span;
+  if (!c.keyword('HEADER')) throw c.error('E_SYNTAX', 'expected HEADER <name> or BEARER', at);
+  const nameAt = c.span;
+  const header = c.word();
+  if (header === '') throw c.error('E_SYNTAX', 'expected a header name', nameAt);
+  if (!HEADER_TOKEN.test(header)) throw c.error('E_SYNTAX', `invalid header name '${header}'`, nameAt);
+  if (RESERVED_HEADERS.has(header.toLowerCase())) throw c.error('E_SYNTAX', `header '${header}' is set by sitefile and cannot carry a secret`, nameAt);
+  return { id, header, bearer: false, span };
 }
 
 interface Flag {
@@ -174,16 +205,21 @@ interface Flag {
   readonly span: SourceSpan;
 }
 
-/** Read leading `--flags`; returns name -> flag (value '' for a bare flag). */
-function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value'>): Map<string, Flag> {
+/**
+ * Read leading `--flags`; returns name -> flag (value '' for a bare flag). A `repeat` flag may be
+ * given several times: each one is added to `repeated` (and the map holds the first).
+ */
+function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repeat'>, repeated: Flag[] = []): Map<string, Flag> {
   const out = new Map<string, Flag>();
   for (let f = c.flag(); f; f = c.flag()) {
     const shape = allowed[f.name];
     if (shape === undefined) throw c.error('E_SYNTAX', `unknown flag --${f.name}`, f.span);
-    if (out.has(f.name)) throw c.error('E_SYNTAX', `--${f.name} given twice`, f.span);
+    if (out.has(f.name) && shape !== 'repeat') throw c.error('E_SYNTAX', `--${f.name} given twice`, f.span);
     if (shape === 'bare' && f.value !== undefined) throw c.error('E_SYNTAX', `--${f.name} takes no value`, f.span);
-    if (shape === 'value' && !f.value) throw c.error('E_SYNTAX', `--${f.name} requires a value (--${f.name}=...)`, f.span);
-    out.set(f.name, { value: f.value ?? '', span: f.span });
+    if (shape !== 'bare' && !f.value) throw c.error('E_SYNTAX', `--${f.name} requires a value (--${f.name}=...)`, f.span);
+    const flag = { value: f.value ?? '', span: f.span };
+    if (shape === 'repeat') repeated.push(flag);
+    if (!out.has(f.name)) out.set(f.name, flag);
   }
   return out;
 }
@@ -201,14 +237,43 @@ function noInlineFrom(c: Cursor, source: Operand | InlineBody, flags: Map<string
 }
 
 function parseCopy(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
+  const excludes: Flag[] = [];
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value', exclude: 'repeat', chmod: 'value', parents: 'bare' }, excludes);
+  for (const e of excludes) {
+    if (!isIgnorePattern(e.value)) throw c.error('E_SYNTAX', `--exclude=${e.value} is not a pattern (it is blank or a # comment in .sitefileignore syntax)`, e.span);
+  }
+  const chmodFlag = flags.get('chmod');
+  let chmod: number | undefined;
+  if (chmodFlag) {
+    chmod = Object.hasOwn(CHMOD_MODES, chmodFlag.value) ? CHMOD_MODES[chmodFlag.value] : undefined;
+    if (chmod === undefined) {
+      throw c.error('E_SYNTAX', `--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '${chmodFlag.value}'`, chmodFlag.span);
+    }
+  }
   const source = c.inline() ?? c.operand('source');
   const dest = c.operand('destination');
   c.expectEnd();
   c.expectInlineUsed('the COPY source');
   noInlineFrom(c, source, flags);
-  return { kind: 'COPY', span, source, dest, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
+  for (const name of ['exclude', 'parents']) {
+    const f = flags.get(name);
+    if (f && isInline(source)) throw c.error('E_SYNTAX', `--${name} cannot be combined with an inline (<<) body`, f.span);
+  }
+  return {
+    kind: 'COPY',
+    span,
+    source,
+    dest,
+    overwrite: flags.has('overwrite'),
+    ...stageRef(c, flags),
+    ...(excludes.length > 0 && { exclude: excludes.map((e) => e.value) }),
+    ...(chmod !== undefined && { chmod }),
+    ...(flags.has('parents') && { parents: true as const }),
+  };
 }
+
+/** `--chmod` values: Sitefile trees only hold 0644 and 0755 files. */
+const CHMOD_MODES: Readonly<Record<string, number>> = { '644': 0o644, '0644': 0o644, '755': 0o755, '0755': 0o755 };
 
 function parseRender(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { escape: 'value', overwrite: 'bare', from: 'value' });

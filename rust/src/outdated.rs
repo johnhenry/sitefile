@@ -22,7 +22,8 @@ use crate::language::ast::ExportFormat;
 use crate::planner::{plan, ImportLocation, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::{insecure_registries_from_env, make_client, process_env, RegistryOptions};
-use crate::resources::https::fetch_remote;
+use crate::resources::https::{fetch_remote_with, FetchRequest};
+use crate::secrets::{redact_secrets, secret_headers};
 use crate::resources::lockfile::Lockfile;
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
@@ -188,7 +189,7 @@ fn status_of(pin: Option<&str>, latest: &str) -> Status {
 }
 
 pub fn outdated(options: &BuildOptions) -> Result<Report> {
-    let Loaded { program, sitefile_path, .. } = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let Loaded { program, sitefile_path, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     if let Some(w) = &options.on_warning {
         for m in &p.warnings {
@@ -203,6 +204,37 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
     let mut inputs = Vec::new();
 
     for spec in &p.imports {
+        if let ImportLocation::Git(loc) = &spec.location {
+            // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it
+            // was locked. A commit in the URL has no ref to follow.
+            let locked = lock.as_ref().and_then(|l| l.get_git(&loc.url)).map(|e| e.commit.clone());
+            let pinned_by = if loc.commit.is_some() {
+                Some("commit")
+            } else if locked.is_some() {
+                Some("lockfile")
+            } else {
+                None
+            };
+            let pin = loc.commit.clone().or(locked);
+            let mut e = Entry { kind: "import", name: spec.name.clone(), source: loc.url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
+            if loc.commit.is_some() {
+                e.status = Status::DigestOnly;
+            } else {
+                let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets).and_then(|origin_headers| {
+                    let t = crate::resources::git::GitTransport { origin_headers: &origin_headers, ..crate::resources::git::GitTransport::new(&options.fetch_policy, Some(&spec.span)) };
+                    crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, t)
+                });
+                match r {
+                    Ok(latest) => {
+                        e.status = status_of(e.pin.as_deref(), &latest);
+                        e.latest = Some(latest);
+                    }
+                    Err(err) => e.error = Some((err.code.as_str().to_string(), redact_secrets(&err.detail, &options.secrets))),
+                }
+            }
+            inputs.push(e);
+            continue;
+        }
         let ImportLocation::Remote { url } = &spec.location else { continue };
         let locked = lock.as_ref().and_then(|l| l.get(url));
         let pin = spec.integrity.clone().or_else(|| locked.map(|e| e.integrity.clone()));
@@ -214,13 +246,15 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
             None
         };
         let mut e = Entry { kind: "import", name: spec.name.clone(), source: url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
-        match fetch_remote(url, &options.fetch_policy, None) {
+        let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets)
+            .and_then(|origin_headers| fetch_remote_with(url, &options.fetch_policy, None, &FetchRequest { origin_headers, ..FetchRequest::default() }));
+        match r {
             Ok(f) => {
                 let latest = sha256(&f.bytes);
                 e.status = status_of(e.pin.as_deref(), &latest);
                 e.latest = Some(latest);
             }
-            Err(err) => e.error = Some((err.code.as_str().to_string(), err.detail)),
+            Err(err) => e.error = Some((err.code.as_str().to_string(), redact_secrets(&err.detail, &options.secrets))),
         }
         inputs.push(e);
     }

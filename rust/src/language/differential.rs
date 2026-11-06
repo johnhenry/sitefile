@@ -97,7 +97,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("type", s(ty.as_str())),
             ("value", Some(operand(value))),
         ]),
-        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort } => obj(vec![
+        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, secrets } => obj(vec![
             ("kind", s("IMPORT")),
             ("span", Some(span(sp))),
             ("name", Some(json!(name))),
@@ -105,14 +105,23 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("as", as_kind.map(|k| json!(k.as_str()))),
             ("integrity", integrity.as_ref().map(|i| json!(i))),
             ("sort", sort.as_ref().map(|so| json!({ "key": so.key, "descending": so.descending, "span": span(&so.span) }))),
+            (
+                "secrets",
+                (!secrets.is_empty()).then(|| {
+                    Value::Array(secrets.iter().map(|x| json!({ "id": x.id, "header": x.header, "bearer": x.bearer, "span": span(&x.span) })).collect())
+                }),
+            ),
         ]),
-        Instruction::Copy { span: sp, source: src, dest, from, overwrite } => obj(vec![
+        Instruction::Copy { span: sp, source: src, dest, from, overwrite, exclude, chmod, parents } => obj(vec![
             ("kind", s("COPY")),
             ("span", Some(span(sp))),
             ("source", Some(source(src))),
             ("dest", Some(operand(dest))),
             ("overwrite", Some(json!(overwrite))),
             ("from", stage_ref(from)),
+            ("exclude", (!exclude.is_empty()).then(|| json!(exclude))),
+            ("chmod", chmod.map(|m| json!(m))),
+            ("parents", parents.then(|| json!(true))),
         ]),
         Instruction::Render { span: sp, template, dest, from, escape, each: e, overwrite } => obj(vec![
             ("kind", s("RENDER")),

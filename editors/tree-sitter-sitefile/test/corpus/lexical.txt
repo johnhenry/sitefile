@@ -152,3 +152,28 @@ LET w = ${A}-${B}
         (identifier))
       (substitution
         (identifier)))))
+
+==================
+Version directive
+==================
+
+# sitefile=1
+  #SiteFile = 2
+# sitefile: 1
+# sitefiles=1
+COPY a \
+  # sitefile=1
+  /c
+
+---
+
+(source_file
+  (directive)
+  (directive)
+  (comment)
+  (comment)
+  (copy_instruction
+    (word)
+    (line_continuation)
+    (directive)
+    (path)))

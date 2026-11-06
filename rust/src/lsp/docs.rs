@@ -20,12 +20,12 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ("LET", "LET NAME[: type] = value", "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails."),
     (
         "IMPORT",
-        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]]",
-        "Names a resource: a context-relative path or an `https://` URL. Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
+        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]…",
+        "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
         "COPY",
-        "COPY [--overwrite] [--from=stage] <source> <dest>",
+        "COPY [--overwrite] [--from=stage] [--exclude=<pattern>…] [--chmod=644|755] [--parents] <source> <dest>",
         "Places a file or directory into the stage's tree. `<source>` is a context path, `name:` / `name:/inner` for an import, a path in an earlier stage with `--from`, or an inline `<<NAME` body. `<dest>` is absolute; a trailing `/` means a directory.",
     ),
     (
@@ -95,11 +95,18 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("STAGE", "IMAGE", "`image <ref>`: the files of an OCI site image (a registry reference is locked in Sitefile.lock; no registry host: the local store)."),
     ("STAGE", "AT", "`AT <dir>`: the directory inside the image to start from (default: its `dev.sitefile.root` label)."),
     ("STAGE", "SCRATCH", "`scratch` (the bare word) is an empty tree."),
-    ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path or an `https://` URL (`http://` only with `--allow-http`)."),
+    ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path, an `https://` URL (`http://` only with `--allow-http`), or `git+https://host/repo.git#ref[:path]` (ref: a branch, tag or 40-hex commit)."),
     ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn or tree. `AS tree` on a file extracts an archive."),
     ("IMPORT", "INTEGRITY", "`INTEGRITY sha256:<64 lowercase hex>`: the content must match; remote pins are recorded in Sitefile.lock."),
     ("IMPORT", "SORT", "`SORT BY key [ASC|DESC]` orders a list import (markdown, json, yaml, csv) by a field; numbers and numeric strings compare numerically."),
     ("IMPORT", "BY", "`SORT BY key`: the field to sort by."),
+    (
+        "IMPORT",
+        "SECRET",
+        "`SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER`: send the build secret given with `--secret id=<id>,env=<VAR>` (or `src=<file>`) as a request header, only to this URL's origin. The value is never recorded or shown. Repeatable, one clause per header.",
+    ),
+    ("IMPORT", "HEADER", "`SECRET <id> AS HEADER <Name>`: the secret is sent verbatim as the request header `<Name>`."),
+    ("IMPORT", "BEARER", "`SECRET <id> AS BEARER`: the secret is sent as `Authorization: Bearer <secret>`."),
     ("IMPORT", "ASC", "Ascending order (the default)."),
     ("IMPORT", "DESC", "Descending order."),
     ("PLUGIN", "FROM", "`FROM ./path`: a local `.mjs` module (in its own folder) or `.wasm` module."),
@@ -133,6 +140,9 @@ const FLAGS: &[(&str, &str)] = &[
     ("warn", "`--warn` (CHECKLINKS): print each broken link as a warning and keep building."),
     ("external", "`--external` (CHECKLINKS): also request every http(s) link once, under the network policy (`--allow-http`, `--allow-private-network`); a failure or a status of 400 or more is a broken link."),
     ("escape", "`--escape=none|html`: with `html`, `& < > \" '` are escaped in every substituted value (`${x|raw}` opts out)."),
+    ("exclude", "`--exclude=<pattern>` (repeatable): skip files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.md`, `drafts/`, `!keep.md`)."),
+    ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
+    ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
 ];
 
 const IMPORT_KINDS: &[(&str, &str)] = &[
@@ -218,13 +228,21 @@ pub fn value_type(name: &str) -> Option<&'static str> {
     lookup(TYPES, name)
 }
 
+/// Hover text of the `# sitefile=N` syntax version directive.
+pub fn version_directive() -> String {
+    format!(
+        "```sitefile\n# sitefile={v}\n```\nThe syntax version this file is written for (this sitefile reads version {v}). A comment before the first instruction, at most once; a file without it is version {v}. A newer version fails with `E_UNSUPPORTED` (upgrade sitefile).",
+        v = crate::language::scanner::SYNTAX_VERSION
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SITEMAP_CLAUSES,
-        SORT_ORDERS, TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS,
+        SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -250,7 +268,7 @@ mod tests {
         for t in ValueType::ALL {
             assert!(value_type(t.as_str()).is_some());
         }
-        for c in IMPORT_CLAUSES.iter().chain(&SORT_ORDERS) {
+        for c in IMPORT_CLAUSES.iter().chain(&SORT_ORDERS).chain(&SECRET_FORMS) {
             assert!(clause("IMPORT", c).is_some(), "{c}");
         }
         for c in EXPORT_CLAUSES {

@@ -51,6 +51,7 @@ emscripten or Docker needed).
 ```
 source_file
   comment
+  directive               # sitefile=1
   from_instruction        base: (scratch | operand)  alias: identifier
   stage_instruction       name: identifier  base: (scratch | operand)
   arg_instruction         name  type: type  value
@@ -79,7 +80,10 @@ source_file
   the parser does.
 - `line_continuation` (`\` at the end of a line, plus any blank lines) and
   `comment` (a line whose first non-blank character is `#`, also inside a
-  continuation) can appear anywhere.
+  continuation) can appear anywhere. A comment that starts `# sitefile=`
+  (name case-insensitive) is a `directive` instead, the syntax version
+  directive; the grammar accepts it anywhere and with any value (the parser
+  requires it before the first instruction and a supported version).
 - Keywords are anonymous nodes named in upper case (`"FROM"`, `"AS"`, …)
   whatever the case in the source. Value words (`json`, `tar.gz`, `gzip`, …)
   are plain nodes (`import_kind`, `export_format`, `compression`, `type`,

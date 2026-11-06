@@ -308,7 +308,7 @@ impl LocalContext {
             bytes,
             mode: if mode_of(&st) & 0o111 != 0 { 0o755 } else { 0o644 },
             basename: basename(rel),
-            provenance: Provenance { uri: format!("./{rel}"), resolved_url: None, digest },
+            provenance: Provenance { uri: format!("./{rel}"), resolved_url: None, digest, git_commit: None },
         })
     }
 
@@ -324,6 +324,12 @@ impl LocalContext {
     /// A context directory as a [`Resource::Tree`]. `.sitefileignore` rules and
     /// the ignore list apply below `rel`, never to `rel` itself.
     pub fn read_tree(&self, rel: &str, origin: &str, span: Option<&SourceSpan>) -> Result<Resource> {
+        self.read_tree_excluding(rel, origin, span, None)
+    }
+
+    /// [`read_tree`](Self::read_tree) without the paths `exclude` (COPY --exclude) matches, relative
+    /// to `rel`, like `.sitefileignore` rules (excluded directories are not read).
+    pub fn read_tree_excluding(&self, rel: &str, origin: &str, span: Option<&SourceSpan>, exclude: Option<&IgnoreRules>) -> Result<Resource> {
         let (real, st) = self.resolve(rel, span, None)?;
         if Self::kind_of(&st, rel, span)? != EntryKind::Directory {
             return Err(SitefileError::new(E_UNSUPPORTED_FILE, format!("'{}' is a file, not a directory", display(rel)), span.cloned()));
@@ -331,12 +337,12 @@ impl LocalContext {
         let mut files: Vec<(String, Node)> = Vec::new();
         let mut ancestors = HashSet::new();
         ancestors.insert(real.clone());
-        self.walk(&real, rel, "", origin, &mut ancestors, &mut files, span)?;
+        self.walk(&real, rel, "", origin, &mut ancestors, &mut files, span, exclude)?;
         let tree = Tree::from_files(files)?;
         let digest = tree.digest();
         Ok(Resource::Tree {
             tree,
-            provenance: Provenance { uri: if rel.is_empty() { "./".into() } else { format!("./{rel}") }, resolved_url: None, digest },
+            provenance: Provenance { uri: if rel.is_empty() { "./".into() } else { format!("./{rel}") }, resolved_url: None, digest, git_commit: None },
         })
     }
 
@@ -354,6 +360,7 @@ impl LocalContext {
         ancestors: &mut HashSet<PathBuf>,
         out: &mut Vec<(String, Node)>,
         span: Option<&SourceSpan>,
+        exclude: Option<&IgnoreRules>,
     ) -> Result<()> {
         let rd = fs::read_dir(real_dir)
             .map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot read directory '{}': {e}", display(ctx_rel)), span.cloned()))?;
@@ -402,6 +409,9 @@ impl LocalContext {
             if self.rules.ignores(&child_ctx, st.is_dir()) {
                 continue;
             }
+            if exclude.is_some_and(|x| x.ignores(&child_tree, st.is_dir())) {
+                continue;
+            }
 
             if st.is_file() {
                 self.check_hardlink(&st, &child_ctx, span)?;
@@ -412,7 +422,7 @@ impl LocalContext {
                     continue; // directory symlink cycle
                 }
                 ancestors.insert(child_real.clone());
-                let r = self.walk(&child_real, &child_ctx, &child_tree, origin, ancestors, out, span);
+                let r = self.walk(&child_real, &child_ctx, &child_tree, origin, ancestors, out, span, exclude);
                 ancestors.remove(&child_real);
                 r?;
             } else {

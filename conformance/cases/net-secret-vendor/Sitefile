@@ -1,0 +1,9 @@
+# Vendoring with secrets, then an offline build that needs neither the network nor the secret.
+FROM scratch
+IMPORT data FROM ${HTTPS}/private/data.json AS json SECRET key AS HEADER X-Api-Key
+IMPORT docs FROM git+${HTTPS}/private.git#main:docs SECRET tok AS BEARER
+COPY docs: /docs/
+RENDER <<T TO /index.html
+${data.title}
+T
+EXPORT /

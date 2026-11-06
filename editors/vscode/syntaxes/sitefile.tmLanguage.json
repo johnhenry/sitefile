@@ -8,6 +8,9 @@
   ],
   "patterns": [
     {
+      "include": "#directive"
+    },
+    {
       "include": "#comment"
     },
     {
@@ -2199,6 +2202,27 @@
         }
       ]
     },
+    "directive": {
+      "match": "^\\s*(#)[ \\t]*((?i:sitefile))[ \\t]*(=)[ \\t]*(?:([1-9][0-9]*)[ \\t]*$|(.*)$)",
+      "name": "comment.line.directive.sitefile",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.sitefile"
+        },
+        "2": {
+          "name": "keyword.other.directive.sitefile"
+        },
+        "3": {
+          "name": "keyword.operator.assignment.sitefile"
+        },
+        "4": {
+          "name": "constant.numeric.version.sitefile"
+        },
+        "5": {
+          "name": "invalid.illegal.version.sitefile"
+        }
+      }
+    },
     "comment": {
       "match": "^\\s*(#).*$",
       "name": "comment.line.number-sign.sitefile",
@@ -2546,6 +2570,37 @@
               }
             },
             {
+              "match": "(?<![^\\s])((?i:SECRET))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+((?i:AS))\\s+(?:((?i:BEARER))(?=\\s|$)|((?i:HEADER))\\s+(\\S+))",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "variable.other.secret.sitefile"
+                },
+                "3": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "4": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "5": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "6": {
+                  "name": "entity.name.tag.header.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:SECRET|HEADER|BEARER))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
               "include": "#operands"
             }
           ]
@@ -2587,7 +2642,44 @@
               }
             },
             {
-              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "match": "(?<![^\\s])(--)(chmod)(=)(?:(0?(?:644|755))(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "constant.numeric.mode.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.mode.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(exclude)(=)(\\S+)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "string.unquoted.glob.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite|parents)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -3268,7 +3360,7 @@
       "name": "constant.character.escape.sitefile"
     },
     "url": {
-      "match": "(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
+      "match": "(?<![^\\s=])(?:[Gg][Ii][Tt]\\+)?https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
       "name": "markup.underline.link.sitefile",
       "captures": {
         "0": {

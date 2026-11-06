@@ -290,7 +290,7 @@ test('IMPORT forms', () => {
   parseErr('IMPORT d FROM ./x INTEGRITY sha256:abc', 'E_SYNTAX', 1, 29, /sha256/);
   parseErr(`IMPORT d FROM ./x INTEGRITY ${digest.toUpperCase()}`, 'E_SYNTAX', 1, 29);
   parseErr('IMPORT d FROM ./x INTEGRITY ${X}', 'E_SYNTAX', 1, 29);
-  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS, INTEGRITY or SORT BY/);
+  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS, INTEGRITY, SORT BY or SECRET/);
 });
 
 test('COPY forms', () => {
@@ -484,4 +484,29 @@ test('forward and self references to stages are errors', () => {
 test('EXPORT must still be last with several stages', () => {
   progErr('FROM scratch AS a\nEXPORT /\nFROM scratch', 'E_VALIDATION', 3, 1, /EXPORT must be the last/);
   progErr('FROM scratch AS a\nFROM scratch', 'E_VALIDATION', 2, 1, /missing EXPORT/);
+});
+
+test('# sitefile=N syntax version directive', () => {
+  // Version 1 (the current one), however it is spelled; other comments are untouched.
+  for (const head of ['# sitefile=1', '#sitefile=1', '# SiteFile = 1 ', '\t#\tsitefile\t=\t1', '﻿# sitefile=1', '# license\n\n# sitefile=1']) {
+    assert.equal(parseProgram(`${head}\nCOPY a /a\nEXPORT /`).instructions.length, 3, head);
+  }
+  for (const other of ['# sitefile: 1', '# sitefile-lint: disable=x', '# sitefiles=2', '# site file=2', '# x sitefile=2', '# ſitefile=2']) {
+    assert.equal(parseSitefile(`${other}\nEXPORT /`).length, 1, other);
+  }
+  // Newer or unknown versions, bad values, misplaced or repeated directives.
+  throwsAt(() => parseSitefile('# sitefile=2\nEXPORT /'), 'E_UNSUPPORTED', 1, 12, /uses syntax version 2; this sitefile supports version 1 \(upgrade sitefile\)/);
+  throwsAt(() => parseSitefile('# sitefile = 12\nEXPORT /'), 'E_UNSUPPORTED', 1, 14);
+  throwsAt(() => parseSitefile('# sitefile=1.0\nEXPORT /'), 'E_SYNTAX', 1, 12, /invalid syntax version '1\.0'/);
+  throwsAt(() => parseSitefile('# sitefile=\nEXPORT /'), 'E_SYNTAX', 1, 12, /invalid syntax version ''/);
+  throwsAt(() => parseSitefile('  # sitefile= 01\nEXPORT /'), 'E_SYNTAX', 1, 15);
+  throwsAt(() => parseSitefile('# sitefile=0\nEXPORT /'), 'E_SYNTAX', 1, 12);
+  throwsAt(() => parseSitefile('# sitefile=1 # note\nEXPORT /'), 'E_SYNTAX', 1, 12);
+  throwsAt(() => parseSitefile('# sitefile=1\n# sitefile=1\nEXPORT /'), 'E_SYNTAX', 2, 1, /given twice/);
+  throwsAt(() => parseSitefile('COPY a /a\n  # sitefile=1\nEXPORT /'), 'E_SYNTAX', 2, 3, /must come before the first instruction/);
+  throwsAt(() => parseSitefile('COPY a \\\n# sitefile=1\n /a\nEXPORT /'), 'E_SYNTAX', 2, 1, /must come before/);
+  // Heredoc bodies are text, not comments.
+  assert.equal(parseSitefile('COPY <<EOF /a\n# sitefile=2\nEOF\nEXPORT /').length, 2);
+  // Columns count UTF-16 units.
+  throwsAt(() => parseSitefile('　# sitefile=x\nEXPORT /'), 'E_SYNTAX', 1, 13);
 });

@@ -16,7 +16,7 @@
 export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'MANIFEST'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
@@ -25,7 +25,7 @@ export const KEYWORDS = {
   escapeModes: ['none', 'html'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
-    COPY: ['overwrite', 'from'],
+    COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
     TRANSFORM: ['overwrite', 'from'],
     SITEMAP: ['overwrite'],
@@ -106,7 +106,30 @@ function flags(instr) {
       },
     });
   }
-  const bare = known.filter((f) => f !== 'escape' && f !== 'from');
+  if (known.includes('chmod')) {
+    pats.push({
+      match: `${W}(--)(chmod)(=)(?:(0?(?:644|755))${WE}|(\\S*))`,
+      captures: {
+        1: { name: S('punctuation.definition.flag') },
+        2: { name: S('variable.parameter.flag') },
+        3: { name: S('keyword.operator.assignment') },
+        4: { name: S('constant.numeric.mode') },
+        5: { name: S('invalid.illegal.mode') },
+      },
+    });
+  }
+  if (known.includes('exclude')) {
+    pats.push({
+      match: `${W}(--)(exclude)(=)(\\S+)`,
+      captures: {
+        1: { name: S('punctuation.definition.flag') },
+        2: { name: S('variable.parameter.flag') },
+        3: { name: S('keyword.operator.assignment') },
+        4: { name: S('string.unquoted.glob') },
+      },
+    });
+  }
+  const bare = known.filter((f) => !['escape', 'from', 'chmod', 'exclude'].includes(f));
   if (bare.length) {
     pats.push({
       match: `${W}(--)(${bare.join('|')})${WE}`,
@@ -204,13 +227,25 @@ export function buildGrammar() {
     name: 'Sitefile',
     scopeName: 'source.sitefile',
     fileTypes: ['Sitefile', 'sitefile'],
-    patterns: [{ include: '#comment' }, { include: '#instructions' }],
+    patterns: [{ include: '#directive' }, { include: '#comment' }, { include: '#instructions' }],
     repository: {
       'heredoc-copy': { patterns: heredocs('raw', [{ include: '#operands' }]) },
       'heredoc-render': { patterns: heredocs('template', [{ include: '#render-clauses' }]) },
       'heredoc-transform': { patterns: heredocs('raw', [{ include: '#transform-clauses' }]) },
       'render-clauses': { patterns: renderClauses },
       'transform-clauses': { patterns: transformClauses },
+      // `# sitefile=1`: the syntax version directive (scanner.ts VERSION_DIRECTIVE).
+      directive: {
+        match: '^\\s*(#)[ \\t]*((?i:sitefile))[ \\t]*(=)[ \\t]*(?:([1-9][0-9]*)[ \\t]*$|(.*)$)',
+        name: S('comment.line.directive'),
+        captures: {
+          1: { name: S('punctuation.definition.comment') },
+          2: { name: S('keyword.other.directive') },
+          3: { name: S('keyword.operator.assignment') },
+          4: { name: S('constant.numeric.version') },
+          5: { name: S('invalid.illegal.version') },
+        },
+      },
       comment: { match: '^\\s*(#).*$', name: S('comment.line.number-sign'), captures: { 1: { name: S('punctuation.definition.comment') } } },
       'continuation-comment': {
         match: '^\\s*(#).*\\n?',
@@ -249,6 +284,19 @@ export function buildGrammar() {
               },
             },
             kw(['SORT', 'BY', 'ASC', 'DESC']),
+            {
+              // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets)
+              match: `${W}(${ci(['SECRET'])})\\s+(${IDENT})\\s+(${ci(['AS'])})\\s+(?:(${ci(['BEARER'])})${WE}|(${ci(['HEADER'])})\\s+(\\S+))`,
+              captures: {
+                1: { name: S('keyword.other.clause') },
+                2: { name: S('variable.other.secret') },
+                3: { name: S('keyword.other.clause') },
+                4: { name: S('keyword.other.clause') },
+                5: { name: S('keyword.other.clause') },
+                6: { name: S('entity.name.tag.header') },
+              },
+            },
+            kw(['SECRET', 'HEADER', 'BEARER']),
             { include: '#operands' },
           ]),
           instruction('COPY', [...flags('COPY'), { include: '#heredoc-copy' }, { include: '#operands' }]),
@@ -332,7 +380,7 @@ export function buildGrammar() {
       },
       escape: { match: '\\\\[^\\n]', name: S('constant.character.escape') },
       url: {
-        match: `(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*`,
+        match: `(?<![^\\s=])(?:[Gg][Ii][Tt]\\+)?https?://(?:[^\\s\\\\]|\\\\[^\\n])*`,
         name: S('markup.underline.link'),
         captures: { 0: { patterns: [{ include: '#interpolation' }] } },
       },

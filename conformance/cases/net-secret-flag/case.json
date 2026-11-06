@@ -1,0 +1,13 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--secret",
+      "conformance-secret-7c1e"
+    ]
+  ]
+}

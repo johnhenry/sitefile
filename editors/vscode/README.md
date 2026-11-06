@@ -35,7 +35,9 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
   strings, paths, `https://` URLs, `sha256:<64 hex>` integrity digests, numbers
   and booleans, and `${NAME}` / `${name.key.0}` interpolation.
 - **Comments** (`#` as the first non-blank character only, also inside a
-  continuation; `#` elsewhere is text) and `\` line continuations.
+  continuation; `#` elsewhere is text) and `\` line continuations. The syntax
+  version directive `# sitefile=1` is highlighted as a directive (a value that
+  is not a whole number is marked invalid).
 - **Heredocs** `<<NAME` and `<<-NAME` on `COPY`, `RENDER` and `TRANSFORM`. The
   body ends at a line that is exactly `NAME` (`<<-` also strips leading tabs).
   The delimiter picks an embedded language: `HTML`/`HTM` (HTML), `CSS`,

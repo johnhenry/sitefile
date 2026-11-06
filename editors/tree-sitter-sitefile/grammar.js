@@ -8,7 +8,8 @@
  * - a line ending in `\` continues; blank lines inside a continuation are
  *   skipped (`line_continuation`);
  * - a comment is a line whose first non-blank character is `#`, also inside
- *   a continuation; `#` elsewhere is ordinary text;
+ *   a continuation; `#` elsewhere is ordinary text; a comment that starts
+ *   `# sitefile=` is the syntax version `directive` (`# sitefile=1`);
  * - heredocs `<<NAME` / `<<-NAME` on COPY, RENDER and TRANSFORM: the body ends
  *   at a line that is exactly NAME (`<<-` also strips leading tabs);
  * - `name:` / `name:/path` import references in source position.
@@ -50,6 +51,7 @@ export default grammar({
     $.line_continuation,
     $._continuation_newline,
     $.comment,
+    $.directive,
     $._heredoc_marker,
     $._heredoc_marker_strip,
     $.heredoc_delimiter,
@@ -62,7 +64,7 @@ export default grammar({
     $._error_sentinel,
   ],
 
-  extras: ($) => [/[ \t\f\v]/, $.line_continuation, $._continuation_newline, $.comment],
+  extras: ($) => [/[ \t\f\v]/, $.line_continuation, $._continuation_newline, $.comment, $.directive],
 
   supertypes: ($) => [$._instruction],
 
@@ -79,7 +81,8 @@ export default grammar({
     boolean: () => token(new RegExp(`${caseInsensitive('true')}|${caseInsensitive('false')}`)),
     placeholder: () => token(/\{(input|output|option\.[A-Za-z0-9_-]+)\}/),
     _path_start: () => token(/(\.\.?)?\/[^\s$\\]*/),
-    _url_start: () => token(/[Hh][Tt][Tt][Pp][Ss]?:\/\/[^\s$\\]*/),
+    // http(s):// and git+http(s):// (Git imports, issue #91)
+    _url_start: () => token(/([Gg][Ii][Tt]\+)?[Hh][Tt][Tt][Pp][Ss]?:\/\/[^\s$\\]*/),
     _word_start: () => token(/[^\s"'$\\-][^\s$\\]*/),
     _dash_word: () => token(/-[^\s$\\-][^\s$\\]*/),
     _value_word: () => token(/[^\s\\]+/),
@@ -133,7 +136,7 @@ export default grammar({
 
     _type_annotation: ($) => seq(':', field('type', alias($.identifier, $.type))),
 
-    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]]
+    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]…
     import_instruction: ($) =>
       seq(
         kw($, 'IMPORT'),
@@ -145,8 +148,18 @@ export default grammar({
             seq(kw($, 'AS'), field('kind', alias($.identifier, $.import_kind))),
             $._integrity_clause,
             field('sort', $.sort_clause),
+            field('secret', $.secret_clause),
           ),
         ),
+      ),
+
+    // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets, issue #85)
+    secret_clause: ($) =>
+      seq(
+        kw($, 'SECRET'),
+        field('id', $.identifier),
+        kw($, 'AS'),
+        choice(kw($, 'BEARER'), seq(kw($, 'HEADER'), field('header', alias($.word, $.header_name)))),
       ),
 
     sort_clause: ($) =>

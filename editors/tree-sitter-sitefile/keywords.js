@@ -6,7 +6,7 @@ export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   /** Rejected by the parser (E_UNSUPPORTED); parsed as `unsupported_instruction`. */
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'MANIFEST'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
@@ -15,7 +15,7 @@ export const KEYWORDS = {
   escapeModes: ['none', 'html'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
-    COPY: ['overwrite', 'from'],
+    COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
     TRANSFORM: ['overwrite', 'from'],
     SITEMAP: ['overwrite'],

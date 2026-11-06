@@ -5,9 +5,11 @@
 use crate::language::ast::{is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
 use crate::language::ast::REDIRECT_STATUSES;
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES,
+    SORT_ORDERS,
     TRANSFORM_CLAUSES,
 };
+use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
 use crate::lsp::docs;
 use crate::lsp::index::{Def, Index, Instr, SymKind, Word};
@@ -161,9 +163,9 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         }
         let items = flags_of(kw)
             .iter()
-            .filter(|(name, _)| !prior.iter().any(|w| w.text.starts_with(&format!("--{name}"))))
+            .filter(|(name, shape)| *shape == Shape::Repeat || !prior.iter().any(|w| w.text.starts_with(&format!("--{name}"))))
             .map(|(name, shape)| Item {
-                label: if *shape == Shape::Value { format!("--{name}=") } else { format!("--{name}") },
+                label: if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=") },
                 kind: CIK_KEYWORD,
                 detail: docs::flag(name).map(str::to_string),
                 insert: None,
@@ -215,18 +217,23 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             }
         }
         "IMPORT" => {
-            let used: Vec<String> = prior.iter().map(|w| w.upper()).collect();
+            // The AS of `SECRET <id> AS …` is not the import's AS clause.
+            let used: Vec<String> =
+                prior.iter().enumerate().filter(|(i, _)| *i < 2 || prior[i - 2].upper() != "SECRET").map(|(_, w)| w.upper()).collect();
             match prev.as_str() {
                 _ if n == 2 => kw_items(["FROM"], CIK_KEYWORD),
+                // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER
+                "AS" if n >= 3 && prior[n - 3].upper() == "SECRET" => kw_items(SECRET_FORMS, CIK_KEYWORD),
+                _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
-                "FROM" | "INTEGRITY" | "BY" => Vec::new(),
+                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" => Vec::new(),
                 _ if n >= 4 => {
                     let mut v: Vec<Item> = Vec::new();
                     if n >= 2 && prior[n - 2].upper() == "BY" {
                         v.extend(kw_items(SORT_ORDERS, CIK_KEYWORD));
                     }
-                    for c in IMPORT_CLAUSES.iter().filter(|c| !used.contains(&c.to_string())) {
+                    for c in IMPORT_CLAUSES.iter().filter(|c| **c == "SECRET" || !used.contains(&c.to_string())) {
                         v.push(if *c == "SORT" {
                             Item { label: "SORT BY".into(), kind: CIK_KEYWORD, detail: None, insert: Some("SORT BY ".into()) }
                         } else {
@@ -416,6 +423,23 @@ fn def_markdown(ix: &Index, def: &Def, analysis: Option<&Analysis>) -> String {
 
 fn md(value: String, line: u32, start: u32, end: u32) -> Value {
     json!({ "contents": { "kind": "markdown", "value": value }, "range": range(line, start, line, end) })
+}
+
+/// Hover on a comment: the `# sitefile=N` directive (not inside a heredoc body).
+pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<Value> {
+    if ix.instrs.iter().any(|i| i.body.as_ref().is_some_and(|b| b.contains_line(line))) {
+        return None;
+    }
+    let raw = lines.get(line);
+    if !js_trim(raw).starts_with('#') {
+        return None;
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let hash = chars.iter().position(|c| *c == '#')?;
+    version_directive(&chars[hash..])?;
+    let start = utf16_len(&chars[..hash].iter().collect::<String>());
+    let end = utf16_len(raw.trim_end_matches(is_js_space));
+    (start <= col && col <= end).then(|| md(docs::version_directive(), line, start, end))
 }
 
 pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Option<Value> {
@@ -647,8 +671,11 @@ mod tests {
     fn clause_values() {
         assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
         assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY"]);
+        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
         assert_eq!(labels("IMPORT p "), ["FROM"]);
         assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
@@ -662,7 +689,9 @@ mod tests {
     #[test]
     fn flags_in_context() {
         assert_eq!(labels("RENDER --"), ["--escape=", "--overwrite", "--from="]);
-        assert_eq!(labels("COPY --overwrite --"), ["--from="]);
+        assert_eq!(labels("COPY --overwrite --"), ["--from=", "--exclude=", "--chmod=", "--parents"]);
+        // --exclude is repeatable.
+        assert_eq!(labels("COPY --exclude=a --chmod=644 --"), ["--overwrite", "--from=", "--exclude=", "--parents"]);
         assert!(labels("EXPORT --").is_empty());
     }
 
@@ -779,6 +808,20 @@ mod tests {
         assert!(s.contains("**stage** `site` — line 7") && s.contains("STAGE site FROM assets"), "{s}");
         assert!(h(10, 55).unwrap().contains("Kind: markdown"));
         assert!(h(8, 1).is_none()); // template text
+    }
+
+    #[test]
+    fn hover_on_the_version_directive() {
+        let src = "  # sitefile=1\n# other\nCOPY <<EOF /a\n# sitefile=1\nEOF\nEXPORT /";
+        let lines = Lines::new(src);
+        let ix = build(&lines);
+        let h = |l, c| comment_hover(&lines, &ix, l, c);
+        let v = h(0, 5).unwrap();
+        assert!(v["contents"]["value"].as_str().unwrap().contains("The syntax version this file is written for"));
+        assert_eq!(v["range"], range(0, 2, 0, 14));
+        assert!(h(0, 0).is_none());
+        assert!(h(1, 3).is_none());
+        assert!(h(3, 3).is_none()); // heredoc body
     }
 
     #[test]

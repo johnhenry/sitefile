@@ -42,6 +42,8 @@ impl SourceRef {
 pub enum ImportLocation {
     Local { path: String },
     Remote { url: String },
+    /// `git+https://…#ref:path` (src/resources/git.ts).
+    Git(crate::resources::git::GitLocation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +61,17 @@ pub struct ImportSpec {
     pub as_kind: Option<ImportKind>,
     pub integrity: Option<String>,
     pub sort: Option<ImportSort>,
+    /// Build secrets sent as request headers (ids and header names only; values come from --secret).
+    pub secrets: Vec<SecretRef>,
     pub span: SourceSpan,
+}
+
+/// An `IMPORT … SECRET` clause as planned: which secret, which header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRef {
+    pub id: String,
+    pub header: String,
+    pub bearer: bool,
 }
 
 /// A declared renderer plugin: a local `.mjs` file in its own folder, or a `.wasm` module.
@@ -146,7 +158,17 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
-    Copy { source: SourceRef, dest: String, dest_is_dir: bool, overwrite: bool, span: SourceSpan },
+    /// `exclude`, `chmod`, `parents`: COPY's `--exclude`, `--chmod` and `--parents`.
+    Copy {
+        source: SourceRef,
+        dest: String,
+        dest_is_dir: bool,
+        overwrite: bool,
+        exclude: Vec<String>,
+        chmod: Option<u32>,
+        parents: bool,
+        span: SourceSpan,
+    },
     Render {
         template: SourceRef,
         /// Normalized destination; `""` when `each` is set (computed per element).
@@ -339,9 +361,23 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let raw = evaluate_operand(value, &vars)?;
                 bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort } => {
+            Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
+                if matches!(location, ImportLocation::Local { .. }) && !secrets.is_empty() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("IMPORT {name}: SECRET applies to remote imports (https:// or git+https://), not local paths"),
+                        &secrets[0].span,
+                    ));
+                }
+                if matches!(location, ImportLocation::Git(_)) && integrity.is_some() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("IMPORT {name}: INTEGRITY does not apply to Git imports; pin a commit instead (#<40 hex>[:path])"),
+                        span,
+                    ));
+                }
                 if matches!(location, ImportLocation::Local { .. }) && integrity.is_some() {
                     warnings.push(format!(
                         "{}:{}: INTEGRITY on a local import is checked but not recorded in the lockfile",
@@ -355,6 +391,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     as_kind: *as_kind,
                     integrity: integrity.clone(),
                     sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
+                    secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
                     span: span.clone(),
                 };
                 // A JavaScript Map keeps the first position of a re-set key (validate() forbids duplicates anyway).
@@ -363,7 +400,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     None => imports.push(spec),
                 }
             }
-            Instruction::Copy { span, source, dest, from, overwrite } => {
+            Instruction::Copy { span, source, dest, from, overwrite, exclude, chmod, parents } => {
                 let d = normalize_virtual(&evaluate_operand(dest, &vars)?, Some(&dest.span), "COPY destination")?;
                 if matches!(source, Source::Inline(_)) && d.trailing_slash {
                     return Err(SitefileError::at(
@@ -378,6 +415,9 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     dest: d.path,
                     dest_is_dir: d.trailing_slash,
                     overwrite: *overwrite,
+                    exclude: exclude.clone(),
+                    chmod: *chmod,
+                    parents: *parents,
                     span: span.clone(),
                 });
             }
@@ -597,6 +637,9 @@ fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Re
 }
 
 fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
+    if crate::resources::git::is_git_uri(uri) {
+        return Ok(ImportLocation::Git(crate::resources::git::parse_git_uri(uri, Some(span))?));
+    }
     if let Some(scheme) = url_scheme(uri) {
         let scheme = scheme.to_ascii_lowercase();
         return match scheme.as_str() {
@@ -608,7 +651,7 @@ fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
             )),
             _ => Err(SitefileError::at(
                 E_PROTOCOL,
-                format!("unsupported protocol '{scheme}:' (supported: https, relative paths)"),
+                format!("unsupported protocol '{scheme}:' (supported: https, git+https, relative paths)"),
                 span,
             )),
         };
@@ -745,6 +788,18 @@ impl ImportSpec {
             match &self.location {
                 ImportLocation::Local { path } => json!({ "kind": "local", "path": path }),
                 ImportLocation::Remote { url } => json!({ "kind": "remote", "url": url }),
+                ImportLocation::Git(g) => {
+                    let mut l = Map::new();
+                    l.insert("kind".into(), json!("git"));
+                    l.insert("url".into(), json!(g.url));
+                    l.insert("repo".into(), json!(g.repo));
+                    l.insert("ref".into(), json!(g.git_ref));
+                    l.insert("path".into(), json!(g.path));
+                    if let Some(c) = &g.commit {
+                        l.insert("commit".into(), json!(c));
+                    }
+                    Value::Object(l)
+                }
             },
         );
         if let Some(k) = self.as_kind {
@@ -755,6 +810,12 @@ impl ImportSpec {
         }
         if let Some(s) = &self.sort {
             m.insert("sort".into(), json!({ "key": s.key, "descending": s.descending }));
+        }
+        if !self.secrets.is_empty() {
+            m.insert(
+                "secrets".into(),
+                Value::Array(self.secrets.iter().map(|s| json!({ "id": s.id, "header": s.header, "bearer": s.bearer })).collect()),
+            );
         }
         m.insert("span".into(), span_json(&self.span));
         Value::Object(m)
@@ -821,11 +882,20 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Copy { source, dest, dest_is_dir, overwrite, span } => {
+            Operation::Copy { source, dest, dest_is_dir, overwrite, exclude, chmod, parents, span } => {
                 m.insert("source".into(), source.to_json());
                 m.insert("dest".into(), json!(dest));
                 m.insert("destIsDir".into(), json!(dest_is_dir));
                 m.insert("overwrite".into(), json!(overwrite));
+                if !exclude.is_empty() {
+                    m.insert("exclude".into(), json!(exclude));
+                }
+                if let Some(c) = chmod {
+                    m.insert("chmod".into(), json!(c));
+                }
+                if *parents {
+                    m.insert("parents".into(), json!(true));
+                }
                 m.insert("span".into(), span_json(span));
             }
             Operation::Render { template, dest, each, escape, overwrite, span } => {
@@ -998,7 +1068,7 @@ mod tests {
 
     #[test]
     fn protocol_and_path_errors() {
-        plan_err("FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /", &[], E_PROTOCOL, 2, "unsupported protocol 'ftp:' (supported: https, relative paths)");
+        plan_err("FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /", &[], E_PROTOCOL, 2, "unsupported protocol 'ftp:' (supported: https, git+https, relative paths)");
         plan_err("FROM scratch\nIMPORT x FROM FILE:///etc/passwd\nEXPORT /", &[], E_PROTOCOL, 2, "file: URLs are not allowed");
         plan_err("FROM scratch\nIMPORT x FROM ../up\nEXPORT /", &[], E_PATH_ESCAPE, 2, "escapes the build context");
         plan_err("FROM scratch\nARG U = https://x/a\nCOPY ${U} /a\nEXPORT /", &[], E_VALIDATION, 3, "cannot read 'https://x/a' directly; IMPORT it under a name, then COPY name:");

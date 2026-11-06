@@ -3,11 +3,12 @@
 
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{
+use crate::language::ast::{ImportSecret, 
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
+use crate::resources::ignore::is_ignore_pattern;
 
 const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 
@@ -19,8 +20,11 @@ pub const INSTRUCTIONS: [&str; 17] = [
     "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
     "FINGERPRINT", "CHECKLINKS", "EXPORT",
 ];
-/// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`).
-pub const IMPORT_CLAUSES: [&str; 3] = ["AS", "INTEGRITY", "SORT"];
+/// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
+/// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
+pub const IMPORT_CLAUSES: [&str; 4] = ["AS", "INTEGRITY", "SORT", "SECRET"];
+/// What follows `SECRET <id> AS`.
+pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
 pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 /// Clauses after `EXPORT <path>`, in this order.
@@ -40,7 +44,13 @@ pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
 /// Leading flags of CHECKLINKS.
 pub const CHECKLINKS_FLAGS: &[(&str, Shape)] = &[("warn", Shape::Bare), ("external", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
-pub const COPY_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const COPY_FLAGS: &[(&str, Shape)] = &[
+    ("overwrite", Shape::Bare),
+    ("from", Shape::Value),
+    ("exclude", Shape::Repeat),
+    ("chmod", Shape::Value),
+    ("parents", Shape::Bare),
+];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
 pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
 
@@ -190,6 +200,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let mut as_kind: Option<ImportKind> = None;
     let mut integrity: Option<String> = None;
     let mut sort: Option<SortBy> = None;
+    let mut secrets: Vec<ImportSecret> = Vec::new();
     while !c.at_end() {
         let at = c.span();
         if c.keyword("AS") {
@@ -223,12 +234,54 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
                 false
             };
             sort = Some(SortBy { key, descending, span: at });
+        } else if c.keyword("SECRET") {
+            let s = parse_secret_clause(c, at.clone())?;
+            if secrets.iter().any(|p| p.header.to_lowercase() == s.header.to_lowercase()) {
+                return Err(SitefileError::at(E_SYNTAX, format!("header '{}' is set by two SECRET clauses", s.header), &at));
+            }
+            secrets.push(s);
         } else {
             let w = c.word();
-            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY or SORT BY)"), &at));
+            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY or SECRET)"), &at));
         }
     }
-    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort })
+    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets })
+}
+
+/// Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them.
+const RESERVED_HEADERS: [&str; 14] = [
+    "accept", "accept-encoding", "connection", "content-encoding", "content-length", "content-type", "git-protocol",
+    "host", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "user-agent",
+];
+
+/// An HTTP token (RFC 9110 tchar).
+fn is_header_token(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+.^_`|~-".contains(c))
+}
+
+/// `SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER` (after the SECRET keyword).
+fn parse_secret_clause(c: &mut Cursor, span: SourceSpan) -> Result<ImportSecret> {
+    let id = c.ident("secret id", "")?;
+    c.expect_keyword("AS")?;
+    if c.keyword("BEARER") {
+        return Ok(ImportSecret { id, header: "Authorization".into(), bearer: true, span });
+    }
+    let at = c.span();
+    if !c.keyword("HEADER") {
+        return Err(SitefileError::at(E_SYNTAX, "expected HEADER <name> or BEARER", &at));
+    }
+    let name_at = c.span();
+    let header = c.word();
+    if header.is_empty() {
+        return Err(SitefileError::at(E_SYNTAX, "expected a header name", &name_at));
+    }
+    if !is_header_token(&header) {
+        return Err(SitefileError::at(E_SYNTAX, format!("invalid header name '{header}'"), &name_at));
+    }
+    if RESERVED_HEADERS.contains(&header.to_lowercase().as_str()) {
+        return Err(SitefileError::at(E_SYNTAX, format!("header '{header}' is set by sitefile and cannot carry a secret"), &name_at));
+    }
+    Ok(ImportSecret { id, header, bearer: false, span })
 }
 
 /// Whether a flag is bare (`--overwrite`) or takes a value (`--from=name`).
@@ -236,6 +289,8 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
 pub enum Shape {
     Bare,
     Value,
+    /// A value flag that may be given several times (`--exclude`).
+    Repeat,
 }
 
 struct ParsedFlag {
@@ -253,6 +308,10 @@ impl Flags {
     fn has(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
+    /// Every occurrence of a repeatable flag, in order.
+    fn all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a ParsedFlag> + 'a {
+        self.0.iter().filter(move |f| f.name == name)
+    }
 }
 
 /// Read leading `--flags` (value `""` for a bare flag).
@@ -262,13 +321,13 @@ fn parse_flags(c: &mut Cursor, allowed: &[(&'static str, Shape)]) -> Result<Flag
         let Some(&(name, shape)) = allowed.iter().find(|(n, _)| *n == f.name) else {
             return Err(SitefileError::at(E_SYNTAX, format!("unknown flag --{}", f.name), &f.span));
         };
-        if out.has(name) {
+        if out.has(name) && shape != Shape::Repeat {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} given twice"), &f.span));
         }
         if shape == Shape::Bare && f.value.is_some() {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} takes no value"), &f.span));
         }
-        if shape == Shape::Value && f.value.as_deref().unwrap_or("").is_empty() {
+        if shape != Shape::Bare && f.value.as_deref().unwrap_or("").is_empty() {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} requires a value (--{name}=...)"), &f.span));
         }
         out.0.push(ParsedFlag { name, value: f.value.unwrap_or_default(), span: f.span });
@@ -300,15 +359,49 @@ fn inline_or_operand(c: &mut Cursor, what: &str) -> Result<Source> {
     }
 }
 
+/// `--chmod` values: Sitefile trees only hold 0644 and 0755 files.
+fn chmod_mode(value: &str) -> Option<u32> {
+    match value {
+        "644" | "0644" => Some(0o644),
+        "755" | "0755" => Some(0o755),
+        _ => None,
+    }
+}
+
 fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, COPY_FLAGS)?;
+    for e in flags.all("exclude") {
+        if !is_ignore_pattern(&e.value) {
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("--exclude={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.value),
+                &e.span,
+            ));
+        }
+    }
+    let chmod = match flags.get("chmod") {
+        None => None,
+        Some(f) => Some(chmod_mode(&f.value).ok_or_else(|| {
+            SitefileError::at(
+                E_SYNTAX,
+                format!("--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '{}'", f.value),
+                &f.span,
+            )
+        })?),
+    };
     let source = inline_or_operand(c, "source")?;
     let dest = c.operand("destination")?;
     c.expect_end()?;
     c.expect_inline_used("the COPY source")?;
     no_inline_from(&source, &flags)?;
+    for name in ["exclude", "parents"] {
+        if let (Some(f), Source::Inline(_)) = (flags.get(name), &source) {
+            return Err(SitefileError::at(E_SYNTAX, format!("--{name} cannot be combined with an inline (<<) body"), &f.span));
+        }
+    }
     let from = stage_ref(&flags)?;
-    Ok(Instruction::Copy { span, source, dest, from, overwrite: flags.has("overwrite") })
+    let exclude = flags.all("exclude").map(|f| f.value.clone()).collect();
+    Ok(Instruction::Copy { span, source, dest, from, overwrite: flags.has("overwrite"), exclude, chmod, parents: flags.has("parents") })
 }
 
 fn parse_for(c: &mut Cursor, span: SourceSpan) -> Result<ForEach> {
@@ -610,6 +703,33 @@ mod tests {
         all.remove(0)
     }
 
+    #[test]
+    fn copy_exclude_chmod_parents() {
+        match one("COPY --exclude=*.md --exclude=drafts/ --chmod=0755 --parents ./src /out/") {
+            Instruction::Copy { exclude, chmod, parents, .. } => {
+                assert_eq!(exclude, ["*.md", "drafts/"]);
+                assert_eq!(chmod, Some(0o755));
+                assert!(parents);
+            }
+            other => panic!("{other:?}"),
+        }
+        match one("COPY ./a /b") {
+            Instruction::Copy { exclude, chmod, parents, .. } => assert!(exclude.is_empty() && chmod.is_none() && !parents),
+            other => panic!("{other:?}"),
+        }
+        let err = |src: &str| {
+            let e = parse_sitefile(src, "Sitefile").unwrap_err();
+            (e.code, e.span.map(|s| s.column), e.detail)
+        };
+        assert_eq!(err("COPY --chmod=600 a /b"), (E_SYNTAX, Some(6), "--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '600'".into()));
+        assert_eq!(err("COPY --chmod=644 --chmod=644 a /b").2, "--chmod given twice");
+        assert_eq!(err("COPY --exclude a /b").2, "--exclude requires a value (--exclude=...)");
+        assert!(err("COPY --exclude=#x a /b").2.starts_with("--exclude=#x is not a pattern"));
+        assert_eq!(err("COPY --parents <<EOF /b\nx\nEOF").2, "--parents cannot be combined with an inline (<<) body");
+        assert_eq!(err("COPY --exclude=x <<EOF /b\nx\nEOF").2, "--exclude cannot be combined with an inline (<<) body");
+        assert_eq!(parse_sitefile("COPY --chmod=755 <<EOF /b\nx\nEOF", "Sitefile").unwrap().len(), 1);
+    }
+
     fn copy_op(src: &str, dest: bool) -> Operand {
         match one(src) {
             Instruction::Copy { source: Source::Operand(s), dest: d, .. } => {
@@ -868,7 +988,7 @@ mod tests {
         parse_err("IMPORT d FROM ./x INTEGRITY sha256:abc", E_SYNTAX, 1, 29, "sha256");
         parse_err(&format!("IMPORT d FROM ./x INTEGRITY {}", digest.to_uppercase()), E_SYNTAX, 1, 29, "");
         parse_err("IMPORT d FROM ./x INTEGRITY ${X}", E_SYNTAX, 1, 29, "");
-        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY or SORT BY)");
+        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY or SECRET)");
         let Instruction::Import { sort, .. } = one("IMPORT p FROM ./p AS markdown SORT BY date DESC") else { panic!() };
         let s = sort.unwrap();
         assert!(s.key == "date" && s.descending && s.span.column == 31);
@@ -1117,6 +1237,22 @@ mod tests {
             let e = parse_sitefile(&format!("IMPORT a FROM ./a {clause}"), "Sitefile").unwrap_err();
             assert!(!e.detail.contains("unexpected"), "{clause}: {e}");
         }
+    }
+
+    #[test]
+    fn import_secret_clauses() {
+        let Instruction::Import { secrets, as_kind, .. } = one("IMPORT d FROM https://e.x/d SECRET k AS HEADER X-Api-Key AS json secret t as bearer") else { panic!() };
+        assert_eq!(as_kind, Some(ImportKind::Json));
+        let got: Vec<_> = secrets.iter().map(|s| (s.id.as_str(), s.header.as_str(), s.bearer, s.span.column)).collect();
+        assert_eq!(got, [("k", "X-Api-Key", false, 29), ("t", "Authorization", true, 66)]);
+        let err = |src: &str| parse_sitefile(src, "Sitefile").unwrap_err().detail;
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k"), "expected AS");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS COOKIE"), "expected HEADER <name> or BEARER");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER"), "expected a header name");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER X:y"), "invalid header name 'X:y'");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER Host"), "header 'Host' is set by sitefile and cannot carry a secret");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER authorization"), "header 'authorization' is set by two SECRET clauses");
+        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY or SECRET)");
     }
 
     #[test]

@@ -75,6 +75,19 @@ export interface ImportInstruction {
   readonly integrity?: string;
   /** `SORT BY key [ASC|DESC]`, for `AS markdown` collections. */
   readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
+  /** `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets, sent with remote requests). */
+  readonly secrets?: readonly ImportSecret[];
+}
+
+/** A build secret sent as an HTTP request header of a remote IMPORT. */
+export interface ImportSecret {
+  /** The `--secret id=…` it names. */
+  readonly id: string;
+  /** Header name as written (`Authorization` for BEARER). */
+  readonly header: string;
+  /** `AS BEARER`: the header value is `Bearer <secret>`. */
+  readonly bearer: boolean;
+  readonly span: SourceSpan;
 }
 
 /**
@@ -112,6 +125,12 @@ export interface CopyInstruction {
   readonly from?: StageRef;
   /** `--overwrite`: replace files that differ instead of failing. */
   readonly overwrite: boolean;
+  /** `--exclude=<pattern>` (repeatable): `.sitefileignore` patterns, relative to the source directory. */
+  readonly exclude?: readonly string[];
+  /** `--chmod=644|755`: the mode of every copied file (0o644 or 0o755). */
+  readonly chmod?: number;
+  /** `--parents`: keep the source's path under the destination. */
+  readonly parents?: true;
 }
 
 export interface RenderInstruction {

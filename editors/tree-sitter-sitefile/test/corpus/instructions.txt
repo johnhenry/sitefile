@@ -360,6 +360,47 @@ HEADER /assets/* Cache-Control: public, max-age=31536000
     (word)
     (word)))
 
+==================
+IMPORT from Git
+==================
+
+IMPORT docs FROM git+https://example.com/r.git#v1:docs AS markdown
+IMPORT site FROM GIT+HTTPS://example.com/r.git
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (url)
+    (import_kind))
+  (import_instruction
+    (identifier)
+    (url)))
+
+==================
+IMPORT with build secrets
+==================
+
+IMPORT data FROM https://api.example.com/d.json SECRET key AS HEADER X-Api-Key AS json
+IMPORT docs FROM https://example.com/r SECRET tok as bearer
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (url)
+    (secret_clause
+      (identifier)
+      (header_name))
+    (import_kind))
+  (import_instruction
+    (identifier)
+    (url)
+    (secret_clause
+      (identifier))))
+
 ================================================================================
 FINGERPRINT with flags, several patterns and a manifest
 ================================================================================
