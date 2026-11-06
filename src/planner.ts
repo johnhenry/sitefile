@@ -133,6 +133,8 @@ export type Operation =
       readonly each?: { readonly as: string; readonly list: string; readonly dest: Operand };
       readonly escape: EscapeMode;
       readonly overwrite: boolean;
+      /** `--inline-svg`: `${file … | svg}` may paste SVG markup. */
+      readonly inlineSvg?: true;
       readonly span: SourceSpan;
     };
 
@@ -306,6 +308,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
             each: { as: ins.each.as, list: ins.each.list, dest: ins.dest },
             escape: ins.escape,
             overwrite: ins.overwrite,
+            ...(ins.inlineSvg ? { inlineSvg: true as const } : {}),
             span: ins.span,
           });
           break;
@@ -321,6 +324,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           dest: dest.path,
           escape: ins.escape,
           overwrite: ins.overwrite,
+          ...(ins.inlineSvg ? { inlineSvg: true as const } : {}),
           span: ins.span,
         });
         break;

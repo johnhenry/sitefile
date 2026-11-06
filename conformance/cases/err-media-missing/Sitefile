@@ -1,0 +1,8 @@
+# ${file …} reads the tree at this RENDER: a path nothing wrote yet is E_NOT_FOUND.
+RENDER --escape=html <<HTML TO /index.html
+<p>${file "/img/hero.jpg" | img alt="hero"}</p>
+HTML
+COPY <<X /img/hero.jpg
+x
+X
+EXPORT /

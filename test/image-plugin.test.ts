@@ -17,7 +17,7 @@ const wasm = (): Promise<Buffer> => readFile(path.join(root, 'plugins', 'image',
 const testdata = (name: string): Promise<Buffer> => readFile(path.join(root, 'plugins', 'image', 'testdata', name));
 
 /** Tree digest of examples/image (pinned here and in the Rust tests). */
-const EXAMPLE_DIGEST = 'sha256:f9f6b62571a6a57051a18ac7370446b049babd543bd163c40670bda5c4de9a0f';
+const EXAMPLE_DIGEST = 'sha256:bfdec3ec231a04bad5cb5a6a67013587065650b49f2f7de5bbda67d78daacfaf';
 /** tiny.jpg at widths 16,24 as jpeg, png and webp (directory mode). */
 const TINY_DIGEST = 'sha256:ab43d0d4f76f6f28cf1ce0876b71822985342702ae1568817401ca7239f8dfc0';
 

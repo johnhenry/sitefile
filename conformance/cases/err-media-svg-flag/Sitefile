@@ -1,0 +1,8 @@
+# Inlining SVG markup needs RENDER --inline-svg.
+COPY <<SVG /logo.svg
+<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>
+SVG
+RENDER --escape=html <<HTML TO /index.html
+${file /logo.svg | svg}
+HTML
+EXPORT /

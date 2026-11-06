@@ -45,10 +45,26 @@ pub struct Ref {
     pub span: SourceSpan,
 }
 
+/// A piece of a `${file …}` string: text, or a `${name.key}` reference.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HelperPart {
+    Text(String),
+    Ref { name: String, path: Vec<String>, span: SourceSpan },
+}
+
+/// An attribute of a `${file … | helper …}`: `name="…"` or a bare `name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileAttr {
+    pub name: String,
+    pub value: Option<Vec<HelperPart>>,
+}
+
 /// A parsed RENDER template: text, substitutions and blocks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplateNode {
     Text(String),
+    /// `${file "<path>" [| helper attr…]}`: markup or a value for a file of the RENDER's tree (`media.rs`).
+    File { path: Vec<HelperPart>, helper: Option<String>, attrs: Vec<FileAttr>, span: SourceSpan },
     /// `raw` is true only for `${x|raw}`, which is never escaped.
     Var { name: String, path: Vec<String>, span: SourceSpan, raw: bool },
     Each { list: Ref, as_name: String, body: Vec<TemplateNode>, empty: Vec<TemplateNode>, span: SourceSpan },
@@ -57,6 +73,7 @@ pub enum TemplateNode {
 
 enum Token {
     Text(String),
+    File(TemplateNode),
     Var { name: String, path: Vec<String>, span: SourceSpan, raw: bool },
     OpenEach { list: Ref, as_name: String, span: SourceSpan },
     OpenIf { cond: Ref, negate: bool, span: SourceSpan },
@@ -299,6 +316,14 @@ pub fn parse_render_template_at(text: &str, file: &str, first_line: u32, first_c
             continue;
         }
         let span = span_at(i, line, line_start);
+        if text[i + 2..].starts_with("file ") || text[i + 2..].starts_with("file\t") {
+            // `${file …}`: strings in it may hold `}`, so it is read by its own scanner.
+            let (node, end) = parse_file_expr(text, i + 2, &|k| span_at(k, line, line_start), &span)?;
+            flush(&mut buf, &mut tokens);
+            tokens.push(Token::File(node));
+            i = end;
+            continue;
+        }
         let close = text[i + 2..].find('}').map(|k| k + i + 2);
         let nl = text[i + 2..].find('\n').map(|k| k + i + 2);
         let close = match close {
@@ -374,6 +399,7 @@ fn build_tree(tokens: Vec<Token>, file: &str, end_line: u32) -> Result<Vec<Templ
         match t {
             Token::Text(v) => target(&mut root, &mut stack).push(TemplateNode::Text(v)),
             Token::Var { name, path, span, raw } => target(&mut root, &mut stack).push(TemplateNode::Var { name, path, span, raw }),
+            Token::File(node) => target(&mut root, &mut stack).push(node),
             open @ (Token::OpenEach { .. } | Token::OpenIf { .. }) => stack.push(Frame { open, first: Vec::new(), second: None }),
             Token::Else(span) => {
                 let Some(f) = stack.last_mut() else {
@@ -413,7 +439,7 @@ fn build_tree(tokens: Vec<Token>, file: &str, end_line: u32) -> Result<Vec<Templ
         let (tag, span) = match &open.open {
             Token::OpenEach { span, .. } => ("${#each}", span),
             Token::OpenIf { span, .. } | Token::Else(span) | Token::CloseEach(span) | Token::CloseIf(span) => ("${#if}", span),
-            Token::Text(_) | Token::Var { .. } => return Ok(merge_text(root)),
+            Token::Text(_) | Token::Var { .. } | Token::File(_) => return Ok(merge_text(root)),
         };
         return err(E_TEMPLATE, format!("{tag} opened here is never closed (template ends at {file}:{end_line})"), Some(span));
     }
@@ -432,12 +458,178 @@ fn merge_text(nodes: Vec<TemplateNode>) -> Vec<TemplateNode> {
     out
 }
 
-/// How a [`FreeRef`] is used: `${name…}`, the list of `${#each}`, or the condition of `${#if}`.
+/// How a [`FreeRef`] is used: `${name…}`, the list of `${#each}`, the condition of `${#if}`, or
+/// inside a `${file …}` string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefUse {
     Var,
     Each,
     If,
+    Text,
+}
+
+/// The code point at byte `i`, for messages.
+fn char_at(text: &str, i: usize) -> String {
+    text[i..].chars().next().map(String::from).unwrap_or_default()
+}
+
+/// `${file <value> [| <helper> [<name>[=<value>]]…]}` from `start` (after `${`); returns the node and
+/// the index after its `}`. A value is a "double-quoted" string (`\` escapes, `${name}` references),
+/// a 'single-quoted' one (literal), or a bare word (escapes and references, up to whitespace, `|` or
+/// `}`). Errors point at the `${`.
+fn parse_file_expr(text: &str, start: usize, span_at: &dyn Fn(usize) -> SourceSpan, span: &SourceSpan) -> Result<(TemplateNode, usize)> {
+    let b = text.as_bytes();
+    let fail = |d: &str| -> SitefileError { SitefileError::at(E_TEMPLATE, d.to_string(), span) };
+    let unterminated = || fail("unterminated '${' in template");
+    let mut i = start + 4;
+    let ws = |i: &mut usize| {
+        while matches!(b.get(*i), Some(b' ' | b'\t')) {
+            *i += 1;
+        }
+    };
+    let at_end = |i: usize| i >= b.len() || b[i] == b'\n';
+    let value = |i: &mut usize| -> Result<Vec<HelperPart>> {
+        let mut parts: Vec<HelperPart> = Vec::new();
+        let add = |parts: &mut Vec<HelperPart>, s: &str| match parts.last_mut() {
+            Some(HelperPart::Text(t)) => t.push_str(s),
+            _ => parts.push(HelperPart::Text(s.to_string())),
+        };
+        if b[*i] == b'\'' {
+            let close = text[*i + 1..].find('\'').map(|k| k + *i + 1);
+            let nl = text[*i + 1..].find('\n').map(|k| k + *i + 1);
+            let close = match close {
+                Some(c) if !matches!(nl, Some(l) if l < c) => c,
+                _ => return Err(fail("unterminated string in ${file …}")),
+            };
+            add(&mut parts, &text[*i + 1..close]);
+            *i = close + 1;
+            return Ok(if parts.is_empty() { vec![HelperPart::Text(String::new())] } else { parts });
+        }
+        let quoted = b[*i] == b'"';
+        if quoted {
+            *i += 1;
+        }
+        loop {
+            if at_end(*i) {
+                if quoted {
+                    return Err(fail("unterminated string in ${file …}"));
+                }
+                break;
+            }
+            let ch = b[*i];
+            if quoted && ch == b'"' {
+                *i += 1;
+                break;
+            }
+            if !quoted && matches!(ch, b' ' | b'\t' | b'|' | b'}' | b'"' | b'\'') {
+                break;
+            }
+            if ch == b'\\' {
+                if *i + 1 >= b.len() || b[*i + 1] == b'\n' {
+                    return Err(if quoted { fail("unterminated string in ${file …}") } else { unterminated() });
+                }
+                let c = char_at(text, *i + 1);
+                add(&mut parts, &c);
+                *i += 1 + c.len();
+                continue;
+            }
+            if ch == b'$' && b.get(*i + 1) == Some(&b'{') {
+                let r = match_ref(&b[*i + 2..]);
+                if r == 0 || b.get(*i + 2 + r) != Some(&b'}') {
+                    return Err(fail("expected ${name} or ${name.key} inside a ${file …} string"));
+                }
+                let reference = split_ref(&text[*i + 2..*i + 2 + r], &span_at(*i));
+                parts.push(HelperPart::Ref { name: reference.name, path: reference.path, span: reference.span });
+                *i += 3 + r;
+                continue;
+            }
+            let c = char_at(text, *i);
+            add(&mut parts, &c);
+            *i += c.len();
+        }
+        Ok(if parts.is_empty() { vec![HelperPart::Text(String::new())] } else { parts })
+    };
+    ws(&mut i);
+    if at_end(i) {
+        return Err(unterminated());
+    }
+    if b[i] == b'}' || b[i] == b'|' {
+        return Err(fail("expected a path after ${file, as in ${file \"/img/a.png\"}"));
+    }
+    let path = value(&mut i)?;
+    ws(&mut i);
+    let mut helper: Option<String> = None;
+    let mut attrs: Vec<FileAttr> = Vec::new();
+    let list = || crate::media::file_helpers().collect::<Vec<_>>().join(", ");
+    if b.get(i) == Some(&b'|') {
+        i += 1;
+        ws(&mut i);
+        let n = b[i..].iter().enumerate().take_while(|(k, c)| if *k == 0 { c.is_ascii_lowercase() } else { c.is_ascii_lowercase() || c.is_ascii_digit() || **c == b'-' }).count();
+        if n == 0 {
+            return Err(fail(&format!("expected a helper name after '|' ({})", list())));
+        }
+        let h = text[i..i + n].to_string();
+        i += n;
+        if !crate::media::file_helpers().any(|x| x == h) {
+            return Err(fail(&format!("unknown file helper '{h}' (expected {})", list())));
+        }
+        loop {
+            let before = i;
+            ws(&mut i);
+            if at_end(i) || b[i] == b'}' {
+                break;
+            }
+            let n = b[i..]
+                .iter()
+                .enumerate()
+                .take_while(|(k, c)| {
+                    let start = c.is_ascii_alphabetic() || **c == b'_' || **c == b':';
+                    if *k == 0 { start } else { start || c.is_ascii_digit() || **c == b'.' || **c == b'-' }
+                })
+                .count();
+            if i == before || n == 0 {
+                return Err(fail(&format!("expected an attribute (name or name=\"value\") in ${{file … | {h}}}, got '{}'", char_at(text, i))));
+            }
+            let name = text[i..i + n].to_string();
+            i += n;
+            let mut v = None;
+            if b.get(i) == Some(&b'=') {
+                i += 1;
+                if at_end(i) || matches!(b[i], b' ' | b'\t' | b'}') {
+                    return Err(fail(&format!("expected a value after '{name}='")));
+                }
+                v = Some(value(&mut i)?);
+            }
+            if attrs.iter().any(|a| a.name.to_ascii_lowercase() == name.to_ascii_lowercase()) {
+                return Err(fail(&format!("attribute '{name}' given twice")));
+            }
+            attrs.push(FileAttr { name, value: v });
+        }
+        if !attrs.is_empty() && crate::media::VALUE_HELPERS.contains(&h.as_str()) {
+            return Err(fail(&format!("the {h} helper takes no attributes")));
+        }
+        helper = Some(h);
+    }
+    ws(&mut i);
+    if at_end(i) {
+        return Err(unterminated());
+    }
+    if b[i] != b'}' {
+        return Err(fail(&format!("expected | or }} after the path in ${{file …}}, got '{}'", char_at(text, i))));
+    }
+    Ok((TemplateNode::File { path, helper, attrs, span: span.clone() }, i + 1))
+}
+
+/// Every `${name}` reference of a `${file …}` expression, in order: (name, path, span).
+pub fn file_refs<'a>(path: &'a [HelperPart], attrs: &'a [FileAttr]) -> Vec<(&'a str, &'a [String], &'a SourceSpan)> {
+    std::iter::once(path)
+        .chain(attrs.iter().filter_map(|a| a.value.as_deref()))
+        .flatten()
+        .filter_map(|p| match p {
+            HelperPart::Ref { name, path, span } => Some((name.as_str(), path.as_slice(), span)),
+            HelperPart::Text(_) => None,
+        })
+        .collect()
 }
 
 /// A name a template reads from outside itself (not a `${#each}` variable of its own).
@@ -458,6 +650,13 @@ pub fn free_refs(nodes: &[TemplateNode]) -> Vec<FreeRef> {
                 TemplateNode::Var { name, path, span, .. } => {
                     if !bound.contains(name) {
                         out.push(FreeRef { name: name.clone(), path: path.clone(), span: span.clone(), usage: RefUse::Var });
+                    }
+                }
+                TemplateNode::File { path, attrs, .. } => {
+                    for (name, path, span) in file_refs(path, attrs) {
+                        if !bound.iter().any(|b| b == name) {
+                            out.push(FreeRef { name: name.to_string(), path: path.to_vec(), span: span.clone(), usage: RefUse::Text });
+                        }
                     }
                 }
                 TemplateNode::Each { list, as_name, body, empty, .. } => {
@@ -491,6 +690,10 @@ pub struct TemplateContext<'a> {
     pub is_fragment: &'a dyn Fn(&str) -> bool,
     /// The parsed template of fragment `name` (may fail, e.g. E_TEMPLATE in an imported partial).
     pub fragment: &'a dyn Fn(&str) -> Result<std::sync::Arc<Vec<TemplateNode>>>,
+    /// The stage's tree at this RENDER, for `${file …}`.
+    pub tree: Option<&'a dyn crate::media::TemplateTree>,
+    /// RENDER --inline-svg.
+    pub inline_svg: bool,
 }
 
 /// E_TYPE for a fragment used where a value is needed.
@@ -587,6 +790,44 @@ fn run<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, list: &[TemplateNode], scope: Option<&Scop
     for n in list {
         match n {
             TemplateNode::Text(v) => out.push_str(v),
+            TemplateNode::File { path, helper, attrs, span } => {
+                // References inside its strings are values (a fragment is not one).
+                let text_of = |t: &[HelperPart]| -> Result<String> {
+                    let mut s = String::new();
+                    for p in t {
+                        match p {
+                            HelperPart::Text(v) => s.push_str(v),
+                            HelperPart::Ref { name, path, span } => {
+                                let v = match Scope::get(scope, name) {
+                                    Some(item) => resolve_json_path(item, path, name, span)?,
+                                    None if ctx.is_fragment(name, None) => return Err(fragment_not_value(name, span)),
+                                    None => (ctx.lookup)(name, path, span)?,
+                                };
+                                s.push_str(&v.to_js_string());
+                            }
+                        }
+                    }
+                    Ok(s)
+                };
+                let Some(tree) = ctx.fragments.and_then(|f| f.tree) else {
+                    return err(E_TEMPLATE, "${file …} reads the tree of a RENDER, which this template has not", Some(span));
+                };
+                let raw = text_of(path)?;
+                let mut evaluated = Vec::with_capacity(attrs.len());
+                for a in attrs {
+                    let value = match &a.value {
+                        Some(v) => Some(text_of(v)?),
+                        None => None,
+                    };
+                    evaluated.push(crate::media::HelperAttr { name: a.name.clone(), value });
+                }
+                let opts = crate::media::HelperOptions { inline_svg: ctx.fragments.is_some_and(|f| f.inline_svg) };
+                match crate::media::render_file(&raw, helper.as_deref(), &evaluated, tree, opts, span)? {
+                    crate::media::HelperOutput::Markup(m) => out.push_str(&m),
+                    crate::media::HelperOutput::Value(v) if ctx.escape == EscapeMode::Html => escape_html_into(&v, out),
+                    crate::media::HelperOutput::Value(v) => out.push_str(&v),
+                }
+            }
             TemplateNode::Var { name, path, span, raw } => {
                 if ctx.is_fragment(name, scope) {
                     render_fragment(ctx, name, path, span, scope, out)?;
@@ -1262,7 +1503,7 @@ mod tests {
                 _ => parse_render_template("${nope}", "Sitefile", 9)?,
             }))
         };
-        let ctx = TemplateContext { is_fragment: &|n: &str| matches!(n, "a" | "b" | "c" | "d"), fragment: &frag };
+        let ctx = TemplateContext { is_fragment: &|n: &str| matches!(n, "a" | "b" | "c" | "d"), fragment: &frag, tree: None, inline_svg: false };
         let run = |t: &str, e: EscapeMode| render_template_with(&parse_render_template(t, "Sitefile", 1)?, &lookup, e, None, Some(&ctx));
         assert_eq!(run("${a}|${T}|${a|raw}", EscapeMode::Html).unwrap(), "<b title=\"&lt;&amp;&gt;\">&lt;&amp;&gt;</b>|&lt;&amp;&gt;|<b title=\"&lt;&amp;&gt;\">&lt;&amp;&gt;</b>");
         assert_eq!(run("${a}", EscapeMode::None).unwrap(), "<b title=\"<&>\"><&></b>");
@@ -1311,7 +1552,19 @@ mod tests {
             let text = fragments.iter().find(|(k, _)| *k == n).map(|(_, t)| *t).unwrap_or_default();
             Ok(std::sync::Arc::new(parse_render_template(text, &format!("{n}.html"), 1)?))
         };
-        let ctx = TemplateContext { is_fragment: &is_fragment, fragment: &fragment };
+        // File helpers, as in generate.mjs: a 3x2 PNG header, a stylesheet and a directory.
+        struct Files(Vec<(&'static str, Vec<u8>)>);
+        impl crate::media::TemplateTree for Files {
+            fn get(&self, path: &str) -> Option<&[u8]> {
+                self.0.iter().find(|(p, _)| *p == path).map(|(_, b)| &b[..])
+            }
+            fn is_directory(&self, path: &str) -> bool {
+                self.0.iter().any(|(p, _)| p.starts_with(&format!("{path}/")))
+            }
+        }
+        let png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 3, 0, 0, 0, 2];
+        let files = Files(vec![("/a.png", png), ("/s.css", b"h1 { color: <red> }\n".to_vec()), ("/d/x.txt", b"x".to_vec())]);
+        let ctx = TemplateContext { is_fragment: &is_fragment, fragment: &fragment, tree: Some(&files), inline_svg: false };
         fixtures::check("template.json", |t| {
             let nodes = parse_render_template(t, "t.html", 3)?;
             let html = render_template_with(&nodes, &lookup, EscapeMode::Html, Some(&values), Some(&ctx))?;

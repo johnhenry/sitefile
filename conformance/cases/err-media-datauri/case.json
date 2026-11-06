@@ -1,0 +1,3 @@
+{
+  "copy": { "sky.jpg": "examples/image/photos/sky.jpg" }
+}

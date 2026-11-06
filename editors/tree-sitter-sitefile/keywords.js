@@ -15,10 +15,12 @@ export const KEYWORDS = {
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
+  /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
+  fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
     COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
-    RENDER: ['escape', 'overwrite', 'from'],
+    RENDER: ['escape', 'overwrite', 'from', 'inline-svg'],
     TRANSFORM: ['overwrite', 'from'],
     SITEMAP: ['overwrite'],
     FEED: ['overwrite'],

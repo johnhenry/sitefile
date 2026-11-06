@@ -165,6 +165,8 @@ export interface RenderInstruction {
   /** `FOR item IN list`: render once per element of an imported list. */
   readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
   readonly overwrite: boolean;
+  /** `--inline-svg`: the template's `${file … | svg}` may paste SVG markup into the page. */
+  readonly inlineSvg?: true;
 }
 
 export interface ExportInstruction {

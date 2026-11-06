@@ -139,11 +139,20 @@ const values = (name, p, span, loose) => {
 };
 // html fragments (issue #106): parsed from these templates, rendered in place.
 const FRAGMENTS = { F1: '<b title="${T}">${T}</b>', F2: '[${F1}|${i.t}]', LOOP: '${#each list as x}${x.t}${/each}', REC: '(${REC2})', REC2: '${REC}', BAD: 'x ${#if}' };
+// File helpers (issue #105): a small tree (a 3x2 PNG header, a stylesheet, a directory).
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 3, 0, 0, 0, 2]);
+const FILES = new Map([['/a.png', PNG], ['/s.css', new TextEncoder().encode('h1 { color: <red> }\n')], ['/d/x.txt', new TextEncoder().encode('x')]]);
 const ctx = {
   isFragment: (name) => Object.hasOwn(FRAGMENTS, name),
   fragment: (name) => parseRenderTemplate(FRAGMENTS[name], `${name}.html`, 1),
+  tree: { get: (p) => FILES.get(p), isDirectory: (p) => [...FILES.keys()].some((k) => k.startsWith(p + '/')) },
+  inlineSvg: false,
 };
 const tAtoms = [
+  '${file "/a.png" | img alt="${T}"}', '${file /s.css | stylesheet}', '${file "/nope"}', '${file "/d"}', '${file a.png}', '${file "/a.png" | width}',
+  '${file "/s.css" | pre class=x}', '${file "/a.png" | bogus}', '${file }', '${file "/a.png" | img alt}', '${file "/a.png" | img alt=1 ALT=2}',
+  "${file '/a${x}.png'}", '${file "/a${i.t}.png"}', '${file "/s.css" | svg}', '${file "x}', '${file \'/s.css\' | datauri}', '${file "/a.png" | url x}',
+  '${file "/a.png"|img loading=eager data-x="a}b"}', '${file "/a.png" | img "x"}', '${file "/a.png" x}', '${file "/s.css" | width}', '${file "/a.png" | integrity}',
   '${F1}', '${F2}', '${LOOP}', '${REC}', '${BAD}', '${F1|raw}', '${F1.x}', '${#each F1 as i}', '${#if F2}', '${#each list as F1}${F1}${/each}',
   '${T}', '${N}', '${F}', '${Z}', '${B}', '${E}', '${T|raw}', '${nil}', '${obj}', '${obj.k}', '${obj.n.1}', '${obj.n.5}', '${list.0.t}', '${nope}',
   '${#each list as i}', '${#each obj.n as i}', '${#each list.0.tags as T}', '${#each nope as i}', '${#each T as i}', '${#each missing.k as i}',

@@ -1,0 +1,8 @@
+# A .png whose bytes are no image: E_DATA at the template.
+COPY <<X /img/a.png
+not a png
+X
+RENDER --escape=html <<HTML TO /index.html
+${file /img/a.png | img}
+HTML
+EXPORT /

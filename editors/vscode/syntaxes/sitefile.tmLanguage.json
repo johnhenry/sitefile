@@ -3532,7 +3532,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "match": "(?<![^\\s])(--)(overwrite|inline-svg)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -4162,6 +4162,74 @@
         {
           "match": "\\$\\$\\{",
           "name": "constant.character.escape.template.sitefile"
+        },
+        {
+          "name": "meta.template.file.sitefile",
+          "begin": "(\\$\\{)(file)(?=[ \\t])",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.template.begin.sitefile"
+            },
+            "2": {
+              "name": "support.function.file.sitefile"
+            }
+          },
+          "end": "(\\})|$",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.template.end.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "match": "(\\|)[ \\t]*(?:(url|width|height|type|size|integrity|datauri|img|video|audio|source|script|stylesheet|preload|modulepreload|pre|svg)(?![A-Za-z0-9-])|([a-z][a-z0-9-]*))",
+              "captures": {
+                "1": {
+                  "name": "keyword.operator.pipe.sitefile"
+                },
+                "2": {
+                  "name": "support.function.helper.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.helper.sitefile"
+                }
+              }
+            },
+            {
+              "match": "([A-Za-z_:][A-Za-z0-9_:.-]*)(=)",
+              "captures": {
+                "1": {
+                  "name": "entity.other.attribute-name.helper.sitefile"
+                },
+                "2": {
+                  "name": "keyword.operator.assignment.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#string-double"
+            },
+            {
+              "include": "#string-single"
+            },
+            {
+              "match": "(?<=[ \\t])[A-Za-z_:][A-Za-z0-9_:.-]*(?=[ \\t]|\\}|$)",
+              "name": "entity.other.attribute-name.helper.sitefile"
+            },
+            {
+              "match": "[^\\s\"'|}]+",
+              "name": "string.unquoted.path.sitefile",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "include": "#interpolation"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
         },
         {
           "match": "(\\$\\{)(#each)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\})",

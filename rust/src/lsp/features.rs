@@ -93,11 +93,23 @@ fn interp_items(ix: &Index, ins_ix: usize, template: bool) -> Vec<Item> {
 
 /// Completion inside `${…}`: `partial` is what was typed after `${`.
 fn complete_interp(ix: &Index, ins_ix: usize, partial: &str, col: u32, template: bool) -> Completion {
+    // `${file "…" | ` and `${file "…" | im`: the helpers.
+    if template {
+        if let Some(rest) = partial.strip_prefix("file").filter(|r| r.starts_with([' ', '\t'])) {
+            if let Some((_, after)) = rest.rsplit_once('|') {
+                let typed = after.trim_start();
+                if typed.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                    return Completion { items: kw_items(crate::media::file_helpers(), CIK_FUNCTION), start: col - utf16_len(typed) };
+                }
+            }
+            return Completion { items: Vec::new(), start: col };
+        }
+    }
     if partial.contains('.') {
         return Completion { items: Vec::new(), start: col }; // a key of a value: unknown without data
     }
-    if template && (partial.starts_with('#') || partial.starts_with('/') || partial.is_empty()) {
-        let mut items = kw_items(["#each", "#if", "else", "/each", "/if"], CIK_KEYWORD);
+    if template && (partial.starts_with('#') || partial.starts_with('/') || partial.is_empty() || "file".starts_with(partial)) {
+        let mut items = kw_items(["#each", "#if", "else", "/each", "/if", "file"], CIK_KEYWORD);
         if !partial.starts_with('#') && !partial.starts_with('/') {
             items.extend(interp_items(ix, ins_ix, true));
         } else if partial.contains(' ') {
@@ -461,7 +473,10 @@ pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Op
     }
     let ins = &ix.instrs[ix.instr_at(line)?];
     if line > ins.end_line {
-        return None; // heredoc body
+        // A template body: `file` and the helpers of `${file … | helper}`.
+        let b = ins.body.as_ref().filter(|b| b.contains_line(line) && matches!(ins.keyword.as_str(), "RENDER" | "LET"))?;
+        let text = b.text.lines().nth((line - b.start_line) as usize)?;
+        return file_hover(text, col).map(|(t, s, e)| md(t.to_string(), line, s, e));
     }
     let at = ins.words.iter().position(|w| w.contains(line, col))?;
     let w = &ins.words[at];
@@ -490,6 +505,42 @@ pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Op
         _ => docs::clause(kw, &w.text),
     };
     text.and_then(r)
+}
+
+/// Hover in a template line: `file` of `${file` or a helper name after `|` inside one:
+/// (text, start, end) in UTF-16 columns.
+fn file_hover(text: &str, col: u32) -> Option<(&'static str, u32, u32)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut cols = Vec::with_capacity(chars.len() + 1);
+    let mut acc = 0u32;
+    for c in &chars {
+        cols.push(acc);
+        acc += c.len_utf16() as u32;
+    }
+    cols.push(acc);
+    let at = cols.iter().position(|&c| c > col).map(|k| k.saturating_sub(1)).unwrap_or(chars.len());
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    let mut s = at.min(chars.len());
+    while s > 0 && word(chars[s - 1]) {
+        s -= 1;
+    }
+    let mut e = at.min(chars.len());
+    while e < chars.len() && word(chars[e]) {
+        e += 1;
+    }
+    if s == e {
+        return None;
+    }
+    let w: String = chars[s..e].iter().collect();
+    let before: String = chars[..s].iter().collect();
+    if w == "file" && before.ends_with("${") {
+        return Some((docs::template_file(), cols[s], cols[e]));
+    }
+    let open = before.rfind("${file")?;
+    if before[open..].contains('}') || !before.trim_end().ends_with('|') {
+        return None;
+    }
+    docs::file_helper(&w).map(|t| (t, cols[s], cols[e]))
 }
 
 // ------------------------------------------------------------------ navigation
@@ -699,7 +750,7 @@ mod tests {
 
     #[test]
     fn flags_in_context() {
-        assert_eq!(labels("RENDER --"), ["--escape=", "--overwrite", "--from="]);
+        assert_eq!(labels("RENDER --"), ["--escape=", "--overwrite", "--from=", "--inline-svg"]);
         assert_eq!(labels("COPY --overwrite --"), ["--from=", "--exclude=", "--chmod=", "--parents"]);
         // --exclude is repeatable.
         assert_eq!(labels("COPY --exclude=a --chmod=644 --"), ["--overwrite", "--from=", "--exclude=", "--parents"]);
@@ -746,7 +797,7 @@ mod tests {
         let l: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(l, ["TITLE", "URL", "posts"]);
         assert_eq!(c.start, 6);
-        assert_eq!(labels("ARG A\nRENDER <<H TO /x\n${"), ["#each", "#if", "else", "/each", "/if", "A"]);
+        assert_eq!(labels("ARG A\nRENDER <<H TO /x\n${"), ["#each", "#if", "else", "/each", "/if", "file", "A"]);
         assert_eq!(labels("ARG A\nIMPORT l FROM ./l AS json\nRENDER <<H TO /x\n${#each "), ["A", "l"]);
     }
 
@@ -853,6 +904,20 @@ mod tests {
         assert!(!labels("ARG h: ").contains(&"html".to_string()));
         // No template error diagnostics beyond validate's.
         assert!(a.diagnostics.iter().all(|d| d.severity != crate::lsp::diagnostics::ERROR), "{:?}", a.diagnostics);
+    }
+
+    #[test]
+    fn file_helpers_completion_and_hover() {
+        let src = "COPY ./a/ /img/\nRENDER --escape=html <<HTML TO /i.html\n${file \"/img/a.png\" | img alt=\"x\"}\n${fi\n${file /a.css | \nHTML\nEXPORT /";
+        assert!(labels_at(src, 3, 4).contains(&"file".to_string()));
+        let helpers = labels_at(src, 4, 16);
+        assert!(helpers.contains(&"img".to_string()) && helpers.contains(&"stylesheet".to_string()), "{helpers:?}");
+        let lines = Lines::new(src);
+        let ix = build(&lines);
+        let h = |l, c| hover(&ix, None, l, c).map(|v| v["contents"]["value"].as_str().unwrap().to_string());
+        assert!(h(2, 3).unwrap().contains("${file \"/path\""));
+        assert!(h(2, 23).unwrap().starts_with("`<img src width height"));
+        assert!(h(2, 12).is_none()); // inside the path
     }
 
     #[test]

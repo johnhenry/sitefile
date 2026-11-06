@@ -54,6 +54,9 @@ const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn',
 const FRAGMENTS = [
   '<b>${TITLE}</b>', '<a href="/${item.slug}">${item.title}</a>', '${#each posts as p}<i>${p.title}</i>${/each}', '${#if x}y${else}z${/if}',
   '${a}${b}', '${frag}', '${TITLE.x}', '${#each}', '${x y}', '<p>', '', '$${literal}', '${posts|raw}', 'a <<EOF b', '${x', '<i>${n}</i>',
+  // `${file …}` helpers (issue #105).
+  '${file "/img/${item.slug}.png" | img alt="${TITLE}"}', '${file /a.css | stylesheet}', '${file x | bogus}', '${file "/a" | img alt="${frag}"}',
+  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
 ];
 const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
 const DIGEST = 'sha256:' + 'ab'.repeat(32);
@@ -107,7 +110,7 @@ const INSTRUCTIONS = {
   COPY: () =>
     `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
     let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
     if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
@@ -261,7 +264,7 @@ function validProgram() {
     () => `COPY ${maybe('--exclude=*.md ')}${maybe('--exclude=drafts/ ')}${maybe(() => `--chmod=${pick(['644', '0755'])} `)}${maybe('--parents ')}${pick(['./src', './src/a.css', 'site:/x', 'site:'])} /out/`,
     () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
-    () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
+    () => `RENDER ${maybe('--escape=html ')}${maybe('--inline-svg ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (frags.length ? `RENDER --escape=html <<HTML TO /f-${int(9)}.html\n\${${pick(frags)}}${pick(['', '<main>${TITLE}</main>', '${' + pick(frags) + '}'])}\nHTML` : 'COPY ./g /g'),
     () => (frags.length ? `COPY ./x /\${${pick(frags)}}` : 'COPY ./h /h'),
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
@@ -412,7 +415,8 @@ const EDGE = [
   'IMPORT h FROM ./h.html AS html\nRENDER ./t TO /x FOR i IN h\nEXPORT /', 'LET h: html = x\nFEED h BASE https://e.x LINK /a\nEXPORT /',
   'IMPORT h FROM ./h.html AS html SORT BY x\nEXPORT /', 'LET a = <<EOF\nEXPORT /', 'LET a: htmlx = 1\nEXPORT /', 'LET a:HTML=<i>\nEXPORT /',
   'ARG T = x\nLET a: html = <b>${T}</b>\nLET b: html = ${a}${item.title}\nRENDER --escape=html <<H TO /i.html\n${b}\nH\nEXPORT /',
-  'LET a: html = x\nLET a = 1\nEXPORT /', 'LET a: html = x\nRENDER ./t TO /${a}.html\nEXPORT /', 'IMPORT h FROM ./h AS html\nCOPY h: /h\nEXPORT /',
+  'LET a: html = x\nLET a = 1\nEXPORT /', 'RENDER --inline-svg --escape=html <<H TO /a.html\n${file /a.svg | svg}\nH\nEXPORT /',
+  'LET a: html = ${file "/i/${x}.png" | img alt="${y.z}"}\nEXPORT /', 'ARG T\nLET a: html = ${file "/i/${T.x}.png"}\nEXPORT /', 'LET f: html = x\nLET a: html = ${file "/${f}"}\nEXPORT /', 'LET a: html = x\nRENDER ./t TO /${a}.html\nEXPORT /', 'IMPORT h FROM ./h AS html\nCOPY h: /h\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

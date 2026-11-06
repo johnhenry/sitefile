@@ -29,7 +29,7 @@ const EXPECTED_SYNTAX_ERRORS = [
 ];
 
 /** An inline RENDER template or html LET with an invalid tag (E_TEMPLATE in src/render.ts). */
-const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-fragment-template/Sitefile', 'conformance/cases/err-template/Sitefile'];
+const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-fragment-template/Sitefile', 'conformance/cases/err-media-helper/Sitefile', 'conformance/cases/err-template/Sitefile'];
 
 /** E_SYNTAX files the grammar is lenient about (the parser checks a value word). */
 const LENIENT = new Set([
@@ -39,6 +39,7 @@ const LENIENT = new Set([
   'conformance/cases/err-secret-reserved/Sitefile',
   'conformance/cases/err-syntax-directive-late/Sitefile',
   'conformance/cases/err-syntax-version-invalid/Sitefile',
+  'conformance/cases/err-media-helper/Sitefile', // `| image`: the grammar accepts any helper name
 ]);
 
 const repoFiles = [...findSitefiles(path.join(repoRoot, 'examples')), ...findSitefiles(path.join(repoRoot, 'conformance/cases'))];

@@ -95,7 +95,7 @@ test('flags per instruction match parseFlags calls', () => {
     const body = parserTs.slice(parserTs.indexOf(`function ${fn}(`));
     const m = /parseFlags\(c, \{([^}]*)\}/.exec(body);
     assert.ok(m, `parseFlags not found in ${fn}`);
-    const names = all(/([a-z]+):/g, m[1]);
+    const names = all(/'?([a-z-]+)'?:/g, m[1]);
     assert.deepEqual([...names].sort(), [...KEYWORDS.flags[instr]].sort(), instr);
     assert.ok(JSON.stringify(grammar.rules[`${instr.toLowerCase()}_instruction`]).includes('"flag"'), `${instr} takes flags`);
   }

@@ -189,6 +189,19 @@ test('# sitefile-lint: comments are highlighted as directives', async () => {
   for (const [, s] of r[2].tokens) hasNot(s, 'directive');
 });
 
+test('${file …} helpers: path, helper, attributes; ${file} alone is a variable', async () => {
+  const r = await tokenize('RENDER --inline-svg <<HTML TO /i.html\n<p>${file "/img/${x}.jpg" | img alt="a}b" class=hero hidden} ${file} ${file /a | bogus}</p>\nHTML\n');
+  has(scopesOf(r, 1, 'inline-svg'), 'variable.parameter.flag');
+  has(scopesOf(r, 2, 'file'), 'support.function.file');
+  has(scopesOf(r, 2, 'img'), 'support.function.helper');
+  has(scopesOf(r, 2, 'alt'), 'entity.other.attribute-name.helper');
+  has(scopesOf(r, 2, 'x'), 'variable.other.readwrite');
+  has(scopesOf(r, 2, 'hero'), 'string.unquoted');
+  has(scopesOf(r, 2, 'hidden'), 'entity.other.attribute-name.helper');
+  has(scopesOf(r, 2, 'bogus'), 'invalid.illegal.helper');
+  has(scopesOf(r, 3, 'HTML'), 'entity.name.tag.heredoc');
+});
+
 test('html fragments: LET name: html = … is a template line; LET name: html <<NAME a template heredoc', async () => {
   const r = await tokenize('LET nav: html = <a href="${p.url}">${#each xs as x}${x}${/each}</a>\nLET h: HTML <<T\n<b>${SITE}</b>\nT\nLET c: html = <<-T\n\t${c2}\n\tT\nLET plain = <<EOF\nARG a: html\nEXPORT /\n');
   has(scopesOf(r, 1, 'LET'), 'keyword.control.instruction');

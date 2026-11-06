@@ -1,0 +1,41 @@
+# Template helpers for files (issue #105): every helper, attributes and escaping,
+# references in helper strings, helpers inside fragments and FOR loops.
+ARG ALT = "Our <team> & co"
+IMPORT pics FROM ./pics.json AS json
+COPY ./photos/ "/img/my photos/"
+COPY <<CSS /css/site.css
+h1 { color: teal }
+CSS
+COPY <<JS /js/app.js
+console.log("<hi>")
+JS
+COPY <<SVG /img/logo.svg
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the logo -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><rect width="2" height="2"/></svg>
+SVG
+COPY <<F /fonts/a.woff2
+not really a font
+F
+LET pic: html = <figure>${file "/img/my photos/${item.file}" | img alt="${item.alt}" sizes="(min-width: 40em) 50vw, 100vw"}</figure>
+
+RENDER --escape=html --inline-svg <<HTML TO /index.html
+${file "/img/my photos/sky.jpg" | img alt="${ALT}" class=hero loading=eager}
+${file '/img/my photos/badge.png' | img alt="" hidden}
+${file "/img/my photos/tiny.gif" | img}${file "/img/my photos/tiny.webp" | img}${file "/img/my photos/rotated.jpg" | img}
+${file /img/logo.svg | img alt=logo} ${file /img/logo.svg | svg class=logo aria-hidden=true}
+${file /css/site.css | stylesheet} ${file /css/site.css | preload} ${file /fonts/a.woff2 | preload}
+${file /js/app.js | script type=module defer} ${file /js/app.js | modulepreload}
+${file /js/app.js | pre class=code}
+<a href="${file "/img/my photos/badge.png"}" data-type="${file /js/app.js | type}" data-size="${file /js/app.js | size}" data-sri="${file /js/app.js | integrity}">
+${file "/img/my photos/sky.jpg" | width}x${file "/img/my photos/sky.jpg" | height}
+${file "/img/my photos/badge.png" | source media="(min-width: 1px)"} ${file /js/app.js | video controls} ${file /js/app.js | audio}
+<img src="${file /css/site.css | datauri}">
+HTML
+RENDER --escape=none <<TXT TO /plain.txt
+${file "/img/my photos/sky.jpg" | img alt="${ALT}"} ${file /js/app.js | type}
+TXT
+RENDER --escape=html <<HTML TO /pics/${item.slug}.html FOR item IN pics
+${pic}
+HTML
+EXPORT /

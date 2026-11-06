@@ -47,7 +47,7 @@ pub const COPY_FLAGS: &[(&str, Shape)] = &[
     ("chmod", Shape::Value),
     ("parents", Shape::Bare),
 ];
-pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value), ("inline-svg", Shape::Bare)];
 pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
 
 /// The leading flags `keyword` accepts (empty for instructions without flags).
@@ -467,7 +467,7 @@ fn parse_render(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     c.expect_inline_used("the RENDER template")?;
     no_inline_from(&template, &flags)?;
     let from = stage_ref(&flags)?;
-    Ok(Instruction::Render { span, template, dest, from, escape, each, overwrite: flags.has("overwrite") })
+    Ok(Instruction::Render { span, template, dest, from, escape, each, overwrite: flags.has("overwrite"), inline_svg: flags.has("inline-svg") })
 }
 
 fn parse_plugin(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {

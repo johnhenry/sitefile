@@ -279,7 +279,7 @@ function checkFragment(ins: FragmentInstruction, file: string, s: FragmentScope)
     if (s.fragments.has(r.name)) {
       if (r.use !== 'var' || r.path.length > 0) throw fragmentNotValue(r.name, r.span);
     } else if (s.vars.has(r.name)) {
-      if (r.use === 'var' && r.path.length > 0) throw new SitefileError('E_TYPE', `'${r.name}' is an ARG/LET value; dotted access only works on JSON imports`, r.span);
+      if ((r.use === 'var' || r.use === 'text') && r.path.length > 0) throw new SitefileError('E_TYPE', `'${r.name}' is an ARG/LET value; dotted access only works on JSON imports`, r.span);
     } else if (s.imports.has(r.name)) {
       // Its kind (and so whether a template can read it) is known once it is resolved.
     } else if (s.notValue(r.name)) {
