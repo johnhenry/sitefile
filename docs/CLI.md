@@ -147,6 +147,19 @@ Docker warns about the mismatch. Use `--platform linux/arm64` to label them for 
 | `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store). A non-empty destination needs `--force`. |
 | `image diff <a> <b>` | `A`/`D`/`C` lines for added, removed and changed paths. |
 
+## Language server
+
+```
+sitefile lsp [--stdio]
+```
+
+Runs the Sitefile language server (LSP 3.17, JSON-RPC over stdin/stdout) for editors: diagnostics from the real
+parse/validate/plan pipeline, completion, hover, go to definition, references, rename and document symbols. `--stdio`
+is accepted (clients pass it) and is the only transport. It exits 0 after `shutdown` + `exit`. See [LSP.md](LSP.md).
+
+**Rust binary only** (a tooling exception, see [RUST.md](RUST.md#tooling-exception-the-language-server)): the
+TypeScript CLI prints a usage error pointing to `rust/target/release/sitefile lsp` and exits 2.
+
 ## Site servers
 
 ```
