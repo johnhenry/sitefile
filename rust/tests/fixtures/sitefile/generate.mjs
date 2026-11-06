@@ -110,6 +110,7 @@ const INSTRUCTIONS = {
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
   FINGERPRINT: () =>
     `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}`,
+  CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // Rejected keywords.
   RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
   NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
@@ -119,7 +120,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -233,6 +234,7 @@ function validProgram() {
     () => (lists.includes('posts') ? `FEED posts BASE https://e.x LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html'])}${maybe(' TO /atom.xml')}${maybe(` TITLE "${v()} & notes"`)}` : 'COPY ./f /f'),
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
+    () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
     () => `FINGERPRINT ${maybe('--overwrite ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}`,
     stage,
   ];

@@ -33,6 +33,7 @@ import { Store } from './store.js';
 import { begin, type Profiler } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
@@ -353,6 +354,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     envKey,
     stageKeys: new Map(),
     fromImage,
+    fetchPolicy: policy,
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
@@ -762,6 +764,8 @@ interface ExecEnv {
   readonly stageKeys: Map<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
+  /** The network policy (CHECKLINKS --external). */
+  readonly fetchPolicy: FetchPolicy;
   /** Resolve a `FROM image` stage base (registry pull or local store). */
   readonly fromImage: (base: ImageStageBase) => Promise<FromImage>;
 }
@@ -921,17 +925,33 @@ async function executeOp(
   prevKey: string,
   env: ExecEnv,
 ): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss'; renames?: ReadonlyArray<readonly [string, string]> }> {
-  const policy = op.overwrite ? 'overwrite' : 'error';
+  const policy = 'overwrite' in op && op.overwrite ? 'overwrite' : 'error';
   const memo = env.memo;
   if (!memo) {
     if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
     if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    if (op.kind === 'CHECKLINKS') {
+      await checkLinks(op, tree, env, env.warn);
+      return { tree, key: '' };
+    }
     return { tree: tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
+    if (op.kind === 'CHECKLINKS') {
+      // The tree is unchanged; a hit skips the check (and its requests) and prints its warnings again.
+      const hit = memo.get<{ warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      await checkLinks(op, tree, env, (m) => (warnings.push(m), env.warn(m)));
+      memo.set(key, { warnings });
+      return { tree, key, memo: 'miss' };
+    }
     if (op.kind === 'FINGERPRINT') {
       const hit = memo.get<{ tree: Tree; renames: ReadonlyArray<readonly [string, string]>; warnings: readonly string[] }>(key);
       if (hit) {
@@ -958,6 +978,11 @@ async function executeOp(
   const out = tree.withFiles(p.files, policy, op.span);
   memo.set(key, out);
   return { tree: out, key, memo: p.hit ? 'files' : 'miss' };
+}
+
+async function checkLinks(op: Extract<Operation, { kind: 'CHECKLINKS' }>, tree: Tree, env: ExecEnv, warn: (m: string) => void): Promise<void> {
+  const broken = await brokenLinks(tree, op, env.fetchPolicy);
+  reportBrokenLinks(broken, op, `${env.label}:${op.span.line} CHECKLINKS`, warn);
 }
 
 function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Fingerprinted {
@@ -1293,7 +1318,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
 }
 
 /** The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo). */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {

@@ -24,4 +24,6 @@ HEADER /* Referrer-Policy: "strict-origin"
 HEADER /assets/* X-Robots-Tag: noindex
 FINGERPRINT /assets/ /**/*.css
 fingerprint --overwrite /${URL}/*.js "/by path/" manifest /asset-manifest.json
+CHECKLINKS --warn
+CHECKLINKS --external
 EXPORT /

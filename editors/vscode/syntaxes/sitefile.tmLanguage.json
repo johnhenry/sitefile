@@ -2913,6 +2913,39 @@
           ]
         },
         {
+          "name": "meta.instruction.checklinks.sitefile",
+          "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(warn|external)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.feed.sitefile",
           "begin": "^\\s*((?i:FEED))(?=\\s|$)",
           "beginCaptures": {

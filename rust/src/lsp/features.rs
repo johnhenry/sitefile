@@ -743,6 +743,10 @@ mod tests {
         assert_eq!(labels("FINGERPRINT --overwrite /a/ /b/*.css "), ["MANIFEST"]);
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert!(labels("FINGERPRINT /a/ MANIFEST /m.json ").is_empty());
+        // CHECKLINKS: flags only
+        assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
+        assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);
+        assert!(labels("CHECKLINKS ").is_empty());
     }
 
     #[test]

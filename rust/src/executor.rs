@@ -35,6 +35,7 @@ use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
+use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
 use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
 use crate::site::{atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry};
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
@@ -666,6 +667,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         unrecorded: warn.clone(),
         from_image: &from_image,
         last_renames: None,
+        fetch_policy: options.fetch_policy.clone(),
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
@@ -1497,6 +1499,8 @@ struct Exec<'a> {
     from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan) -> Result<FromImage>,
     /// What the FINGERPRINT that just ran renamed (old path, new path).
     last_renames: Option<Vec<(String, String)>>,
+    /// The network policy (CHECKLINKS --external).
+    fetch_policy: FetchPolicy,
 }
 
 /// What a stage starts from, for the trace.
@@ -1703,6 +1707,10 @@ impl<'a> Exec<'a> {
             if let Operation::Sitemap { .. } = op {
                 return Ok((self.sitemap(op, tree)?, String::new(), None));
             }
+            if let Operation::CheckLinks { .. } = op {
+                self.check_links(op, &tree, &*self.warn.clone())?;
+                return Ok((tree, String::new(), None));
+            }
             if let Operation::Fingerprint { .. } = op {
                 let (out, renames) = self.fingerprint(op, &tree, &*self.warn.clone())?;
                 self.last_renames = Some(renames);
@@ -1712,6 +1720,29 @@ impl<'a> Exec<'a> {
             return Ok((tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?, String::new(), None));
         };
         let op_id = memo_key(&["op", &self.env_key, &format!("{op:?}")]);
+        if let Operation::CheckLinks { .. } = op {
+            // Reads the whole tree; the tree is unchanged. A hit skips the check (and its requests) and prints its warnings again.
+            let key = memo_key(&["chain", prev, &op_id]);
+            if let Some(warnings) = lock_memo(memo).get::<Vec<String>>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((tree, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            self.check_links(op, &tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), warnings, Vec::new());
+            return Ok((tree, key, Some("miss")));
+        }
         if let Operation::Fingerprint { .. } = op {
             // Reads the whole tree: only the chain key can say it is unchanged.
             let key = memo_key(&["chain", prev, &op_id]);
@@ -1769,6 +1800,13 @@ impl<'a> Exec<'a> {
         Ok((out, key, Some(if p.hit { "files" } else { "miss" })))
     }
 
+    fn check_links(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<()> {
+        let Operation::CheckLinks { warn: as_warnings, external, root, redirects, span } = op else { unreachable!() };
+        let op = CheckLinksOp { warn: *as_warnings, external: *external, root, redirects, span };
+        let broken = broken_links(tree, &op, &self.fetch_policy);
+        report_broken_links(&broken, &op, &format!("{}:{} CHECKLINKS", self.label, span.line), warn)
+    }
+
     fn fingerprint(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<(Tree, Vec<(String, String)>)> {
         let Operation::Fingerprint { patterns, manifest, root, overwrite, span } = op else { unreachable!() };
         let origin = format!("{}:{} FINGERPRINT", self.label, span.line);
@@ -1804,6 +1842,7 @@ impl<'a> Exec<'a> {
             }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => unreachable!("FINGERPRINT reads the tree: execute_op runs it"),
+            Operation::CheckLinks { .. } => unreachable!("CHECKLINKS reads the tree: execute_op runs it"),
             Operation::Copy { source, dest, dest_is_dir, span, .. } => {
                 let src = self.read_source(source, &origin)?;
                 let into_dir = matches!(src, Source::File { .. }) && (*dest_is_dir || tree.is_directory(dest));
@@ -2262,6 +2301,7 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
         | Operation::Fingerprint { overwrite, .. } => *overwrite,
+        Operation::CheckLinks { .. } => false,
     }
 }
 

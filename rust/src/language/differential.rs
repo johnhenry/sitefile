@@ -150,6 +150,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("args", args.as_ref().map(|a| Value::Array(a.iter().map(operand).collect()))),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::CheckLinks { span: sp, warn, external } => obj(vec![
+            ("kind", s("CHECKLINKS")),
+            ("span", Some(span(sp))),
+            ("warn", Some(json!(warn))),
+            ("external", Some(json!(external))),
+        ]),
         Instruction::Fingerprint { span: sp, patterns, manifest, overwrite } => obj(vec![
             ("kind", s("FINGERPRINT")),
             ("span", Some(span(sp))),

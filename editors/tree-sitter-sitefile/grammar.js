@@ -103,6 +103,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
       ),
@@ -266,6 +267,9 @@ export default grammar({
         repeat1(field('pattern', $._operand)),
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
       ),
+
+    // CHECKLINKS [--warn] [--external]
+    checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),
 
     // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]
     export_instruction: ($) =>

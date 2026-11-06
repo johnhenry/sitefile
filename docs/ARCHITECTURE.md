@@ -63,8 +63,9 @@ content digests of everything it reads, and a later build reuses the result when
   list, the names in destinations, options and arguments. A COPY of a file also records whether the destination is
   a directory in the input tree. Then the files are added to the current tree (conflict checks run as usual); the
   resulting tree is keyed by the input tree's key plus the step's, like image layers, so an unchanged prefix of a
-  stage is reused whole. SITEMAP and FINGERPRINT read the whole tree, so only that chained key can reuse them (a
-  FINGERPRINT entry also keeps its renames, for the site files and `why`, and its warnings).
+  stage is reused whole. SITEMAP, FINGERPRINT and CHECKLINKS read the whole tree, so only that chained key can reuse them (a
+  FINGERPRINT entry also keeps its renames, for the site files and `why`, and its warnings; a CHECKLINKS entry its
+  warnings, so an unchanged check makes no requests).
 - **FOR elements**: `RENDER … FOR` pages are keyed by the template, the element and the imports the template names
   other than the loop variable; `TRANSFORM … FOR` results by the plugin or tool, source and element. A template that
   lists every post (a nav) depends on the whole list, so all its pages re-render; one that does not re-renders only

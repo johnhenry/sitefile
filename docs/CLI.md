@@ -136,7 +136,7 @@ directory holds or which variables a template uses.
   `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
-  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`; FOR destinations are not evaluated), `stage:<name>` or
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`, `CHECKLINKS --warn`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).

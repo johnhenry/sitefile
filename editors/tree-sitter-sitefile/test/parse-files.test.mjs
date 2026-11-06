@@ -14,6 +14,7 @@ import { findSitefiles, grammarDir, parseOk, repoRoot } from './helpers.mjs';
 
 /** Rejected by src/language/parser.ts with E_SYNTAX (relative to the repository root). */
 const EXPECTED_SYNTAX_ERRORS = [
+  'conformance/cases/err-checklinks-syntax/Sitefile',
   'conformance/cases/err-compression/Sitefile', // COMPRESSION zstd: the grammar accepts any word here
   'conformance/cases/err-fingerprint-syntax/Sitefile', // FINGERPRINT MANIFEST /m.json: the grammar reads MANIFEST as a pattern
   'conformance/cases/err-from-missing-base/Sitefile',

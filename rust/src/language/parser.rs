@@ -15,9 +15,9 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 16] = [
+pub const INSTRUCTIONS: [&str; 17] = [
     "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
-    "FINGERPRINT", "EXPORT",
+    "FINGERPRINT", "CHECKLINKS", "EXPORT",
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`).
 pub const IMPORT_CLAUSES: [&str; 3] = ["AS", "INTEGRITY", "SORT"];
@@ -37,6 +37,8 @@ pub const FINGERPRINT_CLAUSES: [&str; 1] = ["MANIFEST"];
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
 pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
+/// Leading flags of CHECKLINKS.
+pub const CHECKLINKS_FLAGS: &[(&str, Shape)] = &[("warn", Shape::Bare), ("external", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
 pub const COPY_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
@@ -49,6 +51,7 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
         "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "FINGERPRINT" => SITE_FLAGS,
+        "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
     }
 }
@@ -100,6 +103,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
+        "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(E_UNSUPPORTED, "RUN is not supported: Sitefile never runs shell commands", &span)),
         k if NOT_YET.contains(&k) => Err(SitefileError::at(E_UNSUPPORTED, format!("{k} is not supported yet"), &span)),
         _ => Err(SitefileError::at(E_UNKNOWN_INSTRUCTION, format!("unknown instruction '{word}'"), &span)),
@@ -552,6 +556,13 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let manifest = if c.keyword("MANIFEST") { Some(c.operand("manifest destination")?) } else { None };
     c.expect_end()?;
     Ok(Instruction::Fingerprint { span, patterns, manifest, overwrite: flags.has("overwrite") })
+}
+
+/// `CHECKLINKS [--warn] [--external]`
+fn parse_check_links(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, CHECKLINKS_FLAGS)?;
+    c.expect_end()?;
+    Ok(Instruction::CheckLinks { span, warn: flags.has("warn"), external: flags.has("external") })
 }
 
 fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
@@ -1091,12 +1102,15 @@ mod tests {
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
             ("FINGERPRINT", SITE_FLAGS),
+            ("CHECKLINKS", CHECKLINKS_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);
             for (name, shape) in flags {
                 let flag = if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=x") };
-                let e = parse_sitefile(&format!("{kw} {flag}"), "Sitefile").unwrap_err();
-                assert!(!e.detail.contains("unknown flag"), "{kw} {flag}: {e}");
+                // The flag is accepted (the line may still fail later, for a missing operand).
+                if let Err(e) = parse_sitefile(&format!("{kw} {flag}"), "Sitefile") {
+                    assert!(!e.detail.contains("unknown flag"), "{kw} {flag}: {e}");
+                }
             }
         }
         for clause in IMPORT_CLAUSES {
