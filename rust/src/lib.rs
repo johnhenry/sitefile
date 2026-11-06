@@ -45,9 +45,11 @@ pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod outdated;
+pub mod explain;
 pub mod plugins;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)
 pub mod lsp;
 pub mod registry;
+pub mod registry_cache;

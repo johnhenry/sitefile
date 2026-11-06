@@ -11,6 +11,9 @@
 //            implementation's scratch directory are replaced by ${TMP}).
 //   lock     true: Sitefile.lock in the context copy must be byte-identical
 //            (or absent in both) after the steps.
+//   manifests  ["repo:tag", …] (placeholders allowed, e.g. conf/cache-${IMPL}:1):
+//            the digests of these manifests in the mock registry after the
+//            steps must be equal between implementations (bytes pushed)
 //   errors   "code": compare only the error code, for errors whose text embeds
 //            a third-party library's wording; default the whole line.
 //
@@ -107,16 +110,18 @@ export async function runNetworkCase(c, ctx) {
       out.output = { digest: parts.join(' | '), files: parts.length };
     }
     if (c.lock) out.lock = await readOrNull(path.join(vars.CTX, 'Sitefile.lock'));
+    if (c.manifests) out.manifests = c.manifests.map((k) => `${k.split('${IMPL}').join('*')}=${ctx.servers.manifestDigest(substitute(k, vars))}`).join(' | ');
     r[impl] = out;
   }
   const [a, b] = [r.ts, r.rust];
   const stepsSame = JSON.stringify(a.steps.map((s) => [s.code, s.error, s.stdout])) === JSON.stringify(b.steps.map((s) => [s.code, s.error, s.stdout]));
-  const pass = !b.spawnError && stepsSame && a.output?.digest === b.output?.digest && (!c.lock || a.lock === b.lock);
+  const pass = !b.spawnError && stepsSame && a.output?.digest === b.output?.digest && (!c.lock || a.lock === b.lock) && a.manifests === b.manifests && !(a.manifests ?? "").includes("=null");
   const detail = [];
   if (!pass) {
     for (const impl of ['ts', 'rust']) {
       for (const s of r[impl].steps) detail.push(`${impl.padEnd(4)} ${s.command}: exit ${s.code} ${s.error}${s.stdout !== undefined ? `\n${s.stdout}` : ''}`);
       if (r[impl].output) detail.push(`${impl.padEnd(4)} outputs ${r[impl].output.digest}`);
+      if (r[impl].manifests) detail.push(`${impl.padEnd(4)} manifests ${r[impl].manifests}`);
     }
     if (c.lock && a.lock !== b.lock) detail.push(`Sitefile.lock differs:\n--- ts\n${a.lock ?? '(none)'}\n--- rust\n${b.lock ?? '(none)'}`);
   }

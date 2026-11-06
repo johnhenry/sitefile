@@ -1,0 +1,22 @@
+# graph / why: imports, stages built FROM stages, COPY --from chains, overwrites and site files.
+ARG TITLE = "Explain"
+STAGE build
+IMPORT theme FROM ./theme AS tree
+IMPORT pages FROM ./pages.json AS json
+COPY ./src/ /out/
+COPY --overwrite ./override/index.html /out/index.html
+STAGE more FROM build
+COPY <<X /out/extra.txt
+extra
+X
+STAGE site
+COPY --from=more /out/ /
+COPY --overwrite theme: /
+RENDER --overwrite ./tpl.html TO /about.html
+RENDER ./tpl.html TO /p/${page.slug}.html FOR page IN pages
+COPY ./src/a.txt /files/
+SITEMAP BASE https://example.com
+REDIRECT /old /new
+REDIRECT /x /y STATUS 302
+HEADER /* X-Frame-Options: DENY
+EXPORT /

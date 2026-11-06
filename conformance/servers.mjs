@@ -94,6 +94,11 @@ export async function startServers(root, dir) {
       vars: { HTTPS: base, REGISTRY: registry.host },
       env: { NODE_EXTRA_CA_CERTS: caFile },
       info: { tarIntegrity: sha(tar), baseDigest: seeded.manifestDigest },
+      /** sha256 of the manifest the mock registry holds under `repo:tag` (or `repo@digest`), or null. */
+      manifestDigest: (key) => {
+        const b = registry.manifests.get(key);
+        return b ? sha(b) : null;
+      },
       async close() {
         server.closeAllConnections?.();
         await new Promise((r) => server.close(() => r()));

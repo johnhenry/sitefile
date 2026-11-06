@@ -6,9 +6,11 @@
 ## Building
 
 ```
-sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [options]
-sitefile validate [context] [--json]
-sitefile inspect  [context] [--json]
+sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [--target stage] [options]
+sitefile validate [context] [--json] [--target stage]
+sitefile inspect  [context] [--json] [--target stage]
+sitefile graph    [context] [--json | --dot] [--target stage]
+sitefile why <path> [context] [--json] [--target stage]
 ```
 
 `build` accepts these image-related options on top of the ones in the README:
@@ -24,6 +26,8 @@ sitefile inspect  [context] [--json]
 | `--platform os/arch` | image platform metadata (default `linux/amd64`) |
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
 | `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
+| `--provenance` | attach a [SLSA provenance](https://slsa.dev/provenance/v1) attestation to the oci image (see [Attestations](#attestations)) |
+| `--sbom` | attach an SBOM attestation: a [CycloneDX](https://cyclonedx.org/) 1.6 file list (see [Attestations](#attestations)) |
 
 `build`, `validate` and `inspect` also accept:
 
@@ -33,6 +37,8 @@ sitefile inspect  [context] [--json]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
+| `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
 ## Checking pins: `outdated`
@@ -56,13 +62,135 @@ base    BASE  docker.io/library/nginx:1.25-alpine  05b54105b541  lockfile   05b5
 
 Digests are shortened to 12 hex digits (`--json` has them in full); an `error` row is followed by a
 `name: error[CODE]: message` line. The exit code is 0 whatever the statuses are.
+### Build target: `--target <stage>`
+
+Like `docker build --target`, `--target <stage>` builds up to a **named** stage (`FROM … AS name` or
+`STAGE name`) and stops there, for debugging and partial builds. `build`, `validate`, `inspect` and
+`serve --watch` accept it (with `build --watch` every rebuild uses it).
+
+- **What runs**: the stages from the first one through the target, in source order. Later stages are not
+  run. The Sitefile is still parsed, validated and planned as a whole (an error anywhere in it fails the
+  build), every `IMPORT` is resolved and `Sitefile.lock` is used as for a full build, and `TOOL`/JS `PLUGIN`
+  permissions (`--allow-exec`, `--allow-plugin`) are checked for the whole Sitefile.
+- **What is exported**: the target stage's **whole tree**, from `/`, not the `EXPORT` path (an earlier stage
+  rarely has files there). The `EXPORT` instruction's **format and options still apply** (`AS zip`,
+  `AS oci` with `BASE`/`AT`/`COMPRESSION`, `wbn` `BASE`), and `--format`, `-o` extensions, `--base-url`,
+  `--oci-root`, `-t` and the other export flags work as usual; the default destination is the usual one
+  (`<context>/dist`, or `dist.<ext>` for the EXPORT format). The `/_redirects` and `/_headers` files that
+  `REDIRECT`/`HEADER` make are **not** written: they belong to the EXPORT path of a full build.
+  Naming the last stage still exports its whole tree, without the EXPORT path or site files.
+- **validate**: plans up to the target and reports it: `Sitefile: OK (0 imports, 2 operations, 2 stages,
+  target assets)` (operations and stages up to the target). `--json` adds `"target": "<name>"`, lists only
+  those stages, and gives `"export": "/"`.
+- **Errors**: a name that is not a stage is a usage error (exit 2) listing the named stages:
+  `error: --target 'nope' does not name a stage (stages: theme, assets)`, or
+  `error: --target 'x' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`.
+  An unnamed stage cannot be a target. On `serve`, `--target` needs `--watch`.
+- A target stage with no files warns `--target <name>: stage '<name>' contains no files`.
+
+```bash
+sitefile inspect examples/multistage --target theme      # the 'theme' stage's files
+sitefile build examples/multistage --target assets -o /tmp/assets
+```
+
+## Explaining a build: `graph` and `why`
+
+```
+sitefile graph [context] [--json | --dot] [build options]
+sitefile why <path> [context] [--json] [build options]
+```
+
+Both take the build options (`-f`, `--build-arg`, `--build-arg-file`, `--target`, `--allow-plugin`, ...).
+Their text, `--json` and `--dot` outputs are identical in the TypeScript and Rust CLIs (conformance checks them).
+
+### `sitefile graph`
+
+The dependency graph of the plan, like `bazel query`: what each operation reads and where its tree goes. It
+plans only (like `validate`: nothing is read or fetched), so it shows what the Sitefile names, not what files a
+directory holds or which variables a template uses.
+
+- **Nodes** (`id`, `kind`, `label`, and `line` when there is a Sitefile line):
+  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `local:./<path>` (a context
+  path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
+  `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
+  `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
+  `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
+  (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
+- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory or an
+  earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
+  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation) and
+  `export` (the last stage and the site files to `export`).
+- **Order**: imports, plugins, tools, local paths (first use), then per stage its operations and the stage, then
+  the site files and `export`. Edges in the order the stages are walked, without duplicates.
+- **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
+  `N nodes, M edges`.
+- `--json`: `{"file", "target"?, "nodes": [{"id", "kind", "label", "line"?}], "edges": [{"from", "to", "kind"}]}`.
+- `--dot`: Graphviz (`sitefile graph --dot | dot -Tsvg > graph.svg`): `rankdir=LR`, a shape per kind (cylinder
+  imports, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
+  export), dashed `input` edges and bold `base`/`export` edges. `--dot` with any other command, or with `--json`,
+  is a usage error.
+
+```
+$ sitefile graph examples/multistage
+local:./theme  ./theme
+local:./pages/index.html  ./pages/index.html
+local:./pages/about.html  ./pages/about.html
+op:6  COPY ./pages/index.html /vendor/index.html
+  <- local:./theme (base)
+  <- local:./pages/index.html (input)
+stage:theme  FROM ./theme AS theme
+  <- op:6 (next)
+...
+export  EXPORT / AS directory
+  <- stage:#3 (export)
+11 nodes, 11 edges
+```
+
+### `sitefile why <path>`
+
+Which instructions wrote an exported file, from what inputs, and what overwrote it (like `ninja -d explain`).
+`why` builds in memory like `inspect` (with a frozen lockfile; nothing is exported) and uses the per-file origin
+tracking of the build: it compares each path before and after every operation of every stage.
+
+- `<path>` is a path in the export (`/index.html`; `index.html` means the same). A path that is not in the
+  output is `error[E_NOT_FOUND]: '/x' is not in the build output`; a directory is
+  `error[E_NOT_FOUND]: '/blog' is a directory in the build output; name a file`; `..` is `E_PATH`. A missing
+  `<path>` is a usage error.
+- **History**, oldest first: every write that changed the file, in the stage where it happened, and, through
+  `COPY --from=<stage>` and `FROM <stage>`, the writes in earlier stages to the file it was copied from. Each
+  entry has the instruction's location (`Sitefile:12`), its label (as in `graph`), the stage (`build`, or `#2`
+  when unnamed), the path in that stage's tree, the action (`write`, or `overwrite` when it replaced different
+  content) and the content digest after it. The last entry wrote the exported file. **Writes of identical content
+  are no-ops** (the first writer stays the owner) and are not listed.
+- **Inputs** of an entry: `./src/index.html` (a context file, also inside a copied directory or a `FROM ./dir`
+  base), `stage build:/out/index.html`, `import theme:/style.css` (or `import data` for a whole import), `<<EOF`
+  (an inline body), the template of a RENDER, `plugin <name>`/`tool <name>` and the source of a TRANSFORM,
+  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, and for `/_redirects`/`/_headers`
+  every REDIRECT/HEADER line (`Sitefile:19 REDIRECT`). Variables a template reads are not listed.
+- **Text**: `<path>  <mode>  <size> bytes  <digest>`, then one numbered line per entry,
+  `  1. Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html`, each followed by `       from <input>` lines.
+- `--json`: `{"path", "mode", "size", "digest", "origin", "history": [{"location", "instruction", "stage", "path",
+  "action", "digest", "inputs": [...]}]}`.
+- With `--target`, `<path>` is a path in the target stage's tree.
+
+```
+$ sitefile why /index.html conformance/cases/why-overwrite
+/index.html  644  16 bytes  sha256:979a05...
+  1. conformance/cases/why-overwrite/Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html
+       from ./src/index.html
+  2. conformance/cases/why-overwrite/Sitefile:7 COPY ./override/index.html /out/index.html  [stage build]  overwrote /out/index.html
+       from ./override/index.html
+  3. conformance/cases/why-overwrite/Sitefile:13 COPY --from=more /out /  [stage site]  wrote /index.html
+       from stage more:/out/index.html
+```
 
 ## Watch mode
 
 ```
 sitefile build --watch [context] [build options]
-sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V]... [--build-arg-file f]...
-                       [--no-cache] [--no-lockfile] [context]
+sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -87,7 +215,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V].
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
-  foreground: `-d` and `--name` are refused, and `-f`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
   `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
@@ -160,6 +288,57 @@ Tagged images, and every blob a tagged image uses, are never deleted and do not 
 files), `SIZE`, `EVICTABLE` and the path, a total, and the limit. `--json` gives
 `{home, limit, caches: [{name, path, items, bytes, evictable}], bytes, evictable}` (sizes in bytes, `limit` 0 = none).
 
+### Registry cache
+
+```
+sitefile build --cache-to   ghcr.io/team/site-cache:main --allow-plugins     # CI on main: share results
+sitefile build --cache-from ghcr.io/team/site-cache:main --allow-plugins     # a teammate or a PR build: reuse them
+sitefile build --cache-from reg.example.com/c:pr-12 --cache-from reg.example.com/c:main --cache-to reg.example.com/c:pr-12
+```
+
+`--cache-from <ref>` (repeatable) and `--cache-to <ref>` (once) share the [TRANSFORM cache](#transform-cache) through an
+OCI registry, like buildx's registry cache. Keys are the local cache's keys (content addressed, see
+[PLUGINS.md](PLUGINS.md#caching)), so a shared result is reused exactly when a local one would be.
+
+- **Format**: one OCI artifact (image-spec v1.1), an `application/vnd.oci.image.manifest.v1+json` manifest with
+  `artifactType: application/vnd.sitefile.cache.v1+json`, the empty config (`application/vnd.oci.empty.v1+json`, `{}`),
+  and as layers first the **index** (`application/vnd.sitefile.cache.index.v1+json`), then every result blob
+  (`application/vnd.sitefile.cache.blob.v1`, sorted by digest). The index is canonical JSON (sorted keys, no
+  whitespace) mapping each cache key to its entry: `{"entries":{"<key>":{"files":[["<path>","<sha256 hex>",<size>]],
+  "kind":"file"|"files"}},"version":1}` (`path` is `''` for a one-file result, else relative to the TRANSFORM's
+  destination directory). The same entries always give the same bytes, so both implementations push identical
+  manifests.
+- **`--cache-from`**, before the build: fetches each manifest and its index (at most 64 MiB) and prints
+  `Cache from <ref>: N entries`. A result's blobs are downloaded **only on a hit**: when the local cache misses and the
+  key is in an index (the first `--cache-from` that has it). Every blob is checked against its digest and size while it
+  streams to a temp file, then lands in the local cache (`cache/transform`), so the next build is local. An index entry
+  must name blobs listed in the manifest with the same size and safe relative paths, or the whole index is refused.
+- **`--cache-to`**, after a **successful** build (a failed build pushes nothing): pushes the entries this build used
+  (local hits, registry hits and new results) as a new artifact at that tag, replacing what was there (entries the
+  build did not use are not carried over; list the previous cache in `--cache-from` to reuse it). Blobs the registry
+  repository already has are not uploaded again (`HEAD` first), blobs held by a `--cache-from` repository on the same
+  registry are mounted, then the manifest is `PUT`. One line goes to stderr:
+  `Cache to <ref>: 3 entries, 2 blobs uploaded, 0 mounted, 3 already present (sha256:...)`. A tag is required (not a
+  digest); the default tag is `latest`.
+- **Never fails a build**: an unreachable registry, a missing or rejected credential, a missing tag (a first CI run),
+  something that is not a sitefile cache, a corrupt blob or a bad index is a warning (`warning: --cache-from <ref> not
+  used: ...`, `warning: --cache-from <ref>: ...; not using it for the rest of this build`, `warning: --cache-to <ref>
+  not pushed: ...`) and the TRANSFORM runs as usual. Only usage errors exit 2: a reference without a registry host,
+  `--cache-to` twice or with a digest, `--cache-from`/`--cache-to` with `validate`, `inspect`, `--watch` or
+  `--no-cache`.
+- **Size limit**: a build downloads at most [`SITEFILE_CACHE_MAX`](#cache-size-limit) bytes of results (then
+  `warning: --cache-from: not fetching more cached results: they would exceed SITEFILE_CACHE_MAX=...`), and what it
+  downloads is evicted like any other TRANSFORM result.
+- **Registry access** is the one `push` and `pull` use (see [Registries](#registries-push-and-pull)): https, plain http
+  only for loopback and `--insecure-registry` hosts; redirects and token realms re-validated and refused on private
+  addresses unless `--allow-private-network`; credentials from `$SITEFILE_REGISTRY_AUTH` or the Docker config
+  (`--username`/`--password-stdin` are not build options), only when the registry asks, never printed.
+- **Nothing local or secret is pushed**: keys are SHA-256 hashes, entries hold output-relative paths, digests and sizes,
+  and blobs are the TRANSFORM results themselves (what the build exports anyway). No hostnames, home or context paths,
+  timestamps or credentials. Results of plugins exporting `cache = false` are never cached, so never pushed.
+- **Trust**: a result from `--cache-from` is used as if the plugin or tool had produced it. Pull only from a repository
+  whose writers you trust (CI pushes, pull requests read).
+
 ## Image store
 
 The store lives in `$SITEFILE_HOME`, or `~/.sitefile`. Tests and scripts should always set `SITEFILE_HOME`.
@@ -222,6 +401,11 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
 - **push** HEADs every blob and uploads only the missing ones (monolithic `POST` + `PUT`); layers of a `BASE`
   image are *mounted* from the base's repository when it is on the same registry; then the manifest is `PUT` and the
   digest the registry returns is checked against ours. The pushed manifest digest equals the local image ID.
+- **push** then pushes the image's [attestations](#attestations), if it has any, as OCI 1.1 *referrers*: each
+  artifact manifest (with its blobs) by digest. A registry that implements the referrers API says so with an
+  `OCI-Subject` header; for any other registry (Docker's `registry:2`, for one) the *referrers tag schema* is used:
+  the image index at tag `sha256-<image hex>` lists them, merged with whatever it already lists. The image's own tag
+  and digest are untouched.
 - **pull** accepts OCI and Docker v2 manifests and indexes/manifest lists (for an index the `--platform` variant,
   default `linux/amd64`), checks every blob's sha256 and size *while streaming* into a temp file (nothing unverified is
   ever stored), and a manifest fetched by digest must hash to it. The platform manifest is stored unchanged (its digest
@@ -248,6 +432,54 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
 - Errors: `E_AUTH` (credentials missing/rejected), `E_NOT_FOUND` (404), `E_INTEGRITY` (digest mismatch), `E_TOO_LARGE`,
   `E_PROTOCOL`/`E_SSRF_BLOCKED` (transport policy), `E_REGISTRY` (anything else the registry says).
 
+### Attestations
+
+```
+sitefile build -o site.oci.tar --provenance --sbom          # in the OCI archive / layout
+sitefile build -t localhost:5000/blog:1 --provenance --sbom  # kept with the stored image ...
+sitefile push localhost:5000/blog:1                          # ... and pushed with it
+```
+
+`--provenance` and `--sbom` (both opt-in, like `docker buildx build --provenance/--sbom`) attach
+[in-toto](https://github.com/in-toto/attestation) statements to an oci image: an `EXPORT ... AS oci` /
+`--format oci` / `-o *.oci.tar` export, or an image stored with `-t` (any export format then); otherwise they are a
+usage error. They are command-line flags, not Sitefile syntax: an attestation describes one build of the file, it is not
+part of the site.
+
+- **Attachment**: each statement is the single layer (`application/vnd.in-toto+json`, annotated
+  `in-toto.io/predicate-type`) of an OCI 1.1 artifact manifest (`artifactType: application/vnd.in-toto+json`, the empty
+  config `application/vnd.oci.empty.v1+json`) whose **`subject` is the image manifest**. The image itself is never
+  changed, so **its ID is the same with or without attestations** (and the same as before this feature). An OCI
+  archive or layout lists the attestation manifests in `index.json` after the image (without a name, with their
+  `artifactType` and predicate annotation) and holds their blobs; `-t` keeps them in the store
+  (`$SITEFILE_HOME/referrers/sha256/<image hex>`, an image index of them), `save --format oci` writes them back out,
+  `push` sends them as referrers (above). A later build of the same image with `--provenance` or `--sbom` replaces
+  the stored attestation of that kind; `rmi`/`image prune` remove them with the image. `pull` does not fetch them.
+  This is the OCI 1.1 referrers model rather than BuildKit's attestation manifests inside an image index
+  (`vnd.docker.reference.type: attestation-manifest`): wrapping the image in an index would change what the tag and
+  the image ID point at, and the local store, `save`, `serve` and `pull` work on image manifests.
+- **Provenance** (`predicateType: https://slsa.dev/provenance/v1`): `buildDefinition.buildType` is
+  `https://github.com/johnhenry/sitefile/blob/main/docs/CLI.md#attestations`; `externalParameters` holds the
+  Sitefile path (relative to the context), the `--build-arg`/`--build-arg-file` values (`args`) and the platform;
+  `resolvedDependencies` lists the Sitefile with its sha256, every `IMPORT` (`import:<name>`, its URI, the digest the
+  build used: for remote ones the one pinned in `Sitefile.lock`, with the final URL after redirects as
+  `downloadLocation`; for local directories the tree digest `inspect` prints) and the `BASE` image with its manifest
+  digest; `runDetails.builder` is `{"id": "https://github.com/johnhenry/sitefile", "version": {"sitefile": "0.1.0"}}`
+  (the same for both implementations, whose output is byte-identical).
+  **Build args whose name has a `_`-separated word like `key`, `token`, `password`, `passwd`, `pword`, `secret`,
+  `auth`, `apikey` or `credential(s)` (`API_TOKEN`, `DB_PASSWORD`) are never recorded**: only their names, in
+  `externalParameters.redactedArgs`. Other build-arg values are recorded: do not pass secrets in build args.
+- **SBOM** (`predicateType: https://cyclonedx.org/bom`): a CycloneDX 1.6 JSON document. `metadata.component` is the
+  image (`version` = its digest), `components` the `BASE` image (if any) and every file of the site layer: its path in
+  the image (`/srv/www/index.html`), SHA-256, and `sitefile:mode` / `sitefile:origin` properties (the instruction that
+  wrote it, e.g. `Sitefile:5 RENDER`). CycloneDX rather than SPDX 2.3 because SPDX requires a creation timestamp, a
+  unique document namespace and a SHA-1 for every file; CycloneDX needs none of them, so the document is a pure function
+  of the build.
+- **Deterministic**: canonical JSON, the subject is named `_` (the digest is what matters; retagging changes nothing),
+  and there are **no timestamps unless `SOURCE_DATE_EPOCH`** is set (then `runDetails.metadata.startedOn`/`finishedOn`
+  and the SBOM's `metadata.timestamp`). The same build gives byte-identical attestations.
+- Attestations are not signed; sign them with your registry tooling (cosign, notation) if you need that.
+
 To run a pushed or pulled site image, use it as `COPY --from=` source or serve it with `sitefile serve`; for a runnable
 container image, build on a base with `BASE` (see [LANGUAGE.md](LANGUAGE.md#export-formats)).
 The default platform of images is `linux/amd64` (reproducible, metadata only for files-only images); on an arm64 host
@@ -262,7 +494,7 @@ Docker warns about the mismatch. Use `--platform linux/arm64` to label them for 
 | `tag <src> <dst>` | add or move the local tag `<dst>` to image `<src>`. |
 | `rmi [-f] <ref\|id>...` | remove tags. The image leaves the index when no tag is left. An ID with several tags needs `-f`. Alias: `image rm`. |
 | `image prune` | drop untagged images, delete unreferenced blobs, print the space reclaimed. |
-| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store). A non-empty destination needs `--force`. |
+| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store, attestations included). A non-empty destination needs `--force`. |
 | `image diff <a> <b>` | `A`/`D`/`C` lines for added, removed and changed paths. |
 
 ## Language server

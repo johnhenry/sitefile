@@ -1,0 +1,1 @@
+{"command": "why", "operands": ["extra.txt"], "args": ["--json"]}

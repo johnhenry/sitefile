@@ -1,9 +1,34 @@
 # The Rust implementation
 
 `rust/` is a port of the TypeScript reference implementation (`src/`). Both
-are maintained: same language, same CLI, same output. The TypeScript version
-remains the reference; when they disagree, the TypeScript behaviour is the
-specification until it is deliberately changed in both.
+are maintained: same language, same CLI, same output.
+
+## Roles (decided in #82)
+
+- **The Rust binary is the product.** It's what releases ship for macOS
+  and Linux, and what editors run (`sitefile lsp`). Install instructions,
+  benchmarks and editor setup assume it.
+- **TypeScript is the reference specification and the library.**
+  - When the two disagree, the TypeScript behaviour is the specification
+    until it is deliberately changed in both.
+  - `src/index.ts` is the supported programmatic API.
+  - The npm tarball attached to each release is a secondary way to run the
+    CLI.
+- **Parity rules stay.**
+  - Every language and CLI feature lands in both implementations, in the same
+    PR, with conformance cases.
+  - Output bytes, error codes and messages must match.
+  - The differential fixtures are generated from TypeScript and checked by
+    Rust.
+- **Tooling exceptions are Rust-only by design:**
+  - the language server;
+  - the wasm module disk cache;
+  - other features that only make sense for a long-running or installed
+    binary.
+
+  Each is listed in this file and must not change build output.
+- **New features are written against TypeScript first** (it defines the
+  expected behaviour), then ported. A PR is complete only when both pass.
 
 ```bash
 cd rust
@@ -23,10 +48,11 @@ to find in the other:
 | `language::{ast, scanner, parser, validate}`, `planner`, `build_args` | `language/*`, `planner.ts`, `build-args.ts` |
 | `render`, `markdown`, `frontmatter`, `yaml`, `csv`, `documents` | same names |
 | `resources::*` | `resources/*` |
-| `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
+| `export::{exporter, archive_writers, wbn, oci, attest, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `attest.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `site` (SITEMAP, FEED, `_redirects`/`_headers` writers); the rules section of `server` | `site.ts`; `serve-rules.ts` |
-| `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
+| `plugins::{host, wasm, exec, cache}`, `registry`, `registry_cache`, `base_image` | `plugins/*`, `registry*.ts` (`registry-cache.ts`), `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
+| `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
@@ -106,16 +132,20 @@ paths").
 - **Conformance** (`node conformance/run.mjs`): builds every example (and zip,
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
-  line, and identical output trees; `validate`/`inspect` cases compare stdout.
+  line, and identical output trees; `validate`/`inspect`/`graph`/`why` cases compare stdout.
   Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
   throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
   and an in-process mock OCI registry, then cover remote `IMPORT` with and
   without `INTEGRITY`, redirects, SSRF refusal, status and size errors, remote
   archives, `Sitefile.lock` contents (byte for byte), `--frozen-lockfile`,
-  `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
+  `--update-lock`, `EXPORT … AS oci BASE`, a `push`/`pull`/`save` round trip
+  and the registry TRANSFORM cache (`--cache-from`/`--cache-to`: the pushed
+  manifests must have the same digest, and the Rust CLI must reuse results the
+  TypeScript CLI pushed).
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
-  layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 120/120 (99 offline, 21 network); the network cases need `openssl`.
+  layers) are compared byte for byte, and OCI images by manifest digest
+  (and, with `--provenance` / `--sbom`, by the digest of every attestation).
+  Every case currently passes (`npm run conformance` prints the counts); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
@@ -145,6 +175,38 @@ paths").
   side no longer produces the committed results; regenerate with
   `node rust/tests/fixtures/sitefile/generate.mjs`. New instructions go in
   the generator's `INSTRUCTIONS` table.
+- **Archive and web bundle fuzzing** (`rust/tests/fixtures/archive`): a
+  seeded generator builds tar (ustar and old GNU headers, prefixes, GNU long
+  names, pax records, odd numeric fields), tar.gz (several members, header
+  flags, trailing bytes, bad check values, bombs), zip (stored and deflate,
+  data descriptors, zip64 records, lying sizes and offsets, symlink and
+  special modes, encryption flags, duplicate central records, bombs) and web
+  bundles (b1 and b2, odd CBOR, hosts, URLs, headers and sections), mutates
+  them (bit flips, truncation, inserted, deleted and duplicated bytes,
+  overwritten 16/32-bit fields; tar headers keep a valid checksum), and
+  records what `extractArchive` does with each under default or small
+  limits: the tree (paths, modes, digests) or the error (code and message),
+  plus `readWebBundle`'s entries. Names include case, normalization and
+  Unicode case-folding collisions, unsafe paths and invalid UTF-8.
+  `resources::archive_differential` requires the same result from the Rust
+  readers, no panics, and accepted trees within the limits. The committed
+  fixture is about 420 archives; a local run takes any size:
+
+  ```bash
+  FUZZ_OUT=/tmp/archives.json FUZZ_COUNT=10000 FUZZ_SEED=7 node rust/tests/fixtures/archive/generate.mjs
+  (cd rust && SITEFILE_ARCHIVE_FUZZ=/tmp/archives.json cargo test --release --lib -- --ignored archive_differential_external)
+  ```
+
+  `test/archive-fuzz-fixture.test.ts` (npm test) fails when the TypeScript
+  readers no longer produce the committed results. To agree with Node, the
+  Rust readers emulate it where Node is the reference: `parseInt` on tar
+  numeric fields (leading white space, signs, `mode & 0o111` on the
+  JavaScript number), the CBOR decoder's checks, order and messages
+  (including a leading BOM dropped from text and repeated `Map` keys), the
+  header order of `Object.fromEntries`, Node's gzip member handling and when
+  `maxOutputLength` is reported versus a data error (16 KiB output buffers),
+  and ada's acceptance of ASCII `xn--` host labels that are not valid
+  punycode.
 - **Benchmarks**: `bench/` (see [bench/README.md](../bench/README.md)).
 
 ## Compression
