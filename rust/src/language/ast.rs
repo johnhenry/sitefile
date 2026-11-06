@@ -268,6 +268,23 @@ pub enum Instruction {
         args: Option<Vec<Operand>>,
         overwrite: bool,
     },
+    /// `SITEMAP [--overwrite] BASE <url> [TO <dest>]` (dest defaults to `/sitemap.xml`).
+    Sitemap { span: SourceSpan, base: Operand, dest: Option<Operand>, overwrite: bool },
+    /// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`; LINK may use `${item…}`.
+    Feed {
+        span: SourceSpan,
+        list: String,
+        list_span: SourceSpan,
+        base: Operand,
+        link: Operand,
+        dest: Option<Operand>,
+        title: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]`.
+    Redirect { span: SourceSpan, from: Operand, to: Operand, status: u16, overwrite: bool },
+    /// `HEADER [--overwrite] <pattern> <Name>: <value …>`; `name` has no trailing colon, `value` words are joined with a space.
+    Header { span: SourceSpan, pattern: Operand, name: Operand, value: Vec<Operand>, overwrite: bool },
     Export {
         span: SourceSpan,
         path: Operand,
@@ -291,6 +308,10 @@ impl Instruction {
             | Instruction::Plugin { span, .. }
             | Instruction::Tool { span, .. }
             | Instruction::Transform { span, .. }
+            | Instruction::Sitemap { span, .. }
+            | Instruction::Feed { span, .. }
+            | Instruction::Redirect { span, .. }
+            | Instruction::Header { span, .. }
             | Instruction::Export { span, .. } => span,
         }
     }
@@ -306,10 +327,20 @@ impl Instruction {
             Instruction::Plugin { .. } => "PLUGIN",
             Instruction::Tool { .. } => "TOOL",
             Instruction::Transform { .. } => "TRANSFORM",
+            Instruction::Sitemap { .. } => "SITEMAP",
+            Instruction::Feed { .. } => "FEED",
+            Instruction::Redirect { .. } => "REDIRECT",
+            Instruction::Header { .. } => "HEADER",
             Instruction::Export { .. } => "EXPORT",
         }
     }
 }
+
+/// The loop variable a FEED's LINK uses for the current element.
+pub const FEED_ITEM: &str = "item";
+
+/// `REDIRECT … STATUS` values (the default is 301).
+pub const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
 
 /// A parsed and semantically validated Sitefile.
 #[derive(Debug, Clone)]

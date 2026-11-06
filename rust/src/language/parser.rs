@@ -4,7 +4,7 @@
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    is_ident, literal_text, EscapeMode, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
+    is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
@@ -15,8 +15,10 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 11] =
-    ["FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "EXPORT"];
+pub const INSTRUCTIONS: [&str; 15] = [
+    "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
+    "EXPORT",
+];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`).
 pub const IMPORT_CLAUSES: [&str; 3] = ["AS", "INTEGRITY", "SORT"];
 /// `SORT BY key` directions.
@@ -25,6 +27,14 @@ pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 pub const EXPORT_CLAUSES: [&str; 4] = ["AS", "BASE", "AT", "COMPRESSION"];
 /// Clauses after `TRANSFORM … TO <dest>`.
 pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
+/// Clauses after `SITEMAP`, in this order (`BASE` is required).
+pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
+/// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required).
+pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
+/// Clauses after `REDIRECT <from> <to>`.
+pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
+/// Leading flags of SITEMAP, FEED, REDIRECT and HEADER.
+pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
 pub const COPY_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
@@ -36,6 +46,7 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" => SITE_FLAGS,
         _ => &[],
     }
 }
@@ -82,6 +93,10 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "PLUGIN" => parse_plugin(c, span),
         "TOOL" => parse_tool(c, span),
         "TRANSFORM" => parse_transform(c, span),
+        "SITEMAP" => parse_sitemap(c, span),
+        "FEED" => parse_feed(c, span),
+        "REDIRECT" => parse_redirect(c, span),
+        "HEADER" => parse_header(c, span),
         "RUN" => Err(SitefileError::at(E_UNSUPPORTED, "RUN is not supported: Sitefile never runs shell commands", &span)),
         k if NOT_YET.contains(&k) => Err(SitefileError::at(E_UNSUPPORTED, format!("{k} is not supported yet"), &span)),
         _ => Err(SitefileError::at(E_UNKNOWN_INSTRUCTION, format!("unknown instruction '{word}'"), &span)),
@@ -419,6 +434,89 @@ fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         args,
         overwrite: flags.has("overwrite"),
     })
+}
+
+/// `SITEMAP [--overwrite] BASE <url> [TO <dest>]`
+fn parse_sitemap(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    c.expect_keyword("BASE")?;
+    let base = c.operand("base URL")?;
+    let dest = if c.keyword("TO") { Some(c.operand("destination")?) } else { None };
+    c.expect_end()?;
+    Ok(Instruction::Sitemap { span, base, dest, overwrite: flags.has("overwrite") })
+}
+
+/// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` (clauses in this order)
+fn parse_feed(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let list_span = c.span();
+    let list = c.ident("import name", "")?;
+    c.expect_keyword("BASE")?;
+    let base = c.operand("base URL")?;
+    c.expect_keyword("LINK")?;
+    let link = c.operand("link path")?;
+    let dest = if c.keyword("TO") { Some(c.operand("destination")?) } else { None };
+    let title = if c.keyword("TITLE") { Some(c.operand("feed title")?) } else { None };
+    c.expect_end()?;
+    Ok(Instruction::Feed { span, list, list_span, base, link, dest, title, overwrite: flags.has("overwrite") })
+}
+
+/// `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]`
+fn parse_redirect(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let from = c.operand("redirect source path")?;
+    let to = c.operand("redirect target")?;
+    let mut status = 301;
+    if c.keyword("STATUS") {
+        let at = c.span();
+        let w = c.word();
+        status = match REDIRECT_STATUSES.iter().find(|s| s.to_string() == w) {
+            Some(s) => *s,
+            None => {
+                let msg = if w.is_empty() {
+                    "expected a status after STATUS (301, 302, 303, 307 or 308)".to_string()
+                } else {
+                    format!("unknown redirect status '{w}' (expected 301, 302, 303, 307 or 308)")
+                };
+                return Err(SitefileError::at(E_SYNTAX, msg, &at));
+            }
+        };
+    }
+    c.expect_end()?;
+    Ok(Instruction::Redirect { span, from, to, status, overwrite: flags.has("overwrite") })
+}
+
+/// `HEADER [--overwrite] <path-pattern> <Name>: <value …>`
+fn parse_header(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let pattern = c.operand("path pattern")?;
+    let raw = c.operand("header name")?;
+    let mut parts = raw.parts.clone();
+    let head = match parts.pop() {
+        Some(TemplatePart::Text(t)) if t.ends_with(':') => t[..t.len() - 1].to_string(),
+        _ => {
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                "expected 'Name:' (a header name and a colon, then the value: HEADER /* X-Frame-Options: DENY)",
+                &raw.span,
+            ))
+        }
+    };
+    if !head.is_empty() {
+        parts.push(TemplatePart::Text(head));
+    }
+    if parts.is_empty() {
+        return Err(SitefileError::at(E_SYNTAX, "expected a header name before the colon", &raw.span));
+    }
+    let mut value = Vec::new();
+    while !c.at_end() {
+        value.push(c.operand("header value")?);
+    }
+    if value.is_empty() {
+        let at = c.span();
+        return Err(SitefileError::at(E_SYNTAX, "expected header value", &at));
+    }
+    Ok(Instruction::Header { span, pattern, name: Operand { parts, span: raw.span }, value, overwrite: flags.has("overwrite") })
 }
 
 fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
@@ -845,6 +943,34 @@ mod tests {
     }
 
     #[test]
+    fn site_forms() {
+        assert!(matches!(one("SITEMAP --overwrite BASE https://x.example TO /s.xml"), Instruction::Sitemap { overwrite: true, dest: Some(_), .. }));
+        let Instruction::Feed { list, dest, title, list_span, .. } = one("feed posts base https://x link /p/${item.slug}.html to /atom.xml title \"My blog\"") else {
+            panic!()
+        };
+        assert!(list == "posts" && dest.is_some() && title.is_some() && list_span.column == 6);
+        assert!(matches!(one("REDIRECT /old /new STATUS 308"), Instruction::Redirect { status: 308, .. }));
+        assert!(matches!(one("REDIRECT /old https://x.example/new"), Instruction::Redirect { status: 301, .. }));
+        let Instruction::Header { name, value, .. } = one("HEADER /assets/* Cache-Control: public, max-age=60") else { panic!() };
+        assert_eq!((lit(&name).as_str(), value.len()), ("Cache-Control", 2));
+        let Instruction::Header { name, .. } = one("HEADER /* X-${N}: 1") else { panic!() };
+        assert_eq!(parts(&name).len(), 2);
+        parse_err("SITEMAP TO /a.xml", E_SYNTAX, 1, 9, "expected BASE");
+        parse_err("SITEMAP BASE", E_SYNTAX, 1, 13, "expected base URL");
+        parse_err("SITEMAP BASE https://x extra", E_SYNTAX, 1, 24, "unexpected 'extra'");
+        parse_err("SITEMAP --from=a BASE https://x", E_SYNTAX, 1, 9, "unknown flag --from");
+        parse_err("FEED posts BASE https://x", E_SYNTAX, 1, 26, "expected LINK");
+        parse_err("FEED posts BASE https://x LINK /a TITLE t TO /f.xml", E_SYNTAX, 1, 43, "unexpected 'TO'");
+        parse_err("FEED 1x BASE https://x LINK /a", E_SYNTAX, 1, 6, "expected import name");
+        parse_err("REDIRECT /old /new STATUS 200", E_SYNTAX, 1, 27, "unknown redirect status '200'");
+        parse_err("REDIRECT /old /new STATUS", E_SYNTAX, 1, 26, "expected a status after STATUS");
+        parse_err("REDIRECT /old", E_SYNTAX, 1, 14, "expected redirect target");
+        parse_err("HEADER /* X-Frame-Options DENY", E_SYNTAX, 1, 11, "expected 'Name:'");
+        parse_err("HEADER /* : DENY", E_SYNTAX, 1, 11, "expected a header name before the colon");
+        parse_err("HEADER /* X-Frame-Options:", E_SYNTAX, 1, 27, "expected header value");
+    }
+
+    #[test]
     fn heredoc_bodies() {
         let src = "FROM scratch\nCOPY <<EOF /a.txt\n# not a comment\n\n  indented \\\nEOF\nEXPORT /";
         let ins = parse_sitefile(src, "Sitefile").unwrap();
@@ -903,7 +1029,15 @@ mod tests {
             assert_eq!(ExportFormat::parse(f.as_str()), Some(f));
         }
         assert_eq!(ExportFormat::parse("TAR.GZ"), Some(ExportFormat::Tgz));
-        for (kw, flags) in [("COPY", COPY_FLAGS), ("RENDER", RENDER_FLAGS), ("TRANSFORM", TRANSFORM_FLAGS)] {
+        for (kw, flags) in [
+            ("COPY", COPY_FLAGS),
+            ("RENDER", RENDER_FLAGS),
+            ("TRANSFORM", TRANSFORM_FLAGS),
+            ("SITEMAP", SITE_FLAGS),
+            ("FEED", SITE_FLAGS),
+            ("REDIRECT", SITE_FLAGS),
+            ("HEADER", SITE_FLAGS),
+        ] {
             assert_eq!(flags_of(kw), flags);
             for (name, shape) in flags {
                 let flag = if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=x") };

@@ -49,6 +49,26 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Declares an external program for TRANSFORM … WITH name … ARGS. It runs only when the CLI allows it with `--allow-exec name`.",
     ),
     (
+        "SITEMAP",
+        "SITEMAP [--overwrite] BASE <url> [TO <dest>]",
+        "Writes a sitemaps.org file (default `/sitemap.xml`) listing every `.html` file in the stage's tree at this point, sorted by path, except `/404.html`. `/a/index.html` is listed as `<base>/a/`.",
+    ),
+    (
+        "FEED",
+        "FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]",
+        "Writes an Atom feed (default `/feed.xml`) from a list import such as `AS markdown`, in list order. Each element needs `title` and `date`; `LINK` is evaluated per element with `${item.key}`.",
+    ),
+    (
+        "REDIRECT",
+        "REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]",
+        "Adds a line to `/_redirects` (Netlify / Cloudflare Pages format), written at EXPORT in source order. `<from>` is an absolute path (`/*` and `:splat` work on hosts and in `serve`); `<to>` a path or http(s) URL. Default status 301.",
+    ),
+    (
+        "HEADER",
+        "HEADER [--overwrite] <path-pattern> <Name>: <value>",
+        "Adds a response header for paths matching the pattern (`*` matches anything) to `/_headers`, written at EXPORT; one block per pattern, in source order.",
+    ),
+    (
         "EXPORT",
         "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
         "Exports `<path>` of the last stage. Exactly one, and the last instruction. The CLI's `--out`, `--format` and `--base-url` override it.",
@@ -79,6 +99,13 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("TRANSFORM", "FOR", "`FOR item IN list` runs once per element of a list import."),
     ("TRANSFORM", "IN", "`IN list`: an IMPORT that is a list."),
     ("TRANSFORM", "ARGS", "`ARGS …` (rest of the line): the TOOL's argv, no shell. `{input}`, `{output}` (required) and `{option.key}` are replaced."),
+    ("SITEMAP", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at (no query or fragment)."),
+    ("SITEMAP", "TO", "`TO <dest>`: the sitemap file (default `/sitemap.xml`)."),
+    ("FEED", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at; entry links are made absolute with it."),
+    ("FEED", "LINK", "`LINK <path>`: each entry's page, evaluated per element (`/posts/${item.slug}/index.html`); `…/index.html` becomes `…/`."),
+    ("FEED", "TO", "`TO <dest>`: the feed file (default `/feed.xml`)."),
+    ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
+    ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
@@ -179,7 +206,8 @@ mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, SORT_ORDERS, TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+        TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -213,6 +241,11 @@ mod tests {
         }
         for c in TRANSFORM_CLAUSES {
             assert!(clause("TRANSFORM", c).is_some(), "{c}");
+        }
+        for (kw, clauses) in [("SITEMAP", &SITEMAP_CLAUSES[..]), ("FEED", &FEED_CLAUSES[..]), ("REDIRECT", &REDIRECT_CLAUSES[..])] {
+            for c in clauses {
+                assert!(clause(kw, c).is_some(), "{kw} {c}");
+            }
         }
     }
 }

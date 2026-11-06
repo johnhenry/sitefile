@@ -477,6 +477,80 @@ fn node_extra_ca_certs_is_trusted_for_remote_imports() {
     assert!(text(&missing).contains("Warning: Ignoring extra certs from"), "{}", text(&missing));
 }
 
+// ---- SITEMAP, FEED, REDIRECT and HEADER (test/site.test.ts)
+
+fn site_project(work: &Tmp, files: &[(&str, &str)]) -> PathBuf {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let ctx = work.path().join(format!("site-{}", N.fetch_add(1, Ordering::SeqCst)));
+    for (rel, content) in files {
+        let p = ctx.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+    ctx
+}
+
+const POSTS: [(&str, &str); 2] = [
+    ("posts/2026-01-05-first.md", "---\ntitle: First & <one>\nauthor: Ann\n---\nHello *there*.\n"),
+    ("posts/2026-02-01-second.md", "---\ntitle: Second\ndate: 2026-02-01T09:30:00+01:00\n---\nTwo.\n"),
+];
+
+#[test]
+fn site_files_sitemap_feed_redirects_headers() {
+    let work = Tmp::new();
+    let src = [
+        "ARG URL = \"https://blog.example\"",
+        "IMPORT posts FROM ./posts AS markdown SORT BY date DESC",
+        "COPY <<X /index.html\nX",
+        "COPY <<X /404.html\nX",
+        "COPY <<X /a&b.html\nX",
+        "SITEMAP BASE ${URL}/",
+        "FEED posts BASE ${URL} LINK /p/${item.slug}/index.html TO /atom.xml TITLE \"Ann's & notes\"",
+        "REDIRECT /blog/* https://blog.example/:splat STATUS 302",
+        "HEADER /* X-Frame-Options: DENY",
+        "HEADER /assets/* Cache-Control: public, max-age=60",
+        "HEADER /* Referrer-Policy: no-referrer",
+        "EXPORT /",
+    ]
+    .join("\n");
+    let ctx = site_project(&work, &[POSTS[0], POSTS[1], ("Sitefile", &src)]);
+    let out = work.path().join("out");
+    let r = sitefile(&work, &["build", s(&ctx), "-o", s(&out), "--no-lockfile"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        read(out.join("sitemap.xml")),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <url><loc>https://blog.example/a%26b.html</loc></url>\n  <url><loc>https://blog.example/</loc></url>\n</urlset>\n"
+    );
+    let feed = read(out.join("atom.xml"));
+    assert!(feed.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <title>Ann&apos;s &amp; notes</title>\n  <link href=\"https://blog.example/\"/>\n  <link rel=\"self\" href=\"https://blog.example/atom.xml\"/>\n  <id>https://blog.example/atom.xml</id>\n  <updated>2026-02-01T09:30:00+01:00</updated>\n"), "{feed}");
+    assert!(feed.contains("    <title>First &amp; &lt;one&gt;</title>\n    <link href=\"https://blog.example/p/first/\"/>\n    <id>https://blog.example/p/first/</id>\n    <updated>2026-01-05T00:00:00Z</updated>\n    <author><name>Ann</name></author>\n    <summary>Hello there.</summary>\n    <content type=\"html\">&lt;p&gt;Hello &lt;em&gt;there&lt;/em&gt;.&lt;/p&gt;\n</content>\n"), "{feed}");
+    assert_eq!(read(out.join("_redirects")), "/blog/* https://blog.example/:splat 302\n");
+    assert_eq!(read(out.join("_headers")), "/*\n  X-Frame-Options: DENY\n  Referrer-Policy: no-referrer\n/assets/*\n  Cache-Control: public, max-age=60\n");
+}
+
+#[test]
+fn site_file_errors() {
+    let work = Tmp::new();
+    let cases: [(&[(&str, &str)], &str); 5] = [
+        (&[("posts/x.md", "---\ntitle: X\n---\nbody\n"), ("Sitefile", "IMPORT posts FROM ./posts AS markdown\nFEED posts BASE https://x LINK /x\nEXPORT /")], "FEED posts: document '/x.md' has no 'date' (add it to its frontmatter)"),
+        (&[("posts/x.md", "---\ntitle: X\ndate: soon\n---\n"), ("Sitefile", "IMPORT posts FROM ./posts AS markdown\nFEED posts BASE https://x LINK /x\nEXPORT /")], "has date 'soon'; expected YYYY-MM-DD or an RFC 3339 date-time"),
+        (&[("one.md", "---\ntitle: X\n---\n"), ("Sitefile", "IMPORT posts FROM ./one.md AS markdown\nFEED posts BASE https://x LINK /x\nEXPORT /")], "error[E_TYPE]"),
+        (&[("_redirects", "/x /y 301\n"), ("Sitefile", "COPY ./_redirects /_redirects\nREDIRECT /a /b\nEXPORT /")], "'/_redirects' was already written with different content by "),
+        (&[("Sitefile", "HEADER /* X-A: \"1\\nSet-Cookie: a=b\"\nEXPORT /")], "HEADER X-A: the value must not contain control characters"),
+    ];
+    for (files, expected) in cases {
+        let ctx = site_project(&work, files);
+        let r = sitefile(&work, &["build", s(&ctx), "-o", s(&work.path().join("o")), "--no-lockfile", "--force"]);
+        assert_eq!(r.code, 1, "{expected}");
+        assert!(r.stderr.contains(expected), "{} lacks {expected}", r.stderr);
+    }
+    // identical content is fine; --overwrite replaces
+    let ctx = site_project(&work, &[("_headers", "x"), ("Sitefile", "COPY ./_headers /_headers\nHEADER --overwrite /* A: 1\nEXPORT /")]);
+    let out = work.path().join("ov");
+    assert_eq!(sitefile(&work, &["build", s(&ctx), "-o", s(&out), "--no-lockfile"]).code, 0);
+    assert_eq!(read(out.join("_headers")), "/*\n  A: 1\n");
+}
+
 fn sitefile_env(work: &Tmp, args: &[&str], env: &[(&str, &str)]) -> Out {
     let mut c = Command::new(BIN);
     c.args(args).current_dir(repo_root()).env("SITEFILE_HOME", work.path().join(".home"));

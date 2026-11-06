@@ -1,6 +1,7 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { isInline, stageNames, type EscapeMode, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { isInline, stageNames, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
+import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 
 /** Where a COPY/RENDER reads from. */
@@ -39,7 +40,45 @@ export interface ToolSpec {
   readonly span: SourceSpan;
 }
 
+/** A REDIRECT, evaluated; written to `/_redirects` at EXPORT. */
+export interface RedirectSpec {
+  readonly from: string;
+  readonly to: string;
+  readonly status: RedirectStatus;
+  readonly overwrite: boolean;
+  readonly span: SourceSpan;
+}
+
+/** A HEADER, evaluated; written to `/_headers` at EXPORT. */
+export interface HeaderSpec {
+  readonly pattern: string;
+  readonly name: string;
+  readonly value: string;
+  readonly overwrite: boolean;
+  readonly span: SourceSpan;
+}
+
 export type Operation =
+  | {
+      /** sitemaps.org XML of the `.html` files in the tree at this point. */
+      readonly kind: 'SITEMAP';
+      /** Checked base URL without trailing slashes. */
+      readonly base: string;
+      readonly dest: string;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
+  | {
+      /** An Atom feed of a list import; `link` is interpolated per element (`${item…}`). */
+      readonly kind: 'FEED';
+      readonly list: string;
+      readonly base: string;
+      readonly link: Operand;
+      readonly dest: string;
+      readonly title: string;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
   | {
       /** Run a plugin; `dest` and option values are interpolated per FOR element at execution. */
       readonly kind: 'TRANSFORM';
@@ -106,6 +145,10 @@ export interface Plan {
   readonly exportRoot: string | undefined;
   /** `COMPRESSION` clause of EXPORT ... AS oci (undefined: gzip). */
   readonly exportCompression: OciCompression | undefined;
+  /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
+  readonly redirects: readonly RedirectSpec[];
+  /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
+  readonly headers: readonly HeaderSpec[];
   readonly warnings: readonly string[];
 }
 
@@ -118,6 +161,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const stages: Stage[] = [];
   const plugins: PluginSpec[] = [];
   const tools: ToolSpec[] = [];
+  const redirects: RedirectSpec[] = [];
+  const headers: HeaderSpec[] = [];
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -242,6 +287,45 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           span: ins.span,
         });
         break;
+      case 'SITEMAP': {
+        const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'SITEMAP BASE', ins.base.span);
+        operations().push({ kind: 'SITEMAP', base, dest: fileDest(ins.dest, vars, '/sitemap.xml', 'SITEMAP'), overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
+      case 'FEED': {
+        const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'FEED BASE', ins.base.span);
+        operations().push({
+          kind: 'FEED',
+          list: ins.list,
+          base,
+          link: ins.link,
+          dest: fileDest(ins.dest, vars, '/feed.xml', 'FEED'),
+          title: ins.title ? evaluateOperand(ins.title, vars) : base,
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        break;
+      }
+      case 'REDIRECT':
+        redirects.push({
+          from: checkSitePath(evaluateOperand(ins.from, vars), 'REDIRECT source', ins.from.span),
+          to: checkRedirectTarget(evaluateOperand(ins.to, vars), ins.to.span),
+          status: ins.status,
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        break;
+      case 'HEADER': {
+        const name = checkHeaderName(evaluateOperand(ins.name, vars), ins.name.span);
+        headers.push({
+          pattern: checkSitePath(evaluateOperand(ins.pattern, vars), 'HEADER path pattern', ins.pattern.span),
+          name,
+          value: checkHeaderValue(ins.value.map((v) => evaluateOperand(v, vars)).join(' '), name, ins.value[0]!.span),
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        break;
+      }
       case 'EXPORT':
         exportPath = normalizeVirtual(evaluateOperand(ins.path, vars), ins.path.span, 'EXPORT path').path;
         exportFormat = ins.format;
@@ -267,7 +351,16 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, warnings };
+  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, redirects, headers, warnings };
+}
+
+/** `TO <dest>` of SITEMAP/FEED (a file path), or the default. */
+function fileDest(op: Operand | undefined, vars: ReadonlyMap<string, Scalar>, fallback: string, what: string): string {
+  if (!op) return fallback;
+  const raw = evaluateOperand(op, vars);
+  const dest = normalizeVirtual(raw, op.span, `${what} destination`);
+  if (dest.trailingSlash) throw new SitefileError('E_PATH', `${what} destination '${raw}' must be a file path, not a directory`, op.span);
+  return dest.path;
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {

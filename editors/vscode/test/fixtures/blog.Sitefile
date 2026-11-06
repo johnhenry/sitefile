@@ -14,5 +14,16 @@ IMPORT posts FROM ./posts AS markdown SORT BY date DESC
 COPY ./public/ /
 RENDER --escape=html ./templates/index.html TO /index.html
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
-RENDER --escape=html ./templates/feed.xml TO /feed.xml
+
+# An Atom feed of the posts (newest first, as imported), and a sitemap of
+# every page rendered so far. Both write absolute URLs under SITE_URL.
+FEED posts BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TITLE ${SITE_TITLE}
+SITEMAP BASE ${SITE_URL}
+
+# Old URLs and response headers, for hosts that read _redirects / _headers
+# (Netlify, Cloudflare Pages; `sitefile serve` honours them too).
+REDIRECT /feed /feed.xml
+REDIRECT /posts/hello/* /posts/hello-world/:splat STATUS 302
+HEADER /*.css Cache-Control: public, max-age=3600
+HEADER /* X-Frame-Options: DENY
 EXPORT /

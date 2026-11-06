@@ -8,6 +8,7 @@ use crate::language::ast::{
     TemplatePart, ValueType,
 };
 use crate::paths::{normalize_local, normalize_virtual};
+use crate::site::{check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path};
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -99,8 +100,32 @@ pub struct RenderEach {
     pub dest: Operand,
 }
 
+/// A REDIRECT, evaluated; written to `/_redirects` at EXPORT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RedirectSpec {
+    pub from: String,
+    pub to: String,
+    pub status: u16,
+    pub overwrite: bool,
+    pub span: SourceSpan,
+}
+
+/// A HEADER, evaluated; written to `/_headers` at EXPORT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeaderSpec {
+    pub pattern: String,
+    pub name: String,
+    pub value: String,
+    pub overwrite: bool,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
+    /// sitemaps.org XML of the `.html` files in the tree at this point (`base` is checked, without trailing slashes).
+    Sitemap { base: String, dest: String, overwrite: bool, span: SourceSpan },
+    /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
+    Feed { list: String, base: String, link: Operand, dest: String, title: String, overwrite: bool, span: SourceSpan },
     /// Run a plugin or tool; `dest` and option values are interpolated per FOR element at execution.
     Transform {
         source: Option<SourceRef>,
@@ -128,7 +153,11 @@ pub enum Operation {
 impl Operation {
     pub fn span(&self) -> &SourceSpan {
         match self {
-            Operation::Transform { span, .. } | Operation::Copy { span, .. } | Operation::Render { span, .. } => span,
+            Operation::Transform { span, .. }
+            | Operation::Copy { span, .. }
+            | Operation::Render { span, .. }
+            | Operation::Sitemap { span, .. }
+            | Operation::Feed { span, .. } => span,
         }
     }
     pub fn keyword(&self) -> &'static str {
@@ -136,6 +165,8 @@ impl Operation {
             Operation::Transform { .. } => "TRANSFORM",
             Operation::Copy { .. } => "COPY",
             Operation::Render { .. } => "RENDER",
+            Operation::Sitemap { .. } => "SITEMAP",
+            Operation::Feed { .. } => "FEED",
         }
     }
 }
@@ -179,6 +210,10 @@ pub struct Plan {
     pub export_root: Option<String>,
     /// `COMPRESSION` clause of EXPORT ... AS oci (None: gzip).
     pub export_compression: Option<OciCompression>,
+    /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
+    pub redirects: Vec<RedirectSpec>,
+    /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
+    pub headers: Vec<HeaderSpec>,
     pub warnings: Vec<String>,
 }
 
@@ -207,6 +242,8 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
     let mut stages: Vec<Stage> = Vec::new();
     let mut plugins = Vec::new();
     let mut tools = Vec::new();
+    let mut redirects = Vec::new();
+    let mut headers = Vec::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -370,6 +407,44 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     span: span.clone(),
                 });
             }
+            Instruction::Sitemap { span, base, dest, overwrite } => {
+                let base = check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
+                let dest = file_dest(dest.as_ref(), &vars, "/sitemap.xml", "SITEMAP")?;
+                operations(&mut stages, span)?.push(Operation::Sitemap { base, dest, overwrite: *overwrite, span: span.clone() });
+            }
+            Instruction::Feed { span, list, base, link, dest, title, overwrite, .. } => {
+                let base = check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
+                let dest = file_dest(dest.as_ref(), &vars, "/feed.xml", "FEED")?;
+                let title = match title {
+                    Some(t) => evaluate_operand(t, &vars)?,
+                    None => base.clone(),
+                };
+                operations(&mut stages, span)?.push(Operation::Feed {
+                    list: list.clone(),
+                    base,
+                    link: link.clone(),
+                    dest,
+                    title,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
+            Instruction::Redirect { span, from, to, status, overwrite } => {
+                redirects.push(RedirectSpec {
+                    from: check_site_path(&evaluate_operand(from, &vars)?, "REDIRECT source", &from.span)?,
+                    to: check_redirect_target(&evaluate_operand(to, &vars)?, &to.span)?,
+                    status: *status,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
+            Instruction::Header { span, pattern, name, value, overwrite } => {
+                let name = check_header_name(&evaluate_operand(name, &vars)?, &name.span)?;
+                let pattern = check_site_path(&evaluate_operand(pattern, &vars)?, "HEADER path pattern", &pattern.span)?;
+                let words = value.iter().map(|v| evaluate_operand(v, &vars)).collect::<Result<Vec<_>>>()?;
+                let value = check_header_value(&words.join(" "), &name, &value[0].span)?;
+                headers.push(HeaderSpec { pattern, name, value, overwrite: *overwrite, span: span.clone() });
+            }
             Instruction::Export { path, format, base, at, compression, .. } => {
                 export_path = Some(normalize_virtual(&evaluate_operand(path, &vars)?, Some(&path.span), "EXPORT path")?.path);
                 export_format = *format;
@@ -429,8 +504,21 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
         export_base,
         export_root,
         export_compression,
+        redirects,
+        headers,
         warnings,
     })
+}
+
+/// `TO <dest>` of SITEMAP/FEED (a file path), or the default.
+fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Result<String> {
+    let Some(op) = op else { return Ok(fallback.to_string()) };
+    let raw = evaluate_operand(op, vars)?;
+    let dest = normalize_virtual(&raw, Some(&op.span), &format!("{what} destination"))?;
+    if dest.trailing_slash {
+        return Err(SitefileError::at(E_PATH, format!("{what} destination '{raw}' must be a file path, not a directory"), &op.span));
+    }
+    Ok(dest.path)
 }
 
 fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
@@ -596,6 +684,21 @@ impl Operation {
         let mut m = Map::new();
         m.insert("kind".into(), json!(self.keyword()));
         match self {
+            Operation::Sitemap { base, dest, overwrite, span } => {
+                m.insert("base".into(), json!(base));
+                m.insert("dest".into(), json!(dest));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Feed { list, base, link, dest, title, overwrite, span } => {
+                m.insert("list".into(), json!(list));
+                m.insert("base".into(), json!(base));
+                m.insert("link".into(), operand_json(link));
+                m.insert("dest".into(), json!(dest));
+                m.insert("title".into(), json!(title));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
             Operation::Transform { source, plugin, dest, options, each, args, overwrite, span } => {
                 if let Some(s) = source {
                     m.insert("source".into(), s.to_json());
@@ -826,6 +929,44 @@ mod tests {
         assert!(matches!(&ops[0], Operation::Render { dest, each: Some(e), .. } if dest.is_empty() && e.as_name == "post" && e.list == "posts"));
         assert!(matches!(&ops[1], Operation::Render { template: SourceRef::Inline { text, delimiter, body_line: 5, .. }, .. } if text == "hi\n" && delimiter == "T"));
         assert_eq!((p.export_format, p.export_root.as_deref()), (ExportFormat::Oci, Some("/srv/www")));
+    }
+
+    #[test]
+    fn site_instructions() {
+        let p = plan_of("ARG URL = \"https://x.example/\"\nSITEMAP BASE ${URL}\nREDIRECT /a /b\nHEADER /* X-A: 1\nEXPORT /", &[]).unwrap();
+        assert_eq!(
+            p.stages[0].operations[0],
+            Operation::Sitemap { base: "https://x.example".into(), dest: "/sitemap.xml".into(), overwrite: false, span: SourceSpan::new("Sitefile", 2, 1) }
+        );
+        assert_eq!((p.redirects[0].from.as_str(), p.redirects[0].to.as_str(), p.redirects[0].status), ("/a", "/b", 301));
+        assert_eq!((p.headers[0].pattern.as_str(), p.headers[0].name.as_str(), p.headers[0].value.as_str()), ("/*", "X-A", "1"));
+        let j = p.stages[0].operations[0].to_json();
+        assert_eq!(j.as_object().unwrap().keys().collect::<Vec<_>>(), ["kind", "base", "dest", "overwrite", "span"]);
+        let cases: [(&str, ErrorCode, &str); 16] = [
+            ("SITEMAP BASE ftp://x", E_VALIDATION, "must be an absolute http(s) URL"),
+            ("SITEMAP BASE https://u@x", E_VALIDATION, "must be an absolute http(s) URL"),
+            ("SITEMAP BASE https://x/?q", E_VALIDATION, "must be an absolute http(s) URL"),
+            ("SITEMAP BASE https://", E_VALIDATION, "must be an absolute http(s) URL"),
+            ("SITEMAP BASE https://x TO /maps/", E_PATH, "must be a file path"),
+            ("SITEMAP BASE https://x TO maps.xml", E_PATH, "must be an absolute artifact path"),
+            ("REDIRECT old /b", E_VALIDATION, "REDIRECT source 'old' must be an absolute path"),
+            ("REDIRECT \"/a b\" /b", E_VALIDATION, "must not contain spaces or control characters"),
+            ("REDIRECT /a \"/b\\nX-Evil: 1\"", E_VALIDATION, "REDIRECT target must not contain"),
+            ("REDIRECT /a b", E_VALIDATION, "must be an absolute path or an http(s) URL"),
+            ("REDIRECT /a javascript:alert(1)", E_VALIDATION, "must be an absolute path or an http(s) URL"),
+            ("HEADER /* \"X A:\" 1", E_VALIDATION, "HEADER name must not contain spaces"),
+            ("HEADER /* X(A): 1", E_VALIDATION, "HEADER name 'X(A)' is not a valid header name"),
+            ("HEADER /* X-A: \"1\\nSet-Cookie: a=b\"", E_VALIDATION, "must not contain control characters"),
+            ("HEADER /* X-A: \" \"", E_VALIDATION, "the value is empty"),
+            ("HEADER assets/* X-A: 1", E_VALIDATION, "HEADER path pattern"),
+        ];
+        for (src, code, contains) in cases {
+            plan_err(&format!("{src}\nEXPORT /"), &[], code, 1, contains);
+        }
+        let p = plan_of("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x/ LINK /p/${item.slug}.html\nEXPORT /", &[]).unwrap();
+        let j = p.stages[0].operations[0].to_json();
+        assert_eq!(j.as_object().unwrap().keys().collect::<Vec<_>>(), ["kind", "list", "base", "link", "dest", "title", "overwrite", "span"]);
+        assert_eq!((j["dest"].as_str(), j["title"].as_str()), (Some("/feed.xml"), Some("https://x")));
     }
 
     #[test]

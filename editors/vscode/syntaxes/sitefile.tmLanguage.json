@@ -2795,6 +2795,218 @@
           ]
         },
         {
+          "name": "meta.instruction.sitemap.sitefile",
+          "begin": "^\\s*((?i:SITEMAP))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "match": "(?<![^\\s])((?i:BASE|TO))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.feed.sitefile",
+          "begin": "^\\s*((?i:FEED))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G((?:\\s+--\\S+)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "patterns": [
+                    {
+                      "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+                      "captures": {
+                        "1": {
+                          "name": "punctuation.definition.flag.sitefile"
+                        },
+                        "2": {
+                          "name": "variable.parameter.flag.sitefile"
+                        }
+                      }
+                    },
+                    {
+                      "match": "(?<![^\\s])--\\S*",
+                      "name": "invalid.illegal.unknown-flag.sitefile"
+                    }
+                  ]
+                },
+                "2": {
+                  "name": "variable.other.readwrite.import.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "match": "(?<![^\\s])((?i:BASE|LINK|TO|TITLE))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.redirect.sitefile",
+          "begin": "^\\s*((?i:REDIRECT))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "match": "(?<![^\\s])((?i:STATUS))(?:\\s+(?:((?i:301|302|303|307|308))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.numeric.status.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.status.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.header.sitefile",
+          "begin": "^\\s*((?i:HEADER))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "match": "(?<![^\\s])([!#$%&'*+.^_`|~0-9A-Za-z-]+)(:)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "entity.other.attribute-name.header.sitefile"
+                },
+                "2": {
+                  "name": "punctuation.separator.header.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.export.sitefile",
           "begin": "^\\s*((?i:EXPORT))(?=\\s|$)",
           "beginCaptures": {

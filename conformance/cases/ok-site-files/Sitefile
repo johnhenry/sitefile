@@ -1,0 +1,25 @@
+# SITEMAP, FEED, REDIRECT and HEADER: byte-identical output from both implementations.
+ARG URL = "https://example.com/site/"
+
+# REDIRECT and HEADER lines from every stage are collected in source order.
+FROM scratch AS rules
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+IMPORT feed FROM ./posts AS markdown
+REDIRECT /old /new
+HEADER /* X-Frame-Options: DENY
+
+FROM scratch
+COPY ./public/ /
+RENDER <<HTML TO /posts/${p.slug}.html FOR p IN posts
+<h1>${p.title}</h1>
+HTML
+SITEMAP BASE ${URL}
+SITEMAP --overwrite BASE http://Example.org TO /maps/second.xml
+FEED posts BASE ${URL} LINK /posts/${item.slug}.html TITLE "Notes & <more>"
+FEED feed BASE ${URL} LINK "/by path/${item.slug}/" TO /unsorted.atom
+REDIRECT /blog/* https://blog.example.com/:splat STATUS 302
+REDIRECT --overwrite /caf%C3%A9 /café/ STATUS 308
+HEADER /assets/* Cache-Control: public,   max-age=31536000
+HEADER /* Referrer-Policy: "strict-origin"
+HEADER /assets/* X-Robots-Tag: noindex
+EXPORT /

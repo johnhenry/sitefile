@@ -2,7 +2,7 @@ import { readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
-import type { ExportFormat, OciCompression, Program } from './language/ast.js';
+import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
@@ -28,6 +28,7 @@ import { readLayerBlobs, resolveBase } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
+import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -214,6 +215,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
+  tree = withSiteRules(tree, p, label);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(`EXPORT ${p.exportPath} contains no files`);
 
@@ -645,10 +647,80 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
   return tree.withFiles(files, policy, op.span);
 }
 
+/** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
+function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
+  const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
+    { name: '_redirects', text: redirectsFile(p.redirects), rules: p.redirects, kind: 'REDIRECT' },
+    { name: '_headers', text: headersFile(p.headers), rules: p.headers, kind: 'HEADER' },
+  ];
+  for (const f of files) {
+    const first = f.rules[0];
+    if (!first) continue;
+    const policy = f.rules.some((r) => r.overwrite) ? 'overwrite' : 'error';
+    const node = makeFile(new TextEncoder().encode(f.text), `${label}:${first.span.line} ${f.kind}`);
+    tree = tree.withFiles([[joinVirtual(p.exportPath, f.name), node]], policy, first.span);
+  }
+  return tree;
+}
+
+async function executeFeed(op: Extract<Operation, { kind: 'FEED' }>, tree: Tree, env: ExecEnv): Promise<Tree> {
+  const origin = `${env.label}:${op.span.line} FEED`;
+  const list = valueOf(op.list, [], op.span, false, env);
+  if (!Array.isArray(list)) {
+    throw new SitefileError('E_TYPE', `FEED ${op.list}: '${op.list}' is not a list (import a directory AS markdown)`, op.span);
+  }
+  if (list.length === 0) env.warn(`${origin}: '${op.list}' is empty, so the feed has no entries`);
+  const entries: FeedEntry[] = [];
+  list.forEach((item: unknown, i: number) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new SitefileError('E_TYPE', `FEED ${op.list}: element ${i + 1} is not a document (an object with title and date)`, op.span);
+    }
+    const doc = item as Record<string, unknown>;
+    const name = typeof doc['path'] === 'string' ? doc['path'] : `#${i + 1}`;
+    const text = (key: string): string | undefined => {
+      const v = doc[key];
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+      throw new SitefileError('E_TYPE', `FEED ${op.list}: '${key}' of document '${name}' is not text`, op.span);
+    };
+    const required = (key: string): string => {
+      const v = text(key);
+      if (v === undefined) throw new SitefileError('E_VALIDATION', `FEED ${op.list}: document '${name}' has no '${key}' (add it to its frontmatter)`, op.span);
+      return v;
+    };
+    const title = required('title');
+    const rawDate = required('date');
+    const date = parseFeedDate(rawDate);
+    if (!date) {
+      throw new SitefileError('E_VALIDATION', `FEED ${op.list}: document '${name}' has date '${rawDate}'; expected YYYY-MM-DD or an RFC 3339 date-time`, op.span);
+    }
+    const raw = interpolate(op.link, { ...env, loop: { name: FEED_ITEM, value: item } });
+    const link = normalizeVirtual(raw, op.link.span, 'FEED LINK');
+    const author = text('author');
+    const summary = text('excerpt');
+    const content = text('content');
+    entries.push({
+      title,
+      url: pageUrl(op.base, link.path === '/' || !link.trailingSlash ? link.path : link.path + '/'),
+      date,
+      ...(author !== undefined && author !== '' ? { author } : {}),
+      ...(summary !== undefined && summary !== '' ? { summary } : {}),
+      ...(content !== undefined ? { content } : {}),
+    });
+  });
+  const xml = atomXml({ title: op.title, siteUrl: op.base + '/', selfUrl: pageUrl(op.base, op.dest), entries });
+  return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(xml), origin)]], op.overwrite ? 'overwrite' : 'error', op.span);
+}
+
 async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
   if (op.kind === 'TRANSFORM') return executeTransform(op, tree, env);
+  if (op.kind === 'FEED') return executeFeed(op, tree, env);
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
   const policy = op.overwrite ? 'overwrite' : 'error';
+
+  if (op.kind === 'SITEMAP') {
+    return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(sitemapXml(tree, op.base)), origin)]], policy, op.span);
+  }
 
   if (op.kind === 'COPY') {
     const src = await readSource(op.source, origin, env);

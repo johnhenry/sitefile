@@ -283,3 +283,53 @@ EXEC --x ./a
     (flag
       (flag_name))
     (path)))
+
+==================
+SITEMAP, FEED, REDIRECT and HEADER
+==================
+
+SITEMAP BASE https://example.com
+sitemap --overwrite base ${URL} to /maps/site.xml
+FEED posts BASE ${URL} LINK /posts/${item.slug}/index.html TO /atom.xml TITLE "My blog"
+REDIRECT /old /new
+REDIRECT --overwrite /blog/* https://blog.example/:splat STATUS 302
+HEADER /assets/* Cache-Control: public, max-age=31536000
+
+---
+
+(source_file
+  (sitemap_instruction
+    (url))
+  (sitemap_instruction
+    (flag
+      (flag_name))
+    (word
+      (substitution
+        (identifier)))
+    (path))
+  (feed_instruction
+    (identifier)
+    (word
+      (substitution
+        (identifier)))
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (path)
+    (string
+      (string_content)))
+  (redirect_instruction
+    (path)
+    (path))
+  (redirect_instruction
+    (flag
+      (flag_name))
+    (path)
+    (url)
+    (status))
+  (header_instruction
+    (path)
+    (word)
+    (word)
+    (word)))

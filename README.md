@@ -39,6 +39,9 @@ no runtime dependencies.
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
+| `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
+| `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
+| `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`) |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -55,6 +58,10 @@ A blog from Markdown posts with frontmatter (see `examples/blog/`):
 IMPORT posts FROM ./posts AS markdown SORT BY date DESC
 RENDER --escape=html ./templates/index.html TO /index.html
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+FEED posts BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TITLE ${SITE_TITLE}
+SITEMAP BASE ${SITE_URL}
+REDIRECT /feed /feed.xml
+HEADER /*.css Cache-Control: public, max-age=3600
 ```
 
 Data files are readable too (see `examples/data/`):
@@ -145,7 +152,8 @@ sitefile servers; sitefile server logs site; sitefile server stop site; sitefile
 ```
 
 `serve` serves GET/HEAD only on `127.0.0.1` (never `0.0.0.0` unless you ask for it in `-p`), with ETags,
-correct MIME types and no directory listings. `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
+correct MIME types and no directory listings; it serves `/404.html` for missing paths, `/about` from
+`/about.html`, and honours the site's `_redirects` and `_headers` (exact paths and `/*` splats). `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
 same OCI image without the store; on its own it contains files only, but `EXPORT / AS oci BASE nginx:alpine
 AT /usr/share/nginx/html` (or `--base`) builds a runnable image on top of a pulled base, and `sitefile push` / `pull`
 move images to and from any OCI registry. See

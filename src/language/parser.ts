@@ -10,6 +10,8 @@ import {
   parseExportFormat,
   type OciCompression,
   parseOciCompression,
+  REDIRECT_STATUSES,
+  type RedirectStatus,
   type ImportKind,
   type Instruction,
   type Operand,
@@ -53,6 +55,14 @@ function parseInstruction(c: Cursor): Instruction {
       return parseTool(c, span);
     case 'TRANSFORM':
       return parseTransform(c, span);
+    case 'SITEMAP':
+      return parseSitemap(c, span);
+    case 'FEED':
+      return parseFeed(c, span);
+    case 'REDIRECT':
+      return parseRedirect(c, span);
+    case 'HEADER':
+      return parseHeader(c, span);
     case 'RUN':
       throw c.error('E_UNSUPPORTED', 'RUN is not supported: Sitefile never runs shell commands', span);
   }
@@ -308,6 +318,78 @@ function parseFor(c: Cursor, span: SourceSpan): { as: string; list: string; span
   const as = c.ident('loop variable');
   c.expectKeyword('IN');
   return { as, list: c.ident('list name'), span };
+}
+
+/** `SITEMAP [--overwrite] BASE <url> [TO <dest>]` */
+function parseSitemap(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  c.expectKeyword('BASE');
+  const base = c.operand('base URL');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  c.expectEnd();
+  return { kind: 'SITEMAP', span, base, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` (clauses in this order) */
+function parseFeed(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const listSpan = c.span;
+  const list = c.ident('import name');
+  c.expectKeyword('BASE');
+  const base = c.operand('base URL');
+  c.expectKeyword('LINK');
+  const link = c.operand('link path');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  const title = c.keyword('TITLE') ? c.operand('feed title') : undefined;
+  c.expectEnd();
+  return {
+    kind: 'FEED',
+    span,
+    list,
+    listSpan,
+    base,
+    link,
+    ...(dest ? { dest } : {}),
+    ...(title ? { title } : {}),
+    overwrite: flags.has('overwrite'),
+  };
+}
+
+/** `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]` */
+function parseRedirect(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const from = c.operand('redirect source path');
+  const to = c.operand('redirect target');
+  let status: RedirectStatus = 301;
+  if (c.keyword('STATUS')) {
+    const at = c.span;
+    const w = c.word();
+    const n = REDIRECT_STATUSES.find((s) => String(s) === w);
+    if (n === undefined) {
+      throw c.error('E_SYNTAX', w === '' ? 'expected a status after STATUS (301, 302, 303, 307 or 308)' : `unknown redirect status '${w}' (expected 301, 302, 303, 307 or 308)`, at);
+    }
+    status = n;
+  }
+  c.expectEnd();
+  return { kind: 'REDIRECT', span, from, to, status, overwrite: flags.has('overwrite') };
+}
+
+/** `HEADER [--overwrite] <path-pattern> <Name>: <value …>` */
+function parseHeader(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const pattern = c.operand('path pattern');
+  const raw = c.operand('header name');
+  const last = raw.parts[raw.parts.length - 1];
+  if (last?.kind !== 'text' || !last.value.endsWith(':')) {
+    throw c.error('E_SYNTAX', "expected 'Name:' (a header name and a colon, then the value: HEADER /* X-Frame-Options: DENY)", raw.span);
+  }
+  const head = last.value.slice(0, -1);
+  const parts = [...raw.parts.slice(0, -1), ...(head === '' ? [] : [{ kind: 'text' as const, value: head }])];
+  if (parts.length === 0) throw c.error('E_SYNTAX', 'expected a header name before the colon', raw.span);
+  const value: Operand[] = [];
+  while (!c.atEnd()) value.push(c.operand('header value'));
+  if (value.length === 0) throw c.error('E_SYNTAX', 'expected header value');
+  return { kind: 'HEADER', span, pattern, name: { parts, span: raw.span }, value, overwrite: flags.has('overwrite') };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {

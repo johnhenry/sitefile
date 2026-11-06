@@ -408,6 +408,13 @@ pub fn build(lines: &Lines) -> Index {
             "IMPORT" => name_def(&mut defs, 1, SymKind::Import),
             "PLUGIN" => name_def(&mut defs, 1, SymKind::Plugin),
             "TOOL" => name_def(&mut defs, 1, SymKind::Tool),
+            "FEED" => {
+                if let Some(l) = word(ins.first_operand()) {
+                    if is_ident(&l.text) {
+                        uses.push((l.text.clone(), l.line, l.start, l.end, Pending::Global));
+                    }
+                }
+            }
             "COPY" | "RENDER" | "TRANSFORM" => {
                 for fw in &w[1..ins.first_operand()] {
                     if let Some(v) = fw.text.strip_prefix("--from=") {

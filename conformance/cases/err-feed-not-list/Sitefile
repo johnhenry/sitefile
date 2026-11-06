@@ -1,0 +1,3 @@
+IMPORT post FROM ./a.md AS markdown
+FEED post BASE https://x.example LINK /a.html
+EXPORT /

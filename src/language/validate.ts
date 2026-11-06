@@ -1,5 +1,5 @@
 import { SitefileError } from '../errors.js';
-import { IDENT_RE, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
+import { FEED_ITEM, IDENT_RE, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
 /** Import kinds that can produce a list (and so can be sorted). */
@@ -29,6 +29,14 @@ function operandsOf(ins: Instruction): Operand[] {
     }
     case 'TOOL':
       return [];
+    case 'SITEMAP':
+      return [ins.base, ...(ins.dest ? [ins.dest] : [])];
+    case 'FEED':
+      return [ins.base, ins.link, ...(ins.dest ? [ins.dest] : []), ...(ins.title ? [ins.title] : [])];
+    case 'REDIRECT':
+      return [ins.from, ins.to];
+    case 'HEADER':
+      return [ins.pattern, ins.name, ...ins.value];
     case 'EXPORT':
       return [ins.path];
   }
@@ -90,9 +98,11 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
 
     // RENDER … FOR item IN list: the destination may use ${item} / ${item.key}.
     // RENDER/TRANSFORM … FOR item IN list: the destination (and TRANSFORM options) may use ${item.key}.
-    const loopVar = ins.kind === 'RENDER' || ins.kind === 'TRANSFORM' ? ins.each?.as : undefined;
+    // FEED … LINK <path>: the link may use ${item.key} for the current element.
+    const loopVar = ins.kind === 'RENDER' || ins.kind === 'TRANSFORM' ? ins.each?.as : ins.kind === 'FEED' ? FEED_ITEM : undefined;
     for (const op of operandsOf(ins)) {
       const isDest =
+        (ins.kind === 'FEED' && op === ins.link) ||
         (ins.kind === 'RENDER' && op === ins.dest) ||
         (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op) || (ins.args?.includes(op) ?? false)));
       for (const part of op.parts) {
@@ -190,6 +200,15 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
           }
           if (taken(as)) throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
         }
+        break;
+      case 'FEED':
+        if (!imports.has(ins.list)) {
+          throw new SitefileError('E_UNDEFINED', `FEED ${ins.list}: '${ins.list}' is not an IMPORT declared on an earlier line`, ins.listSpan);
+        }
+        break;
+      case 'SITEMAP':
+      case 'REDIRECT':
+      case 'HEADER':
         break;
       case 'EXPORT':
         sawExport = true;

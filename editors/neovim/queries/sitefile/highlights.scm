@@ -13,7 +13,9 @@
 ; Instructions and clauses (case-insensitive in the source).
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
+  "SITEMAP" "FEED" "REDIRECT" "HEADER"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
+  "LINK" "TITLE" "STATUS"
 ] @keyword
 
 (for_clause [ "FOR" "IN" ] @keyword.repeat)
@@ -44,6 +46,10 @@
 (sort_clause key: (identifier) @property)
 (option key: (identifier) @property)
 (placeholder) @variable.builtin
+(feed_instruction list: (identifier) @module)
+(header_instruction name: (word) @property)
+((redirect_instruction status: (status) @number)
+  (#any-of? @number "301" "302" "303" "307" "308"))
 
 ; Value words: known values are highlighted, anything else is left plain
 ; (the parser rejects it). Matched in lower and upper case.

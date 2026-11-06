@@ -98,6 +98,10 @@ export default grammar({
         $.transform_instruction,
         $.plugin_instruction,
         $.tool_instruction,
+        $.sitemap_instruction,
+        $.feed_instruction,
+        $.redirect_instruction,
+        $.header_instruction,
         $.export_instruction,
         $.unsupported_instruction,
       ),
@@ -203,6 +207,50 @@ export default grammar({
 
     // TOOL name
     tool_instruction: ($) => seq(kw($, 'TOOL'), field('name', $.identifier)),
+
+    // SITEMAP [--overwrite] BASE <url> [TO <dest>]
+    sitemap_instruction: ($) =>
+      seq(
+        kw($, 'SITEMAP'),
+        repeat(field('flag', $.flag)),
+        kw($, 'BASE'),
+        field('base', $._operand),
+        optional(seq(kw($, 'TO'), field('target', $._operand))),
+      ),
+
+    // FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]
+    feed_instruction: ($) =>
+      seq(
+        kw($, 'FEED'),
+        repeat(field('flag', $.flag)),
+        field('list', $.identifier),
+        kw($, 'BASE'),
+        field('base', $._operand),
+        kw($, 'LINK'),
+        field('link', $._operand),
+        optional(seq(kw($, 'TO'), field('target', $._operand))),
+        optional(seq(kw($, 'TITLE'), field('title', $._operand))),
+      ),
+
+    // REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]
+    redirect_instruction: ($) =>
+      seq(
+        kw($, 'REDIRECT'),
+        repeat(field('flag', $.flag)),
+        field('from', $._operand),
+        field('to', $._operand),
+        optional(seq(kw($, 'STATUS'), field('status', alias($._value_word, $.status)))),
+      ),
+
+    // HEADER [--overwrite] <path-pattern> <Name>: <value …> (the name is the word ending in `:`)
+    header_instruction: ($) =>
+      seq(
+        kw($, 'HEADER'),
+        repeat(field('flag', $.flag)),
+        field('pattern', $._operand),
+        field('name', $._operand),
+        repeat1(field('value', $._operand)),
+      ),
 
     // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]
     export_instruction: ($) =>
