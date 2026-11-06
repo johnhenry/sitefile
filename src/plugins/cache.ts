@@ -144,7 +144,12 @@ export class TransformCache {
     if (keepIfSameSize) {
       const size = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
       const st = await stat(file).catch(() => undefined);
-      if (st?.isFile() && st.size === size) return;
+      if (st?.isFile() && st.size === size) {
+        // Reused: refresh its mtime so the size limit's grace period covers it until the entry lands.
+        const now = new Date();
+        await utimes(file, now, now).catch(() => {});
+        return;
+      }
     }
     await mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;

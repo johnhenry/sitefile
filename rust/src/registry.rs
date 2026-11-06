@@ -1376,6 +1376,7 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
     let mut seen = std::collections::HashSet::new();
     for d in blobs.into_iter().filter(|d| seen.insert(d.digest.clone())) {
         if store.has_blob(&d.digest, Some(d.size)) {
+            store.touch_blob(&d.digest); // recently used: protected from the cache size limit
             say(&format!("{}: already exists", short_id(&d.digest)));
             continue;
         }

@@ -41,7 +41,50 @@ beside the image store but separate from it (`image prune` does not touch it). S
 ```
 sitefile cache info [--json]              location, entries, blobs, size
 sitefile cache prune [--older-than days]  delete every cached result, or only entries unused for N days
+sitefile cache prune --max-size <size>    apply the size limit below now, with that size
+sitefile cache du [--json]                size of every cache and the store, and what may be evicted (alias: cache ls)
 ```
+
+### What lives under `$SITEFILE_HOME`
+
+| Path | What | Safe to delete? |
+| --- | --- | --- |
+| `cache/transform/entries/<key>.json`, `cache/transform/blobs/<hex>` | TRANSFORM results (both implementations) | yes: a pure cache, rebuilt on the next miss. **Evicted automatically.** |
+| `cache/wasm/<key>.cwasm` | compiled wasm plugins (Rust build only; [RUST.md](RUST.md#wasm-module-cache)) | yes: a pure cache, recompiled on the next miss. **Evicted automatically.** |
+| `index.json`, `oci-layout`, `blobs/sha256/<hex>` of **tagged** images | the image store: your images | **no**. Never evicted automatically; `rmi` removes tags. |
+| untagged images (`<none>`: a re-tagged build's old image, a BASE image pulled by digest) and blobs no image uses | the image store's garbage and pulled BASE images | yes: `image prune`, or **evicted automatically** (a BASE image is pulled again when needed). |
+| `blobs/sha256/.tmp-*`, `*.tmp` | writes in progress (temp file + rename) | only when old (1 hour); a running pull or build may own them. |
+| `servers/<id>.json`, `servers/<id>.log` | site server state and logs | stopped servers: `server rm`. Never evicted. |
+| `lock` | held while the store is modified (stale locks are broken) | never by hand while sitefile runs. |
+
+Remote `IMPORT`s (https URLs) are not cached on disk: they are fetched on every build and pinned by `Sitefile.lock`
+(integrity), so there is no remote resource cache to clean. BASE images are pulled into the image store (above).
+
+### Cache size limit
+
+At the end of every `build` and `inspect`, Sitefile keeps the **evictable** data (TRANSFORM results, compiled wasm
+modules, untagged images and unreferenced blobs) under a size limit by deleting the least recently used items first.
+Tagged images, and every blob a tagged image uses, are never deleted and do not count against the limit.
+
+- `SITEFILE_CACHE_MAX=<size>` sets the limit: bytes (`1073741824`) or a number with a binary unit, case-insensitive
+  (`512K`, `500M`, `1.5G`, `2GiB`, `1T`). **Default `1G` (1 GiB). `0` turns automatic eviction off.** An invalid value
+  is a warning and the default applies. `cache prune --max-size <size>` runs the same eviction on demand.
+- **Recency is the file's mtime**, refreshed on every use: a TRANSFORM hit touches its entry, a wasm cache hit its
+  `.cwasm` file, storing or pulling an image its manifest and reused blobs. atime is not used (it is often disabled
+  with `noatime`/`relatime`), and an index file would be one more thing to keep consistent between concurrent builds.
+- **Safe with concurrent builds:** every write is a temp file + rename, so a half-written file is never visible; temp
+  files are only removed after 1 hour; nothing touched in the last **10 minutes** (TRANSFORM results, wasm modules)
+  or **1 hour** (image store) is evicted, so a build never loses what it, or another build, just wrote or used; the
+  image-store part runs under the store lock. The cache can therefore briefly exceed the limit by what was written
+  within the grace period.
+- **Cheap when under the limit:** one directory listing per cache, no file is read.
+- **Never fails a build:** a problem (an unreadable store, a corrupt `index.json`) is a `warning: cache size limit
+  not applied: ...` and the command's exit code is unchanged. When something is evicted, one line goes to stderr:
+  `Evicted 3 cache items (412MB) to stay under SITEFILE_CACHE_MAX=1GiB`.
+
+`cache du` prints one row per cache (`transform`, `wasm`, `store`, `servers`) with `ITEMS` (entries, modules, blobs,
+files), `SIZE`, `EVICTABLE` and the path, a total, and the limit. `--json` gives
+`{home, limit, caches: [{name, path, items, bytes, evictable}], bytes, evictable}` (sizes in bytes, `limit` 0 = none).
 
 ## Image store
 
@@ -65,7 +108,8 @@ $SITEFILE_HOME/
 - The **image ID is the manifest digest** (`sha256:<hex>`; shown as the first 12 hex digits). The same files, root,
   platform and labels give the same ID, so rebuilding identical output does not create a new image.
 - An image without a tag is *dangling* (an `index.json` entry without a ref name); it shows as `<none>`. Building a
-  tag again with different content leaves the old image dangling until `image prune`.
+  tag again with different content leaves the old image dangling until `image prune` (or until the
+  [cache size limit](#cache-size-limit) evicts it).
 - `index.json` also records, per entry, `dev.sitefile.created`: when the image was first stored (bookkeeping only; it
   is not part of any digest, and is what `CREATED` shows).
 - Writes are temp file + rename; modifications hold the lock file (stale locks of dead processes are broken), so

@@ -11,7 +11,7 @@ import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportForm
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
-import { transformCacheDir } from './cli/cache.js';
+import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 
 const VERSION = '0.1.0';
@@ -261,6 +261,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       return 1;
     }
     throw e;
+  } finally {
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if (command === 'build' || command === 'inspect') await evictAfterBuild();
   }
 }
 
