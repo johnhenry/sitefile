@@ -1,0 +1,5 @@
+COPY <<X /a.html
+x
+X
+CHECKLINKS --warn /a.html
+EXPORT /

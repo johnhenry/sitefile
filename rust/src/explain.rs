@@ -53,6 +53,9 @@ pub fn operation_label(op: &Operation) -> String {
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
         Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
         Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
+        Operation::CheckLinks { warn, external, .. } => {
+            format!("CHECKLINKS{}{}", if *warn { " --warn" } else { "" }, if *external { " --external" } else { "" })
+        }
     }
 }
 
@@ -225,7 +228,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
                     inputs.push(each.as_ref().and_then(|e| list(&e.list)));
                 }
                 Operation::Feed { list: l, .. } => inputs.push(list(l)),
-                Operation::Sitemap { .. } | Operation::Fingerprint { .. } => {}
+                Operation::Sitemap { .. } | Operation::Fingerprint { .. } | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
                 edges.add(&from, op_id, "input");
@@ -572,6 +575,8 @@ impl Why<'_> {
                     }
                 }
                 Operation::Sitemap { .. } => inputs.push("the .html files in the tree".into()),
+                // Writes nothing, so never reached.
+                Operation::CheckLinks { .. } => {}
                 Operation::Fingerprint { manifest, .. } => inputs.push(
                     if manifest.as_deref() == Some(file) { "the files it renamed" } else { "references to renamed files" }.into(),
                 ),

@@ -39,6 +39,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.pattern, ins.name, ...ins.value];
     case 'FINGERPRINT':
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
+    case 'CHECKLINKS':
+      return [];
     case 'EXPORT':
       return [ins.path];
   }
@@ -212,6 +214,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'REDIRECT':
       case 'HEADER':
       case 'FINGERPRINT':
+      case 'CHECKLINKS':
         break;
       case 'EXPORT':
         sawExport = true;
