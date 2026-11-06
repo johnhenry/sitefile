@@ -1,7 +1,7 @@
 id = "sitefile"
 name = "Sitefile"
-description = "Syntax highlighting for Sitefile, the Docker-inspired static site builder."
-version = "0.1.0"
+description = "Syntax highlighting and language server support for Sitefile, the Docker-inspired static site builder."
+version = "0.2.0"
 schema_version = 1
 authors = ["John Henry <john@iamjohnhenry.com>"]
 repository = "https://github.com/johnhenry/sitefile"
@@ -13,3 +13,9 @@ repository = "https://github.com/johnhenry/sitefile"
 repository = "https://github.com/johnhenry/sitefile"
 rev = "ebbf616167ee6fdfc7792d37fd63fc5ba2163a5a"
 path = "editors/tree-sitter-sitefile"
+
+# `sitefile lsp` from the Rust binary (docs/LSP.md). src/lib.rs finds
+# `sitefile` on PATH, or uses lsp.sitefile-lsp.binary.path from the settings.
+[language_servers.sitefile-lsp]
+name = "Sitefile LSP"
+languages = ["Sitefile"]

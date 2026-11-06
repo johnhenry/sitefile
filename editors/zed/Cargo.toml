@@ -1,0 +1,20 @@
+[package]
+name = "zed_sitefile"
+version = "0.2.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Zed extension for Sitefile: starts the `sitefile lsp` language server"
+
+# Not part of the rust/ workspace: Zed builds this crate to WebAssembly itself
+# when the extension is installed.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Rationale: the Zed extension API (the only way to start a language server
+# from a Zed extension).
+zed_extension_api = "0.7.0"
