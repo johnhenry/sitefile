@@ -9,7 +9,8 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::resources::git::GitSelection;
 use crate::resources::vendor::VendoredGit;
-use crate::executor::{fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
+use crate::executor::{fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, warn_unused_secrets, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
+use crate::secrets::{redact_error, redact_secrets};
 use crate::export::oci::parse_manifest;
 use crate::language::ast::ExportFormat;
 use crate::planner::{plan, ImportLocation, StageBase};
@@ -35,6 +36,25 @@ pub struct VendorResult {
 }
 
 pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
+    if options.secrets.is_empty() {
+        return vendor_unredacted(options);
+    }
+    let secrets = options.secrets.clone();
+    let mut redacted = options.clone();
+    if let Some(on) = options.on_warning.clone() {
+        let s = secrets.clone();
+        redacted.on_warning = Some(Arc::new(move |m: &str| on(&redact_secrets(m, &s))));
+    }
+    match vendor_unredacted(&redacted) {
+        Ok(r) => {
+            let warnings = r.warnings.iter().map(|w| redact_secrets(w, &secrets)).collect();
+            Ok(VendorResult { warnings, ..r })
+        }
+        Err(e) => Err(redact_error(e, &secrets)),
+    }
+}
+
+fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -68,10 +88,21 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
     let frozen = options.frozen_lockfile;
     let update = options.update_lock;
 
+    warn_unused_secrets(&p, &options.secrets, &warn);
     let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut m = VendorManifest::default();
     {
-        let env = RemoteEnv { policy: &options.fetch_policy, lock: &lock, label: &label, warn: &warn, frozen, update, vendor: None, archive_limits: options.archive_limits };
+        let env = RemoteEnv {
+            policy: &options.fetch_policy,
+            lock: &lock,
+            label: &label,
+            warn: &warn,
+            frozen,
+            update,
+            vendor: None,
+            archive_limits: options.archive_limits,
+            secrets: &options.secrets,
+        };
         for spec in &p.imports {
             if let ImportLocation::Git(loc) = &spec.location {
                 let (commit, selection) = fetch_git_import(spec, loc, &env)?;

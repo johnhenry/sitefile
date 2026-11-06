@@ -87,6 +87,10 @@ export async function startServers(root, dir) {
     server = https.createServer({ cert, key }, (req, res) => {
       const url = new URL(req.url ?? '/', base);
       const p = url.pathname;
+      const redirect = (status, location) => {
+        res.writeHead(status, { location });
+        res.end();
+      };
       if (gitServer.handleGit(req, res, url, { repos: gitRepos })) return;
       // Build secrets (net-secret-*): /private/* needs `x-api-key` or `authorization: Bearer` with SECRET.
       if (p.startsWith('/private/')) {
@@ -100,10 +104,6 @@ export async function startServers(root, dir) {
         if (p === '/private/note.txt') return res.writeHead(200, { 'content-type': 'text/plain' }).end('private note\n');
         return res.writeHead(404).end();
       }
-      const redirect = (status, location) => {
-        res.writeHead(status, { location });
-        res.end();
-      };
       if (p in BODIES) {
         const body = Buffer.from(BODIES[p]);
         res.writeHead(200, { 'content-type': p.endsWith('.json') ? 'application/json' : 'text/plain', 'content-length': String(body.length) });

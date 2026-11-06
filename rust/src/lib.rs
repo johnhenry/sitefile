@@ -20,6 +20,7 @@ pub mod values;
 pub mod build_args;
 pub mod language;
 pub mod planner;
+pub mod secrets;
 
 // Templates and data formats
 pub mod csv;

@@ -14,6 +14,7 @@ pub mod servers;
 pub mod vendor;
 
 use crate::build_args::collect_build_args;
+use crate::secrets::{load_secrets, process_env};
 use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
 use crate::export::attest::AttestRequest;
@@ -122,6 +123,9 @@ Options:
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
+      --secret id=<id>,env=<VAR> | id=<id>,src=<file>
+                               a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
+                               (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
@@ -179,6 +183,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("insecure-registry"),
     strings("build-arg"),
     strings("build-arg-file"),
+    strings("secret"),
     string("plugin-timeout"),
     strings("allow-exec"),
     strings("allow-plugin"),
@@ -543,6 +548,7 @@ fn run_build_command(
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
+    let secrets = load_secrets(&o.strs("secret"), &process_env)?;
     let mut format_override: Option<ExportFormat> = None;
     if let Some(f) = o.str("format") {
         format_override = ExportFormat::parse(f);
@@ -565,7 +571,7 @@ fn run_build_command(
         }
     }
     let file = o.str("file").filter(|s| !s.is_empty()).map(|f| if fetched.is_some() { join_path(context, f) } else { f.to_string() });
-    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, target: o.str("target").map(str::to_string), ..Default::default() };
+    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, secrets, target: o.str("target").map(str::to_string), ..Default::default() };
     if fetched.is_some() {
         options.label = Some(o.str("file").unwrap_or("Sitefile").to_string());
     }
