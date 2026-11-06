@@ -83,7 +83,7 @@
   (#eq? @_name "chmod")
   (#any-of? @number "644" "0644" "755" "0755"))
 ((flag name: (flag_name) @_name value: (flag_value) @string.special)
-  (#eq? @_name "exclude"))
+  (#any-of? @_name "exclude" "include"))
 ((flag name: (flag_name) @_name value: (flag_value) @constant.builtin)
   (#eq? @_name "escape")
   (#any-of? @constant.builtin "none" "html" "NONE" "HTML"))

@@ -1,0 +1,4 @@
+# --include and --exclude filter a directory source; this one is a file.
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM --include=*.png ./a.png WITH image TO /img/
+EXPORT /

@@ -39,8 +39,8 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "TRANSFORM",
-        "TRANSFORM [--overwrite] [--from=stage] [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS …]",
-        "Runs a PLUGIN (or an allowed TOOL) on the source and writes what it returns at `<dest>`. A TOOL needs `ARGS` with `{output}` (and `{input}` when there is a source).",
+        "TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…] [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS …]",
+        "Runs a PLUGIN (or an allowed TOOL) on the source and writes what it returns at `<dest>`. A directory source runs it once per file, in path order (`TO /out/` gives each file the directory `/out/<dir>/`; `TO /out/*` or `/out/*.ext` one file named after it). A TOOL needs `ARGS` with `{output}` (and `{input}` when there is a source).",
     ),
     (
         "PLUGIN",
@@ -109,7 +109,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("RENDER", "FOR", "`FOR item IN list` renders once per element of a list import; `<dest>` may use `${item.key}`."),
     ("RENDER", "IN", "`IN list`: an IMPORT that is a list (markdown documents, a JSON/YAML array, CSV rows)."),
     ("TRANSFORM", "WITH", "`WITH name`: a PLUGIN or TOOL declared on an earlier line."),
-    ("TRANSFORM", "TO", "`TO <dest>`: where the result is written (a file, or a directory for several files)."),
+    ("TRANSFORM", "TO", "`TO <dest>`: where the result is written (a file, or a directory for several files). For a directory source, `*` (each file's name) or `*.ext` (its name with a new extension) as the last segment writes one file per input."),
     ("TRANSFORM", "OPTIONS", "`OPTIONS key=value …`: passed to the plugin; TOOL ARGS can use `{option.key}`. Values may use `${item.key}`."),
     ("TRANSFORM", "FOR", "`FOR item IN list` runs once per element of a list import."),
     ("TRANSFORM", "IN", "`IN list`: an IMPORT that is a list."),
@@ -132,6 +132,7 @@ const FLAGS: &[(&str, &str)] = &[
     ("from", "`--from=stage`: read the source from the final tree of an earlier, completed stage (an absolute path inside it)."),
     ("escape", "`--escape=none|html`: with `html`, `& < > \" '` are escaped in every substituted value (`${x|raw}` opts out)."),
     ("exclude", "`--exclude=<pattern>` (repeatable): skip files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.md`, `drafts/`, `!keep.md`)."),
+    ("include", "`--include=<pattern>` (repeatable, TRANSFORM): keep only the files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.jpg`, `gallery/`); `--exclude` then leaves files out."),
     ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
     ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
 ];

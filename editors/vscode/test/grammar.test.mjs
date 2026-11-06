@@ -205,3 +205,10 @@ test('html fragments: LET name: html = … is a template line; LET name: html <<
   has(scopesOf(r, 9, 'html'), 'invalid.illegal.type');
   has(scopesOf(r, 10, 'EXPORT'), 'keyword.control.instruction');
 });
+
+test('TRANSFORM --include and --exclude', async () => {
+  const r = await tokenize('TRANSFORM --include=*.jpg --exclude=drafts/ ./photos/ WITH image TO /img/*.png\n');
+  has(scopesOf(r, 1, 'include'), 'variable.parameter.flag');
+  has(scopesOf(r, 1, '*.jpg'), 'string.unquoted.glob');
+  has(scopesOf(r, 1, 'drafts/'), 'string.unquoted.glob');
+});
