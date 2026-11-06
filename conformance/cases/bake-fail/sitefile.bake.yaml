@@ -1,0 +1,9 @@
+# One target fails (it names a stage the Sitefile does not have); the others still build.
+targets:
+  first:
+    args: {TITLE: First}
+  broken:
+    target: nope
+  last:
+    args: {TITLE: Last}
+    output: dist/last

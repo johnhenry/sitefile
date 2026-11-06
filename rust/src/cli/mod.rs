@@ -3,6 +3,7 @@
 //! (0 ok, 1 build error, 2 usage, 70 internal error).
 
 pub mod args;
+pub mod bake;
 pub mod cache;
 pub mod common;
 pub mod images;
@@ -42,6 +43,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
+
+Variants:
+  sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
+                                                   sitefile.bake.yaml; --print shows the plan
 
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
@@ -210,6 +215,7 @@ const TOP: &[&Command] = &[
     &registry::PULL,
     &vendor::VENDOR,
     &outdated::OUTDATED,
+    &bake::BAKE,
 ];
 
 struct Group {

@@ -118,6 +118,7 @@ sitefile graph    [context] [--json | --dot]   # dependency graph of imports, st
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
+sitefile bake [targets...] [-f sitefile.bake.yaml] [--print [--json]] [-j n]   # build several variants
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
@@ -133,6 +134,33 @@ sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 tree, in the EXPORT format but without the EXPORT path or `_redirects`/`_headers`; an unknown name is a usage
 error listing the stages. See [docs/CLI.md](docs/CLI.md#build-target---target-stage).
 `sitefile graph` and `sitefile why` are described in [docs/CLI.md](docs/CLI.md#explaining-a-build-graph-and-why).
+
+## Variants: `sitefile bake`
+
+Like `docker buildx bake`, `sitefile bake` builds several variants of a site (locales, staging and production)
+from one bake file, `sitefile.bake.yaml` (or `.yml`, `.json`), with the outputs side by side:
+
+```yaml
+groups:
+  default: [site]
+targets:
+  site:
+    matrix:                         # one target per combination: site-en-staging, site-en-production, ...
+      locale: [en, fr]
+      env: [staging, production]
+    arg-files: ["env/${env}.env"]   # ${name} is a matrix value
+    args: {LOCALE: "${locale}"}
+    output: dist/${env}/${locale}
+```
+
+```bash
+cd examples/bake && sitefile bake       # four builds, up to 4 at a time (-j), sharing the TRANSFORM cache
+sitefile bake --print                   # the resolved targets (--json for tools), without building
+```
+
+Targets also take `context`, `file`, `target` (a stage), `format`, `tags` and `inherits`. Every target runs even
+when one fails (then the exit code is 1); outputs that overlap or a tag used twice are refused before anything is
+built. See [docs/CLI.md](docs/CLI.md#variants-sitefile-bake).
 
 ## Watch mode
 

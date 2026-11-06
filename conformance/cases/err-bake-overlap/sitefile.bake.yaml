@@ -1,0 +1,5 @@
+targets:
+  site:
+    output: dist
+  docs:
+    output: dist/docs

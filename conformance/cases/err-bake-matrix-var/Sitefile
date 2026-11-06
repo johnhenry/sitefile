@@ -1,0 +1,5 @@
+FROM scratch
+ARG TITLE = "Site"
+ARG MODE = "ok"
+RENDER ./src/page.html TO /index.html
+EXPORT /
