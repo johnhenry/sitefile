@@ -86,6 +86,9 @@ export async function startServers(root, dir) {
       layers: [{ '/etc/motd': 'base image\n', '/srv/www/index.html': 'base index\n', '/srv/www/keep.txt': 'kept from base\n' }],
       config: { Cmd: ['/bin/serve'], Env: ['PATH=/bin'], WorkingDir: '/srv/www', Labels: { 'org.example.base': 'yes' } },
     });
+    // More tags for `sitefile outdated` (net-outdated-base): a newer one of the same shape and one of another shape.
+    registry.seedImage('conf/base', '2', { layers: [{ '/etc/motd': 'base image 2\n' }], config: { Cmd: ['/bin/serve'] } });
+    registry.seedImage('conf/base', '1.5', { layers: [{ '/etc/motd': 'base image 1.5\n' }], config: { Cmd: ['/bin/serve'] } });
 
     return {
       vars: { HTTPS: base, REGISTRY: registry.host },

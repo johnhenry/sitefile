@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "resources": {
+    "${HTTPS}/big.bin": {
+      "integrity": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "size": 4096,
+      "resolved": "${HTTPS}/big.bin"
+    },
+    "${HTTPS}/r/version.txt": {
+      "integrity": "sha256:b03d44cd60d71de68a4aca7808c6f768802f6d6c414430ff8ccea10c1aa57b4c",
+      "size": 10,
+      "resolved": "${HTTPS}/version.txt"
+    }
+  }
+}

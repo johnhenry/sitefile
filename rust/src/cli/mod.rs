@@ -6,6 +6,7 @@ pub mod args;
 pub mod cache;
 pub mod common;
 pub mod images;
+pub mod outdated;
 pub mod registry;
 pub mod servers;
 pub mod vendor;
@@ -45,6 +46,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
                                                    vendor/sitefile; builds then read them from there
+
+Pins:
+  sitefile outdated [context] [--json]             compare remote imports and the BASE image with
+                                                   their pins (never changes anything)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -204,6 +209,7 @@ const TOP: &[&Command] = &[
     &registry::PUSH,
     &registry::PULL,
     &vendor::VENDOR,
+    &outdated::OUTDATED,
 ];
 
 struct Group {

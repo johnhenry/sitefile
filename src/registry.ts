@@ -71,6 +71,7 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 5;
 const NAME_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/;
 const REF_RE = /^(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|sha256:[0-9a-f]{64})$/;
+const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 
 export const MANIFEST_ACCEPT = [MEDIA.manifest, MEDIA.index, MEDIA.dockerManifest, MEDIA.dockerList].join(', ');
 
@@ -402,6 +403,32 @@ export class RegistryClient {
       }
     }
     return { bytes, digest, mediaType };
+  }
+
+  /**
+   * `GET /v2/<repo>/tags/list`, following `Link: <...>; rel="next"` pages on this registry (at most
+   * 10 pages of 1000). Tags that are not valid tag names are dropped.
+   */
+  async listTags(repo: string): Promise<string[]> {
+    await this.init();
+    const out: string[] = [];
+    let url = this.v2(`${this.repoPath(repo)}/tags/list?n=1000`);
+    for (let page = 0; page < 10; page++) {
+      const res = await this.call('GET', url, { scope: `repository:${repo}:pull` });
+      if (res.statusCode !== 200) return this.fail(res, `GET tags ${repo}`);
+      const link = res.headers.link;
+      let j: { tags?: unknown };
+      try {
+        j = JSON.parse((await readBody(res, this.limits.maxManifestBytes)).toString('utf8')) as { tags?: unknown };
+      } catch {
+        throw new SitefileError('E_REGISTRY', `${this.registry}/${repo}: the tag list is not valid JSON`);
+      }
+      for (const t of Array.isArray(j.tags) ? j.tags : []) if (typeof t === 'string' && TAG_RE.test(t)) out.push(t);
+      const next = typeof link === 'string' ? /<(\/v2\/[^>]*)>\s*;\s*rel="?next"?/.exec(link)?.[1] : undefined;
+      if (next === undefined) break;
+      url = new URL(next, this.origin);
+    }
+    return out;
   }
 
   async hasBlob(repo: string, digest: string): Promise<boolean> {

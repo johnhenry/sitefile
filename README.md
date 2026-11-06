@@ -117,6 +117,7 @@ sitefile inspect  [context] [--json] [--target stage]
 sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
+sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image

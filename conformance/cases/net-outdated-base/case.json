@@ -1,0 +1,13 @@
+{
+  "network": true,
+  "steps": [
+    ["outdated", "${CTX}"],
+    ["build", "${CTX}", "-o", "${OUT}/site.oci.tar"],
+    ["outdated", "${CTX}", "--json"],
+    ["outdated", "${CTX}", "--base", "${REGISTRY}/conf/base:1.5"],
+    ["outdated", "${CTX}", "--base", "${REGISTRY}/conf/base@sha256:0000000000000000000000000000000000000000000000000000000000000000"],
+    ["outdated", "${CTX}", "--base", "${REGISTRY}/conf/missing:3"]
+  ],
+  "stdout": true,
+  "lock": true
+}

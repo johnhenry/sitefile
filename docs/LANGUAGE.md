@@ -552,6 +552,48 @@ later builds work offline and without the network flags:
   URL after redirects, as `Sitefile.lock` already records it.
 - Commit the directory for offline or air-gapped CI, or cache it between runs.
 
+### Checking pins (`sitefile outdated`)
+`sitefile outdated [context] [--json]` (like `cargo outdated` / Renovate) reports,
+for every remote input, what it is pinned to and what it resolves to now. It
+**never changes anything** (no lockfile write, no image store, no pull);
+`build --update-lock` stays the way to accept new content. What can honestly be
+checked:
+- **https IMPORTs** have no notion of "a newer version": a URL is just bytes. The
+  URL is fetched again (a full GET under the same network policy and limits as a
+  build) and its sha256 is compared with the pin, `INTEGRITY` first, else the
+  `Sitefile.lock` entry. `current`: same bytes; `changed`: the URL now serves
+  different bytes (a build would fail with `E_INTEGRITY`/`E_LOCK_MISMATCH`);
+  `unpinned`: no pin (the digest it would get is shown). The lockfile records no
+  `ETag`/`Last-Modified`, so no conditional request is possible, and a changed
+  validator would not prove changed content anyway; the download is the check.
+  A version inside a URL (`https://cdn.example/lib@1.2.3/x.js`) is not
+  interpreted: discovering `lib@1.3.0` would need knowledge of each CDN.
+- **BASE images** (the `oci` export's `BASE`, or `--base`): a tag is resolved again
+  (one manifest GET) and compared with the digest in the reference
+  (`name:tag@sha256:...`) or in the lockfile's `images`. `changed` means the tag
+  has moved since it was pinned. A digest-only reference (`name@sha256:...`) is
+  `digest-only`: there is no tag to follow, and nothing is requested.
+- **Newer version tags**: when the tag looks like a version, `[v]N[.N[.N]][-suffix]`
+  (`1`, `1.27`, `v2.0.1`, `1.27-alpine`), the registry's tag list
+  (`/v2/<name>/tags/list`, following `Link` pages, at most 10 000 tags) is read
+  and the greatest tag **of the same shape** (same `v` prefix, number of numeric
+  components and suffix) that is numerically greater is shown as the newer tag:
+  `1.25-alpine` suggests `1.27-alpine`, never `1.27.1-alpine` or `1.28`. This is a
+  heuristic over tag names, not semver: tags carry no ordering metadata. A registry
+  that refuses to list tags simply gives none.
+- A failed fetch or registry call is an `error` row (with its code and message),
+  not a failure of the command; the exit code is 0 unless the Sitefile itself
+  cannot be read or planned. `--no-lockfile` ignores `Sitefile.lock`.
+- It reads the same inputs as a build: every `IMPORT` of the Sitefile (as a
+  `--target` build still resolves them all) and the same `BASE`. It always asks
+  upstream, never a vendor directory (`sitefile vendor` copies are what is
+  pinned, not what is current), and `--cache-from`/`--cache-to` references are
+  caches, not inputs.
+- `--json` prints `{"inputs": [{kind, name, source, pin, pinnedBy, latest, status,
+  newerTag, error}], "summary": {current, changed, unpinned, digest-only, error}}`;
+  `pinnedBy` is `integrity`, `lockfile`, `digest` or `null`, `error` is
+  `{code, message}` or `null`.
+
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
   tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything

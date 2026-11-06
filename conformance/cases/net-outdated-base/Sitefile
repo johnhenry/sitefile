@@ -1,0 +1,6 @@
+# sitefile outdated on a BASE image: unpinned, then recorded by a build (current, with a newer version tag).
+FROM scratch
+COPY <<HTML /index.html
+<h1>site on a base</h1>
+HTML
+EXPORT / AS oci BASE ${REGISTRY}/conf/base:1 AT /srv/www

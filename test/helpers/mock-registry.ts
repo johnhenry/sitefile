@@ -20,6 +20,8 @@ export interface MockOptions {
   readonly corrupt?: string;
   /** Answer GET manifest by digest with this other manifest (digest mismatch test). */
   readonly swapManifest?: Buffer;
+  /** Largest page of tags/list, whatever ?n= asks for (pagination test). */
+  readonly tagPageSize?: number;
   /** Act as a registry with the OCI 1.1 referrers API: a PUT manifest with a subject answers OCI-Subject. */
   readonly referrersApi?: boolean;
 }
@@ -125,6 +127,22 @@ export async function startMockRegistry(options: MockOptions = {}): Promise<Mock
     }
 
     if (url.pathname === '/v2/' || url.pathname === '/v2') return send(200, '{}');
+    // Tag listing, paginated like the distribution spec: ?n=<count>&last=<tag>, with a Link header to the next page.
+    const tl = /^\/v2\/(.+?)\/tags\/list$/.exec(url.pathname);
+    if (tl && (method === 'GET' || method === 'HEAD')) {
+      const name = tl[1] as string;
+      const all = [...manifests.keys()].filter((k) => k.startsWith(`${name}:`)).map((k) => k.slice(name.length + 1)).sort();
+      if (all.length === 0) return send(404, '{"errors":[{"code":"NAME_UNKNOWN","message":"repository name not known to registry"}]}');
+      const last = url.searchParams.get('last');
+      const from = last === null ? all : all.filter((t) => t > last);
+      const n = Math.min(Number(url.searchParams.get('n') ?? all.length), o.tagPageSize ?? Infinity);
+      const page = from.slice(0, n);
+      const more = from.length > page.length;
+      return send(200, JSON.stringify({ name, tags: page }), {
+        'content-type': 'application/json',
+        ...(more ? { link: `</v2/${name}/tags/list?n=${n}&last=${encodeURIComponent(page[page.length - 1] ?? '')}>; rel="next"` } : {}),
+      });
+    }
     if (!m) return send(404, '{"errors":[{"code":"NAME_UNKNOWN","message":"nope"}]}');
     const kind = m[2];
     const rest = m[3] ?? '';

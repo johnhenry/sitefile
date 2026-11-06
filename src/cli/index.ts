@@ -4,12 +4,13 @@ import { registryCommands } from './registry.js';
 import { serverCommands, serverSubcommands } from './servers.js';
 import { cacheSubcommands } from './cache.js';
 import { vendorCommands } from './vendor.js';
+import { outdatedCommands } from './outdated.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -37,6 +38,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
                                                    vendor/sitefile; builds then read them from there
+
+Pins:
+  sitefile outdated [context] [--json]             compare remote imports and the BASE image with
+                                                   their pins (never changes anything)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
