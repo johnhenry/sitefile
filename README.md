@@ -194,7 +194,9 @@ uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-forma
 
 `rust/` is a full port, maintained alongside the TypeScript version and checked
 against it by `node conformance/run.mjs` (identical output on every example and
-case). It starts in ~4 ms instead of ~70 ms and is 1.3–2× faster on large
+case). The Rust binary is the shipped product. TypeScript is the reference
+specification and the library API, and both get every feature (see
+[docs/RUST.md](docs/RUST.md#roles-decided-in-82)). It starts in ~4 ms instead of ~70 ms and is 1.3–2× faster on large
 sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
 [bench/README.md](bench/README.md).
 
