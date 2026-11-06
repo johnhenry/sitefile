@@ -1,0 +1,4 @@
+{
+  "args": ["--no-cache"],
+  "copy": { "plugins/image.wasm": "plugins/image/image.wasm" }
+}

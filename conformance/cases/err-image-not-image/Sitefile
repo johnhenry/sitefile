@@ -1,0 +1,3 @@
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./photo.jpg WITH image TO /img/
+EXPORT /

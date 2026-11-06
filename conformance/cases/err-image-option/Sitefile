@@ -1,0 +1,3 @@
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./in/tiny.png WITH image TO /img/ OPTIONS widths=100,200 format=avif
+EXPORT /
