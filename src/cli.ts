@@ -17,6 +17,9 @@ import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { SITEFILE_VERSION } from './attest.js';
 import { watchLoop } from './cli/watch.js';
+import { Profiler } from './profile.js';
+import { watchMemo, type BuildMemo } from './memo.js';
+import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 
 const VERSION = SITEFILE_VERSION;
@@ -90,15 +93,21 @@ Options:
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --profile <file>         write a timing trace of the build (Chrome trace event JSON:
+                               chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
   -v, --version                show the version
 ${EXTRA_HELP}`;
 
 /**
  * Run the CLI. `run.once` runs a --watch command a single time (the watch loop's
- * builds); `run.wrote` then receives the export destination.
+ * builds); `run.wrote` then receives the export destination, and `run.memo` carries
+ * results between those builds (incremental rebuilds).
  */
-export async function main(argv: readonly string[], run: { readonly once?: boolean; readonly wrote?: string[] } = {}): Promise<number> {
+export async function main(
+  argv: readonly string[],
+  run: { readonly once?: boolean; readonly wrote?: string[]; readonly memo?: BuildMemo | undefined } = {},
+): Promise<number> {
   if (isExtraCommand(argv[0])) return runExtraCommand(argv);
   let parsed;
   try {
@@ -143,6 +152,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         json: { type: 'boolean' },
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
+        profile: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -181,13 +191,14 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
     try {
+      const memo = watchMemo();
       return await watchLoop({
         context,
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {
           const wrote: string[] = [];
-          return { code: await main(argv, { once: true, wrote }), wrote };
+          return { code: await main(argv, { once: true, wrote, memo }), wrote };
         },
       });
     } catch (e) {
@@ -197,6 +208,12 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     }
   }
 
+  if (o.profile === '') return usageError('--profile expects a file path');
+  // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
+  const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
+  if (o.profile !== undefined) run.wrote?.push(o.profile);
+  const commandSpan = profiler?.begin(command, 'command');
+  let failed = false;
   try {
     const remoteCache =
       cacheFrom.length || cacheTo.length
@@ -260,6 +277,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       updateLock: !!o['update-lock'],
       strictPins: !!o['strict-pins'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
+      ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
+      ...(run.memo ? { memo: run.memo } : {}),
     };
 
     switch (command) {
@@ -317,7 +336,9 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return 0;
       }
       case 'validate': {
+        const span = profiler?.begin('parse', 'build');
         const p = await planBuild(options);
+        span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
         if (o['strict-pins']) await checkPlanPins(options, p);
         if (o.json) {
@@ -348,7 +369,9 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return 0;
       }
       case 'graph': {
+        const span = profiler?.begin('parse', 'build');
         const p = await planBuild(options);
+        span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
         if (o['strict-pins']) await checkPlanPins(options, p);
         const g = planGraph(p);
@@ -365,6 +388,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return usageError(`unknown command '${command}'`);
     }
   } catch (e) {
+    failed = true;
     if (isSitefileError(e)) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
@@ -374,6 +398,15 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   } finally {
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
     if (command === 'build' || command === 'inspect' || command === 'why') await evictAfterBuild();
+    commandSpan?.end();
+    if (profiler && !(await fs.writeFile(o.profile!, profiler.toJSON()).then(() => true, () => false))) {
+      // A failed build already reported its error; otherwise this is the command's error.
+      if (!failed) {
+        process.stderr.write(`error[E_EXPORT]: cannot write the --profile file '${o.profile}'\n`);
+        // eslint-disable-next-line no-unsafe-finally
+        return 1;
+      }
+    }
   }
 }
 

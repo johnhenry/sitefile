@@ -111,7 +111,7 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--strict-pins] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
-               [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch] [--target stage]
+               [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch] [--target stage] [--profile trace.json]
 sitefile validate [context] [--json] [--target stage]
 sitefile inspect  [context] [--json] [--target stage]
 sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
@@ -143,7 +143,19 @@ Rebuilds are debounced (100 ms) and changes made during a build become one follo
 directory, `.git`, `Sitefile.lock` and the store are not watched. A failed rebuild prints the error and keeps the
 last good output (exports are swapped in atomically; `serve --watch` keeps serving the last good build). Live
 reload is a small script added to HTML responses only under `serve --watch`, listening on the reserved
-`/__sitefile/reload` event stream; it is never written to exports. See [docs/CLI.md](docs/CLI.md#watch-mode).
+`/__sitefile/reload` event stream; it is never written to exports. Rebuilds are incremental: steps whose inputs
+are unchanged (by content digest) are reused from the previous build, in memory, and the result is identical to a
+clean build (`SITEFILE_NO_INCREMENTAL=1` turns it off). See [docs/CLI.md](docs/CLI.md#watch-mode).
+
+## Profiling a build
+
+```bash
+sitefile build examples/blog --profile trace.json   # open in ui.perfetto.dev or chrome://tracing
+```
+
+`--profile` writes a Chrome trace of the build: parsing, each import, plugin start, stage, operation, TRANSFORM call
+(with its cache hit or miss), the BASE pull and the export, so slow steps stand out. See
+[docs/CLI.md](docs/CLI.md#profiling---profile).
 
 ## Images and servers
 

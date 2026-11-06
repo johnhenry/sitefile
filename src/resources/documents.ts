@@ -5,6 +5,7 @@ import { renderMarkdown } from '../markdown.js';
 import { parseYaml } from '../yaml.js';
 import { decodeUtf8 } from '../render.js';
 import type { Tree } from '../tree.js';
+import type { DocumentMemo } from '../memo.js';
 
 /**
  * A Markdown document as templates see it: its frontmatter fields plus
@@ -51,11 +52,14 @@ export function markdownDocument(bytes: Uint8Array, path: string, label: string,
 }
 
 /** Every `.md` / `.markdown` file in a tree, as documents, ordered by path. */
-export function markdownCollection(tree: Tree, labelPrefix: string, span?: SourceSpan): MarkdownDocument[] {
+export function markdownCollection(tree: Tree, labelPrefix: string, span?: SourceSpan, memo?: DocumentMemo): MarkdownDocument[] {
   const docs: MarkdownDocument[] = [];
   for (const [p, node] of tree.entries()) {
     if (!/\.(md|markdown)$/i.test(p)) continue;
-    docs.push(markdownDocument(node.bytes, p, `${labelPrefix}${p}`, span));
+    const label = `${labelPrefix}${p}`;
+    const make = (): MarkdownDocument => markdownDocument(node.bytes, p, label, span);
+    // Incremental rebuilds: a document is a function of its bytes, path and label.
+    docs.push(memo ? memo(['md', node.digest, p, label], make) : make());
   }
   return docs;
 }
@@ -66,34 +70,42 @@ export function markdownCollection(tree: Tree, labelPrefix: string, span?: Sourc
  * date from the file name as for Markdown, overridable by the data); any other
  * value becomes `{ slug, path, value }`.
  */
-export function dataCollection(tree: Tree, kind: 'json' | 'yaml', labelPrefix: string, span?: SourceSpan): MarkdownDocument[] {
+export function dataCollection(tree: Tree, kind: 'json' | 'yaml', labelPrefix: string, span?: SourceSpan, memo?: DocumentMemo): MarkdownDocument[] {
   const ext = kind === 'json' ? /\.json$/i : /\.ya?ml$/i;
   const docs: MarkdownDocument[] = [];
   for (const [p, node] of tree.entries()) {
     if (!ext.test(p)) continue;
     const label = `${labelPrefix}${p}`;
-    const text = decodeUtf8(node.bytes, `'${label}'`, span);
-    let value: unknown;
-    if (kind === 'yaml') value = parseYaml(text, label);
-    else {
-      try {
-        value = JSON.parse(text);
-      } catch (e) {
-        throw new SitefileError('E_TYPE', `${label} is not valid JSON: ${(e as Error).message}`, span, { cause: e });
-      }
+    if (memo) {
+      docs.push(memo([kind, node.digest, p, label], () => dataDocument(node.bytes, kind, ext, p, label, span)));
+      continue;
     }
-    const stem = posix.basename(p).replace(ext, '');
-    const dated = DATED.exec(stem);
-    const base: MarkdownDocument = { slug: dated ? dated[2]! : stem, ...(dated ? { date: dated[1]! } : {}) };
-    const fields = value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : { value };
-    const doc: MarkdownDocument = { ...base, ...fields, path: p };
-    const slug = doc['slug'];
-    if (typeof slug !== 'string' || !SAFE_SLUG.test(slug)) {
-      throw new SitefileError('E_VALIDATION', `'${label}': slug ${JSON.stringify(slug)} must be letters, digits, '.', '_', '~' or '-'`, span);
-    }
-    docs.push(doc);
+    docs.push(dataDocument(node.bytes, kind, ext, p, label, span));
   }
   return docs;
+}
+
+function dataDocument(bytes: Uint8Array, kind: 'json' | 'yaml', ext: RegExp, p: string, label: string, span?: SourceSpan): MarkdownDocument {
+  const text = decodeUtf8(bytes, `'${label}'`, span);
+  let value: unknown;
+  if (kind === 'yaml') value = parseYaml(text, label);
+  else {
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      throw new SitefileError('E_TYPE', `${label} is not valid JSON: ${(e as Error).message}`, span, { cause: e });
+    }
+  }
+  const stem = posix.basename(p).replace(ext, '');
+  const dated = DATED.exec(stem);
+  const base: MarkdownDocument = { slug: dated ? dated[2]! : stem, ...(dated ? { date: dated[1]! } : {}) };
+  const fields = value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : { value };
+  const doc: MarkdownDocument = { ...base, ...fields, path: p };
+  const slug = doc['slug'];
+  if (typeof slug !== 'string' || !SAFE_SLUG.test(slug)) {
+    throw new SitefileError('E_VALIDATION', `'${label}': slug ${JSON.stringify(slug)} must be letters, digits, '.', '_', '~' or '-'`, span);
+  }
+  return doc;
 }
 
 /**

@@ -1,0 +1,6 @@
+ARG X = "1"
+FROM scratch
+COPY <<T /a.txt
+${X}
+T
+EXPORT /

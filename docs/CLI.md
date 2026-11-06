@@ -184,6 +184,14 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   store (`$SITEFILE_HOME`). A build's own writes never trigger another build.
 - **Debounce**: a rebuild starts once nothing has changed for 100 ms, so saving several files is one rebuild.
   Changes that arrive while a build runs are coalesced into one follow-up build.
+- **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
+  the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
+  collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
+  and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
+  list). Every input is still read and hashed on every build, and the export is written in full, so the output is
+  byte for byte what a clean build writes, with the same warnings and errors (see
+  [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns this off. With
+  `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
 - **Messages**: `Change detected, rebuilding` before each rebuild, then the usual `Exported ...` line
   (`serve --watch`: `Built N files (sha256:...)`). After the first build: `Watching <context> for changes (Ctrl-C to
   stop)`.
@@ -214,6 +222,42 @@ Only under `serve --watch`:
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
 (recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)).
+
+## Profiling (`--profile`)
+
+```
+sitefile build|inspect|validate|graph [context] --profile trace.json [options]
+sitefile why <path> [context] --profile trace.json [options]
+```
+
+`--profile <file>` writes a timing trace of the command in the [Chrome trace event
+format](https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU) (JSON object form): open it
+in `ui.perfetto.dev`, `chrome://tracing` or speedscope to see which steps are slow. The file is written when the
+command ends, also when the build fails (so you can see how far it got); under `--watch` it is rewritten after every
+build. If it cannot be written, a successful build fails with `error[E_EXPORT]: cannot write the --profile file
+'<file>'` (exit 1); a failed build keeps its own error. A trace file inside the build context is never read as an
+input (like the export destination), and `--watch` ignores its changes.
+
+Every event is a complete event (`"ph": "X"`, `ts` and `dur` in microseconds from the start of the command) on
+`pid` 1. The build runs on `tid` 1; import *N* (0-based, in Sitefile order) runs on `tid` *N*+2, because imports
+resolve concurrently; `thread_name` metadata events name each thread. Events are listed in the order they start in
+the Sitefile (imports in declaration order), so two traces of the same build differ only in `ts` and `dur`; the
+TypeScript and Rust CLIs write the same events, names, categories and args (conformance checks it).
+
+| `cat` | `name` | `args` |
+| --- | --- | --- |
+| `command` | `build`, `inspect`, `validate`, `graph` or `why`: the whole command | |
+| `build` | `parse`: read, parse, validate and plan the Sitefile | `imports`, `stages` (with `--target`, the stages built), `target` (only with `--target`) |
+| `import` | `import <name>` | `uri`, `as` (the `AS` kind, default `file`), `kind` (`file`, `tree` or `value`) |
+| `plugin` | `PLUGIN <name>`: check and register a plugin | `path` |
+| `stage` | `stage <name>` (`stage #N` for an unnamed stage) | `from` (`scratch`, a stage name or `./dir`), `files` (tree size at the end) |
+| `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it); under `--watch` also `memo`: `hit` (result reused), `files` (its files reused, added to a changed tree) or `miss` (it ran) |
+| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
+| `import` | `BASE <image>`: resolve or pull the `oci` BASE | |
+| `export` | `export`: encode and write the output (`build` only) | `format` |
+
+An event the build failed inside has `"incomplete": true` and ends when the trace is written. `<Sitefile>` is the
+Sitefile's path relative to the working directory, as in error messages.
 
 ## Transform cache
 

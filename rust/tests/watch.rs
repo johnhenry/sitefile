@@ -316,3 +316,32 @@ fn build_watch_a_failing_first_build_keeps_watching() {
     w.wait_lines("Exported 3 files", 1);
     assert_eq!(w.stop(), 0);
 }
+
+#[test]
+fn build_watch_rebuilds_incrementally() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let site = make_site(&t, &[("templates/t.html", "<p>${TITLE}</p>")], "ARG TITLE = \"T\"\nCOPY ./public/ /\nRENDER ./templates/t.html TO /t.html\nEXPORT /\n");
+    let trace = home.join("trace.json");
+    let memo = || -> Vec<String> {
+        let Ok(text) = fs::read_to_string(&trace) else { return Vec::new() };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+        v["traceEvents"].as_array().unwrap().iter().filter(|e| e["cat"] == "operation").map(|e| e["args"]["memo"].as_str().unwrap_or("-").to_string()).collect()
+    };
+    let w = Proc::start(&home, &["build", "--watch", s(&site), "--profile", s(&trace)]);
+    w.wait_lines("Watching ", 1);
+    assert_eq!(memo(), ["miss", "miss"]);
+    write(site.join("public/style.css"), "body{margin:2px}");
+    w.wait_lines("Exported ", 2);
+    // COPY read a changed file; RENDER read nothing that changed, so its file is reused.
+    // (The trace is written just after the Exported line.)
+    let end = Instant::now() + Duration::from_secs(10);
+    while memo() != ["miss", "files"] && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(memo(), ["miss", "files"]);
+    assert_eq!(fs::read_to_string(site.join("dist/t.html")).unwrap(), "<p>T</p>");
+    assert_eq!(fs::read_to_string(site.join("dist/style.css")).unwrap(), "body{margin:2px}");
+    assert_eq!(w.stop(), 0);
+}
