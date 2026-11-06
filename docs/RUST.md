@@ -28,6 +28,7 @@ to find in the other:
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
+| `profile` (`--profile` Chrome trace) | `profile.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
 ## Tooling exception: the language server
@@ -107,6 +108,8 @@ paths").
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
   line, and identical output trees; `validate`/`inspect` cases compare stdout.
+  Cases with `"profile": true` also compare the `--profile` trace with every
+  `ts`/`dur` removed (timings are the one thing allowed to differ).
   Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
   throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
   and an in-process mock OCI registry, then cover remote `IMPORT` with and
@@ -115,7 +118,7 @@ paths").
   `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 120/120 (99 offline, 21 network); the network cases need `openssl`.
+  Currently 127/127 (106 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,

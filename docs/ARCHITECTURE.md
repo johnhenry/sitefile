@@ -47,6 +47,9 @@ URI resolution returns one of these, with provenance.
 Parse -> validate -> resolve imports -> plan -> execute operations -> export.
 Instruction order defines write precedence; independent reads may execute concurrently.
 Initial executor: local Node.js. BuildKit and OCI are future adapters, not dependencies.
+`--profile` records each phase (parse, imports, stages, operations, TRANSFORM calls with cache state, export) as a
+Chrome trace (`src/profile.ts`, `rust/src/profile.rs`; format in docs/CLI.md); it observes the build and never changes
+its output.
 
 ## Non-goals for MVP
 Dockerfile compatibility, Docker daemon, OCI publishing, plugin execution, `EXEC`, multi-protocol breadth, dynamic server hosting.

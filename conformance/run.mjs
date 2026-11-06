@@ -24,6 +24,9 @@
 // committed as written (NFD file names: write them with JSON \u escapes).
 // `expectPaths` lists output paths (exact code points, as read back from the
 // directory listing) that both implementations' tree output must contain.
+// `profile: true` adds `--profile <file>` and requires the same trace from both,
+// ignoring each event's `ts` and `dur` (names, categories, threads, args and order
+// must match; also when the build fails).
 //
 // Network cases (case.json "network": true, conformance/cases/net-*; format in
 // conformance/network.mjs) run a list of CLI steps (build, push, pull, save)
@@ -34,7 +37,7 @@
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
 //
-// 99 offline + 21 network cases.
+// 106 offline + 21 network cases.
 //
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 
@@ -82,6 +85,10 @@ function cases() {
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    ex('blog', { suffix: ':profile', profile: true }),
+    ex('multistage', { suffix: ':profile', profile: true }),
+    ex('wasm', { suffix: ':profile', profile: true }),
+    ex('data', { suffix: ':profile-zip', out: 'site.zip', compare: 'archive', profile: true }),
   ];
   return list;
 }
@@ -183,14 +190,19 @@ try {
       for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
         const out = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'), c.out ?? 'dist');
         await fs.mkdir(path.dirname(out), { recursive: true });
-        const argv =
-          command === 'build'
+        const profile = path.join(path.dirname(out), 'profile.json');
+        const argv = [
+          ...(command === 'build'
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
-            : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
+            : [command, c.context, '--no-lockfile', ...(c.args ?? [])]),
+          ...(c.profile ? ['--profile', profile] : []),
+        ];
         // Each implementation gets its own SITEFILE_HOME: builds write the TRANSFORM cache and apply
         // the cache size limit there, and must never touch ~/.sitefile.
         const res = await run(cmd, argv, { SITEFILE_HOME: path.join(tmp, impl, '.home'), ...(c.env ?? {}) });
         r[impl] = { code: res.code, error: errorLine(res.stderr), warnings: warningLines(res.stderr), ms: res.ms, spawnError: res.spawnError };
+        // Timings differ between implementations (and runs); everything else in the trace must not.
+        if (c.profile) r[impl].profile = (await fs.readFile(profile, 'utf8').catch(() => 'missing')).replace(/"ts":\d+,"dur":\d+,/g, '');
         if (res.code === 0) {
           r[impl].output =
             compare === 'stdout'
@@ -214,7 +226,15 @@ try {
       r.ts.code === r.rust.code &&
       r.ts.warnings === r.rust.warnings &&
       (r.ts.code === 0 ? r.ts.output?.digest === r.rust.output?.digest : r.ts.error === r.rust.error) &&
+      r.ts.profile === r.rust.profile &&
       Object.keys(missing).length === 0;
+    if (r.ts.profile !== r.rust.profile) {
+      const a = r.ts.profile.split('\n');
+      const b = (r.rust.profile ?? '').split('\n');
+      const i = a.findIndex((l, k) => l !== b[k]);
+      console.log(`        first --profile difference at line ${i + 1}:\n        ts   ${a[i]}\n        rust ${b[i]}`);
+    }
+    for (const impl of ['ts', 'rust']) delete r[impl].profile;
     if (!same && compare === 'stdout' && r.ts.output?.stdout !== undefined && r.rust.output?.stdout !== undefined) {
       const a = r.ts.output.stdout.split('\n');
       const b = r.rust.output.stdout.split('\n');

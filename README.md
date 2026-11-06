@@ -109,7 +109,7 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
-               [--no-cache] [--watch]
+               [--no-cache] [--watch] [--profile trace.json]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 
@@ -135,6 +135,16 @@ directory, `.git`, `Sitefile.lock` and the store are not watched. A failed rebui
 last good output (exports are swapped in atomically; `serve --watch` keeps serving the last good build). Live
 reload is a small script added to HTML responses only under `serve --watch`, listening on the reserved
 `/__sitefile/reload` event stream; it is never written to exports. See [docs/CLI.md](docs/CLI.md#watch-mode).
+
+## Profiling a build
+
+```bash
+sitefile build examples/blog --profile trace.json   # open in ui.perfetto.dev or chrome://tracing
+```
+
+`--profile` writes a Chrome trace of the build: parsing, each import, plugin start, stage, operation, TRANSFORM call
+(with its cache hit or miss), the BASE pull and the export, so slow steps stand out. See
+[docs/CLI.md](docs/CLI.md#profiling---profile).
 
 ## Images and servers
 

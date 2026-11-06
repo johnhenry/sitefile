@@ -14,6 +14,8 @@ import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { watchLoop } from './cli/watch.js';
+import { Profiler } from './profile.js';
+import { promises as fs } from 'node:fs';
 
 const VERSION = '0.1.0';
 
@@ -68,6 +70,8 @@ Options:
       --json                   machine-readable output (validate, inspect)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --profile <file>         write a timing trace of the build (Chrome trace event JSON:
+                               chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
   -v, --version                show the version
 ${EXTRA_HELP}`;
@@ -114,6 +118,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         timeout: { type: 'string' },
         json: { type: 'boolean' },
         watch: { type: 'boolean' },
+        profile: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -153,137 +158,167 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     }
   }
 
+  if (o.profile === '') return usageError('--profile expects a file path');
+  const profiler = o.profile !== undefined && ['build', 'validate', 'inspect'].includes(command) ? new Profiler(command) : undefined;
+  if (o.profile !== undefined) run.wrote?.push(o.profile);
+  const commandSpan = profiler?.begin(command, 'command');
+  let failed = true;
   try {
-    // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
-    const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
-    let formatOverride: ExportFormat | undefined;
-    if (o.format !== undefined) {
-      formatOverride = parseExportFormat(o.format);
-      if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
+    const code = await runCommand();
+    failed = code !== 0;
+    return code;
+  } finally {
+    commandSpan?.end();
+    if (profiler) {
+      try {
+        await fs.writeFile(o.profile!, profiler.toJSON());
+      } catch {
+        // A failed build already reported its error; otherwise this is the command's error.
+        if (!failed) {
+          process.stderr.write(`error[E_EXPORT]: cannot write the --profile file '${o.profile}'\n`);
+          // eslint-disable-next-line no-unsafe-finally
+          return 1;
+        }
+      }
     }
-    let ociCompression: OciCompression | undefined;
-    if (o['oci-compression'] !== undefined) {
-      ociCompression = parseOciCompression(o['oci-compression']);
-      if (!ociCompression) return usageError(`--oci-compression expects gzip or none, got '${o['oci-compression']}'`);
-    }
-    // No --format: an archive extension on --out picks the format, so `-o site.zip`
-    // writes a zip instead of a directory named site.zip.
-    if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
-    // The default destination depends on the format, which the Sitefile may set.
-    const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
-    const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
-    run.wrote?.push(out);
-    const options: BuildOptions = {
-      contextDir: context,
-      ...(o.file ? { sitefile: o.file } : {}),
-      buildArgs,
-      outDir: out,
-      fetchPolicy: {
-        allowHttp: !!o['allow-http'],
-        allowPrivateNetwork: !!o['allow-private-network'],
-        ...(o['max-download-bytes'] ? { maxBytes: positiveInt(o['max-download-bytes'], '--max-download-bytes') } : {}),
-        ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
-      },
-      ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
-      ...(o['plugin-timeout']
-        ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
-        : {}),
-      ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
-      ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
-      allowAllPlugins: !!o['allow-plugins'],
-      ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
-      onNotice: (m) => process.stderr.write(`${m}\n`),
-      allowHardlinks: !!o['allow-hardlinks'],
-      ...(o.platform !== undefined ? { platform: o.platform } : {}),
-      ...(o.base !== undefined ? { baseImage: o.base } : {}),
-      // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
-      ...(command === 'inspect' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
-      registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
-      frozenLockfile: !!o['frozen-lockfile'],
-      updateLock: !!o['update-lock'],
-      onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
-    };
+  }
 
-    switch (command) {
-      case 'build': {
-        const tags = o.tag ?? [];
-        validateImageTags(tags);
-        const labels = parseLabels(o.label ?? []);
-        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
-        if (tags.length && !o.out) {
-          // -t without -o: store the image only; nothing is written to the context.
-          await storeBuildAsImage(await build(options), tags, imageInfo);
+  async function runCommand(): Promise<number> {
+    try {
+      // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
+      const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
+      let formatOverride: ExportFormat | undefined;
+      if (o.format !== undefined) {
+        formatOverride = parseExportFormat(o.format);
+        if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
+      }
+      let ociCompression: OciCompression | undefined;
+      if (o['oci-compression'] !== undefined) {
+        ociCompression = parseOciCompression(o['oci-compression']);
+        if (!ociCompression) return usageError(`--oci-compression expects gzip or none, got '${o['oci-compression']}'`);
+      }
+      // No --format: an archive extension on --out picks the format, so `-o site.zip`
+      // writes a zip instead of a directory named site.zip.
+      if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
+      // The default destination depends on the format, which the Sitefile may set.
+      const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
+      const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
+      run.wrote?.push(out);
+      const options: BuildOptions = {
+        contextDir: context,
+        ...(o.file ? { sitefile: o.file } : {}),
+        buildArgs,
+        outDir: out,
+        fetchPolicy: {
+          allowHttp: !!o['allow-http'],
+          allowPrivateNetwork: !!o['allow-private-network'],
+          ...(o['max-download-bytes'] ? { maxBytes: positiveInt(o['max-download-bytes'], '--max-download-bytes') } : {}),
+          ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
+        },
+        ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
+        ...(o['plugin-timeout']
+          ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
+          : {}),
+        ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
+        ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
+        allowAllPlugins: !!o['allow-plugins'],
+        ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
+        onNotice: (m) => process.stderr.write(`${m}\n`),
+        allowHardlinks: !!o['allow-hardlinks'],
+        ...(o.platform !== undefined ? { platform: o.platform } : {}),
+        ...(o.base !== undefined ? { baseImage: o.base } : {}),
+        // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
+        ...(command === 'inspect' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
+        registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
+        frozenLockfile: !!o['frozen-lockfile'],
+        updateLock: !!o['update-lock'],
+        onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
+        ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
+      };
+
+      switch (command) {
+        case 'build': {
+          const tags = o.tag ?? [];
+          validateImageTags(tags);
+          const labels = parseLabels(o.label ?? []);
+          const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
+          if (tags.length && !o.out) {
+            // -t without -o: store the image only; nothing is written to the context.
+            await storeBuildAsImage(await build(options), tags, imageInfo);
+            return 0;
+          }
+          const r = await buildToDirectory({
+            ...options,
+            outDir: out,
+            force: !!o.force,
+            ...(formatOverride ? { format: formatOverride } : {}),
+            ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
+            ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
+            ...(ociCompression !== undefined ? { ociCompression } : {}),
+            ...(o.platform !== undefined ? { platform: o.platform } : {}),
+            imageLabels: labels,
+            gitLabels: !!o['git-labels'],
+            ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
+          });
+          const where = path.relative(process.cwd(), r.outDir) || '.';
+          const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
+          process.stdout.write(
+            r.format === 'directory'
+              ? `Exported ${n} to ${where} (${r.output.digest()})\n`
+              : r.format === 'oci'
+                ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
+                : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
+          );
+          if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
+          if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
           return 0;
         }
-        const r = await buildToDirectory({
-          ...options,
-          outDir: out,
-          force: !!o.force,
-          ...(formatOverride ? { format: formatOverride } : {}),
-          ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
-          ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
-          ...(ociCompression !== undefined ? { ociCompression } : {}),
-          ...(o.platform !== undefined ? { platform: o.platform } : {}),
-          imageLabels: labels,
-          gitLabels: !!o['git-labels'],
-          ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
-        });
-        const where = path.relative(process.cwd(), r.outDir) || '.';
-        const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
-        process.stdout.write(
-          r.format === 'directory'
-            ? `Exported ${n} to ${where} (${r.output.digest()})\n`
-            : r.format === 'oci'
-              ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
-              : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
-        );
-        if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
-        if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
-        return 0;
-      }
-      case 'validate': {
-        const p = await planBuild(options);
-        p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
-        if (o.json) {
-          process.stdout.write(
-            JSON.stringify(
-              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
-              null,
-              2,
-            ) + '\n',
-          );
-        } else {
-          const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
-          process.stdout.write(
-            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
-          );
+        case 'validate': {
+          const span = profiler?.begin('parse', 'build');
+          const p = await planBuild(options);
+          span?.end({ imports: p.imports.length, stages: p.stages.length });
+          p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+          if (o.json) {
+            process.stdout.write(
+              JSON.stringify(
+                { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
+                null,
+                2,
+              ) + '\n',
+            );
+          } else {
+            const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
+            process.stdout.write(
+              `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
+            );
+          }
+          return 0;
         }
-        return 0;
-      }
-      case 'inspect': {
-        const r = await build({ ...options, frozenLockfile: true });
-        const files = r.output.entries().map(([p, n]) => ({ path: p, mode: n.mode.toString(8), size: n.bytes.byteLength, digest: n.digest, origin: n.origin }));
-        if (o.json) {
-          process.stdout.write(JSON.stringify({ digest: r.output.digest(), files }, null, 2) + '\n');
-        } else {
-          for (const f of files) process.stdout.write(`${f.mode}  ${String(f.size).padStart(8)}  ${f.path}  (${f.origin})\n`);
-          process.stdout.write(`${files.length} files, ${r.output.digest()}\n`);
+        case 'inspect': {
+          const r = await build({ ...options, frozenLockfile: true });
+          const files = r.output.entries().map(([p, n]) => ({ path: p, mode: n.mode.toString(8), size: n.bytes.byteLength, digest: n.digest, origin: n.origin }));
+          if (o.json) {
+            process.stdout.write(JSON.stringify({ digest: r.output.digest(), files }, null, 2) + '\n');
+          } else {
+            for (const f of files) process.stdout.write(`${f.mode}  ${String(f.size).padStart(8)}  ${f.path}  (${f.origin})\n`);
+            process.stdout.write(`${files.length} files, ${r.output.digest()}\n`);
+          }
+          return 0;
         }
-        return 0;
+        default:
+          return usageError(`unknown command '${command}'`);
       }
-      default:
-        return usageError(`unknown command '${command}'`);
+    } catch (e) {
+      if (isSitefileError(e)) {
+        if (e.code === 'E_USAGE') return usageError(e.detail);
+        process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+        return 1;
+      }
+      throw e;
+    } finally {
+      // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+      if (command === 'build' || command === 'inspect') await evictAfterBuild();
     }
-  } catch (e) {
-    if (isSitefileError(e)) {
-      if (e.code === 'E_USAGE') return usageError(e.detail);
-      process.stderr.write(`error[${e.code}]: ${e.message}\n`);
-      return 1;
-    }
-    throw e;
-  } finally {
-    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
-    if (command === 'build' || command === 'inspect') await evictAfterBuild();
   }
 }
 
