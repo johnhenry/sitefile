@@ -1,0 +1,4 @@
+# A 60000×60000 PNG header: refused before any pixel is decoded.
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./in/bomb.png WITH image TO /img/
+EXPORT /
