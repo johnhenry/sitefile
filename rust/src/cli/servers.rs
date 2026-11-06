@@ -304,6 +304,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let live = LiveReload::new();
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
+    let memo = crate::memo::watch_memo();
     let mut run_build = || -> BuildOutcome {
         let attempt = || -> Result<Tree> {
             let mut options = BuildOptions { context_dir: context.clone(), sitefile: file.clone(), build_args: collect_build_args(&arg_files, &arg_flags)?, ..Default::default() };
@@ -314,6 +315,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 options.cache_dir = Some(super::cache::transform_cache_dir());
             }
             options.skip_base = true;
+            options.memo = memo.clone();
             let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
             options.on_notice = Some(notice);
             let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));

@@ -325,3 +325,42 @@ test('build --watch: a failing first build keeps watching and recovers', async (
     assert.equal(await w.stop(), 0);
   }
 });
+
+test('build --watch rebuilds incrementally (the --profile trace shows reused steps); SITEFILE_NO_INCREMENTAL=1 turns it off', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const site = await makeSite({ 'templates/t.html': '<p>${TITLE}</p>' }, 'ARG TITLE = "T"\nCOPY ./public/ /\nRENDER ./templates/t.html TO /t.html\nEXPORT /\n');
+  const trace = path.join(home, 'trace.json');
+  const memo = async (): Promise<unknown[]> =>
+    (JSON.parse(await fs.readFile(trace, 'utf8')) as { traceEvents: Array<{ cat?: string; args: Record<string, unknown> }> }).traceEvents
+      .filter((e) => e.cat === 'operation')
+      .map((e) => e.args['memo']);
+  const w = startCli(home, ['build', '--watch', site, '--profile', trace]);
+  try {
+    await w.waitFor(/Watching /);
+    assert.deepEqual(await memo(), ['miss', 'miss']);
+    await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:2px}');
+    await w.waitFor(/^Exported /m, 2);
+    // COPY read a changed file; RENDER read nothing that changed, so its file is reused.
+    // (The trace is written just after the Exported line.)
+    const end = Date.now() + 10000;
+    while (JSON.stringify(await memo().catch(() => [])) !== '["miss","files"]' && Date.now() < end) await sleep(25);
+    assert.deepEqual(await memo(), ['miss', 'files']);
+    assert.equal(await fs.readFile(path.join(site, 'dist', 't.html'), 'utf8'), '<p>T</p>');
+    assert.equal(await fs.readFile(path.join(site, 'dist', 'style.css'), 'utf8'), 'body{margin:2px}');
+  } finally {
+    await w.stop();
+  }
+  const off = spawn(process.execPath, [cliPath, 'build', '--watch', site, '--profile', trace], {
+    env: { ...process.env, SITEFILE_HOME: home, SITEFILE_NO_INCREMENTAL: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  off.stdout.on('data', (c: Buffer) => (out += c.toString()));
+  try {
+    const end = Date.now() + 15000;
+    while (!/Watching /.test(out) && Date.now() < end) await sleep(25);
+    assert.deepEqual(await memo(), [undefined, undefined]);
+  } finally {
+    off.kill('SIGINT');
+  }
+});

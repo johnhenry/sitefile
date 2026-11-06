@@ -15,6 +15,7 @@ import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { watchLoop } from './cli/watch.js';
 import { Profiler } from './profile.js';
+import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
 
 const VERSION = '0.1.0';
@@ -78,9 +79,13 @@ ${EXTRA_HELP}`;
 
 /**
  * Run the CLI. `run.once` runs a --watch command a single time (the watch loop's
- * builds); `run.wrote` then receives the export destination.
+ * builds); `run.wrote` then receives the export destination, and `run.memo` carries
+ * results between those builds (incremental rebuilds).
  */
-export async function main(argv: readonly string[], run: { readonly once?: boolean; readonly wrote?: string[] } = {}): Promise<number> {
+export async function main(
+  argv: readonly string[],
+  run: { readonly once?: boolean; readonly wrote?: string[]; readonly memo?: BuildMemo | undefined } = {},
+): Promise<number> {
   if (isExtraCommand(argv[0])) return runExtraCommand(argv);
   let parsed;
   try {
@@ -142,13 +147,14 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
     try {
+      const memo = watchMemo();
       return await watchLoop({
         context,
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {
           const wrote: string[] = [];
-          return { code: await main(argv, { once: true, wrote }), wrote };
+          return { code: await main(argv, { once: true, wrote, memo }), wrote };
         },
       });
     } catch (e) {
@@ -234,6 +240,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         updateLock: !!o['update-lock'],
         onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
         ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
+        ...(run.memo ? { memo: run.memo } : {}),
       };
 
       switch (command) {

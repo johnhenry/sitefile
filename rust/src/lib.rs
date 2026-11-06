@@ -45,6 +45,7 @@ pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod plugins;
+pub mod memo;
 pub mod profile;
 pub mod watch;
 
