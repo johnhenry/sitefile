@@ -472,6 +472,8 @@ pub struct ExportTarget {
     pub oci_ref_name: Option<String>,
     /// Replace a non-empty destination outside the context.
     pub force: bool,
+    /// oci: attach a provenance and/or SBOM attestation (`--provenance`, `--sbom`).
+    pub attest: crate::export::attest::AttestRequest,
 }
 
 pub struct ExportedBuild {
@@ -485,6 +487,29 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+}
+
+/// The attestations (`--provenance`, `--sbom`) of an image built from
+/// `result`: in-toto statements whose subject is the image manifest. They
+/// never change the image itself.
+pub fn image_attestations(
+    result: &BuildResult,
+    manifest_digest: &str,
+    manifest_bytes: &[u8],
+    config_bytes: &[u8],
+    root: &str,
+    options: &BuildOptions,
+    request: crate::export::attest::AttestRequest,
+) -> Result<Vec<crate::export::attest::Referrer>> {
+    use crate::export::attest::{build_facts, make_attestations, AttestSubject};
+    if !request.any() {
+        return Ok(Vec::new());
+    }
+    let facts = build_facts(result, &options.context_dir, options.sitefile.as_deref(), &options.build_args, options.platform.as_deref())?;
+    let cfg = crate::export::oci::parse_config(config_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("image config: {e}")))?;
+    let title = cfg.labels.get(crate::export::oci::ann::TITLE).map(String::as_str);
+    let subject = AttestSubject { digest: manifest_digest, size: manifest_bytes.len() as u64, files: &result.output, root, title };
+    Ok(make_attestations(&subject, &facts, request, source_date_epoch()?))
 }
 
 /// OCI options for the build's exported tree (shared by `-t` image storage).
@@ -528,8 +553,9 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
             None => Vec::new(),
         };
         let ref_name = target.oci_ref_name.as_deref();
+        let referrers = image_attestations(&result, &img.manifest_digest, &img.manifest_bytes, &img.config_bytes, &img.root, options, target.attest)?;
         if out_dir.to_lowercase().ends_with(".tar") {
-            let data = oci_archive(img.parts(), ref_name, source_date_epoch()?, &base_blobs)?;
+            let data = oci_archive(img.parts(), ref_name, source_date_epoch()?, &base_blobs, &referrers)?;
             let written = export_file(&data, out, &export_options)?;
             let digest = sha256(&data);
             return Ok(ExportedBuild {
@@ -541,7 +567,7 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
                 manifest_digest: Some(img.manifest_digest.clone()),
             });
         }
-        let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs)?, out, &export_options)?;
+        let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?, out, &export_options)?;
         return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()) });
     }
     if !is_archive_format(format) {

@@ -18,6 +18,7 @@
 //! ```
 
 use super::archive_writers::{gzip_tar, iso_millis, write_tar, WriterOptions};
+use super::attest::Referrer;
 use crate::digest::sha256;
 use crate::language::ast::OciCompression;
 use crate::error::{ErrorCode::*, Result, SitefileError};
@@ -350,6 +351,8 @@ pub struct IndexEntry {
     pub stored: Option<String>,
     /// Extra annotations written verbatim (exports only).
     pub extra: BTreeMap<String, String>,
+    /// OCI 1.1 artifactType (attestation entries of exports only).
+    pub artifact_type: Option<String>,
 }
 
 /// Index annotations for an exported image named `ref_name`, in the convention
@@ -384,6 +387,9 @@ pub fn encode_index(entries: &[IndexEntry]) -> Vec<u8> {
             m.insert("mediaType".into(), Value::String(media::MANIFEST.into()));
             m.insert("digest".into(), Value::String(e.digest.clone()));
             m.insert("size".into(), Value::from(e.size));
+            if let Some(t) = &e.artifact_type {
+                m.insert("artifactType".into(), Value::String(t.clone()));
+            }
             if !a.is_empty() {
                 m.insert("annotations".into(), str_map(&a));
             }
@@ -413,7 +419,7 @@ pub fn decode_index(bytes: &[u8]) -> std::result::Result<Vec<IndexEntry>, String
             let (Some(digest), Some(size)) = (digest, size_of(m.get("size"))) else { return Err("bad index entry".to_string()) };
             let a = m.get("annotations");
             let s = |k: &str| a.and_then(|a| a.get(k)).and_then(Value::as_str).map(str::to_string);
-            Ok(IndexEntry { digest: digest.into(), size, ref_name: s(ann::REF_NAME), stored: s(ann::STORED), extra: BTreeMap::new() })
+            Ok(IndexEntry { digest: digest.into(), size, ref_name: s(ann::REF_NAME), stored: s(ann::STORED), ..Default::default() })
         })
         .collect()
 }
@@ -427,28 +433,43 @@ pub fn blob_path_of(digest: &str) -> Result<String> {
 
 /// A standalone OCI image layout holding one image, as a Tree (write it as a directory or tar it).
 /// `base_blobs` are the blobs of the layers below the site layer (digest, bytes).
-pub fn layout_tree(img: LayoutParts<'_>, ref_name: Option<&str>, base_blobs: &[(String, Vec<u8>)]) -> Result<Tree> {
+/// `referrers` (attestations, `build --provenance/--sbom`) are listed in
+/// index.json after the image, without a name, and their blobs are included.
+pub fn layout_tree(img: LayoutParts<'_>, ref_name: Option<&str>, base_blobs: &[(String, Vec<u8>)], referrers: &[Referrer]) -> Result<Tree> {
     let extra = match ref_name.filter(|s| !s.is_empty()) {
         Some(r) => export_name_annotations(r)?,
         None => BTreeMap::new(),
     };
-    let index = encode_index(&[IndexEntry { digest: img.manifest_digest.into(), size: img.manifest_bytes.len() as u64, extra, ..Default::default() }]);
+    let mut entries = vec![IndexEntry { digest: img.manifest_digest.into(), size: img.manifest_bytes.len() as u64, extra, ..Default::default() }];
+    for r in referrers {
+        entries.push(IndexEntry {
+            digest: r.descriptor.digest.clone(),
+            size: r.descriptor.size,
+            extra: r.descriptor.annotations.clone().unwrap_or_default(),
+            artifact_type: r.descriptor.artifact_type.clone(),
+            ..Default::default()
+        });
+    }
+    let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    blobs.insert(img.manifest_digest.into(), img.manifest_bytes.to_vec());
+    blobs.insert(img.config_digest.into(), img.config_bytes.to_vec());
+    blobs.insert(img.layer_digest.into(), img.layer_bytes.to_vec());
+    for (d, b) in base_blobs.iter().chain(referrers.iter().flat_map(|r| r.blobs.iter())) {
+        blobs.insert(d.clone(), b.clone());
+    }
     let mut files: Vec<(String, Node)> = vec![
         ("/oci-layout".into(), make_file(OCI_LAYOUT_BYTES.to_vec(), "oci", 0o644)),
-        ("/index.json".into(), make_file(index, "oci", 0o644)),
-        (blob_path_of(img.manifest_digest)?, make_file(img.manifest_bytes.to_vec(), "oci", 0o644)),
-        (blob_path_of(img.config_digest)?, make_file(img.config_bytes.to_vec(), "oci", 0o644)),
-        (blob_path_of(img.layer_digest)?, make_file(img.layer_bytes.to_vec(), "oci", 0o644)),
+        ("/index.json".into(), make_file(encode_index(&entries), "oci", 0o644)),
     ];
-    for (d, b) in base_blobs {
-        files.push((blob_path_of(d)?, make_file(b.clone(), "oci", 0o644)));
+    for (d, b) in blobs {
+        files.push((blob_path_of(&d)?, make_file(b, "oci", 0o644)));
     }
     Tree::from_files(files)
 }
 
 /// Deterministic tar of [`layout_tree`]: an "OCI archive" (`.oci.tar`).
-pub fn oci_archive(img: LayoutParts<'_>, ref_name: Option<&str>, epoch: Option<u64>, base_blobs: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
-    write_tar(&layout_tree(img, ref_name, base_blobs)?, &WriterOptions { epoch: Some(epoch.unwrap_or(0)), dirs: vec![] })
+pub fn oci_archive(img: LayoutParts<'_>, ref_name: Option<&str>, epoch: Option<u64>, base_blobs: &[(String, Vec<u8>)], referrers: &[Referrer]) -> Result<Vec<u8>> {
+    write_tar(&layout_tree(img, ref_name, base_blobs, referrers)?, &WriterOptions { epoch: Some(epoch.unwrap_or(0)), dirs: vec![] })
 }
 
 // ------------------------------------------------------------ parsing
@@ -820,7 +841,7 @@ mod tests {
             ..Default::default()
         };
         let img = build_oci_image(&tree(), &opts).unwrap();
-        let layout = layout_tree(img.parts(), Some("demo:latest"), &[]).unwrap();
+        let layout = layout_tree(img.parts(), Some("demo:latest"), &[], &[]).unwrap();
         assert_eq!(&*layout.get("/oci-layout").unwrap().bytes, OCI_LAYOUT_BYTES);
         let idx_bytes = layout.get("/index.json").unwrap().bytes.clone();
         let entry = decode_index(&idx_bytes).unwrap().remove(0);
@@ -889,7 +910,7 @@ mod tests {
         assert_eq!(build_oci_image(&tree(), &OciOptions { root: Some("relative".into()), ..Default::default() }).unwrap_err().code, E_PATH);
         let slash = build_oci_image(&tree(), &OciOptions { root: Some("/".into()), ..Default::default() }).unwrap();
         assert_eq!(tar_names(&gunzip(&slash.layer_bytes))[0].0, "bin/run.sh");
-        assert_eq!(oci_archive(a.parts(), None, None, &[]).unwrap(), oci_archive(b.parts(), None, None, &[]).unwrap());
+        assert_eq!(oci_archive(a.parts(), None, None, &[], &[]).unwrap(), oci_archive(b.parts(), None, None, &[], &[]).unwrap());
     }
 
     #[test]
@@ -1037,7 +1058,7 @@ mod tests {
             .replace("LAYER_SIZE", &img.layer_bytes.len().to_string())
             .replace("CONFIG_DIGEST", &img.config_digest);
         assert_eq!(manifest, ts);
-        let idx = String::from_utf8(layout_tree(img.parts(), Some("localhost:5000/blog:2"), &[]).unwrap().get("/index.json").unwrap().bytes.to_vec()).unwrap();
+        let idx = String::from_utf8(layout_tree(img.parts(), Some("localhost:5000/blog:2"), &[], &[]).unwrap().get("/index.json").unwrap().bytes.to_vec()).unwrap();
         let ts_idx = TS_INDEX.replace("MANIFEST_DIGEST", &img.manifest_digest).replace("MANIFEST_SIZE", &img.manifest_bytes.len().to_string());
         assert_eq!(idx, ts_idx);
     }

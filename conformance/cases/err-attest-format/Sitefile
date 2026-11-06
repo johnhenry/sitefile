@@ -1,0 +1,6 @@
+# --provenance / --sbom need an oci image: a zip export is a usage error.
+FROM scratch
+COPY <<HTML /index.html
+<p>hi</p>
+HTML
+EXPORT / AS zip

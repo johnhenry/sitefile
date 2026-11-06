@@ -156,7 +156,8 @@ correct MIME types and no directory listings; it serves `/404.html` for missing 
 `/about.html`, and honours the site's `_redirects` and `_headers` (exact paths and `/*` splats). `EXPORT / AS oci` (or `build -o site.oci.tar`) writes the
 same OCI image without the store; on its own it contains files only, but `EXPORT / AS oci BASE nginx:alpine
 AT /usr/share/nginx/html` (or `--base`) builds a runnable image on top of a pulled base, and `sitefile push` / `pull`
-move images to and from any OCI registry. See
+move images to and from any OCI registry. `--provenance` and `--sbom` attach a SLSA provenance statement and a
+CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed with it; the image ID does not change). See
 [docs/CLI.md](docs/CLI.md).
 
 ## Safety defaults

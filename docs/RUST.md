@@ -23,7 +23,7 @@ to find in the other:
 | `language::{ast, scanner, parser, validate}`, `planner`, `build_args` | `language/*`, `planner.ts`, `build-args.ts` |
 | `render`, `markdown`, `frontmatter`, `yaml`, `csv`, `documents` | same names |
 | `resources::*` | `resources/*` |
-| `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
+| `export::{exporter, archive_writers, wbn, oci, attest, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `attest.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `site` (SITEMAP, FEED, `_redirects`/`_headers` writers); the rules section of `server` | `site.ts`; `serve-rules.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
@@ -114,8 +114,9 @@ paths").
   archives, `Sitefile.lock` contents (byte for byte), `--frozen-lockfile`,
   `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
-  layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 120/120 (99 offline, 21 network); the network cases need `openssl`.
+  layers) are compared byte for byte, and OCI images by manifest digest
+  (and, with `--provenance` / `--sbom`, by the digest of every attestation).
+  Currently 126/126 (104 offline, 22 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,

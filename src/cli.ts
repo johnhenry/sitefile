@@ -13,9 +13,10 @@ import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
+import { SITEFILE_VERSION } from './attest.js';
 import { watchLoop } from './cli/watch.js';
 
-const VERSION = '0.1.0';
+const VERSION = SITEFILE_VERSION;
 
 const HELP = `sitefile ${VERSION} — Docker-inspired static artifact builder
 
@@ -40,6 +41,11 @@ Options:
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
+      --provenance             attach a SLSA provenance attestation to the oci image (an in-toto
+                               statement: Sitefile digest, build args, imports, BASE, builder)
+      --sbom                   attach an SBOM attestation (CycloneDX: every file with its SHA-256);
+                               both are OCI 1.1 referrers of the image (its ID does not change),
+                               written into the oci export and kept with -t images for push
       --platform <os/arch>     oci image platform (default linux/amd64); with a BASE, the platform pulled
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
@@ -93,6 +99,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'oci-compression': { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
+        provenance: { type: 'boolean' },
+        sbom: { type: 'boolean' },
         platform: { type: 'string' },
         base: { type: 'string' },
         'insecure-registry': { type: 'string', multiple: true },
@@ -209,7 +217,20 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         const tags = o.tag ?? [];
         validateImageTags(tags);
         const labels = parseLabels(o.label ?? []);
-        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
+        const attest = { provenance: !!o.provenance, sbom: !!o.sbom };
+        if ((attest.provenance || attest.sbom) && !tags.length && (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat) !== 'oci') {
+          return usageError('--provenance and --sbom attach attestations to an oci image: export one (--format oci, -o *.oci.tar, EXPORT ... AS oci) or store one with -t');
+        }
+        const imageInfo = {
+          contextDir: context,
+          ociRoot: o['oci-root'],
+          ociCompression,
+          platform: o.platform,
+          labels,
+          gitLabels: !!o['git-labels'],
+          attest,
+          build: { contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs },
+        };
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
           await storeBuildAsImage(await build(options), tags, imageInfo);
@@ -227,6 +248,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
           imageLabels: labels,
           gitLabels: !!o['git-labels'],
           ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
+          attest,
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';
         const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
