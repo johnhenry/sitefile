@@ -87,6 +87,8 @@ pub struct BuildOptions {
     pub tool_policy: ToolPolicy,
     /// Directory of the TRANSFORM result cache; `None` disables caching.
     pub cache_dir: Option<PathBuf>,
+    /// Consulted on a local cache miss and told about every entry used (`--cache-from` / `--cache-to`). Needs `cache_dir`.
+    pub remote_cache: Option<Arc<dyn crate::plugins::cache::RemoteCache>>,
     pub on_warning: Option<Callback>,
     /// Informational lines (the path each allowed tool resolved to).
     pub on_notice: Option<Callback>,
@@ -120,6 +122,7 @@ impl Default for BuildOptions {
             allow_all_plugins: false,
             tool_policy: DEFAULT_TOOL_POLICY,
             cache_dir: None,
+            remote_cache: None,
             on_warning: None,
             on_notice: None,
             platform: None,
@@ -356,7 +359,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         plugins: PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m)),
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
         tool_policy: options.tool_policy,
-        cache: options.cache_dir.as_ref().map(TransformCache::new),
+        cache: options.cache_dir.as_ref().map(|d| TransformCache::new(d).with_remote(options.remote_cache.clone())),
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
     };

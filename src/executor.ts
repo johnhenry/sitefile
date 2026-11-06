@@ -8,7 +8,7 @@ import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
-import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
+import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
@@ -70,6 +70,8 @@ export interface BuildOptions {
   readonly toolPolicy?: Partial<ToolPolicy>;
   /** Directory of the TRANSFORM result cache. Omit to disable caching (the CLI sets `$SITEFILE_HOME/cache/transform`). */
   readonly cacheDir?: string;
+  /** Consulted on a local cache miss and told about every entry used (`--cache-from` / `--cache-to`). Needs `cacheDir`. */
+  readonly remoteCache?: RemoteCache;
   readonly onWarning?: (message: string) => void;
   /** oci: `os/arch` of the image (and of the BASE to pull); default linux/amd64. */
   readonly platform?: string;
@@ -181,7 +183,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const stageTrees = new Map<string, Tree>();
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
-  const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir) : undefined;
+  const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
   const execEnv: ExecEnv = {
     local,

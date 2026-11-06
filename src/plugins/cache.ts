@@ -18,11 +18,24 @@ import type { PluginResult } from './host.js';
 /** Bump to invalidate every existing entry when the key or entry format changes. */
 export const CACHE_VERSION = 1;
 
-interface Manifest {
+interface Manifest extends CacheEntry {
   readonly version: number;
+}
+
+/** What an entry records: the result kind and `[path, blob hex, size]` per file (a `file` result has one, with path ''). */
+export interface CacheEntry {
   readonly kind: 'file' | 'files';
-  /** `[path, blob digest, size]`; a `file` result has exactly one entry with path ''. */
   readonly files: ReadonlyArray<readonly [string, string, number]>;
+}
+
+/**
+ * A second-level cache consulted on a local miss (`--cache-from`, see src/registry-cache.ts), and told
+ * about every entry this build used or wrote (`--cache-to`).
+ */
+export interface RemoteCache {
+  /** Fetch the entry for `key` and its blobs (written verified to `blobPath(hex)`), or undefined. Never throws. */
+  fetch(key: string, blobPath: (hex: string) => string): Promise<CacheEntry | undefined>;
+  used(key: string, entry: CacheEntry): void;
 }
 
 export interface CacheStats {
@@ -65,7 +78,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
 export class TransformCache {
   readonly stats: CacheStats = { hits: 0, misses: 0, writes: 0, corrupt: 0 };
 
-  constructor(readonly dir: string) {}
+  constructor(
+    readonly dir: string,
+    private readonly remote?: RemoteCache,
+  ) {}
 
   private entryPath(key: string): string {
     return path.join(this.dir, 'entries', `${key}.json`);
@@ -80,11 +96,17 @@ export class TransformCache {
     try {
       raw = await readFile(file, 'utf8');
     } catch {
-      this.stats.misses++;
-      return undefined;
+      const fetched = await this.remote?.fetch(key, (hex) => this.blobPath(hex));
+      if (!fetched) {
+        this.stats.misses++;
+        return undefined;
+      }
+      const m: Manifest = { version: CACHE_VERSION, kind: fetched.kind, files: fetched.files };
+      raw = JSON.stringify(m);
+      await this.writeAtomic(file, raw, false).catch(() => {});
     }
-    const result = await this.load(raw);
-    if (!result) {
+    const loaded = await this.load(raw);
+    if (!loaded) {
       this.stats.corrupt++;
       this.stats.misses++;
       await rm(file, { force: true });
@@ -93,10 +115,11 @@ export class TransformCache {
     this.stats.hits++;
     const now = new Date();
     await utimes(file, now, now).catch(() => {});
-    return result;
+    this.remote?.used(key, loaded.entry);
+    return loaded.result;
   }
 
-  private async load(raw: string): Promise<PluginResult | undefined> {
+  private async load(raw: string): Promise<{ result: PluginResult; entry: CacheEntry } | undefined> {
     let m: Manifest;
     try {
       m = JSON.parse(raw) as Manifest;
@@ -120,7 +143,8 @@ export class TransformCache {
       }
       loaded.push([f[0], new Uint8Array(bytes)]);
     }
-    return m.kind === 'file' ? { kind: 'file', bytes: loaded[0]![1] } : { kind: 'files', files: loaded };
+    const result: PluginResult = m.kind === 'file' ? { kind: 'file', bytes: loaded[0]![1] } : { kind: 'files', files: loaded };
+    return { result, entry: { kind: m.kind, files: m.files.map((f) => [f[0], f[1], f[2]] as const) } };
   }
 
   async put(key: string, result: PluginResult): Promise<void> {
@@ -135,6 +159,7 @@ export class TransformCache {
       const manifest: Manifest = { version: CACHE_VERSION, kind: result.kind, files };
       await this.writeAtomic(this.entryPath(key), JSON.stringify(manifest), false);
       this.stats.writes++;
+      this.remote?.used(key, { kind: result.kind, files });
     } catch {
       // A cache that cannot be written (read-only home, full disk) must not fail the build.
     }

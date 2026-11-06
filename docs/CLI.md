@@ -33,6 +33,8 @@ sitefile inspect  [context] [--json]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
+| `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
 ## Watch mode
@@ -137,6 +139,57 @@ Tagged images, and every blob a tagged image uses, are never deleted and do not 
 `cache du` prints one row per cache (`transform`, `wasm`, `store`, `servers`) with `ITEMS` (entries, modules, blobs,
 files), `SIZE`, `EVICTABLE` and the path, a total, and the limit. `--json` gives
 `{home, limit, caches: [{name, path, items, bytes, evictable}], bytes, evictable}` (sizes in bytes, `limit` 0 = none).
+
+### Registry cache
+
+```
+sitefile build --cache-to   ghcr.io/team/site-cache:main --allow-plugins     # CI on main: share results
+sitefile build --cache-from ghcr.io/team/site-cache:main --allow-plugins     # a teammate or a PR build: reuse them
+sitefile build --cache-from reg.example.com/c:pr-12 --cache-from reg.example.com/c:main --cache-to reg.example.com/c:pr-12
+```
+
+`--cache-from <ref>` (repeatable) and `--cache-to <ref>` (once) share the [TRANSFORM cache](#transform-cache) through an
+OCI registry, like buildx's registry cache. Keys are the local cache's keys (content addressed, see
+[PLUGINS.md](PLUGINS.md#caching)), so a shared result is reused exactly when a local one would be.
+
+- **Format**: one OCI artifact (image-spec v1.1), an `application/vnd.oci.image.manifest.v1+json` manifest with
+  `artifactType: application/vnd.sitefile.cache.v1+json`, the empty config (`application/vnd.oci.empty.v1+json`, `{}`),
+  and as layers first the **index** (`application/vnd.sitefile.cache.index.v1+json`), then every result blob
+  (`application/vnd.sitefile.cache.blob.v1`, sorted by digest). The index is canonical JSON (sorted keys, no
+  whitespace) mapping each cache key to its entry: `{"entries":{"<key>":{"files":[["<path>","<sha256 hex>",<size>]],
+  "kind":"file"|"files"}},"version":1}` (`path` is `''` for a one-file result, else relative to the TRANSFORM's
+  destination directory). The same entries always give the same bytes, so both implementations push identical
+  manifests.
+- **`--cache-from`**, before the build: fetches each manifest and its index (at most 64 MiB) and prints
+  `Cache from <ref>: N entries`. A result's blobs are downloaded **only on a hit**: when the local cache misses and the
+  key is in an index (the first `--cache-from` that has it). Every blob is checked against its digest and size while it
+  streams to a temp file, then lands in the local cache (`cache/transform`), so the next build is local. An index entry
+  must name blobs listed in the manifest with the same size and safe relative paths, or the whole index is refused.
+- **`--cache-to`**, after a **successful** build (a failed build pushes nothing): pushes the entries this build used
+  (local hits, registry hits and new results) as a new artifact at that tag, replacing what was there (entries the
+  build did not use are not carried over; list the previous cache in `--cache-from` to reuse it). Blobs the registry
+  repository already has are not uploaded again (`HEAD` first), blobs held by a `--cache-from` repository on the same
+  registry are mounted, then the manifest is `PUT`. One line goes to stderr:
+  `Cache to <ref>: 3 entries, 2 blobs uploaded, 0 mounted, 3 already present (sha256:...)`. A tag is required (not a
+  digest); the default tag is `latest`.
+- **Never fails a build**: an unreachable registry, a missing or rejected credential, a missing tag (a first CI run),
+  something that is not a sitefile cache, a corrupt blob or a bad index is a warning (`warning: --cache-from <ref> not
+  used: ...`, `warning: --cache-from <ref>: ...; not using it for the rest of this build`, `warning: --cache-to <ref>
+  not pushed: ...`) and the TRANSFORM runs as usual. Only usage errors exit 2: a reference without a registry host,
+  `--cache-to` twice or with a digest, `--cache-from`/`--cache-to` with `validate`, `inspect`, `--watch` or
+  `--no-cache`.
+- **Size limit**: a build downloads at most [`SITEFILE_CACHE_MAX`](#cache-size-limit) bytes of results (then
+  `warning: --cache-from: not fetching more cached results: they would exceed SITEFILE_CACHE_MAX=...`), and what it
+  downloads is evicted like any other TRANSFORM result.
+- **Registry access** is the one `push` and `pull` use (see [Registries](#registries-push-and-pull)): https, plain http
+  only for loopback and `--insecure-registry` hosts; redirects and token realms re-validated and refused on private
+  addresses unless `--allow-private-network`; credentials from `$SITEFILE_REGISTRY_AUTH` or the Docker config
+  (`--username`/`--password-stdin` are not build options), only when the registry asks, never printed.
+- **Nothing local or secret is pushed**: keys are SHA-256 hashes, entries hold output-relative paths, digests and sizes,
+  and blobs are the TRANSFORM results themselves (what the build exports anyway). No hostnames, home or context paths,
+  timestamps or credentials. Results of plugins exporting `cache = false` are never cached, so never pushed.
+- **Trust**: a result from `--cache-from` is used as if the plugin or tool had produced it. Pull only from a repository
+  whose writers you trust (CI pushes, pull requests read).
 
 ## Image store
 

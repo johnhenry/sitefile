@@ -50,3 +50,4 @@ pub mod watch;
 // Editor tooling (Rust only; docs/LSP.md)
 pub mod lsp;
 pub mod registry;
+pub mod registry_cache;
