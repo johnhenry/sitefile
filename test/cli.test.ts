@@ -171,7 +171,13 @@ test('examples/motion renders animated SVGs through a sandboxed plugin', async (
   const work = await tmp();
   const ctx = path.join(work, 'motion');
   await cp(path.join(root, 'examples', 'motion'), ctx, { recursive: true });
-  const r = await sitefile(['build', ctx]);
+  // A JS plugin only runs when allowed by name (or with --allow-plugins).
+  const denied = await sitefile(['build', ctx]);
+  assert.equal(denied.code, 1);
+  assert.match(denied.stderr, /error\[E_UNSUPPORTED\]: .*Sitefile:4:1: PLUGIN motion runs JavaScript, which must be allowed explicitly: add --allow-plugin motion \(or --allow-plugins/);
+  // validate never runs plugins, so it needs no flag.
+  assert.equal((await sitefile(['validate', ctx])).code, 0);
+  const r = await sitefile(['build', ctx, '--allow-plugin', 'motion']);
   assert.equal(r.code, 0, r.stderr);
   const title = await readFile(path.join(ctx, 'dist', 'title.svg'), 'utf8');
   assert.match(title, /^<\?xml[\s\S]*<svg[\s\S]*@keyframes[\s\S]*<\/svg>\s*$/);

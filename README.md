@@ -36,7 +36,7 @@ no runtime dependencies.
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
-| `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module or an import-free WebAssembly module (see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
+| `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
@@ -74,6 +74,14 @@ TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter
 TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
 ```
 
+A JavaScript plugin is code from the repository you are building, so it runs only when you allow it:
+
+```
+sitefile build --allow-plugin motion     # or --allow-plugins for every PLUGIN
+```
+
+WebAssembly plugins (`PLUGIN … FROM ./x.wasm`) import nothing, can only compute, and need no flag (see `examples/wasm/`).
+
 External programs are explicit opt-ins: declare a `TOOL`, and allow it on the command line.
 
 ```
@@ -93,7 +101,8 @@ TRANSFORM results are cached in `$SITEFILE_HOME/cache/transform` (`--no-cache` t
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
-               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache]
+               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
+               [--no-cache]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 

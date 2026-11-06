@@ -292,6 +292,9 @@ line and column.
   environment; a per-call time limit (`--plugin-timeout`). Failures are
   `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
   pin plugins with `INTEGRITY`.
+- A JavaScript plugin runs only if the CLI allows it with `--allow-plugin name`
+  (or `--allow-plugins`); otherwise the build fails with `E_UNSUPPORTED` at the
+  `PLUGIN` line, naming the flag. A WebAssembly plugin needs no flag.
 
 - `TOOL name` declares an external program (`name` is an identifier and the
   program's file name, e.g. `ffmpeg`). It runs only if the CLI allows it with

@@ -63,7 +63,7 @@ function cases() {
     ex('multistage'),
     ex('blog'),
     ex('data'),
-    ex('motion'),
+    ex('motion', { args: ['--allow-plugin', 'motion'] }),
     ex('wasm'),
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
     ex('hello', { suffix: ':tar', out: 'site.tar', compare: 'archive' }),

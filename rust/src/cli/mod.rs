@@ -90,6 +90,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
+      --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
+      --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
@@ -128,6 +130,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     string("plugin-timeout"),
     strings("allow-exec"),
+    strings("allow-plugin"),
+    flag("allow-plugins"),
     flag("no-cache"),
     flag("force"),
     flag("frozen-lockfile"),
@@ -372,6 +376,8 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
         options.tool_policy.timeout_ms = ms;
     }
     options.allow_exec = o.strs("allow-exec");
+    options.allow_plugin = o.strs("allow-plugin");
+    options.allow_all_plugins = o.flag("allow-plugins");
     if !o.flag("no-cache") {
         options.cache_dir = Some(cache::transform_cache_dir());
     }

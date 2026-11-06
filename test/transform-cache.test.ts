@@ -44,7 +44,7 @@ async function setup(files: Record<string, string> = {}): Promise<Ctx> {
   const ctx = await dir('sitefile-cache-ctx-');
   const cacheDir = path.join(await dir('sitefile-cache-home-'), 'cache', 'transform');
   await write(ctx, { 'plugins/p.mjs': PLUGIN, 'plugins/helper.txt': 'h1', 'a.txt': 'alpha', Sitefile: SITEFILE, ...files });
-  return { ctx, cacheDir, go: (extra = {}) => build({ contextDir: ctx, lockfile: false, cacheDir, ...extra }) };
+  return { ctx, cacheDir, go: (extra = {}) => build({ contextDir: ctx, lockfile: false, cacheDir, allowAllPlugins: true, ...extra }) };
 }
 
 test('a second build is served from the cache without starting the plugin', async () => {
@@ -126,7 +126,7 @@ test('no cacheDir (--no-cache) neither reads nor writes', async () => {
   assert.equal(r.transformStats.pluginsSpawned, 1);
   const before = (await new TransformCache(t.cacheDir).info()).entries;
   await write(t.ctx, { 'a.txt': 'different' });
-  await build({ contextDir: t.ctx, lockfile: false });
+  await build({ contextDir: t.ctx, lockfile: false, allowAllPlugins: true });
   assert.equal((await new TransformCache(t.cacheDir).info()).entries, before, 'nothing was written');
 });
 
@@ -248,11 +248,11 @@ test('CLI: builds cache under $SITEFILE_HOME/cache/transform; --no-cache skips i
   await write(ctx, { 'plugins/p.mjs': PLUGIN, 'plugins/helper.txt': 'h', 'a.txt': 'alpha', Sitefile: SITEFILE });
   const out = path.join(ctx, 'dist');
 
-  const nc = await runCli(home, ['build', ctx, '-o', out, '--no-cache']);
+  const nc = await runCli(home, ['build', ctx, '-o', out, '--no-cache', '--allow-plugin', 'p']);
   assert.equal(nc.code, 0, nc.stderr);
   await assert.rejects(stat(path.join(home, 'cache')), 'no cache dir with --no-cache');
 
-  const first = await runCli(home, ['build', ctx, '-o', out, '--force']);
+  const first = await runCli(home, ['build', ctx, '-o', out, '--force', '--allow-plugin', 'p']);
   assert.equal(first.code, 0, first.stderr);
   const dirEntries = await readdir(path.join(home, 'cache', 'transform', 'entries'));
   assert.equal(dirEntries.length, 1);

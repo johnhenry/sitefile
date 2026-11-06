@@ -82,10 +82,36 @@ node --permission --allow-fs-read=<the plugin's folder> …
 Each call has a time limit (`--plugin-timeout`, default 60 s) and results are
 capped at 64 MiB. Processes are stopped when the build ends.
 
-**Trust model.** Node describes its permission model as a "seat belt" for
-trusted code, not a defence against deliberately malicious code. Treat a
-plugin like any dependency: run plugins you trust, keep them in your
-repository, and pin them with `INTEGRITY` (which covers the module file
+## Trust model: `--allow-plugin`
+
+Node describes its permission model as a "seat belt" for trusted code, not a
+defence against deliberately malicious code. A JavaScript plugin is code from
+the repository you are building, so building someone else's Sitefile would
+otherwise run their code on your machine. JavaScript plugins therefore run
+only when you allow them on the command line, by the name the `PLUGIN` line
+declares:
+
+```
+sitefile build --allow-plugin motion   # this plugin (repeatable)
+sitefile build --allow-plugins         # every PLUGIN in the Sitefile
+```
+
+- Without it the build stops with `E_UNSUPPORTED` at the `PLUGIN` line and
+  the exact flag to add, before any import is fetched or any plugin process
+  starts. The Sitefile cannot allow its own plugins; there is no environment
+  variable or config file for it (as with `--allow-exec`).
+- An `--allow-plugin` name that matches no `PLUGIN` is a warning.
+- `validate` never runs plugins and needs no flag. `inspect` builds in memory,
+  so it needs the flag like `build`. The language server never runs plugins.
+- **WebAssembly plugins need no flag.** A wasm module that imports nothing
+  (checked when the build starts) can only compute: no files, network, clock,
+  randomness or processes, and it runs under wasmtime (Rust) or V8 (TypeScript) with a time and
+  memory limit. That is a real sandbox rather than a seat belt, so treating
+  it like a template keeps untrusted builds useful. A `.wasm` path that is a
+  symlink to a JavaScript file runs as JavaScript and needs the flag.
+
+Allowing a plugin is still trusting it: treat it like any dependency, keep it
+in your repository, and pin it with `INTEGRITY` (which covers the module file
 itself; other files in its folder are not hashed). Because a plugin can read
 its whole folder, Sitefile refuses a plugin placed directly in the build
 context root.

@@ -1,4 +1,4 @@
-# Custom renderers: a plugin turns text into animated SVG.
+# Custom renderers: a plugin turns text into animated SVG. Build with: sitefile build --allow-plugin motion
 FROM scratch
 ARG TITLE = "Sitefile"
 PLUGIN motion FROM ./plugins/motion.mjs
