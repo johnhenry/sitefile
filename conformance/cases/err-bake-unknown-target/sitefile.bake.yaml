@@ -1,0 +1,4 @@
+groups:
+  all: [site]
+targets:
+  site:

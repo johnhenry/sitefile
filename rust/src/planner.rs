@@ -179,6 +179,11 @@ pub enum StageBase {
     Local { path: String },
     /// A copy of an earlier stage's final tree.
     Stage { name: String },
+    /// `FROM image <ref> [AT <dir>]`: the files of an OCI site image. `reference` is the evaluated
+    /// reference as written; `local` (no registry host) names an image in the local store, never
+    /// fetched; `at` is the normalized directory inside the image; `lead` is `FROM` or
+    /// `STAGE <name> FROM`, for messages.
+    Image { reference: String, local: bool, at: Option<String>, lead: String, span: SourceSpan },
 }
 
 /// One FROM and the operations that follow it.
@@ -299,6 +304,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let base = match base {
                     FromBase::Scratch => StageBase::Scratch,
                     FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
+                    FromBase::Image { reference, at } => image_base(reference, at.as_ref(), &vars, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
                 };
                 stages.push(Stage { name: alias.clone(), base, operations: Vec::new(), span: span.clone() });
             }
@@ -566,6 +572,20 @@ fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
     Ok(ImportLocation::Local { path: normalize_local(uri, Some(span))?.path })
 }
 
+/// `image <ref> [AT <dir>]`: the reference must parse; a reference without a registry host names a local-store image.
+fn image_base(reference: &Operand, at: Option<&Operand>, vars: &Env, lead: &str) -> Result<StageBase> {
+    let raw = evaluate_operand(reference, vars)?;
+    let local = match crate::refs::parse_ref(&raw) {
+        Ok(r) => r.registry.is_none(),
+        Err(e) => return Err(SitefileError::at(E_VALIDATION, format!("{lead} image: {}", e.detail), &reference.span)),
+    };
+    let at = match at {
+        Some(op) => Some(normalize_virtual(&evaluate_operand(op, vars)?, Some(&op.span), "image directory")?.path),
+        None => None,
+    };
+    Ok(StageBase::Image { reference: raw, local, at, lead: lead.to_string(), span: reference.span.clone() })
+}
+
 /// A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory.
 fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>, lead: &str) -> Result<StageBase> {
     let raw = evaluate_operand(op, vars)?;
@@ -775,6 +795,18 @@ impl Stage {
                 StageBase::Scratch => json!({ "kind": "scratch" }),
                 StageBase::Local { path } => json!({ "kind": "local", "path": path }),
                 StageBase::Stage { name } => json!({ "kind": "stage", "name": name }),
+                StageBase::Image { reference, local, at, lead, span } => {
+                    let mut b = Map::new();
+                    b.insert("kind".into(), json!("image"));
+                    b.insert("ref".into(), json!(reference));
+                    b.insert("local".into(), json!(local));
+                    if let Some(a) = at {
+                        b.insert("at".into(), json!(a));
+                    }
+                    b.insert("lead".into(), json!(lead));
+                    b.insert("span".into(), span_json(span));
+                    Value::Object(b)
+                }
             },
         );
         m.insert("operations".into(), Value::Array(self.operations.iter().map(Operation::to_json).collect()));
@@ -931,6 +963,21 @@ mod tests {
         assert!(matches!(&ops[1], Operation::Transform { args: Some(a), .. } if a.len() == 2));
         plan_err("FROM scratch\nPLUGIN a FROM https://x/a.mjs\nEXPORT /", &[], E_PROTOCOL, 2, "PLUGIN a: plugins must be local files in the build context, not URLs");
         plan_err("FROM scratch\nPLUGIN a FROM ./a.js\nEXPORT /", &[], E_VALIDATION, 2, "PLUGIN a: './a.js' must be an ES module (.mjs) or a WebAssembly module (.wasm)");
+    }
+
+    #[test]
+    fn from_image_bases() {
+        let p = plan_of("ARG V=2\nSTAGE t FROM image ghcr.io/me/theme:${V} AT /srv//www/\nFROM image theme:1 AS l\nFROM t\nEXPORT /", &[]).unwrap();
+        match &p.stages[0].base {
+            StageBase::Image { reference, local, at, lead, span } => {
+                assert_eq!((reference.as_str(), *local, at.as_deref(), lead.as_str(), span.line, span.column), ("ghcr.io/me/theme:2", false, Some("/srv/www"), "STAGE t FROM", 2, 20));
+            }
+            b => panic!("{b:?}"),
+        }
+        assert!(matches!(&p.stages[1].base, StageBase::Image { local: true, at: None, lead, .. } if lead == "FROM"));
+        assert_eq!(p.stages[2].base, StageBase::Stage { name: "t".into() });
+        plan_err("FROM image Bad:1\nEXPORT /", &[], E_VALIDATION, 1, "FROM image: invalid image reference 'Bad:1'");
+        plan_err("FROM image t:1 AT rel\nEXPORT /", &[], E_PATH, 1, "image directory 'rel' must be an absolute artifact path");
     }
 
     #[test]

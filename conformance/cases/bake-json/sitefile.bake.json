@@ -1,0 +1,8 @@
+{
+  "groups": { "default": ["site", "assets"] },
+  "targets": {
+    "base": { "args": { "TITLE": "From JSON" } },
+    "site": { "inherits": ["base"], "format": "zip", "tags": ["bake-json:1"] },
+    "assets": { "inherits": "base", "target": "assets", "output": "dist/assets-only" }
+  }
+}

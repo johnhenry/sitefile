@@ -3,8 +3,8 @@
 Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quoted strings, comments, and backslash continuations. No implicit shell.
 
 Instructions:
-- `FROM scratch|<local dir>|<stage> [AS name]` (optional for a single-stage build: the first instruction other than `ARG` starts an implicit `FROM scratch`)
-- `STAGE <name> [FROM scratch|<local dir>|<stage>]` starts a named stage; same as `FROM <base> AS <name>` (base defaults to `scratch`)
+- `FROM scratch|<local dir>|<stage>|image <ref> [AT <dir>] [AS name]` (optional for a single-stage build: the first instruction other than `ARG` starts an implicit `FROM scratch`)
+- `STAGE <name> [FROM scratch|<local dir>|<stage>|image <ref> [AT <dir>]]` starts a named stage; same as `FROM <base> AS <name>` (base defaults to `scratch`)
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
@@ -122,6 +122,10 @@ These pin down what the draft above leaves open. Tests cover each rule.
     directory; write `./name` to force the directory. Files seeded from a
     directory get the origin `Sitefile:<line> FROM`; files inherited from a
     stage keep their original origin.
+  - **`image <ref> [AT <dir>]`** starts the stage from the files of an OCI
+    site image (issue #84), so a theme can be published as an image and a site
+    built on it: `FROM image ghcr.io/me/theme:1.2 AS theme`,
+    `STAGE theme FROM image ${THEME}`. See *FROM image* below.
   - Stage names are identifiers, unique, and share no namespace with
     ARG/LET/IMPORT: a collision in either order is `E_DUPLICATE`. A name used
     before its stage is complete (itself or a later stage) is `E_UNDEFINED`, so
@@ -131,6 +135,58 @@ These pin down what the draft above leaves open. Tests cover each rule.
     from any later stage.
   - **EXPORT** is still exactly one and last, and exports from the **last
     stage**. Earlier stages exist only to feed later ones.
+- **FROM image** (`FROM image <ref> [AT <dir>] [AS name]`, `STAGE name FROM image <ref> [AT <dir>]`):
+  - **Telling it apart.** `image` is a keyword only when another word other
+    than `AS` follows it, so `FROM image`, `FROM image AS x` and
+    `STAGE x FROM image` still name a stage or a directory called `image`
+    (write `./image` to be explicit). `scratch`, stage names and directories
+    keep their meaning; nothing that parsed before changes.
+  - **The reference** (an operand: `${VAR}` works) has the image grammar of
+    `pull`: `[registry-host[:port]/]name[:tag][@sha256:<hex>]`, checked when the
+    Sitefile is planned (`validate` reports `E_VALIDATION`). With a **registry
+    host** (a first component containing `.` or `:`, or `localhost`) it names an
+    image on that registry. **Without one** (`theme:1`, `theme@sha256:…`, an image
+    ID) it names an image in the **local store** (`sitefile build -t theme:1`,
+    `pull`, `load`), never Docker Hub, and the network and lockfile are never
+    involved; a missing one is `E_NOT_FOUND` at the FROM line ("build it with -t
+    theme:1, pull it, or name its registry"). To use Docker Hub, write
+    `docker.io/…`.
+  - **Pinning** (registry references, exactly like an `oci` export's `BASE`):
+    `@sha256:` pins the image in the Sitefile; a tag is resolved to a digest
+    once and recorded in `Sitefile.lock` under `images` (key
+    `registry/name:tag`), and later builds fetch **by digest**, so a moved tag
+    changes nothing until `--update-lock`. `--frozen-lockfile` fails with
+    `E_LOCK_MISSING` for an unrecorded tag; `--no-lockfile` resolves the tag on
+    every build and warns. `--strict-pins` requires `@sha256:` or a lockfile
+    entry (`E_UNPINNED` before anything is fetched); local-store images need no
+    pin, like local files. A `--target` build that stops before the stage keeps
+    its lockfile entry.
+  - **Fetching** goes through the registry client of `pull` and `BASE`: the same
+    credentials (`sitefile login`, `~/.docker/config.json`, helpers), TLS,
+    `--insecure-registry`, private-network rule (`--allow-private-network`
+    for a registry on a private address; loopback is allowed) and size limits.
+    An image already in the store is used without network access, and pulled
+    blobs count as recently used under the cache size limit (docs/CLI.md).
+    Any platform is accepted (an index is narrowed to `--platform`, default
+    `linux/amd64`): only the files are read.
+  - **Which files**: the image's site layer (its only layer, or the last one of
+    an image built with `BASE`), verified against its digest and `diff_id`, under
+    the image's root: the `dev.sitefile.root` label that `EXPORT … AS oci` writes
+    (its `AT`, default `/srv/www`), or `/` for an image without one. `AT <dir>`
+    (an absolute path inside the image) picks another directory, e.g. the web
+    root of an unlabelled single-layer image. Other multi-layer images are
+    `E_STORE` ("not a Sitefile image"). The files keep the origin
+    `image <registry/name:tag>@<digest>:<path in the layer>`, which conflict
+    messages and `why` show. Later instructions overlay them as usual
+    (`COPY --overwrite` to replace one).
+  - **Elsewhere**: `graph` shows an `image:<ref>` node (kind `image`) with a
+    `base` edge to the stage; `sitefile vendor` vendors the image's blobs like a
+    `BASE` (local-store images are not vendored); `sitefile outdated` lists each
+    registry `FROM image` as kind `image`, named by its stage; `--provenance`
+    lists it as a resolved dependency `from:<line>`. `validate`, `graph` and
+    `inspect --target` before the stage never resolve it.
+  - Example: `examples/theme` (the theme, built with `-t theme:1`) and
+    `examples/themed-site` (a site on it).
 - `ARG NAME[: string|number|boolean] [= value]`. No default means required;
   `--build-arg NAME=value` overrides. Unknown `--build-arg` names are warnings.
 - **Build args from files and the environment** (CLI):
@@ -504,8 +560,8 @@ gitignore subset:
   Nix's fixed-output derivations: every remote input must already be pinned,
   or the command fails with `E_UNPINNED` **before anything is fetched**. A
   remote `IMPORT` is pinned by `INTEGRITY` or a `Sitefile.lock` entry for its
-  URL; the `BASE` image of an `oci` export (or `--base`) by `@sha256:` or a
-  lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
+  URL; a registry `FROM image` and the `BASE` image of an `oci` export (or
+  `--base`) by `@sha256:` or a lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
   count. Local imports never need one. `--strict-pins` conflicts with
   `--update-lock` (a usage error), since that would accept changed content.
   `inspect` and non-oci exports never resolve a `BASE`, so it is not checked
@@ -514,8 +570,8 @@ gitignore subset:
   `--cache-from`/`--cache-to` references are caches, not inputs, and are never
   checked. With `--provenance`, a strict build sets
   `externalParameters.strictPins: true` and gives each remote dependency an
-  annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for the
-  base); without `--strict-pins` the provenance is unchanged.
+  annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for an
+  image); without `--strict-pins` the provenance is unchanged.
   There is no Sitefile-level switch yet (the flag needs no new syntax; the
   `# sitefile=N` directive only pins the language version). Typical CI use:
   `sitefile build --frozen-lockfile --strict-pins`.
@@ -528,8 +584,8 @@ gitignore subset:
 ### Vendoring (`sitefile vendor`)
 `sitefile vendor [context]` (like `cargo vendor`) downloads every remote input so
 later builds work offline and without the network flags:
-- It fetches each remote `IMPORT` and the `BASE` image (of an `oci` export, or
-  `--base`) **exactly as a build would**: same network policy and limits, same
+- It fetches each remote `IMPORT`, each registry `FROM image` and the `BASE`
+  image (of an `oci` export, or `--base`) **exactly as a build would**: same network policy and limits, same
   `INTEGRITY` and `Sitefile.lock` checks (`--frozen-lockfile`, `--update-lock`),
   and `Sitefile.lock` is updated the same way. It always fetches; an existing
   vendor directory is not read.
@@ -537,7 +593,7 @@ later builds work offline and without the network flags:
   `vendor/sitefile`, a path inside the context) as a whole, written to a
   temporary sibling and swapped in:
   - `blobs/sha256/<hex>`: content-addressed bytes: each import body (an archive
-    imported `AS tree` is stored as the archive), and for a `BASE` image the blobs
+    imported `AS tree` is stored as the archive), and for a `FROM image` or `BASE` image the blobs
     an offline pull needs: what the tag resolved to (an image index for
     multi-platform images), the manifest of the `--platform` variant (default
     `linux/amd64`), its config and layers. Only that platform is vendored.
@@ -555,7 +611,7 @@ later builds work offline and without the network flags:
   is involved; the bytes are checked against their digest (`E_INTEGRITY`, "run
   'sitefile vendor' again"), then against `INTEGRITY` and the lockfile exactly
   like a download. A URL the manifest lacks is fetched as usual, with a warning
-  (`... is not vendored in vendor/sitefile; fetching it`). For a `BASE`, a tag
+  (`... is not vendored in vendor/sitefile; fetching it`). For a `FROM image` or `BASE`, a tag
   with no lockfile entry uses the digest the vendor manifest recorded (and records
   it in the lockfile; `--frozen-lockfile` still requires the lockfile entry, and
   `--update-lock` re-resolves the tag from the registry), and the vendored blobs
@@ -588,7 +644,9 @@ checked:
   validator would not prove changed content anyway; the download is the check.
   A version inside a URL (`https://cdn.example/lib@1.2.3/x.js`) is not
   interpreted: discovering `lib@1.3.0` would need knowledge of each CDN.
-- **BASE images** (the `oci` export's `BASE`, or `--base`): a tag is resolved again
+- **Images**: each registry `FROM image` (kind `image`, named by its stage, or
+  `#<n>` for an unnamed one; local-store images have no upstream and are not
+  listed), then the `BASE` (the `oci` export's `BASE`, or `--base`): a tag is resolved again
   (one manifest GET) and compared with the digest in the reference
   (`name:tag@sha256:...`) or in the lockfile's `images`. `changed` means the tag
   has moved since it was pinned. A digest-only reference (`name@sha256:...`) is
@@ -605,7 +663,7 @@ checked:
   not a failure of the command; the exit code is 0 unless the Sitefile itself
   cannot be read or planned. `--no-lockfile` ignores `Sitefile.lock`.
 - It reads the same inputs as a build: every `IMPORT` of the Sitefile (as a
-  `--target` build still resolves them all) and the same `BASE`. It always asks
+  `--target` build still resolves them all), every registry `FROM image` and the same `BASE`. It always asks
   upstream, never a vendor directory (`sitefile vendor` copies are what is
   pinned, not what is current), and `--cache-from`/`--cache-to` references are
   caches, not inputs.

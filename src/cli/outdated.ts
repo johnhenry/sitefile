@@ -17,7 +17,7 @@ const ORDER: readonly OutdatedStatus[] = ['changed', 'unpinned', 'error', 'diges
 
 /** The text report: a table, one line per error, and a summary line. */
 export function formatOutdated(r: OutdatedReport): string {
-  if (r.inputs.length === 0) return 'No remote inputs: the Sitefile has no remote IMPORT and no BASE image\n';
+  if (r.inputs.length === 0) return 'No remote inputs: the Sitefile has no remote IMPORT, no registry FROM image and no BASE image\n';
   const short = (d: string | null): string => (d === null ? '-' : shortId(d));
   const rows = [['KIND', 'NAME', 'SOURCE', 'PINNED', 'BY', 'LATEST', 'STATUS', 'NEWER TAG']];
   for (const i of r.inputs) rows.push([i.kind, i.name, i.source, short(i.pin), i.pinnedBy ?? '-', short(i.latest), i.status, i.newerTag ?? '-']);

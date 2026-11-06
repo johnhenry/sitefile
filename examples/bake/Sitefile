@@ -1,0 +1,10 @@
+# One Sitefile, several variants: sitefile.bake.yaml builds it once per
+# locale and environment (`sitefile bake --print` shows the plan).
+FROM scratch
+ARG LOCALE = "en"
+ARG ENV = "staging"
+ARG BASE_URL = "https://staging.example.com"
+IMPORT strings FROM ./locales/${LOCALE}.yaml AS yaml
+COPY ./public/ /
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT /

@@ -1,0 +1,13 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site",
+      "--frozen-lockfile"
+    ]
+  ],
+  "lock": true
+}

@@ -1,0 +1,7 @@
+# A site on a theme image.
+ARG THEME = "1.2"
+STAGE theme FROM image ghcr.io/me/theme:${THEME}
+FROM image theme:1 AT /srv/www AS local
+FROM theme
+COPY --from=local /index.html /local.html
+EXPORT /

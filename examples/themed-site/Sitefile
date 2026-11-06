@@ -1,0 +1,15 @@
+# A site on a theme image: the theme's files start the stage, the site renders its layout and adds pages.
+# Build the theme first (sitefile build examples/theme -t theme:1), then:
+#
+#   sitefile build examples/themed-site
+#
+# With a registry reference (--build-arg THEME=ghcr.io/me/theme:1) the tag is resolved to a digest once and
+# recorded in Sitefile.lock, so later builds use the same theme until `sitefile build --update-lock`.
+ARG THEME = "theme:1"
+STAGE theme FROM image ${THEME}
+
+FROM theme
+IMPORT page FROM ./content/index.json AS json
+RENDER --escape=html --from=theme /layout/page.html TO /index.html
+COPY ./static/ /
+EXPORT /

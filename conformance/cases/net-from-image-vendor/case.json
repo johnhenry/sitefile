@@ -1,0 +1,34 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "vendor",
+      "${CTX}",
+      "--allow-private-network"
+    ],
+    {
+      "args": [
+        "build",
+        "${CTX}",
+        "-o",
+        "${OUT}/site",
+        "--frozen-lockfile"
+      ],
+      "env": {
+        "SITEFILE_HOME": "${TMP}/fresh-home"
+      }
+    }
+  ],
+  "outputs": [
+    [
+      "site",
+      "tree"
+    ],
+    [
+      "ctx:vendor/sitefile",
+      "tree"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}
