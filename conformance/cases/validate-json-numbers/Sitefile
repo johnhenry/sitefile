@@ -1,0 +1,9 @@
+# Number ARGs whose JSON form differs between JavaScript and serde_json (2^53, 1e20, 1e21, ...).
+ARG big:number = 9007199254740993
+ARG huge:number = 1e20
+ARG e21:number = 1e21
+ARG tiny:number = 1e-7
+ARG neg:number = -0
+ARG frac:number = 1.50
+LET over:number = 1e400
+EXPORT /
