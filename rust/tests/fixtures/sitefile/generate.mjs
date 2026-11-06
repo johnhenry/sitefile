@@ -79,6 +79,10 @@ const INSTRUCTIONS = {
     if (chance(0.6)) clauses.push(`AS ${pick(KINDS)}`);
     if (chance(0.25)) clauses.push(`INTEGRITY ${pick(DIGESTS)}`);
     if (chance(0.25)) clauses.push(`SORT BY ${pick(['date', 'title', 'x-y', '1'])}${maybe(() => ` ${pick(['DESC', 'ASC', 'desc', 'UP'])}`)}`);
+    // Build secrets (issue #85), sometimes twice (the same header twice is E_SYNTAX).
+    for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
+      clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
+    }
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
@@ -339,6 +343,19 @@ const EDGE = [
   '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
   '# sitefile=1\nEXPORT /', '# sitefile=2\nEXPORT /', '#sitefile = 1\n#sitefile=1\nEXPORT /', 'EXPORT /\n# sitefile=1', '# sitefile=1.0\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
+  // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
+  'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#' + 'ab'.repeat(20) + ':a/b/ AS markdown SORT BY date\nEXPORT /', 'IMPORT d FROM git+http://e.x/r#v1.0:README.md AS text\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#refs/tags/v1\nEXPORT /', 'IMPORT d FROM GIT+HTTPS://e.x/r#:sub\nEXPORT /', 'IMPORT d FROM git+ssh://e.x/r\nEXPORT /',
+  'IMPORT d FROM git+https://u:p@e.x/r\nEXPORT /', 'IMPORT d FROM git+https://e.x/r?x=1\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a..b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main:../x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#-x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#x.lock\nEXPORT /',
+  'IMPORT d FROM "git+https://e.x/r#main:a\\\\b"\nEXPORT /', 'ARG R = main\nIMPORT d FROM git+https://e.x/r#${R}:docs\nEXPORT /', 'IMPORT d FROM git+:x\nEXPORT /',
+  // Build secrets (issue #85).
+  'IMPORT d FROM https://e.x/d SECRET k AS HEADER X-Api-Key AS json SECRET t AS BEARER\nEXPORT /', 'IMPORT d FROM ./d SECRET k AS BEARER\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET k AS HEADER Content-Length\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET k AS HEADER xé\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER AUTHORIZATION\nEXPORT /', 'IMPORT d FROM git+https://e.x/r SECRET k as header Cookie\nEXPORT /',
+  'IMPORT d FROM https://e.x/d SECRET k AS COOKIE\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET\nEXPORT /', 'IMPORT d FROM https://e.x/d SECRET k AS HEADER "X-Q"\nEXPORT /',
   'FROM image\nEXPORT /', 'FROM image AS x\nEXPORT /', 'FROM image t:1 AT\nEXPORT /', 'FROM image t:1 AS\nEXPORT /', 'FROM image t:1 extra\nEXPORT /',
   'STAGE s FROM image ghcr.io/a/b:1 AT /srv/www\nEXPORT /', 'STAGE s FROM image\nEXPORT /', 'STAGE s FROM image t:1 AS x\nEXPORT /', 'FROM image Bad:1\nEXPORT /',
   'ARG V=1\nFROM image theme:${V} AS t\nFROM t\nEXPORT /', 'FROM image t:1 AT rel\nEXPORT /', 'FROM image t@sha256:' + 'a'.repeat(64) + ' AT /x/../y\nEXPORT /',

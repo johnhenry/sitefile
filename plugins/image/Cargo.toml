@@ -1,0 +1,28 @@
+[package]
+name = "sitefile-image"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Sitefile WebAssembly plugin: decode, resize and encode images (PNG, JPEG, GIF, WebP)"
+
+[lib]
+# cdylib: the .wasm module; rlib: so `cargo test` can run the fuzz tests natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pinned exactly (and by Cargo.lock): the codecs' output is part of the plugin's bytes.
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
+
+[profile.test]
+opt-level = 2
+
+# Keep this crate out of any parent workspace.
+[workspace]

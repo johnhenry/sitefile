@@ -37,7 +37,7 @@ pub fn bytes_to_resource(
     limits: &ArchiveLimits,
 ) -> Result<Resource> {
     let digest = sha256(&bytes);
-    let provenance = Provenance { uri: info.uri.clone(), resolved_url: info.resolved_url.clone(), digest };
+    let provenance = Provenance { uri: info.uri.clone(), resolved_url: info.resolved_url.clone(), digest, git_commit: None };
     let value = |format: ValueFormat, value: serde_json::Value, provenance: Provenance| Resource::Value { format, value, provenance };
     match kind {
         // The provenance digest is that of the archive bytes, which is what pins and the lockfile cover.

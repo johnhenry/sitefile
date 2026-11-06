@@ -1,0 +1,7 @@
+# sitefile outdated: a locked ref that moved, a commit pin, an unpinned tag and a missing ref.
+FROM scratch
+IMPORT a FROM git+${HTTPS}/repo.git#main:site
+IMPORT b FROM git+${HTTPS}/repo.git#${GIT_V1}
+IMPORT c FROM git+${HTTPS}/repo.git#v1
+IMPORT d FROM git+${HTTPS}/repo.git#gone
+EXPORT /

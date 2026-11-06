@@ -1,0 +1,12 @@
+# IMPORT from Git (issue #91): a tree (symlink and mode kept), one file AS text, a Markdown collection, an annotated tag.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#v1:site
+IMPORT readme FROM git+${HTTPS}/repo.git#main:README.md AS text
+IMPORT docs FROM git+${HTTPS}/repo.git#v1:docs AS markdown SORT BY title DESC
+IMPORT raw FROM git+${HTTPS}/repo.git#refs/tags/v1:docs
+COPY site: /
+COPY raw: /raw/
+RENDER --escape=html <<HTML TO /readme.html
+<p>${readme}</p>${#each docs as d}<i>${d.title}</i>${/each}
+HTML
+EXPORT /

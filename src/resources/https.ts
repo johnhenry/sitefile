@@ -18,6 +18,18 @@ export interface FetchResult {
   readonly mediaType?: string;
 }
 
+/**
+ * What to send. `headers` go to every hop; `originHeaders` (credentials: IMPORT … SECRET) only to hops
+ * on the first URL's origin (scheme, host and port), so a redirect elsewhere never receives them.
+ * A request with a body (POST) never follows redirects (E_REDIRECT).
+ */
+export interface FetchRequest {
+  readonly method?: 'GET' | 'POST';
+  readonly body?: Uint8Array;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly originHeaders?: Readonly<Record<string, string>>;
+}
+
 /** A URL rendered without any userinfo, safe for error messages. */
 export function redactUrl(url: URL | string): string {
   try {
@@ -125,13 +137,15 @@ interface HopState {
  * followed manually and every hop is re-validated; one deadline covers the
  * whole fetch.
  */
-export async function fetchRemote(url: string, policy: FetchPolicy, span?: SourceSpan): Promise<FetchResult> {
+export async function fetchRemote(url: string, policy: FetchPolicy, span?: SourceSpan, request: FetchRequest = {}): Promise<FetchResult> {
   let current: URL;
   try {
     current = new URL(url);
   } catch (e) {
     throw new SitefileError('E_PROTOCOL', `invalid URL '${redactUrl(url)}'`, span, { cause: e });
   }
+  const origin = current.origin;
+  const method = request.method ?? 'GET';
 
   const controller = new AbortController();
   const state: HopState = {};
@@ -154,9 +168,15 @@ export async function fetchRemote(url: string, policy: FetchPolicy, span?: Sourc
       validateHop(current, policy, span);
       if (controller.signal.aborted) throw timeoutError();
 
-      const res = await openHop(current, policy, controller.signal, state, span, timeoutError);
+      // Credentials only ever go to the origin they were given for (not after a redirect elsewhere).
+      const headers = current.origin === origin ? { ...request.headers, ...request.originHeaders } : { ...request.headers };
+      const res = await openHop(current, policy, controller.signal, state, span, timeoutError, method, headers, request.body);
       const status = res.statusCode ?? 0;
 
+      if (REDIRECT_STATUSES.has(status) && method !== 'GET') {
+        res.destroy();
+        throw new SitefileError('E_REDIRECT', `${method} ${redactUrl(current)} was redirected (HTTP ${status}); redirects are only followed for GET`, span);
+      }
       if (REDIRECT_STATUSES.has(status)) {
         const location = res.headers.location;
         res.destroy();
@@ -184,7 +204,7 @@ export async function fetchRemote(url: string, policy: FetchPolicy, span?: Sourc
 
       if (status !== 200) {
         res.destroy();
-        throw new SitefileError('E_FETCH_STATUS', `GET ${redactUrl(current)} returned HTTP ${status}`, span);
+        throw new SitefileError('E_FETCH_STATUS', `${method} ${redactUrl(current)} returned HTTP ${status}`, span);
       }
 
       const encoding = String(res.headers['content-encoding'] ?? '').trim().toLowerCase();
@@ -254,11 +274,14 @@ function openHop(
   state: HopState,
   span: SourceSpan | undefined,
   timeoutError: () => SitefileError,
+  method: 'GET' | 'POST',
+  extra: Readonly<Record<string, string>>,
+  body: Uint8Array | undefined,
 ): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const options: RequestOptions = {
-      method: 'GET',
-      headers: { 'accept-encoding': 'identity', 'user-agent': USER_AGENT, accept: '*/*' },
+      method,
+      headers: { 'accept-encoding': 'identity', 'user-agent': USER_AGENT, accept: '*/*', ...extra, ...(body ? { 'content-length': String(body.byteLength) } : {}) },
       lookup: createGuardedLookup(policy, span),
       agent: false,
       signal,
@@ -295,7 +318,7 @@ function openHop(
       }
       reject(new SitefileError('E_FETCH', `fetching ${redactUrl(url)} failed: ${e.message}`, span, { cause: e }));
     });
-    req.end();
+    req.end(body);
   });
 }
 

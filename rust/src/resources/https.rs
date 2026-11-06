@@ -41,6 +41,20 @@ struct Hop {
     /// Without IPv6 brackets.
     host: String,
     has_credentials: bool,
+    /// scheme://host[:port] (WHATWG origin serialization).
+    origin: String,
+}
+
+/// What to send. `headers` go to every hop; `origin_headers` (credentials) only to hops on the
+/// first URL's origin (scheme, host and port), so a redirect elsewhere never receives them.
+/// A request with a body (POST) never follows redirects (E_REDIRECT).
+#[derive(Debug, Clone, Default)]
+pub struct FetchRequest {
+    /// "GET" (default) or "POST".
+    pub method: Option<&'static str>,
+    pub body: Option<Vec<u8>>,
+    pub headers: Vec<(String, String)>,
+    pub origin_headers: Vec<(String, String)>,
 }
 
 /// Parse with ureq's (WHATWG) parser. Fails for anything without a host.
@@ -58,6 +72,25 @@ fn parse_hop(url: &str) -> Option<Hop> {
         scheme: u.scheme().to_string(),
         host: strip_brackets(host).to_string(),
         has_credentials: !u.username().is_empty() || u.password().is_some_and(|p| !p.is_empty()),
+        origin: u.origin().ascii_serialization(),
+    })
+}
+
+/// What a URL parsed with the WHATWG parser carries (Git URLs: credentials and query are refused).
+pub(crate) struct UrlParts {
+    pub has_credentials: bool,
+    /// A non-empty query (`new URL(…).search !== ''`).
+    pub has_query: bool,
+}
+
+/// Parse an http(s) URL; None when it does not parse.
+pub(crate) fn url_parts(url: &str) -> Option<UrlParts> {
+    let req = ureq::get(url);
+    let ru = req.request_url().ok()?;
+    let u = ru.as_url();
+    Some(UrlParts {
+        has_credentials: !u.username().is_empty() || u.password().is_some_and(|p| !p.is_empty()),
+        has_query: u.query().is_some_and(|q| !q.is_empty()),
     })
 }
 
@@ -343,6 +376,12 @@ fn source_is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
 /// followed manually and every hop is re-validated; one deadline covers the
 /// whole fetch.
 pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) -> Result<FetchResult> {
+    fetch_remote_with(url, policy, span, &FetchRequest::default())
+}
+
+/// [`fetch_remote`] with a method, body and extra headers (see [`FetchRequest`]).
+pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>, request: &FetchRequest) -> Result<FetchResult> {
+    let method = request.method.unwrap_or("GET");
     let started = Instant::now();
     let budget = Duration::from_millis(policy.timeout_ms);
     let deadline = started + budget;
@@ -350,6 +389,7 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         || SitefileError::new(E_FETCH_TIMEOUT, format!("fetching {} timed out after {} ms", redact_url(url), policy.timeout_ms), span.cloned());
 
     let mut current = checked_hop(url, policy, span)?;
+    let origin = current.origin.clone();
     let resolver = GuardedResolver::new(policy, span).with_deadline(deadline, timeout_error().detail);
     let mut builder = ureq::AgentBuilder::new()
         .redirects(0)
@@ -370,13 +410,26 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         if now >= deadline {
             return Err(timeout_error());
         }
-        let req = agent
-            .get(&current.href)
+        let mut req = agent
+            .request(method, &current.href)
             .timeout(deadline - now)
             .set("accept-encoding", "identity")
             .set("user-agent", USER_AGENT)
             .set("accept", "*/*");
-        let res = match req.call() {
+        for (k, v) in &request.headers {
+            req = req.set(k, v);
+        }
+        // Credentials only ever go to the origin they were given for (not after a redirect elsewhere).
+        if current.origin == origin {
+            for (k, v) in &request.origin_headers {
+                req = req.set(k, v);
+            }
+        }
+        let sent = match &request.body {
+            Some(b) => req.send_bytes(b),
+            None => req.call(),
+        };
+        let res = match sent {
             Ok(r) => r,
             Err(ureq::Error::Status(_, r)) => r,
             Err(ureq::Error::Transport(t)) => {
@@ -391,6 +444,13 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         };
         let status = res.status();
 
+        if REDIRECT_STATUSES.contains(&status) && method != "GET" {
+            return Err(SitefileError::new(
+                E_REDIRECT,
+                format!("{method} {} was redirected (HTTP {status}); redirects are only followed for GET", current.redacted),
+                span.cloned(),
+            ));
+        }
         if REDIRECT_STATUSES.contains(&status) {
             let location = res.header("location").map(str::to_string);
             drop(res);
@@ -419,7 +479,7 @@ pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) 
         }
 
         if status != 200 {
-            return Err(SitefileError::new(E_FETCH_STATUS, format!("GET {} returned HTTP {status}", current.redacted), span.cloned()));
+            return Err(SitefileError::new(E_FETCH_STATUS, format!("{method} {} returned HTTP {status}", current.redacted), span.cloned()));
         }
 
         let encoding = res.header("content-encoding").unwrap_or("").trim().to_ascii_lowercase();

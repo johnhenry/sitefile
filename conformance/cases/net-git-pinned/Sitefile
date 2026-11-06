@@ -1,0 +1,5 @@
+# A commit in the URL pins a Git import (--strict-pins); the provenance records the commit.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#${GIT_V1}:site
+COPY site: /
+EXPORT / AS oci

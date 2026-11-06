@@ -1,0 +1,33 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/old",
+      "--allow-private-network",
+      "--frozen-lockfile"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/new",
+      "--allow-private-network",
+      "--update-lock"
+    ]
+  ],
+  "outputs": [
+    [
+      "old",
+      "tree"
+    ],
+    [
+      "new",
+      "tree"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

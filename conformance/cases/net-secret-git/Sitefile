@@ -1,0 +1,5 @@
+# A private Git repository: the secret goes with every Git request (Bearer).
+FROM scratch
+IMPORT docs FROM git+${HTTPS}/private.git#main:docs SECRET tok AS BEARER
+COPY docs: /
+EXPORT /
