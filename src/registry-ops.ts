@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
-import { SitefileError } from './errors.js';
-import { MEDIA, parseConfig, parseManifest, parsePlatform, type Descriptor, type ParsedManifest } from './oci.js';
+import { ATTEST, referrersTag, type Referrer, type ReferrerDescriptor } from './attest.js';
+import { isSitefileError, SitefileError } from './errors.js';
+import { canonicalJson, MEDIA, parseConfig, parseManifest, parsePlatform, type Descriptor, type ParsedManifest } from './oci.js';
 import { parseRef, withDefaultRegistry, type ImageRef } from './ref.js';
 import type { RegistryClient } from './registry.js';
 import { shortId, Store } from './store.js';
@@ -166,6 +167,8 @@ export interface PushResult {
   readonly uploaded: number;
   readonly mounted: number;
   readonly existing: number;
+  /** Attestations pushed (as OCI 1.1 referrers of the image). */
+  readonly attestations: number;
 }
 
 /** Push a stored image to `ref` (a registry reference): blobs that are missing, then the manifest. */
@@ -217,5 +220,54 @@ export async function pushImage(store: Store, client: RegistryClient, id: string
   }
   const digest = await client.putManifest(repo, ref.tag ?? ref.digest ?? 'latest', manifestBytes, mediaType);
   if (digest !== id) throw new SitefileError('E_INTEGRITY', `the registry reports digest ${digest}, expected ${id}`);
-  return { digest, size: manifestBytes.byteLength, ...counts };
+  const attestations = await pushReferrers(client, repo, id, await store.referrers(id), say);
+  return { digest, size: manifestBytes.byteLength, ...counts, attestations };
+}
+
+/**
+ * Push attestations as OCI 1.1 referrers of `subject` (distribution spec v1.1): each artifact
+ * manifest (with its blobs) by digest. A registry with the referrers API answers with an
+ * `OCI-Subject` header; for the others the referrers tag schema is used: the image index at tag
+ * `sha256-<hex>` lists them (merged with what it already lists).
+ */
+export async function pushReferrers(client: RegistryClient, repo: string, subject: string, referrers: readonly Referrer[], say: (m: string) => void): Promise<number> {
+  const fallback: ReferrerDescriptor[] = [];
+  for (const r of referrers) {
+    const blobs = new Map(r.blobs);
+    const manifestBytes = blobs.get(r.descriptor.digest);
+    if (!manifestBytes) throw new SitefileError('E_STORE', `attestation ${r.descriptor.digest} is missing from the local store; cannot push`);
+    const m = parseManifest(manifestBytes);
+    for (const d of [m.config, ...m.layers]) {
+      if (await client.hasBlob(repo, d.digest)) continue;
+      const bytes = blobs.get(d.digest);
+      if (!bytes) throw new SitefileError('E_STORE', `blob ${d.digest} is missing from the local store; cannot push`);
+      await client.pushBlob(repo, d, { length: bytes.byteLength, open: () => bytes });
+    }
+    const put = await client.putManifestFull(repo, r.descriptor.digest, manifestBytes, MEDIA.manifest);
+    if (put.digest !== r.descriptor.digest) throw new SitefileError('E_INTEGRITY', `the registry reports digest ${put.digest}, expected ${r.descriptor.digest}`);
+    say(`${shortId(r.descriptor.digest)}: attestation pushed (${r.descriptor.annotations?.[ATTEST.predicateAnnotation] ?? r.descriptor.artifactType ?? 'artifact'})`);
+    if (put.subject === undefined) fallback.push(r.descriptor);
+  }
+  if (fallback.length) {
+    const tag = referrersTag(subject);
+    let listed: Array<Record<string, unknown>> = [];
+    try {
+      const cur = await client.getManifest(repo, tag);
+      const j = JSON.parse(Buffer.from(cur.bytes).toString('utf8')) as { manifests?: unknown };
+      if (Array.isArray(j.manifests)) listed = (j.manifests as unknown[]).filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x));
+    } catch (e) {
+      // No referrers tag yet (or not an index): start a new one.
+      if (!(isSitefileError(e) && e.code === 'E_NOT_FOUND') && !(e instanceof SyntaxError)) throw e;
+    }
+    const missing = fallback.filter((f) => !listed.some((l) => l.digest === f.digest));
+    if (missing.length === 0) {
+      say(`referrers tag ${tag}: up to date`);
+    } else {
+      const manifests = [...listed, ...missing];
+      const bytes = new TextEncoder().encode(canonicalJson({ schemaVersion: 2, mediaType: MEDIA.index, manifests }));
+      await client.putManifest(repo, tag, bytes, MEDIA.index);
+      say(`referrers tag ${tag}: ${manifests.length} attestation${manifests.length === 1 ? '' : 's'}`);
+    }
+  }
+  return referrers.length;
 }

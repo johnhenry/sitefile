@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { gzipTar, writeTar } from './archive-writers.js';
+import type { Referrer } from './attest.js';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import type { OciCompression } from './language/ast.js';
@@ -220,6 +221,8 @@ export interface IndexEntry {
   readonly stored?: string | undefined;
   /** Extra annotations written verbatim (exports only). */
   readonly extra?: Readonly<Record<string, string>> | undefined;
+  /** OCI 1.1 artifactType (attestation entries of exports only). */
+  readonly artifactType?: string | undefined;
 }
 
 export const ANN_CONTAINERD_NAME = 'io.containerd.image.name';
@@ -244,7 +247,7 @@ export function encodeIndex(entries: readonly IndexEntry[]): Uint8Array {
     if (e.refName) annotations[ANN.refName] = e.refName;
     if (e.stored) annotations[ANN.stored] = e.stored;
     Object.assign(annotations, e.extra);
-    return { mediaType: MEDIA.manifest, digest: e.digest, size: e.size, ...(Object.keys(annotations).length ? { annotations } : {}) };
+    return { mediaType: MEDIA.manifest, digest: e.digest, size: e.size, artifactType: e.artifactType, ...(Object.keys(annotations).length ? { annotations } : {}) };
   });
   return enc.encode(canonicalJson({ schemaVersion: 2, mediaType: MEDIA.index, manifests }));
 }
@@ -270,20 +273,28 @@ export function blobPathOf(digest: string): string {
   return `/blobs/sha256/${digest.slice(7)}`;
 }
 
-/** A standalone OCI image layout holding one image, as a Tree (write it as a directory or tar it). */
+/**
+ * A standalone OCI image layout holding one image, as a Tree (write it as a directory or tar it).
+ * `referrers` (attestations, `build --provenance/--sbom`) are listed in index.json after the image,
+ * without a name, and their blobs are included.
+ */
 export function layoutTree(
   img: Pick<OciImage, 'manifestBytes' | 'manifestDigest' | 'configBytes' | 'configDigest' | 'layerBytes' | 'layerDigest'>,
   refName?: string,
   /** Blobs of the layers below the site layer (digest -> bytes), for images built on a BASE. */
   baseBlobs: ReadonlyMap<string, Uint8Array> = new Map(),
+  referrers: readonly Referrer[] = [],
 ): Tree {
+  const entries: IndexEntry[] = [
+    { digest: img.manifestDigest, size: img.manifestBytes.byteLength, ...(refName ? { extra: exportNameAnnotations(refName) } : {}) },
+    ...referrers.map((r) => ({ digest: r.descriptor.digest, size: r.descriptor.size, artifactType: r.descriptor.artifactType, extra: r.descriptor.annotations })),
+  ];
+  const blobs = new Map<string, Uint8Array>([[img.manifestDigest, img.manifestBytes], [img.configDigest, img.configBytes], [img.layerDigest, img.layerBytes], ...baseBlobs]);
+  for (const r of referrers) for (const [d, b] of r.blobs) blobs.set(d, b);
   const files: Array<[string, FileNode]> = [
     ['/oci-layout', makeFile(OCI_LAYOUT_BYTES, 'oci')],
-    ['/index.json', makeFile(encodeIndex([{ digest: img.manifestDigest, size: img.manifestBytes.byteLength, ...(refName ? { extra: exportNameAnnotations(refName) } : {}) }]), 'oci')],
-    [blobPathOf(img.manifestDigest), makeFile(img.manifestBytes, 'oci')],
-    [blobPathOf(img.configDigest), makeFile(img.configBytes, 'oci')],
-    [blobPathOf(img.layerDigest), makeFile(img.layerBytes, 'oci')],
-    ...[...baseBlobs].map(([d, b]) => [blobPathOf(d), makeFile(b, 'oci')] as [string, FileNode]),
+    ['/index.json', makeFile(encodeIndex(entries), 'oci')],
+    ...[...blobs].map(([d, b]) => [blobPathOf(d), makeFile(b, 'oci')] as [string, FileNode]),
   ];
   return Tree.fromFiles(files);
 }
@@ -294,8 +305,9 @@ export function ociArchive(
   refName: string | undefined,
   epoch: number | undefined,
   baseBlobs?: ReadonlyMap<string, Uint8Array>,
+  referrers: readonly Referrer[] = [],
 ): Uint8Array {
-  return writeTar(layoutTree(img, refName, baseBlobs), { epoch: epoch ?? 0 });
+  return writeTar(layoutTree(img, refName, baseBlobs, referrers), { epoch: epoch ?? 0 });
 }
 
 export interface ParsedManifest {

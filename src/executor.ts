@@ -23,7 +23,8 @@ import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
-import { buildOciImage, imageMeta, layoutTree, ociArchive, type BaseImage } from './oci.js';
+import { buildFacts, makeAttestations, type AttestRequest, type Referrer } from './attest.js';
+import { ANN, buildOciImage, imageMeta, layoutTree, ociArchive, parseConfig, type BaseImage, type OciImage } from './oci.js';
 import { readLayerBlobs, resolveBase } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
@@ -312,6 +313,8 @@ export interface ExportTarget {
   readonly gitLabels?: boolean;
   /** oci: `name:tag` recorded as org.opencontainers.image.ref.name in index.json. */
   readonly ociRefName?: string;
+  /** oci: attach a provenance and/or SBOM attestation (`--provenance`, `--sbom`). */
+  readonly attest?: AttestRequest;
 }
 
 export interface ExportedBuild extends BuildResult {
@@ -360,13 +363,14 @@ async function exportBuild(
     });
     // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
     const baseBlobs = result.base ? await readLayerBlobs(options.store ?? (await Store.open()), img.baseLayers) : undefined;
+    const referrers = options.attest ? await imageAttestations(result, img, options, options.attest) : [];
     // A .tar destination gets an OCI archive; anything else a layout directory.
     if (options.outDir.toLowerCase().endsWith('.tar')) {
-      const data = ociArchive(img, options.ociRefName, sourceDateEpoch(), baseBlobs);
+      const data = ociArchive(img, options.ociRefName, sourceDateEpoch(), baseBlobs, referrers);
       const written = await exportFile(data, options.outDir, exportOptions);
       return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data), manifestDigest: img.manifestDigest };
     }
-    const written = await exportDirectory(layoutTree(img, options.ociRefName, baseBlobs), options.outDir, exportOptions);
+    const written = await exportDirectory(layoutTree(img, options.ociRefName, baseBlobs, referrers), options.outDir, exportOptions);
     return { ...result, format, outDir: written.outDir, manifestDigest: img.manifestDigest };
   }
   if (!isArchiveFormat(format)) {
@@ -379,6 +383,22 @@ async function exportBuild(
   });
   const written = await exportFile(data, options.outDir, exportOptions);
   return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data) };
+}
+
+/**
+ * The attestations (`--provenance`, `--sbom`) of an image built from `result`: in-toto statements
+ * whose subject is the image manifest. They never change the image itself.
+ */
+export async function imageAttestations(
+  result: BuildResult,
+  img: Pick<OciImage, 'manifestDigest' | 'manifestBytes' | 'configBytes' | 'root'>,
+  options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'buildArgs' | 'platform'>,
+  request: AttestRequest,
+): Promise<Referrer[]> {
+  if (!request.provenance && !request.sbom) return [];
+  const facts = await buildFacts(result, options);
+  const title = parseConfig(img.configBytes).labels[ANN.title];
+  return makeAttestations({ digest: img.manifestDigest, size: img.manifestBytes.byteLength, files: result.output, root: img.root, title }, facts, request, sourceDateEpoch());
 }
 
 // ---------------------------------------------------------------- imports

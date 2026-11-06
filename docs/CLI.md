@@ -26,6 +26,8 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--platform os/arch` | image platform metadata (default `linux/amd64`) |
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
 | `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
+| `--provenance` | attach a [SLSA provenance](https://slsa.dev/provenance/v1) attestation to the oci image (see [Attestations](#attestations)) |
+| `--sbom` | attach an SBOM attestation: a [CycloneDX](https://cyclonedx.org/) 1.6 file list (see [Attestations](#attestations)) |
 
 `build`, `validate` and `inspect` also accept:
 
@@ -414,6 +416,11 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
 - **push** HEADs every blob and uploads only the missing ones (monolithic `POST` + `PUT`); layers of a `BASE`
   image are *mounted* from the base's repository when it is on the same registry; then the manifest is `PUT` and the
   digest the registry returns is checked against ours. The pushed manifest digest equals the local image ID.
+- **push** then pushes the image's [attestations](#attestations), if it has any, as OCI 1.1 *referrers*: each
+  artifact manifest (with its blobs) by digest. A registry that implements the referrers API says so with an
+  `OCI-Subject` header; for any other registry (Docker's `registry:2`, for one) the *referrers tag schema* is used:
+  the image index at tag `sha256-<image hex>` lists them, merged with whatever it already lists. The image's own tag
+  and digest are untouched.
 - **pull** accepts OCI and Docker v2 manifests and indexes/manifest lists (for an index the `--platform` variant,
   default `linux/amd64`), checks every blob's sha256 and size *while streaming* into a temp file (nothing unverified is
   ever stored), and a manifest fetched by digest must hash to it. The platform manifest is stored unchanged (its digest
@@ -440,6 +447,54 @@ when the registry rejects it, and straight away for pushes) or Basic auth.
 - Errors: `E_AUTH` (credentials missing/rejected), `E_NOT_FOUND` (404), `E_INTEGRITY` (digest mismatch), `E_TOO_LARGE`,
   `E_PROTOCOL`/`E_SSRF_BLOCKED` (transport policy), `E_REGISTRY` (anything else the registry says).
 
+### Attestations
+
+```
+sitefile build -o site.oci.tar --provenance --sbom          # in the OCI archive / layout
+sitefile build -t localhost:5000/blog:1 --provenance --sbom  # kept with the stored image ...
+sitefile push localhost:5000/blog:1                          # ... and pushed with it
+```
+
+`--provenance` and `--sbom` (both opt-in, like `docker buildx build --provenance/--sbom`) attach
+[in-toto](https://github.com/in-toto/attestation) statements to an oci image: an `EXPORT ... AS oci` /
+`--format oci` / `-o *.oci.tar` export, or an image stored with `-t` (any export format then); otherwise they are a
+usage error. They are command-line flags, not Sitefile syntax: an attestation describes one build of the file, it is not
+part of the site.
+
+- **Attachment**: each statement is the single layer (`application/vnd.in-toto+json`, annotated
+  `in-toto.io/predicate-type`) of an OCI 1.1 artifact manifest (`artifactType: application/vnd.in-toto+json`, the empty
+  config `application/vnd.oci.empty.v1+json`) whose **`subject` is the image manifest**. The image itself is never
+  changed, so **its ID is the same with or without attestations** (and the same as before this feature). An OCI
+  archive or layout lists the attestation manifests in `index.json` after the image (without a name, with their
+  `artifactType` and predicate annotation) and holds their blobs; `-t` keeps them in the store
+  (`$SITEFILE_HOME/referrers/sha256/<image hex>`, an image index of them), `save --format oci` writes them back out,
+  `push` sends them as referrers (above). A later build of the same image with `--provenance` or `--sbom` replaces
+  the stored attestation of that kind; `rmi`/`image prune` remove them with the image. `pull` does not fetch them.
+  This is the OCI 1.1 referrers model rather than BuildKit's attestation manifests inside an image index
+  (`vnd.docker.reference.type: attestation-manifest`): wrapping the image in an index would change what the tag and
+  the image ID point at, and the local store, `save`, `serve` and `pull` work on image manifests.
+- **Provenance** (`predicateType: https://slsa.dev/provenance/v1`): `buildDefinition.buildType` is
+  `https://github.com/johnhenry/sitefile/blob/main/docs/CLI.md#attestations`; `externalParameters` holds the
+  Sitefile path (relative to the context), the `--build-arg`/`--build-arg-file` values (`args`) and the platform;
+  `resolvedDependencies` lists the Sitefile with its sha256, every `IMPORT` (`import:<name>`, its URI, the digest the
+  build used: for remote ones the one pinned in `Sitefile.lock`, with the final URL after redirects as
+  `downloadLocation`; for local directories the tree digest `inspect` prints) and the `BASE` image with its manifest
+  digest; `runDetails.builder` is `{"id": "https://github.com/johnhenry/sitefile", "version": {"sitefile": "0.1.0"}}`
+  (the same for both implementations, whose output is byte-identical).
+  **Build args whose name has a `_`-separated word like `key`, `token`, `password`, `passwd`, `pword`, `secret`,
+  `auth`, `apikey` or `credential(s)` (`API_TOKEN`, `DB_PASSWORD`) are never recorded**: only their names, in
+  `externalParameters.redactedArgs`. Other build-arg values are recorded: do not pass secrets in build args.
+- **SBOM** (`predicateType: https://cyclonedx.org/bom`): a CycloneDX 1.6 JSON document. `metadata.component` is the
+  image (`version` = its digest), `components` the `BASE` image (if any) and every file of the site layer: its path in
+  the image (`/srv/www/index.html`), SHA-256, and `sitefile:mode` / `sitefile:origin` properties (the instruction that
+  wrote it, e.g. `Sitefile:5 RENDER`). CycloneDX rather than SPDX 2.3 because SPDX requires a creation timestamp, a
+  unique document namespace and a SHA-1 for every file; CycloneDX needs none of them, so the document is a pure function
+  of the build.
+- **Deterministic**: canonical JSON, the subject is named `_` (the digest is what matters; retagging changes nothing),
+  and there are **no timestamps unless `SOURCE_DATE_EPOCH`** is set (then `runDetails.metadata.startedOn`/`finishedOn`
+  and the SBOM's `metadata.timestamp`). The same build gives byte-identical attestations.
+- Attestations are not signed; sign them with your registry tooling (cosign, notation) if you need that.
+
 To run a pushed or pulled site image, use it as `COPY --from=` source or serve it with `sitefile serve`; for a runnable
 container image, build on a base with `BASE` (see [LANGUAGE.md](LANGUAGE.md#export-formats)).
 The default platform of images is `linux/amd64` (reproducible, metadata only for files-only images); on an arm64 host
@@ -454,7 +509,7 @@ Docker warns about the mismatch. Use `--platform linux/arm64` to label them for 
 | `tag <src> <dst>` | add or move the local tag `<dst>` to image `<src>`. |
 | `rmi [-f] <ref\|id>...` | remove tags. The image leaves the index when no tag is left. An ID with several tags needs `-f`. Alias: `image rm`. |
 | `image prune` | drop untagged images, delete unreferenced blobs, print the space reclaimed. |
-| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store). A non-empty destination needs `--force`. |
+| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store, attestations included). A non-empty destination needs `--force`. |
 | `image diff <a> <b>` | `A`/`D`/`C` lines for added, removed and changed paths. |
 
 ## Language server
