@@ -25,6 +25,24 @@ export interface ExportResult {
   readonly files: number;
 }
 
+/**
+ * The temp directory starts empty and the tree has no two paths equal under
+ * case folding, so EEXIST/ENOTDIR/EISDIR here means the destination file
+ * system treats two different tree paths as one name (a folding or
+ * normalization rule wider than Sitefile's). Report the artifact path, not the
+ * temp path.
+ */
+export function occupied(e: unknown, p: string): unknown {
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  if (code !== 'EEXIST' && code !== 'ENOTDIR' && code !== 'EISDIR') return e;
+  return new SitefileError(
+    'E_EXPORT',
+    `cannot write '${p}': the destination file system already has an entry by that name (it folds case or normalizes Unicode more widely than Sitefile's checks)`,
+    undefined,
+    { cause: e },
+  );
+}
+
 /** Matches the exporter's temporary (`tmp`) and backup (`old`) sibling names. */
 export const TEMP_PREFIX_PATTERN = /^\..+\.sitefile-(?:tmp|old)-[0-9a-f]+$/;
 
@@ -76,7 +94,7 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
 
   // --- validate paths before touching the disk ------------------------------
   const entries = tree.entries();
-  const planned: Array<{ segments: string[]; bytes: Uint8Array; mode: number }> = [];
+  const planned: Array<{ path: string; segments: string[]; bytes: Uint8Array; mode: number }> = [];
   for (const [p, node] of entries) {
     if (!p.startsWith('/')) throw new SitefileError('E_EXPORT', `invalid artifact path '${p}': not absolute`);
     const segments = p.slice(1).split('/');
@@ -85,7 +103,7 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
         throw new SitefileError('E_EXPORT', `invalid artifact path '${p}'`);
       }
     }
-    planned.push({ segments, bytes: node.bytes, mode: node.mode });
+    planned.push({ path: p, segments, bytes: node.bytes, mode: node.mode });
   }
 
   // --- write into a temp sibling, then swap ---------------------------------
@@ -139,10 +157,14 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
   let oldMoved = false;
   let swapped = false;
   try {
-    for (const { segments, bytes, mode } of planned) {
+    for (const { path: p, segments, bytes, mode } of planned) {
       const target = path.join(tmp, ...segments);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, bytes, { flag: 'wx' });
+      try {
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, bytes, { flag: 'wx' });
+      } catch (e) {
+        throw occupied(e, p);
+      }
       await fs.chmod(target, mode);
     }
     if (options.beforeSwap) await options.beforeSwap();

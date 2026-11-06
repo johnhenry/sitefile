@@ -64,7 +64,8 @@ pub fn safe_segments(raw_path: &str) -> Option<Vec<String>> {
         if seg == "." || seg == ".." || seg.chars().any(|c| c == '\\' || c == '/' || (c as u32) < 0x20 || c == '\u{7f}') {
             return None;
         }
-        out.push(seg);
+        // Tree paths are NFC; a request for an NFD spelling finds the same file.
+        out.push(crate::paths::nfc(&seg).into_owned());
     }
     Some(out)
 }

@@ -1,0 +1,4 @@
+FROM scratch
+COPY ./a.txt /café.html
+COPY ./b.txt /CAFÉ.html
+EXPORT /

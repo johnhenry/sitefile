@@ -138,6 +138,9 @@ move images to and from any OCI registry. See
   time and on every redirect), size- and time-limited, never decompressed or executed.
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
 - Writing different content to an existing path fails unless `--overwrite` is given.
+  Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
+  (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same
+  files and image IDs on macOS, Windows and Linux.
 - Export is staged in a temporary sibling and swapped in; a non-empty destination
   outside the context is only replaced with `--force`.
 - Archive exports (`zip`, `tar`, `tgz`, `wbn`) write one file via a temporary sibling and
