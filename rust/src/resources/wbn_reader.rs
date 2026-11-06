@@ -78,7 +78,7 @@ impl Ctx<'_> {
         SitefileError::new(E_ARCHIVE, format!("{}: web bundle: {}", self.origin, why.as_ref()), self.span.cloned())
     }
     fn cbor(&self, e: CborError) -> SitefileError {
-        self.bad(format!("malformed CBOR: {}", e.message))
+        self.bad(format!("malformed CBOR: {e}"))
     }
     fn decode(&self, b: &[u8], max_items: u64) -> Result<(Cbor, usize)> {
         cbor::decode(b, &cbor::Limits { max_items, ..Default::default() }).map_err(|e| self.cbor(e))
@@ -132,7 +132,7 @@ pub fn read_web_bundle(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span:
 
     // section-lengths
     let (major, arg, next) = c.head(bytes, pos)?;
-    if major != 2 {
+    if major != 2 || arg > cbor::MAX_SAFE {
         return Err(c.bad("section-lengths is not a byte string"));
     }
     if arg >= MAX_SECTION_LENGTHS {
@@ -163,7 +163,7 @@ pub fn read_web_bundle(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span:
     let mut sections: Vec<Section> = Vec::new();
     for pair in sl.chunks(2) {
         let (name, length) = match (&pair[0], &pair[1]) {
-            (Cbor::Text(n), Cbor::Uint(l)) => (n.clone(), *l),
+            (Cbor::Text(n), l) if l.as_number().is_some() => (n.clone(), l.as_number().unwrap()),
             _ => return Err(c.bad("malformed section-lengths entry")),
         };
         if !seen.insert(name.clone()) {
@@ -261,7 +261,7 @@ pub fn read_web_bundle(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span:
             &value[..]
         };
         let (off, len) = match (&loc[0], &loc[1]) {
-            (Cbor::Uint(o), Cbor::Uint(l)) => (*o, *l),
+            (o, l) if o.as_number().is_some() && l.as_number().is_some() => (o.as_number().unwrap(), l.as_number().unwrap()),
             _ => return Err(c.bad(format!("index offset/length for '{url}' is not an unsigned integer"))),
         };
         match off.checked_add(len) {
@@ -344,6 +344,14 @@ fn parse_response(b: &[u8], url: &str, c: &Ctx) -> Result<Parsed> {
         }
     }
     let status = status.ok_or_else(|| c.bad(format!("response for '{url}' has no :status")))?;
+    // Object.fromEntries: array-index names ("0", "10", …) come first, in numeric order.
+    let index = |n: &str| -> Option<u64> {
+        let ok = n == "0" || (!n.starts_with('0') && !n.is_empty() && n.len() <= 10 && n.bytes().all(|x| x.is_ascii_digit()));
+        ok.then(|| n.parse::<u64>().ok()).flatten().filter(|&v| v <= 4_294_967_294)
+    };
+    let (mut numeric, named): (Vec<_>, Vec<_>) = headers.into_iter().partition(|(n, _)| index(n).is_some());
+    numeric.sort_by_key(|(n, _)| index(n));
+    let headers: Vec<(String, String)> = numeric.into_iter().chain(named).collect();
     Ok((status, headers, Arc::from(body)))
 }
 
@@ -364,6 +372,63 @@ pub(crate) fn split_scheme(s: &str) -> Option<(&str, &str)> {
 /// WHATWG host serialization (`new URL('<scheme>://<authority>/').host`) for
 /// http(s), via ureq's URL parser (the `url` crate). None if the host is invalid.
 pub(crate) fn whatwg_host(scheme: &str, authority: &str) -> Option<String> {
+    url_crate_host(scheme, authority).or_else(|| ascii_punycode_host(scheme, authority))
+}
+
+/// Node's URL parser (ada) takes a host that is all ASCII after
+/// percent-decoding as it is: lower-cased, its `xn--` labels never
+/// punycode-checked. The `url` crate rejects such a label when it is not
+/// valid punycode (`xn--a`, `xn--`), so check the host with those labels
+/// replaced and put them back (found by differential fuzzing, #81).
+fn ascii_punycode_host(scheme: &str, authority: &str) -> Option<String> {
+    let (host, port) = match authority.rfind(':') {
+        Some(i) if !authority.starts_with('[') => (&authority[..i], &authority[i..]),
+        _ => (authority, ""),
+    };
+    let decoded = String::from_utf8(percent_decode_bytes(host)?).ok()?;
+    if !decoded.is_ascii() {
+        return None;
+    }
+    let labels: Vec<String> = decoded.split('.').map(|l| l.to_ascii_lowercase()).collect();
+    if !labels.iter().any(|l| l.starts_with("xn--")) {
+        return None;
+    }
+    let stand_in = |i: usize| format!("sitefile-xn-{i}");
+    let probe: Vec<String> = labels.iter().enumerate().map(|(i, l)| if l.starts_with("xn--") { stand_in(i) } else { l.clone() }).collect();
+    let parsed = url_crate_host(scheme, &format!("{}{port}", probe.join(".")))?;
+    let (parsed_host, parsed_port) = match parsed.rfind(':') {
+        Some(i) => (&parsed[..i], &parsed[i..]),
+        None => (parsed.as_str(), ""),
+    };
+    let out: Vec<String> = parsed_host
+        .split('.')
+        .enumerate()
+        .map(|(i, l)| if l == stand_in(i) { labels[i].clone() } else { l.to_string() })
+        .collect();
+    Some(format!("{}{parsed_port}", out.join(".")))
+}
+
+/// Percent-decode into bytes (invalid escapes are kept as-is, like the URL parser).
+fn percent_decode_bytes(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |x: u8| (x as char).to_digit(16);
+        if b[i] == b'%' {
+            if let (Some(h), Some(l)) = (b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    Some(out)
+}
+
+fn url_crate_host(scheme: &str, authority: &str) -> Option<String> {
     let req = ureq::get(&format!("{scheme}://{authority}/"));
     let u = req.request_url().ok()?;
     let url = u.as_url();
@@ -374,18 +439,64 @@ pub(crate) fn whatwg_host(scheme: &str, authority: &str) -> Option<String> {
     })
 }
 
-/// Whether `new URL(s)` would succeed. Special schemes other than `file` need a
-/// valid host; any other scheme only needs to be well-formed.
+/// Whether `new URL(s)` would succeed. Like the URL parser, leading and
+/// trailing C0 controls and spaces are trimmed and tabs and newlines removed
+/// first. Special schemes need a valid host (`file` an empty one or a host
+/// without credentials or port); others an opaque host without forbidden
+/// code points and a valid port, if they have an authority.
 fn is_absolute_url(s: &str) -> bool {
-    let Some((scheme, rest)) = split_scheme(s) else { return false };
+    let s: String = s.trim_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let Some((scheme, rest)) = split_scheme(&s) else { return false };
     let scheme = scheme.to_ascii_lowercase();
+    let special = matches!(scheme.as_str(), "http" | "https" | "ws" | "wss" | "ftp" | "file");
+    let authority = |r: &str, delims: &[char]| -> String {
+        let end = r.find(delims).unwrap_or(r.len());
+        r[..end].to_string()
+    };
     match scheme.as_str() {
         "http" | "https" | "ws" | "wss" | "ftp" => {
-            let r = rest.trim_start_matches(['/', '\\']);
-            let end = r.find(['/', '\\', '?', '#']).unwrap_or(r.len());
-            let auth = &r[..end];
-            let host_part = auth.rsplit('@').next().unwrap_or(auth);
+            let auth = authority(rest.trim_start_matches(['/', '\\']), &['/', '\\', '?', '#']);
+            let host_part = auth.rsplit('@').next().unwrap_or(&auth);
             !host_part.is_empty() && whatwg_host(if scheme == "https" { "https" } else { "http" }, host_part).is_some()
+        }
+        "file" => {
+            let b = rest.as_bytes();
+            if !(b.len() >= 2 && matches!(b[0], b'/' | b'\\') && matches!(b[1], b'/' | b'\\')) {
+                return true;
+            }
+            let r = &rest[2..];
+            let auth = authority(r, &['/', '\\', '?', '#']);
+            if auth.is_empty() {
+                return true;
+            }
+            let bracketed = auth.starts_with('[');
+            !auth.contains('@') && (bracketed || !auth.contains(':')) && whatwg_host("http", &auth).is_some()
+        }
+        _ if !special => {
+            let Some(r) = rest.strip_prefix("//") else { return true };
+            let auth = authority(r, &['/', '?', '#']);
+            let host_port = auth.rsplit('@').next().unwrap_or(&auth);
+            let (host, port) = if host_port.starts_with('[') {
+                match host_port.find(']') {
+                    Some(i) => (&host_port[..=i], &host_port[i + 1..]),
+                    None => return false,
+                }
+            } else {
+                match host_port.rfind(':') {
+                    Some(i) => (&host_port[..i], &host_port[i..]),
+                    None => (host_port, ""),
+                }
+            };
+            let port_ok = match port.strip_prefix(':') {
+                None => port.is_empty(),
+                Some(p) => p.bytes().all(|b| b.is_ascii_digit()) && (p.is_empty() || p.parse::<u32>().is_ok_and(|n| n <= 65535)),
+            };
+            let host_ok = if host.starts_with('[') {
+                whatwg_host("http", host).is_some()
+            } else {
+                !host.chars().any(|c| matches!(c, '\0' | ' ' | '#' | '/' | ':' | '<' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '|'))
+            };
+            port_ok && host_ok
         }
         _ => true,
     }
@@ -1028,6 +1139,48 @@ pub(crate) mod tests {
         let index = cmap(&["a", "b", "c"].map(|s| (ctext(&format!("https://x.test/{s}")), carray(&[cuint(1), cuint(n)]))));
         let g = bundle(&Built { index, responses: carray(&[big]) }, Opts::default());
         assert_eq!(code(read_l(&g, ArchiveLimits { max_total_bytes: 250, ..L })), E_ARCHIVE_LIMIT);
+    }
+
+    #[test]
+    fn a_negative_index_offset_or_section_length_is_rejected() {
+        let r = response(&resp("x"));
+        let index = cmap(&[(ctext("https://x.test/a"), carray(&[vec![0x20], cuint(r.len() as u64)]))]);
+        let g = bundle(&Built { index, responses: carray(&[r]) }, Opts::default());
+        assert!(msg(read(&g)).contains("index offset/length for 'https://x.test/a' is not an unsigned integer"), "{}", msg(read(&g)));
+        let mut g = good();
+        // section-lengths ["index", n, …]: make n negative (uint8 head 0x18 -> nint8 head 0x38)
+        let at = g.windows(5).position(|w| w == b"index").unwrap() + 5;
+        assert_eq!(g[at], 0x18);
+        g[at] = 0x38;
+        assert!(msg(read(&g)).contains("malformed section-lengths entry"), "{}", msg(read(&g)));
+    }
+
+    #[test]
+    fn header_names_that_are_array_indices_come_first() {
+        let mut r = resp("x");
+        r.headers = vec![("x-b", "1"), ("10", "a"), ("2", "b")];
+        let g = bundle(&build(&[("https://x.test/a", r)], false), Opts::default());
+        let names: Vec<_> = read(&g).unwrap().entries[0].headers.iter().map(|(k, _)| k.clone()).collect();
+        assert_eq!(names, ["2", "10", "x-b"]);
+    }
+
+    #[test]
+    fn primary_urls_are_checked_like_the_url_parser() {
+        for (u, ok) in [
+            ("\u{0}https://e.x/", true),
+            (" https://e.x/ ", true),
+            ("ht\ttps://e.x/", true),
+            ("file://h:1/a", false),
+            ("file://u@h/a", false),
+            ("file:///a", true),
+            ("x://a b/", false),
+            ("x://h:80/", true),
+            ("x://h:8a/", false),
+            ("http://xn--a.x/", true),
+            ("http://\u{e9}.xn--a/", false),
+        ] {
+            assert_eq!(is_absolute_url(u), ok, "{u:?}");
+        }
     }
 
     #[test]
