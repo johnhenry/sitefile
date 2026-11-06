@@ -1,0 +1,4 @@
+# '*' in the destination names each file of a directory source; this one is a file.
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./a.png WITH image TO /img/*.webp
+EXPORT /

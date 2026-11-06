@@ -5,12 +5,17 @@
 FROM scratch
 PLUGIN image FROM ./plugins/image.wasm INTEGRITY sha256:9dc3d952f49be96e36bd7153701daf4d557aaf8079ac70cce5ba3eef981d86db
 
-# A photo in three widths, plus /img/sky.json (paths, widths, heights, srcset).
-TRANSFORM ./photos/sky.jpg WITH image TO /img/ OPTIONS widths=400,800,1200 format=jpeg quality=80
-# A transparent graphic at 1x and 2x, as lossless WebP with a PNG fallback.
-TRANSFORM ./photos/badge.png WITH image TO /img/ OPTIONS widths=64,128 format=webp,png
-# One file: the extension picks the format.
-TRANSFORM ./photos/sky.jpg WITH image TO /img/sky-thumb.png OPTIONS widths=160
+# A directory source runs the plugin once per file, in path order (drop more
+# photos into ./photos/ and they are processed too). --include/--exclude pick
+# the files with .sitefileignore patterns.
+#
+# Every JPEG in three widths, plus /img/<name>.json (paths, widths, heights, srcset).
+TRANSFORM --include=*.jpg ./photos/ WITH image TO /img/ OPTIONS widths=400,800,1200 format=jpeg quality=80
+# Every PNG (transparent graphics) at 1x and 2x, as lossless WebP with a PNG fallback.
+TRANSFORM --include=*.png ./photos/ WITH image TO /img/ OPTIONS widths=64,128 format=webp,png
+# A thumbnail of every file: '*.png' means one file per input, named after it
+# (/img/thumbs/sky.png, /img/thumbs/badge.png); the extension picks the format.
+TRANSFORM ./photos/ WITH image TO /img/thumbs/*.png OPTIONS widths=160
 
 RENDER --escape=html ./templates/index.html TO /index.html
 EXPORT /

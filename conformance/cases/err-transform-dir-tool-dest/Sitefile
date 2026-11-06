@@ -1,0 +1,4 @@
+# A TOOL writes one file per input, so a directory destination is refused.
+TOOL cp
+TRANSFORM ./src/ WITH cp TO /out/ ARGS {input} {output}
+EXPORT /

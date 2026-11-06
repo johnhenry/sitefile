@@ -1,0 +1,6 @@
+{
+  "copy": {
+    "plugins/image.wasm": "plugins/image/image.wasm",
+    "in/a.png": "plugins/image/testdata/tiny.png"
+  }
+}

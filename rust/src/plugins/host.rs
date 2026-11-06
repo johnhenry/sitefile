@@ -129,6 +129,42 @@ pub enum PluginResult {
     Files(Vec<(String, Vec<u8>)>),
 }
 
+/// A directory TRANSFORM runs at most this many wasm or tool calls at a time (a JS plugin, one).
+pub fn transform_jobs() -> usize {
+    thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4)
+}
+
+/// Run `f(0..n)` at most `limit` at a time, starting them in index order. After a failure no
+/// later index starts, so the lowest failing index is always among the results (and every
+/// index below it has run): callers report that one, whatever order the calls finished in.
+pub fn run_bounded<R: Send>(n: usize, limit: usize, f: impl Fn(usize) -> Result<R> + Sync) -> Vec<Option<Result<R>>> {
+    let out: Vec<Mutex<Option<Result<R>>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed_at = std::sync::atomic::AtomicUsize::new(usize::MAX);
+    let lane = || loop {
+        let i = next.fetch_add(1, Ordering::SeqCst);
+        if i >= n || i > failed_at.load(Ordering::SeqCst) {
+            return;
+        }
+        let r = f(i);
+        if r.is_err() {
+            failed_at.fetch_min(i, Ordering::SeqCst);
+        }
+        *out[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    };
+    let lanes = limit.max(1).min(n);
+    if lanes <= 1 {
+        lane();
+    } else {
+        thread::scope(|s| {
+            for _ in 0..lanes {
+                s.spawn(&lane);
+            }
+        });
+    }
+    out.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
+}
+
 /// Counters a build reports (BuildResult.transformStats).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostStats {
@@ -751,6 +787,29 @@ impl PluginHost {
     }
 
     pub fn call(&mut self, name: &str, request: &PluginRequest, span: Option<&SourceSpan>) -> Result<PluginResult> {
+        self.start(name, span)?;
+        self.stats.calls += 1;
+        self.procs.get_mut(name).expect("started above").call(request, span)
+    }
+
+    /// A wasm plugin, compiled, whose calls may run on several threads at once (`WasmPlugin::call_prepared`;
+    /// add them to `stats.calls`). None for a JavaScript plugin: its one process takes one call at a time.
+    pub fn shared_wasm(&mut self, name: &str, span: Option<&SourceSpan>) -> Result<Option<&WasmPlugin>> {
+        if !self.is_wasm(name) {
+            return Ok(None);
+        }
+        self.start(name, span)?;
+        match self.procs.get_mut(name) {
+            Some(Runner::Wasm(w)) => {
+                w.prepare(span)?;
+                Ok(Some(&*w))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Start a plugin's runner on its first use.
+    fn start(&mut self, name: &str, span: Option<&SourceSpan>) -> Result<()> {
         if !self.procs.contains_key(name) {
             let Some(reg) = self.registered.get(name) else {
                 return Err(SitefileError::new(ErrorCode::E_UNDEFINED, format!("unknown plugin '{name}'"), span.cloned()));
@@ -767,8 +826,7 @@ impl PluginHost {
             self.procs.insert(name.to_string(), runner);
             self.stats.spawned += 1;
         }
-        self.stats.calls += 1;
-        self.procs.get_mut(name).expect("inserted above").call(request, span)
+        Ok(())
     }
 
     /// Stop every runner and forget the registrations.

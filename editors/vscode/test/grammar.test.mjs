@@ -188,3 +188,10 @@ test('# sitefile-lint: comments are highlighted as directives', async () => {
   has(scopesOf(r, 2, 'disable-next-line'), 'keyword.other.directive');
   for (const [, s] of r[2].tokens) hasNot(s, 'directive');
 });
+
+test('TRANSFORM --include and --exclude', async () => {
+  const r = await tokenize('TRANSFORM --include=*.jpg --exclude=drafts/ ./photos/ WITH image TO /img/*.png\n');
+  has(scopesOf(r, 1, 'include'), 'variable.parameter.flag');
+  has(scopesOf(r, 1, '*.jpg'), 'string.unquoted.glob');
+  has(scopesOf(r, 1, 'drafts/'), 'string.unquoted.glob');
+});
