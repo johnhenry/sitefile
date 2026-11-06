@@ -3,7 +3,8 @@ import path from 'node:path';
 import { resolveBase } from './base-image.js';
 import { sha256 } from './digest.js';
 import { SitefileError, type SourceSpan } from './errors.js';
-import { fetchGitImport, fetchRemoteImport, gitSelectionBytes, loadProgram, type BuildOptions, type RemoteEnv } from './executor.js';
+import { fetchGitImport, fetchRemoteImport, gitSelectionBytes, loadProgram, warnUnusedSecrets, type BuildOptions, type RemoteEnv } from './executor.js';
+import { redactError, redactSecrets } from './secrets.js';
 import { parseManifest } from './oci.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
 import { plan } from './planner.js';
@@ -32,6 +33,18 @@ export interface VendorResult {
  * content-addressed names and a manifest. Always fetches: an existing vendor directory is not read.
  */
 export async function vendor(options: BuildOptions): Promise<VendorResult> {
+  const secrets = options.secrets;
+  if (!secrets?.size) return vendorUnredacted(options);
+  const onWarning = options.onWarning;
+  try {
+    const r = await vendorUnredacted({ ...options, ...(onWarning ? { onWarning: (m: string) => onWarning(redactSecrets(m, secrets)) } : {}) });
+    return { ...r, warnings: r.warnings.map((w) => redactSecrets(w, secrets)) };
+  } catch (e) {
+    throw redactError(e, secrets);
+  }
+}
+
+async function vendorUnredacted(options: BuildOptions): Promise<VendorResult> {
   const { program, sitefilePath, label } = await loadProgram(options);
   const p = plan(program, options.buildArgs ?? {});
   const warnings: string[] = [];
@@ -49,7 +62,8 @@ export async function vendor(options: BuildOptions): Promise<VendorResult> {
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
   const frozen = !!options.frozenLockfile;
   const update = !!options.updateLock;
-  const env: RemoteEnv = { policy, lock, label, warn, frozen, update, archiveLimits: { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits } };
+  warnUnusedSecrets(p, options.secrets, warn);
+  const env: RemoteEnv = { policy, lock, label, warn, frozen, update, archiveLimits: { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits }, ...(options.secrets ? { secrets: options.secrets } : {}) };
 
   const blobs = new Map<string, Uint8Array>();
   const resources: Record<string, VendoredResource> = {};

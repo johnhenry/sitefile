@@ -19,6 +19,9 @@ import { pathToFileURL } from 'node:url';
 
 const sha = (b) => 'sha256:' + createHash('sha256').update(b).digest('hex');
 
+/** The build secret the /private/* endpoints and private.git accept (passed as API_TOKEN in net-secret-* cases). */
+export const SECRET = 'conformance-secret-7c1e';
+
 /** Fixed bodies served by the HTTPS server. Sitefiles in conformance/cases/net-* pin some of them. */
 export const BODIES = {
   '/data.json': '{"title":"Remote data","items":[{"name":"alpha","n":2},{"name":"beta","n":1}]}\n',
@@ -44,6 +47,7 @@ export async function startServers(root, dir) {
   const pki = createTestPki();
   const caFile = path.join(dir, 'conformance-ca.pem');
   let server;
+  let other; // a second HTTPS origin (another port): cross-origin redirects must not carry secrets
   let registry;
   try {
     await fs.writeFile(caFile, pki.caCert);
@@ -72,17 +76,34 @@ export async function startServers(root, dir) {
     const v2 = repo.commit({ 'Sitefile': 'FROM scratch\nCOPY ./site/ /\nEXPORT /\n', 'site/index.html': '<h1>v2</h1>\n', 'README.md': 'readme v2\n' });
     const bad = new gitServer.MemRepo();
     bad.commit({ 'ok.txt': 'ok\n', 'mod': { gitlink: '1'.repeat(40) }, 'esc/link': { data: '../../outside', mode: '120000' } });
-    const gitRepos = new Map([['/repo.git', repo], ['/bad.git', bad], ['/dumb.git', repo]]);
+    // A private repository for the net-secret-* cases (issue #85): requests need the build secret.
+    const priv = new gitServer.MemRepo();
+    priv.commit({ 'docs/private.txt': 'private repository file\n' });
+    priv.auth = `Bearer ${SECRET}`;
+    const gitRepos = new Map([['/repo.git', repo], ['/bad.git', bad], ['/dumb.git', repo], ['/private.git', priv]]);
 
     let base = '';
+    let otherBase = '';
     server = https.createServer({ cert, key }, (req, res) => {
       const url = new URL(req.url ?? '/', base);
       const p = url.pathname;
-      if (gitServer.handleGit(req, res, url, { repos: gitRepos })) return;
       const redirect = (status, location) => {
         res.writeHead(status, { location });
         res.end();
       };
+      if (gitServer.handleGit(req, res, url, { repos: gitRepos })) return;
+      // Build secrets (net-secret-*): /private/* needs `x-api-key` or `authorization: Bearer` with SECRET.
+      if (p.startsWith('/private/')) {
+        const authed = req.headers['x-api-key'] === SECRET || req.headers.authorization === `Bearer ${SECRET}`;
+        if (p === '/private/away') return redirect(302, `${otherBase}/private/echo`);
+        if (p === '/private/same') return redirect(302, '/private/data.json');
+        // Reflects the credential into a redirect URL, so it would end up in an error message.
+        if (p === '/private/leak') return redirect(302, `/private/missing?k=${String(req.headers['x-api-key'])}`);
+        if (!authed) return res.writeHead(401, { 'content-type': 'text/plain' }).end('unauthorized\n');
+        if (p === '/private/data.json') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"title":"Private data"}\n');
+        if (p === '/private/note.txt') return res.writeHead(200, { 'content-type': 'text/plain' }).end('private note\n');
+        return res.writeHead(404).end();
+      }
       if (p in BODIES) {
         const body = Buffer.from(BODIES[p]);
         res.writeHead(200, { 'content-type': p.endsWith('.json') ? 'application/json' : 'text/plain', 'content-length': String(body.length) });
@@ -102,6 +123,13 @@ export async function startServers(root, dir) {
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     base = `https://127.0.0.1:${server.address().port}`;
+    // The other origin reports whether any credential arrived.
+    other = https.createServer({ cert, key }, (req, res) => {
+      const got = req.headers['x-api-key'] !== undefined || req.headers.authorization !== undefined;
+      res.writeHead(200, { 'content-type': 'text/plain' }).end(got ? 'credential received\n' : 'no credential\n');
+    });
+    await new Promise((resolve) => other.listen(0, '127.0.0.1', resolve));
+    otherBase = `https://127.0.0.1:${other.address().port}`;
 
     registry = await startMockRegistry();
     const seeded = registry.seedImage('conf/base', '1', {
@@ -131,12 +159,15 @@ export async function startServers(root, dir) {
       async close() {
         server.closeAllConnections?.();
         await new Promise((r) => server.close(() => r()));
+        other.closeAllConnections?.();
+        await new Promise((r) => other.close(() => r()));
         await registry.close();
         pki.dispose();
       },
     };
   } catch (e) {
     server?.close();
+    other?.close();
     await registry?.close();
     pki.dispose();
     throw e;

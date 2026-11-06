@@ -1,0 +1,10 @@
+# Build secrets (issue #85): a header, a bearer token, a same-origin redirect (kept) and a
+# redirect to another origin (dropped: the other server reports no credential).
+FROM scratch
+IMPORT data FROM ${HTTPS}/private/same SECRET key AS HEADER X-Api-Key AS json
+IMPORT note FROM ${HTTPS}/private/note.txt AS text SECRET tok AS BEARER
+IMPORT away FROM ${HTTPS}/private/away AS text SECRET key AS HEADER X-Api-Key
+RENDER <<T TO /index.html
+${data.title} | ${note} | ${away}
+T
+EXPORT /

@@ -3,6 +3,7 @@ import { insecureRegistriesFromEnv } from '../base-image.js';
 import { collectBuildArgs } from '../build-args.js';
 import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
 import { vendor } from '../vendor.js';
+import { loadSecrets } from '../secrets.js';
 import { requireArgs, str, strs, usage, type Command } from './common.js';
 
 function positive(raw: string | undefined, flag: string): number | undefined {
@@ -25,6 +26,7 @@ const vendorCommand: Command = {
     '--vendor-dir <dir>            vendor directory, relative to the context (default vendor/sitefile)',
     '--build-arg <NAME=value>      set an ARG (repeatable); --build-arg NAME reads $NAME',
     '--build-arg-file <path>       read ARGs from a .json, .yaml/.yml or .env file (repeatable)',
+    '--secret id=<id>,env=<VAR>    a build secret for IMPORT ... SECRET (or id=<id>,src=<file>; repeatable)',
     '--frozen-lockfile             fail instead of changing Sitefile.lock',
     '--update-lock                 re-record unpinned URLs whose content changed, re-resolve BASE tags',
     '--allow-http                  permit plain http:// imports',
@@ -40,6 +42,7 @@ const vendorCommand: Command = {
     'vendor-dir': { type: 'string' },
     'build-arg': { type: 'string', multiple: true },
     'build-arg-file': { type: 'string', multiple: true },
+    secret: { type: 'string', multiple: true },
     'frozen-lockfile': { type: 'boolean' },
     'update-lock': { type: 'boolean' },
     'allow-http': { type: 'boolean' },
@@ -64,6 +67,7 @@ const vendorCommand: Command = {
       contextDir: context,
       ...(file ? { sitefile: file } : {}),
       buildArgs: await collectBuildArgs(strs(v['build-arg-file']), strs(v['build-arg'])),
+      secrets: await loadSecrets(strs(v.secret)),
       fetchPolicy: {
         allowHttp: !!v['allow-http'],
         allowPrivateNetwork: !!v['allow-private-network'],

@@ -235,6 +235,10 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
   the commit recorded in `Sitefile.lock`, symlinks kept inside the tree, submodules
   refused; `sitefile build https://host/repo.git#ref:dir` builds a repository
   ([docs/LANGUAGE.md](docs/LANGUAGE.md#git-sources-githttps)).
+- Private APIs and repositories: `--secret id=token,env=API_TOKEN` with
+  `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`). Secrets go only to the
+  import's own origin and never into the output, caches, `Sitefile.lock`, vendor files,
+  provenance, traces or messages.
 - `sitefile vendor` stores every remote import (and the BASE image's blobs) under
   `vendor/sitefile/` by content digest; builds then read them from there, verified,
   with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).

@@ -1,0 +1,4 @@
+# A SECRET clause whose --secret was not given.
+FROM scratch
+IMPORT data FROM ${HTTPS}/private/data.json AS json SECRET key AS HEADER X-Api-Key
+EXPORT /

@@ -22,7 +22,8 @@ use crate::language::ast::ExportFormat;
 use crate::planner::{plan, ImportLocation, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::{insecure_registries_from_env, make_client, process_env, RegistryOptions};
-use crate::resources::https::fetch_remote;
+use crate::resources::https::{fetch_remote_with, FetchRequest};
+use crate::secrets::{redact_secrets, secret_headers};
 use crate::resources::lockfile::Lockfile;
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
@@ -219,12 +220,16 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
             if loc.commit.is_some() {
                 e.status = Status::DigestOnly;
             } else {
-                match crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, crate::resources::git::GitTransport::new(&options.fetch_policy, Some(&spec.span))) {
+                let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets).and_then(|origin_headers| {
+                    let t = crate::resources::git::GitTransport { origin_headers: &origin_headers, ..crate::resources::git::GitTransport::new(&options.fetch_policy, Some(&spec.span)) };
+                    crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, t)
+                });
+                match r {
                     Ok(latest) => {
                         e.status = status_of(e.pin.as_deref(), &latest);
                         e.latest = Some(latest);
                     }
-                    Err(err) => e.error = Some((err.code.as_str().to_string(), err.detail)),
+                    Err(err) => e.error = Some((err.code.as_str().to_string(), redact_secrets(&err.detail, &options.secrets))),
                 }
             }
             inputs.push(e);
@@ -241,13 +246,15 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
             None
         };
         let mut e = Entry { kind: "import", name: spec.name.clone(), source: url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
-        match fetch_remote(url, &options.fetch_policy, None) {
+        let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets)
+            .and_then(|origin_headers| fetch_remote_with(url, &options.fetch_policy, None, &FetchRequest { origin_headers, ..FetchRequest::default() }));
+        match r {
             Ok(f) => {
                 let latest = sha256(&f.bytes);
                 e.status = status_of(e.pin.as_deref(), &latest);
                 e.latest = Some(latest);
             }
-            Err(err) => e.error = Some((err.code.as_str().to_string(), err.detail)),
+            Err(err) => e.error = Some((err.code.as_str().to_string(), redact_secrets(&err.detail, &options.secrets))),
         }
         inputs.push(e);
     }
