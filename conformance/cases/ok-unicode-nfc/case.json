@@ -1,0 +1,14 @@
+{
+  "files": {
+    "gen/nfd/cafe\u0301.txt": "nfd\n",
+    "gen/nfc/caf\u00e9.txt": "nfc\n"
+  },
+  "expectPaths": [
+    "/named-nfd/caf\u00e9.txt",
+    "/named-nfc/caf\u00e9.txt",
+    "/r\u00e9sum\u00e9/caf\u00e9.txt",
+    "/walked/nfd/caf\u00e9.txt",
+    "/walked/nfc/caf\u00e9.txt",
+    "/caf\u00e9.txt"
+  ]
+}

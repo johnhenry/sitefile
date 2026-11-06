@@ -6,6 +6,7 @@
 //! TypeScript files they port.
 
 // Core (shared by every module)
+pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
 pub mod digest;

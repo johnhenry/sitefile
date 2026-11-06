@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
 import type { Tree } from './tree.js';
+import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 
 export interface SiteServerOptions {
@@ -70,7 +71,8 @@ export function safeSegments(rawPath: string): string[] | undefined {
     }
     // A decoded '/', '\\', NUL, control character, '.' or '..' could change what is read.
     if (seg === '.' || seg === '..' || /[\\/\u0000-\u001f\u007f]/.test(seg)) return undefined;
-    out.push(seg);
+    // Tree paths are NFC; a request for an NFD spelling finds the same file.
+    out.push(nfc(seg));
   }
   return out;
 }

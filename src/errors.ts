@@ -26,6 +26,8 @@ export type ErrorCode =
   | 'E_NOT_FOUND'
   | 'E_UNSUPPORTED_FILE'
   | 'E_HARDLINK'
+  /** Two paths equal under Unicode simple case folding, or two context names equal after NFC. */
+  | 'E_PATH_COLLISION'
   // composition
   | 'E_CONFLICT'
   // remote resources

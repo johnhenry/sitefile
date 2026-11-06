@@ -92,6 +92,21 @@ fn show(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// The temp directory starts empty and the tree has no two paths equal under
+/// case folding, so AlreadyExists/NotADirectory/IsADirectory here means the
+/// destination file system treats two different tree paths as one name (a
+/// folding or normalization rule wider than Sitefile's). Report the artifact
+/// path, not the temp path; other errors are returned unchanged.
+pub fn occupied(e: io::Error, p: &str) -> std::result::Result<SitefileError, io::Error> {
+    match e.kind() {
+        io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory | io::ErrorKind::IsADirectory => Ok(SitefileError::plain(
+            E_EXPORT,
+            format!("cannot write '{p}': the destination file system already has an entry by that name (it folds case or normalizes Unicode more widely than Sitefile's checks)"),
+        )),
+        _ => Err(e),
+    }
+}
+
 fn unsafe_err(msg: String) -> SitefileError {
     SitefileError::plain(E_EXPORT_UNSAFE, msg)
 }
@@ -349,7 +364,7 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
     }
 
     // --- validate paths before touching the disk
-    let mut planned: Vec<(Vec<&str>, &[u8], u32)> = Vec::with_capacity(entries.len());
+    let mut planned: Vec<(&str, Vec<&str>, &[u8], u32)> = Vec::with_capacity(entries.len());
     for &(p, bytes, mode) in entries {
         let Some(rel) = p.strip_prefix('/') else {
             return Err(SitefileError::plain(E_EXPORT, format!("invalid artifact path '{p}': not absolute")));
@@ -360,7 +375,7 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
                 return Err(SitefileError::plain(E_EXPORT, format!("invalid artifact path '{p}'")));
             }
         }
-        planned.push((segments, bytes, mode));
+        planned.push((p, segments, bytes, mode));
     }
 
     // --- write into a temp sibling, then swap (see src/exporter.ts for the
@@ -396,7 +411,7 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
         // Directories first, in order; then the files, in parallel.
         let targets: Vec<PathBuf> = planned
             .iter()
-            .map(|(segments, _, _)| {
+            .map(|(_, segments, _, _)| {
                 let mut t = tmp.clone();
                 for s in segments {
                     t.push(s);
@@ -405,10 +420,10 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
             })
             .collect();
         let mut made: Option<&Path> = None;
-        for t in &targets {
+        for (t, (p, ..)) in targets.iter().zip(planned.iter()) {
             let dir = t.parent().unwrap_or(&tmp);
             if made != Some(dir) {
-                fs::create_dir_all(dir).map_err(io_fail)?;
+                fs::create_dir_all(dir).map_err(|e| occupied(e, p).unwrap_or_else(io_fail))?;
                 made = Some(dir);
             }
         }
@@ -417,28 +432,29 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
             f.write_all(bytes)?;
             f.set_permissions(fs::Permissions::from_mode(mode))
         };
-        let jobs: Vec<(&Path, &[u8], u32)> = targets.iter().zip(planned.iter()).map(|(t, (_, bytes, mode))| (t.as_path(), *bytes, *mode)).collect();
+        let jobs: Vec<(&Path, &str, &[u8], u32)> =
+            targets.iter().zip(planned.iter()).map(|(t, (p, _, bytes, mode))| (t.as_path(), *p, *bytes, *mode)).collect();
         let threads = io_threads(jobs.len());
-        let first_error: std::sync::Mutex<Option<io::Error>> = std::sync::Mutex::new(None);
+        let first_error: std::sync::Mutex<Option<(io::Error, &str)>> = std::sync::Mutex::new(None);
         std::thread::scope(|sc| {
             for part in jobs.chunks(jobs.len().div_ceil(threads).max(1)) {
                 let (write_one, first_error) = (&write_one, &first_error);
                 sc.spawn(move || {
-                    for &(target, bytes, mode) in part {
+                    for &(target, p, bytes, mode) in part {
                         if first_error.lock().map(|e| e.is_some()).unwrap_or(true) {
                             return;
                         }
                         if let Err(e) = write_one(target, bytes, mode) {
                             let mut slot = first_error.lock().unwrap_or_else(|p| p.into_inner());
-                            slot.get_or_insert(e);
+                            slot.get_or_insert((e, p));
                             return;
                         }
                     }
                 });
             }
         });
-        if let Some(e) = first_error.into_inner().unwrap_or_else(|p| p.into_inner()) {
-            return Err(io_fail(e));
+        if let Some((e, p)) = first_error.into_inner().unwrap_or_else(|p| p.into_inner()) {
+            return Err(occupied(e, p).unwrap_or_else(io_fail));
         }
         if let Some(hook) = &options.before_swap {
             hook();
@@ -629,6 +645,14 @@ pub(crate) mod tests {
     }
     fn hook(f: impl Fn() + Send + Sync + 'static) -> Option<BeforeSwap> {
         Some(Arc::new(f))
+    }
+
+    #[test]
+    fn an_occupied_name_is_reported_by_artifact_path() {
+        let e = occupied(io::Error::from(io::ErrorKind::AlreadyExists), "/a.html").unwrap();
+        assert_eq!(e.code, E_EXPORT);
+        assert!(e.detail.starts_with("cannot write '/a.html': the destination file system already has an entry by that name"), "{}", e.detail);
+        assert!(occupied(io::Error::other("boom"), "/a").is_err());
     }
 
     #[test]

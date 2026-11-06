@@ -1,0 +1,4 @@
+FROM scratch
+COPY ./src/A.html /A.html
+COPY ./src/a2.html /a.html
+EXPORT / AS directory

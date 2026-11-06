@@ -139,6 +139,30 @@ fn errors_print_code_and_location_usage_errors_exit_2() {
 }
 
 #[test]
+fn case_only_collisions_fail_at_the_second_write() {
+    // Issue #71: this used to fail in the exporter with a raw EEXIST on a temp path (macOS).
+    let work = Tmp::new();
+    let dir = work.path().join("case");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/A.html"), "A").unwrap();
+    fs::write(dir.join("src/a2.html"), "b").unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nCOPY ./src/A.html /A.html\nCOPY ./src/a2.html /a.html\nEXPORT / AS directory\n").unwrap();
+    let r = sitefile(&work, &["build", s(&dir), "--no-lockfile"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.starts_with("error[E_PATH_COLLISION]: "), "{}", r.stderr);
+    assert!(r.stderr.contains("Sitefile:3:1: '/a.html' differs only in case from '/A.html' (written by "), "{}", r.stderr);
+    assert!(!r.stderr.contains("sitefile-tmp"), "{}", r.stderr);
+
+    // NFD in the Sitefile gives an NFC output path.
+    fs::write(dir.join("Sitefile"), "FROM scratch\nCOPY ./src/A.html /cafe\u{301}.html\nEXPORT /\n").unwrap();
+    let out = work.path().join("out");
+    let r = sitefile(&work, &["build", s(&dir), "--no-lockfile", "-o", s(&out)]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let names: Vec<String> = fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(names, vec!["caf\u{e9}.html".to_string()]);
+}
+
+#[test]
 fn refuses_to_replace_a_non_empty_directory_outside_the_context_without_force() {
     let work = Tmp::new();
     let ctx = example(&work, "hello");
