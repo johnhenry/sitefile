@@ -227,7 +227,7 @@ export function buildGrammar() {
     name: 'Sitefile',
     scopeName: 'source.sitefile',
     fileTypes: ['Sitefile', 'sitefile'],
-    patterns: [{ include: '#directive' }, { include: '#comment' }, { include: '#instructions' }],
+    patterns: [{ include: '#directive' }, { include: '#lint-comment' }, { include: '#comment' }, { include: '#instructions' }],
     repository: {
       'heredoc-copy': { patterns: heredocs('raw', [{ include: '#operands' }]) },
       'heredoc-render': { patterns: heredocs('template', [{ include: '#render-clauses' }]) },
@@ -244,6 +244,19 @@ export function buildGrammar() {
           3: { name: S('keyword.operator.assignment') },
           4: { name: S('constant.numeric.version') },
           5: { name: S('invalid.illegal.version') },
+        },
+      },
+      // `# sitefile-lint: disable=<rule>,…` / `disable-next-line=…` (src/lint.ts).
+      'lint-comment': {
+        match: '^\\s*(#)[ \\t]*((?i:sitefile-lint))[ \\t]*(:)[ \\t]*(?:((?:disable-next-line|disable))[ \\t]*(=)(.*))?.*$',
+        name: S('comment.line.directive'),
+        captures: {
+          1: { name: S('punctuation.definition.comment') },
+          2: { name: S('keyword.other.directive') },
+          3: { name: S('punctuation.separator.key-value') },
+          4: { name: S('keyword.other.directive') },
+          5: { name: S('keyword.operator.assignment') },
+          6: { name: S('constant.other.rule') },
         },
       },
       comment: { match: '^\\s*(#).*$', name: S('comment.line.number-sign'), captures: { 1: { name: S('punctuation.definition.comment') } } },

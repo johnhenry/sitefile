@@ -1,0 +1,1 @@
+{"command": "validate", "args": ["--build-arg", "A=1", "--lint-disable", "unused-name, render-escape", "--lint-disable=unpinned-image"]}

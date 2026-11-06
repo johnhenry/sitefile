@@ -26,6 +26,14 @@ export interface Heredoc {
   readonly bodyLine: number;
 }
 
+/** A comment line outside heredoc bodies: `text` runs from its `#` to the end of the line. */
+export interface CommentLine {
+  readonly line: number;
+  /** Column of the `#`. */
+  readonly column: number;
+  readonly text: string;
+}
+
 /** Instructions whose source may be a heredoc. */
 const HEREDOC_INSTRUCTIONS = new Set(['COPY', 'RENDER', 'TRANSFORM']);
 
@@ -75,8 +83,9 @@ function trailingBackslashes(s: string): number {
  * of `\` continues; pieces are trimmed at the join and joined with one space.
  * A `# sitefile=N` comment is the syntax version directive: it must come before
  * the first instruction, at most once, and name a supported version.
+ * `comments`, when given, receives every comment line (for `# sitefile-lint:`).
  */
-export function logicalLines(source: string, file = 'Sitefile'): LogicalLine[] {
+export function logicalLines(source: string, file = 'Sitefile', comments?: CommentLine[]): LogicalLine[] {
   const out: LogicalLine[] = [];
   let sawVersion = false;
   /** A comment line: check a `# sitefile=N` directive (only allowed before the first instruction). */
@@ -129,6 +138,7 @@ export function logicalLines(source: string, file = 'Sitefile'): LogicalLine[] {
     }
     const trimmed = raw.trim();
     if (trimmed.startsWith('#')) {
+      comments?.push({ line, column: raw.indexOf('#') + 1, text: raw.slice(raw.indexOf('#')) });
       directive(raw, line, out.length > 0 || continuing);
       return;
     }

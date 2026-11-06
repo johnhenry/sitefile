@@ -37,6 +37,8 @@ Any other LSP client: command `sitefile lsp`, stdio transport, language id
 | Capability | What it does |
 | --- | --- |
 | Diagnostics (`textDocument/publishDiagnostics`) | On open, change and save; cleared on close. Runs the real pipeline: **scan → parse → validate → plan**, plus the template parser on `RENDER` heredoc bodies. Every logical line that fails to parse gets its own error; after parsing, the first validation or planning error is reported (as `sitefile validate` would). Planner warnings (`unnamed stage is not the last one`, `INTEGRITY on a local import …`) are warnings on their whole line. Each diagnostic carries the stable error code (`E_SYNTAX`, `E_UNDEFINED`, …). |
+| Lint warnings | `validate`'s [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) are Warning diagnostics on their instruction's first line, with the rule id as the diagnostic `code` (`render-escape`, …; `lint-comment` for a bad `# sitefile-lint:` comment) and the same text as `validate` prints. |
+| Code actions (quick fixes) | `textDocument/codeAction` for the diagnostics in the requested range: `render-escape` → **Add --escape=html**; `unpinned-import` → **Add INTEGRITY from Sitefile.lock** and `unpinned-image` → **Pin the digest from Sitefile.lock** (only when the `Sitefile.lock` next to the document has the URL / the image tag); the unnamed-stage warning → **Name this stage** (`FROM … AS stageN`, or a `STAGE stageN` line before an implicit stage); every lint rule → **Disable <rule> for this instruction** (`# sitefile-lint: disable-next-line=…` above it) and **Disable <rule> in this file** (`# sitefile-lint: disable=…` on the first line). |
 | `ARG` without a default | An **Information** diagnostic (`E_MISSING_ARG`): a build needs `--build-arg NAME=<value>`. The rest of the file is planned with a placeholder value for it (`placeholder`, `0` or `false` by type), and an error found that way says so. |
 | Completion | Instruction keywords at the start of a line; clause keywords and values in context (`IMPORT … AS` → `file text json yaml csv markdown wbn tree`, `EXPORT … AS` → `directory zip tar tgz wbn oci`, `COMPRESSION` → `gzip none`, `--escape=` → `none html`, `ARG NAME:` → types, `SORT BY key` → `ASC DESC`, `TO`, `FOR`, `IN`, `WITH`, `OPTIONS`, `ARGS`; `SITEMAP`/`FEED` clauses in order (`BASE`, `LINK`, `TO`, `TITLE`), `REDIRECT … STATUS` → `301 302 303 307 308`, `MANIFEST` after a `FINGERPRINT` pattern, `--warn`/`--external` after `CHECKLINKS`); the flags of `COPY` (`--overwrite`, `--from=`, `--exclude=`, `--chmod=`, `--parents`), `RENDER`, `TRANSFORM` and the site instructions; imports after `FEED`; stage names defined earlier after `FROM`, `STAGE … FROM` and `--from=`; imports as `name:` sources and after `FOR … IN`; plugins and tools after `WITH`; and names inside `${`: ARG/LET names and the loop variable in operands, plus imports and block tags (`#each`, `#if`, `else`, `/each`, `/if`) in `RENDER` heredoc bodies. Keyword lists come from the parser's own tables (`rust/src/language/parser.rs`, `ast.rs`). |
 | Hover | Short docs for every instruction, clause, flag and value word, and for the `# sitefile=1` version directive; for a name, its kind, the line that defines it, and (when the file plans) its value: an ARG/LET value, or an import's kind and URI. |
@@ -49,7 +51,7 @@ Server capabilities: `positionEncoding: utf-16`, full text sync
 if a client sends them), `completionProvider` (trigger characters
 `$ { - = space :`), `hoverProvider`, `definitionProvider`,
 `referencesProvider`, `documentSymbolProvider`, `renameProvider` with
-`prepareProvider`.
+`prepareProvider`, `codeActionProvider` (kind `quickfix`).
 
 Protocol: `initialize`, `initialized`, `shutdown` and `exit` (exit code 0
 after `shutdown`, 1 otherwise or at end of input). Requests before
@@ -63,7 +65,9 @@ and `$/cancelRequest` are ignored (requests are answered synchronously).
   tools, or writes anything: planning binds variables and normalizes paths
   only. So errors that need the files (`E_NOT_FOUND`, a bad JSON import,
   `E_CONFLICT`, an undefined name used in a template) appear only when you
-  build. Template *syntax* in heredoc bodies is checked.
+  build. Template *syntax* in heredoc bodies is checked. The one exception is
+  a code action: the pin quick fixes read the `Sitefile.lock` next to the
+  document (never the network) when you ask for actions.
 - **Single-threaded.** One loop reads a message, handles it and replies.
   Diagnostics are published when no further input is already buffered, so a
   burst of edits is analyzed once, for the last version.
@@ -100,7 +104,7 @@ and its warnings are `validate`'s warnings (`rust/tests/lsp_parity.rs`,
 - **Ranges.** An error's range covers the word at its column; an error at
   the end of a line (`expected TO`) covers the line's last character. An
   error without a position covers the first line.
-- **Warnings** are the same text, on the whole line they name. A
+- **Warnings** (planner and lint) are the same text, on the whole line they name. A
   `--build-arg … was ignored` warning cannot occur (the LSP takes no build
   arguments).
 
@@ -110,7 +114,7 @@ and its warnings are `validate`'s warnings (`rust/tests/lsp_parity.rs`,
   until it is fixed (the validator and planner stop at the first error).
 - No workspace-wide analysis: each document is analyzed on its own (there are
   no cross-file references in the language).
-- No formatting, code actions, semantic tokens or signature help.
+- No formatting, semantic tokens or signature help. Code actions are quick fixes only.
 - Keys inside values (`${post.title}`) are not completed: they depend on the
   imported data.
 - Only the stdio transport.

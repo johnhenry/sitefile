@@ -25,6 +25,7 @@ import { findVendorDir, Vendor } from './resources/vendor.js';
 import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 import { IgnoreRules } from './resources/ignore.js';
+import { lint } from './lint.js';
 import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
@@ -183,6 +184,7 @@ interface Loaded {
   readonly program: Program;
   readonly sitefilePath: string;
   readonly label: string;
+  readonly source: string;
 }
 
 /** Read, parse and validate a Sitefile. */
@@ -196,13 +198,19 @@ export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'si
     throw new SitefileError('E_NOT_FOUND', `cannot read Sitefile '${options.label ?? sitefilePath}'`, undefined, { cause: e });
   }
   const label = options.label ?? (path.relative(process.cwd(), sitefilePath) || path.basename(sitefilePath));
-  return { program: parseProgram(source, label), sitefilePath, label };
+  return { program: parseProgram(source, label), sitefilePath, label, source };
 }
 
 /** Parse, validate and evaluate variables, without reading any sources. */
 export async function planBuild(options: BuildOptions): Promise<Plan> {
   const { program } = await loadProgram(options);
   return planFor(program, options);
+}
+
+/** `validate`'s lint warnings (src/lint.ts) for the whole Sitefile (a `--target` does not narrow them). */
+export async function lintBuild(options: BuildOptions, disabled: readonly string[] = []): Promise<string[]> {
+  const { program, source } = await loadProgram(options);
+  return lint(program, plan(program, options.buildArgs ?? {}), source, disabled);
 }
 
 /** The plan of a program for these options (`target` applied). */
@@ -1026,7 +1034,7 @@ function namesKey(env: ExecEnv, names: Iterable<string>, except?: string): strin
 }
 
 /** Top-level names a template reads (variables, #each lists, #if conditions). */
-function templateNames(nodes: readonly TemplateNode[], out = new Set<string>()): Set<string> {
+export function templateNames(nodes: readonly TemplateNode[], out = new Set<string>()): Set<string> {
   for (const n of nodes) {
     if (n.kind === 'var') out.add(n.name);
     else if (n.kind === 'each') {

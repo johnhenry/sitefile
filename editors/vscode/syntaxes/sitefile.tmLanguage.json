@@ -11,6 +11,9 @@
       "include": "#directive"
     },
     {
+      "include": "#lint-comment"
+    },
+    {
       "include": "#comment"
     },
     {
@@ -2220,6 +2223,30 @@
         },
         "5": {
           "name": "invalid.illegal.version.sitefile"
+        }
+      }
+    },
+    "lint-comment": {
+      "match": "^\\s*(#)[ \\t]*((?i:sitefile-lint))[ \\t]*(:)[ \\t]*(?:((?:disable-next-line|disable))[ \\t]*(=)(.*))?.*$",
+      "name": "comment.line.directive.sitefile",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.sitefile"
+        },
+        "2": {
+          "name": "keyword.other.directive.sitefile"
+        },
+        "3": {
+          "name": "punctuation.separator.key-value.sitefile"
+        },
+        "4": {
+          "name": "keyword.other.directive.sitefile"
+        },
+        "5": {
+          "name": "keyword.operator.assignment.sitefile"
+        },
+        "6": {
+          "name": "constant.other.rule.sitefile"
         }
       }
     },
