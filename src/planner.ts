@@ -28,6 +28,8 @@ export interface ImportSpec {
   readonly as?: ImportKind;
   readonly integrity?: string;
   readonly sort?: { readonly key: string; readonly descending: boolean };
+  /** Build secrets sent as request headers (ids and header names only; values come from --secret). */
+  readonly secrets?: readonly { readonly id: string; readonly header: string; readonly bearer: boolean }[];
   readonly span: SourceSpan;
 }
 
@@ -251,8 +253,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.as ? { as: ins.as } : {}),
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
           ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
+          ...(ins.secrets ? { secrets: ins.secrets.map((s) => ({ id: s.id, header: s.header, bearer: s.bearer })) } : {}),
           span: ins.span,
         };
+        if (spec.location.kind === 'local' && ins.secrets) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SECRET applies to remote imports (https:// or git+https://), not local paths`, ins.secrets[0]!.span);
+        }
         if (spec.location.kind === 'git' && spec.integrity) {
           throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: INTEGRITY does not apply to Git imports; pin a commit instead (#<40 hex>[:path])`, ins.span);
         }

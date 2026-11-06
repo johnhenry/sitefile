@@ -14,6 +14,7 @@ import {
   REDIRECT_STATUSES,
   type RedirectStatus,
   type ImportKind,
+  type ImportSecret,
   type Instruction,
   type Operand,
   type StageRef,
@@ -130,6 +131,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   let as: ImportKind | undefined;
   let integrity: string | undefined;
   let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
+  const secrets: ImportSecret[] = [];
   while (!c.atEnd()) {
     const at = c.span;
     if (c.keyword('AS')) {
@@ -152,8 +154,13 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       const key = c.ident('sort key');
       const descending = c.keyword('DESC') ? true : (c.keyword('ASC'), false);
       sort = { key, descending, span: at };
+    } else if (c.keyword('SECRET')) {
+      const s = parseSecretClause(c, at);
+      const prior = secrets.find((p) => p.header.toLowerCase() === s.header.toLowerCase());
+      if (prior) throw c.error('E_SYNTAX', `header '${s.header}' is set by two SECRET clauses`, at);
+      secrets.push(s);
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY or SORT BY)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY or SECRET)`, at);
     }
   }
   return {
@@ -164,7 +171,30 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     ...(as !== undefined && { as }),
     ...(integrity !== undefined && { integrity }),
     ...(sort !== undefined && { sort }),
+    ...(secrets.length > 0 && { secrets }),
   };
+}
+
+const HEADER_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them. */
+const RESERVED_HEADERS = new Set([
+  'accept', 'accept-encoding', 'connection', 'content-encoding', 'content-length', 'content-type', 'git-protocol',
+  'host', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'user-agent',
+]);
+
+/** `SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER` (after the SECRET keyword). */
+function parseSecretClause(c: Cursor, span: SourceSpan): ImportSecret {
+  const id = c.ident('secret id');
+  c.expectKeyword('AS');
+  if (c.keyword('BEARER')) return { id, header: 'Authorization', bearer: true, span };
+  const at = c.span;
+  if (!c.keyword('HEADER')) throw c.error('E_SYNTAX', 'expected HEADER <name> or BEARER', at);
+  const nameAt = c.span;
+  const header = c.word();
+  if (header === '') throw c.error('E_SYNTAX', 'expected a header name', nameAt);
+  if (!HEADER_TOKEN.test(header)) throw c.error('E_SYNTAX', `invalid header name '${header}'`, nameAt);
+  if (RESERVED_HEADERS.has(header.toLowerCase())) throw c.error('E_SYNTAX', `header '${header}' is set by sitefile and cannot carry a secret`, nameAt);
+  return { id, header, bearer: false, span };
 }
 
 interface Flag {

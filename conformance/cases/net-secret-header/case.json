@@ -1,0 +1,50 @@
+{
+  "network": true,
+  "steps": [
+    {
+      "args": [
+        "build",
+        "${CTX}",
+        "-o",
+        "${OUT}/dist",
+        "--allow-private-network",
+        "--secret",
+        "id=key,env=API_TOKEN",
+        "--secret",
+        "id=tok,env=API_TOKEN",
+        "--secret",
+        "id=unused,env=API_TOKEN"
+      ],
+      "env": {
+        "API_TOKEN": "conformance-secret-7c1e"
+      }
+    },
+    {
+      "args": [
+        "inspect",
+        "${CTX}",
+        "--allow-private-network",
+        "--secret",
+        "id=key,env=API_TOKEN",
+        "--secret",
+        "id=tok,env=API_TOKEN"
+      ],
+      "env": {
+        "API_TOKEN": "conformance-secret-7c1e"
+      }
+    },
+    [
+      "validate",
+      "${CTX}",
+      "--json"
+    ]
+  ],
+  "outputs": [
+    [
+      "dist",
+      "tree"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

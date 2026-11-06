@@ -1,0 +1,4 @@
+# A wrong secret: the server refuses (401), and the message does not show it.
+FROM scratch
+IMPORT data FROM ${HTTPS}/private/data.json AS json SECRET key AS HEADER X-Api-Key
+EXPORT /

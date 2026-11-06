@@ -15,8 +15,11 @@
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
   "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE" "MANIFEST"
+  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST"
 ] @keyword
+
+(secret_clause id: (identifier) @variable)
+(secret_clause header: (header_name) @property)
 
 (for_clause [ "FOR" "IN" ] @keyword)
 

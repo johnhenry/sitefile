@@ -764,6 +764,25 @@
     }
   },
   {
+    "type": "header_name",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "escape_sequence",
+          "named": true
+        },
+        {
+          "type": "substitution",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "heredoc_body",
     "named": true,
     "fields": {},
@@ -922,6 +941,16 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "secret": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "secret_clause",
             "named": true
           }
         ]
@@ -1410,6 +1439,32 @@
         "types": [
           {
             "type": "path",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "secret_clause",
+    "named": true,
+    "fields": {
+      "header": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "header_name",
+            "named": true
+          }
+        ]
+      },
+      "id": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
             "named": true
           }
         ]
@@ -2068,6 +2123,10 @@
     "named": false
   },
   {
+    "type": "BEARER",
+    "named": false
+  },
+  {
     "type": "BY",
     "named": false
   },
@@ -2169,6 +2228,10 @@
   },
   {
     "type": "RUN",
+    "named": false
+  },
+  {
+    "type": "SECRET",
     "named": false
   },
   {

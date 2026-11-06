@@ -1,0 +1,19 @@
+{
+  "network": true,
+  "steps": [
+    {
+      "args": [
+        "build",
+        "${CTX}",
+        "-o",
+        "${OUT}/dist",
+        "--allow-private-network",
+        "--secret",
+        "id=key,env=API_TOKEN"
+      ],
+      "env": {
+        "API_TOKEN": "conformance-secret-7c1e"
+      }
+    }
+  ]
+}

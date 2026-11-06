@@ -209,6 +209,18 @@ pub struct ForEach {
     pub span: SourceSpan,
 }
 
+/// A build secret sent as an HTTP request header of a remote IMPORT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportSecret {
+    /// The `--secret id=…` it names.
+    pub id: String,
+    /// Header name as written (`Authorization` for BEARER).
+    pub header: String,
+    /// `AS BEARER`: the header value is `Bearer <secret>`.
+    pub bearer: bool,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortBy {
     pub key: String,
@@ -244,6 +256,8 @@ pub enum Instruction {
         as_kind: Option<ImportKind>,
         integrity: Option<String>,
         sort: Option<SortBy>,
+        /// `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets).
+        secrets: Vec<ImportSecret>,
     },
     Copy { span: SourceSpan, source: Source, dest: Operand, from: Option<StageRef>, overwrite: bool },
     Render {

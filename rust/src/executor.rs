@@ -28,7 +28,8 @@ use crate::profile::{begin, Profiler};
 use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
 use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk, TemplateNode};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
-use crate::resources::https::fetch_remote;
+use crate::resources::https::{fetch_remote_with, FetchRequest};
+use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
 use crate::resources::lockfile::{GitLockEntry, LockEntry, Lockfile};
 use crate::resources::git::{fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport};
@@ -69,6 +70,9 @@ pub struct BuildOptions {
     pub sitefile: Option<String>,
     /// How messages name the Sitefile (default: its path relative to the working directory).
     pub label: Option<String>,
+    /// Build secrets by id (`--secret id=…,env=…|src=…`, see src/secrets.rs): sent only as the request
+    /// headers that `IMPORT … SECRET` clauses name, and redacted from every warning and error.
+    pub secrets: Secrets,
     pub build_args: BuildArgs,
     /// `--target <stage>`: build up to this named stage and export its whole tree (planner `target_plan`).
     pub target: Option<String>,
@@ -135,6 +139,7 @@ impl Default for BuildOptions {
             context_dir: ".".into(),
             sitefile: None,
             label: None,
+            secrets: Secrets::default(),
             build_args: BuildArgs::new(),
             target: None,
             out_dir: None,
@@ -468,6 +473,38 @@ pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
 
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
+    // Build secrets never appear in a warning or an error, even when a server echoes one back.
+    if options.secrets.is_empty() {
+        return build_unredacted(options);
+    }
+    let secrets = options.secrets.clone();
+    let mut redacted = options.clone();
+    if let Some(on) = options.on_warning.clone() {
+        let s = secrets.clone();
+        redacted.on_warning = Some(Arc::new(move |m: &str| on(&redact_secrets(m, &s))));
+    }
+    match build_unredacted(&redacted) {
+        Ok(r) => {
+            let warnings = r.warnings.iter().map(|w| redact_secrets(w, &secrets)).collect();
+            Ok(BuildResult { warnings, ..r })
+        }
+        Err(e) => Err(redact_error(e, &secrets)),
+    }
+}
+
+/// `--secret` ids that no IMPORT … SECRET names (likely a typo).
+pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
+    let used: std::collections::HashSet<&str> = p.imports.iter().flat_map(|s| s.secrets.iter().map(|x| x.id.as_str())).collect();
+    let mut ids: Vec<&str> = secrets.ids().collect();
+    ids.sort();
+    for id in ids {
+        if !used.contains(id) {
+            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+        }
+    }
+}
+
+fn build_unredacted(options: &BuildOptions) -> Result<BuildResult> {
     let Some(memo) = &options.memo else { return build_once(options) };
     lock_memo(memo).begin();
     let r = build_once(options);
@@ -508,6 +545,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     for w in &p.warnings {
         warn(w);
     }
+    warn_unused_secrets(&p, &options.secrets, &warn);
     let tools = resolve_tools(&p, options, &warn)?;
     let plugin_permission = check_plugins(&p, options, &warn)?;
 
@@ -579,6 +617,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             update: options.update_lock,
             vendor: vendor.as_ref().map(|v| (v, &local)),
             archive_limits: options.archive_limits,
+            secrets: &options.secrets,
         },
         memo: options.memo.as_deref(),
     };
@@ -1029,6 +1068,8 @@ pub struct RemoteEnv<'a> {
     pub vendor: Option<(&'a Vendor, &'a LocalContext)>,
     /// Limits for Git trees (file count, total size).
     pub archive_limits: ArchiveLimits,
+    /// Build secrets by id (`--secret`), sent as the headers of IMPORT … SECRET clauses.
+    pub secrets: &'a Secrets,
 }
 
 /// The canonical bytes `sitefile vendor` stores for a Git selection: a file's bytes, or a tree as a deterministic tar.
@@ -1079,7 +1120,9 @@ pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_
                 env.label, spec.span.line, spec.name, v.dir
             ));
         }
-        let objs = fetch_git_commit(&loc.repo, &loc.git_ref, want.as_deref(), GitTransport::new(env.policy, span), &env.archive_limits)?;
+        let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+        let transport = GitTransport { origin_headers: &origin_headers, ..GitTransport::new(env.policy, span) };
+        let objs = fetch_git_commit(&loc.repo, &loc.git_ref, want.as_deref(), transport, &env.archive_limits)?;
         want = Some(objs.commit.clone());
         select_git_path(&objs, &loc.repo, &loc.path, &env.archive_limits, span)?
     };
@@ -1119,7 +1162,8 @@ pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) ->
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let f = fetch_remote(url, env.policy, span)?;
+            let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let f = fetch_remote_with(url, env.policy, span, &FetchRequest { origin_headers, ..FetchRequest::default() })?;
             (f.bytes, f.final_url)
         }
     };

@@ -7,6 +7,7 @@ import { plan } from './planner.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
 import { fetchRemote } from './resources/https.js';
 import { resolveRef } from './resources/git.js';
+import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { Lockfile } from './resources/lockfile.js';
 import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 
@@ -94,9 +95,9 @@ export function newerVersionTag(current: string, tags: readonly string[]): strin
   return best?.tag;
 }
 
-function errorOf(e: unknown): { code: string; message: string } {
-  if (isSitefileError(e)) return { code: e.code, message: e.detail };
-  throw e;
+function errorOf(e: unknown, secrets?: Secrets): { code: string; message: string } {
+  if (isSitefileError(e)) return { code: e.code, message: redactSecrets(e.detail, secrets) };
+  throw redactError(e, secrets);
 }
 
 /** An entry with its keys in the documented order (the JSON output is compared across implementations). */
@@ -131,10 +132,11 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
         continue;
       }
       try {
-        const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span });
+        const originHeaders = secretHeaders(spec, options.secrets);
+        const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) });
         inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
       } catch (e) {
-        inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e) }));
+        inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
       }
       continue;
     }
@@ -145,11 +147,12 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
     const pinnedBy: OutdatedEntry['pinnedBy'] = spec.integrity ? 'integrity' : locked ? 'lockfile' : null;
     const row = { kind: 'import' as const, name: spec.name, source: url, pin, pinnedBy, newerTag: null };
     try {
-      const { bytes } = await fetchRemote(url, policy);
+      const originHeaders = secretHeaders(spec, options.secrets);
+      const { bytes } = await fetchRemote(url, policy, undefined, originHeaders ? { originHeaders } : {});
       const latest = sha256(bytes);
       inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
     } catch (e) {
-      inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e) }));
+      inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
     }
   }
 

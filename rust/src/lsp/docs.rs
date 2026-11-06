@@ -20,7 +20,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ("LET", "LET NAME[: type] = value", "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails."),
     (
         "IMPORT",
-        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]]",
+        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]…",
         "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
@@ -95,6 +95,13 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("IMPORT", "INTEGRITY", "`INTEGRITY sha256:<64 lowercase hex>`: the content must match; remote pins are recorded in Sitefile.lock."),
     ("IMPORT", "SORT", "`SORT BY key [ASC|DESC]` orders a list import (markdown, json, yaml, csv) by a field; numbers and numeric strings compare numerically."),
     ("IMPORT", "BY", "`SORT BY key`: the field to sort by."),
+    (
+        "IMPORT",
+        "SECRET",
+        "`SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER`: send the build secret given with `--secret id=<id>,env=<VAR>` (or `src=<file>`) as a request header, only to this URL's origin. The value is never recorded or shown. Repeatable, one clause per header.",
+    ),
+    ("IMPORT", "HEADER", "`SECRET <id> AS HEADER <Name>`: the secret is sent verbatim as the request header `<Name>`."),
+    ("IMPORT", "BEARER", "`SECRET <id> AS BEARER`: the secret is sent as `Authorization: Bearer <secret>`."),
     ("IMPORT", "ASC", "Ascending order (the default)."),
     ("IMPORT", "DESC", "Descending order."),
     ("PLUGIN", "FROM", "`FROM ./path`: a local `.mjs` module (in its own folder) or `.wasm` module."),
@@ -216,8 +223,8 @@ mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SITEMAP_CLAUSES,
-        SORT_ORDERS, TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS,
+        SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -243,7 +250,7 @@ mod tests {
         for t in ValueType::ALL {
             assert!(value_type(t.as_str()).is_some());
         }
-        for c in IMPORT_CLAUSES.iter().chain(&SORT_ORDERS) {
+        for c in IMPORT_CLAUSES.iter().chain(&SORT_ORDERS).chain(&SECRET_FORMS) {
             assert!(clause("IMPORT", c).is_some(), "{c}");
         }
         for c in EXPORT_CLAUSES {

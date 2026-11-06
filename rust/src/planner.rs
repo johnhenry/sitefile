@@ -61,7 +61,17 @@ pub struct ImportSpec {
     pub as_kind: Option<ImportKind>,
     pub integrity: Option<String>,
     pub sort: Option<ImportSort>,
+    /// Build secrets sent as request headers (ids and header names only; values come from --secret).
+    pub secrets: Vec<SecretRef>,
     pub span: SourceSpan,
+}
+
+/// An `IMPORT … SECRET` clause as planned: which secret, which header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretRef {
+    pub id: String,
+    pub header: String,
+    pub bearer: bool,
 }
 
 /// A declared renderer plugin: a local `.mjs` file in its own folder, or a `.wasm` module.
@@ -336,9 +346,16 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let raw = evaluate_operand(value, &vars)?;
                 bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort } => {
+            Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
+                if matches!(location, ImportLocation::Local { .. }) && !secrets.is_empty() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("IMPORT {name}: SECRET applies to remote imports (https:// or git+https://), not local paths"),
+                        &secrets[0].span,
+                    ));
+                }
                 if matches!(location, ImportLocation::Git(_)) && integrity.is_some() {
                     return Err(SitefileError::at(
                         E_VALIDATION,
@@ -359,6 +376,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     as_kind: *as_kind,
                     integrity: integrity.clone(),
                     sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
+                    secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
                     span: span.clone(),
                 };
                 // A JavaScript Map keeps the first position of a re-set key (validate() forbids duplicates anyway).
@@ -759,6 +777,12 @@ impl ImportSpec {
         }
         if let Some(s) = &self.sort {
             m.insert("sort".into(), json!({ "key": s.key, "descending": s.descending }));
+        }
+        if !self.secrets.is_empty() {
+            m.insert(
+                "secrets".into(),
+                Value::Array(self.secrets.iter().map(|s| json!({ "id": s.id, "header": s.header, "bearer": s.bearer })).collect()),
+            );
         }
         m.insert("span".into(), span_json(&self.span));
         Value::Object(m)

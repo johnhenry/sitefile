@@ -183,7 +183,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
+  - `SECRET`: see Build secrets below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
   - `<uri>` is a context-relative path, an `https://` URL (`http://` only with
@@ -718,7 +719,39 @@ repository at a commit, and `sitefile build https://host/repo.git#ref:dir` build
   than 40 links in a row is a loop (`E_UNSUPPORTED_FILE`); a directory link back to one of its own
   ancestors is skipped. **Submodules** (gitlinks) are refused (`E_UNSUPPORTED_FILE`): import the
   submodule's repository with its own `IMPORT`.
-- Private repositories need credentials, which URLs may not carry; they are not supported yet.
+- Private repositories need credentials, which URLs may not carry: use a build secret
+  (`IMPORT … FROM git+https://… SECRET token AS BEARER`, or `AS HEADER Authorization` with a
+  `Basic …` value); it is sent with every Git request to the repository's origin.
+
+### Build secrets (`--secret`, `IMPORT … SECRET`)
+Remote IMPORTs from private APIs and repositories need credentials, which URLs may not carry.
+Like Docker's `--mount=type=secret`, a secret is given on the command line and named in the
+Sitefile; its value is never part of the Sitefile, the output or any record of the build.
+- **CLI**: `--secret id=<id>,env=<VAR>` (an environment variable) or `--secret id=<id>,src=<file>`
+  (a file, relative to the working directory; one trailing newline is dropped), repeatable, on
+  `build`, `inspect`, `why`, `vendor` and `outdated` (`validate` and `graph` accept and ignore it).
+  `<id>` is an identifier. A malformed flag is a usage error that does not echo the flag (it might be
+  the secret); an unset variable, an unreadable or empty file, or a value with characters other than
+  printable ASCII, spaces and tabs is `E_SECRET`. An id no IMPORT names is a warning.
+- **Sitefile**: `SECRET <id> AS HEADER <Name>` sends the value verbatim as the request header `<Name>`
+  (an HTTP token); `SECRET <id> AS BEARER` sends `Authorization: Bearer <value>`. Clauses may be
+  repeated and mixed with `AS`, `INTEGRITY` and `SORT BY` in any order, but a header (compared
+  case-insensitively; `BEARER` is `Authorization`) only once. Headers the client sets itself (`Host`,
+  `Content-Length`, `Content-Type`, `Accept`, `Accept-Encoding`, `User-Agent`, `Git-Protocol`,
+  `Connection`, …) are `E_SYNTAX`. `SECRET` on a local import is `E_VALIDATION`.
+- **Missing**: an IMPORT whose secret was not given fails with `E_SECRET` when it would be fetched. A
+  vendored copy needs no secret (nothing is fetched).
+- **Where the value goes**: only into the request headers of that IMPORT, and only to the origin
+  (scheme, host and port) of its URL: a redirect to another origin is followed without it (a
+  same-origin redirect keeps it). For Git imports it goes with every Git request to the repository.
+- **Where it never goes**: the output, cache and memo keys (they hold the secret's *id* and header
+  name, never the value), `Sitefile.lock` and the vendor manifest (keyed by URL, as before),
+  provenance and SBOM, `--profile` traces, `validate --json` (ids and header names only), warnings and
+  error messages. As a last line of defence, every warning and error of a build, `vendor` or
+  `outdated` run with secrets has each secret value replaced by `***` (for example when a server puts
+  the credential it received into a redirect URL).
+- The content fetched with a secret is ordinary content: it is pinned, locked and vendored like any
+  other import, so commit a vendor directory of private data only where that data may live.
 
 ### Vendoring (`sitefile vendor`)
 `sitefile vendor [context]` (like `cargo vendor`) downloads every remote input so

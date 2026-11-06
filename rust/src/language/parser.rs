@@ -3,7 +3,7 @@
 
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{
+use crate::language::ast::{ImportSecret, 
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SortBy, Source, StageRef, TransformOption, ValueType,
 };
@@ -19,8 +19,11 @@ pub const INSTRUCTIONS: [&str; 16] = [
     "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
     "FINGERPRINT", "EXPORT",
 ];
-/// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`).
-pub const IMPORT_CLAUSES: [&str; 3] = ["AS", "INTEGRITY", "SORT"];
+/// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
+/// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
+pub const IMPORT_CLAUSES: [&str; 4] = ["AS", "INTEGRITY", "SORT", "SECRET"];
+/// What follows `SECRET <id> AS`.
+pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
 pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 /// Clauses after `EXPORT <path>`, in this order.
@@ -186,6 +189,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let mut as_kind: Option<ImportKind> = None;
     let mut integrity: Option<String> = None;
     let mut sort: Option<SortBy> = None;
+    let mut secrets: Vec<ImportSecret> = Vec::new();
     while !c.at_end() {
         let at = c.span();
         if c.keyword("AS") {
@@ -219,12 +223,54 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
                 false
             };
             sort = Some(SortBy { key, descending, span: at });
+        } else if c.keyword("SECRET") {
+            let s = parse_secret_clause(c, at.clone())?;
+            if secrets.iter().any(|p| p.header.to_lowercase() == s.header.to_lowercase()) {
+                return Err(SitefileError::at(E_SYNTAX, format!("header '{}' is set by two SECRET clauses", s.header), &at));
+            }
+            secrets.push(s);
         } else {
             let w = c.word();
-            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY or SORT BY)"), &at));
+            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY or SECRET)"), &at));
         }
     }
-    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort })
+    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets })
+}
+
+/// Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them.
+const RESERVED_HEADERS: [&str; 14] = [
+    "accept", "accept-encoding", "connection", "content-encoding", "content-length", "content-type", "git-protocol",
+    "host", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade", "user-agent",
+];
+
+/// An HTTP token (RFC 9110 tchar).
+fn is_header_token(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+.^_`|~-".contains(c))
+}
+
+/// `SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER` (after the SECRET keyword).
+fn parse_secret_clause(c: &mut Cursor, span: SourceSpan) -> Result<ImportSecret> {
+    let id = c.ident("secret id", "")?;
+    c.expect_keyword("AS")?;
+    if c.keyword("BEARER") {
+        return Ok(ImportSecret { id, header: "Authorization".into(), bearer: true, span });
+    }
+    let at = c.span();
+    if !c.keyword("HEADER") {
+        return Err(SitefileError::at(E_SYNTAX, "expected HEADER <name> or BEARER", &at));
+    }
+    let name_at = c.span();
+    let header = c.word();
+    if header.is_empty() {
+        return Err(SitefileError::at(E_SYNTAX, "expected a header name", &name_at));
+    }
+    if !is_header_token(&header) {
+        return Err(SitefileError::at(E_SYNTAX, format!("invalid header name '{header}'"), &name_at));
+    }
+    if RESERVED_HEADERS.contains(&header.to_lowercase().as_str()) {
+        return Err(SitefileError::at(E_SYNTAX, format!("header '{header}' is set by sitefile and cannot carry a secret"), &name_at));
+    }
+    Ok(ImportSecret { id, header, bearer: false, span })
 }
 
 /// Whether a flag is bare (`--overwrite`) or takes a value (`--from=name`).
@@ -857,7 +903,7 @@ mod tests {
         parse_err("IMPORT d FROM ./x INTEGRITY sha256:abc", E_SYNTAX, 1, 29, "sha256");
         parse_err(&format!("IMPORT d FROM ./x INTEGRITY {}", digest.to_uppercase()), E_SYNTAX, 1, 29, "");
         parse_err("IMPORT d FROM ./x INTEGRITY ${X}", E_SYNTAX, 1, 29, "");
-        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY or SORT BY)");
+        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY or SECRET)");
         let Instruction::Import { sort, .. } = one("IMPORT p FROM ./p AS markdown SORT BY date DESC") else { panic!() };
         let s = sort.unwrap();
         assert!(s.key == "date" && s.descending && s.span.column == 31);
@@ -1103,6 +1149,22 @@ mod tests {
             let e = parse_sitefile(&format!("IMPORT a FROM ./a {clause}"), "Sitefile").unwrap_err();
             assert!(!e.detail.contains("unexpected"), "{clause}: {e}");
         }
+    }
+
+    #[test]
+    fn import_secret_clauses() {
+        let Instruction::Import { secrets, as_kind, .. } = one("IMPORT d FROM https://e.x/d SECRET k AS HEADER X-Api-Key AS json secret t as bearer") else { panic!() };
+        assert_eq!(as_kind, Some(ImportKind::Json));
+        let got: Vec<_> = secrets.iter().map(|s| (s.id.as_str(), s.header.as_str(), s.bearer, s.span.column)).collect();
+        assert_eq!(got, [("k", "X-Api-Key", false, 29), ("t", "Authorization", true, 66)]);
+        let err = |src: &str| parse_sitefile(src, "Sitefile").unwrap_err().detail;
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k"), "expected AS");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS COOKIE"), "expected HEADER <name> or BEARER");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER"), "expected a header name");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER X:y"), "invalid header name 'X:y'");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER Host"), "header 'Host' is set by sitefile and cannot carry a secret");
+        assert_eq!(err("IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER authorization"), "header 'authorization' is set by two SECRET clauses");
+        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY or SECRET)");
     }
 
     #[test]

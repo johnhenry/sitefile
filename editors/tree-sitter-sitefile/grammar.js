@@ -133,7 +133,7 @@ export default grammar({
 
     _type_annotation: ($) => seq(':', field('type', alias($.identifier, $.type))),
 
-    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]]
+    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]…
     import_instruction: ($) =>
       seq(
         kw($, 'IMPORT'),
@@ -145,8 +145,18 @@ export default grammar({
             seq(kw($, 'AS'), field('kind', alias($.identifier, $.import_kind))),
             $._integrity_clause,
             field('sort', $.sort_clause),
+            field('secret', $.secret_clause),
           ),
         ),
+      ),
+
+    // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets, issue #85)
+    secret_clause: ($) =>
+      seq(
+        kw($, 'SECRET'),
+        field('id', $.identifier),
+        kw($, 'AS'),
+        choice(kw($, 'BEARER'), seq(kw($, 'HEADER'), field('header', alias($.word, $.header_name)))),
       ),
 
     sort_clause: ($) =>

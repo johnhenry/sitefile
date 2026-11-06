@@ -14,6 +14,7 @@ const FLAGS: &[&str] = &[
     "--json                        machine-readable output",
     "--build-arg <NAME=value>      set an ARG (repeatable); --build-arg NAME reads $NAME",
     "--build-arg-file <path>       read ARGs from a .json, .yaml/.yml or .env file (repeatable)",
+    "--secret id=<id>,env=<VAR>    a build secret for IMPORT ... SECRET (or id=<id>,src=<file>; repeatable)",
     "--no-lockfile                 ignore Sitefile.lock (only INTEGRITY and @sha256: count as pins)",
     "--allow-http                  permit plain http:// imports",
     "--allow-private-network       permit loopback/private network addresses",
@@ -28,6 +29,7 @@ const OPTS: &[OptSpec] = &[
     flag("json"),
     strings("build-arg"),
     strings("build-arg-file"),
+    strings("secret"),
     flag("no-lockfile"),
     flag("allow-http"),
     flag("allow-private-network"),
@@ -105,6 +107,7 @@ fn run_outdated(v: &Parsed) -> Result<i32> {
         context_dir: v.positionals.first().cloned().unwrap_or_else(|| ".".into()),
         sitefile: v.str("file").filter(|s| !s.is_empty()).map(str::to_string),
         build_args: collect_build_args(&v.strs("build-arg-file"), &v.strs("build-arg"))?,
+        secrets: crate::secrets::load_secrets(&v.strs("secret"), &crate::secrets::process_env)?,
         base_image: v.str("base").map(str::to_string),
         insecure_registries: super::registry::insecure_registries_from_env(&v.strs("insecure-registry")),
         ..Default::default()
