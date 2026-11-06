@@ -9,6 +9,7 @@ pub mod images;
 pub mod outdated;
 pub mod registry;
 pub mod servers;
+pub mod vendor;
 
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
@@ -41,6 +42,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
+
+Offline builds:
+  sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
+                                                   vendor/sitefile; builds then read them from there
 
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
@@ -128,6 +133,8 @@ Options:
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
       --no-lockfile            do not read or write Sitefile.lock
+      --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
+                               to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
@@ -176,6 +183,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("update-lock"),
     flag("strict-pins"),
     flag("no-lockfile"),
+    string("vendor-dir"),
     flag("allow-http"),
     flag("allow-private-network"),
     flag("allow-hardlinks"),
@@ -200,6 +208,7 @@ const TOP: &[&Command] = &[
     &servers::PS,
     &registry::PUSH,
     &registry::PULL,
+    &vendor::VENDOR,
     &outdated::OUTDATED,
 ];
 
@@ -539,6 +548,7 @@ fn run_build_command(
     if o.flag("no-lockfile") {
         options.lockfile = LockfileSetting::Disabled;
     }
+    options.vendor_dir = o.str("vendor-dir").map(str::to_string);
     if let Some(t) = o.str("plugin-timeout").filter(|s| !s.is_empty()) {
         let ms = positive_int(t, "--plugin-timeout")?;
         options.plugin_policy.timeout_ms = ms;

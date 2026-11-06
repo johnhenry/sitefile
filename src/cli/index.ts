@@ -3,13 +3,14 @@ import { imageCommands, imageSubcommands } from './images.js';
 import { registryCommands } from './registry.js';
 import { serverCommands, serverSubcommands } from './servers.js';
 import { cacheSubcommands } from './cache.js';
+import { vendorCommands } from './vendor.js';
 import { outdatedCommands } from './outdated.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...outdatedCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -33,6 +34,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
+
+Offline builds:
+  sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
+                                                   vendor/sitefile; builds then read them from there
 
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with

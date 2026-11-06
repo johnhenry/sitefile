@@ -505,6 +505,53 @@ gitignore subset:
   CAs. Certificate and hostname verification are never disabled; there is no
   CLI flag for it.
 
+### Vendoring (`sitefile vendor`)
+`sitefile vendor [context]` (like `cargo vendor`) downloads every remote input so
+later builds work offline and without the network flags:
+- It fetches each remote `IMPORT` and the `BASE` image (of an `oci` export, or
+  `--base`) **exactly as a build would**: same network policy and limits, same
+  `INTEGRITY` and `Sitefile.lock` checks (`--frozen-lockfile`, `--update-lock`),
+  and `Sitefile.lock` is updated the same way. It always fetches; an existing
+  vendor directory is not read.
+- It then **replaces** the vendor directory (`--vendor-dir`, default
+  `vendor/sitefile`, a path inside the context) as a whole, written to a
+  temporary sibling and swapped in:
+  - `blobs/sha256/<hex>`: content-addressed bytes: each import body (an archive
+    imported `AS tree` is stored as the archive), and for a `BASE` image the blobs
+    an offline pull needs: what the tag resolved to (an image index for
+    multi-platform images), the manifest of the `--platform` variant (default
+    `linux/amd64`), its config and layers. Only that platform is vendored.
+  - `manifest.json`: `{"version": 1, "resources": {url: {integrity, size,
+    resolved}}, "images": {ref: {digest, platform, manifest}}}` with sorted keys,
+    so vendoring the same inputs gives the same bytes. `ref` is the lockfile key
+    (`registry/name:tag`), or `registry/name[:tag]@sha256:...` for a digest pin.
+  A directory that resolves outside the context, a symlink, or an existing
+  non-empty directory without `manifest.json` is refused (`E_PATH_ESCAPE`,
+  `E_EXPORT_UNSAFE`).
+- **Builds** (`build`, `inspect`, `serve --watch`) use `vendor/sitefile` when its
+  `manifest.json` exists, or the directory named by `--vendor-dir` (which must
+  exist: `E_NOT_FOUND` otherwise). A vendored URL is read from its blob instead of
+  the network, so no fetch, redirect or `--allow-http`/`--allow-private-network`
+  is involved; the bytes are checked against their digest (`E_INTEGRITY`, "run
+  'sitefile vendor' again"), then against `INTEGRITY` and the lockfile exactly
+  like a download. A URL the manifest lacks is fetched as usual, with a warning
+  (`... is not vendored in vendor/sitefile; fetching it`). For a `BASE`, a tag
+  with no lockfile entry uses the digest the vendor manifest recorded (and records
+  it in the lockfile; `--frozen-lockfile` still requires the lockfile entry, and
+  `--update-lock` re-resolves the tag from the registry), and the vendored blobs
+  are copied into the image store, verified, before the pull, so the pull needs
+  no network. Blobs that are not vendored (another platform) are pulled as usual.
+- The vendor directory is never part of a directory copy (`COPY ./ /`), like
+  `.git`; a file in it can still be named explicitly.
+- It composes with the other build modes: `--target` builds and `why` resolve
+  every `IMPORT` as a full build does, so they read the same vendored copies;
+  `--cache-from`/`--cache-to` references are TRANSFORM caches, not inputs, so
+  they are neither vendored nor affected by it.
+- **Nothing secret is vendored**: URLs with credentials are rejected before any
+  fetch, and registry tokens and passwords stay in memory. `resolved` is the final
+  URL after redirects, as `Sitefile.lock` already records it.
+- Commit the directory for offline or air-gapped CI, or cache it between runs.
+
 ### Checking pins (`sitefile outdated`)
 `sitefile outdated [context] [--json]` (like `cargo outdated` / Renovate) reports,
 for every remote input, what it is pinned to and what it resolves to now. It

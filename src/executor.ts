@@ -17,6 +17,7 @@ import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
+import { findVendorDir, Vendor } from './resources/vendor.js';
 import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 import type { Scalar } from './values.js';
@@ -53,6 +54,12 @@ export interface BuildOptions {
   readonly frozenLockfile?: boolean;
   /** Re-record unpinned URLs whose content changed. */
   readonly updateLock?: boolean;
+  /**
+   * Context-relative vendor directory written by `sitefile vendor` (default `vendor/sitefile`, used when
+   * its manifest.json exists; a directory given here must exist). Remote IMPORTs and BASE blobs found
+   * there are read from it instead of the network, verified as usual. It is never part of a directory copy.
+   */
+  readonly vendorDir?: string;
   /**
    * `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
    * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
@@ -237,11 +244,14 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
       }
     }
   }
+  const vendorDir = await findVendorDir(contextReal, options.vendorDir);
+  if (vendorDir !== undefined) ignore.push(vendorDir);
   for (const w of options.alsoWrites ?? []) {
     const rel = path.relative(contextReal, await realpathLoose(path.resolve(w)));
     if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) ignore.push(rel.split(path.sep).join('/'));
   }
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
+  const vendor = vendorDir !== undefined ? await Vendor.open(local, vendorDir) : undefined;
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
   const lockPath = lockPathFor(options, sitefilePath);
@@ -261,6 +271,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     warn,
     frozen: !!options.frozenLockfile,
     update: !!options.updateLock,
+    vendor,
     ...(memo ? { memo } : {}),
   };
   // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
@@ -355,6 +366,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
         lock,
         frozen: !!options.frozenLockfile,
         update: !!options.updateLock,
+        vendor,
         registry: {
           ...options.registry,
           allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork,
@@ -508,15 +520,9 @@ export async function imageAttestations(
 
 // ---------------------------------------------------------------- imports
 
-interface ImportEnv {
+interface ImportEnv extends RemoteEnv {
   readonly local: LocalContext;
-  readonly policy: FetchPolicy;
   readonly archiveLimits: ArchiveLimits;
-  readonly lock: Lockfile | undefined;
-  readonly label: string;
-  readonly warn: (m: string) => void;
-  readonly frozen: boolean;
-  readonly update: boolean;
   readonly memo?: BuildMemo;
 }
 
@@ -585,11 +591,38 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
 
   const url = spec.location.url;
   const as = spec.as ?? 'file';
+  const { bytes, finalUrl } = await fetchRemoteImport(spec, url, env);
+  const basename = path.posix.basename(new URL(finalUrl).pathname) || spec.name;
+  const key = keyOf(`${sha256(bytes)}\0${finalUrl}`);
+  return { key, res: await convertBytes(key, () => bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits)) };
+}
+
+/** What fetching a remote IMPORT needs: the network policy and the lockfile rules (and, for builds, the vendor directory). */
+export interface RemoteEnv {
+  readonly policy: FetchPolicy;
+  readonly lock: Lockfile | undefined;
+  readonly label: string;
+  readonly warn: (m: string) => void;
+  readonly frozen: boolean;
+  readonly update: boolean;
+  /** Vendored copies (`sitefile vendor`), preferred over the network. */
+  readonly vendor?: Vendor | undefined;
+}
+
+/**
+ * The bytes of a remote IMPORT, checked against its INTEGRITY and the lockfile (and recorded there):
+ * read from the vendor directory when it has the URL, otherwise fetched.
+ */
+export async function fetchRemoteImport(spec: ImportSpec, url: string, env: RemoteEnv): Promise<{ bytes: Uint8Array; finalUrl: string }> {
   const entry = env.lock?.get(url);
   if (env.frozen && !entry) {
     throw new SitefileError('E_LOCK_MISSING', `IMPORT ${spec.name}: '${url}' is not in the lockfile (--frozen-lockfile)`, spec.span);
   }
-  const { bytes, finalUrl } = await fetchRemote(url, env.policy, spec.span);
+  const vendored = env.vendor?.resource(url);
+  if (env.vendor && !vendored) {
+    env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}; fetching it (run 'sitefile vendor' to add it)`);
+  }
+  const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchRemote(url, env.policy, spec.span);
   const digest = sha256(bytes);
   if (spec.integrity) {
     verifyIntegrity(bytes, spec.integrity, url, spec.span);
@@ -606,9 +639,7 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
     throw new SitefileError('E_LOCK_MISMATCH', `IMPORT ${spec.name}: '${url}' does not match the lockfile (--frozen-lockfile)`, spec.span);
   }
   env.lock?.record(url, { integrity: digest, size: bytes.byteLength, resolved: finalUrl });
-  const basename = path.posix.basename(new URL(finalUrl).pathname) || spec.name;
-  const key = keyOf(`${digest}\0${finalUrl}`);
-  return { key, res: await convertBytes(key, () => bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits)) };
+  return { bytes, finalUrl };
 }
 
 // ---------------------------------------------------------------- operations

@@ -1,0 +1,11 @@
+# Vendored builds compose with --target (every IMPORT is still resolved, from vendor/), why and
+# --cache-from (a cache reference is not an input and is never vendored). No --allow-* flags after vendoring.
+IMPORT data FROM ${HTTPS}/r/data.json AS json
+IMPORT css FROM ${HTTPS}/style.css
+STAGE assets
+COPY css: /style.css
+STAGE site FROM assets
+RENDER --escape=html <<HTML TO /index.html
+<h1>${data.title}</h1>
+HTML
+EXPORT /

@@ -1,0 +1,3 @@
+FROM scratch
+IMPORT lib FROM https://example.com/js/lib.js
+EXPORT /

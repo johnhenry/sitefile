@@ -15,7 +15,9 @@ use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::export::oci::{BaseImage, Descriptor};
 use crate::refs::{parse_ref, with_default_registry, ImageRef};
 use crate::registry::{make_client, process_env, pull_image, resolve_digest, Env, PullImageOptions, RegistryOptions};
+use crate::resources::local::LocalContext;
 use crate::resources::lockfile::{ImageLockEntry, Lockfile};
+use crate::resources::vendor::Vendor;
 use crate::store::Store;
 
 pub use crate::registry::insecure_registries_from_env;
@@ -28,6 +30,9 @@ pub struct ResolveBaseOptions<'a> {
     pub frozen: bool,
     /// `--update-lock`: re-resolve the tag and re-record it.
     pub update: bool,
+    /// `sitefile vendor`'s directory (and the context reader for it): a tag it recorded is used when
+    /// the lockfile has none, and its blobs seed the store.
+    pub vendor: Option<(&'a Vendor, &'a LocalContext)>,
     pub registry: RegistryOptions,
     /// Environment for credentials and `$SITEFILE_INSECURE_REGISTRIES` (default: the process environment).
     pub env: Option<Env>,
@@ -38,7 +43,7 @@ pub struct ResolveBaseOptions<'a> {
 
 impl<'a> ResolveBaseOptions<'a> {
     pub fn new(store: &'a Store) -> Self {
-        ResolveBaseOptions { store, platform: None, frozen: false, update: false, registry: RegistryOptions::default(), env: None, warn: None, span: None }
+        ResolveBaseOptions { store, platform: None, frozen: false, update: false, vendor: None, registry: RegistryOptions::default(), env: None, warn: None, span: None }
     }
 }
 
@@ -80,11 +85,17 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
     if root_digest.is_none() {
         let mut lock = lock;
         let locked = if o.update { None } else { lock.as_deref().and_then(|l| l.get_image(&lock_key)).map(|e| e.digest.clone()) };
+        let vendored = if locked.is_some() || o.update || o.frozen { None } else { o.vendor.and_then(|(v, _)| v.image(&lock_key)).map(|e| e.digest.clone()) };
         if let Some(d) = locked {
             root_digest = Some(d);
             if let Some(l) = lock.as_deref_mut() {
                 l.mark_image_used(&lock_key);
             }
+        } else if let Some(d) = vendored {
+            if let Some(l) = lock.as_deref_mut() {
+                l.record_image(&lock_key, ImageLockEntry { digest: d.clone() });
+            }
+            root_digest = Some(d);
         } else if o.frozen {
             return Err(SitefileError::new(
                 E_LOCK_MISSING,
@@ -108,6 +119,10 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
             }
             root_digest = Some(d);
         }
+    }
+    // Vendored blobs go into the store first, so the pull below finds them and needs no network.
+    if let (Some((v, local)), Some(root)) = (o.vendor, root_digest.as_deref()) {
+        v.seed_store(local, o.store, root, o.platform.as_deref().unwrap_or("linux/amd64"))?;
     }
     let pulled = pull_image(
         o.store,
@@ -271,6 +286,52 @@ mod tests {
         let n = reg.requests().len();
         resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { frozen: true, ..opts(&s3) }).unwrap();
         assert_eq!(reg.requests().len(), n, "second resolution made no registry requests");
+    }
+
+    #[test]
+    fn vendored_bases_seed_the_store_and_need_no_registry() {
+        use crate::resources::local::LocalContextOptions;
+        use crate::resources::vendor::{serialize_vendor_manifest, write_vendor_dir, Vendor, VendorManifest, VendoredImage};
+        let reg = MockRegistry::start(MockOptions::default());
+        let b = seed_base(&reg, "1");
+        let input = format!("{}/lib/base:1", reg.host);
+        // vendor: resolve once, then copy every blob of the image out of the store
+        let s0 = Store::open(tmp("home-")).unwrap();
+        let online = resolve_base(&input, None, &opts(&s0)).unwrap();
+        let mut blobs = std::collections::BTreeMap::new();
+        let m = crate::export::oci::parse_manifest(&s0.read_blob(&online.manifest_digest, None).unwrap()).unwrap();
+        for d in [online.manifest_digest.clone(), m.config.digest.clone()].into_iter().chain(m.layers.iter().map(|l| l.digest.clone())) {
+            blobs.insert(d.clone(), s0.read_blob(&d, None).unwrap());
+        }
+        let mut vm = VendorManifest::default();
+        vm.images.insert(input.clone(), VendoredImage { digest: b.manifest_digest.clone(), platform: "linux/amd64".into(), manifest: online.manifest_digest.clone() });
+        let ctx = tmp("ctx-");
+        let ctx = std::fs::canonicalize(&ctx).unwrap();
+        write_vendor_dir(&ctx, "vendor/sitefile", &serialize_vendor_manifest(&vm), &blobs).unwrap();
+        let local = LocalContext::open(&ctx, &LocalContextOptions::default()).unwrap();
+        let vendor = Vendor::open(&local, "vendor/sitefile").unwrap();
+
+        // a fresh store, no lockfile entry: the vendored tag digest and blobs are used, nothing is requested
+        let n = reg.requests().len();
+        let lock_path = ctx.join("Sitefile.lock");
+        let mut lock = Lockfile::load(&lock_path).unwrap();
+        let s1 = Store::open(tmp("home-")).unwrap();
+        let off = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { vendor: Some((&vendor, &local)), ..opts(&s1) }).unwrap();
+        assert_eq!(reg.requests().len(), n, "the registry was not contacted");
+        assert_eq!(off.manifest_digest, online.manifest_digest);
+        assert_eq!(lock.get_image(&input).unwrap().digest, b.manifest_digest, "the vendored digest is recorded in the lockfile");
+        // --frozen-lockfile still needs the lockfile entry
+        let mut empty = Lockfile::load(tmp("ctx-").join("Sitefile.lock")).unwrap();
+        let s2 = Store::open(tmp("home-")).unwrap();
+        let e = resolve_base(&input, Some(&mut empty), &ResolveBaseOptions { frozen: true, vendor: Some((&vendor, &local)), ..opts(&s2) }).unwrap_err();
+        assert_eq!(e.code, E_LOCK_MISSING);
+        // a corrupt vendored layer is an error, not a silent fetch
+        let layer = &m.layers[0].digest;
+        std::fs::write(ctx.join("vendor/sitefile/blobs/sha256").join(&layer[7..]), b"tampered").unwrap();
+        let s3 = Store::open(tmp("home-")).unwrap();
+        let e = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { vendor: Some((&vendor, &local)), ..opts(&s3) }).unwrap_err();
+        assert_eq!(e.code, E_INTEGRITY);
+        assert!(e.detail.contains("vendored image blob (vendor/sitefile/blobs/sha256/") && e.detail.contains("is corrupt"), "{}", e.detail);
     }
 
     #[test]

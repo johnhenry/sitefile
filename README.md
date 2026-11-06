@@ -116,6 +116,7 @@ sitefile validate [context] [--json] [--target stage]
 sitefile inspect  [context] [--json] [--target stage]
 sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
+sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
 
 # images and servers (see below and docs/CLI.md)
@@ -194,6 +195,9 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
   `--strict-pins` refuses any remote import or BASE image that is not pinned
   (`INTEGRITY`, `@sha256:` or a lockfile entry), for reproducible CI builds.
+- `sitefile vendor` stores every remote import (and the BASE image's blobs) under
+  `vendor/sitefile/` by content digest; builds then read them from there, verified,
+  with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
 - Writing different content to an existing path fails unless `--overwrite` is given.
   Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
   (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same

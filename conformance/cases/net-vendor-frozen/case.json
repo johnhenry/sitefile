@@ -1,0 +1,5 @@
+{
+  "network": true,
+  "steps": [["vendor", "${CTX}", "--allow-private-network", "--frozen-lockfile"]],
+  "lock": true
+}

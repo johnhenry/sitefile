@@ -42,6 +42,27 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
+## Offline builds: `vendor`
+
+```
+sitefile vendor [context] [-f Sitefile] [--vendor-dir dir] [--build-arg K=V]... [--build-arg-file f]...
+                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
+                [--max-download-bytes n] [--timeout ms] [--base image] [--platform os/arch]
+                [--insecure-registry host[:port]]...
+```
+
+Fetches every remote `IMPORT` and the `BASE` image as a build would (same checks; `Sitefile.lock` is updated
+like a build updates it) and replaces `<context>/vendor/sitefile` (or `--vendor-dir`, relative to the context)
+with `blobs/sha256/<hex>` and `manifest.json`. It prints
+`Vendored 3 resources and 1 image (7 blobs, 1234567 bytes) to vendor/sitefile`, then `Updated Sitefile.lock` when
+the lockfile changed. `build` and `inspect` accept `--vendor-dir <dir>` to read from another vendor directory
+(`validate` reads no sources and ignores it); without it they use `vendor/sitefile` when its `manifest.json` exists. See
+[LANGUAGE.md](LANGUAGE.md#vendoring-sitefile-vendor) for what is stored and how builds verify it.
+
+```bash
+sitefile vendor                          # once, online
+sitefile build --frozen-lockfile         # later: no network needed, no --allow-* flags
+
 ## Checking pins: `outdated`
 
 ```
@@ -306,6 +327,7 @@ sitefile cache du [--json]                size of every cache and the store, and
 
 Remote `IMPORT`s (https URLs) are not cached on disk: they are fetched on every build and pinned by `Sitefile.lock`
 (integrity), so there is no remote resource cache to clean. BASE images are pulled into the image store (above).
+For offline builds, `sitefile vendor` keeps copies **in the context** (`vendor/sitefile`), not under `$SITEFILE_HOME`.
 
 ### Cache size limit
 

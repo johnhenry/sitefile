@@ -1,0 +1,11 @@
+{
+  "network": true,
+  "steps": [
+    ["vendor", "${CTX}", "--allow-private-network"],
+    ["build", "${CTX}", "-o", "${OUT}/dist", "--frozen-lockfile"],
+    ["inspect", "${CTX}"]
+  ],
+  "outputs": [["dist", "tree"], ["ctx:vendor/sitefile", "tree"]],
+  "stdout": true,
+  "lock": true
+}

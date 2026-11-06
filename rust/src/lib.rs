@@ -49,6 +49,7 @@ pub mod explain;
 pub mod plugins;
 pub mod memo;
 pub mod profile;
+pub mod vendor;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)

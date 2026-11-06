@@ -1,0 +1,6 @@
+# A committed vendor directory: the remote import is read from it, never fetched.
+FROM scratch
+IMPORT lib FROM https://example.com/js/lib.js INTEGRITY sha256:a2098bd92b10bf8b816d24b7556b1ce8c49a879d130489065ef1051c17e042f6
+COPY lib: /js/
+COPY ./ /src/
+EXPORT /
