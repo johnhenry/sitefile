@@ -35,6 +35,7 @@ pub mod export;
 pub mod refs;
 pub mod server;
 pub mod servers;
+pub mod site;
 pub mod store;
 
 // Build, plugins, registry and CLI

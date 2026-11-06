@@ -112,6 +112,10 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         304 => "Not Modified",
         400 => "Bad Request",
         404 => "Not Found",
@@ -120,29 +124,226 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------- _redirects and _headers
+// (src/serve-rules.ts)
+
+/// A `_redirects` rule `serve` understands (docs/CLI.md, "serve").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeRedirect {
+    /// Decoded path without a trailing slash (`/` for the root); for a splat rule, the prefix before `/*` (`""` for `/*`).
+    pub from: String,
+    pub splat: bool,
+    pub to: String,
+    pub status: u16,
+    /// `301!`: applies even when a file exists at the path.
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeHeaders {
+    pub pattern: String,
+    /// Lowercase names.
+    pub headers: Vec<(String, String)>,
+}
+
+/// Headers the server owns; `_headers` cannot set them.
+const PROTECTED_HEADERS: [&str; 6] = ["content-length", "transfer-encoding", "connection", "keep-alive", "etag", "location"];
+const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
+
+/// `^https?://[^/]` (case-insensitive).
+fn is_http_url(s: &str) -> bool {
+    let lower = s.get(..8).unwrap_or(s).to_ascii_lowercase();
+    let n = if lower.starts_with("https://") {
+        8
+    } else if lower.starts_with("http://") {
+        7
+    } else {
+        return false;
+    };
+    s.as_bytes().get(n).is_some_and(|b| *b != b'/')
+}
+
+/// JavaScript's `String.prototype.trim` whitespace (the characters that matter in these files).
+fn js_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+}
+
+/// Parse `_redirects`: `from to [status[!]]` per line, `#` comments. Supported: exact paths and a
+/// trailing `/*` with `:splat` in the target; statuses 301, 302, 303, 307, 308 (redirect), 200
+/// (rewrite) and 404. Other lines (placeholders, conditions, query matching) are ignored.
+pub fn parse_redirect_rules(text: &str) -> Vec<ServeRedirect> {
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let t = js_trim(line);
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = t.split([' ', '\t']).filter(|f| !f.is_empty()).collect();
+        if fields.len() < 2 || fields.len() > 3 {
+            continue;
+        }
+        let (from, to, st) = (fields[0], fields[1], fields.get(2).copied().unwrap_or("301"));
+        let force = st.ends_with('!');
+        let code = if force { &st[..st.len() - 1] } else { st };
+        let Some(status) = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse::<u16>().ok()).flatten() else { continue };
+        if !SERVE_STATUSES.contains(&status) {
+            continue;
+        }
+        if to.is_empty() || !to.bytes().all(|b| (0x21..=0x7e).contains(&b)) || !(to.starts_with('/') || is_http_url(to)) {
+            continue;
+        }
+        if (status == 200 || status == 404) && !to.starts_with('/') {
+            continue;
+        }
+        if !from.starts_with('/') {
+            continue;
+        }
+        let splat = from == "/*" || from.ends_with("/*");
+        let prefix = if splat { &from[..from.len() - 2] } else { from };
+        if prefix.contains('*') || prefix.split('/').any(|seg| seg.starts_with(':')) {
+            continue;
+        }
+        let Some(segs) = safe_segments(if prefix.is_empty() { "/" } else { prefix }) else { continue };
+        let decoded = format!("/{}", segs.join("/"));
+        let from = if splat && decoded == "/" { String::new() } else { decoded };
+        out.push(ServeRedirect { from, splat, to: to.to_string(), status, force });
+    }
+    out
+}
+
+/// Parse `_headers`: a path pattern line (`*` matches anything), then indented `Name: value` lines.
+pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
+    let mut out: Vec<ServeHeaders> = Vec::new();
+    let mut cur = false;
+    for raw in text.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let t = js_trim(line);
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) {
+            let Some(i) = t.find(':').filter(|i| *i > 0) else { continue };
+            if !cur {
+                continue;
+            }
+            let name = js_trim(&t[..i]).to_ascii_lowercase();
+            let value = js_trim(&t[i + 1..]);
+            if !crate::site::is_token(&name)
+                || !value.bytes().all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
+                || PROTECTED_HEADERS.contains(&name.as_str())
+            {
+                continue;
+            }
+            if let Some(last) = out.last_mut() {
+                last.headers.push((name, value.to_string()));
+            }
+            continue;
+        }
+        cur = t.starts_with('/');
+        if cur {
+            out.push(ServeHeaders { pattern: t.to_string(), headers: Vec::new() });
+        }
+    }
+    out
+}
+
+/// Glob match where `*` matches any run of characters (including `/`).
+pub fn glob_match(pattern: &str, s: &str) -> bool {
+    let (p, s): (Vec<char>, Vec<char>) = (pattern.chars().collect(), s.chars().collect());
+    let (mut pi, mut si, mut star, mut mark) = (0usize, 0usize, None::<usize>, 0usize);
+    while si < s.len() {
+        if pi < p.len() && p[pi] != '*' && p[pi] == s[si] {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            mark = si;
+        } else if let Some(st) = star {
+            pi = st + 1;
+            mark += 1;
+            si = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Every matching block's headers; a name set by several blocks gets its values joined with `, `.
+pub fn headers_for(rules: &[ServeHeaders], path: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for r in rules.iter().filter(|r| glob_match(&r.pattern, path)) {
+        for (k, v) in &r.headers {
+            match out.iter_mut().find(|(n, _)| n == k) {
+                Some((_, existing)) => *existing = format!("{existing}, {v}"),
+                None => out.push((k.clone(), v.clone())),
+            }
+        }
+    }
+    out
+}
+
+/// The remainder a rule matches for `path` (`""` for the prefix itself), or `None`.
+pub fn match_redirect<'p>(r: &ServeRedirect, path: &'p str) -> Option<&'p str> {
+    if !r.splat {
+        return (path == r.from).then_some("");
+    }
+    if r.from.is_empty() {
+        return Some(&path[1..]);
+    }
+    if path == r.from {
+        return Some("");
+    }
+    path.strip_prefix(r.from.as_str()).and_then(|rest| rest.strip_prefix('/'))
+}
+
+/// The rules a tree's `/_redirects` and `/_headers` define (parsed once per server).
+#[derive(Debug, Clone, Default)]
+pub struct SiteRules {
+    pub redirects: Vec<ServeRedirect>,
+    pub headers: Vec<ServeHeaders>,
+}
+
+impl SiteRules {
+    pub fn from_tree(tree: &Tree) -> SiteRules {
+        let text = |p: &str| tree.get(p).map(|f| String::from_utf8_lossy(&f.bytes).into_owned()).unwrap_or_default();
+        SiteRules { redirects: parse_redirect_rules(&text("/_redirects")), headers: parse_header_rules(&text("/_headers")) }
+    }
+}
+
 /// Answer one request (no I/O). `headers` are lowercase names; repeated ones joined with `, `.
 pub fn handle_request(tree: &Tree, options: &SiteServerOptions, method: &str, url: &str, headers: &HashMap<String, String>) -> Response {
+    respond(tree, &SiteRules::from_tree(tree), options, method, url, headers)
+}
+
+/// [`handle_request`] with the tree's rules already parsed.
+pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, method: &str, url: &str, headers: &HashMap<String, String>) -> Response {
     let mut base: Vec<(String, String)> = vec![("x-content-type-options".into(), "nosniff".into()), ("cache-control".into(), "no-cache".into())];
     if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
         base.push(("x-sitefile-server".into(), id.to_string()));
     }
-    let finish = |status: u16, extra: Vec<(&str, String)>, body: Option<Vec<u8>>| -> Response {
+    let finish = |status: u16, extra: Vec<(String, String)>, body: Option<Vec<u8>>| -> Response {
         let mut headers = base.clone();
         for (k, v) in extra {
-            headers.retain(|(h, _)| h != k);
-            headers.push((k.to_string(), v));
+            headers.retain(|(h, _)| *h != k);
+            headers.push((k, v));
         }
         let body = if method != "HEAD" && status != 304 { body.unwrap_or_default() } else { Vec::new() };
         Response { status, headers, body }
     };
-    let page = |status: u16, html: &str, mut extra: Vec<(&str, String)>| -> Response {
-        let mut h = vec![("content-type", "text/html; charset=utf-8".to_string()), ("content-length", html.len().to_string())];
-        h.append(&mut extra);
+    let owned = |v: Vec<(&str, String)>| -> Vec<(String, String)> { v.into_iter().map(|(k, v)| (k.to_string(), v)).collect() };
+    let page = |status: u16, html: &str, extra: Vec<(String, String)>| -> Response {
+        let mut h = owned(vec![("content-type", "text/html; charset=utf-8".to_string()), ("content-length", html.len().to_string())]);
+        h.extend(extra);
         finish(status, h, Some(html.as_bytes().to_vec()))
     };
 
     if method != "GET" && method != "HEAD" {
-        return page(405, METHOD_PAGE, vec![("allow", "GET, HEAD".into())]);
+        return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
     }
     let q = url.find('?');
     let hash = url.find('#');
@@ -156,38 +357,94 @@ pub fn handle_request(tree: &Tree, options: &SiteServerOptions, method: &str, ur
     let Some(segs) = safe_segments(raw_path) else { return page(400, BAD_REQUEST_PAGE, vec![]) };
     let trailing = raw_path.ends_with('/');
     let vpath = format!("/{}", segs.join("/"));
+    // `_headers` patterns match the request path (with its trailing slash).
+    let custom = headers_for(&rules.headers, &format!("{vpath}{}", if trailing && !segs.is_empty() { "/" } else { "" }));
+    let is_file = |p: &str| tree.is_file(p) && p != "/_redirects" && p != "/_headers";
 
-    let mut served: Option<String> = if tree.is_file(&vpath) && !(trailing && vpath != "/") { Some(vpath.clone()) } else { None };
-    if served.is_none() && tree.is_directory(&vpath) {
-        if !trailing {
-            let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-            let location = format!("/{}/{search}", enc.join("/"));
-            return finish(301, vec![("location", location), ("content-length", "0".into())], None);
+    let send_file = |status: u16, served: &str| -> Response {
+        let file = tree.get(served).cloned().expect("resolved file");
+        let mut h = owned(vec![("content-type", mime_type_for(served).into()), ("content-length", file.bytes.len().to_string())]);
+        h.extend(custom.iter().cloned());
+        if status != 200 {
+            return finish(status, h, Some(file.bytes.to_vec()));
         }
-        let index = if vpath == "/" { "/index.html".to_string() } else { format!("{vpath}/index.html") };
-        if tree.is_file(&index) {
-            served = Some(index);
+        let etag = format!("\"{}\"", file.digest.strip_prefix("sha256:").unwrap_or(&file.digest));
+        if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
+            let mut h: Vec<(String, String)> = custom.clone();
+            h.push(("etag".into(), etag));
+            return finish(304, h, None);
+        }
+        h.push(("etag".into(), etag));
+        finish(200, h, Some(file.bytes.to_vec()))
+    };
+    // The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash.
+    let resolve = |p: &str, slash: bool| -> Option<String> {
+        if is_file(p) && !(slash && p != "/") {
+            return Some(p.to_string());
+        }
+        if !slash && p != "/" && is_file(&format!("{p}.html")) {
+            return Some(format!("{p}.html"));
+        }
+        if slash && tree.is_directory(p) {
+            let index = if p == "/" { "/index.html".to_string() } else { format!("{p}/index.html") };
+            if is_file(&index) {
+                return Some(index);
+            }
+        }
+        None
+    };
+    // Apply the first matching `_redirects` rule (forced ones, or the others).
+    let redirect = |forced: bool| -> Option<Response> {
+        for r in rules.redirects.iter().filter(|r| r.force == forced) {
+            let Some(rest) = match_redirect(r, &vpath) else { continue };
+            let target = if r.splat {
+                let enc: Vec<String> = rest.split('/').map(encode_uri_component).collect();
+                r.to.replace(":splat", &enc.join("/"))
+            } else {
+                r.to.clone()
+            };
+            if r.status != 200 && r.status != 404 {
+                let location = if target.contains('?') { target } else { format!("{target}{search}") };
+                return Some(finish(r.status, owned(vec![("location", location), ("content-length", "0".into())]), None));
+            }
+            // 200 (rewrite) and 404: serve the target path's file with that status.
+            let tpath = target.split('?').next().unwrap_or("");
+            let served = safe_segments(tpath).and_then(|t| resolve(&format!("/{}", t.join("/")), tpath.ends_with('/')));
+            if let Some(served) = served {
+                return Some(send_file(r.status, &served));
+            }
+        }
+        None
+    };
+
+    if let Some(res) = redirect(true) {
+        return res;
+    }
+    let mut served = resolve(&vpath, trailing);
+    if served.is_none() && !trailing && tree.is_directory(&vpath) {
+        let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+        let location = format!("/{}/{search}", enc.join("/"));
+        return finish(301, owned(vec![("location", location), ("content-length", "0".into())]), None);
+    }
+    if served.is_none() {
+        if let Some(res) = redirect(false) {
+            return res;
         }
     }
     if served.is_none() && options.spa {
         let last = segs.last().map(String::as_str).unwrap_or("");
         let has_ext = last.rfind('.').is_some_and(|i| i + 1 < last.len());
-        if !has_ext && tree.is_file("/index.html") {
+        if !has_ext && is_file("/index.html") {
             served = Some("/index.html".into());
         }
     }
-    let Some((served, file)) = served.and_then(|s| tree.get(&s).cloned().map(|f| (s, f))) else {
-        return page(404, NOT_FOUND_PAGE, vec![]);
-    };
-    let etag = format!("\"{}\"", file.digest.strip_prefix("sha256:").unwrap_or(&file.digest));
-    if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
-        return finish(304, vec![("etag", etag)], None);
+    if let Some(served) = served {
+        return send_file(200, &served);
     }
-    finish(
-        200,
-        vec![("etag", etag), ("content-type", mime_type_for(&served).into()), ("content-length", file.bytes.len().to_string())],
-        Some(file.bytes.to_vec()),
-    )
+    if is_file("/404.html") {
+        return send_file(404, "/404.html");
+    }
+    page(404, NOT_FOUND_PAGE, custom.clone())
 }
 
 const MAX_HEAD: usize = 64 * 1024;
@@ -259,7 +516,7 @@ fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::
     Ok(Some(Ok(Request { method: method.into(), url: url.into(), headers, keep_alive, body_len, chunked })))
 }
 
-fn serve_connection(stream: TcpStream, tree: &Tree, options: &SiteServerOptions) {
+fn serve_connection(stream: TcpStream, tree: &Tree, rules: &SiteRules, options: &SiteServerOptions) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
     let Ok(mut out) = stream.try_clone() else { return };
@@ -278,7 +535,7 @@ fn serve_connection(stream: TcpStream, tree: &Tree, options: &SiteServerOptions)
         if req.body_len > 0 && keep && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err() {
             keep = false;
         }
-        let res = handle_request(tree, options, &req.method, &req.url, &req.headers);
+        let res = respond(tree, rules, options, &req.method, &req.url, &req.headers);
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -336,6 +593,7 @@ pub fn listen(tree: Arc<Tree>, options: SiteServerOptions, host: &str, port: u16
     }
     let listener = bound.ok_or_else(|| fail(&last))?;
     let addr = listener.local_addr().map_err(|e| fail(&e))?;
+    let rules = Arc::new(SiteRules::from_tree(&tree));
     let stop = Arc::new(AtomicBool::new(false));
     let conns: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let (s2, c2) = (stop.clone(), conns.clone());
@@ -352,9 +610,9 @@ pub fn listen(tree: Arc<Tree>, options: SiteServerOptions, host: &str, port: u16
                     m.insert(id, c);
                 }
             }
-            let (tree, options, conns) = (tree.clone(), options.clone(), c2.clone());
+            let (tree, rules, options, conns) = (tree.clone(), rules.clone(), options.clone(), c2.clone());
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &options);
+                serve_connection(stream, &tree, &rules, &options);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
                 }
@@ -656,5 +914,133 @@ mod tests {
         assert!(e.detail.contains("already in use"), "{}", e.detail);
         assert_eq!(format_url("0.0.0.0", 8080), "http://127.0.0.1:8080/");
         assert_eq!(format_url("::1", 1), "http://[::1]:1/");
+    }
+
+    // ---- 404.html, clean URLs, _redirects, _headers (test/server.test.ts)
+
+    fn rules_site() -> Tree {
+        let redirects = [
+            "# comments and blank lines are skipped",
+            "",
+            "/old /new 301",
+            "/temp /new 302",
+            "/blog/* https://blog.example/:splat",
+            "/app/* /app/index.html 200",
+            "/gone /404.html 404",
+            "/about /elsewhere 301",
+            "/docs /forced 308!",
+            "/users/:id /u/:id 301",
+            "/x /y 301 Country=nz",
+            "/bad /bad\u{1} 301",
+        ]
+        .join("\n");
+        let headers = [
+            "/assets/*",
+            "  Cache-Control: public, max-age=60",
+            "  Content-Length: 1",
+            "/*",
+            "  X-Frame-Options: DENY",
+            "  X-Bad: a\u{1}b",
+            "  Cache-Control: immutable",
+            "https://other/*",
+            "  X-Other: 1",
+        ]
+        .join("\n");
+        let files: Vec<(&str, String)> = vec![
+            ("/index.html", "home".into()),
+            ("/404.html", "custom 404".into()),
+            ("/about.html", "about page".into()),
+            ("/docs/index.html", "docs".into()),
+            ("/new.html", "new".into()),
+            ("/app/index.html", "app shell".into()),
+            ("/assets/a.css", "a{}".into()),
+            ("/_redirects", redirects),
+            ("/_headers", headers),
+        ];
+        Tree::from_files(files.into_iter().map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644)))).unwrap()
+    }
+
+    fn at(tree: &Tree, url: &str) -> Response {
+        handle_request(tree, &SiteServerOptions::default(), "GET", url, &HashMap::new())
+    }
+
+    fn body(r: &Response) -> &str {
+        std::str::from_utf8(&r.body).unwrap()
+    }
+
+    #[test]
+    fn not_found_page_is_404_html() {
+        let t = rules_site();
+        let r = at(&t, "/nope");
+        assert_eq!((r.status, body(&r)), (404, "custom 404"));
+        assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+        assert_eq!(r.header("etag"), None);
+        let plain = Tree::from_files([("/index.html".to_string(), make_file(b"x".to_vec(), "t", 0o644))]).unwrap();
+        assert!(body(&at(&plain, "/nope")).contains("404 Not Found"));
+    }
+
+    #[test]
+    fn clean_urls_and_directory_redirects() {
+        let t = rules_site();
+        let r = at(&t, "/about");
+        assert_eq!((r.status, body(&r)), (200, "about page"));
+        assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+        assert_eq!(body(&at(&t, "/about.html")), "about page");
+        assert_eq!(at(&t, "/about/").header("location"), Some("/elsewhere"), "no file at /about/, so the rule applies");
+        assert_eq!(at(&t, "/docs?q=1").status, 308, "a forced rule wins over the directory");
+        let d = Tree::from_files([("/docs/index.html".to_string(), make_file(b"docs".to_vec(), "t", 0o644))]).unwrap();
+        let r = at(&d, "/docs");
+        assert_eq!((r.status, r.header("location")), (301, Some("/docs/")));
+    }
+
+    #[test]
+    fn redirects_file_rules() {
+        let t = rules_site();
+        let r = at(&t, "/old?a=1");
+        assert_eq!((r.status, r.header("location")), (301, Some("/new?a=1")));
+        assert_eq!(at(&t, "/old/").header("location"), Some("/new"), "a trailing slash matches too");
+        assert_eq!(at(&t, "/temp").status, 302);
+        let r = at(&t, "/blog/2024/a%20b");
+        assert_eq!((r.status, r.header("location")), (301, Some("https://blog.example/2024/a%20b")));
+        assert_eq!(at(&t, "/blog").header("location"), Some("https://blog.example/"));
+        let r = at(&t, "/app/settings/profile");
+        assert_eq!((r.status, body(&r)), (200, "app shell"));
+        let r = at(&t, "/gone");
+        assert_eq!((r.status, body(&r)), (404, "custom 404"));
+        assert_eq!(body(&at(&t, "/about")), "about page", "a file shadows a rule without !");
+        for path in ["/users/1", "/x", "/bad", "/_redirects", "/_headers"] {
+            assert_eq!(at(&t, path).status, 404, "{path}");
+        }
+        assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    #[test]
+    fn headers_file_rules() {
+        let t = rules_site();
+        let r = at(&t, "/assets/a.css");
+        assert_eq!(r.status, 200);
+        assert_eq!(r.header("cache-control"), Some("public, max-age=60, immutable"));
+        assert_eq!(r.header("x-frame-options"), Some("DENY"));
+        assert_eq!(r.header("content-length"), Some("3"));
+        assert_eq!((r.header("x-bad"), r.header("x-other")), (None, None));
+        assert_eq!(r.headers.iter().filter(|(k, _)| k == "cache-control").count(), 1);
+        assert_eq!(at(&t, "/").header("cache-control"), Some("immutable"));
+        assert_eq!(at(&t, "/nope").header("x-frame-options"), Some("DENY"), "the 404 page gets headers too");
+        assert_eq!(at(&t, "/old").header("x-frame-options"), None, "redirects do not");
+        let etag = r.header("etag").unwrap().to_string();
+        let h: HashMap<String, String> = [("if-none-match".to_string(), etag)].into_iter().collect();
+        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/assets/a.css", &h);
+        assert_eq!((r.status, r.header("cache-control")), (304, Some("public, max-age=60, immutable")));
+    }
+
+    #[test]
+    fn rule_parsers_and_glob() {
+        assert!(glob_match("/*.css", "/a/b.css") && glob_match("/*", "/") && glob_match("/a*b*c", "/aXbYc"));
+        assert!(!glob_match("/*.css", "/a.js") && !glob_match("/a", "/ab"));
+        let r = parse_redirect_rules("/a /b\n/c/* /d/:splat 302!\n/e\n/f /g 418\n/h ftp://x\n");
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[1].from.as_str(), r[1].splat, r[1].status, r[1].force), ("/c", true, 302, true));
+        let h = parse_header_rules("  X-Orphan: 1\n/a\r\n  X-A: 1\r\n  bad name: 2\n");
+        assert_eq!(h, vec![ServeHeaders { pattern: "/a".into(), headers: vec![("x-a".into(), "1".into())] }]);
     }
 }

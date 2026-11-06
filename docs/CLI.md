@@ -183,12 +183,31 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   `error[E_SERVER]`.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
-- Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; `/dir`
-  redirects (`301`) to `/dir/`; no directory listings; `404` with a small page; `content-type` from the extension;
+- Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
+  URLs: `/about` serves `/about.html` when there is no file `/about`; otherwise a directory `/dir` redirects (`301`)
+  to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
+  page); `content-type` from the extension;
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
   `x-content-type-options: nosniff`. Paths are percent-decoded per segment; `..`, an encoded `/`, NUL, control
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
   file extension (a missing `/app.js` stays `404`).
+- **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
+  `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
+  - `_redirects`: one `from to [status]` per line (`#` comments). Supported: exact paths (a trailing slash on
+    the request is ignored, so `/old/` matches `/old`), and a trailing `/*` whose remainder replaces `:splat` in
+    the target (`/blog/* https://blog.example/:splat`). Statuses `301` (the default), `302`, `303`, `307`, `308`
+    redirect with `Location` (the request's query string is kept unless the target has one); `200` serves the
+    target path's file instead (a rewrite, e.g. `/app/* /app/index.html 200`); `404` serves it with status
+    404. Like Netlify, a rule applies only when no file answers the path, unless its status ends in `!`
+    (`301!`), which is checked first. The first matching rule wins. Not supported (the line is ignored):
+    `:placeholders`, `*` anywhere but the end, query or country/language conditions, extra fields, and targets
+    with characters outside printable ASCII.
+  - `_headers`: a path pattern line (`*` matches any characters, `/` included), then indented `Name: value`
+    lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
+    with `, `. They are added to file, `304` and `404` responses (not to redirects) and can replace
+    `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
+    `keep-alive` and `transfer-encoding` cannot be set. Lines with an invalid name or a control character in
+    the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker

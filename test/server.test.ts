@@ -342,3 +342,127 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
     blocker.close();
   }
 });
+
+// ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
+
+async function withTree(files: Record<string, string>, opts: { spa?: boolean }, fn: (port: number) => Promise<void>): Promise<void> {
+  const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const s = createSiteServer(t, opts);
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    await fn(port);
+  } finally {
+    await closeServer(s);
+  }
+}
+
+const SITE = {
+  '/index.html': 'home',
+  '/404.html': 'custom 404',
+  '/about.html': 'about page',
+  '/docs/index.html': 'docs',
+  '/new.html': 'new',
+  '/app/index.html': 'app shell',
+  '/assets/a.css': 'a{}',
+  '/_redirects': [
+    '# comments and blank lines are skipped',
+    '',
+    '/old /new 301',
+    '/temp /new 302',
+    '/blog/* https://blog.example/:splat',
+    '/app/* /app/index.html 200',
+    '/gone /404.html 404',
+    '/about /elsewhere 301',
+    '/docs /forced 308!',
+    '/users/:id /u/:id 301',
+    '/x /y 301 Country=nz',
+    '/bad /bad\u0001 301',
+  ].join('\n'),
+  '/_headers': [
+    '/assets/*',
+    '  Cache-Control: public, max-age=60',
+    '  Content-Length: 1',
+    '/*',
+    '  X-Frame-Options: DENY',
+    '  X-Bad: a\u0001b',
+    '  Cache-Control: immutable',
+    'https://other/*',
+    '  X-Other: 1',
+  ].join('\n'),
+};
+
+test('serve: /404.html is the not-found page, with status 404', async () => {
+  await withTree(SITE, {}, async (port) => {
+    const r = await req(port, '/nope');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'custom 404');
+    assert.equal(r.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(r.headers.etag, undefined);
+  });
+  await withTree({ '/index.html': 'x' }, {}, async (port) => assert.match((await req(port, '/nope')).body, /404 Not Found/));
+});
+
+test('serve: clean URLs: /about serves /about.html; a directory still redirects to its slash form', async () => {
+  await withTree(SITE, {}, async (port) => {
+    const r = await req(port, '/about');
+    assert.equal(r.status, 200);
+    assert.equal(r.body, 'about page');
+    assert.equal(r.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal((await req(port, '/about.html')).body, 'about page');
+    assert.equal((await req(port, '/about/')).headers.location, '/elsewhere', 'no file at /about/, so the rule applies');
+    assert.equal((await req(port, '/docs?q=1')).status, 308, 'a forced rule wins over the directory');
+  });
+  await withTree({ '/docs/index.html': 'docs' }, {}, async (port) => {
+    const d = await req(port, '/docs');
+    assert.equal(d.status, 301);
+    assert.equal(d.headers.location, '/docs/');
+  });
+});
+
+test('serve: _redirects: exact paths, splats, rewrites, 404s, shadowing and force', async () => {
+  await withTree(SITE, {}, async (port) => {
+    let r = await req(port, '/old?a=1');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/new?a=1');
+    assert.equal((await req(port, '/old/')).headers.location, '/new', 'a trailing slash matches too');
+    assert.equal((await req(port, '/temp')).status, 302);
+    r = await req(port, '/blog/2024/a%20b');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, 'https://blog.example/2024/a%20b');
+    assert.equal((await req(port, '/blog')).headers.location, 'https://blog.example/');
+    r = await req(port, '/app/settings/profile');
+    assert.equal(r.status, 200);
+    assert.equal(r.body, 'app shell');
+    r = await req(port, '/gone');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'custom 404');
+    assert.equal((await req(port, '/about')).body, 'about page', 'a file shadows a rule without !');
+    assert.equal((await req(port, '/users/1')).status, 404, 'placeholders are not supported');
+    assert.equal((await req(port, '/x')).status, 404, 'conditions are not supported');
+    assert.equal((await req(port, '/bad')).status, 404, 'control characters drop the rule');
+    assert.equal((await req(port, '/_redirects')).status, 404, 'the rules files are not served');
+    assert.equal((await req(port, '/_headers')).status, 404);
+  });
+});
+
+test('serve: _headers: glob patterns, joined values, protected names and invalid lines', async () => {
+  await withTree(SITE, {}, async (port) => {
+    let r = await req(port, '/assets/a.css');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['cache-control'], 'public, max-age=60, immutable');
+    assert.equal(r.headers['x-frame-options'], 'DENY');
+    assert.equal(r.headers['content-length'], '3');
+    assert.equal(r.headers['x-bad'], undefined);
+    assert.equal(r.headers['x-other'], undefined);
+    r = await req(port, '/');
+    assert.equal(r.headers['cache-control'], 'immutable');
+    r = await req(port, '/nope');
+    assert.equal(r.headers['x-frame-options'], 'DENY', 'the 404 page gets headers too');
+    r = await req(port, '/old');
+    assert.equal(r.headers['x-frame-options'], undefined, 'redirects do not');
+    const etag = String((await req(port, '/assets/a.css')).headers.etag);
+    r = await req(port, '/assets/a.css', 'GET', { 'if-none-match': etag });
+    assert.equal(r.status, 304);
+    assert.equal(r.headers['cache-control'], 'public, max-age=60, immutable');
+  });
+});

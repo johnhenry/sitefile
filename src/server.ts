@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
+import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { mimeTypeFor } from './wbn.js';
 
@@ -49,10 +50,19 @@ function printable(s: string): string {
 /**
  * An HTTP server for an immutable Tree. GET and HEAD only; nothing outside the tree is
  * ever reachable because lookups are exact map keys built from validated segments.
+ * Honours `/404.html`, `/_redirects` and `/_headers` (which it never serves), and answers
+ * `/about` with `/about.html` when there is no such file or directory.
  */
 export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): http.Server {
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
+  const text = (p: string): string => {
+    const f = tree.get(p);
+    return f ? new TextDecoder().decode(f.bytes) : '';
+  };
+  const redirects = parseRedirectRules(text('/_redirects'));
+  const headerRules = parseHeaderRules(text('/_headers'));
+  const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
 
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
@@ -87,24 +97,61 @@ export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): h
     if (!segs) return page(400, BAD_REQUEST_PAGE);
     const trailingSlash = rawPath.endsWith('/');
     const vpath = '/' + segs.join('/');
+    // `_headers` patterns match the request path (with its trailing slash).
+    const custom = headersFor(headerRules, vpath + (trailingSlash && segs.length > 0 ? '/' : ''));
 
-    let served: string | undefined = tree.isFile(vpath) && !(trailingSlash && vpath !== '/') ? vpath : undefined;
-    if (!served && tree.isDirectory(vpath)) {
-      if (!trailingSlash) {
-        const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
-        return finish(301, { location, 'content-length': 0 }, undefined);
+    const sendFile = (status: number, served: string): void => {
+      const file = tree.get(served)!;
+      const type = mimeTypeFor(served);
+      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': file.bytes.byteLength, ...custom }, file.bytes);
+      const etag = `"${file.digest.replace(/^sha256:/, '')}"`;
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
+      finish(200, { 'content-type': type, 'content-length': file.bytes.byteLength, ...custom, etag }, file.bytes);
+    };
+    /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
+    const resolve = (p: string, slash: boolean): string | undefined => {
+      if (isFile(p) && !(slash && p !== '/')) return p;
+      if (!slash && p !== '/' && isFile(`${p}.html`)) return `${p}.html`;
+      if (slash && tree.isDirectory(p)) {
+        const index = p === '/' ? '/index.html' : `${p}/index.html`;
+        if (isFile(index)) return index;
       }
-      const index = vpath === '/' ? '/index.html' : `${vpath}/index.html`;
-      if (tree.isFile(index)) served = index;
-    }
-    if (!served && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && tree.isFile('/index.html')) served = '/index.html';
-    const file = served === undefined ? undefined : tree.get(served);
-    if (served === undefined || !file) return page(404, NOT_FOUND_PAGE);
+      return undefined;
+    };
+    /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
+    const redirect = (forced: boolean): boolean => {
+      for (const r of redirects) {
+        if (r.force !== forced) continue;
+        const rest = matchRedirect(r, vpath);
+        if (rest === undefined) continue;
+        const target = r.splat ? r.to.split(':splat').join(rest.split('/').map(encodeURIComponent).join('/')) : r.to;
+        if (r.status !== 200 && r.status !== 404) {
+          finish(r.status, { location: target.includes('?') ? target : target + search, 'content-length': 0 }, undefined);
+          return true;
+        }
+        // 200 (rewrite) and 404: serve the target path's file with that status.
+        const tq = target.indexOf('?');
+        const tpath = tq === -1 ? target : target.slice(0, tq);
+        const tsegs = safeSegments(tpath);
+        const served = tsegs ? resolve('/' + tsegs.join('/'), tpath.endsWith('/')) : undefined;
+        if (served === undefined) continue;
+        sendFile(r.status, served);
+        return true;
+      }
+      return false;
+    };
 
-    const etag = `"${file.digest.replace(/^sha256:/, '')}"`;
-    const type = mimeTypeFor(served);
-    if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { etag }, undefined);
-    finish(200, { etag, 'content-type': type, 'content-length': file.bytes.byteLength }, file.bytes);
+    if (redirect(true)) return;
+    let served = resolve(vpath, trailingSlash);
+    if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
+      const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
+      return finish(301, { location, 'content-length': 0 }, undefined);
+    }
+    if (served === undefined && redirect(false)) return;
+    if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
+    if (served !== undefined) return sendFile(200, served);
+    if (isFile('/404.html')) return sendFile(404, '/404.html');
+    page(404, NOT_FOUND_PAGE, custom);
   };
 
   const server = http.createServer(handler);

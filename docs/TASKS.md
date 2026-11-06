@@ -50,3 +50,4 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] OCI exports name the image the way `docker save` does (`io.containerd.image.name` + tag in `ref.name`) so `docker load` finds it by name (`test/oci.test.ts`, `test/engine.test.ts`)
 - [x] #34 WebAssembly plugins: `PLUGIN x FROM ./x.wasm`, import-free ABI v1, worker + timeout, Rust example (`test/wasm-plugins.test.ts`, `examples/wasm/`)
 - [x] #37 Rust port (`rust/`), conformance suite (39/39), comparison benchmarks (`bench/`)
+- [x] #70 Site files: `SITEMAP`, `FEED` (Atom), `REDIRECT` / `HEADER` (`_redirects` / `_headers`); `serve` honours `/404.html`, `_redirects`, `_headers` and clean URLs (`test/site.test.ts`, `test/server.test.ts`, `rust/src/site.rs`, `conformance/cases/*site*`, `examples/blog/`)

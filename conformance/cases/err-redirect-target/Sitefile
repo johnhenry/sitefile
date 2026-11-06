@@ -1,0 +1,2 @@
+REDIRECT /a javascript:alert(1)
+EXPORT /

@@ -2,7 +2,7 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    is_ident, literal_text, stage_names, FromBase, ImportKind, Instruction, Operand, Program, Source, StageRef,
+    is_ident, literal_text, stage_names, FromBase, FEED_ITEM, ImportKind, Instruction, Operand, Program, Source, StageRef,
     TemplatePart,
 };
 use crate::language::parser::parse_sitefile;
@@ -33,6 +33,14 @@ fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(options.iter().map(|o| (&o.value, true)))
             .chain(args.iter().flatten().map(|a| (a, true)))
             .collect(),
+        Instruction::Sitemap { base, dest, .. } => std::iter::once(base).chain(dest).map(|o| (o, false)).collect(),
+        Instruction::Feed { base, link, dest, title, .. } => {
+            [(base, false), (link, true)].into_iter().chain(dest.iter().chain(title).map(|o| (o, false))).collect()
+        }
+        Instruction::Redirect { from, to, .. } => vec![(from, false), (to, false)],
+        Instruction::Header { pattern, name, value, .. } => {
+            [(pattern, false), (name, false)].into_iter().chain(value.iter().map(|o| (o, false))).collect()
+        }
         Instruction::Export { path, .. } => vec![(path, false)],
     }
 }
@@ -181,8 +189,10 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
         }
 
         // RENDER/TRANSFORM … FOR item IN list: the destination (and TRANSFORM options/args) may use ${item.key}.
+        // FEED … LINK <path>: the link may use ${item.key} for the current element.
         let loop_var = match ins {
             Instruction::Render { each, .. } | Instruction::Transform { each, .. } => each.as_ref().map(|e| e.as_name.as_str()),
+            Instruction::Feed { .. } => Some(FEED_ITEM),
             _ => None,
         };
         for (op, is_dest) in operands_of(ins) {
@@ -308,6 +318,16 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     check_each(&e.as_name, &e.list, &e.span, &scope)?;
                 }
             }
+            Instruction::Feed { list, list_span, .. } => {
+                if !scope.imports.contains(list.as_str()) {
+                    return Err(SitefileError::at(
+                        E_UNDEFINED,
+                        format!("FEED {list}: '{list}' is not an IMPORT declared on an earlier line"),
+                        list_span,
+                    ));
+                }
+            }
+            Instruction::Sitemap { .. } | Instruction::Redirect { .. } | Instruction::Header { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}
         }
@@ -414,6 +434,15 @@ mod tests {
 
     fn kinds(p: &Program) -> Vec<&'static str> {
         p.instructions.iter().map(|i| i.keyword()).collect()
+    }
+
+    #[test]
+    fn site_instructions_validate() {
+        prog_err("FEED posts BASE https://x LINK /a\nEXPORT /", E_UNDEFINED, 1, 6, "'posts' is not an IMPORT");
+        prog("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x LINK /p/${item.slug}.html\nEXPORT /");
+        prog_err("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x/${item.a} LINK /a\nEXPORT /", E_SYNTAX, 2, 27, "dotted access");
+        prog_err("SITEMAP BASE ${URL}\nEXPORT /", E_UNDEFINED, 1, 14, "undefined variable ${URL}");
+        assert_eq!(kinds(&prog("REDIRECT /a /b\nEXPORT /")), ["FROM", "REDIRECT", "EXPORT"]);
     }
 
     #[test]

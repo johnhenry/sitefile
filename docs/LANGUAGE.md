@@ -12,6 +12,7 @@ Instructions:
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
+- `SITEMAP`, `FEED`, `REDIRECT` and `HEADER` (sitemap.xml, an Atom feed, `_redirects`, `_headers`): see Site files below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -308,6 +309,76 @@ line and column.
   `<dest>` is a file, not a directory. Failures, timeouts and oversized
   outputs are `E_PLUGIN`. See `docs/PLUGINS.md`.
 - Results are cached between builds (`docs/PLUGINS.md`, "Caching").
+
+### Site files: SITEMAP, FEED, REDIRECT and HEADER (see `examples/blog/`)
+Common files a static host reads, generated from the tree and the imports.
+Every one takes `--overwrite` (see Writes and conflicts) and operands that may
+use `${NAME}`.
+
+- `SITEMAP [--overwrite] BASE <url> [TO <dest>]` writes a
+  [sitemaps.org](https://www.sitemaps.org/protocol.html) file (default
+  `/sitemap.xml`) listing every `.html` file in the **current stage's tree at
+  that point** (so put it after the pages are written), except `/404.html`,
+  sorted by path (UTF-8 bytes). `/index.html` is listed as `<base>/`,
+  `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
+  segment is percent-encoded like `encodeURIComponent`, and the result is XML
+  escaped. There is no `lastmod` (the output depends only on the tree).
+- `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
+  with a host and no credentials, query, fragment, whitespace or control
+  characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
+  `https://example.com/blog/` and `https://example.com/blog` are the same.
+- `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`
+  (clauses in this order) writes an [Atom 1.0](https://www.rfc-editor.org/rfc/rfc4287)
+  feed (default `/feed.xml`) with one entry per element of a list import,
+  **in list order** (use `SORT BY date DESC`). `<import>` must be an IMPORT on
+  an earlier line (`E_UNDEFINED`) whose value is a list of objects (`E_TYPE`),
+  usually `AS markdown`.
+  - Each element needs `title` and `date` (text, numbers or booleans):
+    `FEED posts: document '/a.md' has no 'date' (add it to its frontmatter)`
+    (`E_VALIDATION`). A Markdown document's `date` comes from its file name when
+    the frontmatter has none. `date` is `YYYY-MM-DD` (midnight UTC) or an
+    RFC 3339 date-time (`2026-01-05T10:30:00Z`, `…+02:00`, a space or `T`
+    separator, optional seconds and fraction); anything else, or an impossible
+    date, is `E_VALIDATION`.
+  - `LINK` is evaluated per element with `${item}` / `${item.key}` (only LINK
+    may use `item`; it shadows nothing else). The result must be an absolute
+    artifact path (`E_PATH` otherwise) and becomes `<base><path>` like a
+    sitemap entry, so `/posts/${item.slug}/index.html` links to `…/posts/x/`.
+  - The feed's `id` is its own URL (`<base><dest>`), with `<link href="<base>/">`
+    and a `rel="self"` link; `updated` is the newest entry date (compared as
+    instants, so time zones are respected; ties keep the first), or
+    `1970-01-01T00:00:00Z` for an empty list (which also warns). Each entry
+    has `title`, `link` and `id` (the entry URL), `updated` (the date, with
+    `T00:00:00Z` added to a plain date), `author` when the element has a
+    non-empty `author`, `summary` from a non-empty `excerpt`, and
+    `content type="html"` from `content` (the rendered Markdown). `TITLE`
+    defaults to the BASE URL. Characters XML 1.0 forbids become U+FFFD.
+- `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]` and
+  `HEADER [--overwrite] <path-pattern> <Name>: <value …>` accumulate, **in
+  source order and from every stage**, into `/_redirects` and `/_headers` in
+  the [Netlify](https://docs.netlify.com/routing/redirects/) /
+  [Cloudflare Pages](https://developers.cloudflare.com/pages/configuration/redirects/)
+  formats. They are written **at EXPORT**, at the root of the exported
+  directory (`EXPORT /www` gets `/www/_redirects`), after every stage has
+  run.
+  - `/_redirects` has one `from to status` line per REDIRECT (the status is
+    always written; the default is 301). `from` must be an absolute path and
+    `to` an absolute path or an `http(s)://host…` URL; neither may contain
+    spaces or control characters (`E_VALIDATION`). Host syntax such as
+    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
+    understands exact paths and a trailing `/*` (docs/CLI.md).
+  - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
+    word ending in `:` (`E_SYNTAX` if there is none), the value is the rest of
+    the line, its words joined with one space and trimmed. The name must be an
+    HTTP token (`E_VALIDATION`), and the value must be non-empty and contain no
+    control characters other than tab, so CR/LF cannot inject headers. The
+    pattern is an absolute path like `from`. `/_headers` has one block per
+    pattern, in order of first use: the pattern, then `  Name: value` lines in
+    source order.
+  - If the tree already has `/_redirects` or `/_headers` (from a COPY, say),
+    the normal conflict rules apply: identical bytes are fine, different
+    content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
+    HEADER) lines has `--overwrite`, which replaces the file.
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that
