@@ -2288,6 +2288,11 @@
     "named": true
   },
   {
+    "type": "directive",
+    "named": true,
+    "extra": true
+  },
+  {
     "type": "else",
     "named": false
   },

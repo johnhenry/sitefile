@@ -20,6 +20,7 @@ const ZED = {
   'keyword.repeat': 'keyword',
   'keyword.conditional': 'keyword',
   'keyword.unsupported': 'keyword',
+  'keyword.directive': 'preproc',
   module: 'variable.special',
   'function.call': 'function',
   'function.builtin': 'function',

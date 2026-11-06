@@ -9,6 +9,7 @@ use crate::language::parser::{
     SORT_ORDERS,
     TRANSFORM_CLAUSES,
 };
+use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
 use crate::lsp::docs;
 use crate::lsp::index::{Def, Index, Instr, SymKind, Word};
@@ -424,6 +425,23 @@ fn md(value: String, line: u32, start: u32, end: u32) -> Value {
     json!({ "contents": { "kind": "markdown", "value": value }, "range": range(line, start, line, end) })
 }
 
+/// Hover on a comment: the `# sitefile=N` directive (not inside a heredoc body).
+pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<Value> {
+    if ix.instrs.iter().any(|i| i.body.as_ref().is_some_and(|b| b.contains_line(line))) {
+        return None;
+    }
+    let raw = lines.get(line);
+    if !js_trim(raw).starts_with('#') {
+        return None;
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let hash = chars.iter().position(|c| *c == '#')?;
+    version_directive(&chars[hash..])?;
+    let start = utf16_len(&chars[..hash].iter().collect::<String>());
+    let end = utf16_len(raw.trim_end_matches(is_js_space));
+    (start <= col && col <= end).then(|| md(docs::version_directive(), line, start, end))
+}
+
 pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Option<Value> {
     if let Some(o) = ix.occ_at(line, col) {
         if let Some(d) = o.def {
@@ -784,6 +802,20 @@ mod tests {
         assert!(s.contains("**stage** `site` — line 7") && s.contains("STAGE site FROM assets"), "{s}");
         assert!(h(10, 55).unwrap().contains("Kind: markdown"));
         assert!(h(8, 1).is_none()); // template text
+    }
+
+    #[test]
+    fn hover_on_the_version_directive() {
+        let src = "  # sitefile=1\n# other\nCOPY <<EOF /a\n# sitefile=1\nEOF\nEXPORT /";
+        let lines = Lines::new(src);
+        let ix = build(&lines);
+        let h = |l, c| comment_hover(&lines, &ix, l, c);
+        let v = h(0, 5).unwrap();
+        assert!(v["contents"]["value"].as_str().unwrap().contains("The syntax version this file is written for"));
+        assert_eq!(v["range"], range(0, 2, 0, 14));
+        assert!(h(0, 0).is_none());
+        assert!(h(1, 3).is_none());
+        assert!(h(3, 3).is_none()); // heredoc body
     }
 
     #[test]

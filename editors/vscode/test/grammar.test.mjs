@@ -159,3 +159,13 @@ test('operands: strings, escapes, interpolation, integrity, flags and values', a
   has(scopesOf(r, 6, 'number'), 'support.type.primitive');
   has(scopesOf(r, 6, '3'), 'constant.numeric');
 });
+
+test('# sitefile=N is highlighted as the version directive', async () => {
+  const r = await tokenize('# sitefile=1\n  #SiteFile = 2 \n# sitefile=1.0\n# sitefile: 1\nCOPY a /b\n');
+  has(scopesOf(r, 1, 'sitefile'), 'keyword.other.directive');
+  has(scopesOf(r, 1, '1'), 'constant.numeric.version');
+  has(scopesOf(r, 2, 'SiteFile'), 'keyword.other.directive');
+  has(scopesOf(r, 2, '2'), 'constant.numeric.version');
+  has(scopesOf(r, 3, '1.0'), 'invalid.illegal.version');
+  for (const [, s] of r[3].tokens) hasNot(s, 'directive');
+});

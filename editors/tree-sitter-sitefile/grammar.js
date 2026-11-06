@@ -8,7 +8,8 @@
  * - a line ending in `\` continues; blank lines inside a continuation are
  *   skipped (`line_continuation`);
  * - a comment is a line whose first non-blank character is `#`, also inside
- *   a continuation; `#` elsewhere is ordinary text;
+ *   a continuation; `#` elsewhere is ordinary text; a comment that starts
+ *   `# sitefile=` is the syntax version `directive` (`# sitefile=1`);
  * - heredocs `<<NAME` / `<<-NAME` on COPY, RENDER and TRANSFORM: the body ends
  *   at a line that is exactly NAME (`<<-` also strips leading tabs);
  * - `name:` / `name:/path` import references in source position.
@@ -50,6 +51,7 @@ export default grammar({
     $.line_continuation,
     $._continuation_newline,
     $.comment,
+    $.directive,
     $._heredoc_marker,
     $._heredoc_marker_strip,
     $.heredoc_delimiter,
@@ -62,7 +64,7 @@ export default grammar({
     $._error_sentinel,
   ],
 
-  extras: ($) => [/[ \t\f\v]/, $.line_continuation, $._continuation_newline, $.comment],
+  extras: ($) => [/[ \t\f\v]/, $.line_continuation, $._continuation_newline, $.comment, $.directive],
 
   supertypes: ($) => [$._instruction],
 
