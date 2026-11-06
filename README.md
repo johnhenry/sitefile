@@ -33,9 +33,9 @@ no runtime dependencies.
 | `FROM scratch\|<dir>\|<stage>\|image <ref> [AT <dir>] [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported; `image` starts from a site image's files (a theme: `examples/theme`, `examples/themed-site`), locked in `Sitefile.lock` when it comes from a registry |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]] [SCHEMA <file>]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter (`SCHEMA` checks it against a YAML/JSON schema); `AS yaml`/`csv`/`wbn` give data for templates |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]] [SCHEMA <file>] [DRAFTS true\|false]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter (`SCHEMA` checks it against a YAML/JSON schema); `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
-| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
+| `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element, `BY` one per tag, `PAGE` paginates |
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
@@ -55,9 +55,11 @@ HTML
 A blog from Markdown posts with frontmatter (see `examples/blog/`):
 
 ```
-IMPORT posts FROM ./posts AS markdown SORT BY date DESC
-RENDER --escape=html ./templates/index.html TO /index.html
+ARG DRAFTS: boolean = false                          # --build-arg DRAFTS=true previews drafts
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml DRAFTS ${DRAFTS}
+RENDER --escape=html ./templates/index.html TO /page/${page.number}/index.html FOR page IN posts PAGE 10 FIRST /index.html
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+RENDER --escape=html ./templates/tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
 FEED posts BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TITLE ${SITE_TITLE}
 SITEMAP BASE ${SITE_URL}
 REDIRECT /feed /feed.xml

@@ -290,7 +290,7 @@ test('IMPORT forms', () => {
   parseErr('IMPORT d FROM ./x INTEGRITY sha256:abc', 'E_SYNTAX', 1, 29, /sha256/);
   parseErr(`IMPORT d FROM ./x INTEGRITY ${digest.toUpperCase()}`, 'E_SYNTAX', 1, 29);
   parseErr('IMPORT d FROM ./x INTEGRITY ${X}', 'E_SYNTAX', 1, 29);
-  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS, INTEGRITY, SORT BY, SCHEMA or SECRET/);
+  parseErr('IMPORT d FROM ./x EXTRA', 'E_SYNTAX', 1, 19, /AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET/);
 });
 
 test('COPY forms', () => {

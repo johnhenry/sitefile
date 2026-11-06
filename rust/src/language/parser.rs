@@ -5,7 +5,7 @@ use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{ImportSecret, 
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
-    SchemaClause, SortBy, Source, StageRef, TransformOption, ValueType,
+    SchemaClause, DraftsClause, GroupBy, PageClause, SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
 use crate::resources::ignore::is_ignore_pattern;
@@ -22,7 +22,9 @@ pub const INSTRUCTIONS: [&str; 15] = [
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
 /// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
-pub const IMPORT_CLAUSES: [&str; 5] = ["AS", "INTEGRITY", "SORT", "SCHEMA", "SECRET"];
+pub const IMPORT_CLAUSES: [&str; 6] = ["AS", "INTEGRITY", "SORT", "SCHEMA", "DRAFTS", "SECRET"];
+/// Clauses after a RENDER's `FOR item IN list`, in this order (`FIRST` only after `PAGE n`).
+pub const RENDER_LOOP_CLAUSES: [&str; 3] = ["BY", "PAGE", "FIRST"];
 /// What follows `SECRET <id> AS`.
 pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
@@ -194,6 +196,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let mut integrity: Option<String> = None;
     let mut sort: Option<SortBy> = None;
     let mut schema: Option<SchemaClause> = None;
+    let mut drafts: Option<DraftsClause> = None;
     let mut secrets: Vec<ImportSecret> = Vec::new();
     while !c.at_end() {
         let at = c.span();
@@ -233,6 +236,11 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
                 return Err(SitefileError::at(E_SYNTAX, "SCHEMA given twice", &at));
             }
             schema = Some(SchemaClause { path: c.operand("schema path")?, span: at });
+        } else if c.keyword("DRAFTS") {
+            if drafts.is_some() {
+                return Err(SitefileError::at(E_SYNTAX, "DRAFTS given twice", &at));
+            }
+            drafts = Some(DraftsClause { value: c.operand("true or false")?, span: at });
         } else if c.keyword("SECRET") {
             let s = parse_secret_clause(c, at.clone())?;
             if secrets.iter().any(|p| p.header.to_lowercase() == s.header.to_lowercase()) {
@@ -241,10 +249,10 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             secrets.push(s);
         } else {
             let w = c.word();
-            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)"), &at));
+            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)"), &at));
         }
     }
-    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets })
+    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, drafts, secrets })
 }
 
 /// Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them.
@@ -407,7 +415,23 @@ fn parse_for(c: &mut Cursor, span: SourceSpan) -> Result<ForEach> {
     let as_name = c.ident("loop variable", "")?;
     c.expect_keyword("IN")?;
     let list = c.ident("list name", "")?;
-    Ok(ForEach { as_name, list, span })
+    Ok(ForEach { as_name, list, span, by: None, page: None })
+}
+
+/// `FOR item IN list [BY key] [PAGE n [FIRST <dest>]]` of a RENDER.
+fn parse_render_for(c: &mut Cursor, span: SourceSpan) -> Result<ForEach> {
+    let mut each = parse_for(c, span)?;
+    let by_at = c.span();
+    if c.keyword("BY") {
+        each.by = Some(GroupBy { key: c.ident("group key", "")?, span: by_at });
+    }
+    let page_at = c.span();
+    if c.keyword("PAGE") {
+        let size = c.operand("page size")?;
+        let first = if c.keyword("FIRST") { Some(c.operand("first page destination")?) } else { None };
+        each.page = Some(PageClause { size, first, span: page_at });
+    }
+    Ok(each)
 }
 
 fn parse_render(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
@@ -429,7 +453,7 @@ fn parse_render(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     c.expect_keyword("TO")?;
     let dest = c.operand("destination")?;
     let for_at = c.span();
-    let each = if c.keyword("FOR") { Some(parse_for(c, for_at)?) } else { None };
+    let each = if c.keyword("FOR") { Some(parse_render_for(c, for_at)?) } else { None };
     c.expect_end()?;
     c.expect_inline_used("the RENDER template")?;
     no_inline_from(&template, &flags)?;
@@ -965,7 +989,7 @@ mod tests {
         parse_err("IMPORT d FROM ./x INTEGRITY sha256:abc", E_SYNTAX, 1, 29, "sha256");
         parse_err(&format!("IMPORT d FROM ./x INTEGRITY {}", digest.to_uppercase()), E_SYNTAX, 1, 29, "");
         parse_err("IMPORT d FROM ./x INTEGRITY ${X}", E_SYNTAX, 1, 29, "");
-        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)");
+        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)");
         let Instruction::Import { sort, .. } = one("IMPORT p FROM ./p AS markdown SORT BY date DESC") else { panic!() };
         let s = sort.unwrap();
         assert!(s.key == "date" && s.descending && s.span.column == 31);
@@ -1225,7 +1249,7 @@ mod tests {
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER X:y"), "invalid header name 'X:y'");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER Host"), "header 'Host' is set by sitefile and cannot carry a secret");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER authorization"), "header 'authorization' is set by two SECRET clauses");
-        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)");
+        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)");
     }
 
     #[test]

@@ -188,6 +188,27 @@
         "value": "[Ss][Cc][Hh][Ee][Mm][Aa]"
       }
     },
+    "_kw_drafts": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Dd][Rr][Aa][Ff][Tt][Ss]"
+      }
+    },
+    "_kw_page": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Pp][Aa][Gg][Ee]"
+      }
+    },
+    "_kw_first": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ff][Ii][Rr][Ss][Tt]"
+      }
+    },
     "_kw_for": {
       "type": "TOKEN",
       "content": {
@@ -892,6 +913,28 @@
                 ]
               },
               {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_kw_drafts"
+                    },
+                    "named": false,
+                    "value": "DRAFTS"
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "drafts",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_operand"
+                    }
+                  }
+                ]
+              },
+              {
                 "type": "FIELD",
                 "name": "secret",
                 "content": {
@@ -1241,12 +1284,123 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "FIELD",
-              "name": "loop",
-              "content": {
-                "type": "SYMBOL",
-                "name": "for_clause"
-              }
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "loop",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "for_clause"
+                  }
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "FIELD",
+                      "name": "group",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "group_clause"
+                      }
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "FIELD",
+                      "name": "page",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "page_clause"
+                      }
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "group_clause": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_by"
+          },
+          "named": false,
+          "value": "BY"
+        },
+        {
+          "type": "FIELD",
+          "name": "key",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        }
+      ]
+    },
+    "page_clause": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_page"
+          },
+          "named": false,
+          "value": "PAGE"
+        },
+        {
+          "type": "FIELD",
+          "name": "size",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_operand"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_first"
+                  },
+                  "named": false,
+                  "value": "FIRST"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "first",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
             },
             {
               "type": "BLANK"

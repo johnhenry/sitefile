@@ -36,7 +36,9 @@ export function operationLabel(op: Operation): string {
     case 'COPY':
       return `COPY ${sourceLabel(op.source)} ${op.dest}${op.destIsDir && op.dest !== '/' ? '/' : ''}`;
     case 'RENDER':
-      return op.each ? `RENDER ${sourceLabel(op.template)} FOR ${op.each.as} IN ${op.each.list}` : `RENDER ${sourceLabel(op.template)} TO ${op.dest}`;
+      return op.each
+        ? `RENDER ${sourceLabel(op.template)} FOR ${op.each.as} IN ${op.each.list}${op.each.by !== undefined ? ` BY ${op.each.by}` : ''}${op.each.page ? ` PAGE ${op.each.page.size}` : ''}`
+        : `RENDER ${sourceLabel(op.template)} TO ${op.dest}`;
     case 'TRANSFORM':
       return `TRANSFORM ${op.plugin}${op.source ? ` ${sourceLabel(op.source)}` : ''}${op.each ? ` FOR ${op.each.as} IN ${op.each.list}` : ''}`;
     case 'SITEMAP':

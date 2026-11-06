@@ -202,9 +202,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
   - `SECRET`: see Build secrets below.
-  - `SCHEMA`: see Schemas below.
+  - `SCHEMA`: see Schemas below; `DRAFTS`: see Tag pages, pagination and drafts below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
   - `<uri>` is a context-relative path, an `https://` URL (`http://` only with
@@ -263,7 +263,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`--from=s /www/a` → `www/a`) otherwise; a whole context, import or stage
     keeps nothing. There is no `/./` pivot. Not allowed with an inline body
     (`E_SYNTAX`).
-- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]`
+- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]` (`BY`, `PAGE`: see Tag pages, pagination and drafts below)
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
   - Templates use `${NAME}` for ARG/LET, `${name}` for a text import, and
@@ -387,6 +387,76 @@ line and column.
 - `SORT BY` applies to any list import (markdown, json, yaml, csv); the value
   must be a list of objects. Numbers **and numeric strings** (such as CSV
   cells) compare numerically.
+
+### Tag pages, pagination and drafts (see `examples/blog/`)
+Three blog staples, built on `IMPORT` and `RENDER … FOR`:
+
+```
+ARG DRAFTS: boolean = false
+ARG PER_PAGE: number = 10
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
+RENDER --escape=html ./index.html TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html
+RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+```
+
+- **Drafts: `IMPORT … DRAFTS <true|false>`.** With `false`, the elements whose
+  `draft` field is `true` (or the text `true`, as in a CSV cell) are left out of
+  the import, so of everything that reads it: `RENDER … FOR` pages, `#each`
+  lists, groups and pages, FEED entries, and therefore the SITEMAP (which lists
+  the pages written). With `true` they are kept. The value is an operand that
+  must be `true` or `false` once interpolated (`E_VALIDATION` otherwise), so
+  the usual pattern is a boolean ARG: drafts stay out unless the build says
+  `--build-arg DRAFTS=true` (a preview). Without the clause nothing is left out
+  (importing never filters implicitly). `DRAFTS` applies to `AS markdown`,
+  `json`, `yaml` and `csv` (`E_VALIDATION`), at most once, and needs a list
+  (`E_TYPE` for a single document). Drafts are left out first, then the
+  `SCHEMA` checks the rest, then `SORT BY` orders it.
+- **Tag pages: `RENDER … FOR tag IN list BY key`.** Instead of once per
+  element, the template renders once per distinct value of the element field
+  `key`: `tag` is `{ key, count, items }`, where `key` is the value as text
+  (`${tag.key}`), `items` the elements that have it, in list order, and `count`
+  their number. A field that is a list (`tags: [a, b]`) puts the element in a
+  group per value (a value repeated in one element counts once); elements
+  without the field, or with `null` or `''`, are in no group. Values must be
+  text, numbers or booleans (`E_TYPE`: `FOR tag IN posts BY tags: 'tags' of
+  document '/a.md' is not text or a list of text`), and an element that is not
+  an object is `E_TYPE`. Groups come in `SORT BY` order of their keys (numeric
+  ones numerically, then text by UTF-16 code units); two keys that only differ
+  in case (`Rust`, `rust`) are two groups whose paths collide
+  (`E_PATH_COLLISION`). If no element has the field, nothing is rendered and
+  the build warns.
+- **Pagination: `RENDER … FOR page IN list PAGE <n> [FIRST <dest>]`.** The
+  list is cut into pages of `n` items (`n` is an operand, a whole number from 1
+  to 999999999, `E_VALIDATION` otherwise; `${PER_PAGE}` works) and the template
+  renders once per page. `page` is `{ count, items, number, total, url, prev,
+  next }`: the page's `items`, its `number` (from 1) of `total` pages, `count`
+  items in the whole list, and the URLs of this, the previous and the next page
+  (`''` when there is none, so `${#if page.next}` works). A URL is the page's
+  destination with `…/index.html` written as `…/` and each segment
+  percent-encoded, as SITEMAP writes paths. The destination is evaluated per
+  page (it usually uses `${page.number}`); `FIRST <dest>` gives page 1 its own
+  destination (`/index.html` rather than `/page/1/index.html`). Destinations
+  are computed before the URLs, so they cannot use `url`, `prev` or `next`
+  (`E_UNDEFINED`). An empty list gives one page with no items (so an index
+  page always exists) and no warning.
+- **Both: `FOR tag IN list BY key PAGE <n> [FIRST <dest>]`** paginates each
+  group: `tag` is a page with the group's `key` too (`{ key, count, items,
+  number, total, url, prev, next }`, `count` being the group's size), and
+  `prev`/`next` stay within the group.
+  `FOR t IN posts BY tags PAGE 10 FIRST /tags/${t.key}/index.html` with
+  destination `/tags/${t.key}/page/${t.number}/index.html` gives every tag an
+  index and numbered older pages.
+- The clauses come in this order after `FOR item IN list`: `BY`, then `PAGE`,
+  then `FIRST` (only after `PAGE`). `FIRST` may use the loop variable like the
+  destination; `PAGE`'s size may use ARG/LET values only. They apply to
+  `RENDER`, not `TRANSFORM … FOR`.
+- **Elsewhere**: FEED reads the import itself (drafts left out, every element,
+  not pages). Incremental rebuilds memoize each group or page as one element:
+  its key is the element value (items, numbers and URLs included), so a page
+  re-renders exactly when what it shows changes, and editing one post re-renders
+  its own page, its tag pages and the index pages that list it. `graph` labels
+  the operation `RENDER ./tag.html FOR tag IN posts BY tags PAGE 10`; lint's
+  `render-escape` checks the destination as written.
 
 ### Schemas: `IMPORT … SCHEMA <file>` (see `examples/blog/`)
 Like Astro's content collections, an import of documents can declare what their

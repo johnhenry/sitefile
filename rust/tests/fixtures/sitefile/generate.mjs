@@ -89,13 +89,15 @@ const INSTRUCTIONS = {
     for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
       clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
     }
+    // Drafts (issue #101).
+    if (chance(0.15)) clauses.push(`${pick(['DRAFTS', 'drafts'])}${pick([' true', ' false', ' ${x}', ' yes', ' TRUE', ''])}`);
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
   COPY: () =>
     `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}${renderLoop()}`, 0.3)}`,
   TRANSFORM: () => {
     let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
     if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
@@ -133,10 +135,19 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
+
+/** `[BY key] [PAGE n [FIRST <dest>]]` after a RENDER's FOR (issue #101), sometimes out of order. */
+function renderLoop() {
+  let s = '';
+  if (chance(0.3)) s += ` ${pick(['BY', 'by'])} ${pick(['tags', 'category', '1x', ''])}`;
+  if (chance(0.3)) s += ` ${pick(['PAGE', 'page'])} ${pick(['10', '1', '0', '-1', '${x}', '${n}', 'ten', '1e3', '01', ''])}${maybe(() => ` FIRST ${pick(PATHS)}`, 0.4)}`;
+  if (chance(0.05)) s += pick([' BY tags', ' FIRST /a', ' PAGE 2']);
+  return s;
+}
 
 function flags(list) {
   let s = '';
@@ -214,7 +225,7 @@ function validProgram() {
   }
   const v = () => '${' + pick(vars) + '}';
   if (chance(0.5)) {
-    lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}${maybe(() => ` SCHEMA ${pick(['./post.schema.yaml', `./schemas/${v()}.json`])}`, 0.3)}`);
+    lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}${maybe(() => ` DRAFTS ${pick(['false', 'true', v()])}`, 0.3)}${maybe(() => ` SCHEMA ${pick(['./post.schema.yaml', `./schemas/${v()}.json`])}`, 0.3)}`);
     lists.push('posts');
   }
   if (chance(0.3)) {
@@ -242,6 +253,18 @@ function validProgram() {
     () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
     () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
+    ...(lists.length
+      ? [
+          () => {
+            const l = pick(lists);
+            return pick([
+              `RENDER --escape=html ./tag.html TO /tags/\${t.key}/index.html FOR t IN ${l} BY tags`,
+              `RENDER ./i.html TO /page/\${p.number}/index.html FOR p IN ${l} PAGE ${pick(['2', '10', v(), '0'])}${maybe(' FIRST /index.html')}`,
+              `RENDER ./t.html TO /t/\${g.key}/\${g.number}.html FOR g IN ${l} BY tags PAGE 5 FIRST /t/\${g.key}/index.html`,
+            ]);
+          },
+        ]
+      : []),
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
@@ -348,7 +371,11 @@ const EDGE = [
   'IMPORT p FROM ./posts AS markdown\nRENDER t.html TO /p/${post.slug}.html FOR post IN p\nEXPORT /',
   'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x AS text SCHEMA ./s.yaml\nEXPORT /', 'IMPORT p FROM ./p AS csv SCHEMA ./s.yaml SCHEMA ./t.yaml\nEXPORT /',
   'ARG S = post\nIMPORT p FROM ./p AS markdown SCHEMA ./${S}.schema.yaml SORT BY date\nRENDER <<H TO /i.html\n${#each p as x}${x.title}${/each}\nH\nEXPORT /', 'IMPORT p FROM ./p AS json SCHEMA\nEXPORT /',
-  'IMPORT p FROM ./p AS yaml SCHEMA ./s.md\nEXPORT /', 'IMPORT p FROM https://e.x/p.json AS json SCHEMA https://e.x/s.json\nEXPORT /', 'IMPORT p FROM ./p AS json SCHEMA ../s.json\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
+  'IMPORT p FROM ./p AS yaml SCHEMA ./s.md\nEXPORT /', 'IMPORT p FROM ./p DRAFTS false\nEXPORT /', 'IMPORT p FROM ./p AS csv DRAFTS maybe\nEXPORT /',
+  'ARG D: boolean = false\nIMPORT p FROM ./p AS markdown DRAFTS ${D}\nRENDER ./t TO /t/${t.key}.html FOR t IN p BY tags\nRENDER ./t TO /p/${x.number}.html FOR x IN p PAGE 3 FIRST /index.html\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p PAGE 2 BY tags\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /${x.n}.html FOR x IN p PAGE ${x.n}\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p FIRST /b\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /${x.number}.html FOR x IN p PAGE 1 FIRST /${x.key}.html\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /${y.number}.html FOR x IN p PAGE 1 FIRST /${y.n}.html\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p BY\nEXPORT /', 'IMPORT p FROM https://e.x/p.json AS json SCHEMA https://e.x/s.json\nEXPORT /', 'IMPORT p FROM ./p AS json SCHEMA ../s.json\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
   'PLUGIN p FROM ./p.mjs\nTRANSFORM a WITH p TO /b OPTIONS w=1 w=2\nEXPORT /', 'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input}\nEXPORT /',
   'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input} {output} {option.q}\nEXPORT /', 'TRANSFORM --from=a WITH p TO /b\nEXPORT /',
   'EXPORT / AS oci COMPRESSION', 'EXPORT / AS oci COMPRESSION zstd', 'EXPORT / AS', 'EXPORT / AS rar', 'EXPORT /\nEXPORT /', 'EXPORT /../x',

@@ -1,0 +1,6 @@
+ARG N = "0"
+IMPORT posts FROM ./posts.json AS json
+RENDER <<HTML TO /p/${p.number}.html FOR p IN posts PAGE ${N}
+x
+HTML
+EXPORT /

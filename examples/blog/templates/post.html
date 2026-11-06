@@ -20,7 +20,7 @@
       ${#if post.tags}
       <ul class="tags">
         ${#each post.tags as tag}
-        <li>${tag}</li>
+        <li><a href="/tags/${tag}/">${tag}</a></li>
         ${/each}
       </ul>
       ${/if}

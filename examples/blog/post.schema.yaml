@@ -6,3 +6,4 @@ properties:
   description: string
   date: date
   tags: {type: list, items: string}
+  draft: boolean

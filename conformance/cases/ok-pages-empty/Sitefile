@@ -1,0 +1,8 @@
+IMPORT items FROM ./items.json AS json
+RENDER <<HTML TO /p/${p.number}.html FOR p IN items PAGE 5
+${p.total} ${#each p.items as i}${i}${else}nothing${/each} [${p.prev}|${p.next}]
+HTML
+RENDER <<HTML TO /t/${t.key}.html FOR t IN items BY tags
+${t.key}
+HTML
+EXPORT /

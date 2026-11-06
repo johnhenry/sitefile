@@ -42,7 +42,14 @@ pub fn operation_label(op: &Operation) -> String {
             format!("COPY {} {dest}{}", source_label(source), if *dest_is_dir && dest != "/" { "/" } else { "" })
         }
         Operation::Render { template, dest, each, .. } => match each {
-            Some(e) => format!("RENDER {} FOR {} IN {}", source_label(template), e.as_name, e.list),
+            Some(e) => format!(
+                "RENDER {} FOR {} IN {}{}{}",
+                source_label(template),
+                e.as_name,
+                e.list,
+                e.by.as_ref().map(|b| format!(" BY {b}")).unwrap_or_default(),
+                e.page.as_ref().map(|p| format!(" PAGE {}", p.size)).unwrap_or_default()
+            ),
             None => format!("RENDER {} TO {dest}", source_label(template)),
         },
         Operation::Transform { source, plugin, each, .. } => format!(

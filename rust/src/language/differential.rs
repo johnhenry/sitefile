@@ -62,7 +62,15 @@ fn obj(fields: Vec<(&str, Option<Value>)>) -> Value {
 }
 
 fn each(e: &Option<crate::language::ast::ForEach>) -> Option<Value> {
-    e.as_ref().map(|e| json!({ "as": e.as_name, "list": e.list, "span": span(&e.span) }))
+    e.as_ref().map(|e| {
+        obj(vec![
+            ("as", Some(json!(e.as_name))),
+            ("list", Some(json!(e.list))),
+            ("span", Some(span(&e.span))),
+            ("by", e.by.as_ref().map(|b| json!({ "key": b.key, "span": span(&b.span) }))),
+            ("page", e.page.as_ref().map(|p| obj(vec![("size", Some(operand(&p.size))), ("first", p.first.as_ref().map(operand)), ("span", Some(span(&p.span)))]))),
+        ])
+    })
 }
 
 fn stage_ref(f: &Option<crate::language::ast::StageRef>) -> Option<Value> {
@@ -97,7 +105,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("type", s(ty.as_str())),
             ("value", Some(operand(value))),
         ]),
-        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, schema, secrets } => obj(vec![
+        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, schema, drafts, secrets } => obj(vec![
             ("kind", s("IMPORT")),
             ("span", Some(span(sp))),
             ("name", Some(json!(name))),
@@ -106,6 +114,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("integrity", integrity.as_ref().map(|i| json!(i))),
             ("sort", sort.as_ref().map(|so| json!({ "key": so.key, "descending": so.descending, "span": span(&so.span) }))),
             ("schema", schema.as_ref().map(|sc| json!({ "path": operand(&sc.path), "span": span(&sc.span) }))),
+            ("drafts", drafts.as_ref().map(|d| json!({ "value": operand(&d.value), "span": span(&d.span) }))),
             (
                 "secrets",
                 (!secrets.is_empty()).then(|| {

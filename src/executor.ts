@@ -40,6 +40,7 @@ import { begin, type Profiler } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
 import { checkSchema, compileSchema } from './schema.js';
+import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
@@ -341,9 +342,10 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     importSpans[i]?.end({ kind: r.res.kind });
     return r;
   });
-  // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
-  for (const [i, spec] of p.imports.entries()) if (spec.schema) await checkImportSchema(spec, resolved[i]!.res, local);
-  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!.res)]));
+  // DRAFTS false drops drafts; then SCHEMA checks run in Sitefile order, on the documents in path order; then SORT BY.
+  const filtered = p.imports.map((spec, i) => withoutDrafts(spec, resolved[i]!.res));
+  for (const [i, spec] of p.imports.entries()) if (spec.schema) await checkImportSchema(spec, filtered[i]!, local);
+  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, filtered[i]!)]));
   // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
   const resourceKeys = new Map<string, string>(memo ? p.imports.map((s, i) => [s.name, resolved[i]!.key]) : []);
   const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
@@ -1438,23 +1440,46 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
     if (!Array.isArray(items)) {
       throw new SitefileError('E_TYPE', `FOR ${as} IN ${list}: '${list}' is not a list (import a directory AS markdown, or a JSON array)`, op.span);
     }
-    if (items.length === 0) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+    // BY / PAGE: the loop runs over groups or pages instead of the elements.
+    const what = `FOR ${as} IN ${list}${op.each.by !== undefined ? ` BY ${op.each.by}` : ''}`;
+    const groups = op.each.by !== undefined ? groupBy(items, op.each.by, what, op.span) : undefined;
+    if (items.length === 0 && !(op.each.page && !groups)) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+    else if (groups?.length === 0) env.warn(`${origin}: ${what} renders nothing: no element has '${op.each.by}'`);
+    const destOf = (item: unknown, op_: Operand): string => {
+      let raw = '';
+      for (const part of op_.parts) {
+        if (part.kind === 'text') raw += part.value;
+        else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
+      }
+      const target = normalizeVirtual(raw, op_.span, `RENDER destination for ${as}`);
+      if (target.trailingSlash) {
+        throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, op_.span);
+      }
+      return target.path;
+    };
+    // Each element with its destination. Pages get `url`, `prev` and `next` once every page's destination is known.
+    const elements: Array<{ item: unknown; path: string }> = [];
+    if (op.each.page) {
+      const { size, first } = op.each.page;
+      const runs = groups ? groups.map((g) => ({ key: g['key'] as string, items: g['items'] as unknown[] })) : [{ items }];
+      for (const pages of paginate(runs, size)) {
+        const paths = pages.map((pg) => destOf(pg, pg['number'] === 1 && first ? first : dest));
+        const urls = paths.map((p) => pageUrl('', p));
+        pages.forEach((pg, i) => {
+          elements.push({ item: { ...pg, url: urls[i]!, prev: urls[i - 1] ?? '', next: urls[i + 1] ?? '' }, path: paths[i]! });
+        });
+      }
+    } else {
+      for (const item of groups ?? items) elements.push({ item, path: destOf(item, dest) });
+    }
     // Incremental rebuilds: an element's page depends on the template, the element and the imports the
     // template names (other than the loop variable), so editing one document re-renders one page.
     const memo = env.memo;
     const refsKey = memo ? namesKey(env, templateNames(parts), as) : '';
     const files: Files = [];
-    for (const item of items) {
+    for (const { item, path: targetPath } of elements) {
       const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
-      let raw = '';
-      for (const part of dest.parts) {
-        if (part.kind === 'text') raw += part.value;
-        else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
-      }
-      const target = normalizeVirtual(raw, dest.span, `RENDER destination for ${as}`);
-      if (target.trailingSlash) {
-        throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
-      }
+      const target = { path: targetPath };
       const page = (): FileNode => {
         const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv));
         return makeFile(new TextEncoder().encode(out), origin);
@@ -1463,6 +1488,17 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
     }
     return files;
   });
+}
+
+/** `IMPORT … DRAFTS false`: leave out the elements whose `draft` is `true` (or the text `true`, as in a CSV cell). */
+function withoutDrafts(spec: ImportSpec, res: Resource): Resource {
+  if (spec.drafts === undefined || res.kind !== 'value') return res;
+  if (!Array.isArray(res.value)) {
+    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: DRAFTS needs a list (a directory of documents, a CSV file or a JSON/YAML array), not a single value`, spec.span);
+  }
+  if (spec.drafts) return res;
+  const isDraft = (d: unknown): boolean => d !== null && typeof d === 'object' && !Array.isArray(d) && ((d as Record<string, unknown>)['draft'] === true || (d as Record<string, unknown>)['draft'] === 'true');
+  return { ...res, value: res.value.filter((d) => !isDraft(d)) };
 }
 
 /** `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents. */

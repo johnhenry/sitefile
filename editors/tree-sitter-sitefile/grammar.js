@@ -134,7 +134,7 @@ export default grammar({
 
     _type_annotation: ($) => seq(':', field('type', alias($.identifier, $.type))),
 
-    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [SECRET id AS HEADER <Name> | AS BEARER]…
+    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET id AS HEADER <Name> | AS BEARER]…
     import_instruction: ($) =>
       seq(
         kw($, 'IMPORT'),
@@ -147,6 +147,7 @@ export default grammar({
             $._integrity_clause,
             field('sort', $.sort_clause),
             seq(kw($, 'SCHEMA'), field('schema', $._operand)),
+            seq(kw($, 'DRAFTS'), field('drafts', $._operand)),
             field('secret', $.secret_clause),
           ),
         ),
@@ -177,7 +178,7 @@ export default grammar({
         ),
       ),
 
-    // RENDER [flags] <template>|<<NAME TO <dest> [FOR item IN list]
+    // RENDER [flags] <template>|<<NAME TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]
     render_instruction: ($) =>
       seq(
         kw($, 'RENDER'),
@@ -188,7 +189,18 @@ export default grammar({
         ),
       ),
 
-    _render_clauses: ($) => seq(kw($, 'TO'), field('target', $._operand), optional(field('loop', $.for_clause))),
+    _render_clauses: ($) =>
+      seq(
+        kw($, 'TO'),
+        field('target', $._operand),
+        optional(seq(field('loop', $.for_clause), optional(field('group', $.group_clause)), optional(field('page', $.page_clause)))),
+      ),
+
+    // RENDER … FOR item IN list BY key (tag pages)
+    group_clause: ($) => seq(kw($, 'BY'), field('key', $.identifier)),
+
+    // RENDER … FOR item IN list PAGE n [FIRST <dest>] (pagination)
+    page_clause: ($) => seq(kw($, 'PAGE'), field('size', $._operand), optional(seq(kw($, 'FIRST'), field('first', $._operand)))),
 
     // TRANSFORM [flags] [<source>|<<NAME] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list] [ARGS …]
     transform_instruction: ($) =>

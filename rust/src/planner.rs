@@ -62,6 +62,8 @@ pub struct ImportSpec {
     pub sort: Option<ImportSort>,
     /// `SCHEMA <path>`: every document must match the schema file.
     pub schema: Option<ImportSchema>,
+    /// `DRAFTS true|false`: false leaves out the elements whose `draft` is true.
+    pub drafts: Option<bool>,
     /// Build secrets sent as request headers (ids and header names only; values come from --secret).
     pub secrets: Vec<SecretRef>,
     pub span: SourceSpan,
@@ -114,12 +116,22 @@ pub struct TransformEach {
     pub list: String,
 }
 
-/// `FOR as IN list` of a RENDER: `dest` is interpolated per element.
+/// `FOR as IN list [BY key] [PAGE size [FIRST <dest>]]` of a RENDER: `dest` (and `first`, for the first page)
+/// is interpolated per element, group or page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderEach {
     pub as_name: String,
     pub list: String,
     pub dest: Operand,
+    pub by: Option<String>,
+    pub page: Option<RenderPage>,
+}
+
+/// `PAGE size [FIRST <dest>]`, evaluated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderPage {
+    pub size: usize,
+    pub first: Option<Operand>,
 }
 
 /// A REDIRECT, evaluated; written to `/_redirects` at EXPORT.
@@ -359,11 +371,15 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let raw = evaluate_operand(value, &vars)?;
                 bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets } => {
+            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, drafts, secrets } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
                 let schema_planned = match schema {
                     Some(s) => Some(schema_spec(name, &s.path, &vars, &s.span)?),
+                    None => None,
+                };
+                let drafts_planned = match drafts {
+                    Some(d) => Some(drafts_value(name, &d.value, &vars)?),
                     None => None,
                 };
                 if matches!(location, ImportLocation::Local { .. }) && !secrets.is_empty() {
@@ -394,6 +410,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     integrity: integrity.clone(),
                     sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
                     schema: schema_planned,
+                    drafts: drafts_planned,
                     secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
                     span: span.clone(),
                 };
@@ -430,7 +447,16 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     operations(&mut stages, span)?.push(Operation::Render {
                         template,
                         dest: String::new(),
-                        each: Some(RenderEach { as_name: e.as_name.clone(), list: e.list.clone(), dest: dest.clone() }),
+                        each: Some(RenderEach {
+                            as_name: e.as_name.clone(),
+                            list: e.list.clone(),
+                            dest: dest.clone(),
+                            by: e.by.as_ref().map(|b| b.key.clone()),
+                            page: match &e.page {
+                                Some(pg) => Some(RenderPage { size: page_size(&pg.size, &vars)?, first: pg.first.clone() }),
+                                None => None,
+                            },
+                        }),
                         escape: *escape,
                         overwrite: *overwrite,
                         span: span.clone(),
@@ -605,6 +631,25 @@ fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Re
         return Err(SitefileError::at(E_PATH, format!("{what} destination '{raw}' must be a file path, not a directory"), &op.span));
     }
     Ok(dest.path)
+}
+
+/// `IMPORT … DRAFTS <value>`: `true` keeps drafts, `false` leaves them out.
+fn drafts_value(name: &str, op: &Operand, vars: &Env) -> Result<bool> {
+    match evaluate_operand(op, vars)?.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        raw => Err(SitefileError::at(E_VALIDATION, format!("IMPORT {name}: DRAFTS must be true or false, got '{raw}'"), &op.span)),
+    }
+}
+
+/// `RENDER … PAGE <n>`: a whole number of items per page, at least 1.
+fn page_size(op: &Operand, vars: &Env) -> Result<usize> {
+    let raw = evaluate_operand(op, vars)?;
+    let b = raw.as_bytes();
+    if b.is_empty() || b.len() > 9 || b[0] == b'0' || !b.iter().all(u8::is_ascii_digit) {
+        return Err(SitefileError::at(E_VALIDATION, format!("RENDER … PAGE: '{raw}' is not a page size (a whole number from 1 to 999999999)"), &op.span));
+    }
+    Ok(raw.parse().expect("digits"))
 }
 
 /// `IMPORT … SCHEMA <path>`: a local `.json`, `.yaml` or `.yml` file in the build context.
@@ -799,6 +844,9 @@ impl ImportSpec {
         if let Some(s) = &self.schema {
             m.insert("schema".into(), json!({ "uri": s.uri, "path": s.path, "span": span_json(&s.span) }));
         }
+        if let Some(d) = self.drafts {
+            m.insert("drafts".into(), json!(d));
+        }
         if !self.secrets.is_empty() {
             m.insert(
                 "secrets".into(),
@@ -874,7 +922,22 @@ impl Operation {
                 m.insert("template".into(), template.to_json());
                 m.insert("dest".into(), json!(dest));
                 if let Some(e) = each {
-                    m.insert("each".into(), json!({ "as": e.as_name, "list": e.list, "dest": operand_json(&e.dest) }));
+                    let mut each = Map::new();
+                    each.insert("as".into(), json!(e.as_name));
+                    each.insert("list".into(), json!(e.list));
+                    each.insert("dest".into(), operand_json(&e.dest));
+                    if let Some(b) = &e.by {
+                        each.insert("by".into(), json!(b));
+                    }
+                    if let Some(pg) = &e.page {
+                        let mut page = Map::new();
+                        page.insert("size".into(), json!(pg.size));
+                        if let Some(f) = &pg.first {
+                            page.insert("first".into(), operand_json(f));
+                        }
+                        each.insert("page".into(), Value::Object(page));
+                    }
+                    m.insert("each".into(), Value::Object(each));
                 }
                 m.insert("escape".into(), json!(escape_str(*escape)));
                 m.insert("overwrite".into(), json!(overwrite));
