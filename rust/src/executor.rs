@@ -9,7 +9,8 @@ use crate::build_args::BuildArgs;
 use crate::registry::RegistryOptions;
 use crate::store::Store;
 use crate::digest::sha256;
-use crate::documents::{data_collection, markdown_collection, sort_documents, DataKind};
+use crate::documents::{data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument};
+use crate::memo::DocMemo;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::export::archive_writers::{source_date_epoch, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions};
@@ -24,7 +25,8 @@ use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolI
 use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
 use crate::plugins::wasm::check_wasm_plugin;
 use crate::profile::{begin, Profiler};
-use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk};
+use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
+use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk, TemplateNode};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::https::fetch_remote;
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
@@ -37,7 +39,7 @@ use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -107,6 +109,9 @@ pub struct BuildOptions {
     pub profiler: Option<Arc<Profiler>>,
     /// Other paths this command writes (the --profile file): skipped when walking the context, like `out_dir`.
     pub also_writes: Vec<String>,
+    /// Incremental rebuilds: reuse the results of steps whose inputs did not change since an
+    /// earlier build with the same memo (watch mode keeps one per session; src/memo.rs).
+    pub memo: Option<SharedMemo>,
     /// Keep every intermediate tree in [`BuildResult::steps`] (for `sitefile why`).
     pub record_steps: bool,
 }
@@ -141,6 +146,7 @@ impl Default for BuildOptions {
             insecure_registries: Vec::new(),
             profiler: None,
             also_writes: Vec::new(),
+            memo: None,
             record_steps: false,
         }
     }
@@ -169,6 +175,8 @@ pub struct BuildResult {
     pub base: Option<BaseImage>,
     pub tools: Vec<ResolvedTool>,
     pub transform_stats: TransformStats,
+    /// With `memo`: how many steps were reused and how many ran.
+    pub memo_stats: Option<MemoStats>,
     /// With `record_steps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
     /// operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
     pub steps: Option<Vec<Vec<Tree>>>,
@@ -296,6 +304,16 @@ fn realpath_loose(p: &Path) -> PathBuf {
 
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
+    let Some(memo) = &options.memo else { return build_once(options) };
+    lock_memo(memo).begin();
+    let r = build_once(options);
+    let mut m = lock_memo(memo);
+    m.finish(r.is_ok());
+    let stats = m.stats;
+    r.map(|r| BuildResult { memo_stats: Some(stats), ..r })
+}
+
+fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
@@ -376,6 +394,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         warn: &warn,
         frozen: options.frozen_lockfile,
         update: options.update_lock,
+        memo: options.memo.as_deref(),
     };
     // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
     let import_spans: Vec<_> = p
@@ -398,17 +417,30 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         }
         let r = resolve_import(spec, &env)?;
         if let Some(s) = &import_spans[*i] {
-            s.end(vec![("kind", json!(r.kind()))]);
+            s.end(vec![("kind", json!(r.0.kind()))]);
         }
         Ok(r)
     })?;
     let mut resources: HashMap<String, Resource> = HashMap::new();
     let mut resource_list: Vec<(String, Resource)> = Vec::new();
-    for (spec, res) in p.imports.iter().zip(resolved) {
+    // Incremental rebuilds: what each import is (its spec and the digest of what it read).
+    let mut resource_keys: HashMap<String, String> = HashMap::new();
+    for (spec, (res, key)) in p.imports.iter().zip(resolved) {
         let res = sorted(spec, res)?;
         resources.insert(spec.name.clone(), res.clone());
         resource_list.push((spec.name.clone(), res));
+        resource_keys.insert(spec.name.clone(), key);
     }
+    let memo = options.memo.as_deref();
+    // The Sitefile label and its ARG/LET values (sorted: Env is a HashMap).
+    let env_key = match memo {
+        Some(_) => {
+            let mut vars: Vec<_> = p.vars.iter().collect();
+            vars.sort_by(|a, b| a.0.cmp(b.0));
+            memo_key(&["env", &label, &format!("{vars:?}")])
+        }
+        None => String::new(),
+    };
 
     let plugin_warn = warn.clone();
     let mut exec = Exec {
@@ -425,6 +457,12 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
         profiler: prof,
+        memo,
+        resource_keys,
+        env_key,
+        stage_keys: HashMap::new(),
+        recorded: None,
+        unrecorded: warn.clone(),
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     let run = (|| -> Result<Tree> {
@@ -437,22 +475,30 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         for (i, stage) in p.stages.iter().enumerate() {
             let name = stage.name.clone().unwrap_or_else(|| format!("#{}", i + 1));
             let s = begin(prof, || format!("stage {name}"), "stage", || vec![("from", json!(stage_from(stage)))]);
-            tree = exec.start_stage(stage)?;
+            let (start, mut key) = exec.start_stage(stage)?;
+            tree = start;
             let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 let line = op.span().line;
                 let o = begin(prof, || format!("{label}:{line} {}", op.keyword()), "operation", || vec![("line", json!(line))]);
-                tree = exec.execute(op, tree)?;
+                let (out, k, state) = exec.execute_op(op, tree, &key)?;
+                tree = out;
+                key = k;
                 if let Some(r) = record.as_mut() {
                     r.push(tree.clone());
                 }
-                o.end(vec![("files", json!(tree.len()))]);
+                let mut args = vec![("files", json!(tree.len()))];
+                if let Some(state) = state {
+                    args.push(("memo", json!(state)));
+                }
+                o.end(args);
             }
             if let (Some(all), Some(r)) = (steps.as_mut(), record) {
                 all.push(r);
             }
             if let Some(name) = &stage.name {
                 exec.stages.insert(name.clone(), tree.clone());
+                exec.stage_keys.insert(name.clone(), key);
             }
             s.end(vec![("files", json!(tree.len()))]);
         }
@@ -519,7 +565,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         _ => false,
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
-    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats, steps })
+    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats, steps, memo_stats: None })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
@@ -695,6 +741,7 @@ struct ImportEnv<'a> {
     warn: &'a Warn,
     frozen: bool,
     update: bool,
+    memo: Option<&'a Mutex<BuildMemo>>,
 }
 
 /// Run `f` over `items` with at most `limit` at once; results in input order.
@@ -753,9 +800,27 @@ fn url_basename(url: &str) -> String {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
-fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<Resource> {
+/// Read an import. The key identifies the result for incremental rebuilds: the
+/// import's spec (with its Sitefile position) and the digest of the bytes or tree
+/// it read. With a memo, conversions (Markdown, data, archives) whose key is
+/// unchanged are reused; a collection's documents are memoized one by one.
+fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, String)> {
     let origin = format!("{}:{} IMPORT {}", env.label, spec.span.line, spec.name);
     let span = Some(&spec.span);
+    let id = if env.memo.is_some() { format!("{spec:?}") } else { String::new() };
+    let key_of = |raw: &str| if env.memo.is_some() { memo_key(&["import", env.label, &id, raw]) } else { String::new() };
+    // `compute` gets the per-document memo (children of this import's entry).
+    let convert = |key: &str, compute: &dyn Fn(Option<DocMemo>) -> Result<Resource>| -> Result<Resource> {
+        let Some(memo) = env.memo else { return compute(None) };
+        memoize(memo, key, None, |children| {
+            let docs = |parts: &[&str], make: &mut dyn FnMut() -> Result<MarkdownDocument>| -> Result<MarkdownDocument> {
+                let mut all = vec!["document"];
+                all.extend_from_slice(parts);
+                memoize(memo, &memo_key(&all), Some(children), |_| make())
+            };
+            compute(Some(&docs))
+        })
+    };
     match &spec.location {
         ImportLocation::Local { path: rel } => {
             if env.local.stat(rel, span)? == EntryKind::Directory {
@@ -765,8 +830,12 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<Resource> {
                             return Err(integrity_on_dir(spec));
                         }
                         let Resource::Tree { tree, provenance } = env.local.read_tree(rel, &origin, span)? else { unreachable!() };
-                        let docs = markdown_collection(&tree, &trim_trailing_slashes(&spec.uri), span)?;
-                        return Ok(Resource::Value { format: ValueFormat::Markdown, value: Value::Array(docs.into_iter().map(Value::Object).collect()), provenance });
+                        let key = key_of(&provenance.digest);
+                        let res = convert(&key, &|docs| {
+                            let list = markdown_collection(&tree, &trim_trailing_slashes(&spec.uri), span, docs)?;
+                            Ok(Resource::Value { format: ValueFormat::Markdown, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                        })?;
+                        return Ok((res, key));
                     }
                     Some(k @ (ImportKind::Json | ImportKind::Yaml)) => {
                         if spec.integrity.is_some() {
@@ -774,8 +843,12 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<Resource> {
                         }
                         let Resource::Tree { tree, provenance } = env.local.read_tree(rel, &origin, span)? else { unreachable!() };
                         let (kind, format) = if k == ImportKind::Json { (DataKind::Json, ValueFormat::Json) } else { (DataKind::Yaml, ValueFormat::Yaml) };
-                        let docs = data_collection(&tree, kind, &trim_trailing_slashes(&spec.uri), span)?;
-                        return Ok(Resource::Value { format, value: Value::Array(docs.into_iter().map(Value::Object).collect()), provenance });
+                        let key = key_of(&provenance.digest);
+                        let res = convert(&key, &|docs| {
+                            let list = data_collection(&tree, kind, &trim_trailing_slashes(&spec.uri), span, docs)?;
+                            Ok(Resource::Value { format, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                        })?;
+                        return Ok((res, key));
                     }
                     Some(k) if k != ImportKind::Tree => {
                         return Err(SitefileError::at(
@@ -789,19 +862,22 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<Resource> {
                 if spec.integrity.is_some() {
                     return Err(integrity_on_dir(spec));
                 }
-                return env.local.read_tree(rel, &origin, span);
+                let res = env.local.read_tree(rel, &origin, span)?;
+                let key = key_of(&res.provenance().digest);
+                return Ok((res, key));
             }
             let file = env.local.read_file(rel, span)?;
-            let Resource::File { bytes, mode, basename, .. } = &file else { unreachable!() };
+            let Resource::File { bytes, mode, basename, provenance } = &file else { unreachable!() };
             if let Some(i) = &spec.integrity {
                 verify_integrity(bytes, i, &spec.uri, span)?;
             }
+            let key = key_of(&format!("{}\0{mode}\0{basename}", provenance.digest));
             match spec.as_kind {
-                None | Some(ImportKind::File) => Ok(file),
+                None | Some(ImportKind::File) => Ok((file, key)),
                 Some(kind) => {
                     let info = BytesInfo { uri: spec.uri.clone(), resolved_url: None, basename: basename.clone(), mode: Some(*mode) };
-                    let Resource::File { bytes, .. } = file else { unreachable!() };
-                    bytes_to_resource(bytes, kind, &info, span, env.archive_limits)
+                    let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
+                    Ok((res, key))
                 }
             }
         }
@@ -835,13 +911,16 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<Resource> {
             }
             if let Ok(mut l) = env.lock.lock() {
                 if let Some(l) = l.as_mut() {
-                    l.record(url, LockEntry { integrity: digest, size: fetched.bytes.len() as u64, resolved: fetched.final_url.clone() });
+                    l.record(url, LockEntry { integrity: digest.clone(), size: fetched.bytes.len() as u64, resolved: fetched.final_url.clone() });
                 }
             }
             let base = url_basename(&fetched.final_url);
             let basename = if base.is_empty() { spec.name.clone() } else { base };
             let info = BytesInfo { uri: url.clone(), resolved_url: Some(fetched.final_url.clone()), basename, mode: None };
-            bytes_to_resource(fetched.bytes, kind, &info, span, env.archive_limits)
+            let key = key_of(&format!("{digest}\0{}", fetched.final_url));
+            let bytes = fetched.bytes;
+            let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
+            Ok((res, key))
         }
     }
 }
@@ -1091,10 +1170,14 @@ enum Source {
         label: String,
         /// Heredoc bodies: the Sitefile label and the body's first line, for template error positions.
         inline: Option<(String, u32)>,
+        /// Local files: the content digest, mode and name (memo keys); empty otherwise.
+        digest: String,
     },
     Tree {
         tree: Tree,
         label: String,
+        /// Local directories: the tree digest (memo keys); empty otherwise.
+        digest: String,
     },
 }
 
@@ -1122,6 +1205,18 @@ struct Exec<'a> {
     plugin_digests: HashMap<String, Option<String>>,
     stats: TransformStats,
     profiler: Option<&'a Profiler>,
+    /// Incremental rebuilds (with `BuildOptions.memo`): the memo and the keys of what operations read.
+    memo: Option<&'a Mutex<BuildMemo>>,
+    /// Import name -> its key (resolve_import).
+    resource_keys: HashMap<String, String>,
+    /// The Sitefile label and its ARG/LET values.
+    env_key: String,
+    /// Stage name -> the key of its final tree.
+    stage_keys: HashMap<String, String>,
+    /// While an operation runs with a memo: the warnings it printed (a memoized step replays them).
+    recorded: Option<Arc<Mutex<Vec<String>>>>,
+    /// The warning callback that does not record (a tool's stderr).
+    unrecorded: Warn,
 }
 
 /// What a stage starts from, for the trace.
@@ -1151,18 +1246,24 @@ impl<'a> Exec<'a> {
         Scope { vars: self.vars, resources: self.resources, each: None }
     }
 
-    /// The tree a stage starts from.
-    fn start_stage(&self, stage: &Stage) -> Result<Tree> {
+    /// The tree a stage starts from, and its key.
+    fn start_stage(&self, stage: &Stage) -> Result<(Tree, String)> {
         match &stage.base {
-            StageBase::Scratch => Ok(Tree::empty()),
-            StageBase::Stage { name } => self.stages.get(name).cloned().ok_or_else(|| unknown_stage(name, &stage.span)),
+            StageBase::Scratch => Ok((Tree::empty(), if self.memo.is_some() { memo_key(&["scratch", &self.env_key]) } else { String::new() })),
+            StageBase::Stage { name } => {
+                let tree = self.stages.get(name).cloned().ok_or_else(|| unknown_stage(name, &stage.span))?;
+                Ok((tree, self.stage_keys.get(name).cloned().unwrap_or_default()))
+            }
             StageBase::Local { path } => {
                 let display = if path.is_empty() { "./".to_string() } else { format!("./{path}") };
                 if self.local.stat(path, Some(&stage.span))? != EntryKind::Directory {
                     return Err(SitefileError::at(E_TYPE, format!("FROM '{display}' is a file; FROM needs a directory"), &stage.span));
                 }
                 match self.local.read_tree(path, &format!("{}:{} FROM", self.label, stage.span.line), Some(&stage.span))? {
-                    Resource::Tree { tree, .. } => Ok(tree),
+                    Resource::Tree { tree, provenance } => {
+                        let key = if self.memo.is_some() { memo_key(&["from", &self.env_key, &stage.span.line.to_string(), path, &provenance.digest]) } else { String::new() };
+                        Ok((tree, key))
+                    }
                     _ => unreachable!("read_tree returns a tree"),
                 }
             }
@@ -1177,24 +1278,26 @@ impl<'a> Exec<'a> {
                 basename: String::new(),
                 label: format!("<<{delimiter}"),
                 inline: Some((self.label.to_string(), *body_line)),
+                digest: String::new(),
             }),
             SourceRef::Local { path, span } => {
                 let label = format!("./{path}");
                 if self.local.stat(path, Some(span))? == EntryKind::Directory {
-                    let Resource::Tree { tree, .. } = self.local.read_tree(path, origin, Some(span))? else { unreachable!() };
-                    return Ok(Source::Tree { tree, label });
+                    let Resource::Tree { tree, provenance } = self.local.read_tree(path, origin, Some(span))? else { unreachable!() };
+                    return Ok(Source::Tree { tree, label, digest: provenance.digest });
                 }
-                let Resource::File { bytes, mode, basename, .. } = self.local.read_file(path, Some(span))? else { unreachable!() };
-                Ok(Source::File { bytes: Arc::from(bytes), mode, basename, label, inline: None })
+                let Resource::File { bytes, mode, basename, provenance } = self.local.read_file(path, Some(span))? else { unreachable!() };
+                let digest = format!("{}\0{mode}\0{basename}", provenance.digest);
+                Ok(Source::File { bytes: Arc::from(bytes), mode, basename, label, inline: None, digest })
             }
             SourceRef::Stage { name, path, span } => {
                 let tree = self.stages.get(name).ok_or_else(|| unknown_stage(name, span))?;
                 let label = format!("--from={name} {path}");
                 if let Some(node) = tree.get(path) {
-                    return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None });
+                    return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None, digest: String::new() });
                 }
                 if tree.is_directory(path) {
-                    return Ok(Source::Tree { tree: tree.subtree(path), label });
+                    return Ok(Source::Tree { tree: tree.subtree(path), label, digest: String::new() });
                 }
                 Err(SitefileError::at(E_NOT_FOUND, format!("'{path}' does not exist in stage '{name}'"), span))
             }
@@ -1214,14 +1317,14 @@ impl<'a> Exec<'a> {
                         if path != "/" {
                             return Err(SitefileError::at(E_PATH, format!("import '{name}' is a single file; use '{name}:'"), span));
                         }
-                        Ok(Source::File { bytes: Arc::from(bytes.as_slice()), mode: *mode, basename: basename.clone(), label, inline: None })
+                        Ok(Source::File { bytes: Arc::from(bytes.as_slice()), mode: *mode, basename: basename.clone(), label, inline: None, digest: String::new() })
                     }
                     Resource::Tree { tree, .. } => {
                         if let Some(node) = tree.get(path) {
-                            return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None });
+                            return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None, digest: String::new() });
                         }
                         if tree.is_directory(path) {
-                            return Ok(Source::Tree { tree: tree.subtree(path), label });
+                            return Ok(Source::Tree { tree: tree.subtree(path), label, digest: String::new() });
                         }
                         Err(SitefileError::at(E_NOT_FOUND, format!("'{path}' does not exist in import '{name}'"), span))
                     }
@@ -1230,42 +1333,180 @@ impl<'a> Exec<'a> {
         }
     }
 
-    fn execute(&mut self, op: &Operation, tree: Tree) -> Result<Tree> {
-        let origin = format!("{}:{} {}", self.label, op.span().line, op.keyword());
-        match op {
-            Operation::Transform { .. } => self.execute_transform(op, tree),
-            Operation::Feed { .. } => self.execute_feed(op, tree),
-            Operation::Sitemap { base, dest, overwrite, span } => {
-                let xml = sitemap_xml(&tree, base);
-                tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
+    // ------------------------------------------------------------ incremental rebuilds
+
+    /// What a source reference reads, for memo keys (the operation's own text covers inline bodies and paths).
+    fn source_key(&self, r: &SourceRef, src: &Source) -> String {
+        let digest = match src {
+            Source::File { digest, .. } | Source::Tree { digest, .. } => digest,
+        };
+        match r {
+            SourceRef::Inline { .. } => "inline".into(),
+            SourceRef::Local { .. } => format!("local\0{digest}"),
+            SourceRef::Stage { name, .. } => format!("stage\0{}", self.stage_keys.get(name).map(String::as_str).unwrap_or("")),
+            SourceRef::Import { name, .. } => format!("import\0{}", self.resource_keys.get(name).map(String::as_str).unwrap_or("")),
+        }
+    }
+
+    /// The keys of the imports an operation may read, by name (ARG/LET values are in its op id).
+    /// `except`: a loop variable, which hides an import of the same name.
+    fn names_key(&self, names: BTreeSet<String>, except: Option<&str>) -> String {
+        let mut parts: Vec<&str> = vec!["names"];
+        for n in &names {
+            if Some(n.as_str()) == except {
+                continue;
             }
-            Operation::Copy { source, dest, dest_is_dir, overwrite, span } => {
-                let policy = policy_of(*overwrite);
-                match self.read_source(source, &origin)? {
-                    Source::File { bytes, mode, basename, label, inline } => {
-                        let into_dir = *dest_is_dir || tree.is_directory(dest);
+            parts.push(n);
+            parts.push(self.resource_keys.get(n).map(String::as_str).unwrap_or(""));
+        }
+        memo_key(&parts)
+    }
+
+    /// A memoized step's files: replays the warnings it printed after those this run already
+    /// printed before the lookup (the same code ran up to here, so they are a prefix).
+    fn memo_lookup(&mut self, key: &Option<String>) -> Option<Produced> {
+        let (Some(memo), Some(k)) = (self.memo, key) else { return None };
+        let (files, warnings) = lock_memo(memo).get::<(Files, Vec<String>)>(k)?;
+        let seen = self.recorded.as_ref().and_then(|r| r.lock().ok().map(|r| r.len())).unwrap_or(0);
+        for w in warnings.iter().skip(seen) {
+            (self.warn)(w);
+        }
+        Some(Produced { files, key: Some(k.clone()), hit: true })
+    }
+
+    /// Memoize a step's files under `key` (with the warnings it printed), unless `store` is false.
+    fn memo_store(&mut self, key: Option<String>, files: Files, children: Vec<String>, store: bool) -> Produced {
+        let (Some(memo), Some(k), true) = (self.memo, key, store) else { return Produced { files, key: None, hit: false } };
+        let warnings = self.recorded.as_ref().and_then(|r| r.lock().ok().map(|r| r.clone())).unwrap_or_default();
+        lock_memo(memo).set(k.clone(), (files.clone(), warnings), children);
+        Produced { files, key: Some(k), hit: false }
+    }
+
+    /// `produce`, with the warnings it prints recorded (a memoized step replays them).
+    fn produce_recorded(&mut self, op: &Operation, tree: &Tree, op_id: &str) -> Result<Produced> {
+        let outer = self.warn.clone();
+        let rec: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let r2 = rec.clone();
+        let o2 = outer.clone();
+        self.warn = Arc::new(move |m: &str| {
+            if let Ok(mut r) = r2.lock() {
+                r.push(m.to_string());
+            }
+            o2(m)
+        });
+        self.recorded = Some(rec);
+        self.unrecorded = outer.clone();
+        let r = self.produce(op, tree, op_id);
+        self.warn = outer;
+        self.recorded = None;
+        r
+    }
+
+    /// Run one operation: produce its files, then add them to the tree. With a memo, a step
+    /// whose key (the operation and everything it reads) is unchanged reuses its files, and
+    /// one whose input tree is also unchanged reuses the resulting tree. The result's key
+    /// chains the input tree's key with the step's, like image layers.
+    fn execute_op(&mut self, op: &Operation, tree: Tree, prev: &str) -> Result<(Tree, String, Option<&'static str>)> {
+        let span = op.span();
+        let Some(memo) = self.memo else {
+            if let Operation::Sitemap { .. } = op {
+                return Ok((self.sitemap(op, tree)?, String::new(), None));
+            }
+            let p = self.produce(op, &tree, "")?;
+            return Ok((tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?, String::new(), None));
+        };
+        let op_id = memo_key(&["op", &self.env_key, &format!("{op:?}")]);
+        if let Operation::Sitemap { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged.
+            let key = memo_key(&["chain", prev, &op_id]);
+            if let Some(hit) = lock_memo(memo).get::<Tree>(&key) {
+                return Ok((hit, key, Some("hit")));
+            }
+            let out = self.sitemap(op, tree)?;
+            lock_memo(memo).set(key.clone(), out.clone(), Vec::new());
+            return Ok((out, key, Some("miss")));
+        }
+        let p = self.produce_recorded(op, &tree, &op_id)?;
+        // Not memoizable (a plugin that opted out of caching): chain on what it produced instead.
+        let step_key = match &p.key {
+            Some(k) => k.clone(),
+            None => {
+                let mut parts: Vec<String> = vec!["files".into()];
+                for (f, n) in &p.files {
+                    parts.extend([f.clone(), n.mode.to_string(), n.digest.clone(), n.origin.clone()]);
+                }
+                memo_key(&parts.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+        };
+        let key = memo_key(&["chain", prev, &step_key]);
+        if let Some(hit) = lock_memo(memo).get::<Tree>(&key) {
+            return Ok((hit, key, Some("hit")));
+        }
+        let out = tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?;
+        lock_memo(memo).set(key.clone(), out.clone(), Vec::new());
+        Ok((out, key, Some(if p.hit { "files" } else { "miss" })))
+    }
+
+    fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
+        let Operation::Sitemap { base, dest, overwrite, span } = op else { unreachable!() };
+        let origin = format!("{}:{} SITEMAP", self.label, span.line);
+        let xml = sitemap_xml(&tree, base);
+        tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
+    }
+
+    /// The files an operation (other than SITEMAP) adds; `op_id` is its memo identity ("" without a memo).
+    fn produce(&mut self, op: &Operation, tree: &Tree, op_id: &str) -> Result<Produced> {
+        let origin = format!("{}:{} {}", self.label, op.span().line, op.keyword());
+        let memoized = self.memo.is_some();
+        match op {
+            Operation::Transform { .. } => self.produce_transform(op, op_id),
+            Operation::Feed { list, link, .. } => {
+                // A feed reads its list and what its LINK names.
+                let key = memoized.then(|| {
+                    let mut names = operand_names(&[link]);
+                    names.insert(list.clone());
+                    memo_key(&["feed", op_id, &self.names_key(names, None)])
+                });
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files = self.feed_files(op)?;
+                Ok(self.memo_store(key, files, Vec::new(), true))
+            }
+            Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
+            Operation::Copy { source, dest, dest_is_dir, span, .. } => {
+                let src = self.read_source(source, &origin)?;
+                let into_dir = matches!(src, Source::File { .. }) && (*dest_is_dir || tree.is_directory(dest));
+                let key = memoized.then(|| {
+                    let shape = if matches!(src, Source::File { .. }) { into_dir.to_string() } else { "tree".into() };
+                    memo_key(&["copy", op_id, &self.source_key(source, &src), &shape])
+                });
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files: Files = match src {
+                    Source::File { bytes, mode, basename, label, inline, .. } => {
                         if into_dir && inline.is_some() {
                             return Err(SitefileError::at(E_PATH, format!("'{dest}' is a directory; an inline {label} body needs a file destination"), span));
                         }
                         let target = if into_dir { join_virtual(dest, &basename) } else { dest.clone() };
-                        tree.with_files([(target, make_file(bytes, origin, mode))], policy, Some(span))
+                        vec![(target, make_file(bytes, origin, mode))]
                     }
-                    Source::Tree { tree: src, label } => {
+                    Source::Tree { tree: src, label, .. } => {
                         if src.is_empty() {
                             (self.warn)(&format!("{origin}: '{label}' contains no files"));
                         }
-                        let files: Vec<(String, Node)> = src
-                            .mounted_at(dest)
+                        src.mounted_at(dest)
                             .into_iter()
                             .map(|(p, n)| (p, Arc::new(FileNode { bytes: n.bytes.clone(), mode: n.mode, digest: n.digest.clone(), origin: origin.clone() })))
-                            .collect();
-                        tree.with_files(files, policy, Some(span))
+                            .collect()
                     }
-                }
+                };
+                Ok(self.memo_store(key, files, Vec::new(), true))
             }
-            Operation::Render { template, dest, each, escape, overwrite, span } => {
-                let policy = policy_of(*overwrite);
+            Operation::Render { template, dest, each, escape, span, .. } => {
                 let src = self.read_source(template, &origin)?;
+                let template_key = if memoized { self.source_key(template, &src) } else { String::new() };
                 let Source::File { bytes, inline, label, .. } = src else {
                     return Err(SitefileError::at(E_TYPE, format!("RENDER template '{}' is a directory, not a file", src.label()), template.span()));
                 };
@@ -1274,6 +1515,18 @@ impl<'a> Exec<'a> {
                     Some((file, first)) => parse_render_template(&text, file, *first)?,
                     None => parse_render_template(&text, &label, 1)?,
                 };
+                // What the template names, the FOR list and the destination's variables (ARG/LET values are in op_id).
+                let key = memoized.then(|| {
+                    let mut names = template_names(&parts);
+                    if let Some(e) = each {
+                        names.insert(e.list.clone());
+                        names.extend(operand_names(&[&e.dest]));
+                    }
+                    memo_key(&["render", op_id, &template_key, &self.names_key(names, None)])
+                });
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
                 let scope = self.scope();
                 let Some(each) = each else {
                     let out = render_template(
@@ -1282,7 +1535,8 @@ impl<'a> Exec<'a> {
                         *escape,
                         Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| scope.value_of(n, p, s, l)),
                     )?;
-                    return tree.with_files([(dest.clone(), make_file(out.into_bytes(), origin, 0o644))], policy, Some(span));
+                    let files = vec![(dest.clone(), make_file(out.into_bytes(), origin, 0o644))];
+                    return Ok(self.memo_store(key, files, Vec::new(), true));
                 };
 
                 // RENDER … FOR item IN list: one file per element, the destination interpolated per element.
@@ -1298,7 +1552,11 @@ impl<'a> Exec<'a> {
                 if items.is_empty() {
                     (self.warn)(&format!("{origin}: FOR {as_name} IN {list} renders nothing: '{list}' is empty"));
                 }
-                let mut files: Vec<(String, Node)> = Vec::new();
+                // An element's page depends on the template, the element and the imports the template
+                // names (other than the loop variable), so editing one document re-renders one page.
+                let refs_key = if memoized { self.names_key(template_names(&parts), Some(as_name)) } else { String::new() };
+                let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
+                let mut files: Files = Vec::new();
                 for item in items {
                     let mut raw = String::new();
                     for part in &dest_op.parts {
@@ -1315,21 +1573,31 @@ impl<'a> Exec<'a> {
                         return Err(SitefileError::at(E_PATH, format!("RENDER destination '{raw}' must be a file path, not a directory"), &dest_op.span));
                     }
                     let item_scope = scope.with_item(as_name, item);
-                    let out = render_template(
-                        &parts,
-                        &|n: &str, p: &[String], s: &SourceSpan| item_scope.lookup(n, p, s),
-                        *escape,
-                        Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| item_scope.value_of(n, p, s, l)),
-                    )?;
-                    files.push((target.path, make_file(out.into_bytes(), origin.clone(), 0o644)));
+                    let page = || -> Result<Node> {
+                        let out = render_template(
+                            &parts,
+                            &|n: &str, p: &[String], s: &SourceSpan| item_scope.lookup(n, p, s),
+                            *escape,
+                            Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| item_scope.value_of(n, p, s, l)),
+                        )?;
+                        Ok(make_file(out.into_bytes(), origin.clone(), 0o644))
+                    };
+                    let node = match self.memo {
+                        Some(memo) => {
+                            let item_key = memo_key(&["item", op_id, &template_key, &refs_key, &value_key(item)]);
+                            memoize(memo, &item_key, Some(&children), |_| page())?
+                        }
+                        None => page()?,
+                    };
+                    files.push((target.path, node));
                 }
-                tree.with_files(files, policy, Some(span))
+                Ok(self.memo_store(key, files, children.into_inner().unwrap_or_default(), true))
             }
         }
     }
 
-    fn execute_feed(&mut self, op: &Operation, tree: Tree) -> Result<Tree> {
-        let Operation::Feed { list, base, link, dest, title, overwrite, span } = op else { unreachable!() };
+    fn feed_files(&mut self, op: &Operation) -> Result<Files> {
+        let Operation::Feed { list, base, link, dest, title, span, .. } = op else { unreachable!() };
         let origin = format!("{}:{} FEED", self.label, span.line);
         let scope = self.scope();
         let items = scope.value_of(list, &[], span, false)?;
@@ -1382,13 +1650,12 @@ impl<'a> Exec<'a> {
             entries.push(FeedEntry { title, url: page_url(base, &path), date, author, summary, content });
         }
         let xml = atom_xml(title, &format!("{base}/"), &page_url(base, dest), &entries);
-        tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
+        Ok(vec![(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))])
     }
 
-    fn execute_transform(&mut self, op: &Operation, tree: Tree) -> Result<Tree> {
-        let Operation::Transform { source, plugin, dest, options, each, args, overwrite, span } = op else { unreachable!() };
+    fn produce_transform(&mut self, op: &Operation, op_id: &str) -> Result<Produced> {
+        let Operation::Transform { source, plugin, dest, options, each, args, span, .. } = op else { unreachable!() };
         let origin = format!("{}:{} TRANSFORM", self.label, span.line);
-        let policy = policy_of(*overwrite);
         let scope = self.scope();
         let list_value;
         let items: Vec<Option<&Value>> = match each {
@@ -1408,6 +1675,7 @@ impl<'a> Exec<'a> {
         // The source is the same for every element; read it once.
         let mut input: Option<PluginInput> = None;
         let mut data: Option<Value> = None;
+        let mut src_key = String::new();
         if let Some(src_ref) = source {
             let value_import = match src_ref {
                 SourceRef::Import { name, path, span } => match self.resources.get(name) {
@@ -1425,6 +1693,9 @@ impl<'a> Exec<'a> {
                 data = Some(v);
             } else {
                 let src = self.read_source(src_ref, &origin)?;
+                if self.memo.is_some() {
+                    src_key = self.source_key(src_ref, &src);
+                }
                 let Source::File { bytes, basename, label, .. } = src else {
                     return Err(SitefileError::at(
                         E_TYPE,
@@ -1443,7 +1714,7 @@ impl<'a> Exec<'a> {
         }
         let input_digest = input.as_ref().map(|i| sha256(&i.bytes));
         let mut plugin_digest: Option<String> = None;
-        if self.cache.is_some() && tool.is_none() {
+        if (self.cache.is_some() || self.memo.is_some()) && tool.is_none() {
             if !self.plugin_digests.contains_key(plugin) {
                 // A wasm plugin is just its module; a JS plugin can read its whole folder.
                 let digest = match self.plugins.wasm_bytes(plugin) {
@@ -1453,7 +1724,7 @@ impl<'a> Exec<'a> {
                         None => None,
                     },
                 };
-                if digest.is_none() {
+                if digest.is_none() && self.cache.is_some() {
                     (self.warn)(&format!("{origin}: PLUGIN {plugin}'s folder is too large to hash; its results are not cached"));
                 }
                 self.plugin_digests.insert(plugin.clone(), digest);
@@ -1461,8 +1732,54 @@ impl<'a> Exec<'a> {
             plugin_digest = self.plugin_digests.get(plugin).cloned().flatten();
         }
 
-        let mut files: Vec<(String, Node)> = Vec::new();
+        // Incremental rebuilds: the same code (plugin digest, or tool binary), source, data, list and interpolated names.
+        let code = match (&tool, &plugin_digest) {
+            (Some(t), _) => Some(format!("tool\0{}\0{}\0{}", t.path.display(), t.size, t.mtime_ms)),
+            (None, Some(d)) => Some(format!("plugin\0{d}")),
+            (None, None) => None,
+        };
+        let memo = self.memo.filter(|_| code.is_some());
+        let code = code.unwrap_or_default();
+        let mut operand_refs = {
+            let mut ops: Vec<&Operand> = vec![dest];
+            ops.extend(options.iter().map(|o| &o.value));
+            ops.extend(args.as_deref().unwrap_or(&[]).iter());
+            operand_names(&ops)
+        };
+        if let (Some(_), Some(SourceRef::Import { name, .. })) = (&data, source) {
+            operand_refs.insert(name.clone());
+        }
+        let key = memo.map(|_| {
+            let mut names = operand_refs.clone();
+            if let Some(e) = each {
+                names.insert(e.list.clone());
+            }
+            memo_key(&["transform", op_id, &src_key, &code, &self.names_key(names, None)])
+        });
+        // One FOR element's files: the same request gives the same result (the list itself is not read).
+        let item_base = match (memo, each) {
+            (Some(_), Some(e)) => Some(memo_key(&["transform-item", op_id, &src_key, &code, &self.names_key(operand_refs, Some(&e.as_name))])),
+            _ => None,
+        };
+        if let Some(hit) = self.memo_lookup(&key) {
+            return Ok(hit);
+        }
+
+        let mut children: Vec<String> = Vec::new();
+        let mut files: Files = Vec::new();
         for item in items {
+            let item_key = match (&item_base, item) {
+                (Some(b), Some(v)) => Some(memo_key(&[b, &value_key(v)])),
+                _ => None,
+            };
+            if let (Some(m), Some(k)) = (memo, &item_key) {
+                children.push(k.clone());
+                if let Some(reused) = lock_memo(m).get::<Files>(k) {
+                    files.extend(reused);
+                    continue;
+                }
+            }
+            let mut item_files: Files = Vec::new();
             let item_scope = match (each, item) {
                 (Some(e), Some(v)) => scope.with_item(&e.as_name, v),
                 _ => scope,
@@ -1498,7 +1815,7 @@ impl<'a> Exec<'a> {
             }
             // Everything the result can depend on: the code (plugin digest, or tool binary + argv) and the request.
             let cacheable = self.cache.is_some() && (tool.is_some() || plugin_digest.is_some());
-            let key = if cacheable {
+            let cached = if cacheable {
                 let code = match &tool {
                     Some(t) => json!({
                         "tool": { "path": t.path.to_string_lossy(), "size": t.size, "mtimeMs": t.mtime_ms },
@@ -1532,11 +1849,11 @@ impl<'a> Exec<'a> {
                 "transform",
                 || vec![("plugin", json!(plugin)), ("tool", json!(tool.is_some())), ("dest", json!(d.path))],
             );
-            let mut result: Option<PluginResult> = match (&key, self.cache.as_mut()) {
+            let mut result: Option<PluginResult> = match (&cached, self.cache.as_mut()) {
                 (Some(k), Some(c)) => c.get(k),
                 _ => None,
             };
-            let cache_state = if key.is_none() { "off" } else if result.is_some() { "hit" } else { "miss" };
+            let cache_state = if cached.is_none() { "off" } else if result.is_some() { "hit" } else { "miss" };
             if result.is_none() {
                 let r = if let Some(t) = &tool {
                     self.stats.tool_runs += 1;
@@ -1546,12 +1863,13 @@ impl<'a> Exec<'a> {
                         options: opts.clone(),
                         input: input.as_ref().map(|i| ToolInput { name: i.name.clone(), bytes: i.bytes.clone() }),
                     };
-                    let warn = self.warn.clone();
+                    // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
+                    let warn = self.unrecorded.clone();
                     run_tool(t, &call, &self.tool_policy, &move |l: &str| warn(l), Some(span))?
                 } else {
                     self.plugins.call(plugin, &request, Some(span))?
                 };
-                if let Some(k) = &key {
+                if let Some(k) = &cached {
                     if tool.is_some() || self.plugins.cacheable(plugin) {
                         if let Some(c) = self.cache.as_mut() {
                             c.put(k, &r);
@@ -1570,7 +1888,7 @@ impl<'a> Exec<'a> {
                             &dest.span,
                         ));
                     }
-                    files.push((d.path.clone(), make_file(bytes, origin.clone(), 0o644)));
+                    item_files.push((d.path.clone(), make_file(bytes, origin.clone(), 0o644)));
                 }
                 PluginResult::Files(list) => {
                     // { files }: placed under the destination directory.
@@ -1580,13 +1898,85 @@ impl<'a> Exec<'a> {
                         if rel.contains("..") || rel.starts_with('/') {
                             return Err(SitefileError::at(E_PLUGIN, format!("PLUGIN {plugin} returned an unsafe path '{rel}'"), span));
                         }
-                        files.push((p, make_file(bytes, origin.clone(), 0o644)));
+                        item_files.push((p, make_file(bytes, origin.clone(), 0o644)));
                     }
                 }
             }
+            // A plugin that answered `cache: false` is not reused either.
+            if let (Some(m), Some(k)) = (memo, item_key) {
+                if tool.is_some() || self.plugins.cacheable(plugin) {
+                    lock_memo(m).set(k, item_files.clone(), Vec::new());
+                }
+            }
+            files.extend(item_files);
         }
-        tree.with_files(files, policy, Some(span))
+        let store = tool.is_some() || self.plugins.cacheable(plugin);
+        Ok(self.memo_store(key, files, children, store))
     }
+}
+
+type Files = Vec<(String, Node)>;
+
+/// An operation's files, before they are added to the tree; `key`: memoized under it.
+struct Produced {
+    files: Files,
+    key: Option<String>,
+    hit: bool,
+}
+
+fn op_overwrite(op: &Operation) -> bool {
+    match op {
+        Operation::Copy { overwrite, .. }
+        | Operation::Render { overwrite, .. }
+        | Operation::Transform { overwrite, .. }
+        | Operation::Feed { overwrite, .. }
+        | Operation::Sitemap { overwrite, .. } => *overwrite,
+    }
+}
+
+/// Names an operand interpolates.
+fn operand_names(ops: &[&Operand]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for op in ops {
+        for part in &op.parts {
+            if let TemplatePart::Var { name, .. } = part {
+                out.insert(name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Top-level names a template reads (variables, #each lists, #if conditions).
+fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
+    fn walk_nodes(nodes: &[TemplateNode], out: &mut BTreeSet<String>) {
+        for n in nodes {
+            match n {
+                TemplateNode::Text(_) => {}
+                TemplateNode::Var { name, .. } => {
+                    out.insert(name.clone());
+                }
+                TemplateNode::Each { list, body, empty, .. } => {
+                    out.insert(list.name.clone());
+                    walk_nodes(body, out);
+                    walk_nodes(empty, out);
+                }
+                TemplateNode::If { cond, then, otherwise, .. } => {
+                    out.insert(cond.name.clone());
+                    walk_nodes(then, out);
+                    walk_nodes(otherwise, out);
+                }
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk_nodes(nodes, &mut out);
+    out
+}
+
+/// A FOR element's identity in memo keys (serde_json keeps key order; values cannot hold NaN).
+fn value_key(v: &Value) -> String {
+    serde_json::to_string(v).unwrap_or_default()
 }
 
 #[cfg(test)]

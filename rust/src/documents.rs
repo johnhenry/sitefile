@@ -16,6 +16,7 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::frontmatter::parse_frontmatter;
+use crate::memo::DocMemo;
 use crate::markdown::render_markdown;
 use crate::render::{decode_utf8, js};
 use crate::tree::Tree;
@@ -131,13 +132,19 @@ fn markdown_map(bytes: &[u8], path: &str, label: &str, span: Option<&SourceSpan>
 }
 
 /// Every `.md` / `.markdown` file in a tree, as documents, ordered by path.
-pub fn markdown_collection(tree: &Tree, label_prefix: &str, span: Option<&SourceSpan>) -> Result<Vec<MarkdownDocument>> {
+/// `memo` (incremental rebuilds) reuses a document whose bytes, path and label are unchanged.
+pub fn markdown_collection(tree: &Tree, label_prefix: &str, span: Option<&SourceSpan>, memo: Option<DocMemo>) -> Result<Vec<MarkdownDocument>> {
     let mut docs = Vec::new();
     for (p, node) in tree.entries() {
         if strip_ext(p, &MD_EXTS).is_none() {
             continue;
         }
-        docs.push(markdown_map(&node.bytes, p, &format!("{label_prefix}{p}"), span)?);
+        let label = format!("{label_prefix}{p}");
+        let mut make = || markdown_map(&node.bytes, p, &label, span);
+        docs.push(match memo {
+            Some(m) => m(&["md", &node.digest, p, &label], &mut make)?,
+            None => make()?,
+        });
     }
     Ok(docs)
 }
@@ -147,7 +154,7 @@ pub fn markdown_collection(tree: &Tree, label_prefix: &str, span: Option<&Source
 /// `{ slug, date?, path, ...fields }` (slug and date from the file name as for
 /// Markdown, overridable by the data); any other value becomes
 /// `{ slug, path, value }`.
-pub fn data_collection(tree: &Tree, kind: DataKind, label_prefix: &str, span: Option<&SourceSpan>) -> Result<Vec<MarkdownDocument>> {
+pub fn data_collection(tree: &Tree, kind: DataKind, label_prefix: &str, span: Option<&SourceSpan>, memo: Option<DocMemo>) -> Result<Vec<MarkdownDocument>> {
     let exts: &[&str] = match kind {
         DataKind::Json => &[".json"],
         DataKind::Yaml => &[".yaml", ".yml"],
@@ -158,43 +165,55 @@ pub fn data_collection(tree: &Tree, kind: DataKind, label_prefix: &str, span: Op
             continue;
         }
         let label = format!("{label_prefix}{p}");
-        let text = decode_utf8(&node.bytes, &format!("'{label}'"), span)?;
-        let value = match kind {
-            DataKind::Yaml => parse_yaml(&text, &label)?,
-            // The detail after the colon is serde_json's message, not V8's.
-            DataKind::Json => match serde_json::from_str::<Value>(&text) {
-                Ok(v) => js::from_json_parse(v),
-                Err(e) => return Err(SitefileError::new(E_TYPE, format!("{label} is not valid JSON: {e}"), span.cloned())),
-            },
+        let mut make = || data_document(&node.bytes, kind, exts, p, &label, span);
+        let tag = match kind {
+            DataKind::Json => "json",
+            DataKind::Yaml => "yaml",
         };
-        let name = basename(p);
-        let stem = strip_ext(name, exts).unwrap_or(name);
-        let mut doc = base_fields(stem);
-        match value {
-            Value::Object(fields) => {
-                for (k, v) in fields {
-                    doc.insert(k, v);
-                }
-            }
-            other => {
-                doc.insert("value".into(), other);
-            }
-        }
-        doc.insert("path".into(), Value::String(p.clone()));
-        let doc = js::object_order(doc);
-        match doc.get("slug") {
-            Some(Value::String(s)) if is_safe_slug(s) => {}
-            slug => {
-                return Err(SitefileError::new(
-                    E_VALIDATION,
-                    format!("'{label}': slug {} must be letters, digits, '.', '_', '~' or '-'", json_stringify(slug)),
-                    span.cloned(),
-                ))
-            }
-        }
-        docs.push(doc);
+        docs.push(match memo {
+            Some(m) => m(&[tag, &node.digest, p, &label], &mut make)?,
+            None => make()?,
+        });
     }
     Ok(docs)
+}
+
+fn data_document(bytes: &[u8], kind: DataKind, exts: &[&str], p: &String, label: &str, span: Option<&SourceSpan>) -> Result<MarkdownDocument> {
+    let text = decode_utf8(bytes, &format!("'{label}'"), span)?;
+    let value = match kind {
+        DataKind::Yaml => parse_yaml(&text, &label)?,
+        // The detail after the colon is serde_json's message, not V8's.
+        DataKind::Json => match serde_json::from_str::<Value>(&text) {
+            Ok(v) => js::from_json_parse(v),
+            Err(e) => return Err(SitefileError::new(E_TYPE, format!("{label} is not valid JSON: {e}"), span.cloned())),
+        },
+    };
+    let name = basename(p);
+    let stem = strip_ext(name, exts).unwrap_or(name);
+    let mut doc = base_fields(stem);
+    match value {
+        Value::Object(fields) => {
+            for (k, v) in fields {
+                doc.insert(k, v);
+            }
+        }
+        other => {
+            doc.insert("value".into(), other);
+        }
+    }
+    doc.insert("path".into(), Value::String(p.clone()));
+    let doc = js::object_order(doc);
+    match doc.get("slug") {
+        Some(Value::String(s)) if is_safe_slug(s) => {}
+        slug => {
+            return Err(SitefileError::new(
+                E_VALIDATION,
+                format!("'{label}': slug {} must be letters, digits, '.', '_', '~' or '-'", json_stringify(slug)),
+                span.cloned(),
+            ))
+        }
+    }
+    Ok(doc)
 }
 
 /// `^-?\d+(\.\d+)?([eE][+-]?\d+)?$`
@@ -373,7 +392,7 @@ mod tests {
             ("/notes.txt", "not markdown"),
             ("/sub/About.MARKDOWN", "Hi."),
         ]);
-        let docs: Vec<Value> = markdown_collection(&t, "./posts", None).unwrap().into_iter().map(Value::Object).collect();
+        let docs: Vec<Value> = markdown_collection(&t, "./posts", None, None).unwrap().into_iter().map(Value::Object).collect();
         assert_eq!(docs.len(), 3);
         assert_eq!(
             docs[0],
@@ -423,23 +442,23 @@ mod tests {
             ("/a.yaml", "title: A\n"),
             ("/b.yml", "- 1\n- 2\n"),
         ]);
-        let items: Vec<Value> = data_collection(&t, DataKind::Json, "./items", None).unwrap().into_iter().map(Value::Object).collect();
+        let items: Vec<Value> = data_collection(&t, DataKind::Json, "./items", None, None).unwrap().into_iter().map(Value::Object).collect();
         assert_eq!(items[0], json!({ "slug": "alpha", "date": "2026-01-02", "title": "Alpha", "rank": 2, "path": "/2026-01-02-alpha.json" }));
         let items = sort_documents(items, "rank", false);
         assert_eq!(paths(&items), ["/beta.json", "/2026-01-02-alpha.json"]);
         assert_eq!(items[0]["slug"], "b");
-        let cfg: Vec<Value> = data_collection(&t, DataKind::Yaml, "./cfg", None).unwrap().into_iter().map(Value::Object).collect();
+        let cfg: Vec<Value> = data_collection(&t, DataKind::Yaml, "./cfg", None, None).unwrap().into_iter().map(Value::Object).collect();
         assert_eq!(cfg, vec![json!({ "slug": "a", "title": "A", "path": "/a.yaml" }), json!({ "slug": "b", "value": [1, 2], "path": "/b.yml" })]);
         assert_eq!(cfg[1].as_object().unwrap().keys().collect::<Vec<_>>(), ["slug", "value", "path"]);
 
         let bad = tree(&[("/x.json", "{nope")]);
-        let e = data_collection(&bad, DataKind::Json, "./d", None).unwrap_err();
+        let e = data_collection(&bad, DataKind::Json, "./d", None, None).unwrap_err();
         assert_eq!(e.code, E_TYPE);
         assert!(e.detail.starts_with("./d/x.json is not valid JSON: "));
         let bad = tree(&[("/x.yaml", "a: &x 1\nb: *x\n")]);
-        assert_eq!(data_collection(&bad, DataKind::Yaml, "./d", None).unwrap_err().code, E_DATA);
+        assert_eq!(data_collection(&bad, DataKind::Yaml, "./d", None, None).unwrap_err().code, E_DATA);
         let bad = tree(&[("/x.json", "{\"slug\": \"a b\"}")]);
-        let e = data_collection(&bad, DataKind::Json, "./d", None).unwrap_err();
+        let e = data_collection(&bad, DataKind::Json, "./d", None, None).unwrap_err();
         assert_eq!(e.detail, "'./d/x.json': slug \"a b\" must be letters, digits, '.', '_', '~' or '-'");
     }
 

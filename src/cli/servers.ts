@@ -12,6 +12,7 @@ import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
+import { watchMemo } from '../memo.js';
 import { watchLoop } from './watch.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
@@ -185,6 +186,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
 
   let current: Tree = Tree.empty;
   let started = false;
+  const memo = watchMemo();
   const live = new LiveReload();
   const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, log: (l) => process.stdout.write(`${l}\n`) });
   try {
@@ -202,6 +204,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
             ...(v['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
             skipBase: true,
+            ...(memo ? { memo } : {}),
             onNotice: (m) => process.stderr.write(`${m}\n`),
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
           });

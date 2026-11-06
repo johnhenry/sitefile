@@ -5,6 +5,8 @@ export { validate, parseProgram } from './language/validate.js';
 export { plan, type Plan, type Operation, type ImportSpec, type SourceRef } from './planner.js';
 export { build, buildToDirectory, planBuild, loadProgram, type BuildOptions, type BuildResult } from './executor.js';
 export { exportDirectory } from './exporter.js';
+export { BuildMemo, type MemoStats } from './memo.js';
+export { Profiler } from './profile.js';
 export { Tree, makeFile, type FileNode, type ConflictPolicy } from './tree.js';
 export { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 export { extractArchive } from './resources/archive.js';

@@ -383,9 +383,10 @@ fn run_main(argv: &[String]) -> i32 {
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
         }
+        let memo = crate::memo::watch_memo();
         let mut build = || {
             let mut wrote = Vec::new();
-            let code = run_profiled(&command, &context, None, &o, &mut wrote);
+            let code = run_profiled(&command, &context, None, &o, &mut wrote, memo.clone());
             crate::watch::BuildOutcome { code, wrote }
         };
         return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
@@ -393,11 +394,12 @@ fn run_main(argv: &[String]) -> i32 {
     if o.str("profile") == Some("") {
         return usage_error("--profile expects a file path");
     }
-    run_profiled(&command, &context, why_path.as_deref(), &o, &mut Vec::new())
+    run_profiled(&command, &context, why_path.as_deref(), &o, &mut Vec::new(), None)
 }
 
 /// One build/validate/inspect/graph/why run with its cache eviction and, with `--profile`, its trace.
-fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>) -> i32 {
+/// `memo`: results carried between the builds of a watch session (incremental rebuilds).
+fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>, memo: Option<crate::memo::SharedMemo>) -> i32 {
     let profile = o.str("profile").map(str::to_string);
     let profiler = profile.as_ref().map(|_| Profiler::new(command));
     if let Some(p) = &profile {
@@ -405,7 +407,7 @@ fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::
     }
     let span = profiler.as_ref().map(|p| p.begin(command, "command", Vec::new()));
     let mut failed = false;
-    let code = match run_build_command(command, context, why_path, o, wrote, profiler.clone()) {
+    let code = match run_build_command(command, context, why_path, o, wrote, profiler.clone(), memo) {
         Ok(code) => code,
         Err(e) => {
             failed = true;
@@ -470,7 +472,16 @@ fn registry_cache(o: &args::Parsed) -> Result<Option<Arc<crate::registry_cache::
 
 /// One build/validate/inspect/graph/why run (`why_path`: the path `why` explains); `wrote` receives the export
 /// destination (for --watch).
-fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>, profiler: Option<Arc<Profiler>>) -> Result<i32> {
+#[allow(clippy::too_many_arguments)]
+fn run_build_command(
+    command: &str,
+    context: &str,
+    why_path: Option<&str>,
+    o: &args::Parsed,
+    wrote: &mut Vec<String>,
+    profiler: Option<Arc<Profiler>>,
+    memo: Option<crate::memo::SharedMemo>,
+) -> Result<i32> {
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
@@ -544,6 +555,7 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
     options.update_lock = o.flag("update-lock");
     let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     options.on_warning = Some(warning);
+    options.memo = memo;
     if let Some(p) = profiler {
         options.also_writes = o.str("profile").map(str::to_string).into_iter().collect();
         options.profiler = Some(p);

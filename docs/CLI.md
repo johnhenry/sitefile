@@ -183,6 +183,14 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   store (`$SITEFILE_HOME`). A build's own writes never trigger another build.
 - **Debounce**: a rebuild starts once nothing has changed for 100 ms, so saving several files is one rebuild.
   Changes that arrive while a build runs are coalesced into one follow-up build.
+- **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
+  the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
+  collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
+  and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
+  list). Every input is still read and hashed on every build, and the export is written in full, so the output is
+  byte for byte what a clean build writes, with the same warnings and errors (see
+  [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns this off. With
+  `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
 - **Messages**: `Change detected, rebuilding` before each rebuild, then the usual `Exported ...` line
   (`serve --watch`: `Built N files (sha256:...)`). After the first build: `Watching <context> for changes (Ctrl-C to
   stop)`.
@@ -242,8 +250,8 @@ TypeScript and Rust CLIs write the same events, names, categories and args (conf
 | `import` | `import <name>` | `uri`, `as` (the `AS` kind, default `file`), `kind` (`file`, `tree` or `value`) |
 | `plugin` | `PLUGIN <name>`: check and register a plugin | `path` |
 | `stage` | `stage <name>` (`stage #N` for an unnamed stage) | `from` (`scratch`, a stage name or `./dir`), `files` (tree size at the end) |
-| `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it) |
-| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
+| `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it); under `--watch` also `memo`: `hit` (result reused), `files` (its files reused, added to a changed tree) or `miss` (it ran) |
+| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
 | `import` | `BASE <image>`: resolve or pull the `oci` BASE | |
 | `export` | `export`: encode and write the output (`build` only) | `format` |
 
