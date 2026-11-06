@@ -1,0 +1,6 @@
+# A non-Sitefile image (no root label): AT picks the web root; the OCI export's provenance lists the image.
+FROM image ${REGISTRY}/conf/base:1 AT /srv/www
+COPY <<CSS /style.css
+body { margin: 0; }
+CSS
+EXPORT / AS oci

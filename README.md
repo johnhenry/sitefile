@@ -30,7 +30,7 @@ no runtime dependencies.
 
 | Instruction | Supported |
 | --- | --- |
-| `FROM scratch\|<dir>\|<stage> [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported |
+| `FROM scratch\|<dir>\|<stage>\|image <ref> [AT <dir>] [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported; `image` starts from a site image's files (a theme: `examples/theme`, `examples/themed-site`), locked in `Sitefile.lock` when it comes from a registry |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |

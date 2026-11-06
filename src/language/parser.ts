@@ -3,6 +3,7 @@ import type { SourceSpan } from '../errors.js';
 import {
   IDENT_RE,
   isInline,
+  type FromBase,
   type InlineBody,
   literalText,
   type EscapeMode,
@@ -70,8 +71,24 @@ function parseInstruction(c: Cursor): Instruction {
   throw c.error('E_UNKNOWN_INSTRUCTION', `unknown instruction '${word}'`, span);
 }
 
+/**
+ * A FROM base: `scratch`, `image <ref> [AT <dir>]`, or an operand (stage or directory). `image` is the
+ * keyword only when something other than `AS` follows it, so `FROM image` and `FROM image AS x` still
+ * name a stage or directory called `image`.
+ */
+function fromBase(c: Cursor): FromBase {
+  if (c.keyword('scratch')) return 'scratch';
+  const mark = c.mark();
+  if (c.keyword('image') && !c.atEnd() && !c.peekKeyword('AS')) {
+    const ref = c.operand('image reference');
+    return c.keyword('AT') ? { kind: 'image', ref, at: c.operand('image directory') } : { kind: 'image', ref };
+  }
+  c.reset(mark);
+  return c.operand('base');
+}
+
 function parseFrom(c: Cursor, span: SourceSpan): Instruction {
-  const base = c.keyword('scratch') ? 'scratch' : c.operand('base');
+  const base = fromBase(c);
   const alias = c.keyword('AS') ? c.ident('stage name') : undefined;
   c.expectEnd();
   return alias === undefined ? { kind: 'FROM', span, base } : { kind: 'FROM', span, base, alias };
@@ -80,8 +97,8 @@ function parseFrom(c: Cursor, span: SourceSpan): Instruction {
 /** `STAGE name [FROM base]`: the same IR as `FROM base AS name` (an omitted base is `scratch`). */
 function parseStage(c: Cursor, span: SourceSpan): Instruction {
   const alias = c.ident('stage name');
-  let base: 'scratch' | Operand = 'scratch';
-  if (c.keyword('FROM')) base = c.keyword('scratch') ? 'scratch' : c.operand('base');
+  let base: FromBase = 'scratch';
+  if (c.keyword('FROM')) base = fromBase(c);
   c.expectEnd();
   return { kind: 'FROM', span, base, alias, keyword: 'STAGE' };
 }

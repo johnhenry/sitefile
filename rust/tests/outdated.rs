@@ -122,5 +122,5 @@ fn imports_current_changed_unpinned_and_errors_without_writing() {
     // no remote inputs
     fs::write(ctx.join("Sitefile"), "FROM scratch\nEXPORT /\n").unwrap();
     let (_, out, _) = sitefile(&home, &["outdated", c]);
-    assert_eq!(out, "No remote inputs: the Sitefile has no remote IMPORT and no BASE image\n");
+    assert_eq!(out, "No remote inputs: the Sitefile has no remote IMPORT, no registry FROM image and no BASE image\n");
 }

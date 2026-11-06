@@ -258,6 +258,13 @@
         "value": "[Ss][Tt][Aa][Tt][Uu][Ss]"
       }
     },
+    "_kw_image": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ii][Mm][Aa][Gg][Ee]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -560,7 +567,76 @@
         },
         {
           "type": "SYMBOL",
+          "name": "image_base"
+        },
+        {
+          "type": "SYMBOL",
           "name": "_operand"
+        }
+      ]
+    },
+    "image_base": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_image"
+          },
+          "named": false,
+          "value": "IMAGE"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "reference",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "ALIAS",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "_kw_at"
+                          },
+                          "named": false,
+                          "value": "AT"
+                        },
+                        {
+                          "type": "FIELD",
+                          "name": "at",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "_operand"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "type": "BLANK"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },

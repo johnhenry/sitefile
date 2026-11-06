@@ -48,6 +48,32 @@ stage x from SCRATCH
     (scratch)))
 
 ==================
+FROM image and STAGE … FROM image
+==================
+
+FROM image ghcr.io/me/theme:1.2 AT /srv/www AS theme
+stage site from IMAGE theme:${V}
+FROM image AS other
+
+---
+
+(source_file
+  (from_instruction
+    (image_base
+      (word)
+      (path))
+    (identifier))
+  (stage_instruction
+    (identifier)
+    (image_base
+      (word
+        (substitution
+          (identifier)))))
+  (from_instruction
+    (image_base)
+    (identifier)))
+
+==================
 ARG and LET
 ==================
 

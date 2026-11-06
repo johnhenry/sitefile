@@ -105,7 +105,7 @@ test('CLI: text and --json; no remote inputs', async () => {
   assert.equal(blocked.code, 0);
   assert.match(blocked.stdout, /a: error\[E_PROTOCOL\]/);
   const none = await runCli(home, ['outdated', await makeSite()]);
-  assert.equal(none.stdout, 'No remote inputs: the Sitefile has no remote IMPORT and no BASE image\n');
+  assert.equal(none.stdout, 'No remote inputs: the Sitefile has no remote IMPORT, no registry FROM image and no BASE image\n');
   await assert.rejects(fs.stat(path.join(home, 'index.json')), 'the image store was not touched');
 });
 
