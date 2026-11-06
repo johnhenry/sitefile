@@ -5,7 +5,7 @@ import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { plan, targetPlan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
@@ -37,6 +37,8 @@ export interface BuildOptions {
   /** Sitefile path. Default: `<contextDir>/Sitefile`. */
   readonly sitefile?: string;
   readonly buildArgs?: Readonly<Record<string, string>>;
+  /** `--target <stage>`: build up to this named stage and export its whole tree (planner `targetPlan`). */
+  readonly target?: string;
   /** Export destination; skipped when walking the context if it lies inside it. */
   readonly outDir?: string;
   readonly fetchPolicy?: Partial<FetchPolicy>;
@@ -88,6 +90,8 @@ export interface BuildOptions {
   readonly profiler?: Profiler;
   /** Other paths this command writes (e.g. the --profile file): skipped when walking the context, like `outDir`. */
   readonly alsoWrites?: readonly string[];
+  /** Keep every intermediate tree in {@link BuildResult.steps} (for `sitefile why`). */
+  readonly recordSteps?: boolean;
 }
 
 export interface BuildResult {
@@ -105,6 +109,11 @@ export interface BuildResult {
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
   readonly transformStats: TransformStats;
+  /**
+   * With `recordSteps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
+   * operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
+   */
+  readonly steps?: readonly (readonly Tree[])[];
 }
 
 export interface TransformStats extends CacheStats {
@@ -138,7 +147,13 @@ export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'si
 /** Parse, validate and evaluate variables, without reading any sources. */
 export async function planBuild(options: BuildOptions): Promise<Plan> {
   const { program } = await loadProgram(options);
-  return plan(program, options.buildArgs ?? {});
+  return planFor(program, options);
+}
+
+/** The plan of a program for these options (`target` applied). */
+function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'target'>): Plan {
+  const p = plan(program, options.buildArgs ?? {});
+  return options.target === undefined ? p : targetPlan(p, options.target);
 }
 
 /** Run a build in memory. */
@@ -146,8 +161,8 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const prof = options.profiler;
   const parseSpan = begin(prof, 'parse', 'build');
   const { program, sitefilePath, label } = await loadProgram(options);
-  const p = plan(program, options.buildArgs ?? {});
-  parseSpan.end({ imports: p.imports.length, stages: p.stages.length });
+  const p = planFor(program, options);
+  parseSpan.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
   const warnings: string[] = [];
   const warn = (m: string): void => {
     warnings.push(m);
@@ -221,6 +236,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     ...(prof ? { profiler: prof } : {}),
   };
   let tree = Tree.empty;
+  const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
   try {
     for (const spec of p.plugins) {
       const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
@@ -230,9 +246,12 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     for (const [i, stage] of p.stages.entries()) {
       const s = begin(prof, `stage ${stage.name ?? '#' + (i + 1)}`, 'stage', { from: stageFrom(stage) });
       tree = await startStage(stage, execEnv);
+      const record = steps ? [tree] : undefined;
+      steps?.push(record!);
       for (const op of stage.operations) {
         const o = begin(prof, `${label}:${op.span.line} ${op.kind}`, 'operation', { line: op.span.line });
         tree = await execute(op, tree, execEnv);
+        record?.push(tree);
         o.end({ files: tree.size });
       }
       if (stage.name !== undefined) stageTrees.set(stage.name, tree);
@@ -250,7 +269,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
   tree = withSiteRules(tree, p, label);
   const output = tree.subtree(p.exportPath);
-  if (output.size === 0) warn(`EXPORT ${p.exportPath} contains no files`);
+  if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
@@ -273,7 +292,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   baseSpan?.end();
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
 }
 
 export interface ExportTarget {

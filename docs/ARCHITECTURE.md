@@ -25,7 +25,7 @@ A general-purpose static artifact composer, initially optimized for websites. Do
 7. executor: bounded concurrent graph scheduling.
 8. cache: content-addressed blobs, tree manifests, lockfile.
 9. exporter: atomic directory materialization.
-10. cli: build, validate, inspect.
+10. cli: build, validate, inspect, graph, why.
 
 ## Resource types
 File {digest, bytes, mode, mediaType?}

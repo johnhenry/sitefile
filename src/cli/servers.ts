@@ -98,6 +98,7 @@ const run: Command = {
     '--spa             serve /index.html for unknown paths without a file extension',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
+    '--target <stage>             build up to this stage and serve its whole tree (--watch)',
     '--build-arg <NAME=value>     set an ARG (--watch; repeatable)',
     '--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)',
     '--no-cache        do not use the TRANSFORM result cache (--watch)',
@@ -110,6 +111,7 @@ const run: Command = {
     spa: { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
+    target: { type: 'string' },
     'build-arg': { type: 'string', multiple: true },
     'build-arg-file': { type: 'string', multiple: true },
     'no-cache': { type: 'boolean' },
@@ -166,7 +168,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile'] as const;
 
 /** `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. */
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
@@ -176,6 +178,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const bind = parsePublish(str(v.publish));
   const context = pos[0] ?? '.';
   const file = str(v.file);
+  const target = str(v.target);
   const argFiles = strs(v['build-arg-file']);
   const argFlags = strs(v['build-arg']);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
@@ -194,6 +197,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           const r = await build({
             contextDir: context,
             ...(file ? { sitefile: file } : {}),
+            ...(target !== undefined ? { target } : {}),
             buildArgs: await collectBuildArgs(argFiles, argFlags),
             ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
             ...(v['no-cache'] ? {} : { cacheDir: transformCacheDir() }),

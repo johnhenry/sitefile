@@ -167,3 +167,30 @@ fn trace_inside_context_is_not_an_input_and_other_commands() {
     assert_eq!(code, 2);
     assert!(err.contains("--profile expects a file path"), "{err}");
 }
+
+#[test]
+fn target_why_and_graph_are_traced() {
+    let work = Tmp::new();
+    fs::write(work.0.join("Sitefile"), "STAGE a FROM scratch\nCOPY <<T /a.txt\nhi\nT\nSTAGE b FROM a\nCOPY --from=a /a.txt /b.txt\nEXPORT /\n").unwrap();
+    let prof = work.0.join("trace.json");
+    let short = || -> Vec<String> {
+        spans(&trace(&prof))
+            .iter()
+            .map(|n| {
+                let (cat, name) = n.split_once(' ').unwrap();
+                format!("{cat} {}", name.rsplit_once("Sitefile:").map(|(_, r)| r).unwrap_or(name))
+            })
+            .collect()
+    };
+    let (code, _, err) = run(&work, &["build", s(&work.0), "-o", s(&work.0.join("out")), "--no-lockfile", "--target", "a", "--profile", s(&prof)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(short(), ["command build", "build parse", "stage stage a", "operation 2 COPY", "export export"]);
+    assert_eq!(trace(&prof).iter().find(|e| e["name"] == "parse").unwrap()["args"]["target"], "a");
+    let (code, out, err) = run(&work, &["why", "/b.txt", s(&work.0), "--no-lockfile", "--profile", s(&prof)]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("b.txt"), "{out}");
+    assert_eq!(short(), ["command why", "build parse", "stage stage a", "operation 2 COPY", "stage stage b", "operation 6 COPY"]);
+    let (code, _, err) = run(&work, &["graph", s(&work.0), "--profile", s(&prof)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(short(), ["command graph", "build parse"]);
+}

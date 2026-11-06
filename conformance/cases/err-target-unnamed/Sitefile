@@ -1,0 +1,5 @@
+FROM scratch
+COPY <<X /a.txt
+a
+X
+EXPORT /
