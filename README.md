@@ -188,6 +188,7 @@ stopgap.
 - [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — syntax and the exact semantics chosen for v0.1
 - [docs/RUST.md](docs/RUST.md) — the Rust port: layout, parity checks, known differences
+- [docs/LSP.md](docs/LSP.md) — the language server for editors (`sitefile lsp`, Rust binary)
 - [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)

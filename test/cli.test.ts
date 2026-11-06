@@ -192,3 +192,12 @@ test('examples/wasm draws badges with a WebAssembly plugin built from Rust', asy
   assert.match(svg, /^<svg [^>]*aria-label="reading time: 1 min · \d+ words"/);
   assert.match(await readFile(path.join(ctx, 'dist', 'badges', 'built-with.svg'), 'utf8'), /sitefile \+ wasm/);
 });
+
+test('sitefile lsp points to the Rust implementation', async () => {
+  const r = await sitefile(['lsp', '--stdio']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /^error: 'sitefile lsp' \(the language server\) is provided by the Rust implementation/);
+  assert.match(r.stderr, /rust\/target\/release\/sitefile lsp/);
+  const help = await sitefile(['--help']);
+  assert.match(help.stdout, /sitefile lsp \[--stdio\]/);
+});

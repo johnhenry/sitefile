@@ -48,6 +48,9 @@ Serving sites (detached servers are tracked by name):
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
 
+Editor support:
+  sitefile lsp [--stdio]                           language server over stdio (Rust build only; docs/LSP.md)
+
 Run 'sitefile <command> --help' for the options of a command.
 ";
 
@@ -266,6 +269,9 @@ fn store_build_as_image(result: &BuildResult, tags: &[String], info: &ImageInfo<
 }
 
 fn run_main(argv: &[String]) -> i32 {
+    if argv.first().map(String::as_str) == Some("lsp") {
+        return crate::lsp::run(&argv[1..]);
+    }
     if is_extra_command(argv.first()) {
         return run_extra_command(argv);
     }
