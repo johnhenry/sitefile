@@ -1,0 +1,4 @@
+# Only git+https (and git+http with --allow-http) are supported.
+FROM scratch
+IMPORT x FROM git+ssh://example.com/r.git
+EXPORT /

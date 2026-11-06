@@ -3235,7 +3235,7 @@
       "name": "constant.character.escape.sitefile"
     },
     "url": {
-      "match": "(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
+      "match": "(?<![^\\s=])(?:[Gg][Ii][Tt]\\+)?https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
       "name": "markup.underline.link.sitefile",
       "captures": {
         "0": {

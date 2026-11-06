@@ -188,7 +188,7 @@ fn status_of(pin: Option<&str>, latest: &str) -> Status {
 }
 
 pub fn outdated(options: &BuildOptions) -> Result<Report> {
-    let Loaded { program, sitefile_path, .. } = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let Loaded { program, sitefile_path, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     if let Some(w) = &options.on_warning {
         for m in &p.warnings {
@@ -203,6 +203,33 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
     let mut inputs = Vec::new();
 
     for spec in &p.imports {
+        if let ImportLocation::Git(loc) = &spec.location {
+            // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it
+            // was locked. A commit in the URL has no ref to follow.
+            let locked = lock.as_ref().and_then(|l| l.get_git(&loc.url)).map(|e| e.commit.clone());
+            let pinned_by = if loc.commit.is_some() {
+                Some("commit")
+            } else if locked.is_some() {
+                Some("lockfile")
+            } else {
+                None
+            };
+            let pin = loc.commit.clone().or(locked);
+            let mut e = Entry { kind: "import", name: spec.name.clone(), source: loc.url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
+            if loc.commit.is_some() {
+                e.status = Status::DigestOnly;
+            } else {
+                match crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, crate::resources::git::GitTransport::new(&options.fetch_policy, Some(&spec.span))) {
+                    Ok(latest) => {
+                        e.status = status_of(e.pin.as_deref(), &latest);
+                        e.latest = Some(latest);
+                    }
+                    Err(err) => e.error = Some((err.code.as_str().to_string(), err.detail)),
+                }
+            }
+            inputs.push(e);
+            continue;
+        }
         let ImportLocation::Remote { url } = &spec.location else { continue };
         let locked = lock.as_ref().and_then(|l| l.get(url));
         let pin = spec.integrity.clone().or_else(|| locked.map(|e| e.integrity.clone()));

@@ -79,7 +79,8 @@ export default grammar({
     boolean: () => token(new RegExp(`${caseInsensitive('true')}|${caseInsensitive('false')}`)),
     placeholder: () => token(/\{(input|output|option\.[A-Za-z0-9_-]+)\}/),
     _path_start: () => token(/(\.\.?)?\/[^\s$\\]*/),
-    _url_start: () => token(/[Hh][Tt][Tt][Pp][Ss]?:\/\/[^\s$\\]*/),
+    // http(s):// and git+http(s):// (Git imports, issue #91)
+    _url_start: () => token(/([Gg][Ii][Tt]\+)?[Hh][Tt][Tt][Pp][Ss]?:\/\/[^\s$\\]*/),
     _word_start: () => token(/[^\s"'$\\-][^\s$\\]*/),
     _dash_word: () => token(/-[^\s$\\-][^\s$\\]*/),
     _value_word: () => token(/[^\s\\]+/),

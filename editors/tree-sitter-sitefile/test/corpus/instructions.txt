@@ -360,6 +360,24 @@ HEADER /assets/* Cache-Control: public, max-age=31536000
     (word)
     (word)))
 
+==================
+IMPORT from Git
+==================
+
+IMPORT docs FROM git+https://example.com/r.git#v1:docs AS markdown
+IMPORT site FROM GIT+HTTPS://example.com/r.git
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (url)
+    (import_kind))
+  (import_instruction
+    (identifier)
+    (url)))
+
 ================================================================================
 FINGERPRINT with flags, several patterns and a manifest
 ================================================================================

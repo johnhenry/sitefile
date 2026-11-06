@@ -1,0 +1,41 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "validate",
+      "${CTX}",
+      "--strict-pins",
+      "--json"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site.oci.tar",
+      "--allow-private-network",
+      "--strict-pins",
+      "--provenance"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/again.oci.tar",
+      "--allow-private-network",
+      "--frozen-lockfile",
+      "--strict-pins"
+    ]
+  ],
+  "outputs": [
+    [
+      "site.oci.tar",
+      "oci"
+    ],
+    [
+      "again.oci.tar",
+      "oci"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

@@ -1,0 +1,4 @@
+# Only Git protocol v2 smart HTTP servers are supported.
+FROM scratch
+IMPORT x FROM git+${HTTPS}/dumb.git#main
+EXPORT /

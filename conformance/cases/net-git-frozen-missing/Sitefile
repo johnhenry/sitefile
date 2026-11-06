@@ -1,0 +1,5 @@
+# --frozen-lockfile needs a lockfile entry for a Git import.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#${GIT_V1}:site
+COPY site: /
+EXPORT /

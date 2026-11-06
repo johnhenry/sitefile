@@ -5,6 +5,7 @@ import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
 import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
+import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
 
 /** Where a COPY/RENDER reads from. */
 export type SourceRef =
@@ -20,7 +21,10 @@ export interface ImportSpec {
   readonly name: string;
   /** Interpolated URI as written. */
   readonly uri: string;
-  readonly location: { readonly kind: 'local'; readonly path: string } | { readonly kind: 'remote'; readonly url: string };
+  readonly location:
+    | { readonly kind: 'local'; readonly path: string }
+    | { readonly kind: 'remote'; readonly url: string }
+    | ({ readonly kind: 'git' } & GitLocation);
   readonly as?: ImportKind;
   readonly integrity?: string;
   readonly sort?: { readonly key: string; readonly descending: boolean };
@@ -249,6 +253,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
           span: ins.span,
         };
+        if (spec.location.kind === 'git' && spec.integrity) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: INTEGRITY does not apply to Git imports; pin a commit instead (#<40 hex>[:path])`, ins.span);
+        }
         if (spec.location.kind === 'local' && spec.integrity) {
           warnings.push(`${program.file}:${ins.span.line}: INTEGRITY on a local import is checked but not recorded in the lockfile`);
         }
@@ -435,6 +442,7 @@ function fileDest(op: Operand | undefined, vars: ReadonlyMap<string, Scalar>, fa
 }
 
 function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
+  if (isGitUri(uri)) return { kind: 'git', ...parseGitUri(uri, span) };
   const m = URL_RE.exec(uri);
   if (m) {
     const scheme = m[1]!.toLowerCase();
@@ -442,7 +450,7 @@ function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
     if (scheme === 'file') {
       throw new SitefileError('E_PROTOCOL', `file: URLs are not allowed; use a path relative to the build context`, span);
     }
-    throw new SitefileError('E_PROTOCOL', `unsupported protocol '${scheme}:' (supported: https, relative paths)`, span);
+    throw new SitefileError('E_PROTOCOL', `unsupported protocol '${scheme}:' (supported: https, git+https, relative paths)`, span);
   }
   return { kind: 'local', path: normalizeLocal(uri, span).path };
 }

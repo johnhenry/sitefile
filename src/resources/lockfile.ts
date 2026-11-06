@@ -17,10 +17,17 @@ export interface ImageLockEntry {
   readonly digest: string;
 }
 
+/** A Git IMPORT (`git+https://…#ref:path`, keyed by the URI as written) pinned to the commit its ref resolved to. */
+export interface GitLockEntry {
+  /** 40 lowercase hex digits. */
+  readonly commit: string;
+}
+
 interface LockfileJson {
   version: 1;
   resources: Record<string, LockEntry>;
   images?: Record<string, ImageLockEntry>;
+  git?: Record<string, GitLockEntry>;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -33,6 +40,8 @@ export class Lockfile {
   private readonly used = new Set<string>();
   private readonly images = new Map<string, ImageLockEntry>();
   private readonly usedImages = new Set<string>();
+  private readonly gits = new Map<string, GitLockEntry>();
+  private readonly usedGits = new Set<string>();
 
   private constructor(
     readonly path: string,
@@ -85,7 +94,25 @@ export class Lockfile {
       }
       lock.images.set(ref, { digest: raw.digest });
     }
+    const gits = data.git ?? {};
+    if (!isObject(gits)) throw bad('"git" must be an object');
+    for (const [url, raw] of Object.entries(gits)) {
+      if (!isObject(raw) || typeof raw.commit !== 'string' || !/^[0-9a-f]{40}$/.test(raw.commit)) {
+        throw bad(`git entry for ${url} needs a "commit" (40 lowercase hex digits)`);
+      }
+      lock.gits.set(url, { commit: raw.commit });
+    }
     return lock;
+  }
+
+  /** The commit a Git IMPORT URI was locked to. */
+  getGit(url: string): GitLockEntry | undefined {
+    return this.gits.get(url);
+  }
+
+  recordGit(url: string, entry: GitLockEntry): void {
+    this.gits.set(url, { commit: entry.commit });
+    this.usedGits.add(url);
   }
 
   /** The pinned digest for a canonical image reference (`docker.io/library/nginx:alpine`). */
@@ -133,6 +160,14 @@ export class Lockfile {
       }
       data.images = images;
     }
+    if (this.usedGits.size > 0) {
+      const gits: Record<string, GitLockEntry> = {};
+      for (const url of [...this.usedGits].sort()) {
+        const e = this.gits.get(url);
+        if (e) gits[url] = { commit: e.commit };
+      }
+      data.git = gits;
+    }
     return JSON.stringify(data, null, 2) + '\n';
   }
 
@@ -143,7 +178,7 @@ export class Lockfile {
    */
   async save(): Promise<boolean> {
     const text = this.serialize();
-    if (!this.existed && this.used.size === 0 && this.usedImages.size === 0) return false;
+    if (!this.existed && this.used.size === 0 && this.usedImages.size === 0 && this.usedGits.size === 0) return false;
     if (this.existed && text === this.originalText) return false;
     const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
     try {

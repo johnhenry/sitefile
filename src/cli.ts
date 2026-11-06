@@ -21,6 +21,7 @@ import { Profiler } from './profile.js';
 import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
+import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 
 const VERSION = SITEFILE_VERSION;
 
@@ -34,6 +35,8 @@ Usage:
                                          (text, --json or --dot; no IO, like validate)
   sitefile why <path> [context] [opts]   build in memory and show which instructions wrote an exported
                                          file, from what inputs, and what overwrote it
+  The context may be a Git URL, https://host/repo.git#ref:dir (fetched to a temporary directory;
+  the default --out is then ./dist; see docs/CLI.md).
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
@@ -176,8 +179,13 @@ export async function main(
   // why <path> [context]
   const whyPath = command === 'why' ? rest.shift() : undefined;
   if (command === 'why' && whyPath === undefined) return usageError('why expects a path in the build output: sitefile why <path> [context]');
-  const [context = '.', ...extra] = rest;
+  const [contextArg = '.', ...extra] = rest;
   if (extra.length) return usageError(`unexpected arguments: ${extra.join(' ')}`);
+  const gitContext = isGitContext(contextArg);
+  if (gitContext && o.watch) return usageError('--watch needs a local context directory, not a Git URL');
+  if (gitContext && o.file !== undefined && (path.isAbsolute(o.file) || o.file.split(/[\\/]/).includes('..'))) {
+    return usageError('with a Git URL context, -f/--file is a path inside the repository');
+  }
   if (o.dot && command !== 'graph') return usageError('--dot is only for graph');
   if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
@@ -196,7 +204,7 @@ export async function main(
     try {
       const memo = watchMemo();
       return await watchLoop({
-        context,
+        context: contextArg,
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {
@@ -217,7 +225,21 @@ export async function main(
   if (o.profile !== undefined) run.wrote?.push(o.profile);
   const commandSpan = profiler?.begin(command, 'command');
   let failed = false;
+  let fetched: GitContext | undefined;
   try {
+    const fetchPolicy = {
+      allowHttp: !!o['allow-http'],
+      allowPrivateNetwork: !!o['allow-private-network'],
+      ...(o['max-download-bytes'] ? { maxBytes: positiveInt(o['max-download-bytes'], '--max-download-bytes') } : {}),
+      ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
+    };
+    if (gitContext) {
+      // A Git URL context: fetched into a temporary directory, built from there, then removed.
+      fetched = await materializeGitContext(contextArg, { ...DEFAULT_FETCH_POLICY, ...fetchPolicy });
+      process.stderr.write(`context: ${contextArg} at commit ${fetched.commit}\n`);
+    }
+    const context = fetched?.dir ?? contextArg;
+    const file = fetched && o.file !== undefined ? path.join(context, o.file) : o.file;
     const remoteCache =
       cacheFrom.length || cacheTo.length
         ? new RegistryCache({
@@ -245,21 +267,18 @@ export async function main(
     // writes a zip instead of a directory named site.zip.
     if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
     // The default destination depends on the format, which the Sitefile may set.
-    const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
-    const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
+    const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs })).exportFormat : undefined;
+    // A Git context's default destination is in the current directory, not the temporary checkout.
+    const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
     run.wrote?.push(out);
     const options: BuildOptions = {
       contextDir: context,
-      ...(o.file ? { sitefile: o.file } : {}),
+      ...(file ? { sitefile: file } : {}),
+      ...(fetched ? { label: o.file ?? 'Sitefile' } : {}),
       ...(o.target !== undefined ? { target: o.target } : {}),
       buildArgs,
       outDir: out,
-      fetchPolicy: {
-        allowHttp: !!o['allow-http'],
-        allowPrivateNetwork: !!o['allow-private-network'],
-        ...(o['max-download-bytes'] ? { maxBytes: positiveInt(o['max-download-bytes'], '--max-download-bytes') } : {}),
-        ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
-      },
+      fetchPolicy,
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(o['vendor-dir'] !== undefined ? { vendorDir: o['vendor-dir'] } : {}),
       ...(o['plugin-timeout']
@@ -302,7 +321,7 @@ export async function main(
           labels,
           gitLabels: !!o['git-labels'],
           attest,
-          build: { contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs },
+          build: { contextDir: context, ...(file ? { sitefile: file } : {}), ...(fetched ? { label: o.file ?? 'Sitefile' } : {}), buildArgs },
         };
         await remoteCache?.load();
         if (tags.length && !o.out) {
@@ -334,7 +353,8 @@ export async function main(
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
               : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
         );
-        if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
+        // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
+        if (r.lockfileWritten && !fetched) process.stdout.write('Updated Sitefile.lock\n');
         if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
         await remoteCache?.push(transformCacheDir());
         return 0;
@@ -402,6 +422,7 @@ export async function main(
   } finally {
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
     if (command === 'build' || command === 'inspect' || command === 'why') await evictAfterBuild();
+    await fetched?.dispose();
     commandSpan?.end();
     if (profiler && !(await fs.writeFile(o.profile!, profiler.toJSON()).then(() => true, () => false))) {
       // A failed build already reported its error; otherwise this is the command's error.
