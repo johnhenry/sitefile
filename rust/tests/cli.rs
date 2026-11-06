@@ -265,7 +265,7 @@ fn motion_renders_animated_svgs_through_a_sandboxed_plugin() {
         return;
     }
     let ctx = example(&work, "motion");
-    let r = sitefile(&work, &["build", s(&ctx)]);
+    let r = sitefile(&work, &["build", s(&ctx), "--allow-plugin", "motion"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let title = read(ctx.join("dist/title.svg"));
     assert!(title.starts_with("<?xml") && title.contains("<svg") && title.contains("@keyframes") && title.trim_end().ends_with("</svg>"));
@@ -286,6 +286,54 @@ fn wasm_draws_badges_with_a_webassembly_plugin() {
     let svg = read(ctx.join("dist/badges/why-wasm.svg"));
     assert!(svg.starts_with("<svg ") && svg.contains("aria-label=\"reading time: 1 min · "), "{svg}");
     assert!(read(ctx.join("dist/badges/built-with.svg")).contains("sitefile + wasm"));
+}
+
+#[test]
+fn js_plugin_needs_allow_plugin() {
+    let work = Tmp::new();
+    let dir = work.path().join("plug");
+    fs::create_dir_all(dir.join("plugins")).unwrap();
+    fs::write(dir.join("a.txt"), "a").unwrap();
+    fs::write(dir.join("plugins/up.mjs"), "export function transform(r) { return r.input.text.toUpperCase(); }\n").unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nPLUGIN up FROM ./plugins/up.mjs\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /\n").unwrap();
+    let flag_hint = "PLUGIN up runs JavaScript, which must be allowed explicitly: add --allow-plugin up (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag";
+    // Denied before node is needed, so this part runs without node too.
+    let denied = sitefile(&work, &["build", s(&dir)]);
+    assert_eq!(denied.code, 1);
+    assert!(denied.stderr.contains("error[E_UNSUPPORTED]: ") && denied.stderr.contains(&format!("Sitefile:2:1: {flag_hint}")), "{}", denied.stderr);
+    let other = sitefile(&work, &["build", s(&dir), "--allow-plugin", "other"]);
+    assert_eq!(other.code, 1);
+    assert!(other.stderr.contains(flag_hint), "{}", other.stderr);
+    let bad = sitefile(&work, &["build", s(&dir), "--allow-plugin", "bad-name"]);
+    assert_eq!(bad.code, 2);
+    assert!(bad.stderr.contains("--allow-plugin expects a PLUGIN name (an identifier), got 'bad-name'"), "{}", bad.stderr);
+    // validate never runs plugins.
+    assert_eq!(sitefile(&work, &["validate", s(&dir)]).code, 0);
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("skipped the allowed builds: node is not installed");
+        return;
+    }
+    let named = sitefile(&work, &["build", s(&dir), "--allow-plugin", "up", "--allow-plugin", "unused"]);
+    assert_eq!(named.code, 0, "{}", named.stderr);
+    assert!(named.stderr.contains("warning: --allow-plugin unused does not match any PLUGIN and was ignored"), "{}", named.stderr);
+    assert_eq!(read(dir.join("dist/a.out")), "A");
+    let all = sitefile(&work, &["build", s(&dir), "--allow-plugins", "--force"]);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wasm_named_symlink_to_a_js_plugin_still_needs_allow_plugin() {
+    let work = Tmp::new();
+    let dir = work.path().join("plug");
+    fs::create_dir_all(dir.join("plugins")).unwrap();
+    fs::write(dir.join("a.txt"), "a").unwrap();
+    fs::write(dir.join("plugins/up.mjs"), "export function transform() { return 'js'; }\n").unwrap();
+    std::os::unix::fs::symlink("up.mjs", dir.join("plugins/up.wasm")).unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nPLUGIN up FROM ./plugins/up.wasm\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /\n").unwrap();
+    let denied = sitefile(&work, &["build", s(&dir)]);
+    assert_eq!(denied.code, 1);
+    assert!(denied.stderr.contains("error[E_UNSUPPORTED]") && denied.stderr.contains("add --allow-plugin up"), "{}", denied.stderr);
 }
 
 #[test]

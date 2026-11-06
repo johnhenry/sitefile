@@ -30,6 +30,8 @@ sitefile inspect  [context] [--json]
 | Option | Meaning |
 | --- | --- |
 | `--allow-exec name[=/abs/path]` | allow a `TOOL name` (an external program) to run; repeatable. A bare name is looked up on `PATH` when the build starts and the resolved real path is printed (`tool ffmpeg -> /opt/homebrew/bin/ffmpeg`). A `TOOL` that is not allowed fails with `E_UNSUPPORTED` naming the flag to add. The program runs **with your privileges**: allow only what you trust. |
+| `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
+| `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 

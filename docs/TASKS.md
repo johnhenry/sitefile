@@ -50,4 +50,5 @@ Open work is tracked as GitHub issues in `johnhenry/sitefile`:
 - [x] #29 Runnable images: `EXPORT / AS oci BASE <image>` / `--base`, base config and layers preserved, base digest in `Sitefile.lock` `images` (`test/registry.test.ts`, `test/engine.test.ts`)
 - [x] OCI exports name the image the way `docker save` does (`io.containerd.image.name` + tag in `ref.name`) so `docker load` finds it by name (`test/oci.test.ts`, `test/engine.test.ts`)
 - [x] #34 WebAssembly plugins: `PLUGIN x FROM ./x.wasm`, import-free ABI v1, worker + timeout, Rust example (`test/wasm-plugins.test.ts`, `examples/wasm/`)
+- [x] #72 JavaScript PLUGINs need `--allow-plugin name` / `--allow-plugins` (wasm plugins need no flag) (`test/plugins.test.ts`, `rust/tests/cli.rs`, `conformance/cases/*plugin*`)
 - [x] #37 Rust port (`rust/`), conformance suite (39/39), comparison benchmarks (`bench/`)
