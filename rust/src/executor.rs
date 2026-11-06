@@ -31,6 +31,7 @@ use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::https::fetch_remote;
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
 use crate::resources::lockfile::{LockEntry, Lockfile};
+use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
@@ -77,6 +78,11 @@ pub struct BuildOptions {
     pub frozen_lockfile: bool,
     /// Re-record unpinned URLs whose content changed.
     pub update_lock: bool,
+    /// Context-relative vendor directory written by `sitefile vendor` (default `vendor/sitefile`, used
+    /// when its manifest.json exists; a directory given here must exist). Remote IMPORTs and BASE blobs
+    /// found there are read from it instead of the network, verified as usual. It is never part of a
+    /// directory copy.
+    pub vendor_dir: Option<String>,
     /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
     /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
     pub strict_pins: bool,
@@ -132,6 +138,7 @@ impl Default for BuildOptions {
             lockfile: LockfileSetting::Default,
             frozen_lockfile: false,
             update_lock: false,
+            vendor_dir: None,
             strict_pins: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
@@ -287,7 +294,7 @@ fn plan_for(program: &Program, options: &BuildOptions) -> Result<Plan> {
 type Warn = Callback;
 
 /// realpath of the nearest existing ancestor, with the missing tail re-joined.
-fn realpath_loose(p: &Path) -> PathBuf {
+pub(crate) fn realpath_loose(p: &Path) -> PathBuf {
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut cur = p.to_path_buf();
     loop {
@@ -455,6 +462,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             }
         }
     }
+    let vendor_dir = find_vendor_dir(&context_real, options.vendor_dir.as_deref())?;
+    if let Some(d) = &vendor_dir {
+        ignore.push(d.clone());
+    }
     for w in &options.also_writes {
         let rel = relative_path(&context_real, &realpath_loose(&resolve_path(Path::new(w))));
         if !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/') {
@@ -465,6 +476,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         &context_real,
         &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
     )?;
+    let vendor = match &vendor_dir {
+        Some(d) => Some(Vendor::open(&local, d)?),
+        None => None,
+    };
     let lock = match lock_path_for(&options.lockfile, &sitefile_path) {
         Some(p) => Some(Lockfile::load(p)?),
         None => None,
@@ -476,13 +491,16 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
 
     let env = ImportEnv {
         local: &local,
-        policy: &options.fetch_policy,
         archive_limits: &options.archive_limits,
-        lock: &lock,
-        label: &label,
-        warn: &warn,
-        frozen: options.frozen_lockfile,
-        update: options.update_lock,
+        remote: RemoteEnv {
+            policy: &options.fetch_policy,
+            lock: &lock,
+            label: &label,
+            warn: &warn,
+            frozen: options.frozen_lockfile,
+            update: options.update_lock,
+            vendor: vendor.as_ref().map(|v| (v, &local)),
+        },
         memo: options.memo.as_deref(),
     };
     // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
@@ -630,6 +648,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                 platform: options.platform.clone(),
                 frozen: options.frozen_lockfile,
                 update: options.update_lock,
+                vendor: vendor.as_ref().map(|v| (v, &local)),
                 registry: RegistryOptions {
                     insecure_registries: options.insecure_registries.clone(),
                     allow_private_network: options.fetch_policy.allow_private_network,
@@ -818,14 +837,70 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
 
 struct ImportEnv<'a> {
     local: &'a LocalContext,
-    policy: &'a FetchPolicy,
     archive_limits: &'a ArchiveLimits,
-    lock: &'a Mutex<Option<Lockfile>>,
-    label: &'a str,
-    warn: &'a Warn,
-    frozen: bool,
-    update: bool,
+    remote: RemoteEnv<'a>,
     memo: Option<&'a Mutex<BuildMemo>>,
+}
+
+/// What fetching a remote IMPORT needs: the network policy and the lockfile rules (and, for builds,
+/// the vendor directory with the context reader for its blobs).
+pub struct RemoteEnv<'a> {
+    pub policy: &'a FetchPolicy,
+    pub lock: &'a Mutex<Option<Lockfile>>,
+    pub label: &'a str,
+    pub warn: &'a Callback,
+    pub frozen: bool,
+    pub update: bool,
+    /// Vendored copies (`sitefile vendor`), preferred over the network.
+    pub vendor: Option<(&'a Vendor, &'a LocalContext)>,
+}
+
+/// The bytes of a remote IMPORT and its final URL, checked against its INTEGRITY and the lockfile (and
+/// recorded there): read from the vendor directory when it has the URL, otherwise fetched.
+pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) -> Result<(Vec<u8>, String)> {
+    let span = Some(&spec.span);
+    let entry = env.lock.lock().ok().and_then(|l| l.as_ref().and_then(|l| l.get(url).cloned()));
+    if env.frozen && entry.is_none() {
+        return Err(SitefileError::at(E_LOCK_MISSING, format!("IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+    }
+    let vendored = env.vendor.and_then(|(v, _)| v.resource(url));
+    if let (Some((v, _)), None) = (env.vendor, vendored) {
+        (env.warn)(&format!(
+            "{}:{}: IMPORT {}: '{url}' is not vendored in {}; fetching it (run 'sitefile vendor' to add it)",
+            env.label, spec.span.line, spec.name, v.dir
+        ));
+    }
+    let (bytes, final_url) = match (env.vendor, vendored) {
+        (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
+        _ => {
+            let f = fetch_remote(url, env.policy, span)?;
+            (f.bytes, f.final_url)
+        }
+    };
+    let digest = sha256(&bytes);
+    if let Some(i) = &spec.integrity {
+        verify_integrity(&bytes, i, url, span)?;
+    } else if let Some(e) = entry.as_ref().filter(|e| !env.update && e.integrity != digest) {
+        return Err(SitefileError::at(
+            E_LOCK_MISMATCH,
+            format!(
+                "IMPORT {}: '{url}' changed since it was locked (locked {}, got {digest}); rerun with --update-lock to accept it",
+                spec.name, e.integrity
+            ),
+            &spec.span,
+        ));
+    } else if entry.is_none() {
+        (env.warn)(&format!("{}:{}: IMPORT {} is not pinned; add INTEGRITY {digest} for a reproducible build", env.label, spec.span.line, spec.name));
+    }
+    if env.frozen && entry.as_ref().is_some_and(|e| e.integrity != digest) {
+        return Err(SitefileError::at(E_LOCK_MISMATCH, format!("IMPORT {}: '{url}' does not match the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+    }
+    if let Ok(mut l) = env.lock.lock() {
+        if let Some(l) = l.as_mut() {
+            l.record(url, LockEntry { integrity: digest, size: bytes.len() as u64, resolved: final_url.clone() });
+        }
+    }
+    Ok((bytes, final_url))
 }
 
 /// Run `f` over `items` with at most `limit` at once; results in input order.
@@ -889,10 +964,10 @@ fn url_basename(url: &str) -> String {
 /// it read. With a memo, conversions (Markdown, data, archives) whose key is
 /// unchanged are reused; a collection's documents are memoized one by one.
 fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, String)> {
-    let origin = format!("{}:{} IMPORT {}", env.label, spec.span.line, spec.name);
+    let origin = format!("{}:{} IMPORT {}", env.remote.label, spec.span.line, spec.name);
     let span = Some(&spec.span);
     let id = if env.memo.is_some() { format!("{spec:?}") } else { String::new() };
-    let key_of = |raw: &str| if env.memo.is_some() { memo_key(&["import", env.label, &id, raw]) } else { String::new() };
+    let key_of = |raw: &str| if env.memo.is_some() { memo_key(&["import", env.remote.label, &id, raw]) } else { String::new() };
     // `compute` gets the per-document memo (children of this import's entry).
     let convert = |key: &str, compute: &dyn Fn(Option<DocMemo>) -> Result<Resource>| -> Result<Resource> {
         let Some(memo) = env.memo else { return compute(None) };
@@ -967,42 +1042,11 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
         }
         ImportLocation::Remote { url } => {
             let kind = spec.as_kind.unwrap_or(ImportKind::File);
-            let entry = env.lock.lock().ok().and_then(|l| l.as_ref().and_then(|l| l.get(url).cloned()));
-            if env.frozen && entry.is_none() {
-                return Err(SitefileError::at(E_LOCK_MISSING, format!("IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)", spec.name), &spec.span));
-            }
-            let fetched = fetch_remote(url, env.policy, span)?;
-            let digest = sha256(&fetched.bytes);
-            if let Some(i) = &spec.integrity {
-                verify_integrity(&fetched.bytes, i, url, span)?;
-            } else if let Some(e) = entry.as_ref().filter(|e| !env.update && e.integrity != digest) {
-                return Err(SitefileError::at(
-                    E_LOCK_MISMATCH,
-                    format!(
-                        "IMPORT {}: '{url}' changed since it was locked (locked {}, got {digest}); rerun with --update-lock to accept it",
-                        spec.name, e.integrity
-                    ),
-                    &spec.span,
-                ));
-            } else if entry.is_none() {
-                (env.warn)(&format!(
-                    "{}:{}: IMPORT {} is not pinned; add INTEGRITY {digest} for a reproducible build",
-                    env.label, spec.span.line, spec.name
-                ));
-            }
-            if env.frozen && entry.as_ref().is_some_and(|e| e.integrity != digest) {
-                return Err(SitefileError::at(E_LOCK_MISMATCH, format!("IMPORT {}: '{url}' does not match the lockfile (--frozen-lockfile)", spec.name), &spec.span));
-            }
-            if let Ok(mut l) = env.lock.lock() {
-                if let Some(l) = l.as_mut() {
-                    l.record(url, LockEntry { integrity: digest.clone(), size: fetched.bytes.len() as u64, resolved: fetched.final_url.clone() });
-                }
-            }
-            let base = url_basename(&fetched.final_url);
+            let (bytes, final_url) = fetch_remote_import(spec, url, &env.remote)?;
+            let base = url_basename(&final_url);
             let basename = if base.is_empty() { spec.name.clone() } else { base };
-            let info = BytesInfo { uri: url.clone(), resolved_url: Some(fetched.final_url.clone()), basename, mode: None };
-            let key = key_of(&format!("{digest}\0{}", fetched.final_url));
-            let bytes = fetched.bytes;
+            let key = key_of(&format!("{}\0{final_url}", sha256(&bytes)));
+            let info = BytesInfo { uri: url.clone(), resolved_url: Some(final_url), basename, mode: None };
             let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
             Ok((res, key))
         }

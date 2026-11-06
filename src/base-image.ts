@@ -5,6 +5,7 @@ import { resolveCredentials, type Credentials } from './registry-auth.js';
 import { pullImage, resolveDigest } from './registry-ops.js';
 import { RegistryClient, type RegistryOptions } from './registry.js';
 import type { Lockfile } from './resources/lockfile.js';
+import type { Vendor } from './resources/vendor.js';
 import type { Store } from './store.js';
 
 /** Registries reachable over plain http: `--insecure-registry` flags plus $SITEFILE_INSECURE_REGISTRIES (comma-separated). */
@@ -31,6 +32,8 @@ export interface ResolveBaseOptions {
   readonly frozen?: boolean | undefined;
   /** `--update-lock`: re-resolve the tag and re-record it. */
   readonly update?: boolean | undefined;
+  /** `sitefile vendor`'s directory: a tag it recorded is used when the lockfile has none, and its blobs seed the store. */
+  readonly vendor?: Vendor | undefined;
   readonly registry?: RegistryOptions | undefined;
   readonly warn?: ((message: string) => void) | undefined;
   readonly span?: SourceSpan | undefined;
@@ -69,9 +72,13 @@ export async function resolveBase(input: string, o: ResolveBaseOptions): Promise
   let fresh = false;
   if (rootDigest === undefined) {
     const locked = o.update ? undefined : o.lock?.getImage(lockKey);
+    const vendored = locked || o.update || o.frozen ? undefined : o.vendor?.image(lockKey);
     if (locked) {
       rootDigest = locked.digest;
       o.lock?.markImageUsed(lockKey);
+    } else if (vendored) {
+      rootDigest = vendored.digest;
+      o.lock?.recordImage(lockKey, { digest: rootDigest });
     } else if (o.frozen) {
       throw new SitefileError('E_LOCK_MISSING', `BASE ${input}: '${lockKey}' is not in the lockfile (--frozen-lockfile); pin it with @sha256:... or run a build without --frozen-lockfile to record it`, o.span);
     } else {
@@ -81,6 +88,8 @@ export async function resolveBase(input: string, o: ResolveBaseOptions): Promise
       else o.warn?.(`BASE ${input} is not pinned and there is no lockfile: the build is not reproducible (use ${display}@sha256:... or a Sitefile.lock)`);
     }
   }
+  // Vendored blobs go into the store first, so the pull below finds them and needs no network.
+  if (o.vendor) await o.vendor.seedStore(o.store, rootDigest, o.platform ?? 'linux/amd64');
   const pulled = await pullImage(o.store, client, ref, {
     platform: o.platform,
     enforcePlatform: true,

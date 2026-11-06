@@ -5,7 +5,10 @@
 //            implementation runs them in order and stops at the first failure.
 //            Step exit codes and `error[CODE]: …` lines must match.
 //   outputs  [[path, kind], …] under ${OUT} compared after the steps succeed
-//            (kind: tree | archive | bytes | oci); default none.
+//            (kind: tree | archive | bytes | oci); default none. A path written
+//            ctx:<path> is in the context copy instead (e.g. a vendor directory).
+//   stdout   true: every step's stdout must be identical too (paths to the
+//            implementation's scratch directory are replaced by ${TMP}).
 //   lock     true: Sitefile.lock in the context copy must be byte-identical
 //            (or absent in both) after the steps.
 //   manifests  ["repo:tag", …] (placeholders allowed, e.g. conf/cache-${IMPL}:1):
@@ -90,8 +93,9 @@ export async function runNetworkCase(c, ctx) {
       spawnError ??= res.spawnError;
       // Paths to this implementation's scratch directory (absolute, or relative to
       // the CLIs' working directory) differ between the two runs.
-      const line = ctx.errorLine(res.stderr).split(path.relative(ctx.cwd, vars.TMP)).join('${TMP}').split(vars.TMP).join('${TMP}');
-      steps.push({ command: argv[0], code: res.code, error: c.errors === 'code' ? codeOf(line) : line });
+      const scrub = (s) => s.split(path.relative(ctx.cwd, vars.TMP)).join('${TMP}').split(vars.TMP).join('${TMP}');
+      const line = scrub(ctx.errorLine(res.stderr));
+      steps.push({ command: argv[0], code: res.code, error: c.errors === 'code' ? codeOf(line) : line, ...(c.stdout ? { stdout: scrub(res.stdout) } : {}) });
       if (res.code !== 0) break;
     }
     const last = steps[steps.length - 1] ?? { code: 0, error: '' };
@@ -99,7 +103,8 @@ export async function runNetworkCase(c, ctx) {
     if (steps.every((s) => s.code === 0)) {
       const parts = [];
       for (const [p, kind] of c.outputs ?? []) {
-        const o = await ctx.outputOf(kind, path.join(vars.OUT, p)).catch((err) => ({ digest: `unreadable: ${err.message}` }));
+        const where = p.startsWith('ctx:') ? path.join(vars.CTX, p.slice(4)) : path.join(vars.OUT, p);
+        const o = await ctx.outputOf(kind, where).catch((err) => ({ digest: `unreadable: ${err.message}` }));
         parts.push(`${p}=${o.digest}`);
       }
       out.output = { digest: parts.join(' | '), files: parts.length };
@@ -109,12 +114,12 @@ export async function runNetworkCase(c, ctx) {
     r[impl] = out;
   }
   const [a, b] = [r.ts, r.rust];
-  const stepsSame = JSON.stringify(a.steps.map((s) => [s.code, s.error])) === JSON.stringify(b.steps.map((s) => [s.code, s.error]));
+  const stepsSame = JSON.stringify(a.steps.map((s) => [s.code, s.error, s.stdout])) === JSON.stringify(b.steps.map((s) => [s.code, s.error, s.stdout]));
   const pass = !b.spawnError && stepsSame && a.output?.digest === b.output?.digest && (!c.lock || a.lock === b.lock) && a.manifests === b.manifests && !(a.manifests ?? "").includes("=null");
   const detail = [];
   if (!pass) {
     for (const impl of ['ts', 'rust']) {
-      for (const s of r[impl].steps) detail.push(`${impl.padEnd(4)} ${s.command}: exit ${s.code} ${s.error}`);
+      for (const s of r[impl].steps) detail.push(`${impl.padEnd(4)} ${s.command}: exit ${s.code} ${s.error}${s.stdout !== undefined ? `\n${s.stdout}` : ''}`);
       if (r[impl].output) detail.push(`${impl.padEnd(4)} outputs ${r[impl].output.digest}`);
       if (r[impl].manifests) detail.push(`${impl.padEnd(4)} manifests ${r[impl].manifests}`);
     }
