@@ -36,9 +36,13 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
   sitefile cache prune [--older-than <days>]       delete cached results
+  sitefile cache prune --max-size <size>           shrink evictable data (LRU) to <size>
+  sitefile cache du [--json]                       size of every cache and the store (alias: cache ls)
+  Evictable data over $SITEFILE_CACHE_MAX (default 1GiB, 0 = no limit) is deleted after each build.
 
 Serving sites (detached servers are tracked by name):
   sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
+  sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
 
@@ -55,7 +59,7 @@ export function isExtraCommand(name: string | undefined): boolean {
 const GROUPS: ReadonlyMap<string, { subs: ReadonlyMap<string, Command>; usage: string }> = new Map([
   ['image', { subs: imageSubcommands, usage: 'image <ls|inspect|tag|rm|save|prune|diff>' }],
   ['server', { subs: serverSubcommands, usage: 'server <ls|stop|rm|logs|restart>' }],
-  ['cache', { subs: cacheSubcommands, usage: 'cache <info|prune>' }],
+  ['cache', { subs: cacheSubcommands, usage: 'cache <info|prune|du>' }],
 ]);
 
 export async function runExtraCommand(argv: readonly string[]): Promise<number> {

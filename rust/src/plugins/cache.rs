@@ -425,6 +425,10 @@ fn write_atomic(file: &Path, data: &[u8], keep_if_same_size: bool) -> io::Result
     if keep_if_same_size {
         if let Ok(st) = fs::metadata(file) {
             if st.is_file() && st.len() == data.len() as u64 {
+                // Reused: refresh its mtime so the size limit's grace period covers it until the entry lands.
+                if let Ok(f) = fs::OpenOptions::new().write(true).open(file) {
+                    let _ = f.set_modified(SystemTime::now());
+                }
                 return Ok(());
             }
         }

@@ -37,12 +37,14 @@ pub mod refs;
 pub mod server;
 pub mod servers;
 pub mod store;
+pub mod cache_limit;
 
 // Build, plugins, registry and CLI
 pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod plugins;
+pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)
 pub mod lsp;

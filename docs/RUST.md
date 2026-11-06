@@ -26,6 +26,7 @@ to find in the other:
 | `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
+| `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
 ## Tooling exception: the language server
@@ -63,7 +64,11 @@ stale entry is recompiled and replaced; import and export checks run on every
 load, hits included. Any cache failure (read-only home, etc.) is ignored and
 the build compiles as before. Within one process each plugin is compiled once.
 Set `SITEFILE_NO_WASM_CACHE=1` to turn the disk cache off. The TypeScript
-version has no equivalent (V8 compiles wasm quickly).
+version has no equivalent (V8 compiles wasm quickly). A hit refreshes the
+file's mtime, and the shared cache size limit (`SITEFILE_CACHE_MAX`, see
+[CLI.md](CLI.md#cache-size-limit)) evicts least recently used modules; both
+implementations measure and evict this directory, so `cache du` and the
+eviction results are the same whichever one runs.
 
 ## Unicode paths
 
@@ -146,6 +151,15 @@ flate2. A change to the encoder must be made in both files; regenerate
   still treats as unassigned, so a path that puts one of them after another
   combining mark normalizes differently. The parity digests leave them out;
   they will agree once Node's ICU catches up.
+- **Watch mode change detection.** `build --watch` and `serve --watch` behave the
+  same (paths watched and ignored, 100 ms debounce, coalescing, messages), but
+  the TypeScript CLI is notified by `fs.watch` (recursive) while the Rust CLI
+  polls: every 100 ms it walks the context, the Sitefile and the
+  `--build-arg-file` files (symlinks are not followed) and compares size,
+  mtime, ctime, inode and type. Rust's std has no file notification API, and a
+  crate such as `notify` would be a new dependency for little gain, so a
+  rebuild in Rust starts up to ~100 ms later, and a very large context costs a
+  directory walk per poll.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in
   `serve -p`, `toPrecision` rounding ties in `images` sizes, very deep emphasis
   nesting in Markdown.

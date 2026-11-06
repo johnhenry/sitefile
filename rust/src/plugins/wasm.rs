@@ -26,7 +26,9 @@
 //! codegen settings. Cache files are trusted by `Module::deserialize_file`, so
 //! they live in a 0700 directory, are written 0600 via temp file + rename, and a
 //! file that fails to load is recompiled and replaced. Import/export checks run
-//! on every load, hits included. No cache failure ever fails a build.
+//! on every load, hits included. No cache failure ever fails a build. A hit
+//! refreshes the file's mtime: the size limit (`$SITEFILE_CACHE_MAX`, see
+//! `cache_limit.rs`) evicts least recently used modules first.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -185,6 +187,10 @@ fn load_with_dir(dir: Option<&Path>, name: &str, bytes: &[u8], span: Option<&Sou
             // artifacts from another version/config. Any failure falls back to compiling.
             if let Ok(module) = unsafe { Module::deserialize_file(engine(), &path) } {
                 check_module(name, &module, span)?;
+                // A hit: the mtime is the recency the cache size limit goes by (cache_limit.rs).
+                if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&path) {
+                    let _ = f.set_modified(std::time::SystemTime::now());
+                }
                 return Ok((module, Origin::Disk));
             }
         }
@@ -565,8 +571,12 @@ mod tests {
             assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
             assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
         }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::OpenOptions::new().write(true).open(&file).unwrap().set_modified(old).unwrap();
         let (m, o) = load_with_dir(Some(&dir), "p", &bytes, None).unwrap();
         assert_eq!((o, compiles() - c0), (Origin::Disk, 1), "a hit must not compile");
+        let touched = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert!(touched > old + std::time::Duration::from_secs(60), "a hit refreshes the mtime (LRU recency for the size limit)");
         let out = run(&m, b"{}", &PluginPolicy::default()).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("hello from wasm"));
         // Corrupt entry: falls back to compiling and rewrites a good file.

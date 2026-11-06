@@ -12,6 +12,45 @@ export interface SiteServerOptions {
   readonly log?: (line: string) => void;
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
   readonly serverId?: string;
+  /**
+   * `serve --watch`: answer {@link RELOAD_PATH} with an event stream and add
+   * {@link RELOAD_SCRIPT} to HTML responses. Never set otherwise, and never written to exports.
+   */
+  readonly liveReload?: LiveReload;
+}
+
+/** Reserved for the live-reload event stream while `serve --watch` runs. */
+export const RELOAD_PATH = '/__sitefile/reload';
+/** Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`. */
+export const RELOAD_SCRIPT = `<script>new EventSource("${RELOAD_PATH}").onmessage=function(){location.reload()}</script>`;
+
+/** Open live-reload streams; {@link LiveReload.reload} tells every page to reload. */
+export class LiveReload {
+  private readonly clients = new Set<http.ServerResponse>();
+
+  /** Hold `res` open as a text/event-stream until the client goes away. */
+  attach(res: http.ServerResponse, headers: Record<string, string>): void {
+    res.writeHead(200, { ...headers, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    res.write('retry: 1000\n\n');
+    this.clients.add(res);
+    res.on('close', () => this.clients.delete(res));
+  }
+
+  reload(): void {
+    for (const c of this.clients) c.write('data: reload\n\n');
+  }
+
+  get size(): number {
+    return this.clients.size;
+  }
+}
+
+/** `html` with {@link RELOAD_SCRIPT} inserted before the last `</body` (ASCII case-insensitive), else appended. */
+export function injectReloadScript(html: Uint8Array): Uint8Array {
+  const buf = Buffer.from(html.buffer, html.byteOffset, html.byteLength);
+  const at = buf.toString('latin1').toLowerCase().lastIndexOf('</body');
+  const script = Buffer.from(RELOAD_SCRIPT);
+  return at === -1 ? Buffer.concat([buf, script]) : Buffer.concat([buf.subarray(0, at), script, buf.subarray(at)]);
 }
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
@@ -52,7 +91,9 @@ function printable(s: string): string {
  * An HTTP server for an immutable Tree. GET and HEAD only; nothing outside the tree is
  * ever reachable because lookups are exact map keys built from validated segments.
  */
-export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): http.Server {
+export function createSiteServer(site: Tree | (() => Tree), options: SiteServerOptions = {}): http.Server {
+  // A function is read per request (`serve --watch` swaps in each good rebuild).
+  const current = typeof site === 'function' ? site : (): Tree => site;
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
 
@@ -79,11 +120,16 @@ export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): h
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
+    const tree = current();
 
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
     const end = Math.min(q === -1 ? url.length : q, hash === -1 ? url.length : hash);
     const rawPath = url.slice(0, end);
+    if (options.liveReload && rawPath === RELOAD_PATH) {
+      if (method === 'HEAD') return finish(200, { 'content-type': 'text/event-stream' }, undefined);
+      return options.liveReload.attach(res, base); // not access-logged: one long request per open page
+    }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
     const segs = safeSegments(rawPath);
     if (!segs) return page(400, BAD_REQUEST_PAGE);
@@ -103,10 +149,13 @@ export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): h
     const file = served === undefined ? undefined : tree.get(served);
     if (served === undefined || !file) return page(404, NOT_FOUND_PAGE);
 
-    const etag = `"${file.digest.replace(/^sha256:/, '')}"`;
     const type = mimeTypeFor(served);
+    const live = options.liveReload !== undefined && type.startsWith('text/html');
+    // An injected page is a different representation of the file: give it its own ETag.
+    const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
     if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { etag }, undefined);
-    finish(200, { etag, 'content-type': type, 'content-length': file.bytes.byteLength }, file.bytes);
+    const body = live ? injectReloadScript(file.bytes) : file.bytes;
+    finish(200, { etag, 'content-type': type, 'content-length': body.byteLength }, body);
   };
 
   const server = http.createServer(handler);

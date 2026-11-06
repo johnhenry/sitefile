@@ -4,15 +4,16 @@ import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
-import { loadBuildArgFile } from './build-args.js';
+import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv } from './base-image.js';
 import { parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
-import { transformCacheDir } from './cli/cache.js';
+import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
+import { watchLoop } from './cli/watch.js';
 
 const VERSION = '0.1.0';
 
@@ -49,6 +50,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
+      --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
+      --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
@@ -63,11 +66,17 @@ Options:
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
       --json                   machine-readable output (validate, inspect)
+      --watch                  build, then rebuild when the context, the Sitefile or a
+                               --build-arg-file changes (build only; Ctrl-C stops)
   -h, --help                   show this help
   -v, --version                show the version
 ${EXTRA_HELP}`;
 
-export async function main(argv: readonly string[]): Promise<number> {
+/**
+ * Run the CLI. `run.once` runs a --watch command a single time (the watch loop's
+ * builds); `run.wrote` then receives the export destination.
+ */
+export async function main(argv: readonly string[], run: { readonly once?: boolean; readonly wrote?: string[] } = {}): Promise<number> {
   if (isExtraCommand(argv[0])) return runExtraCommand(argv);
   let parsed;
   try {
@@ -91,6 +100,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         'build-arg-file': { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
+        'allow-plugin': { type: 'string', multiple: true },
+        'allow-plugins': { type: 'boolean' },
         'no-cache': { type: 'boolean' },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
@@ -102,6 +113,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
+        watch: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -121,24 +133,29 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (extra.length) return usageError(`unexpected arguments: ${extra.join(' ')}`);
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
+  if (o.watch && !run.once) {
+    if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
+    if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
+    try {
+      return await watchLoop({
+        context,
+        ...(o.file ? { sitefile: o.file } : {}),
+        argFiles: o['build-arg-file'] ?? [],
+        build: async () => {
+          const wrote: string[] = [];
+          return { code: await main(argv, { once: true, wrote }), wrote };
+        },
+      });
+    } catch (e) {
+      if (!isSitefileError(e)) throw e;
+      process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+      return 1;
+    }
+  }
 
   try {
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
-    const buildArgs: Record<string, string> = {};
-    for (const file of o['build-arg-file'] ?? []) Object.assign(buildArgs, await loadBuildArgFile(file));
-    for (const kv of o['build-arg'] ?? []) {
-      const eq = kv.indexOf('=');
-      if (eq === -1) {
-        // --build-arg NAME: take the value from the environment, as Docker does.
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(kv)) return usageError(`--build-arg expects NAME=value or NAME, got '${kv}'`);
-        const env = process.env[kv];
-        if (env === undefined) return usageError(`--build-arg ${kv}: environment variable ${kv} is not set`);
-        buildArgs[kv] = env;
-        continue;
-      }
-      if (eq === 0) return usageError(`--build-arg expects NAME=value, got '${kv}'`);
-      buildArgs[kv.slice(0, eq)] = kv.slice(eq + 1);
-    }
+    const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
     let formatOverride: ExportFormat | undefined;
     if (o.format !== undefined) {
       formatOverride = parseExportFormat(o.format);
@@ -155,6 +172,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     // The default destination depends on the format, which the Sitefile may set.
     const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs })).exportFormat : undefined;
     const out = o.out ?? path.join(context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
+    run.wrote?.push(out);
     const options: BuildOptions = {
       contextDir: context,
       ...(o.file ? { sitefile: o.file } : {}),
@@ -171,6 +189,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
         : {}),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
+      ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
+      allowAllPlugins: !!o['allow-plugins'],
       ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
@@ -261,6 +281,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       return 1;
     }
     throw e;
+  } finally {
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if (command === 'build' || command === 'inspect') await evictAfterBuild();
   }
 }
 

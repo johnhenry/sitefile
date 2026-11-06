@@ -9,7 +9,7 @@ pub mod images;
 pub mod registry;
 pub mod servers;
 
-use crate::build_args::{load_build_arg_file, BuildArgs};
+use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{build, build_to_directory, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
 use crate::export::formats::{default_out_name, format_from_extension};
@@ -42,9 +42,13 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
   sitefile cache prune [--older-than <days>]       delete cached results
+  sitefile cache prune --max-size <size>           shrink evictable data (LRU) to <size>
+  sitefile cache du [--json]                       size of every cache and the store (alias: cache ls)
+  Evictable data over $SITEFILE_CACHE_MAX (default 1GiB, 0 = no limit) is deleted after each build.
 
 Serving sites (detached servers are tracked by name):
   sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
+  sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
 
@@ -90,6 +94,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
+      --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
+      --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
@@ -104,6 +110,8 @@ Options:
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
       --json                   machine-readable output (validate, inspect)
+      --watch                  build, then rebuild when the context, the Sitefile or a
+                               --build-arg-file changes (build only; Ctrl-C stops)
   -h, --help                   show this help
   -v, --version                show the version
 {EXTRA_HELP}",
@@ -128,6 +136,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     string("plugin-timeout"),
     strings("allow-exec"),
+    strings("allow-plugin"),
+    flag("allow-plugins"),
     flag("no-cache"),
     flag("force"),
     flag("frozen-lockfile"),
@@ -139,6 +149,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("max-download-bytes"),
     string("timeout"),
     flag("json"),
+    flag("watch"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
 ];
@@ -182,7 +193,7 @@ const GROUPS: &[Group] = &[
         usage: "server <ls|stop|rm|logs|restart>",
         subs: &[("ls", &servers::PS), ("stop", &servers::STOP), ("rm", &servers::RM), ("logs", &servers::LOGS), ("restart", &servers::RESTART)],
     },
-    Group { name: "cache", usage: "cache <info|prune>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE)] },
+    Group { name: "cache", usage: "cache <info|prune|du>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE), ("du", &cache::DU), ("ls", &cache::DU)] },
 ];
 
 fn is_extra_command(name: Option<&String>) -> bool {
@@ -229,11 +240,6 @@ fn positive_int(raw: &str, flag: &str) -> Result<u64> {
         return Err(SitefileError::plain(ErrorCode::E_USAGE, format!("{flag} expects a positive integer")));
     }
     Ok(n as u64)
-}
-
-fn is_identifier(s: &str) -> bool {
-    let mut c = s.chars();
-    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Validate `-t` values before building: local name[:tag] only.
@@ -297,34 +303,39 @@ fn run_main(argv: &[String]) -> i32 {
     if o.flag("frozen-lockfile") && o.flag("update-lock") {
         return usage_error("--frozen-lockfile and --update-lock conflict");
     }
-    match run_build_command(&command, &context, &o) {
+    if o.flag("watch") {
+        if command != "build" {
+            return usage_error(&format!("--watch is only for build (and serve --watch), not {command}"));
+        }
+        if !o.strs("tag").is_empty() {
+            return usage_error("--watch cannot be combined with -t");
+        }
+        servers::catch_signals();
+        let arg_files = o.strs("build-arg-file");
+        let opts = crate::watch::WatchOptions { context: &context, sitefile: o.str("file").filter(|s| !s.is_empty()), arg_files: &arg_files };
+        let mut build = || {
+            let mut wrote = Vec::new();
+            let code = run_build_command(&command, &context, &o, &mut wrote).unwrap_or_else(|e| report(&e));
+            cache::evict_after_build();
+            crate::watch::BuildOutcome { code, wrote }
+        };
+        return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
+    }
+    let code = match run_build_command(&command, &context, &o, &mut Vec::new()) {
         Ok(code) => code,
         Err(e) => report(&e),
+    };
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if command == "build" || command == "inspect" {
+        cache::evict_after_build();
     }
+    code
 }
 
-fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i32> {
+/// One build/validate/inspect run; `wrote` receives the export destination (for --watch).
+fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut Vec<String>) -> Result<i32> {
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
-    let mut build_args = BuildArgs::new();
-    for file in o.strs("build-arg-file") {
-        build_args.extend_from(&load_build_arg_file(&file)?);
-    }
-    for kv in o.strs("build-arg") {
-        match kv.find('=') {
-            None => {
-                // --build-arg NAME: take the value from the environment, as Docker does.
-                if !is_identifier(&kv) {
-                    return Ok(usage_error(&format!("--build-arg expects NAME=value or NAME, got '{kv}'")));
-                }
-                match std::env::var(&kv) {
-                    Ok(v) => build_args.set(kv.clone(), v),
-                    Err(_) => return Ok(usage_error(&format!("--build-arg {kv}: environment variable {kv} is not set"))),
-                }
-            }
-            Some(0) => return Ok(usage_error(&format!("--build-arg expects NAME=value, got '{kv}'"))),
-            Some(eq) => build_args.set(kv[..eq].to_string(), kv[eq + 1..].to_string()),
-        }
-    }
+    let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
     let mut format_override: Option<ExportFormat> = None;
     if let Some(f) = o.str("format") {
         format_override = ExportFormat::parse(f);
@@ -355,6 +366,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
         None => join_path(context, default_out_name(format_override.or(sitefile_format).unwrap_or(ExportFormat::Directory))),
     };
     options.out_dir = Some(out_dir.clone());
+    wrote.push(out_dir.clone());
     options.fetch_policy.allow_http = o.flag("allow-http");
     options.fetch_policy.allow_private_network = o.flag("allow-private-network");
     if let Some(m) = o.str("max-download-bytes").filter(|s| !s.is_empty()) {
@@ -372,6 +384,8 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i
         options.tool_policy.timeout_ms = ms;
     }
     options.allow_exec = o.strs("allow-exec");
+    options.allow_plugin = o.strs("allow-plugin");
+    options.allow_all_plugins = o.flag("allow-plugins");
     if !o.flag("no-cache") {
         options.cache_dir = Some(cache::transform_cache_dir());
     }
