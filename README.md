@@ -112,6 +112,8 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--no-cache] [--watch] [--target stage]
 sitefile validate [context] [--json] [--target stage]
 sitefile inspect  [context] [--json] [--target stage]
+sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
+sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
@@ -126,6 +128,7 @@ sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 `--target <stage>` (like `docker build --target`) stops after a named stage and exports that stage's whole
 tree, in the EXPORT format but without the EXPORT path or `_redirects`/`_headers`; an unknown name is a usage
 error listing the stages. See [docs/CLI.md](docs/CLI.md#build-target---target-stage).
+`sitefile graph` and `sitefile why` are described in [docs/CLI.md](docs/CLI.md#explaining-a-build-graph-and-why).
 
 ## Watch mode
 

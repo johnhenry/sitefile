@@ -14,6 +14,7 @@ import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { watchLoop } from './cli/watch.js';
+import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 
 const VERSION = '0.1.0';
 
@@ -23,6 +24,10 @@ Usage:
   sitefile build [context] [options]     build and export to --out (default: <context>/dist, or dist.<ext>)
   sitefile validate [context] [options]  parse, validate and evaluate variables (no IO)
   sitefile inspect [context] [options]   build in memory and list the exported files
+  sitefile graph [context] [options]     print the dependency graph of imports, stages and operations
+                                         (text, --json or --dot; no IO, like validate)
+  sitefile why <path> [context] [opts]   build in memory and show which instructions wrote an exported
+                                         file, from what inputs, and what overwrote it
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
@@ -67,7 +72,8 @@ Options:
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
-      --json                   machine-readable output (validate, inspect)
+      --json                   machine-readable output (validate, inspect, graph, why)
+      --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
   -h, --help                   show this help
@@ -116,6 +122,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
+        dot: { type: 'boolean' },
         watch: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
@@ -129,12 +136,18 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     process.stdout.write(`${VERSION}\n`);
     return 0;
   }
-  const [command, context = '.', ...extra] = positionals;
+  const [command, ...rest] = positionals;
   if (o.help || !command) {
     process.stdout.write(HELP);
     return o.help ? 0 : 2;
   }
+  // why <path> [context]
+  const whyPath = command === 'why' ? rest.shift() : undefined;
+  if (command === 'why' && whyPath === undefined) return usageError('why expects a path in the build output: sitefile why <path> [context]');
+  const [context = '.', ...extra] = rest;
   if (extra.length) return usageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (o.dot && command !== 'graph') return usageError('--dot is only for graph');
+  if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
@@ -201,7 +214,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
       ...(o.base !== undefined ? { baseImage: o.base } : {}),
       // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
-      ...(command === 'inspect' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
+      ...(command === 'inspect' || command === 'why' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
       registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
@@ -275,6 +288,19 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         }
         return 0;
       }
+      case 'graph': {
+        const p = await planBuild(options);
+        p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        const g = planGraph(p);
+        process.stdout.write(o.json ? JSON.stringify(g, null, 2) + '\n' : o.dot ? graphDot(g) : graphText(g));
+        return 0;
+      }
+      case 'why': {
+        const r = await build({ ...options, frozenLockfile: true, recordSteps: true });
+        const report = why(r, whyPath!, context);
+        process.stdout.write(o.json ? JSON.stringify(report, null, 2) + '\n' : whyText(report));
+        return 0;
+      }
       default:
         return usageError(`unknown command '${command}'`);
     }
@@ -287,7 +313,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     throw e;
   } finally {
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
-    if (command === 'build' || command === 'inspect') await evictAfterBuild();
+    if (command === 'build' || command === 'inspect' || command === 'why') await evictAfterBuild();
   }
 }
 
