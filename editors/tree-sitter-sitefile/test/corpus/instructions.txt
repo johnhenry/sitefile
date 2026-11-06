@@ -1,0 +1,285 @@
+==================
+FROM scratch
+==================
+
+FROM scratch
+
+---
+
+(source_file
+  (from_instruction
+    (scratch)))
+
+==================
+FROM a stage with an alias (keywords are case-insensitive)
+==================
+
+from build As final
+FROM ./theme AS theme
+
+---
+
+(source_file
+  (from_instruction
+    (word)
+    (identifier))
+  (from_instruction
+    (path)
+    (identifier)))
+
+==================
+STAGE
+==================
+
+STAGE assets
+STAGE site FROM assets
+stage x from SCRATCH
+
+---
+
+(source_file
+  (stage_instruction
+    (identifier))
+  (stage_instruction
+    (identifier)
+    (word))
+  (stage_instruction
+    (identifier)
+    (scratch)))
+
+==================
+ARG and LET
+==================
+
+ARG TITLE = "Hello"
+ARG COUNT: number = 3
+ARG DRAFT : boolean = false
+ARG REQUIRED
+LET GREETING = "Welcome to ${TITLE}."
+  LET n: number = -1.5
+
+---
+
+(source_file
+  (arg_instruction
+    (identifier)
+    (string
+      (string_content)))
+  (arg_instruction
+    (identifier)
+    (type)
+    (number))
+  (arg_instruction
+    (identifier)
+    (type)
+    (boolean))
+  (arg_instruction
+    (identifier))
+  (let_instruction
+    (identifier)
+    (string
+      (string_content)
+      (substitution
+        (identifier))
+      (string_content)))
+  (let_instruction
+    (identifier)
+    (type)
+    (number)))
+
+==================
+IMPORT with every clause
+==================
+
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+IMPORT data FROM https://example.com/data.json AS json INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa
+import notes from ./notes as yaml sort by title asc
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (sort_clause
+      (identifier)))
+  (import_instruction
+    (identifier)
+    (url)
+    (import_kind)
+    (integrity))
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (sort_clause
+      (identifier))))
+
+==================
+COPY
+==================
+
+COPY ./public/ /
+COPY --overwrite --from=theme /css/ /static/
+COPY site:/ /hello/
+COPY f: /f.txt
+
+---
+
+(source_file
+  (copy_instruction
+    (path)
+    (path))
+  (copy_instruction
+    (flag
+      (flag_name))
+    (flag
+      (flag_name)
+      (flag_value))
+    (path)
+    (path))
+  (copy_instruction
+    (resource_ref
+      (identifier)
+      (path))
+    (path))
+  (copy_instruction
+    (resource_ref
+      (identifier))
+    (path)))
+
+==================
+RENDER
+==================
+
+RENDER --escape=html ./templates/index.html TO /index.html
+RENDER ./post.html TO /posts/${post.slug}/index.html FOR post IN posts
+
+---
+
+(source_file
+  (render_instruction
+    (flag
+      (flag_name)
+      (flag_value))
+    (path)
+    (path))
+  (render_instruction
+    (path)
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (for_clause
+      (identifier)
+      (identifier))))
+
+==================
+PLUGIN, TOOL and TRANSFORM
+==================
+
+PLUGIN og FROM ./plugins/og.mjs INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c
+TOOL magick
+TRANSFORM ./title.txt WITH og TO /title.svg OPTIONS style=typewriter duration=2
+TRANSFORM WITH og TO /cards/${post.slug}.svg OPTIONS text=${post.title} label="a b" FOR post IN posts
+TRANSFORM ./in.png WITH magick TO /out.webp OPTIONS q=80 ARGS {input} -quality {option.q} {output}
+
+---
+
+(source_file
+  (plugin_instruction
+    (identifier)
+    (path)
+    (integrity))
+  (tool_instruction
+    (identifier))
+  (transform_instruction
+    (path)
+    (identifier)
+    (path)
+    (options_clause
+      (option
+        (identifier)
+        (word))
+      (option
+        (identifier)
+        (number))))
+  (transform_instruction
+    (identifier)
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (options_clause
+      (option
+        (identifier)
+        (word
+          (substitution
+            (identifier)
+            (key))))
+      (option
+        (identifier)
+        (string
+          (string_content))))
+    (for_clause
+      (identifier)
+      (identifier)))
+  (transform_instruction
+    (path)
+    (identifier)
+    (path)
+    (options_clause
+      (option
+        (identifier)
+        (number)))
+    (args_clause
+      (placeholder)
+      (word)
+      (placeholder)
+      (placeholder))))
+
+==================
+EXPORT with every clause
+==================
+
+EXPORT /
+EXPORT / AS directory
+EXPORT / AS oci BASE docker.io/library/nginx:1.27 AT /usr/share/nginx/html COMPRESSION none
+EXPORT /site.tar.gz AS tar.gz
+
+---
+
+(source_file
+  (export_instruction
+    (path))
+  (export_instruction
+    (path)
+    (export_format))
+  (export_instruction
+    (path)
+    (export_format)
+    (word)
+    (path)
+    (compression))
+  (export_instruction
+    (path)
+    (export_format)))
+
+==================
+Unsupported instructions
+==================
+
+RUN npm install
+EXEC --x ./a
+
+---
+
+(source_file
+  (unsupported_instruction
+    (word)
+    (word))
+  (unsupported_instruction
+    (flag
+      (flag_name))
+    (path)))

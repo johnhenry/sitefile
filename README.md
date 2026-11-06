@@ -183,6 +183,12 @@ code --install-extension editors/vscode/sitefile-0.1.0.vsix
 Without it, `"files.associations": { "Sitefile": "dockerfile" }` is a usable
 stopgap.
 
+[editors/tree-sitter-sitefile/](editors/tree-sitter-sitefile/) is a
+tree-sitter grammar with highlight, injection, fold and outline queries. It
+powers the [Zed extension](editors/zed/) (install it with **zed: install dev
+extension** on `editors/zed`) and the [Neovim](editors/neovim/) and
+[Helix](editors/helix/) setups, whose READMEs list the configuration to add.
+
 ## Docs
 
 - [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar

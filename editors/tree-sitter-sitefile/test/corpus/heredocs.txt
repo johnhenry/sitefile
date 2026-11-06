@@ -1,0 +1,239 @@
+==================
+COPY heredoc (raw body, no template parsing)
+==================
+
+COPY <<CSS /style.css
+h1::after { content: " ${not substituted}"; }
+CSS
+EXPORT /
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end))
+  (export_instruction
+    (path)))
+
+==================
+RENDER heredoc (template body)
+==================
+
+RENDER --escape=html <<HTML TO /index.html
+<h1>${TITLE}</h1>
+<p>$${TITLE} is literal, so is $5</p>
+HTML
+
+---
+
+(source_file
+  (render_instruction
+    (flag
+      (flag_name)
+      (flag_value))
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_substitution
+        (identifier))
+      (template_escape))
+    (heredoc_end)))
+
+==================
+<<- strips leading tabs from the closing line
+==================
+
+COPY <<-EOF /tabs.txt
+	indented with tabs
+	EOF
+EXPORT /
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end))
+  (export_instruction
+    (path)))
+
+==================
+<<- does not strip spaces
+==================
+
+COPY <<-EOF /a.txt
+  EOF
+	EOF
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end)))
+
+==================
+Without <<- an indented delimiter is body
+==================
+
+COPY <<EOF /a.txt
+	EOF
+EOF
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end)))
+
+==================
+Nested-looking delimiters stay in the body
+==================
+
+COPY <<EOF /a.sh
+cat <<EOF2
+EOFX
+ EOF
+EOF2
+<<EOF
+EOF
+EXPORT /
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end))
+  (export_instruction
+    (path)))
+
+==================
+Empty body
+==================
+
+COPY <<EMPTY /empty.txt
+EMPTY
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_end)))
+
+==================
+Blank lines and # lines are body text
+==================
+
+COPY <<TXT /a.txt
+
+# not a comment
+
+TXT
+
+---
+
+(source_file
+  (copy_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body)
+    (heredoc_end)))
+
+==================
+TRANSFORM heredoc
+==================
+
+TRANSFORM <<TXT WITH og TO /og.svg OPTIONS size=12
+${raw text for the plugin}
+TXT
+
+---
+
+(source_file
+  (transform_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (identifier)
+    (path)
+    (options_clause
+      (option
+        (identifier)
+        (number)))
+    (heredoc_body)
+    (heredoc_end)))
+
+==================
+Heredoc header continued on the next line
+==================
+
+RENDER <<HTML \
+  TO /x.html
+<p>${x}</p>
+HTML
+
+---
+
+(source_file
+  (render_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (line_continuation)
+    (path)
+    (heredoc_body
+      (template_substitution
+        (identifier)))
+    (heredoc_end)))
+
+==================
+<< in a quoted string or mid-word is not a heredoc
+==================
+
+COPY "<<EOF" a<<EOF
+
+---
+
+(source_file
+  (copy_instruction
+    (string
+      (string_content))
+    (word)))
+
+==================
+Heredoc at the end of the file without a newline
+==================
+
+COPY <<A /a.txt
+x
+A
+---
+
+(source_file
+  (copy_instruction
+    source: (heredoc_start
+      delimiter: (heredoc_delimiter))
+    target: (path)
+    body: (heredoc_body)
+    end: (heredoc_end)))

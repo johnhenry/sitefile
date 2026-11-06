@@ -1,0 +1,14 @@
+# Add to ~/.config/helix/languages.toml (see README.md).
+
+[[language]]
+name = "sitefile"
+scope = "source.sitefile"
+injection-regex = "^sitefile$"
+file-types = ["sitefile", "Sitefile", { glob = "Sitefile" }, { glob = "Sitefile.*" }]
+comment-token = "#"
+indent = { tab-width = 2, unit = "  " }
+
+[[grammar]]
+name = "sitefile"
+# Update `rev` to a later commit on main when the grammar changes.
+source = { git = "https://github.com/johnhenry/sitefile", rev = "ebbf616167ee6fdfc7792d37fd63fc5ba2163a5a", subpath = "editors/tree-sitter-sitefile" }

@@ -1,0 +1,16 @@
+name = "Sitefile"
+grammar = "sitefile"
+# Zed matches a suffix against the whole file name, the extension, or the end
+# of the name after a dot: `Sitefile`, `site.Sitefile`, `site.sitefile`.
+# `Sitefile.*` (e.g. `Sitefile.prod`) needs a glob in your settings, see README.md.
+path_suffixes = ["Sitefile", "sitefile"]
+line_comments = ["# "]
+tab_size = 2
+brackets = [
+  { start = "${", end = "}", close = true, newline = false },
+  { start = "{", end = "}", close = true, newline = false },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string"] },
+]

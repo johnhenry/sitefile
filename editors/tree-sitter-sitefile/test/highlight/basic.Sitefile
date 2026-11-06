@@ -1,0 +1,21 @@
+STAGE assets FROM scratch
+# <- keyword
+#      ^ label
+#             ^ keyword
+#                  ^ constant.builtin
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+#        ^ module
+#                  ^ string.special.path
+#                             ^ type.builtin
+#                                             ^ property
+COPY --overwrite --from=assets /css/ /static/
+#     ^ attribute
+#                       ^ label
+RENDER --escape=html <<HTML TO /index.html
+<h1>${TITLE}</h1>
+HTML
+# <- label
+ARG COUNT: number = 3
+#   ^ variable
+#          ^ type.builtin
+#                   ^ number

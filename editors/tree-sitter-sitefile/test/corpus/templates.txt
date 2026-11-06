@@ -1,0 +1,97 @@
+==================
+Template substitutions, filter and escape
+==================
+
+RENDER <<T TO /a.html
+<a href="${data.link}">${title|raw}</a> ${post.tags.0}
+$${literal}
+T
+
+---
+
+(source_file
+  (render_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_substitution
+        (identifier)
+        (key))
+      (template_substitution
+        (identifier)
+        (identifier))
+      (template_substitution
+        (identifier)
+        (key)
+        (key))
+      (template_escape))
+    (heredoc_end)))
+
+==================
+Template blocks
+==================
+
+RENDER <<MARKDOWN TO /notes.md
+${#each notes as n}
+- ${n.title}${#if !n.draft} (published)${/if}
+${else}
+none
+${/each}
+${#if  data.items.0 }${data.items.0.name}${/if}
+MARKDOWN
+
+---
+
+(source_file
+  (render_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_each
+        (reference
+          (identifier))
+        (identifier))
+      (template_substitution
+        (identifier)
+        (key))
+      (template_if
+        (reference
+          (identifier)
+          (key)))
+      (template_end)
+      (template_else)
+      (template_end)
+      (template_if
+        (reference
+          (identifier)
+          (key)
+          (key)))
+      (template_substitution
+        (identifier)
+        (key)
+        (key)
+        (key))
+      (template_end))
+    (heredoc_end)))
+
+==================
+A RENDER body that is only a tag
+==================
+
+RENDER <<T TO /a.txt
+${x}
+T
+
+---
+
+(source_file
+  (render_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_substitution
+        (identifier)))
+    (heredoc_end)))
