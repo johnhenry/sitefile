@@ -42,6 +42,9 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
   sitefile cache prune [--older-than <days>]       delete cached results
+  sitefile cache prune --max-size <size>           shrink evictable data (LRU) to <size>
+  sitefile cache du [--json]                       size of every cache and the store (alias: cache ls)
+  Evictable data over $SITEFILE_CACHE_MAX (default 1GiB, 0 = no limit) is deleted after each build.
 
 Serving sites (detached servers are tracked by name):
   sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
@@ -186,7 +189,7 @@ const GROUPS: &[Group] = &[
         usage: "server <ls|stop|rm|logs|restart>",
         subs: &[("ls", &servers::PS), ("stop", &servers::STOP), ("rm", &servers::RM), ("logs", &servers::LOGS), ("restart", &servers::RESTART)],
     },
-    Group { name: "cache", usage: "cache <info|prune>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE)] },
+    Group { name: "cache", usage: "cache <info|prune|du>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE), ("du", &cache::DU), ("ls", &cache::DU)] },
 ];
 
 fn is_extra_command(name: Option<&String>) -> bool {
@@ -301,10 +304,15 @@ fn run_main(argv: &[String]) -> i32 {
     if o.flag("frozen-lockfile") && o.flag("update-lock") {
         return usage_error("--frozen-lockfile and --update-lock conflict");
     }
-    match run_build_command(&command, &context, &o) {
+    let code = match run_build_command(&command, &context, &o) {
         Ok(code) => code,
         Err(e) => report(&e),
+    };
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if command == "build" || command == "inspect" {
+        cache::evict_after_build();
     }
+    code
 }
 
 fn run_build_command(command: &str, context: &str, o: &args::Parsed) -> Result<i32> {

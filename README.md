@@ -110,6 +110,7 @@ sitefile inspect  [context] [--json]
 sitefile build [context] -t name[:tag]        # also store the build as an image
 sitefile images | image inspect|diff|prune | tag | rmi | save
 sitefile cache info | cache prune [--older-than days]   # TRANSFORM result cache
+sitefile cache du                                       # cache sizes; SITEFILE_CACHE_MAX bounds them (default 1G)
 sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
