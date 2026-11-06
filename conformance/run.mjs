@@ -17,7 +17,7 @@
 // --sbom), which are byte-identical in-toto statements in both implementations.
 //
 // A case directory may hold case.json: { args, env, out, compare, command, operands,
-// links, files, expectPaths }.
+// links, files, copy, expectPaths }.
 // `command` ("validate", "inspect", "graph" or "why") runs that command instead of
 // build and compares exit code and stdout; `operands` go between the command and
 // the context (`why <path> <context>`). `links` lists [existing, new] hard links to
@@ -25,6 +25,8 @@
 // to contents, created before the case and removed after it (with the
 // top-level directory each one creates), for names that should not be
 // committed as written (NFD file names: write them with JSON \u escapes).
+// `copy` maps context paths to repository paths copied there the same way, so a
+// case can use a binary that is committed once (plugins/image/image.wasm).
 // `expectPaths` lists output paths (exact code points, as read back from the
 // directory listing) that both implementations' tree output must contain.
 // `command: "bake"` copies the case directory once per implementation and runs
@@ -81,6 +83,7 @@ function cases() {
     ex('data'),
     ex('motion', { args: ['--allow-plugin', 'motion'] }),
     ex('wasm'),
+    ex('image'),
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
     ex('hello', { suffix: ':tar', out: 'site.tar', compare: 'archive' }),
     ex('hello', { suffix: ':tgz', out: 'site.tar.gz', compare: 'archive' }),
@@ -236,6 +239,12 @@ try {
       if (!generated.includes(top) && (await fs.lstat(top).catch(() => undefined)) === undefined) generated.push(top);
       await fs.mkdir(path.dirname(path.join(c.context, rel)), { recursive: true });
       await fs.writeFile(path.join(c.context, rel), content);
+    }
+    for (const [rel, from] of Object.entries(c.copy ?? {})) {
+      const top = path.join(c.context, rel.split('/')[0]);
+      if (!generated.includes(top) && (await fs.lstat(top).catch(() => undefined)) === undefined) generated.push(top);
+      await fs.mkdir(path.dirname(path.join(c.context, rel)), { recursive: true });
+      await fs.copyFile(path.join(root, from), path.join(c.context, rel));
     }
     try {
       for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
