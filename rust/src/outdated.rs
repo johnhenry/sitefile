@@ -19,7 +19,7 @@ use crate::digest::sha256;
 use crate::error::Result;
 use crate::executor::{load_program, BuildOptions, LockfileSetting, Loaded};
 use crate::language::ast::ExportFormat;
-use crate::planner::{plan, ImportLocation};
+use crate::planner::{plan, ImportLocation, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::{insecure_registries_from_env, make_client, process_env, RegistryOptions};
 use crate::resources::https::fetch_remote;
@@ -54,7 +54,7 @@ impl Status {
 pub struct Entry {
     /// `import` or `base`.
     pub kind: &'static str,
-    /// The IMPORT name, or `BASE`.
+    /// The IMPORT name, the stage of a `FROM image` base (its name, or `#<n>`), or `BASE`.
     pub name: String,
     /// The URL, or the canonical image reference.
     pub source: String,
@@ -64,7 +64,7 @@ pub struct Entry {
     /// What the source resolves to now.
     pub latest: Option<String>,
     pub status: Status,
-    /// BASE only: a greater version-like tag of the same shape.
+    /// Images only (BASE and FROM image): a greater version-like tag of the same shape.
     pub newer_tag: Option<String>,
     /// (code, message)
     pub error: Option<(String, String)>,
@@ -225,11 +225,11 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         inputs.push(e);
     }
 
-    let base_input = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None });
-    if let Some(input) = base_input {
-        let mut e = Entry { kind: "base", name: "BASE".into(), source: input.clone(), pin: None, pinned_by: None, latest: None, status: Status::Error, newer_tag: None, error: None };
+    // A registry image (BASE or a FROM image base): resolve its tag again and compare with the pin.
+    let image_row = |kind: &'static str, name: String, input: &str| -> Entry {
+        let mut e = Entry { kind, name, source: input.to_string(), pin: None, pinned_by: None, latest: None, status: Status::Error, newer_tag: None, error: None };
         let r = (|| -> Result<()> {
-            let r = with_default_registry(&parse_ref(&input)?);
+            let r = with_default_registry(&parse_ref(input)?);
             let registry = r.registry.clone().unwrap_or_default();
             e.source = format!(
                 "{registry}/{}{}{}",
@@ -273,7 +273,17 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
             e.status = Status::Error;
             e.error = Some((err.code.as_str().to_string(), err.detail));
         }
-        inputs.push(e);
+        e
+    };
+    // FROM image stage bases with a registry (local-store images have no upstream), named by their stage.
+    for (i, st) in p.stages.iter().enumerate() {
+        if let StageBase::Image { reference, local: false, .. } = &st.base {
+            inputs.push(image_row("image", st.name.clone().unwrap_or_else(|| format!("#{}", i + 1)), reference));
+        }
+    }
+    let base_input = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None });
+    if let Some(input) = base_input {
+        inputs.push(image_row("base", "BASE".into(), &input));
     }
     Ok(Report { inputs })
 }

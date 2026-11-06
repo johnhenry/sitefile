@@ -1,0 +1,7 @@
+# A site built on a theme image from the mock registry: the tag is locked, then a frozen, strict build reuses it.
+STAGE theme FROM image ${REGISTRY}/conf/theme:1
+FROM theme
+COPY --overwrite <<HTML /index.html
+<h1>my site on the theme</h1>
+HTML
+EXPORT /

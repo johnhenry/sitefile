@@ -37,7 +37,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
-| `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
+| `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or a registry `FROM image` or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
@@ -71,7 +71,7 @@ sitefile outdated [context] [-f Sitefile] [--json] [--build-arg K=V]... [--build
                   [--base image] [--insecure-registry host[:port]]...
 ```
 
-Reports every remote `IMPORT` and the `BASE` image without changing anything (see
+Reports every remote `IMPORT`, registry `FROM image` and the `BASE` image without changing anything (see
 [LANGUAGE.md](LANGUAGE.md#checking-pins-sitefile-outdated) for what each status means and what cannot be known):
 
 ```
@@ -132,24 +132,25 @@ plans only (like `validate`: nothing is read or fetched), so it shows what the S
 directory holds or which variables a template uses.
 
 - **Nodes** (`id`, `kind`, `label`, and `line` when there is a Sitefile line):
-  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `local:./<path>` (a context
+  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `image:<ref>` (a
+  `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
   `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
-- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory or an
-  earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
+- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory, an
+  image or an earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
   stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation) and
   `export` (the last stage and the site files to `export`).
-- **Order**: imports, plugins, tools, local paths (first use), then per stage its operations and the stage, then
+- **Order**: imports, plugins, tools, images (first use), local paths (first use), then per stage its operations and the stage, then
   the site files and `export`. Edges in the order the stages are walked, without duplicates.
 - **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
   `N nodes, M edges`.
 - `--json`: `{"file", "target"?, "nodes": [{"id", "kind", "label", "line"?}], "edges": [{"from", "to", "kind"}]}`.
 - `--dot`: Graphviz (`sitefile graph --dot | dot -Tsvg > graph.svg`): `rankdir=LR`, a shape per kind (cylinder
-  imports, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
+  imports, tab images, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
   export), dashed `input` edges and bold `base`/`export` edges. `--dot` with any other command, or with `--json`,
   is a usage error.
 

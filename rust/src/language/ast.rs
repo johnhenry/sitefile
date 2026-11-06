@@ -227,6 +227,8 @@ pub struct TransformOption {
 pub enum FromBase {
     Scratch,
     Operand(Operand),
+    /// `image <ref> [AT <dir>]`: the files of an OCI site image (a registry or the local store).
+    Image { reference: Operand, at: Option<Operand> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

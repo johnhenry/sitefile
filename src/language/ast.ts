@@ -23,13 +23,28 @@ export interface FromInstruction {
   readonly kind: 'FROM';
   readonly span: SourceSpan;
   /**
-   * `scratch` keyword, or an operand: an earlier stage name or a context-relative
-   * directory (the planner decides, see docs/LANGUAGE.md).
+   * `scratch` keyword, an operand (an earlier stage name or a context-relative
+   * directory; the planner decides, see docs/LANGUAGE.md), or `image <ref> [AT <dir>]`.
    */
-  readonly base: 'scratch' | Operand;
+  readonly base: FromBase;
   readonly alias?: string;
   /** Set when written as `STAGE <name> [FROM <base>]`; otherwise the instruction is `FROM … [AS name]`. Only used in error messages. */
   readonly keyword?: 'STAGE';
+}
+
+/** `FROM image <ref> [AT <dir>]`: start from the files of an OCI site image (a registry or the local store). */
+export interface ImageBase {
+  readonly kind: 'image';
+  readonly ref: Operand;
+  /** `AT <dir>`: the directory inside the image to start from (default: the image's `dev.sitefile.root` label). */
+  readonly at?: Operand;
+}
+
+export type FromBase = 'scratch' | Operand | ImageBase;
+
+/** Whether a FROM base is `image <ref>`. */
+export function isImageBase(b: FromBase): b is ImageBase {
+  return typeof b === 'object' && 'kind' in b && b.kind === 'image';
 }
 
 export interface ArgInstruction {

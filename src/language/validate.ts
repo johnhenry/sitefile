@@ -1,5 +1,5 @@
 import { SitefileError } from '../errors.js';
-import { FEED_ITEM, IDENT_RE, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
+import { FEED_ITEM, IDENT_RE, isImageBase, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
 /** Import kinds that can produce a list (and so can be sorted). */
@@ -10,7 +10,7 @@ const IMPORT_REF = /^([A-Za-z_][A-Za-z0-9_]*):/;
 function operandsOf(ins: Instruction): Operand[] {
   switch (ins.kind) {
     case 'FROM':
-      return ins.base === 'scratch' ? [] : [ins.base];
+      return ins.base === 'scratch' ? [] : isImageBase(ins.base) ? [ins.base.ref, ...(ins.base.at ? [ins.base.at] : [])] : [ins.base];
     case 'ARG':
       return ins.defaultValue ? [ins.defaultValue] : [];
     case 'LET':
@@ -123,7 +123,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
 
     if (ins.kind === 'FROM') {
       if (currentStage !== undefined) finishedStages.add(currentStage);
-      if (ins.base !== 'scratch') {
+      if (ins.base !== 'scratch' && !isImageBase(ins.base)) {
         // A bare word naming a stage must name an earlier one; './name' always means a directory.
         const text = literalText(ins.base);
         if (text !== undefined && IDENT_RE.test(text) && allStages.has(text) && !finishedStages.has(text)) {

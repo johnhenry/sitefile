@@ -106,15 +106,20 @@ export default grammar({
         $.unsupported_instruction,
       ),
 
-    // FROM scratch|<base> [AS name]
+    // FROM scratch|<base>|image <ref> [AT <dir>] [AS name]
     from_instruction: ($) =>
       seq(kw($, 'FROM'), field('base', $._base), optional(seq(kw($, 'AS'), field('alias', $.identifier)))),
 
-    // STAGE name [FROM scratch|<base>]
+    // STAGE name [FROM scratch|<base>|image <ref> [AT <dir>]]
     stage_instruction: ($) =>
       seq(kw($, 'STAGE'), field('name', $.identifier), optional(seq(kw($, 'FROM'), field('base', $._base)))),
 
-    _base: ($) => choice($.scratch, $._operand),
+    _base: ($) => choice($.scratch, $.image_base, $._operand),
+
+    // image <ref> [AT <dir>]: an OCI site image. The parser reads `image` as a stage or directory name
+    // when nothing (or AS) follows it; here that is an image_base without a reference.
+    image_base: ($) =>
+      seq(kw($, 'IMAGE'), optional(seq(field('reference', $._operand), optional(seq(kw($, 'AT'), field('at', $._operand)))))),
 
     // ARG NAME[: type] [= value]
     arg_instruction: ($) =>

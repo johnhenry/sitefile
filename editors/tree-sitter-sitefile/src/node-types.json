@@ -566,6 +566,10 @@
         "required": true,
         "types": [
           {
+            "type": "image_base",
+            "named": true
+          },
+          {
             "type": "path",
             "named": true
           },
@@ -732,6 +736,64 @@
         "types": [
           {
             "type": "heredoc_delimiter",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "image_base",
+    "named": true,
+    "fields": {
+      "at": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "reference": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
             "named": true
           }
         ]
@@ -1405,6 +1467,10 @@
         "required": false,
         "types": [
           {
+            "type": "image_base",
+            "named": true
+          },
+          {
             "type": "path",
             "named": true
           },
@@ -1971,6 +2037,10 @@
   },
   {
     "type": "HEADER",
+    "named": false
+  },
+  {
+    "type": "IMAGE",
     "named": false
   },
   {

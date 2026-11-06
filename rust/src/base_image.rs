@@ -19,6 +19,7 @@ use crate::resources::local::LocalContext;
 use crate::resources::lockfile::{ImageLockEntry, Lockfile};
 use crate::resources::vendor::Vendor;
 use crate::store::Store;
+use crate::tree::Tree;
 
 pub use crate::registry::insecure_registries_from_env;
 
@@ -39,11 +40,27 @@ pub struct ResolveBaseOptions<'a> {
     pub warn: Option<&'a dyn Fn(&str)>,
     /// Where the BASE was written (for error positions).
     pub span: Option<SourceSpan>,
+    /// How messages name the reference (default `BASE`; `FROM image` for a stage base).
+    pub lead: Option<String>,
+    /// Fail when the image's platform differs from `platform` (default true; FROM image reads only files).
+    pub enforce_platform: Option<bool>,
 }
 
 impl<'a> ResolveBaseOptions<'a> {
     pub fn new(store: &'a Store) -> Self {
-        ResolveBaseOptions { store, platform: None, frozen: false, update: false, vendor: None, registry: RegistryOptions::default(), env: None, warn: None, span: None }
+        ResolveBaseOptions {
+            store,
+            platform: None,
+            frozen: false,
+            update: false,
+            vendor: None,
+            registry: RegistryOptions::default(),
+            env: None,
+            warn: None,
+            span: None,
+            lead: None,
+            enforce_platform: None,
+        }
     }
 }
 
@@ -59,7 +76,12 @@ pub struct BaseRef {
 }
 
 pub fn base_ref(input: &str, span: Option<&SourceSpan>) -> Result<BaseRef> {
-    let r = parse_ref(input).map(|r| with_default_registry(&r)).map_err(|e| SitefileError::new(e.code, format!("BASE: {}", e.detail), span.cloned()))?;
+    base_ref_as(input, span, "BASE")
+}
+
+/// [`base_ref`] with the word messages use for the reference (`BASE`, `FROM image`).
+pub fn base_ref_as(input: &str, span: Option<&SourceSpan>, lead: &str) -> Result<BaseRef> {
+    let r = parse_ref(input).map(|r| with_default_registry(&r)).map_err(|e| SitefileError::new(e.code, format!("{lead}: {}", e.detail), span.cloned()))?;
     let registry = r.registry.clone().unwrap_or_default();
     let tag = r.tag.clone().unwrap_or_else(|| "latest".into());
     let display = if r.tag.is_some() || r.digest.is_none() {
@@ -72,7 +94,8 @@ pub fn base_ref(input: &str, span: Option<&SourceSpan>) -> Result<BaseRef> {
 }
 
 pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<BaseImage> {
-    let BaseRef { r, registry, display, lock_key } = base_ref(input, o.span.as_ref())?;
+    let lead = o.lead.as_deref().unwrap_or("BASE");
+    let BaseRef { r, registry, display, lock_key } = base_ref_as(input, o.span.as_ref(), lead)?;
     let env = o.env.clone().unwrap_or_else(process_env);
     let options = RegistryOptions {
         insecure_registries: insecure_registries_from_env(&o.registry.insecure_registries, &env),
@@ -100,7 +123,7 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
             return Err(SitefileError::new(
                 E_LOCK_MISSING,
                 format!(
-                    "BASE {input}: '{lock_key}' is not in the lockfile (--frozen-lockfile); pin it with @sha256:... or run a build without --frozen-lockfile to record it"
+                    "{lead} {input}: '{lock_key}' is not in the lockfile (--frozen-lockfile); pin it with @sha256:... or run a build without --frozen-lockfile to record it"
                 ),
                 o.span.clone(),
             ));
@@ -112,7 +135,7 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
                 None => {
                     if let Some(w) = o.warn {
                         w(&format!(
-                            "BASE {input} is not pinned and there is no lockfile: the build is not reproducible (use {display}@sha256:... or a Sitefile.lock)"
+                            "{lead} {input} is not pinned and there is no lockfile: the build is not reproducible (use {display}@sha256:... or a Sitefile.lock)"
                         ));
                     }
                 }
@@ -128,9 +151,80 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
         o.store,
         &client,
         &r,
-        &PullImageOptions { platform: o.platform.clone(), enforce_platform: true, root_digest, tag: fresh, on_event: None },
+        &PullImageOptions { platform: o.platform.clone(), enforce_platform: o.enforce_platform.unwrap_or(true), root_digest, tag: fresh, on_event: None },
     )?;
     Ok(BaseImage { name: display, manifest_digest: pulled.id, layers: pulled.manifest.layers, config: pulled.config })
+}
+
+/// A `FROM image` stage base, resolved: its files and the image (manifest) digest they came from.
+pub struct FromImage {
+    pub tree: Tree,
+    /// The platform manifest digest (the image ID).
+    pub digest: String,
+    /// `registry/name:tag` (or the local name as written), without a digest.
+    pub name: String,
+}
+
+/// Resolve `FROM image <ref> [AT <dir>]` to the image's files (port of `resolveFromImage`).
+///
+/// - A reference with a registry host is resolved exactly like a BASE ([`resolve_base`]): pinned by
+///   `@sha256:` or a Sitefile.lock `images` entry, fetched by digest, honouring `--frozen-lockfile`,
+///   `--update-lock`, the vendor directory and the registry's auth/TLS/network rules. Any platform is
+///   accepted (an index is narrowed to `platform`): only the files are read.
+/// - A reference without a registry host (`theme:1`, `theme@sha256:...`, an image ID) names an image in
+///   the local store and never touches the network or the lockfile.
+///
+/// The files are the image's site layer under its `dev.sitefile.root` label (`/` without one), or under
+/// `at`. Their origins read `image <name>@<digest>:<path in the layer>`.
+pub fn resolve_from_image(input: &str, at: Option<&str>, local: bool, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<FromImage> {
+    let lead = o.lead.clone().unwrap_or_else(|| "FROM image".to_string());
+    let (id, name) = if local {
+        let name = input.split('@').next().unwrap_or(input).to_string();
+        let id = o.store.resolve(input).map_err(|e| {
+            if e.code == E_NOT_FOUND {
+                SitefileError::new(
+                    E_NOT_FOUND,
+                    format!("{lead} {input}: no such image in the local store; build it with -t {name}, pull it, or name its registry (registry.example/{name})"),
+                    o.span.clone(),
+                )
+            } else {
+                e
+            }
+        })?;
+        (id, name)
+    } else {
+        let name = base_ref_as(input, o.span.as_ref(), &lead)?.display;
+        let opts = ResolveBaseOptions { lead: Some(lead.clone()), enforce_platform: Some(false), ..o.clone_shallow() };
+        (resolve_base(input, lock, &opts)?.manifest_digest, name)
+    };
+    let tree = o.store.load_tree_with(&id, Some(&format!("image {name}@{id}")), at).map_err(|e| {
+        // Name the FROM line in errors about the image's content (not a Sitefile image, corrupt blobs).
+        if e.span.is_none() && o.span.is_some() {
+            SitefileError::new(e.code, e.detail, o.span.clone())
+        } else {
+            e
+        }
+    })?;
+    Ok(FromImage { tree, digest: id, name })
+}
+
+impl<'a> ResolveBaseOptions<'a> {
+    /// A copy of these options (they hold only references and small values).
+    fn clone_shallow(&self) -> ResolveBaseOptions<'a> {
+        ResolveBaseOptions {
+            store: self.store,
+            platform: self.platform.clone(),
+            frozen: self.frozen,
+            update: self.update,
+            vendor: self.vendor,
+            registry: self.registry.clone(),
+            env: self.env.clone(),
+            warn: self.warn,
+            span: self.span.clone(),
+            lead: self.lead.clone(),
+            enforce_platform: self.enforce_platform,
+        }
+    }
 }
 
 /// Read the blobs of `layers` from the store (verifying each digest), for

@@ -62,7 +62,7 @@ const ORDER: [Status; 5] = [Status::Changed, Status::Unpinned, Status::Error, St
 /// The text report: a table, one line per error, and a summary line.
 pub fn format_outdated(r: &Report) -> String {
     if r.inputs.is_empty() {
-        return "No remote inputs: the Sitefile has no remote IMPORT and no BASE image\n".into();
+        return "No remote inputs: the Sitefile has no remote IMPORT, no registry FROM image and no BASE image\n".into();
     }
     let short = |d: &Option<String>| d.as_deref().map(short_id).unwrap_or_else(|| "-".into());
     let mut rows: Vec<Vec<String>> = vec![["KIND", "NAME", "SOURCE", "PINNED", "BY", "LATEST", "STATUS", "NEWER TAG"].iter().map(|s| s.to_string()).collect()];

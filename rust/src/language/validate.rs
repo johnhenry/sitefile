@@ -16,6 +16,7 @@ fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
     }
     match ins {
         Instruction::From { base: FromBase::Operand(o), .. } => vec![(o, false)],
+        Instruction::From { base: FromBase::Image { reference, at }, .. } => std::iter::once(reference).chain(at).map(|o| (o, false)).collect(),
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
         Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
         Instruction::Let { value, .. } => vec![(value, false)],
