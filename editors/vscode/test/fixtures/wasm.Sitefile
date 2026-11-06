@@ -1,0 +1,10 @@
+# A WebAssembly plugin (written in Rust, see plugins/badge-src) draws a
+# reading-time badge for each post. The module imports nothing, so it can't
+# touch files, the network or the clock.
+FROM scratch
+PLUGIN badge FROM ./plugins/badge.wasm
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+TRANSFORM WITH badge TO /badges/${post.slug}.svg FOR post IN posts
+TRANSFORM WITH badge TO /badges/built-with.svg OPTIONS label=built value="sitefile + wasm" color=#6d28d9
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT /

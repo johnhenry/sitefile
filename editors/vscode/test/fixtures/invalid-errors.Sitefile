@@ -1,0 +1,12 @@
+# Not a valid Sitefile: each line shows how an error is scoped.
+FROM scratch
+RUN npm install
+ARG X: integer = 1
+IMPORT a FROM ./a AS xml INTEGRITY sha256:ABC
+COPY --chmod=644 ./a /a
+RENDER --escape=js ./t TO /t
+RENDER <<HTML TO /x.html
+<p>${a + b}</p>
+HTML
+LET y = "${1bad}"
+EXPORT / AS rar COMPRESSION brotli

@@ -1,0 +1,410 @@
+{
+ "1": {
+  "text": "# Not a valid Sitefile: each line shows how an error is scoped.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Not a valid Sitefile: each line shows how an error is scoped.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "RUN npm install",
+  "tokens": [
+   [
+    "RUN",
+    "invalid.illegal.unsupported-instruction.sitefile"
+   ],
+   [
+    " npm install",
+    ""
+   ]
+  ]
+ },
+ "4": {
+  "text": "ARG X: integer = 1",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "X",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    ":",
+    "meta.instruction.arg.sitefile punctuation.separator.type.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "integer",
+    "meta.instruction.arg.sitefile invalid.illegal.type.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "1",
+    "meta.instruction.arg.sitefile constant.numeric.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "IMPORT a FROM ./a AS xml INTEGRITY sha256:ABC",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "a",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./a",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "xml",
+    "meta.instruction.import.sitefile invalid.illegal.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "INTEGRITY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sha256:ABC",
+    "meta.instruction.import.sitefile invalid.illegal.integrity.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "COPY --chmod=644 ./a /a",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--chmod=644",
+    "meta.instruction.copy.sitefile invalid.illegal.unknown-flag.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "./a",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/a",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "RENDER --escape=js ./t TO /t",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "js",
+    "meta.instruction.render.sitefile invalid.illegal.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./t",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/t",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "RENDER <<HTML TO /x.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/x.html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "<p>${a + b}</p>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${a + b}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html invalid.illegal.template.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "10": {
+  "text": "HTML",
+  "tokens": [
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "11": {
+  "text": "LET y = \"${1bad}\"",
+  "tokens": [
+   [
+    "LET",
+    "meta.instruction.let.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "y",
+    "meta.instruction.let.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.let.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "${1bad}",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile invalid.illegal.interpolation.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "12": {
+  "text": "EXPORT / AS rar COMPRESSION brotli",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "rar",
+    "meta.instruction.export.sitefile invalid.illegal.export-format.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "COMPRESSION",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "brotli",
+    "meta.instruction.export.sitefile invalid.illegal.compression.sitefile"
+   ]
+  ]
+ }
+}

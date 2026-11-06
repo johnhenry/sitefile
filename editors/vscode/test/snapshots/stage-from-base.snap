@@ -1,0 +1,210 @@
+{
+ "1": {
+  "text": "ARG T = 1",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "T",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "1",
+    "meta.instruction.arg.sitefile constant.numeric.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "STAGE base FROM ./src",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "base",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "./src",
+    "meta.instruction.stage.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "COPY <<EOF /extra.txt",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "EOF",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/extra.txt",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "extra",
+  "tokens": [
+   [
+    "extra",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile string.unquoted.heredoc.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "EOF",
+  "tokens": [
+   [
+    "EOF",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "STAGE site FROM base",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "site",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "base",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "COPY --from=base /a.txt /copy.txt",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "base",
+    "meta.instruction.copy.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/a.txt",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/copy.txt",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

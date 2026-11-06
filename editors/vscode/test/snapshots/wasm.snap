@@ -1,0 +1,440 @@
+{
+ "1": {
+  "text": "# A WebAssembly plugin (written in Rust, see plugins/badge-src) draws a",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " A WebAssembly plugin (written in Rust, see plugins/badge-src) draws a",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "# reading-time badge for each post. The module imports nothing, so it can't",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " reading-time badge for each post. The module imports nothing, so it can't",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "# touch files, the network or the clock.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " touch files, the network or the clock.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "PLUGIN badge FROM ./plugins/badge.wasm",
+  "tokens": [
+   [
+    "PLUGIN",
+    "meta.instruction.plugin.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.plugin.sitefile"
+   ],
+   [
+    "badge",
+    "meta.instruction.plugin.sitefile entity.name.function.plugin.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.plugin.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.plugin.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.plugin.sitefile"
+   ],
+   [
+    "./plugins/badge.wasm",
+    "meta.instruction.plugin.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "IMPORT posts FROM ./posts AS markdown SORT BY date DESC",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./posts",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "markdown",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "SORT",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "BY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "date",
+    "meta.instruction.import.sitefile variable.other.property.sort-key.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "DESC",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "TRANSFORM WITH badge TO /badges/${post.slug}.svg FOR post IN posts",
+  "tokens": [
+   [
+    "TRANSFORM",
+    "meta.instruction.transform.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "WITH",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "badge",
+    "meta.instruction.transform.sitefile entity.name.function.plugin.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "/badges/",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "slug",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    ".svg",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "FOR",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.transform.sitefile variable.other.definition.loop.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "IN",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.transform.sitefile variable.other.readwrite.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "TRANSFORM WITH badge TO /badges/built-with.svg OPTIONS label=built value=\"sitefile + wasm\" color=#6d28d9",
+  "tokens": [
+   [
+    "TRANSFORM",
+    "meta.instruction.transform.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "WITH",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "badge",
+    "meta.instruction.transform.sitefile entity.name.function.plugin.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "/badges/built-with.svg",
+    "meta.instruction.transform.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "OPTIONS",
+    "meta.instruction.transform.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "label",
+    "meta.instruction.transform.sitefile entity.other.attribute-name.option.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.transform.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "built ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "value",
+    "meta.instruction.transform.sitefile entity.other.attribute-name.option.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.transform.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.transform.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "sitefile + wasm",
+    "meta.instruction.transform.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.transform.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.transform.sitefile"
+   ],
+   [
+    "color",
+    "meta.instruction.transform.sitefile entity.other.attribute-name.option.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.transform.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "#6d28d9",
+    "meta.instruction.transform.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "RENDER --escape=html ./templates/index.html TO /index.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./templates/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "10": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

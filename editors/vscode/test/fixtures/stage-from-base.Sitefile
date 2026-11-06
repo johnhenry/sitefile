@@ -1,0 +1,8 @@
+ARG T = 1
+STAGE base FROM ./src
+COPY <<EOF /extra.txt
+extra
+EOF
+STAGE site FROM base
+COPY --from=base /a.txt /copy.txt
+EXPORT /
