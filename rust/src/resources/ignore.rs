@@ -58,6 +58,23 @@ impl IgnoreRules {
         IgnoreRules { rules }
     }
 
+    /// Rules from `COPY --exclude` patterns, one `.sitefileignore` line each (see [`is_ignore_pattern`]).
+    pub fn from_patterns(patterns: &[String]) -> IgnoreRules {
+        IgnoreRules { rules: patterns.iter().filter_map(|p| parse_line(p)).collect() }
+    }
+
+    /// Whether `rel` (relative to the rules' root) is excluded, counting excluded parent directories:
+    /// what a directory walk that does not descend into excluded directories would skip.
+    pub fn excludes(&self, rel: &str) -> bool {
+        let segs: Vec<&str> = rel.split('/').collect();
+        for i in 1..segs.len() {
+            if self.ignores(&segs[..i].join("/"), true) {
+                return true;
+            }
+        }
+        self.ignores(rel, false)
+    }
+
     pub fn size(&self) -> usize {
         self.rules.len()
     }
@@ -95,6 +112,11 @@ fn strip_trailing_space(raw: &str) -> String {
         s
     };
     chars[..cut].iter().collect()
+}
+
+/// Whether `text` is a `.sitefileignore` rule (not blank, a `#` comment, or only `!` and `/`).
+pub fn is_ignore_pattern(text: &str) -> bool {
+    parse_line(text).is_some()
 }
 
 fn parse_line(raw: &str) -> Option<Rule> {
@@ -218,6 +240,13 @@ mod tests {
     }
     fn igd(text: &str, rel: &str) -> bool {
         IgnoreRules::parse(text).ignores(rel, true)
+    }
+
+    #[test]
+    fn exclude_patterns_count_parent_directories() {
+        let r = IgnoreRules::from_patterns(&["drafts/".into(), "*.md".into(), "!keep.md".into()]);
+        assert!(r.excludes("drafts/a/b.html") && r.excludes("x/a.md") && !r.excludes("x/keep.md") && !r.excludes("a.html"));
+        assert!(is_ignore_pattern("*.md") && !is_ignore_pattern("#x") && !is_ignore_pattern("/") && !is_ignore_pattern("!"));
     }
 
     #[test]

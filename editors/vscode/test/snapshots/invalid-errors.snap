@@ -153,7 +153,7 @@
   ]
  },
  "6": {
-  "text": "COPY --chmod=644 ./a /a",
+  "text": "COPY --chown=1 ./a /a",
   "tokens": [
    [
     "COPY",
@@ -164,7 +164,7 @@
     "meta.instruction.copy.sitefile"
    ],
    [
-    "--chmod=644",
+    "--chown=1",
     "meta.instruction.copy.sitefile invalid.illegal.unknown-flag.sitefile"
    ],
    [
@@ -186,6 +186,51 @@
   ]
  },
  "7": {
+  "text": "COPY --chmod=600 ./a /a",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "chmod",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "600",
+    "meta.instruction.copy.sitefile invalid.illegal.mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "./a",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/a",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "8": {
   "text": "RENDER --escape=js ./t TO /t",
   "tokens": [
    [
@@ -238,7 +283,7 @@
    ]
   ]
  },
- "8": {
+ "9": {
   "text": "RENDER <<HTML TO /x.html",
   "tokens": [
    [
@@ -275,7 +320,7 @@
    ]
   ]
  },
- "9": {
+ "10": {
   "text": "<p>${a + b}</p>",
   "tokens": [
    [
@@ -308,7 +353,7 @@
    ]
   ]
  },
- "10": {
+ "11": {
   "text": "HTML",
   "tokens": [
    [
@@ -317,7 +362,7 @@
    ]
   ]
  },
- "11": {
+ "12": {
   "text": "LET y = \"${1bad}\"",
   "tokens": [
    [
@@ -358,7 +403,7 @@
    ]
   ]
  },
- "12": {
+ "13": {
   "text": "EXPORT / AS rar COMPRESSION brotli",
   "tokens": [
    [

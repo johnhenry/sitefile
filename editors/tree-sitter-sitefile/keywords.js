@@ -15,7 +15,7 @@ export const KEYWORDS = {
   escapeModes: ['none', 'html'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
-    COPY: ['overwrite', 'from'],
+    COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
     TRANSFORM: ['overwrite', 'from'],
     SITEMAP: ['overwrite'],

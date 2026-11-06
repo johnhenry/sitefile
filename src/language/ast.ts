@@ -97,6 +97,12 @@ export interface CopyInstruction {
   readonly from?: StageRef;
   /** `--overwrite`: replace files that differ instead of failing. */
   readonly overwrite: boolean;
+  /** `--exclude=<pattern>` (repeatable): `.sitefileignore` patterns, relative to the source directory. */
+  readonly exclude?: readonly string[];
+  /** `--chmod=644|755`: the mode of every copied file (0o644 or 0o755). */
+  readonly chmod?: number;
+  /** `--parents`: keep the source's path under the destination. */
+  readonly parents?: true;
 }
 
 export interface RenderInstruction {

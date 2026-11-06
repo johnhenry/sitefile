@@ -149,3 +149,13 @@ test('# sitefile=N is highlighted as the version directive', async () => {
   has(scopesOf(r, 3, '1.0'), 'invalid.illegal.version');
   for (const [, s] of r[3].tokens) hasNot(s, 'directive');
 });
+
+test('COPY --exclude, --chmod and --parents', async () => {
+  const r = await tokenize('COPY --exclude=*.md --exclude=drafts/ --chmod=755 --parents ./src /out/\nCOPY --chmod=600 a /b\n');
+  has(scopesOf(r, 1, 'exclude'), 'variable.parameter.flag');
+  has(scopesOf(r, 1, '*.md'), 'string.unquoted.glob');
+  has(scopesOf(r, 1, 'drafts/'), 'string.unquoted.glob');
+  has(scopesOf(r, 1, '755'), 'constant.numeric.mode');
+  has(scopesOf(r, 1, 'parents'), 'variable.parameter.flag');
+  has(scopesOf(r, 2, '600'), 'invalid.illegal.mode');
+});

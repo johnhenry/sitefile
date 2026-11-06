@@ -2581,7 +2581,44 @@
               }
             },
             {
-              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "match": "(?<![^\\s])(--)(chmod)(=)(?:(0?(?:644|755))(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "constant.numeric.mode.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.mode.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(exclude)(=)(\\S+)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "string.unquoted.glob.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite|parents)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"

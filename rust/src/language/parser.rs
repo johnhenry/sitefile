@@ -8,6 +8,7 @@ use crate::language::ast::{
     SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
+use crate::resources::ignore::is_ignore_pattern;
 
 const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 
@@ -36,7 +37,13 @@ pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT and HEADER.
 pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
-pub const COPY_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const COPY_FLAGS: &[(&str, Shape)] = &[
+    ("overwrite", Shape::Bare),
+    ("from", Shape::Value),
+    ("exclude", Shape::Repeat),
+    ("chmod", Shape::Value),
+    ("parents", Shape::Bare),
+];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
 pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
 
@@ -212,6 +219,8 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
 pub enum Shape {
     Bare,
     Value,
+    /// A value flag that may be given several times (`--exclude`).
+    Repeat,
 }
 
 struct ParsedFlag {
@@ -229,6 +238,10 @@ impl Flags {
     fn has(&self, name: &str) -> bool {
         self.get(name).is_some()
     }
+    /// Every occurrence of a repeatable flag, in order.
+    fn all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a ParsedFlag> + 'a {
+        self.0.iter().filter(move |f| f.name == name)
+    }
 }
 
 /// Read leading `--flags` (value `""` for a bare flag).
@@ -238,13 +251,13 @@ fn parse_flags(c: &mut Cursor, allowed: &[(&'static str, Shape)]) -> Result<Flag
         let Some(&(name, shape)) = allowed.iter().find(|(n, _)| *n == f.name) else {
             return Err(SitefileError::at(E_SYNTAX, format!("unknown flag --{}", f.name), &f.span));
         };
-        if out.has(name) {
+        if out.has(name) && shape != Shape::Repeat {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} given twice"), &f.span));
         }
         if shape == Shape::Bare && f.value.is_some() {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} takes no value"), &f.span));
         }
-        if shape == Shape::Value && f.value.as_deref().unwrap_or("").is_empty() {
+        if shape != Shape::Bare && f.value.as_deref().unwrap_or("").is_empty() {
             return Err(SitefileError::at(E_SYNTAX, format!("--{name} requires a value (--{name}=...)"), &f.span));
         }
         out.0.push(ParsedFlag { name, value: f.value.unwrap_or_default(), span: f.span });
@@ -276,15 +289,49 @@ fn inline_or_operand(c: &mut Cursor, what: &str) -> Result<Source> {
     }
 }
 
+/// `--chmod` values: Sitefile trees only hold 0644 and 0755 files.
+fn chmod_mode(value: &str) -> Option<u32> {
+    match value {
+        "644" | "0644" => Some(0o644),
+        "755" | "0755" => Some(0o755),
+        _ => None,
+    }
+}
+
 fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, COPY_FLAGS)?;
+    for e in flags.all("exclude") {
+        if !is_ignore_pattern(&e.value) {
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("--exclude={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.value),
+                &e.span,
+            ));
+        }
+    }
+    let chmod = match flags.get("chmod") {
+        None => None,
+        Some(f) => Some(chmod_mode(&f.value).ok_or_else(|| {
+            SitefileError::at(
+                E_SYNTAX,
+                format!("--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '{}'", f.value),
+                &f.span,
+            )
+        })?),
+    };
     let source = inline_or_operand(c, "source")?;
     let dest = c.operand("destination")?;
     c.expect_end()?;
     c.expect_inline_used("the COPY source")?;
     no_inline_from(&source, &flags)?;
+    for name in ["exclude", "parents"] {
+        if let (Some(f), Source::Inline(_)) = (flags.get(name), &source) {
+            return Err(SitefileError::at(E_SYNTAX, format!("--{name} cannot be combined with an inline (<<) body"), &f.span));
+        }
+    }
     let from = stage_ref(&flags)?;
-    Ok(Instruction::Copy { span, source, dest, from, overwrite: flags.has("overwrite") })
+    let exclude = flags.all("exclude").map(|f| f.value.clone()).collect();
+    Ok(Instruction::Copy { span, source, dest, from, overwrite: flags.has("overwrite"), exclude, chmod, parents: flags.has("parents") })
 }
 
 fn parse_for(c: &mut Cursor, span: SourceSpan) -> Result<ForEach> {
@@ -562,6 +609,33 @@ mod tests {
         let mut all = parse_sitefile(src, "Sitefile").unwrap();
         assert_eq!(all.len(), 1, "{src}");
         all.remove(0)
+    }
+
+    #[test]
+    fn copy_exclude_chmod_parents() {
+        match one("COPY --exclude=*.md --exclude=drafts/ --chmod=0755 --parents ./src /out/") {
+            Instruction::Copy { exclude, chmod, parents, .. } => {
+                assert_eq!(exclude, ["*.md", "drafts/"]);
+                assert_eq!(chmod, Some(0o755));
+                assert!(parents);
+            }
+            other => panic!("{other:?}"),
+        }
+        match one("COPY ./a /b") {
+            Instruction::Copy { exclude, chmod, parents, .. } => assert!(exclude.is_empty() && chmod.is_none() && !parents),
+            other => panic!("{other:?}"),
+        }
+        let err = |src: &str| {
+            let e = parse_sitefile(src, "Sitefile").unwrap_err();
+            (e.code, e.span.map(|s| s.column), e.detail)
+        };
+        assert_eq!(err("COPY --chmod=600 a /b"), (E_SYNTAX, Some(6), "--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '600'".into()));
+        assert_eq!(err("COPY --chmod=644 --chmod=644 a /b").2, "--chmod given twice");
+        assert_eq!(err("COPY --exclude a /b").2, "--exclude requires a value (--exclude=...)");
+        assert!(err("COPY --exclude=#x a /b").2.starts_with("--exclude=#x is not a pattern"));
+        assert_eq!(err("COPY --parents <<EOF /b\nx\nEOF").2, "--parents cannot be combined with an inline (<<) body");
+        assert_eq!(err("COPY --exclude=x <<EOF /b\nx\nEOF").2, "--exclude cannot be combined with an inline (<<) body");
+        assert_eq!(parse_sitefile("COPY --chmod=755 <<EOF /b\nx\nEOF", "Sitefile").unwrap().len(), 1);
     }
 
     fn copy_op(src: &str, dest: bool) -> Operand {

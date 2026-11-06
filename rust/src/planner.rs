@@ -138,7 +138,17 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
-    Copy { source: SourceRef, dest: String, dest_is_dir: bool, overwrite: bool, span: SourceSpan },
+    /// `exclude`, `chmod`, `parents`: COPY's `--exclude`, `--chmod` and `--parents`.
+    Copy {
+        source: SourceRef,
+        dest: String,
+        dest_is_dir: bool,
+        overwrite: bool,
+        exclude: Vec<String>,
+        chmod: Option<u32>,
+        parents: bool,
+        span: SourceSpan,
+    },
     Render {
         template: SourceRef,
         /// Normalized destination; `""` when `each` is set (computed per element).
@@ -345,7 +355,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     None => imports.push(spec),
                 }
             }
-            Instruction::Copy { span, source, dest, from, overwrite } => {
+            Instruction::Copy { span, source, dest, from, overwrite, exclude, chmod, parents } => {
                 let d = normalize_virtual(&evaluate_operand(dest, &vars)?, Some(&dest.span), "COPY destination")?;
                 if matches!(source, Source::Inline(_)) && d.trailing_slash {
                     return Err(SitefileError::at(
@@ -360,6 +370,9 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     dest: d.path,
                     dest_is_dir: d.trailing_slash,
                     overwrite: *overwrite,
+                    exclude: exclude.clone(),
+                    chmod: *chmod,
+                    parents: *parents,
                     span: span.clone(),
                 });
             }
@@ -741,11 +754,20 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Copy { source, dest, dest_is_dir, overwrite, span } => {
+            Operation::Copy { source, dest, dest_is_dir, overwrite, exclude, chmod, parents, span } => {
                 m.insert("source".into(), source.to_json());
                 m.insert("dest".into(), json!(dest));
                 m.insert("destIsDir".into(), json!(dest_is_dir));
                 m.insert("overwrite".into(), json!(overwrite));
+                if !exclude.is_empty() {
+                    m.insert("exclude".into(), json!(exclude));
+                }
+                if let Some(c) = chmod {
+                    m.insert("chmod".into(), json!(c));
+                }
+                if *parents {
+                    m.insert("parents".into(), json!(true));
+                }
                 m.insert("span".into(), span_json(span));
             }
             Operation::Render { template, dest, each, escape, overwrite, span } => {
