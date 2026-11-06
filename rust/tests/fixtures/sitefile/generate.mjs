@@ -49,7 +49,9 @@ const maybe = (s, p = 0.5) => (chance(p) ? (typeof s === 'function' ? s() : s) :
 
 const NAMES = ['a', 'b', 'site', 'posts', 'TITLE', 'x', 'out', 'md', 'og', 'cp', 'post', 'build', '_n', 'A1', 'data', 'item'];
 const TYPES = ['string', 'number', 'boolean', 'String', 'NUMBER', 'int', 'bool'];
-const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml'];
+const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml', 'sitefile', 'SITEFILE'];
+/** Stages of imported Sitefiles (`<import>+<stage>`, issue #97), and near misses. */
+const QUALIFIED = ['site+a', 'a+b', 'data+build', 'a+', '+b', 'a+b+c', 'a++b', 'a+1'];
 const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
 const DIGEST = 'sha256:' + 'ab'.repeat(32);
 const DIGESTS = [DIGEST, DIGEST.toUpperCase(), 'sha256:abc', 'md5:x', '"' + DIGEST + '"', 'sha256:${x}'];
@@ -72,8 +74,8 @@ const imageBase = () => `${pick(['image', 'IMAGE', 'Image'])} ${pick(IMAGES)}${m
 
 /** Instruction lines (one string; heredoc bodies use \n). Add new instructions here. */
 const INSTRUCTIONS = {
-  FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
-  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x'])}`)}`,
+  FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS, ...QUALIFIED.slice(0, 4)])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
+  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x', ...QUALIFIED])}`)}`,
   ARG: () => `ARG ${pick(NAMES)}${maybe(() => `${pick([':', ' : ', ': '])}${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = ', '= '])}${pick(VALUES)}`, 0.6)}`,
   LET: () => `LET ${pick(NAMES)}${maybe(() => `:${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = '])}${pick(VALUES)}`, 0.85)}`,
   IMPORT: () => {
@@ -85,13 +87,17 @@ const INSTRUCTIONS = {
     for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
       clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
     }
+    // ARG clauses of an IMPORT … AS sitefile (issue #97), sometimes twice or malformed.
+    for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
+      clauses.push(`${pick(['ARG', 'arg'])} ${pick(['X=1', 'TITLE = "a b"', 'x=${x}', 'X', '=1', '1x=2', 'X=', 'X:number=1', "A='lit'"])}`);
+    }
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
   COPY: () =>
-    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
+    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
     let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
     if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
@@ -129,7 +135,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -209,6 +215,9 @@ function validProgram() {
     vars.push('slug');
   }
   const v = () => '${' + pick(vars) + '}';
+  // A Sitefile imported AS sitefile (issue #97); it may come before the first stage.
+  const theme = chance(0.3);
+  if (theme) lines.push(`IMPORT theme FROM ${pick(['./theme', 'git+https://e.x/t.git#v1:theme', 'git+https://e.x/t.git'])} AS sitefile${maybe(() => ` ARG ACCENT=${v()}`)}${maybe(' ARG N=2')}`);
   if (chance(0.5)) {
     lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}`);
     lists.push('posts');
@@ -230,6 +239,7 @@ function validProgram() {
   const stage = () => {
     const n = `s${stages.length}`;
     stages.push(n);
+    if (theme && chance(0.3)) return `STAGE ${n} FROM theme+${pick(['assets', 'layout'])}`;
     return chance(0.5) ? `STAGE ${n}${maybe(' FROM scratch')}` : `FROM scratch AS ${n}`;
   };
   const ops = [
@@ -240,6 +250,7 @@ function validProgram() {
     () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
+    () => (theme ? pick(['COPY --from=theme+assets / /t/', 'RENDER --escape=html --from=theme+layout /page.html TO /t.html']) : 'COPY ./v /v'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
     () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
     () => `SITEMAP ${maybe('--overwrite ')}BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' TO /map.xml')}`,
@@ -377,6 +388,16 @@ const EDGE = [
   'STAGE s FROM image ghcr.io/a/b:1 AT /srv/www\nEXPORT /', 'STAGE s FROM image\nEXPORT /', 'STAGE s FROM image t:1 AS x\nEXPORT /', 'FROM image Bad:1\nEXPORT /',
   'ARG V=1\nFROM image theme:${V} AS t\nFROM t\nEXPORT /', 'FROM image t:1 AT rel\nEXPORT /', 'FROM image t@sha256:' + 'a'.repeat(64) + ' AT /x/../y\nEXPORT /',
   'STAGE image\nFROM image\nEXPORT /', 'STAGE image\nFROM image AS b\nEXPORT /', 'FROM image ${NOPE}\nEXPORT /',
+  // IMPORT … AS sitefile and <import>+<stage> (issue #97).
+  'IMPORT t FROM ./theme AS sitefile\nFROM t+assets\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile ARG A=1 ARG B="x y"\nSTAGE s FROM t+a\nCOPY --from=t+b / /b/\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile ARG A=1 ARG A=2\nEXPORT /', 'IMPORT t FROM ./theme AS json ARG A=1\nEXPORT /', 'IMPORT t FROM ./theme ARG A=1 AS sitefile\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'IMPORT t FROM https://e.x/t AS sitefile\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM git+https://e.x/t.git#v1:theme AS sitefile SECRET k AS BEARER\nFROM t+a\nEXPORT /', 'FROM scratch\nCOPY --from=t+a / /\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nCOPY t: /\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nRENDER <<H TO /x FOR i IN t\nx\nH\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nFEED t BASE https://e.x LINK /a\nEXPORT /', 'FROM t+a\nEXPORT /', 'IMPORT t FROM ./t.json AS json\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile ARG X\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile ARG X=${NOPE}\nEXPORT /', 'ARG V=1\nIMPORT t FROM ./theme AS sitefile ARG X=${V}\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nCOPY --from=t+a+b / /\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE t\nEXPORT /', 'STAGE t\nIMPORT t FROM ./theme AS sitefile\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nIMPORT d FROM ./d AS json\nFROM t+a\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE s FROM ./t+a\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

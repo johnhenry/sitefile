@@ -16,7 +16,7 @@ export interface Operand {
 }
 
 export type ValueType = 'string' | 'number' | 'boolean';
-export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn';
+export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn' | 'sitefile';
 export type EscapeMode = 'none' | 'html';
 
 export interface FromInstruction {
@@ -77,6 +77,15 @@ export interface ImportInstruction {
   readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
   /** `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets, sent with remote requests). */
   readonly secrets?: readonly ImportSecret[];
+  /** `ARG NAME=value` (repeatable): build args passed to a Sitefile imported `AS sitefile`. */
+  readonly args?: readonly ImportArg[];
+}
+
+/** `ARG NAME=value` on an `IMPORT … AS sitefile`: sets an ARG of the imported Sitefile. */
+export interface ImportArg {
+  readonly name: string;
+  readonly value: Operand;
+  readonly span: SourceSpan;
 }
 
 /** A build secret sent as an HTTP request header of a remote IMPORT. */
@@ -312,6 +321,15 @@ export function literalText(op: Operand | InlineBody): string | undefined {
 
 /** Names of ARG, LET, IMPORT and stages (`FROM … AS name`, `--from=name`). */
 export const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A stage of an imported Sitefile: `<import>+<stage>` (`IMPORT theme … AS sitefile`, then `FROM theme+assets`). */
+export const IMPORTED_STAGE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\+([A-Za-z_][A-Za-z0-9_]*)$/;
+
+/** `theme+assets` -> `{ import: 'theme', stage: 'assets' }`; undefined for anything else. */
+export function importedStage(name: string): { readonly import: string; readonly stage: string } | undefined {
+  const m = IMPORTED_STAGE_RE.exec(name);
+  return m ? { import: m[1]!, stage: m[2]! } : undefined;
+}
 
 /** Every stage alias declared anywhere in the file. */
 export function stageNames(instructions: readonly Instruction[]): Set<string> {

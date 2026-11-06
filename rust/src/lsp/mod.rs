@@ -67,7 +67,7 @@ impl Document {
 
 /// The last path segment of a `file://` URI, percent-decoded (`Sitefile` otherwise).
 /// The local path of a `file://` URI (percent-decoded), if it is one.
-fn uri_path(uri: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn uri_path(uri: &str) -> Option<std::path::PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     Some(std::path::PathBuf::from(percent_decode(rest)))
 }

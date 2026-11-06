@@ -1,0 +1,5 @@
+# The imported Sitefile has a required ARG; the IMPORT does not set it (this build's --build-args never reach it).
+ARG N = 3
+IMPORT theme FROM ./theme AS sitefile
+FROM theme+assets
+EXPORT /

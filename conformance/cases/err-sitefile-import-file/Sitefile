@@ -1,0 +1,4 @@
+# AS sitefile names a directory, not a file.
+IMPORT theme FROM ./theme.Sitefile AS sitefile
+FROM theme+assets
+EXPORT /

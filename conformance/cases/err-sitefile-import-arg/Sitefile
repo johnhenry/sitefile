@@ -1,0 +1,4 @@
+# An ARG clause for an ARG the imported Sitefile does not declare.
+IMPORT theme FROM ./theme AS sitefile ARG COLOR=red
+FROM theme+assets
+EXPORT /

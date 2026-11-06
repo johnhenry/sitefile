@@ -1,5 +1,5 @@
-import { SitefileError } from '../errors.js';
-import { FEED_ITEM, IDENT_RE, isImageBase, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
+import { SitefileError, type SourceSpan } from '../errors.js';
+import { FEED_ITEM, IDENT_RE, importedStage, isImageBase, isInline, literalText, stageNames, type InlineBody, type Instruction, type Operand, type Program, type StageRef } from './ast.js';
 import { parseSitefile } from './parser.js';
 
 /** Import kinds that can produce a list (and so can be sorted). */
@@ -16,7 +16,7 @@ export function operandsOf(ins: Instruction): Operand[] {
     case 'LET':
       return [ins.value];
     case 'IMPORT':
-      return [ins.uri];
+      return [ins.uri, ...(ins.args ?? []).map((a) => a.value)];
     case 'COPY':
       return isInline(ins.source) ? [ins.dest] : [ins.source, ins.dest];
     case 'RENDER':
@@ -80,6 +80,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   let currentStage: string | undefined;
   const plugins = new Set<string>();
   const tools = new Set<string>();
+  /** IMPORTs `AS sitefile`: `<name>+<stage>` names a stage of the imported Sitefile. */
+  const sitefiles = new Set<string>();
   /** One namespace for ARG/LET, IMPORT, stage and PLUGIN names. */
   const taken = (name: string): boolean => vars.has(name) || imports.has(name) || declaredStages.has(name) || plugins.has(name) || tools.has(name);
   let sawFrom = false;
@@ -89,7 +91,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   for (const ins of instructions) {
     // The first instruction other than ARG, with no FROM yet, starts an implicit unnamed `FROM scratch`
     // stage. It has no source line of its own, so it takes that instruction's span.
-    if (!sawFrom && ins.kind !== 'FROM' && ins.kind !== 'ARG') {
+    // An IMPORT … AS sitefile may come first too, so a file can start FROM one of its stages.
+    if (!sawFrom && ins.kind !== 'FROM' && ins.kind !== 'ARG' && !(ins.kind === 'IMPORT' && ins.as === 'sitefile')) {
       out.push({ kind: 'FROM', span: ins.span, base: 'scratch' });
       sawFrom = true;
     }
@@ -126,7 +129,9 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       if (ins.base !== 'scratch' && !isImageBase(ins.base)) {
         // A bare word naming a stage must name an earlier one; './name' always means a directory.
         const text = literalText(ins.base);
-        if (text !== undefined && IDENT_RE.test(text) && allStages.has(text) && !finishedStages.has(text)) {
+        const imported = text === undefined ? undefined : importedStage(text);
+        // `<import>+<stage>` of an IMPORT … AS sitefile: whether the stage exists is checked when that Sitefile is read.
+        if (!(imported && sitefiles.has(imported.import)) && text !== undefined && IDENT_RE.test(text) && allStages.has(text) && !finishedStages.has(text)) {
           throw new SitefileError(
             'E_UNDEFINED',
             `${ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'} ${text}: stage '${text}' is not defined before this line (write ./${text} for a local directory)`,
@@ -159,18 +164,28 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (ins.sort && !SORTABLE.has(ins.as ?? '')) {
           throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY applies to lists: AS markdown, json, yaml or csv`, ins.sort.span);
         }
+        if (ins.args && ins.as !== 'sitefile') {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: ARG sets a build arg of an imported Sitefile, so it needs AS sitefile`, ins.args[0]!.span);
+        }
+        if (ins.as === 'sitefile') {
+          if (ins.integrity) {
+            throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: INTEGRITY does not apply to AS sitefile (pin a Git import by its commit, #<40 hex>[:path])`, ins.span);
+          }
+          sitefiles.add(ins.name);
+        }
         imports.add(ins.name);
         break;
       case 'COPY':
-        checkSource(ins.source, imports, ins.from, finishedStages, allStages);
+        checkSource(ins.source, imports, ins.from, finishedStages, allStages, sitefiles);
         break;
       case 'RENDER':
-        checkSource(ins.template, imports, ins.from, finishedStages, allStages);
+        checkSource(ins.template, imports, ins.from, finishedStages, allStages, sitefiles);
         if (ins.each) {
           const { as, list, span } = ins.each;
           if (!imports.has(list)) {
             throw new SitefileError('E_UNDEFINED', `FOR ${as} IN ${list}: '${list}' is not an IMPORT declared on an earlier line`, span);
           }
+          notSitefile(list, `FOR ${as} IN ${list}`, span, sitefiles);
           if (taken(as) || allStages.has(as)) {
             throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
           }
@@ -192,12 +207,13 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
           throw new SitefileError('E_VALIDATION', `ARGS applies to a TOOL; ${ins.plugin} is a PLUGIN (pass values with OPTIONS)`, ins.span);
         }
         // With no source and no FOR the plugin gets only its OPTIONS (e.g. a badge or a generated file).
-        if (ins.source) checkSource(ins.source, imports, ins.from, finishedStages, allStages);
+        if (ins.source) checkSource(ins.source, imports, ins.from, finishedStages, allStages, sitefiles);
         if (ins.each) {
           const { as, list, span } = ins.each;
           if (!imports.has(list)) {
             throw new SitefileError('E_UNDEFINED', `FOR ${as} IN ${list}: '${list}' is not an IMPORT declared on an earlier line`, span);
           }
+          notSitefile(list, `FOR ${as} IN ${list}`, span, sitefiles);
           if (taken(as)) throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
         }
         break;
@@ -205,6 +221,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         if (!imports.has(ins.list)) {
           throw new SitefileError('E_UNDEFINED', `FEED ${ins.list}: '${ins.list}' is not an IMPORT declared on an earlier line`, ins.listSpan);
         }
+        notSitefile(ins.list, `FEED ${ins.list}`, ins.listSpan, sitefiles);
         break;
       case 'SITEMAP':
       case 'REDIRECT':
@@ -221,14 +238,28 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
   return { file, instructions: out };
 }
 
+/** A FOR or FEED list must be a value import, not a Sitefile imported AS sitefile. */
+function notSitefile(name: string, what: string, span: SourceSpan, sitefiles: ReadonlySet<string>): void {
+  if (sitefiles.has(name)) throw new SitefileError('E_TYPE', `${what}: '${name}' is a Sitefile import, not a list`, span);
+}
+
 function checkSource(
   op: Operand | InlineBody,
   imports: ReadonlySet<string>,
   from: StageRef | undefined,
   finished: ReadonlySet<string>,
   all: ReadonlySet<string>,
+  sitefiles: ReadonlySet<string>,
 ): void {
   if (isInline(op)) return; // content is in the Sitefile itself
+  const imported = from ? importedStage(from.name) : undefined;
+  if (from && imported) {
+    // `--from=<import>+<stage>`: a stage of an imported Sitefile (whether it exists is checked when that Sitefile is read).
+    if (!sitefiles.has(imported.import)) {
+      throw new SitefileError('E_UNDEFINED', `--from=${from.name}: '${imported.import}' is not an IMPORT … AS sitefile declared on an earlier line`, from.span);
+    }
+    return;
+  }
   if (from) {
     // The source is a path inside the stage, not an import ref or local path.
     if (!finished.has(from.name)) {
@@ -245,6 +276,9 @@ function checkSource(
   const m = IMPORT_REF.exec(text);
   if (m && !imports.has(m[1]!)) {
     throw new SitefileError('E_UNDEFINED', `unknown import '${m[1]}' (declare it with IMPORT on an earlier line, or write ./${text} for a local path)`, op.span);
+  }
+  if (m && sitefiles.has(m[1]!)) {
+    throw new SitefileError('E_TYPE', `'${m[1]}' is a Sitefile import; read one of its stages with --from=${m[1]}+<stage>`, op.span);
   }
 }
 

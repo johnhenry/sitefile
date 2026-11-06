@@ -105,8 +105,9 @@ pub struct BuildFacts {
     pub platform: String,
     pub imports: Vec<ImportFact>,
     pub base: Option<(String, String)>,
-    /// `FROM image` stage bases, in stage order: (FROM line, image name, image digest).
-    pub images: Vec<(u32, String, String)>,
+    /// `FROM image` stage bases, in stage order: (FROM line, image name, image digest, the qualified name of
+    /// the imported Sitefile (IMPORT … AS sitefile) whose stage it is).
+    pub images: Vec<(u32, String, String, Option<String>)>,
     /// `--strict-pins`: how each remote input was pinned (shown in the provenance).
     pub pins: Option<crate::executor::Pins>,
     /// File origins start with the Sitefile label (relative to the cwd).
@@ -191,7 +192,7 @@ pub fn build_facts(
         platform: platform.unwrap_or("linux/amd64").to_string(),
         imports,
         base: result.base.as_ref().map(|b| (b.name.clone(), b.manifest_digest.clone())),
-        images: result.images.iter().map(|i| (i.line, i.name.clone(), i.digest.clone())).collect(),
+        images: result.images.iter().map(|i| (i.line, i.name.clone(), i.digest.clone(), i.import.clone())).collect(),
         pins: result.pins.clone(),
         label: match label {
             Some(l) => l.to_string(),
@@ -234,9 +235,15 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
         }
         deps.push(d);
     }
-    for (line, name, digest) in &facts.images {
-        let mut d = json!({ "name": format!("from:{line}"), "uri": name, "digest": { "sha256": hex(digest) } });
-        if let Some(pin) = facts.pins.as_ref().and_then(|p| p.images.iter().find(|(l, _)| l == line).map(|(_, b)| *b)) {
+    for (line, name, digest, import) in &facts.images {
+        // A stage of an imported Sitefile is `from:<import>:<line>` (its line is in that Sitefile); --strict-pins checked it there.
+        let dep = match import {
+            Some(i) => format!("from:{i}:{line}"),
+            None => format!("from:{line}"),
+        };
+        let mut d = json!({ "name": dep, "uri": name, "digest": { "sha256": hex(digest) } });
+        let pin = if import.is_some() { None } else { facts.pins.as_ref().and_then(|p| p.images.iter().find(|(l, _)| l == line).map(|(_, b)| *b)) };
+        if let Some(pin) = pin {
             d["annotations"] = json!({ "dev.sitefile.pin": pin });
         }
         deps.push(d);

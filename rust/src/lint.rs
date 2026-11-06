@@ -13,7 +13,7 @@ use crate::language::ast::{EscapeMode, Instruction, Operand, Program, Source, Te
 use crate::language::scanner::{is_js_space, js_trim, logical_lines_with_comments, CommentLine, LogicalLine};
 use crate::language::validate::operands_of;
 use crate::language::ast::ExportFormat;
-use crate::planner::{ImportLocation, Operation, Plan, SourceRef, StageBase};
+use crate::planner::{imported_stage_refs, ImportLocation, Operation, Plan, SourceRef, StageBase};
 use crate::refs::parse_ref;
 use crate::render::parse_render_template;
 use std::collections::{HashMap, HashSet};
@@ -213,6 +213,10 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
                 used.insert(name.clone());
             }
         }
+    }
+    // An IMPORT … AS sitefile is used by naming one of its stages (`FROM theme+assets`, `--from=theme+assets`).
+    for r in imported_stage_refs(&plan.stages) {
+        used.insert(r.import);
     }
     for ins in &program.instructions {
         let decl = match ins {

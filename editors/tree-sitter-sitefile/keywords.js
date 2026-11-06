@@ -6,10 +6,10 @@ export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'EXPORT'],
   /** Rejected by the parser (E_UNSUPPORTED); parsed as `unsupported_instruction`. */
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
-  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
+  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'sitefile'],
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
