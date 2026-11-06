@@ -699,6 +699,7 @@ mod tests {
         assert_eq!(labels("COPY --overwrite --"), ["--from=", "--exclude=", "--chmod=", "--parents"]);
         // --exclude is repeatable.
         assert_eq!(labels("COPY --exclude=a --chmod=644 --"), ["--overwrite", "--from=", "--exclude=", "--parents"]);
+        assert_eq!(labels("TRANSFORM --include=*.jpg --"), ["--overwrite", "--from=", "--include=", "--exclude="]);
         assert!(labels("EXPORT --").is_empty());
     }
 

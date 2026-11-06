@@ -381,7 +381,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 - **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
-  and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
+  and `RENDER … FOR` / `TRANSFORM … FOR` (and a directory TRANSFORM, per file) re-run only the elements that changed (unless the template reads the whole
   list). A directory export writes only the files that changed and removes the ones (and the directories) that are
   gone, after checking that the output is still exactly what the previous build wrote; otherwise, and for archive
   formats, it is written in full (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-export)). Every input is still
@@ -449,7 +449,7 @@ TypeScript and Rust CLIs write the same events, names, categories and args (conf
 | `plugin` | `PLUGIN <name>`: check and register a plugin | `path` |
 | `stage` | `stage <name>` (`stage #N` for an unnamed stage) | `from` (`scratch`, a stage name or `./dir`), `files` (tree size at the end) |
 | `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it); under `--watch` also `memo`: `hit` (result reused), `files` (its files reused, added to a changed tree) or `miss` (it ran) |
-| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
+| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element or per file of a directory source, in path order; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `input` (directory sources: the file, e.g. `./photos/a.jpg`), `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable). Calls of a directory source may overlap in time (up to 4 at once) |
 | `import` | `BASE <image>`: resolve or pull the `oci` BASE | |
 | `export` | `export`: encode and write the output (`build` only) | `format` |
 

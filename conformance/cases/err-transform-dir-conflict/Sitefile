@@ -1,0 +1,4 @@
+# Two inputs of one directory TRANSFORM write /img/x.json with different content.
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./in/ WITH image TO /img/
+EXPORT /

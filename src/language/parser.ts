@@ -203,11 +203,16 @@ interface Flag {
   readonly span: SourceSpan;
 }
 
+/** A repeatable flag, in the order given (several repeatable flags share one list). */
+interface NamedFlag extends Flag {
+  readonly name: string;
+}
+
 /**
  * Read leading `--flags`; returns name -> flag (value '' for a bare flag). A `repeat` flag may be
  * given several times: each one is added to `repeated` (and the map holds the first).
  */
-function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repeat'>, repeated: Flag[] = []): Map<string, Flag> {
+function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repeat'>, repeated: NamedFlag[] = []): Map<string, Flag> {
   const out = new Map<string, Flag>();
   for (let f = c.flag(); f; f = c.flag()) {
     const shape = allowed[f.name];
@@ -216,7 +221,7 @@ function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repea
     if (shape === 'bare' && f.value !== undefined) throw c.error('E_SYNTAX', `--${f.name} takes no value`, f.span);
     if (shape !== 'bare' && !f.value) throw c.error('E_SYNTAX', `--${f.name} requires a value (--${f.name}=...)`, f.span);
     const flag = { value: f.value ?? '', span: f.span };
-    if (shape === 'repeat') repeated.push(flag);
+    if (shape === 'repeat') repeated.push({ ...flag, name: f.name });
     if (!out.has(f.name)) out.set(f.name, flag);
   }
   return out;
@@ -234,12 +239,17 @@ function noInlineFrom(c: Cursor, source: Operand | InlineBody, flags: Map<string
   if (from && isInline(source)) throw c.error('E_SYNTAX', '--from cannot be combined with an inline (<<) body', from.span);
 }
 
-function parseCopy(c: Cursor, span: SourceSpan): Instruction {
-  const excludes: Flag[] = [];
-  const flags = parseFlags(c, { overwrite: 'bare', from: 'value', exclude: 'repeat', chmod: 'value', parents: 'bare' }, excludes);
-  for (const e of excludes) {
-    if (!isIgnorePattern(e.value)) throw c.error('E_SYNTAX', `--exclude=${e.value} is not a pattern (it is blank or a # comment in .sitefileignore syntax)`, e.span);
+/** Repeatable pattern flags (`--exclude`, `--include`): each value must be a `.sitefileignore` rule. */
+function checkPatterns(c: Cursor, patterns: readonly NamedFlag[]): void {
+  for (const e of patterns) {
+    if (!isIgnorePattern(e.value)) throw c.error('E_SYNTAX', `--${e.name}=${e.value} is not a pattern (it is blank or a # comment in .sitefileignore syntax)`, e.span);
   }
+}
+
+function parseCopy(c: Cursor, span: SourceSpan): Instruction {
+  const excludes: NamedFlag[] = [];
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value', exclude: 'repeat', chmod: 'value', parents: 'bare' }, excludes);
+  checkPatterns(c, excludes);
   const chmodFlag = flags.get('chmod');
   let chmod: number | undefined;
   if (chmodFlag) {
@@ -332,7 +342,9 @@ function parseTool(c: Cursor, span: SourceSpan): Instruction {
 }
 
 function parseTransform(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
+  const patterns: NamedFlag[] = [];
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value', include: 'repeat', exclude: 'repeat' }, patterns);
+  checkPatterns(c, patterns);
   // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
   const source = c.keyword('WITH') ? undefined : (c.inline() ?? c.operand('source'));
   if (source !== undefined) c.expectKeyword('WITH');
@@ -383,6 +395,15 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
   c.expectInlineUsed('the TRANSFORM source');
   if (source !== undefined) noInlineFrom(c, source, flags);
   if (source === undefined && flags.has('from')) throw c.error('E_SYNTAX', '--from needs a source path', flags.get('from')!.span);
+  // --include/--exclude pick the files of a directory source, which runs the plugin once per file.
+  const firstPattern = patterns[0];
+  if (firstPattern) {
+    if (source === undefined) throw c.error('E_SYNTAX', `--${firstPattern.name} needs a source directory`, firstPattern.span);
+    if (isInline(source)) throw c.error('E_SYNTAX', `--${firstPattern.name} cannot be combined with an inline (<<) body`, firstPattern.span);
+    if (each) throw c.error('E_SYNTAX', `--${firstPattern.name} filters a directory source, which cannot be combined with FOR`, firstPattern.span);
+  }
+  const include = patterns.filter((p) => p.name === 'include').map((p) => p.value);
+  const exclude = patterns.filter((p) => p.name === 'exclude').map((p) => p.value);
   return {
     kind: 'TRANSFORM',
     span,
@@ -394,6 +415,8 @@ function parseTransform(c: Cursor, span: SourceSpan): Instruction {
     options,
     ...(each && { each }),
     ...(args && { args }),
+    ...(include.length > 0 && { include }),
+    ...(exclude.length > 0 && { exclude }),
     overwrite: flags.has('overwrite'),
   };
 }
