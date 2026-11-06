@@ -1,0 +1,7 @@
+targets:
+  a:
+    inherits: [b]
+  b:
+    inherits: [c]
+  c:
+    inherits: a
