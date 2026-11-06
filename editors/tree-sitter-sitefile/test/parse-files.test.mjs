@@ -18,6 +18,7 @@ const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-copy-chmod/Sitefile', // --chmod=600: the grammar accepts any flag value
   'conformance/cases/err-from-missing-base/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile', // STATUS 200: the grammar accepts any word here
+  'conformance/cases/err-secret-reserved/Sitefile', // SECRET … AS HEADER Content-Length: the grammar accepts any header name
   'conformance/cases/err-sitemap-syntax/Sitefile',
   'conformance/cases/err-stage-missing-base/Sitefile',
   'conformance/cases/err-stage-missing-name/Sitefile',
@@ -35,6 +36,7 @@ const LENIENT = new Set([
   'conformance/cases/err-compression/Sitefile',
   'conformance/cases/err-copy-chmod/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile',
+  'conformance/cases/err-secret-reserved/Sitefile',
   'conformance/cases/err-syntax-directive-late/Sitefile',
   'conformance/cases/err-syntax-version-invalid/Sitefile',
 ]);

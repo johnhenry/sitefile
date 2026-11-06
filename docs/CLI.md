@@ -42,10 +42,34 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
+| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
 `validate` also prints **lint warnings** (`warning: Sitefile:4: [render-escape] RENDER writes /index.html without
 --escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
 `build`, `inspect`, `graph` and `why` do not lint. See [LANGUAGE.md](LANGUAGE.md#lint-rules-sitefile-validate).
+
+### Building from a Git URL
+
+```
+sitefile build https://github.com/x/y.git#ref:dir [options]
+sitefile build git+https://host/repo.git#<40-hex commit> [options]
+```
+
+A context argument with a URL scheme is a Git repository (like `docker build <git url>`): the tree at
+`ref` (default the remote HEAD) and `dir` (default the root) is fetched with the Git client of
+`IMPORT … FROM git+https://…` (same network policy, symlink, submodule and name rules; see
+[LANGUAGE.md](LANGUAGE.md#git-sources-githttps)), written to a temporary directory, built from there
+and removed afterwards. `build`, `validate`, `inspect`, `graph` and `why` accept it; stderr starts with
+`context: <url> at commit <hex>`.
+
+- The default `--out` is in the current directory (`./dist`, `./dist.zip`, …), not in the checkout.
+- `-f` is a path inside the repository (relative, no `..`). Messages name the Sitefile `Sitefile`
+  (or the `-f` path), never the temporary directory.
+- The repository's `Sitefile.lock` and `vendor/sitefile` are used as in a local build, but the lockfile
+  is **never written back** (there is nothing to write it to): add `--frozen-lockfile` to require every
+  remote input to be locked already.
+- `--watch` needs a local context (usage error). A ref is resolved on every build; name a commit for a
+  reproducible one.
 
 ## Offline builds: `vendor`
 

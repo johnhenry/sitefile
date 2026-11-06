@@ -1,0 +1,5 @@
+# Git imports (issue #91): git+https URLs with a ref and a path.
+IMPORT docs FROM git+https://example.com/r.git#v1:docs AS markdown
+IMPORT site FROM git+https://example.com/r.git#main:site
+COPY site: /
+EXPORT /

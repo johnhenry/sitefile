@@ -2597,6 +2597,37 @@
               }
             },
             {
+              "match": "(?<![^\\s])((?i:SECRET))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+((?i:AS))\\s+(?:((?i:BEARER))(?=\\s|$)|((?i:HEADER))\\s+(\\S+))",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "variable.other.secret.sitefile"
+                },
+                "3": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "4": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "5": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "6": {
+                  "name": "entity.name.tag.header.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:SECRET|HEADER|BEARER))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
               "include": "#operands"
             }
           ]
@@ -3279,7 +3310,7 @@
       "name": "constant.character.escape.sitefile"
     },
     "url": {
-      "match": "(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
+      "match": "(?<![^\\s=])(?:[Gg][Ii][Tt]\\+)?https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
       "name": "markup.underline.link.sitefile",
       "captures": {
         "0": {

@@ -51,7 +51,8 @@ pub fn code_actions(lines: &Lines, ix: &Index, analysis: &Analysis, uri: &str, f
                 let url = analysis.plan.as_ref().and_then(|p| {
                     p.imports.iter().find(|i| i.span.line == d.line + 1).and_then(|i| match &i.location {
                         ImportLocation::Remote { url } => Some(url.clone()),
-                        ImportLocation::Local { .. } => None,
+                        // Git imports pin by commit (INTEGRITY is refused), so there is nothing to add.
+                        ImportLocation::Local { .. } | ImportLocation::Git(_) => None,
                     })
                 });
                 if let Some(entry) = url.as_deref().and_then(|u| lock.and_then(|l| l.get(u))) {

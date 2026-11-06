@@ -1,0 +1,5 @@
+# A Git ref with no lockfile entry is not pinned.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#main:site
+COPY site: /
+EXPORT /

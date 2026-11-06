@@ -10,6 +10,7 @@ pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
 pub mod digest;
+pub mod sha1;
 pub mod error;
 pub mod paths;
 pub mod tree;
@@ -20,6 +21,7 @@ pub mod build_args;
 pub mod language;
 pub mod planner;
 pub mod lint;
+pub mod secrets;
 
 // Templates and data formats
 pub mod csv;

@@ -1,0 +1,12 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--allow-private-network"
+    ]
+  ]
+}

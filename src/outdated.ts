@@ -6,6 +6,8 @@ import { loadProgram, type BuildOptions } from './executor.js';
 import { plan } from './planner.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
 import { fetchRemote } from './resources/https.js';
+import { resolveRef } from './resources/git.js';
+import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { Lockfile } from './resources/lockfile.js';
 import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 
@@ -37,7 +39,7 @@ export interface OutdatedEntry {
   readonly source: string;
   /** The pinned digest, if any. */
   readonly pin: string | null;
-  readonly pinnedBy: 'integrity' | 'lockfile' | 'digest' | null;
+  readonly pinnedBy: 'integrity' | 'lockfile' | 'digest' | 'commit' | null;
   /** What the source resolves to now (body sha256, or the tag's manifest/index digest). */
   readonly latest: string | null;
   readonly status: OutdatedStatus;
@@ -93,9 +95,9 @@ export function newerVersionTag(current: string, tags: readonly string[]): strin
   return best?.tag;
 }
 
-function errorOf(e: unknown): { code: string; message: string } {
-  if (isSitefileError(e)) return { code: e.code, message: e.detail };
-  throw e;
+function errorOf(e: unknown, secrets?: Secrets): { code: string; message: string } {
+  if (isSitefileError(e)) return { code: e.code, message: redactSecrets(e.detail, secrets) };
+  throw redactError(e, secrets);
 }
 
 /** An entry with its keys in the documented order (the JSON output is compared across implementations). */
@@ -117,6 +119,27 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
   const inputs: OutdatedEntry[] = [];
 
   for (const spec of p.imports) {
+    if (spec.location.kind === 'git') {
+      // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it was
+      // locked. A commit in the URL has no ref to follow.
+      const loc = spec.location;
+      const locked = lock?.getGit(loc.url)?.commit;
+      const pin = loc.commit ?? locked ?? null;
+      const pinnedBy: OutdatedEntry['pinnedBy'] = loc.commit !== undefined ? 'commit' : locked !== undefined ? 'lockfile' : null;
+      const row = { kind: 'import' as const, name: spec.name, source: loc.url, pin, pinnedBy, newerTag: null };
+      if (loc.commit !== undefined) {
+        inputs.push(entry({ ...row, latest: null, status: 'digest-only', error: null }));
+        continue;
+      }
+      try {
+        const originHeaders = secretHeaders(spec, options.secrets);
+        const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) });
+        inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
+      } catch (e) {
+        inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
+      }
+      continue;
+    }
     if (spec.location.kind !== 'remote') continue;
     const url = spec.location.url;
     const locked = lock?.get(url);
@@ -124,11 +147,12 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
     const pinnedBy: OutdatedEntry['pinnedBy'] = spec.integrity ? 'integrity' : locked ? 'lockfile' : null;
     const row = { kind: 'import' as const, name: spec.name, source: url, pin, pinnedBy, newerTag: null };
     try {
-      const { bytes } = await fetchRemote(url, policy);
+      const originHeaders = secretHeaders(spec, options.secrets);
+      const { bytes } = await fetchRemote(url, policy, undefined, originHeaders ? { originHeaders } : {});
       const latest = sha256(bytes);
       inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
     } catch (e) {
-      inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e) }));
+      inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
     }
   }
 

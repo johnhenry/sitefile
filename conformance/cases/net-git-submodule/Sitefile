@@ -1,0 +1,4 @@
+# Submodules are refused.
+FROM scratch
+IMPORT m FROM git+${HTTPS}/bad.git#main:mod
+EXPORT /

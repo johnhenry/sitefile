@@ -1,0 +1,10 @@
+# The image plugin (plugins/image/image.wasm, copied in by case.json): every
+# input format, several widths and output formats, both destination kinds.
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./in/tiny.png WITH image TO /png/ OPTIONS widths=10,20,40 format=png,webp,jpeg background=#336699
+TRANSFORM ./in/tiny.jpg WITH image TO /jpg/ OPTIONS widths=12,30,99 quality=40
+TRANSFORM ./in/tiny.gif WITH image TO /gif/
+TRANSFORM ./in/tiny-lossy.webp WITH image TO /webp/ OPTIONS format=webp,png name=lossy
+TRANSFORM ./in/rotated.jpg WITH image TO /rotated.png OPTIONS widths=16
+TRANSFORM ./in/tiny.jpg WITH image TO /one.webp
+EXPORT /

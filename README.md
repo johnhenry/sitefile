@@ -37,7 +37,7 @@ no runtime dependencies.
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
-| `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
+| `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
@@ -88,6 +88,13 @@ sitefile build --allow-plugin motion     # or --allow-plugins for every PLUGIN
 ```
 
 WebAssembly plugins (`PLUGIN … FROM ./x.wasm`) import nothing, can only compute, and need no flag (see `examples/wasm/`).
+
+Images: the first-party image plugin (`plugins/image/image.wasm`, WebAssembly) decodes PNG, JPEG, GIF and WebP, resizes with a fixed Lanczos-3 filter and writes PNG, JPEG or lossless WebP, with a metadata file listing each variant's path, width, height and a ready `srcset` (see [docs/PLUGINS.md](docs/PLUGINS.md#the-image-plugin), `examples/image/`):
+
+```
+PLUGIN image FROM ./plugins/image.wasm INTEGRITY sha256:…
+TRANSFORM ./photos/sky.jpg WITH image TO /img/ OPTIONS widths=400,800,1200 quality=80
+```
 
 External programs are explicit opt-ins: declare a `TOOL`, and allow it on the command line.
 
@@ -223,6 +230,15 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
   `--strict-pins` refuses any remote import or BASE image that is not pinned
   (`INTEGRITY`, `@sha256:` or a lockfile entry), for reproducible CI builds.
+- `IMPORT … FROM git+https://host/repo.git#ref:path` imports from Git without running
+  `git`: protocol v2 over the same HTTPS client and policy, every object's SHA-1 checked,
+  the commit recorded in `Sitefile.lock`, symlinks kept inside the tree, submodules
+  refused; `sitefile build https://host/repo.git#ref:dir` builds a repository
+  ([docs/LANGUAGE.md](docs/LANGUAGE.md#git-sources-githttps)).
+- Private APIs and repositories: `--secret id=token,env=API_TOKEN` with
+  `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`). Secrets go only to the
+  import's own origin and never into the output, caches, `Sitefile.lock`, vendor files,
+  provenance, traces or messages.
 - `sitefile vendor` stores every remote import (and the BASE image's blobs) under
   `vendor/sitefile/` by content digest; builds then read them from there, verified,
   with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).

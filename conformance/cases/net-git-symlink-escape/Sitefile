@@ -1,0 +1,4 @@
+# A symlink must stay inside the imported tree.
+FROM scratch
+IMPORT e FROM git+${HTTPS}/bad.git#main:esc
+EXPORT /

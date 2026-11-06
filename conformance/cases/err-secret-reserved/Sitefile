@@ -1,0 +1,4 @@
+# A secret cannot replace a header the client sets.
+FROM scratch
+IMPORT x FROM https://example.com/x SECRET key AS HEADER Content-Length
+EXPORT /

@@ -1,0 +1,4 @@
+# INTEGRITY does not apply to Git imports: pin a commit.
+FROM scratch
+IMPORT x FROM git+https://example.com/r.git#main INTEGRITY sha256:0000000000000000000000000000000000000000000000000000000000000000
+EXPORT /

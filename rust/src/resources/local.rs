@@ -308,7 +308,7 @@ impl LocalContext {
             bytes,
             mode: if mode_of(&st) & 0o111 != 0 { 0o755 } else { 0o644 },
             basename: basename(rel),
-            provenance: Provenance { uri: format!("./{rel}"), resolved_url: None, digest },
+            provenance: Provenance { uri: format!("./{rel}"), resolved_url: None, digest, git_commit: None },
         })
     }
 
@@ -342,7 +342,7 @@ impl LocalContext {
         let digest = tree.digest();
         Ok(Resource::Tree {
             tree,
-            provenance: Provenance { uri: if rel.is_empty() { "./".into() } else { format!("./{rel}") }, resolved_url: None, digest },
+            provenance: Provenance { uri: if rel.is_empty() { "./".into() } else { format!("./{rel}") }, resolved_url: None, digest, git_commit: None },
         })
     }
 
