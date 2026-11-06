@@ -1,0 +1,7 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/site", "--allow-plugins", "--no-lockfile", "--cache-from", "${REGISTRY}/conf/no-such-cache:1", "--cache-from", "${REGISTRY}/conf/base:1", "--cache-to", "127.0.0.1:1/conf/unreachable:1"]
+  ],
+  "outputs": [["site", "tree"]]
+}
