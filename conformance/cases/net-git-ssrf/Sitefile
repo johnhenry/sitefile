@@ -1,0 +1,4 @@
+# Git imports follow the HTTPS network policy: loopback needs --allow-private-network.
+FROM scratch
+IMPORT x FROM git+${HTTPS}/repo.git#main
+EXPORT /

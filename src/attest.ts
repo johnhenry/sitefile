@@ -77,7 +77,7 @@ export interface BuildFacts {
   readonly redactedArgs: readonly string[];
   readonly platform: string;
   /** Imports in declaration order with the digest the build used (Sitefile.lock's for remote ones). */
-  readonly imports: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly resolved?: string | undefined; readonly digest: string }>;
+  readonly imports: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly resolved?: string | undefined; readonly digest: string; readonly gitCommit?: string | undefined }>;
   readonly base?: { readonly name: string; readonly digest: string } | undefined;
   /** `FROM image` stage bases, in stage order (FROM line, image name, image digest). */
   readonly images?: ReadonlyArray<{ readonly line: number; readonly name: string; readonly digest: string }> | undefined;
@@ -116,7 +116,7 @@ export function sitefilePathOf(contextDir: string, sitefile: string | undefined)
 /** Collect the facts for a finished build. Reads the Sitefile again to digest it. */
 export async function buildFacts(
   result: Pick<BuildResult, 'resources' | 'base' | 'pins' | 'images'>,
-  options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
+  options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly label?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
 ): Promise<BuildFacts> {
   const file = sitefilePathOf(options.contextDir, options.sitefile);
   let bytes: Uint8Array;
@@ -135,7 +135,7 @@ export async function buildFacts(
     else args[k] = v;
   }
   redactedArgs.sort();
-  const imports = [...result.resources].map(([name, r]) => ({ name, uri: r.provenance.uri, resolved: r.provenance.resolvedUrl, digest: r.provenance.digest }));
+  const imports = [...result.resources].map(([name, r]) => ({ name, uri: r.provenance.uri, resolved: r.provenance.resolvedUrl, digest: r.provenance.digest, gitCommit: r.provenance.gitCommit }));
   return {
     sitefile,
     sitefileDigest: sha256(bytes),
@@ -146,7 +146,7 @@ export async function buildFacts(
     base: result.base ? { name: result.base.name, digest: result.base.manifestDigest } : undefined,
     images: result.images?.map((i) => ({ line: i.line, name: i.name, digest: i.digest })),
     pins: result.pins,
-    label: path.relative(process.cwd(), file) || path.basename(file),
+    label: options.label ?? (path.relative(process.cwd(), file) || path.basename(file)),
   };
 }
 
@@ -164,7 +164,7 @@ export function provenancePredicate(facts: BuildFacts, epoch: number | undefined
   if (facts.pins) externalParameters.strictPins = true;
   const deps: Array<Record<string, unknown>> = [{ name: 'sitefile', uri: facts.sitefile, digest: { sha256: hex(facts.sitefileDigest) } }];
   for (const i of facts.imports) {
-    const d: Record<string, unknown> = { name: `import:${i.name}`, uri: i.uri, digest: { sha256: hex(i.digest) } };
+    const d: Record<string, unknown> = { name: `import:${i.name}`, uri: i.uri, digest: i.gitCommit !== undefined ? { gitCommit: i.gitCommit, sha256: hex(i.digest) } : { sha256: hex(i.digest) } };
     if (i.resolved !== undefined && i.resolved !== i.uri) d.downloadLocation = i.resolved;
     const pin = facts.pins?.imports[i.name];
     if (pin !== undefined) d.annotations = { 'dev.sitefile.pin': pin };

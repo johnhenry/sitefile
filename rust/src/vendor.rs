@@ -7,7 +7,9 @@
 use crate::base_image::{resolve_base, ResolveBaseOptions};
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::executor::{fetch_remote_import, load_program, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
+use crate::resources::git::GitSelection;
+use crate::resources::vendor::VendoredGit;
+use crate::executor::{fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
 use crate::export::oci::parse_manifest;
 use crate::language::ast::ExportFormat;
 use crate::planner::{plan, ImportLocation, StageBase};
@@ -33,7 +35,7 @@ pub struct VendorResult {
 }
 
 pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
-    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Callback = {
@@ -69,8 +71,20 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
     let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut m = VendorManifest::default();
     {
-        let env = RemoteEnv { policy: &options.fetch_policy, lock: &lock, label: &label, warn: &warn, frozen, update, vendor: None };
+        let env = RemoteEnv { policy: &options.fetch_policy, lock: &lock, label: &label, warn: &warn, frozen, update, vendor: None, archive_limits: options.archive_limits };
         for spec in &p.imports {
+            if let ImportLocation::Git(loc) = &spec.location {
+                let (commit, selection) = fetch_git_import(spec, loc, &env)?;
+                let bytes = git_selection_bytes(&selection)?;
+                let digest = sha256(&bytes);
+                let mode = match &selection {
+                    GitSelection::File { mode, .. } => Some(if *mode == 0o755 { "755" } else { "644" }.to_string()),
+                    GitSelection::Tree(_) => None,
+                };
+                m.git.insert(loc.url.clone(), VendoredGit { commit, kind: selection.kind().into(), integrity: digest.clone(), size: bytes.len() as u64, mode });
+                blobs.insert(digest, bytes);
+                continue;
+            }
             let ImportLocation::Remote { url } = &spec.location else { continue };
             let (bytes, final_url) = fetch_remote_import(spec, url, &env)?;
             let digest = sha256(&bytes);
@@ -147,7 +161,7 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
     Ok(VendorResult {
         dir: written,
-        resources: m.resources.len(),
+        resources: m.resources.len() + m.git.len(),
         images: m.images.len(),
         blobs: blobs.len(),
         bytes: blobs.values().map(|b| b.len() as u64).sum(),

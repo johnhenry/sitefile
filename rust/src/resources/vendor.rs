@@ -47,10 +47,25 @@ pub struct VendoredImage {
     pub manifest: String,
 }
 
+/// A Git IMPORT: the commit it was read from and its content (a file's bytes, or a tree as a tar).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendoredGit {
+    pub commit: String,
+    /// `tree` or `file`.
+    pub kind: String,
+    /// `sha256:<hex>` of the stored bytes: also their blob name.
+    pub integrity: String,
+    pub size: u64,
+    /// Files only: `644` or `755`.
+    pub mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VendorManifest {
     pub resources: BTreeMap<String, VendoredResource>,
     pub images: BTreeMap<String, VendoredImage>,
+    /// Written only when non-empty.
+    pub git: BTreeMap<String, VendoredGit>,
 }
 
 /// Validate a vendor directory: a relative path inside the build context. Returns it normalized (POSIX, no trailing slash).
@@ -141,6 +156,24 @@ pub fn parse_vendor_manifest(bytes: &[u8], shown: &str) -> Result<VendorManifest
             _ => return Err(bad(format!("image entry for {r} needs \"digest\", \"platform\" and \"manifest\""))),
         }
     }
+    for (url, e) in section("git")? {
+        let commit = e.get("commit").and_then(Value::as_str).filter(|c| crate::resources::git::is_commit(c));
+        let kind = e.get("kind").and_then(Value::as_str).filter(|k| *k == "tree" || *k == "file");
+        let integrity = e.get("integrity").and_then(Value::as_str).filter(|s| is_integrity(s));
+        let size = e.get("size").and_then(safe_size);
+        let mode = e.get("mode");
+        let mode_ok = match kind {
+            Some("file") => matches!(mode.and_then(Value::as_str), Some("644" | "755")),
+            _ => mode.is_none(),
+        };
+        match (e.is_object(), commit, kind, integrity, size, mode_ok) {
+            (true, Some(c), Some(k), Some(i), Some(s), true) => {
+                let mode = if k == "file" { mode.and_then(Value::as_str).map(str::to_string) } else { None };
+                m.git.insert(url.clone(), VendoredGit { commit: c.into(), kind: k.into(), integrity: i.into(), size: s, mode });
+            }
+            _ => return Err(bad(format!("git entry for {url} needs \"commit\", \"kind\" (tree or file), \"integrity\", \"size\" (and \"mode\" for a file)"))),
+        }
+    }
     Ok(m)
 }
 
@@ -166,6 +199,21 @@ pub fn serialize_vendor_manifest(m: &VendorManifest) -> String {
     data.insert("version".into(), Value::from(1));
     data.insert("resources".into(), Value::Object(resources));
     data.insert("images".into(), Value::Object(images));
+    if !m.git.is_empty() {
+        let mut git = Map::new();
+        for (url, e) in &m.git {
+            let mut o = Map::new();
+            o.insert("commit".into(), Value::String(e.commit.clone()));
+            o.insert("kind".into(), Value::String(e.kind.clone()));
+            o.insert("integrity".into(), Value::String(e.integrity.clone()));
+            o.insert("size".into(), Value::from(e.size));
+            if let Some(md) = &e.mode {
+                o.insert("mode".into(), Value::String(md.clone()));
+            }
+            git.insert(url.clone(), Value::Object(o));
+        }
+        data.insert("git".into(), Value::Object(git));
+    }
     crate::values::js_json_pretty(&Value::Object(data)) + "\n"
 }
 
@@ -200,6 +248,30 @@ impl Vendor {
 
     pub fn image(&self, r: &str) -> Option<&VendoredImage> {
         self.manifest.images.get(r)
+    }
+
+    pub fn git(&self, url: &str) -> Option<&VendoredGit> {
+        self.manifest.git.get(url)
+    }
+
+    /// The vendored content of a Git IMPORT, verified against its digest.
+    pub fn read_git(
+        &self,
+        local: &LocalContext,
+        url: &str,
+        e: &VendoredGit,
+        basename: &str,
+        limits: &crate::resources::types::ArchiveLimits,
+        span: Option<&SourceSpan>,
+    ) -> Result<crate::resources::git::GitSelection> {
+        let what = format!("vendored copy of '{url}'");
+        let bytes = self.read_blob(local, &e.integrity, &what, span)?;
+        if e.kind == "file" {
+            let mode = if e.mode.as_deref() == Some("755") { 0o755 } else { 0o644 };
+            return Ok(crate::resources::git::GitSelection::File { bytes: bytes.into(), mode, basename: basename.to_string() });
+        }
+        let tree = crate::resources::archive::extract_archive(&bytes, &what, limits, span)?;
+        Ok(crate::resources::git::GitSelection::Tree(tree.entries().map(|(p, n)| (p.clone(), n.bytes.clone(), n.mode)).collect()))
     }
 
     /// The vendored body of `url`, verified against its digest: (bytes, final URL).

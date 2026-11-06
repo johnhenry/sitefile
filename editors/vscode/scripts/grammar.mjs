@@ -328,7 +328,7 @@ export function buildGrammar() {
       },
       escape: { match: '\\\\[^\\n]', name: S('constant.character.escape') },
       url: {
-        match: `(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*`,
+        match: `(?<![^\\s=])(?:[Gg][Ii][Tt]\\+)?https?://(?:[^\\s\\\\]|\\\\[^\\n])*`,
         name: S('markup.underline.link'),
         captures: { 0: { patterns: [{ include: '#interpolation' }] } },
       },

@@ -41,6 +41,8 @@ impl SourceRef {
 pub enum ImportLocation {
     Local { path: String },
     Remote { url: String },
+    /// `git+https://…#ref:path` (src/resources/git.ts).
+    Git(crate::resources::git::GitLocation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +332,13 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
             Instruction::Import { span, name, uri, as_kind, integrity, sort } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
+                if matches!(location, ImportLocation::Git(_)) && integrity.is_some() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("IMPORT {name}: INTEGRITY does not apply to Git imports; pin a commit instead (#<40 hex>[:path])"),
+                        span,
+                    ));
+                }
                 if matches!(location, ImportLocation::Local { .. }) && integrity.is_some() {
                     warnings.push(format!(
                         "{}:{}: INTEGRITY on a local import is checked but not recorded in the lockfile",
@@ -553,6 +562,9 @@ fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Re
 }
 
 fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
+    if crate::resources::git::is_git_uri(uri) {
+        return Ok(ImportLocation::Git(crate::resources::git::parse_git_uri(uri, Some(span))?));
+    }
     if let Some(scheme) = url_scheme(uri) {
         let scheme = scheme.to_ascii_lowercase();
         return match scheme.as_str() {
@@ -564,7 +576,7 @@ fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
             )),
             _ => Err(SitefileError::at(
                 E_PROTOCOL,
-                format!("unsupported protocol '{scheme}:' (supported: https, relative paths)"),
+                format!("unsupported protocol '{scheme}:' (supported: https, git+https, relative paths)"),
                 span,
             )),
         };
@@ -701,6 +713,18 @@ impl ImportSpec {
             match &self.location {
                 ImportLocation::Local { path } => json!({ "kind": "local", "path": path }),
                 ImportLocation::Remote { url } => json!({ "kind": "remote", "url": url }),
+                ImportLocation::Git(g) => {
+                    let mut l = Map::new();
+                    l.insert("kind".into(), json!("git"));
+                    l.insert("url".into(), json!(g.url));
+                    l.insert("repo".into(), json!(g.repo));
+                    l.insert("ref".into(), json!(g.git_ref));
+                    l.insert("path".into(), json!(g.path));
+                    if let Some(c) = &g.commit {
+                        l.insert("commit".into(), json!(c));
+                    }
+                    Value::Object(l)
+                }
             },
         );
         if let Some(k) = self.as_kind {
@@ -938,7 +962,7 @@ mod tests {
 
     #[test]
     fn protocol_and_path_errors() {
-        plan_err("FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /", &[], E_PROTOCOL, 2, "unsupported protocol 'ftp:' (supported: https, relative paths)");
+        plan_err("FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /", &[], E_PROTOCOL, 2, "unsupported protocol 'ftp:' (supported: https, git+https, relative paths)");
         plan_err("FROM scratch\nIMPORT x FROM FILE:///etc/passwd\nEXPORT /", &[], E_PROTOCOL, 2, "file: URLs are not allowed");
         plan_err("FROM scratch\nIMPORT x FROM ../up\nEXPORT /", &[], E_PATH_ESCAPE, 2, "escapes the build context");
         plan_err("FROM scratch\nARG U = https://x/a\nCOPY ${U} /a\nEXPORT /", &[], E_VALIDATION, 3, "cannot read 'https://x/a' directly; IMPORT it under a name, then COPY name:");

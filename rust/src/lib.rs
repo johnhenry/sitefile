@@ -10,6 +10,7 @@ pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
 pub mod digest;
+pub mod sha1;
 pub mod error;
 pub mod paths;
 pub mod tree;

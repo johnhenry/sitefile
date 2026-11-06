@@ -1,0 +1,40 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "git+${HTTPS}/repo.git#v1",
+      "-o",
+      "${OUT}/v1",
+      "--allow-private-network"
+    ],
+    [
+      "build",
+      "${HTTPS}/repo.git#${GIT_V2}",
+      "-o",
+      "${OUT}/v2",
+      "--allow-private-network"
+    ],
+    [
+      "inspect",
+      "${HTTPS}/repo.git#v1",
+      "--allow-private-network"
+    ],
+    [
+      "validate",
+      "${HTTPS}/repo.git#v1:site",
+      "--allow-private-network"
+    ]
+  ],
+  "outputs": [
+    [
+      "v1",
+      "tree"
+    ],
+    [
+      "v2",
+      "tree"
+    ]
+  ],
+  "stdout": true
+}
