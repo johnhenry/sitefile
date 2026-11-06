@@ -20,6 +20,8 @@ export interface MockOptions {
   readonly corrupt?: string;
   /** Answer GET manifest by digest with this other manifest (digest mismatch test). */
   readonly swapManifest?: Buffer;
+  /** Act as a registry with the OCI 1.1 referrers API: a PUT manifest with a subject answers OCI-Subject. */
+  readonly referrersApi?: boolean;
 }
 
 export interface MockRequest {
@@ -157,7 +159,9 @@ export async function startMockRegistry(options: MockOptions = {}): Promise<Mock
       const d = sha(body);
       manifests.set(`${repo}@${d}`, body);
       if (!/^sha256:/.test(rest)) manifests.set(`${repo}:${rest}`, body);
-      return send(201, undefined, { 'docker-content-digest': d });
+      const subject = (JSON.parse(body.toString('utf8')) as { subject?: { digest?: unknown } }).subject?.digest;
+      const extra: Record<string, string> = o.referrersApi && typeof subject === 'string' ? { 'oci-subject': subject } : {};
+      return send(201, undefined, { 'docker-content-digest': d, ...extra });
     }
     if (kind === 'manifests' && (method === 'GET' || method === 'HEAD')) {
       let b = manifests.get(rest.startsWith('sha256:') ? `${repo}@${rest}` : `${repo}:${rest}`);

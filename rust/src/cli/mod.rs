@@ -12,6 +12,7 @@ pub mod servers;
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{build, build_to_directory, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use crate::export::attest::AttestRequest;
 use crate::export::formats::{default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
 use crate::language::ast::{ExportFormat, OciCompression};
@@ -24,7 +25,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = crate::export::attest::SITEFILE_VERSION;
 
 const EXTRA_HELP: &str = "
 Images (local store: $SITEFILE_HOME or ~/.sitefile):
@@ -90,6 +91,11 @@ Options:
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
+      --provenance             attach a SLSA provenance attestation to the oci image (an in-toto
+                               statement: Sitefile digest, build args, imports, BASE, builder)
+      --sbom                   attach an SBOM attestation (CycloneDX: every file with its SHA-256);
+                               both are OCI 1.1 referrers of the image (its ID does not change),
+                               written into the oci export and kept with -t images for push
       --platform <os/arch>     oci image platform (default linux/amd64); with a BASE, the platform pulled
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
@@ -141,6 +147,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("oci-compression"),
     strings("label"),
     flag("git-labels"),
+    flag("provenance"),
+    flag("sbom"),
     string("platform"),
     string("base"),
     strings("insecure-registry"),
@@ -274,13 +282,22 @@ struct ImageInfo<'a> {
     platform: Option<&'a str>,
     labels: &'a BTreeMap<String, String>,
     git_labels: bool,
+    /// `--provenance` / `--sbom`: attach these attestations to the stored image (they are pushed with it).
+    attest: AttestRequest,
 }
 
 /// Store a build's exported tree as an OCI image in the local store and point each tag at it.
-fn store_build_as_image(result: &BuildResult, tags: &[String], info: &ImageInfo<'_>) -> Result<String> {
+fn store_build_as_image(result: &BuildResult, tags: &[String], info: &ImageInfo<'_>, build_options: &BuildOptions) -> Result<String> {
     let store = Store::open_default()?;
     let opts = oci_options(result, info.context_dir, info.oci_root, info.oci_compression, info.platform, info.labels, info.git_labels)?;
     let added = store.add_image(&result.output, &opts)?;
+    if info.attest.any() {
+        let manifest_bytes = store.read_blob(&added.id, None)?;
+        let d = store.details(&added.id)?;
+        let config_bytes = store.read_blob(&d.manifest.config.digest, None)?;
+        let referrers = crate::executor::image_attestations(result, &added.id, &manifest_bytes, &config_bytes, &d.root, build_options, info.attest)?;
+        store.put_referrers(&added.id, &referrers)?;
+    }
     let n = result.output.len();
     for t in tags {
         let key = store.tag(&added.id, &parse_local_ref(t)?)?;
@@ -484,7 +501,27 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
         "build" => {
             validate_image_tags(&tags)?;
             let labels = parse_labels(&o.strs("label"))?;
-            let info = ImageInfo { context_dir: context, oci_root: o.str("oci-root"), oci_compression, platform: o.str("platform"), labels: &labels, git_labels: o.flag("git-labels") };
+            let attest = AttestRequest { provenance: o.flag("provenance"), sbom: o.flag("sbom") };
+            if attest.any() && tags.is_empty() {
+                let format = match format_override.or(sitefile_format) {
+                    Some(f) => f,
+                    None => plan_build(&options)?.export_format,
+                };
+                if format != ExportFormat::Oci {
+                    return Ok(usage_error(
+                        "--provenance and --sbom attach attestations to an oci image: export one (--format oci, -o *.oci.tar, EXPORT ... AS oci) or store one with -t",
+                    ));
+                }
+            }
+            let info = ImageInfo {
+                context_dir: context,
+                oci_root: o.str("oci-root"),
+                oci_compression,
+                platform: o.str("platform"),
+                labels: &labels,
+                git_labels: o.flag("git-labels"),
+                attest,
+            };
             if let Some(rc) = &remote_cache {
                 rc.load();
             }
@@ -495,7 +532,7 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
             };
             if !tags.is_empty() && out_flag.is_none() {
                 // -t without -o: store the image only; nothing is written to the context.
-                store_build_as_image(&build(&options)?, &tags, &info)?;
+                store_build_as_image(&build(&options)?, &tags, &info, &options)?;
                 push_cache();
                 return Ok(0);
             }
@@ -511,6 +548,7 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
                     None => None,
                 },
                 force: o.flag("force"),
+                attest,
             };
             let r = build_to_directory(&options, &out_dir, &target)?;
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -537,7 +575,7 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
                 out("Updated Sitefile.lock\n");
             }
             if !tags.is_empty() {
-                store_build_as_image(&r.result, &tags, &info)?;
+                store_build_as_image(&r.result, &tags, &info, &options)?;
             }
             push_cache();
             Ok(0)

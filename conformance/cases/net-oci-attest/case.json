@@ -1,0 +1,60 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site.oci.tar",
+      "--allow-private-network",
+      "--provenance",
+      "--sbom",
+      "--build-arg",
+      "TITLE=Attested",
+      "--build-arg",
+      "DEPLOY_TOKEN=do-not-record",
+      "-t",
+      "${REGISTRY}/conf/att-${IMPL}:1"
+    ],
+    [
+      "push",
+      "${REGISTRY}/conf/att-${IMPL}:1"
+    ],
+    [
+      "push",
+      "${REGISTRY}/conf/att-${IMPL}:1"
+    ],
+    [
+      "save",
+      "${REGISTRY}/conf/att-${IMPL}:1",
+      "-o",
+      "${OUT}/saved.oci.tar"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/frozen.oci.tar",
+      "--allow-private-network",
+      "--frozen-lockfile",
+      "--provenance",
+      "--build-arg",
+      "TITLE=Attested"
+    ]
+  ],
+  "outputs": [
+    [
+      "site.oci.tar",
+      "oci"
+    ],
+    [
+      "saved.oci.tar",
+      "oci"
+    ],
+    [
+      "frozen.oci.tar",
+      "oci"
+    ]
+  ],
+  "lock": true
+}

@@ -12,7 +12,9 @@
 // compressed formats (zip, tar.gz, OCI layers) are checked byte for byte too.
 //
 // OCI outputs (compare: 'oci') are compared by manifest digest (the image ID)
-// and config digest (diff_ids, labels, platform).
+// and config digest (diff_ids, labels, platform), plus the digest and
+// artifactType of every other index.json entry (attestations: --provenance,
+// --sbom), which are byte-identical in-toto statements in both implementations.
 //
 // A case directory may hold case.json: { args, env, out, compare, command, operands,
 // links, files, expectPaths }.
@@ -83,6 +85,11 @@ function cases() {
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
+    ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),
+    ex('blog', { suffix: ':oci-attest-id', out: 'site.oci.tar', args: ['--sbom', '--provenance'], compare: 'oci' }),
+    ex('blog', { suffix: ':oci-attest-epoch-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom'], env: { SOURCE_DATE_EPOCH: '1700000000' }, compare: 'bytes' }),
+    ex('data', { suffix: ':oci-attest-layout', out: 'site-oci', args: ['--format', 'oci', '--provenance', '--sbom', '--oci-root', '/usr/share/nginx/html'], compare: 'tree' }),
   ];
   return list;
 }
@@ -144,7 +151,8 @@ async function outputOf(kind, outPath) {
     const index = JSON.parse(text('/index.json'));
     const manifest = JSON.parse(text(blob(index.manifests[0].digest)));
     const refName = index.manifests[0].annotations?.['org.opencontainers.image.ref.name'] ?? '';
-    return { digest: `id ${index.manifests[0].digest} config ${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}`, files: tree.size };
+    const referrers = index.manifests.slice(1).map((m) => ` + ${m.artifactType ?? m.mediaType} ${m.digest}`).join('');
+    return { digest: `id ${index.manifests[0].digest} config ${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}${referrers}`, files: tree.size };
   }
   return { digest: tree.digest(), files: tree.size };
 }
