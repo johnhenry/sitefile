@@ -11,7 +11,7 @@ import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportForm
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
-import { transformCacheDir } from './cli/cache.js';
+import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { watchLoop } from './cli/watch.js';
 
@@ -50,6 +50,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
+      --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
+      --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
@@ -98,6 +100,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'build-arg-file': { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
+        'allow-plugin': { type: 'string', multiple: true },
+        'allow-plugins': { type: 'boolean' },
         'no-cache': { type: 'boolean' },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
@@ -185,6 +189,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
         : {}),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
+      ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
+      allowAllPlugins: !!o['allow-plugins'],
       ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
@@ -275,6 +281,9 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       return 1;
     }
     throw e;
+  } finally {
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if (command === 'build' || command === 'inspect') await evictAfterBuild();
   }
 }
 

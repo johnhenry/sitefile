@@ -63,7 +63,11 @@ stale entry is recompiled and replaced; import and export checks run on every
 load, hits included. Any cache failure (read-only home, etc.) is ignored and
 the build compiles as before. Within one process each plugin is compiled once.
 Set `SITEFILE_NO_WASM_CACHE=1` to turn the disk cache off. The TypeScript
-version has no equivalent (V8 compiles wasm quickly).
+version has no equivalent (V8 compiles wasm quickly). A hit refreshes the
+file's mtime, and the shared cache size limit (`SITEFILE_CACHE_MAX`, see
+[CLI.md](CLI.md#cache-size-limit)) evicts least recently used modules; both
+implementations measure and evict this directory, so `cache du` and the
+eviction results are the same whichever one runs.
 
 ## How parity is checked
 

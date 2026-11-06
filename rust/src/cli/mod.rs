@@ -42,6 +42,9 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
   sitefile cache prune [--older-than <days>]       delete cached results
+  sitefile cache prune --max-size <size>           shrink evictable data (LRU) to <size>
+  sitefile cache du [--json]                       size of every cache and the store (alias: cache ls)
+  Evictable data over $SITEFILE_CACHE_MAX (default 1GiB, 0 = no limit) is deleted after each build.
 
 Serving sites (detached servers are tracked by name):
   sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
@@ -91,6 +94,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
+      --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
+      --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
@@ -131,6 +136,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     string("plugin-timeout"),
     strings("allow-exec"),
+    strings("allow-plugin"),
+    flag("allow-plugins"),
     flag("no-cache"),
     flag("force"),
     flag("frozen-lockfile"),
@@ -186,7 +193,7 @@ const GROUPS: &[Group] = &[
         usage: "server <ls|stop|rm|logs|restart>",
         subs: &[("ls", &servers::PS), ("stop", &servers::STOP), ("rm", &servers::RM), ("logs", &servers::LOGS), ("restart", &servers::RESTART)],
     },
-    Group { name: "cache", usage: "cache <info|prune>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE)] },
+    Group { name: "cache", usage: "cache <info|prune|du>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE), ("du", &cache::DU), ("ls", &cache::DU)] },
 ];
 
 fn is_extra_command(name: Option<&String>) -> bool {
@@ -309,14 +316,20 @@ fn run_main(argv: &[String]) -> i32 {
         let mut build = || {
             let mut wrote = Vec::new();
             let code = run_build_command(&command, &context, &o, &mut wrote).unwrap_or_else(|e| report(&e));
+            cache::evict_after_build();
             crate::watch::BuildOutcome { code, wrote }
         };
         return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
     }
-    match run_build_command(&command, &context, &o, &mut Vec::new()) {
+    let code = match run_build_command(&command, &context, &o, &mut Vec::new()) {
         Ok(code) => code,
         Err(e) => report(&e),
+    };
+    // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
+    if command == "build" || command == "inspect" {
+        cache::evict_after_build();
     }
+    code
 }
 
 /// One build/validate/inspect run; `wrote` receives the export destination (for --watch).
@@ -371,6 +384,8 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
         options.tool_policy.timeout_ms = ms;
     }
     options.allow_exec = o.strs("allow-exec");
+    options.allow_plugin = o.strs("allow-plugin");
+    options.allow_all_plugins = o.flag("allow-plugins");
     if !o.flag("no-cache") {
         options.cache_dir = Some(cache::transform_cache_dir());
     }

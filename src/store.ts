@@ -82,6 +82,12 @@ export function shortId(id: string): string {
 export class Store {
   private constructor(readonly home: string) {}
 
+  /** The store at `home` if one exists there (nothing is created). */
+  static async openExisting(home: string = resolveStoreHome()): Promise<Store | undefined> {
+    const st = await fs.stat(path.join(home, 'blobs', 'sha256')).catch(() => undefined);
+    return st?.isDirectory() ? new Store(path.resolve(home)) : undefined;
+  }
+
   static async open(home: string = resolveStoreHome()): Promise<Store> {
     const s = new Store(path.resolve(home));
     await fs.mkdir(path.join(s.home, 'blobs', 'sha256'), { recursive: true, mode: 0o700 });
@@ -210,8 +216,17 @@ export class Store {
   private async putBlob(digest: string, bytes: Uint8Array): Promise<void> {
     const bp = this.blobFile(digest);
     const st = await fs.stat(bp).catch(() => undefined);
-    if (st?.isFile() && st.size === bytes.byteLength) return;
+    if (st?.isFile() && st.size === bytes.byteLength) return this.touchBlob(digest);
     await this.writeAtomic(bp, bytes);
+  }
+
+  /**
+   * Mark a blob as just used (its mtime is the recency the size limit goes by, see cache-limit.ts;
+   * atime is often disabled). Never fails.
+   */
+  async touchBlob(digest: string): Promise<void> {
+    const now = new Date();
+    await fs.utimes(this.blobFile(digest), now, now).catch(() => undefined);
   }
 
   /** True when the blob exists with the given size (content is verified when it was written). */
@@ -456,6 +471,40 @@ export class Store {
       await this.writeIndex(entries);
       return { untagged, deleted: id };
     });
+  }
+
+  /**
+   * What the size limit may evict: `live` holds the blob hexes of tagged images (never evicted),
+   * `untagged` each untagged image with the blobs it uses. An unreadable tagged manifest throws
+   * (its blobs are unknown, so nothing may be evicted).
+   */
+  async gcView(): Promise<{ live: Set<string>; untagged: Array<{ id: string; blobs: string[] }> }> {
+    const entries = await this.readIndex();
+    const blobsOf = async (id: string): Promise<string[]> => {
+      let m: ParsedManifest;
+      try {
+        m = parseManifest(await this.readBlob(id));
+      } catch (e) {
+        if (e instanceof SitefileError) throw e;
+        throw storeError(`image ${shortId(id)} is corrupt: ${(e as Error).message}`, e);
+      }
+      return [id, m.config.digest, ...m.layers.map((l) => l.digest)].map((d) => d.slice(7));
+    };
+    const live = new Set<string>();
+    for (const id of new Set(entries.filter((e) => e.refName).map((e) => e.digest))) for (const h of await blobsOf(id)) live.add(h);
+    const untagged: Array<{ id: string; blobs: string[] }> = [];
+    for (const id of new Set(entries.filter((e) => !e.refName).map((e) => e.digest))) {
+      if (live.has(id.slice(7))) continue;
+      untagged.push({ id, blobs: await blobsOf(id).catch(() => [id.slice(7)]) });
+    }
+    return { live, untagged };
+  }
+
+  /** Remove an untagged image from the index (its blobs stay). The caller holds the lock. */
+  async dropUntaggedLocked(id: string): Promise<void> {
+    const entries = await this.readIndex();
+    if (entries.some((e) => e.digest === id && e.refName)) return;
+    await this.writeIndex(entries.filter((e) => e.digest !== id));
   }
 
   /** Drop untagged images from the index, then delete every blob no remaining image uses. */

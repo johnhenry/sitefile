@@ -36,6 +36,7 @@ pub mod refs;
 pub mod server;
 pub mod servers;
 pub mod store;
+pub mod cache_limit;
 
 // Build, plugins, registry and CLI
 pub mod base_image;

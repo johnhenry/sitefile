@@ -78,6 +78,11 @@ pub struct BuildOptions {
     pub allow_hardlinks: bool,
     /// `--allow-exec` entries: `name` or `name=/absolute/path`.
     pub allow_exec: Vec<String>,
+    /// `--allow-plugin` entries: JavaScript PLUGINs allowed to run, by declared name.
+    /// WebAssembly plugins need no permission.
+    pub allow_plugin: Vec<String>,
+    /// `--allow-plugins`: allow every JavaScript PLUGIN.
+    pub allow_all_plugins: bool,
     pub tool_policy: ToolPolicy,
     /// Directory of the TRANSFORM result cache; `None` disables caching.
     pub cache_dir: Option<PathBuf>,
@@ -110,6 +115,8 @@ impl Default for BuildOptions {
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             allow_hardlinks: false,
             allow_exec: Vec::new(),
+            allow_plugin: Vec::new(),
+            allow_all_plugins: false,
             tool_policy: DEFAULT_TOOL_POLICY,
             cache_dir: None,
             on_warning: None,
@@ -279,6 +286,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         warn(w);
     }
     let tools = resolve_tools(&p, options, &warn)?;
+    let plugin_permission = check_plugins(&p, options, &warn)?;
 
     let context_real = std::fs::canonicalize(&options.context_dir)
         .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
@@ -353,7 +361,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     };
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
-            register_plugin(spec, &local, &mut exec.plugins)?;
+            register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
         }
         let mut tree = Tree::empty();
         for stage in &p.stages {
@@ -714,7 +722,7 @@ fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
 // ---------------------------------------------------------------- plugins and tools
 
 /// Check a plugin file (sandbox, own folder, integrity) and register it.
-fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHost) -> Result<()> {
+fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHost, permission: &PluginPermission) -> Result<()> {
     let span = Some(&spec.span);
     let (real, bytes) = local.real_file(&spec.path, span)?;
     if let Some(i) = &spec.integrity {
@@ -726,6 +734,8 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
         host.register(&spec.name, real, Some(spec.span.clone()), Some(bytes));
         return Ok(());
     }
+    // It runs as JavaScript (also a '.wasm' path that is a symlink to a JS file), so it needs the opt-in.
+    permission.check(spec)?;
     // A JS plugin may read its whole folder, so that folder must not be the context itself.
     if real.parent() == Some(local.root()) {
         let base = real.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -742,6 +752,55 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
 fn is_identifier(s: &str) -> bool {
     let mut c = s.chars();
     c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// Which JavaScript PLUGINs `--allow-plugin` / `--allow-plugins` let run.
+struct PluginPermission {
+    all: bool,
+    names: Vec<String>,
+}
+
+impl PluginPermission {
+    fn check(&self, spec: &PluginSpec) -> Result<()> {
+        if self.all || self.names.contains(&spec.name) {
+            return Ok(());
+        }
+        Err(SitefileError::at(
+            E_UNSUPPORTED,
+            format!(
+                "PLUGIN {0} runs JavaScript, which must be allowed explicitly: add --allow-plugin {0} (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag",
+                spec.name
+            ),
+            &spec.span,
+        ))
+    }
+}
+
+/// Check every JavaScript PLUGIN against `--allow-plugin` / `--allow-plugins` before
+/// anything is read or started. A wasm plugin (a module that imports nothing) runs
+/// without permission. Returns the check, which register_plugin repeats on the real path.
+fn check_plugins(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<PluginPermission> {
+    let mut names: Vec<String> = Vec::new();
+    for name in &options.allow_plugin {
+        if !is_identifier(name) {
+            return Err(SitefileError::plain(E_USAGE, format!("--allow-plugin expects a PLUGIN name (an identifier), got '{name}'")));
+        }
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    let permission = PluginPermission { all: options.allow_all_plugins, names };
+    for spec in &p.plugins {
+        if !spec.path.ends_with(".wasm") {
+            permission.check(spec)?;
+        }
+    }
+    for name in &permission.names {
+        if !p.plugins.iter().any(|s| &s.name == name) {
+            warn(&format!("--allow-plugin {name} does not match any PLUGIN and was ignored"));
+        }
+    }
+    Ok(permission)
 }
 
 /// Match each declared TOOL to a `--allow-exec` entry and resolve it to a real path.

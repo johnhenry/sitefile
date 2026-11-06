@@ -63,7 +63,7 @@ function cases() {
     ex('multistage'),
     ex('blog'),
     ex('data'),
-    ex('motion'),
+    ex('motion', { args: ['--allow-plugin', 'motion'] }),
     ex('wasm'),
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
     ex('hello', { suffix: ':tar', out: 'site.tar', compare: 'archive' }),
@@ -173,7 +173,9 @@ try {
           command === 'build'
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
             : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
-        const res = await run(cmd, argv, c.env ?? {});
+        // Each implementation gets its own SITEFILE_HOME: builds write the TRANSFORM cache and apply
+        // the cache size limit there, and must never touch ~/.sitefile.
+        const res = await run(cmd, argv, { SITEFILE_HOME: path.join(tmp, impl, '.home'), ...(c.env ?? {}) });
         r[impl] = { code: res.code, error: errorLine(res.stderr), warnings: warningLines(res.stderr), ms: res.ms, spawnError: res.spawnError };
         if (res.code === 0) {
           r[impl].output =
