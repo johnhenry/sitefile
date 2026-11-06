@@ -1,0 +1,6 @@
+# sitefile vendor with a FROM image base: its blobs are vendored, and a build with an empty store uses them.
+FROM image ${REGISTRY}/conf/theme:1
+COPY <<TXT /extra.txt
+extra
+TXT
+EXPORT /

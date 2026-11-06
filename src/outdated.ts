@@ -31,8 +31,8 @@ import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 export type OutdatedStatus = 'current' | 'changed' | 'unpinned' | 'digest-only' | 'error';
 
 export interface OutdatedEntry {
-  readonly kind: 'import' | 'base';
-  /** The IMPORT name, or `BASE`. */
+  readonly kind: 'import' | 'image' | 'base';
+  /** The IMPORT name, the stage of a `FROM image` base (its name, or `#<n>`), or `BASE`. */
   readonly name: string;
   /** The URL, or the canonical image reference. */
   readonly source: string;
@@ -42,7 +42,7 @@ export interface OutdatedEntry {
   /** What the source resolves to now (body sha256, or the tag's manifest/index digest). */
   readonly latest: string | null;
   readonly status: OutdatedStatus;
-  /** BASE only: a greater version-like tag of the same shape. */
+  /** Images only (BASE and FROM image): a greater version-like tag of the same shape. */
   readonly newerTag: string | null;
   readonly error: { readonly code: string; readonly message: string } | null;
 }
@@ -153,38 +153,43 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
     }
   }
 
-  const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
-  if (baseInput !== undefined) {
-    let source = baseInput;
+  /** A registry image (BASE or a FROM image base): resolve its tag again and compare with the pin. */
+  const imageRow = async (kind: 'image' | 'base', name: string, input: string): Promise<OutdatedEntry> => {
+    let source = input;
     let pin: string | null = null;
     let pinnedBy: OutdatedEntry['pinnedBy'] = null;
     try {
-      const ref = withDefaultRegistry(parseRef(baseInput));
+      const ref = withDefaultRegistry(parseRef(input));
       const registry = ref.registry as string;
       source = `${registry}/${ref.name}${ref.tag !== undefined ? `:${ref.tag}` : ''}${ref.digest !== undefined ? `@${ref.digest}` : ''}`;
       const locked = lock?.getImage(`${registry}/${ref.name}:${ref.tag ?? 'latest'}`);
       pin = ref.digest ?? locked?.digest ?? null;
       pinnedBy = ref.digest !== undefined ? 'digest' : pin !== null ? 'lockfile' : null;
       if (ref.tag === undefined && ref.digest !== undefined) {
-        inputs.push(entry({ kind: 'base', name: 'BASE', source, pin, pinnedBy, latest: null, status: 'digest-only', newerTag: null, error: null }));
-      } else {
-        const tag = ref.tag ?? 'latest';
-        const client = makeClient(registry, { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork });
-        const latest = (await client.getManifest(ref.name, tag)).digest;
-        let newerTag: string | null = null;
-        if (versionTag(tag)) {
-          try {
-            newerTag = newerVersionTag(tag, await client.listTags(ref.name)) ?? null;
-          } catch (e) {
-            errorOf(e); // not listable: no newer tag
-          }
-        }
-        inputs.push(entry({ kind: 'base', name: 'BASE', source, pin, pinnedBy, latest, status: statusOf(pin, latest), newerTag, error: null }));
+        return entry({ kind, name, source, pin, pinnedBy, latest: null, status: 'digest-only', newerTag: null, error: null });
       }
+      const tag = ref.tag ?? 'latest';
+      const client = makeClient(registry, { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork });
+      const latest = (await client.getManifest(ref.name, tag)).digest;
+      let newerTag: string | null = null;
+      if (versionTag(tag)) {
+        try {
+          newerTag = newerVersionTag(tag, await client.listTags(ref.name)) ?? null;
+        } catch (e) {
+          errorOf(e); // not listable: no newer tag
+        }
+      }
+      return entry({ kind, name, source, pin, pinnedBy, latest, status: statusOf(pin, latest), newerTag, error: null });
     } catch (e) {
-      inputs.push(entry({ kind: 'base', name: 'BASE', source, pin, pinnedBy, latest: null, status: 'error', newerTag: null, error: errorOf(e) }));
+      return entry({ kind, name, source, pin, pinnedBy, latest: null, status: 'error', newerTag: null, error: errorOf(e) });
     }
+  };
+  // FROM image stage bases with a registry (local-store images have no upstream), named by their stage.
+  for (const [i, st] of p.stages.entries()) {
+    if (st.base.kind === 'image' && !st.base.local) inputs.push(await imageRow('image', st.name ?? `#${i + 1}`, st.base.ref));
   }
+  const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
+  if (baseInput !== undefined) inputs.push(await imageRow('base', 'BASE', baseInput));
 
   const summary: Record<OutdatedStatus, number> = { current: 0, changed: 0, unpinned: 0, 'digest-only': 0, error: 0 };
   for (const i of inputs) summary[i.status]++;

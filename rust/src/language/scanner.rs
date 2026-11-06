@@ -371,6 +371,23 @@ impl<'a> Cursor<'a> {
         true
     }
 
+    /// Whether `kw` (case-insensitive) is the next whole bare word, without consuming it.
+    pub fn peek_keyword(&mut self, kw: &str) -> bool {
+        let at = self.i;
+        let found = self.keyword(kw);
+        self.i = at;
+        found
+    }
+
+    /// The current position, for [`Cursor::reset`] (one-token lookahead).
+    pub fn mark(&self) -> usize {
+        self.i
+    }
+
+    pub fn reset(&mut self, mark: usize) {
+        self.i = mark;
+    }
+
     pub fn expect_keyword(&mut self, kw: &str) -> Result<()> {
         let at = self.span();
         if !self.keyword(kw) {

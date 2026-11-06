@@ -1,6 +1,7 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { isInline, stageNames, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
+import { parseRef } from './ref.js';
 import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
@@ -122,7 +123,22 @@ export type StageBase =
   /** `path` is context-relative (`''` for the context root). */
   | { readonly kind: 'local'; readonly path: string }
   /** A copy of an earlier stage's final tree. */
-  | { readonly kind: 'stage'; readonly name: string };
+  | { readonly kind: 'stage'; readonly name: string }
+  /** `FROM image <ref> [AT <dir>]`: the files of an OCI site image. */
+  | ImageStageBase;
+
+export interface ImageStageBase {
+  readonly kind: 'image';
+  /** The evaluated reference, as written (validated). */
+  readonly ref: string;
+  /** No registry host: an image in the local store, never fetched. */
+  readonly local: boolean;
+  /** `AT`: normalized absolute directory inside the image (default: the image's root label). */
+  readonly at?: string;
+  /** `FROM` or `STAGE <name> FROM`, for messages. */
+  readonly lead: string;
+  readonly span: SourceSpan;
+}
 
 /** One FROM and the operations that follow it. */
 export interface Stage {
@@ -192,7 +208,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       case 'FROM':
         stages.push({
           ...(ins.alias !== undefined && { name: ins.alias }),
-          base: ins.base === 'scratch' ? { kind: 'scratch' } : stageBase(ins.base, vars, stages, allStageNames, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'),
+          base:
+            ins.base === 'scratch'
+              ? { kind: 'scratch' }
+              : isImageBase(ins.base)
+                ? imageBase(ins.base, vars, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM')
+                : stageBase(ins.base, vars, stages, allStageNames, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'),
           operations: [],
           span: ins.span,
         });
@@ -407,6 +428,20 @@ function classifyUri(uri: string, span: SourceSpan): ImportSpec['location'] {
     throw new SitefileError('E_PROTOCOL', `unsupported protocol '${scheme}:' (supported: https, git+https, relative paths)`, span);
   }
   return { kind: 'local', path: normalizeLocal(uri, span).path };
+}
+
+/** `image <ref> [AT <dir>]`: the reference must parse; a reference without a registry host names a local-store image. */
+function imageBase(b: ImageBase, vars: ReadonlyMap<string, Scalar>, lead: string): ImageStageBase {
+  const ref = evaluateOperand(b.ref, vars);
+  let local: boolean;
+  try {
+    local = parseRef(ref).registry === undefined;
+  } catch (e) {
+    if (e instanceof SitefileError) throw new SitefileError('E_VALIDATION', `${lead} image: ${e.detail}`, b.ref.span, { cause: e });
+    throw e;
+  }
+  const at = b.at ? normalizeVirtual(evaluateOperand(b.at, vars), b.at.span, 'image directory').path : undefined;
+  return { kind: 'image', ref, local, ...(at !== undefined ? { at } : {}), lead, span: b.ref.span };
 }
 
 /** A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory. */

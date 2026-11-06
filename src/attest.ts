@@ -79,6 +79,8 @@ export interface BuildFacts {
   /** Imports in declaration order with the digest the build used (Sitefile.lock's for remote ones). */
   readonly imports: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly resolved?: string | undefined; readonly digest: string; readonly gitCommit?: string | undefined }>;
   readonly base?: { readonly name: string; readonly digest: string } | undefined;
+  /** `FROM image` stage bases, in stage order (FROM line, image name, image digest). */
+  readonly images?: ReadonlyArray<{ readonly line: number; readonly name: string; readonly digest: string }> | undefined;
   /** `--strict-pins`: how each remote input was pinned (shown in the provenance). */
   readonly pins?: Pins | undefined;
   /** File origins start with the Sitefile label (relative to the cwd); they are rewritten to `sitefile`. */
@@ -113,7 +115,7 @@ export function sitefilePathOf(contextDir: string, sitefile: string | undefined)
 
 /** Collect the facts for a finished build. Reads the Sitefile again to digest it. */
 export async function buildFacts(
-  result: Pick<BuildResult, 'resources' | 'base' | 'pins'>,
+  result: Pick<BuildResult, 'resources' | 'base' | 'pins' | 'images'>,
   options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly label?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
 ): Promise<BuildFacts> {
   const file = sitefilePathOf(options.contextDir, options.sitefile);
@@ -142,6 +144,7 @@ export async function buildFacts(
     platform: options.platform ?? 'linux/amd64',
     imports,
     base: result.base ? { name: result.base.name, digest: result.base.manifestDigest } : undefined,
+    images: result.images?.map((i) => ({ line: i.line, name: i.name, digest: i.digest })),
     pins: result.pins,
     label: options.label ?? (path.relative(process.cwd(), file) || path.basename(file)),
   };
@@ -166,6 +169,10 @@ export function provenancePredicate(facts: BuildFacts, epoch: number | undefined
     const pin = facts.pins?.imports[i.name];
     if (pin !== undefined) d.annotations = { 'dev.sitefile.pin': pin };
     deps.push(d);
+  }
+  for (const i of facts.images ?? []) {
+    const pin = facts.pins?.images?.[i.line];
+    deps.push({ name: `from:${i.line}`, uri: i.name, digest: { sha256: hex(i.digest) }, ...(pin ? { annotations: { 'dev.sitefile.pin': pin } } : {}) });
   }
   if (facts.base) {
     deps.push({ name: 'base', uri: facts.base.name, digest: { sha256: hex(facts.base.digest) }, ...(facts.pins?.base ? { annotations: { 'dev.sitefile.pin': facts.pins.base } } : {}) });

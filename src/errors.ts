@@ -65,6 +65,8 @@ export type ErrorCode =
   | 'E_REGISTRY'
   | 'E_AUTH'
   // cli
+  /** One or more `sitefile bake` targets failed. */
+  | 'E_BAKE'
   | 'E_USAGE';
 
 export class SitefileError extends Error {

@@ -37,7 +37,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
-| `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
+| `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or a registry `FROM image` or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
@@ -94,7 +94,7 @@ sitefile outdated [context] [-f Sitefile] [--json] [--build-arg K=V]... [--build
                   [--base image] [--insecure-registry host[:port]]...
 ```
 
-Reports every remote `IMPORT` and the `BASE` image without changing anything (see
+Reports every remote `IMPORT`, registry `FROM image` and the `BASE` image without changing anything (see
 [LANGUAGE.md](LANGUAGE.md#checking-pins-sitefile-outdated) for what each status means and what cannot be known):
 
 ```
@@ -155,24 +155,25 @@ plans only (like `validate`: nothing is read or fetched), so it shows what the S
 directory holds or which variables a template uses.
 
 - **Nodes** (`id`, `kind`, `label`, and `line` when there is a Sitefile line):
-  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `local:./<path>` (a context
+  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `image:<ref>` (a
+  `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
   `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
-- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory or an
-  earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
+- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory, an
+  image or an earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
   stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation) and
   `export` (the last stage and the site files to `export`).
-- **Order**: imports, plugins, tools, local paths (first use), then per stage its operations and the stage, then
+- **Order**: imports, plugins, tools, images (first use), local paths (first use), then per stage its operations and the stage, then
   the site files and `export`. Edges in the order the stages are walked, without duplicates.
 - **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
   `N nodes, M edges`.
 - `--json`: `{"file", "target"?, "nodes": [{"id", "kind", "label", "line"?}], "edges": [{"from", "to", "kind"}]}`.
 - `--dot`: Graphviz (`sitefile graph --dot | dot -Tsvg > graph.svg`): `rankdir=LR`, a shape per kind (cylinder
-  imports, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
+  imports, tab images, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
   export), dashed `input` edges and bold `base`/`export` edges. `--dot` with any other command, or with `--json`,
   is a usage error.
 
@@ -230,6 +231,126 @@ $ sitefile why /index.html conformance/cases/why-overwrite
        from stage more:/out/index.html
 ```
 
+## Variants: `sitefile bake`
+
+```
+sitefile bake [targets...] [-f sitefile.bake.yaml] [--print [--json]] [-j n] [--profile dir]
+              [--build-arg K=V]... [--build-arg-file f]... [build flags]
+```
+
+Like `docker buildx bake`: build several variants of one or more Sitefiles (locales, staging and production) with
+one command. The variants live in a **bake file**, not in the Sitefile: `-f <file>`, or else the first of
+`sitefile.bake.yaml`, `sitefile.bake.yml`, `sitefile.bake.json` in the current directory. YAML files use the same
+safe subset as `IMPORT ... AS yaml` ([LANGUAGE.md](LANGUAGE.md#data-files-yaml-csv-and-web-bundles-see-examplesdata));
+another extension is a usage error. See `examples/bake/`.
+
+```yaml
+groups:
+  default: [site]                     # what `sitefile bake` builds without names
+  en: [site-en-staging, site-en-production]
+targets:
+  common:                             # shared settings (not in the default group, so not built alone)
+    context: .
+  site:
+    inherits: common
+    matrix:
+      locale: [en, fr]
+      env: [staging, production]
+    arg-files: ["env/${env}.env"]
+    args: {LOCALE: "${locale}"}
+    output: dist/${env}/${locale}
+```
+
+- **Top level**: `targets` (a non-empty mapping) and optional `groups`. Any other key is `E_DATA`.
+- **Target fields** (all optional; every path is **relative to the bake file's directory** unless absolute):
+
+  | Field | Meaning | Default |
+  | --- | --- | --- |
+  | `context` | build context | the bake file's directory |
+  | `file` | Sitefile (`-f`) | `<context>/Sitefile` |
+  | `args` | mapping of ARG name to a string, number or boolean (`--build-arg`) | none |
+  | `arg-files` | list of `.json`/`.yaml`/`.env` files (`--build-arg-file`) | none |
+  | `target` | stop at this stage (`--target`) | the whole build |
+  | `output` | export destination (`-o`) | `dist/<target name>`, with the format's extension (`dist/<name>.zip`) when `format` is set |
+  | `format` | `--format` (`directory`, `zip`, `tar`, `tgz`/`tar.gz`, `wbn`, `oci`) | from `output`'s extension, else the Sitefile's `EXPORT ... AS` |
+  | `tags` | list of `name[:tag]`: also store the build as an image (`-t`; the output is still written) | none |
+  | `inherits` | a target name or a list: start from those targets' fields, in order | none |
+  | `matrix` | mapping of variable name to a non-empty list of values | none |
+
+  With `format` unset and an `output` without an archive extension, a Sitefile that exports `AS zip` writes a zip
+  file at `output`; set `format` (or name `output` `*.zip`) to be explicit.
+- **Inheritance**: fields of the `inherits` targets are applied in order, then the target's own; `args` merge key
+  by key (later wins), every other field is replaced. `matrix` and `inherits` themselves are not inherited. An
+  unknown parent or a cycle (`inherits cycle: a -> b -> a`) is `E_DATA`.
+- **Matrix**: a target with a `matrix` becomes one target per combination of values, the first variable varying
+  slowest, named `<target>-<value>-<value>...` (characters other than letters, digits, `.`, `_`, `-` become `_`):
+  `site-en-staging`, `site-en-production`, `site-fr-staging`, `site-fr-production`. In its string fields (also
+  inherited ones and `args` values) `${name}` is replaced by the variable's value; any other `${...}` is `E_DATA`
+  (`target 'site-en': output: '${lcoale}' is not a matrix variable (locale)`). Targets without a matrix are not
+  interpolated. Two targets with one name are `E_DATA`.
+- **Selection**: name targets and groups to build, in order and without duplicates. A matrix target's name selects
+  all its variants; a variant's own name (`site-fr-production`) selects just it; a group selects its members (groups
+  can list groups). With no names: the `default` group, or every target in file order when there is none. An
+  unknown name is a usage error listing the targets and groups; a group naming an unknown target is `E_DATA`.
+- **Conflicts**, checked for the selected targets before anything is built (`E_CONFLICT`): two targets writing the
+  same output (`bake targets 'a' and 'b' both write 'dist/x'`), one output inside another
+  (`... write overlapping outputs 'dist' and 'dist/docs'`), or one tag in two targets (`... both tag 'site:1'`).
+
+**Running.** Each target is a separate `sitefile build` process (`build <context> -f <file> -o <output>
+[--target] [--format] [--build-arg-file]... [--build-arg]... [-t]...` plus the flags below), so a crash or a
+plugin in one target cannot affect another. Up to `-j, --jobs` (default 4) run at once. Targets whose builds
+could write the same `Sitefile.lock` (the file next to their Sitefile) never run at the same time, unless
+`--frozen-lockfile` or `--no-lockfile` is given. All builds share `$SITEFILE_HOME`: the TRANSFORM result cache (a
+result computed by one target is a hit for the next one that needs it), the image store and the cache size limit,
+which bake applies once at the end instead of after every build. Remote imports are fetched by each build (pin them
+or `sitefile vendor` once to avoid repeated downloads); in-process sharing of import resolution is not done.
+
+**Output.** Each target's output and errors are printed, each line prefixed with `[<target>] `, in plan order (a
+target's lines appear once it and every target before it finished; standard error before standard output):
+
+```
+[site-en-staging] Exported 2 files to dist/staging/en (sha256:...)
+[site-en-production] Exported 2 files to dist/production/en (sha256:...)
+...
+Baked 4 targets
+```
+
+**Failures.** Every target runs even when one fails. Then nothing else is printed to standard output, the last line
+on standard error is `error[E_BAKE]: 1 of 4 targets failed: site-fr-staging` and the exit code is 1 (also when a
+target's failure is a usage error in that build). Errors in the bake file itself stop before any build: exit 1
+(`E_DATA`, `E_CONFLICT`, `E_NOT_FOUND`) or 2 (usage).
+
+**`--print`** shows the resolved plan without building (`--json` only with `--print`), identical in the TypeScript
+and Rust CLIs:
+
+```
+site-en-staging
+  context   .
+  file      Sitefile
+  output    dist/staging/en
+  arg       LOCALE=en
+  arg-file  env/staging.env
+  matrix    locale=en env=staging
+...
+4 targets from sitefile.bake.yaml
+```
+
+The lines are `context`, `file`, `target` (if set), `output`, `format` (if set), one `arg` per build arg in
+definition order (inherited ones first), one `arg-file` and one `tag` each, and `matrix` for a variant.
+`--json`: `{"file", "targets": [{"name", "context", "file", "args": {...}, "argFiles": [...], "target", "output",
+"format", "tags": [...], "matrix": {...}}]}`, with `null` for an unset `target`, `format` or `matrix`.
+
+**Flags.**
+
+| Flag | Effect in bake |
+| --- | --- |
+| `-f, --file`, `--print`, `--json`, `-j, --jobs` | bake's own (see above) |
+| `--build-arg K=V`, `--build-arg-file f` | added to every target: `--build-arg` wins over the bake file's `args` and arg files; `--build-arg-file` files (relative to the current directory) are read after the target's own `arg-files` (a target's `args` still win over them, as `--build-arg` always wins over files) |
+| `--profile <dir>` | one trace per target: `<dir>/<target>.json` |
+| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
+| `--cache-to` | refused: each target would replace the results the others pushed. Push from one `sitefile build --cache-to` |
+| `-o`, `-t`, `--format`, `--target`, `--watch` and the image flags (`--base`, `--label`, `--provenance`, ...) | not accepted: set them per target in the bake file (`output`, `tags`, `format`, `target`); watch mode and image options are per build |
+
 ## Watch mode
 
 ```
@@ -253,17 +374,20 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
   and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
-  list). Every input is still read and hashed on every build, and the export is written in full, so the output is
-  byte for byte what a clean build writes, with the same warnings and errors (see
-  [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns this off. With
-  `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
+  list). A directory export writes only the files that changed and removes the ones (and the directories) that are
+  gone, after checking that the output is still exactly what the previous build wrote; otherwise, and for archive
+  formats, it is written in full (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-export)). Every input is still
+  read and hashed on every build, so the output is byte for byte what a clean build writes, with the same warnings
+  and errors (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns both
+  off. With `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
 - **Messages**: `Change detected, rebuilding` before each rebuild, then the usual `Exported ...` line
   (`serve --watch`: `Built N files (sha256:...)`). After the first build: `Watching <context> for changes (Ctrl-C to
   stop)`.
 - **Failures**: a failed rebuild prints its `error[CODE]: ...` line and `Build failed; keeping the last good
-  output`, and the loop keeps watching. Exports are atomic (written to a temporary sibling and swapped in), so
-  `dist/` is either the previous good output or the new one, never half-written; `serve --watch` keeps serving the
-  last good build. If the *first* build fails, `build --watch` keeps watching and `serve --watch` serves an empty
+  output`, and the loop keeps watching. A failed build never touches `dist/`. A full export is atomic (written to a
+  temporary sibling and swapped in); an incremental one writes the changed files to a temporary sibling first and
+  then renames each into place, so every file is always its old or its new version and the output mixes the two
+  builds only for the moment those renames take; `serve --watch` keeps serving the last good build. If the *first* build fails, `build --watch` keeps watching and `serve --watch` serves an empty
   site until a build succeeds. A usage error in the first build (for example a malformed `--build-arg`) exits with
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage

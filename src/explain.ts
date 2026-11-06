@@ -47,7 +47,9 @@ export function operationLabel(op: Operation): string {
 }
 
 function stageLabel(stage: Stage): string {
-  const base = stage.base.kind === 'scratch' ? 'scratch' : stage.base.kind === 'local' ? localLabel(stage.base.path) : stage.base.name;
+  const b = stage.base;
+  const base =
+    b.kind === 'scratch' ? 'scratch' : b.kind === 'local' ? localLabel(b.path) : b.kind === 'image' ? `image ${b.ref}${b.at !== undefined ? ` AT ${b.at}` : ''}` : b.name;
   return `FROM ${base}${stage.name !== undefined ? ` AS ${stage.name}` : ''}`;
 }
 
@@ -62,7 +64,7 @@ function stageId(stage: Stage, index: number): string {
 
 // ---------------------------------------------------------------- graph
 
-export type GraphNodeKind = 'import' | 'plugin' | 'tool' | 'local' | 'operation' | 'stage' | 'site' | 'export';
+export type GraphNodeKind = 'import' | 'image' | 'plugin' | 'tool' | 'local' | 'operation' | 'stage' | 'site' | 'export';
 export type GraphEdgeKind = 'base' | 'input' | 'next' | 'export';
 
 export interface GraphNode {
@@ -125,11 +127,17 @@ export function planGraph(p: Plan): Graph {
   const list = (name: string): string | undefined => (imports.has(name) ? `import:${name}` : undefined);
 
   const staged: GraphNode[] = [];
+  const images: GraphNode[] = [];
   p.stages.forEach((stage, si) => {
     const id = stageId(stage, si);
     const ids = stage.operations.map((op) => `op:${op.span.line}`);
     const first = ids[0] ?? id;
     if (stage.base.kind === 'local') edge(local(stage.base.path), first, 'base');
+    else if (stage.base.kind === 'image') {
+      const imageId = `image:${stage.base.ref}`;
+      if (!images.some((n) => n.id === imageId)) images.push({ id: imageId, kind: 'image', label: `image ${stage.base.ref}`, line: stage.span.line });
+      edge(imageId, first, 'base');
+    }
     else if (stage.base.kind === 'stage') {
       const from = stageIds.get(stage.base.name);
       if (from) edge(from, first, 'base');
@@ -167,6 +175,7 @@ export function planGraph(p: Plan): Graph {
     ...p.imports.map((i): GraphNode => ({ id: `import:${i.name}`, kind: 'import', label: `IMPORT ${i.name} ${i.uri}${i.as ? ` AS ${i.as}` : ''}`, line: i.span.line })),
     ...p.plugins.map((pl): GraphNode => ({ id: `plugin:${pl.name}`, kind: 'plugin', label: `PLUGIN ${pl.name} ${localLabel(pl.path)}`, line: pl.span.line })),
     ...p.tools.map((t): GraphNode => ({ id: `tool:${t.name}`, kind: 'tool', label: `TOOL ${t.name}`, line: t.span.line })),
+    ...images,
     ...locals,
     ...staged,
     ...site,
@@ -187,6 +196,7 @@ export function graphText(g: Graph): string {
 
 const DOT_SHAPES: Record<GraphNodeKind, string> = {
   import: 'cylinder',
+  image: 'tab',
   plugin: 'component',
   tool: 'component',
   local: 'folder',
@@ -328,6 +338,9 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       else if (stage.base.kind === 'local') {
         const rest = stage.base.path === '' ? file.slice(1) : stage.base.path + file;
         events.push({ location: at(stage.span.line), instruction: stageLabel(stage), stage: display, path: file, action: 'write', digest: prev.digest, inputs: [localLabel(rest)] });
+      } else if (stage.base.kind === 'image') {
+        // The file's origin names the image, its digest and the path inside the layer.
+        events.push({ location: at(stage.span.line), instruction: stageLabel(stage), stage: display, path: file, action: 'write', digest: prev.digest, inputs: [prev.origin] });
       }
     }
     stage.operations.forEach((op, i) => {

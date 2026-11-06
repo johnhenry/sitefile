@@ -6,7 +6,7 @@
 //   default store, and the Rust CLI honors the same variable.
 // - The in-process mock OCI distribution registry from
 //   test/helpers/mock-registry.ts (plain http on loopback, which both CLIs allow
-//   for registries), seeded with a small base image.
+//   for registries), seeded with a small base image and a theme site image.
 //
 // Nothing listens on a fixed port, nothing is written outside `dir`, and the
 // servers are closed by `close()`.
@@ -111,6 +111,13 @@ export async function startServers(root, dir) {
     // More tags for `sitefile outdated` (net-outdated-base): a newer one of the same shape and one of another shape.
     registry.seedImage('conf/base', '2', { layers: [{ '/etc/motd': 'base image 2\n' }], config: { Cmd: ['/bin/serve'] } });
     registry.seedImage('conf/base', '1.5', { layers: [{ '/etc/motd': 'base image 1.5\n' }], config: { Cmd: ['/bin/serve'] } });
+    // A Sitefile theme image for `FROM image` (net-from-image-*): one layer under /srv/www with the root label, and a newer tag.
+    const theme = { Labels: { 'dev.sitefile.root': '/srv/www', 'org.opencontainers.image.title': 'theme' } };
+    registry.seedImage('conf/theme', '1', {
+      layers: [{ '/srv/www/index.html': 'theme index\n', '/srv/www/theme.css': 'body { font: 16px serif; }\n', '/srv/www/layout/page.html': '<main>${content}</main>\n' }],
+      config: theme,
+    });
+    registry.seedImage('conf/theme', '2', { layers: [{ '/srv/www/theme.css': 'body { font: 18px serif; }\n' }], config: theme });
 
     return {
       vars: { HTTPS: base, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2 },

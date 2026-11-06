@@ -4,12 +4,12 @@
 const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     (
         "FROM",
-        "FROM scratch|<base> [AS name]",
-        "Starts a stage. `scratch` is an empty tree; a bare name of an earlier stage starts from a copy of its final tree; anything else is a context directory (`./name` forces the directory). Without any FROM, an implicit unnamed `FROM scratch` starts at the first non-ARG instruction.",
+        "FROM scratch|<base>|image <ref> [AT <dir>] [AS name]",
+        "Starts a stage. `scratch` is an empty tree; a bare name of an earlier stage starts from a copy of its final tree; `image <ref>` starts from the files of an OCI site image (a registry reference is pinned in Sitefile.lock; a name without a registry host is a local-store image); anything else is a context directory (`./name` forces the directory). Without any FROM, an implicit unnamed `FROM scratch` starts at the first non-ARG instruction.",
     ),
     (
         "STAGE",
-        "STAGE name [FROM base]",
+        "STAGE name [FROM scratch|<base>|image <ref> [AT <dir>]]",
         "Starts a named stage: exactly `FROM base AS name`; `STAGE name` alone is `FROM scratch AS name`.",
     ),
     (
@@ -79,7 +79,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
 const CLAUSES: &[(&str, &str, &str)] = &[
     ("FROM", "AS", "`AS name` names this stage, so a later `FROM name`, `STAGE x FROM name` or `--from=name` can use it."),
     ("FROM", "SCRATCH", "`scratch` (the bare word) is an empty tree. `\"scratch\"` is a path."),
-    ("STAGE", "FROM", "`FROM base`: `scratch`, an earlier stage, or a context directory. Omitted: `scratch`."),
+    ("FROM", "IMAGE", "`image <ref>`: the files of an OCI site image. With a registry host (`ghcr.io/me/theme:1`) the tag is resolved to a digest once and recorded in Sitefile.lock `images` (or pin it with `@sha256:`); without one (`theme:1`, made by `build -t`) it is an image in the local store."),
+    ("FROM", "AT", "`AT <dir>`: the directory inside the image to start from (default: the image's `dev.sitefile.root` label, `/` without one)."),
+    ("STAGE", "FROM", "`FROM base`: `scratch`, an earlier stage, `image <ref>`, or a context directory. Omitted: `scratch`."),
+    ("STAGE", "IMAGE", "`image <ref>`: the files of an OCI site image (a registry reference is locked in Sitefile.lock; no registry host: the local store)."),
+    ("STAGE", "AT", "`AT <dir>`: the directory inside the image to start from (default: its `dev.sitefile.root` label)."),
     ("STAGE", "SCRATCH", "`scratch` (the bare word) is an empty tree."),
     ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path, an `https://` URL (`http://` only with `--allow-http`), or `git+https://host/repo.git#ref[:path]` (ref: a branch, tag or 40-hex commit)."),
     ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn or tree. `AS tree` on a file extracts an archive."),

@@ -579,6 +579,12 @@ const MAX_LAYER_BYTES: u64 = 8 * (1 << 30);
 /// Decode a site image's files, verifying the layer digest and diff_id.
 /// `layer_bytes` are the compressed blob bytes. Returns the tree under the image's root.
 pub fn extract_image_files(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: &[u8], origin: &str) -> Result<Tree> {
+    extract_image_files_at(m, cfg, layer_bytes, origin, None)
+}
+
+/// [`extract_image_files`], rooted at `root_override` (`FROM image … AT <dir>`) instead of the image's
+/// `dev.sitefile.root` label (`/` without one).
+pub fn extract_image_files_at(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: &[u8], origin: &str, root_override: Option<&str>) -> Result<Tree> {
     let idx = site_layer_index(m, cfg);
     let layer = idx.and_then(|i| m.layers.get(i));
     let (Some(idx), Some(layer)) = (idx, layer.filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)) else {
@@ -606,7 +612,7 @@ pub fn extract_image_files(m: &ParsedManifest, cfg: &ParsedConfig, layer_bytes: 
     if cfg.diff_ids.get(idx).map(String::as_str) != Some(sha256(&tar).as_str()) {
         return Err(SitefileError::plain(E_STORE, format!("{origin}: layer content does not match the config diff_id")));
     }
-    let root = cfg.labels.get(ann::ROOT).map(String::as_str).unwrap_or("/");
+    let root = root_override.unwrap_or_else(|| cfg.labels.get(ann::ROOT).map(String::as_str).unwrap_or("/"));
     let limits = ArchiveLimits { max_entries: MAX_LAYER_ENTRIES as u64, max_total_bytes: MAX_LAYER_BYTES, max_ratio: u64::MAX };
     let all = extract_archive(&tar, origin, &limits, None)?;
     Ok(all.subtree(&normalize_virtual(root, None, "path")?.path))

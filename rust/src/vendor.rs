@@ -6,13 +6,13 @@
 
 use crate::base_image::{resolve_base, ResolveBaseOptions};
 use crate::digest::sha256;
-use crate::error::{ErrorCode::*, Result, SitefileError};
+use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::resources::git::GitSelection;
 use crate::resources::vendor::VendoredGit;
 use crate::executor::{fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
 use crate::export::oci::parse_manifest;
 use crate::language::ast::ExportFormat;
-use crate::planner::{plan, ImportLocation};
+use crate::planner::{plan, ImportLocation, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::RegistryOptions;
 use crate::resources::lockfile::Lockfile;
@@ -94,9 +94,22 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
     }
 
     let mut lock = lock.into_inner().unwrap_or(None);
-    let base_input = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None });
-    if let Some(input) = base_input {
-        let store = Store::open_default()?;
+    // FROM image stage bases with a registry (local-store images are not vendored), then the BASE.
+    let mut wanted: Vec<(String, String, bool, Option<SourceSpan>)> = Vec::new();
+    for st in &p.stages {
+        if let StageBase::Image { reference, local: false, lead, span, .. } = &st.base {
+            wanted.push((reference.clone(), format!("{lead} image"), false, Some(span.clone())));
+        }
+    }
+    if let Some(input) = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None }) {
+        wanted.push((input, "BASE".into(), true, None));
+    }
+    let mut store: Option<Store> = None;
+    for (input, lead, enforce, span) in wanted {
+        if store.is_none() {
+            store = Some(Store::open_default()?);
+        }
+        let store = store.as_ref().expect("opened above");
         let platform = options.platform.clone().unwrap_or_else(|| "linux/amd64".into());
         let w = warn.clone();
         let warn_fn = move |msg: &str| w(msg);
@@ -110,7 +123,10 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
                 ..Default::default()
             },
             warn: Some(&warn_fn),
-            ..ResolveBaseOptions::new(&store)
+            span,
+            lead: Some(lead),
+            enforce_platform: Some(enforce),
+            ..ResolveBaseOptions::new(store)
         };
         let base = resolve_base(&input, lock.as_mut(), &o)?;
         // resolve_base has validated the reference; this is its lockfile key.

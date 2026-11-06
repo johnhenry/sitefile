@@ -15,7 +15,7 @@
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
   "SITEMAP" "FEED" "REDIRECT" "HEADER"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS"
+  "LINK" "TITLE" "STATUS" "IMAGE"
 ] @keyword
 
 (for_clause [ "FOR" "IN" ] @keyword.repeat)

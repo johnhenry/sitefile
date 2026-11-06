@@ -1,0 +1,9 @@
+# A theme packaged as a site image. Build it into the local image store:
+#
+#   sitefile build examples/theme -t theme:1
+#
+# or publish it (sitefile build examples/theme -t ghcr.io/me/theme:1 && sitefile push ghcr.io/me/theme:1).
+# examples/themed-site then starts FROM image theme:1 (or FROM image ghcr.io/me/theme:1).
+COPY ./assets/ /assets/
+COPY ./layout/ /layout/
+EXPORT /

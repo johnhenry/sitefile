@@ -1,0 +1,6 @@
+# A theme from the local image store (built with -t): no registry, no lockfile entry.
+FROM image theme:1 AS theme
+COPY --overwrite <<HTML /index.html
+<h1>site</h1>
+HTML
+EXPORT /

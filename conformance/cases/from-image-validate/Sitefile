@@ -1,0 +1,6 @@
+# validate plans FROM image bases without resolving them.
+ARG V=1
+STAGE theme FROM image registry.example/me/theme:${V} AT /srv/www
+FROM image theme@sha256:0000000000000000000000000000000000000000000000000000000000000000 AS local
+FROM theme
+EXPORT /

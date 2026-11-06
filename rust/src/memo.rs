@@ -35,6 +35,8 @@ pub struct BuildMemo {
     gen: u64,
     good_gen: u64,
     pub stats: MemoStats,
+    /// What the session's last directory export wrote, so the next one writes only the changes.
+    pub export_state: crate::export::incremental::SharedExportState,
 }
 
 /// A memo shared by a watch session's builds (imports resolve on threads).
