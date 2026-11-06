@@ -7,7 +7,7 @@
 
 ```
 sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [--target stage] [options]
-sitefile validate [context] [--json] [--target stage]
+sitefile validate [context] [--json] [--target stage] [--lint-disable rule[,rule…]]
 sitefile inspect  [context] [--json] [--target stage]
 sitefile graph    [context] [--json | --dot] [--target stage]
 sitefile why <path> [context] [--json] [--target stage]
@@ -41,7 +41,12 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
+| `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
 | `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
+
+`validate` also prints **lint warnings** (`warning: Sitefile:4: [render-escape] RENDER writes /index.html without
+--escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
+`build`, `inspect`, `graph` and `why` do not lint. See [LANGUAGE.md](LANGUAGE.md#lint-rules-sitefile-validate).
 
 ### Building from a Git URL
 
@@ -719,7 +724,7 @@ sitefile lsp [--stdio]
 ```
 
 Runs the Sitefile language server (LSP 3.17, JSON-RPC over stdin/stdout) for editors: diagnostics from the real
-parse/validate/plan pipeline, completion, hover, go to definition, references, rename and document symbols. `--stdio`
+parse/validate/plan pipeline and lint rules, quick fixes (code actions), completion, hover, go to definition, references, rename and document symbols. `--stdio`
 is accepted (clients pass it) and is the only transport. It exits 0 after `shutdown` + `exit`. See [LSP.md](LSP.md).
 
 **Rust binary only** (a tooling exception, see [RUST.md](RUST.md#tooling-exception-the-language-server)): the

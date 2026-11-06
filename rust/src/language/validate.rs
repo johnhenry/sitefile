@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashSet};
 
 /// Each operand of an instruction, and whether it may use a FOR loop variable
 /// (the destination, OPTIONS values and ARGS of RENDER/TRANSFORM).
-fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
+pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
     fn src(s: &Source) -> Option<&Operand> {
         s.as_operand()
     }

@@ -117,13 +117,16 @@ const INSTRUCTIONS = {
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
+  // Lint comments (`# sitefile-lint: …`), valid or not.
+  LINT: () =>
+    `${pick(['#', '  #'])} ${pick(['sitefile-lint:', 'SITEFILE-LINT :', 'sitefile-lint'])} ${pick(['disable', 'disable-next-line', 'disabel', 'disable-next-line '])}=${pick(['unused-name', 'render-escape', 'unpinned-import', 'unpinned-image', 'sitemap-order', 'shadowed-write', 'all', 'bogus', 'unused-name, render-escape', ''])}`,
   // Rejected keywords.
   RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
   NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
   UNKNOWN: () => `${pick(['WORKDIR', 'ENV', 'ADD', 'Copy', 'copy', 'FROMX', 'É', '--x', 'ſtage', 'İmport', 'ﬁ', 'exec'])} ${pick(PATHS)}`,
 };
 /** Relative weights (instructions not listed get 1). */
-const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3 };
+const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
   'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
@@ -349,6 +352,13 @@ const EDGE = [
   '# sitefile=1\nEXPORT /', '# sitefile=2\nEXPORT /', '#sitefile = 1\n#sitefile=1\nEXPORT /', 'EXPORT /\n# sitefile=1', '# sitefile=1.0\nEXPORT /',
   'COPY --exclude=*.md --exclude=x/ --chmod=755 --parents ./a /b/\nEXPORT /', 'COPY --chmod=600 a /b\nEXPORT /', 'COPY --exclude=#x a /b\nEXPORT /',
   'COPY --parents <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --chmod=755 <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --exclude=a --exclude=a ./a /b\nEXPORT /',
+  // Lint rules (src/lint.ts) and their disable comments.
+  'ARG A\nLET B = 1\nIMPORT t FROM ./t.json AS json\nIMPORT d FROM ./d\nPLUGIN p FROM ./p/p.mjs\nTOOL cp\nEXPORT /',
+  'ARG A\nRENDER ./t.html TO /a.html\nIMPORT d FROM ./d\nEXPORT /', 'IMPORT r FROM https://e.x/a.json AS json\nRENDER <<H TO /i.html\n${r.x}\nH\nEXPORT /',
+  'RENDER --escape=none <<H TO /i.html\nx\nH\nRENDER <<H TO /p/${x}.HTM\nx\nH\nEXPORT /', 'SITEMAP BASE https://e.x\nRENDER --escape=html <<H TO /a.html\nx\nH\nEXPORT /',
+  'RENDER --escape=html <<H TO /a.html\nx\nH\nRENDER --escape=html --overwrite <<H TO /a.html\ny\nH\nEXPORT /',
+  'FROM image ghcr.io/a/site:1\nEXPORT /', 'FROM image ghcr.io/a/site@sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'FROM image site:1\nEXPORT / AS oci BASE nginx:alpine',
+  '# sitefile-lint: disable=all\nARG A\nEXPORT /', '# sitefile-lint: disable-next-line=unused-name\nARG A\nARG B\nEXPORT /', '# sitefile-lint: disable=bogus,unused-name\n# sitefile-lint: nope\nARG A\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
   // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
   'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',

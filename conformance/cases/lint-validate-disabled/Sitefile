@@ -1,0 +1,20 @@
+ARG A
+ARG T = x
+IMPORT r FROM https://e.x/a.json AS json
+TOOL cp
+STAGE s
+FROM image ghcr.io/a/site:1
+SITEMAP BASE https://e.x
+RENDER <<H TO /i.html
+${T} ${r.x}
+H
+RENDER --escape=html --overwrite <<H TO /i.html
+y
+H
+# sitefile-lint: disable-next-line=render-escape
+RENDER <<H TO /j.html
+z
+H
+# sitefile-lint: disabel=x
+# sitefile-lint: disable=bogus
+EXPORT / AS oci BASE nginx:alpine

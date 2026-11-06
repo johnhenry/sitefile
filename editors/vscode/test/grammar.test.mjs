@@ -179,3 +179,12 @@ test('COPY --exclude, --chmod and --parents', async () => {
   has(scopesOf(r, 1, 'parents'), 'variable.parameter.flag');
   has(scopesOf(r, 2, '600'), 'invalid.illegal.mode');
 });
+
+test('# sitefile-lint: comments are highlighted as directives', async () => {
+  const r = await tokenize('# sitefile-lint: disable=unused-name,render-escape\n# sitefile-lint: disable-next-line=all\n# sitefile-linter: x\n');
+  has(scopesOf(r, 1, 'sitefile-lint'), 'keyword.other.directive');
+  has(scopesOf(r, 1, 'disable'), 'keyword.other.directive');
+  has(scopesOf(r, 1, 'unused-name,render-escape'), 'constant.other.rule');
+  has(scopesOf(r, 2, 'disable-next-line'), 'keyword.other.directive');
+  for (const [, s] of r[2].tokens) hasNot(s, 'directive');
+});
