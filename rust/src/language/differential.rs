@@ -145,7 +145,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("integrity", integrity.as_ref().map(|i| json!(i))),
         ]),
         Instruction::Tool { span: sp, name } => obj(vec![("kind", s("TOOL")), ("span", Some(span(sp))), ("name", Some(json!(name)))]),
-        Instruction::Transform { span: sp, source: src, from, plugin, plugin_span, dest, options, each: e, args, overwrite } => obj(vec![
+        Instruction::Transform { span: sp, source: src, from, plugin, plugin_span, dest, options, each: e, args, include, exclude, overwrite } => obj(vec![
             ("kind", s("TRANSFORM")),
             ("span", Some(span(sp))),
             ("source", src.as_ref().map(source)),
@@ -161,6 +161,8 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ),
             ("each", each(e)),
             ("args", args.as_ref().map(|a| Value::Array(a.iter().map(operand).collect()))),
+            ("include", (!include.is_empty()).then(|| json!(include))),
+            ("exclude", (!exclude.is_empty()).then(|| json!(exclude))),
             ("overwrite", Some(json!(overwrite))),
         ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![

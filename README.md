@@ -38,7 +38,7 @@ no runtime dependencies.
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
-| `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`) |
+| `TRANSFORM [--include/--exclude=<pattern>] [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`); a directory source runs once per file (`TO /img/thumbs/*.png`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |

@@ -65,7 +65,8 @@ content digests of everything it reads, and a later build reuses the result when
   resulting tree is keyed by the input tree's key plus the step's, like image layers, so an unchanged prefix of a
   stage is reused whole. SITEMAP reads the whole tree, so only that chained key can reuse it.
 - **FOR elements**: `RENDER … FOR` pages are keyed by the template, the element and the imports the template names
-  other than the loop variable; `TRANSFORM … FOR` results by the plugin or tool, source and element. A template that
+  other than the loop variable; `TRANSFORM … FOR` results by the plugin or tool, source and element; a directory
+  TRANSFORM's results per file, by the plugin or tool, the file's relative path and its content digest. A template that
   lists every post (a nav) depends on the whole list, so all its pages re-render; one that does not re-renders only
   the edited post's page.
 - **TRANSFORM**: memoized only when its code has an identity: a wasm module's digest, a JS plugin's folder digest, a

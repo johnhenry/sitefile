@@ -99,7 +99,8 @@ const INSTRUCTIONS = {
   RENDER: () =>
     `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
-    let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
+    const fl = flags(['--overwrite', '--from=' + pick(NAMES), '--include=' + pick(EXCLUDES), '--exclude=' + pick(EXCLUDES), '--include', '--exclude=']);
+    let s = `TRANSFORM ${fl}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick([...PATHS, '/img/*.png', '/out/*', '/a/*.'])}`;
     if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
     if (chance(0.3)) s += ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`;
     if (chance(0.3)) s += ` ARGS ${pick(['-i {input} {output}', '{output}', '{input}', '{option.w} {output}', '"%{pts}" {output}', 'x'])}`;
@@ -253,6 +254,7 @@ function validProgram() {
     () => (theme ? pick(['COPY --from=theme+assets / /t/', 'RENDER --escape=html --from=theme+layout /page.html TO /t.html']) : 'COPY ./v /v'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
     () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
+    () => (plugin ? `TRANSFORM ${maybe('--include=*.jpg ')}${maybe('--exclude=drafts/ ')}${pick(['./photos/', './photos', 'site:/img'])} WITH og TO ${pick(['/img/', '/img/*.png', '/t/*'])}` : 'COPY ./v /v'),
     () => `SITEMAP ${maybe('--overwrite ')}BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' TO /map.xml')}`,
     () => (lists.includes('posts') ? `FEED posts BASE https://e.x LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html'])}${maybe(' TO /atom.xml')}${maybe(` TITLE "${v()} & notes"`)}` : 'COPY ./f /f'),
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
@@ -356,6 +358,11 @@ const EDGE = [
   'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
   'PLUGIN p FROM ./p.mjs\nTRANSFORM a WITH p TO /b OPTIONS w=1 w=2\nEXPORT /', 'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input}\nEXPORT /',
   'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input} {output} {option.q}\nEXPORT /', 'TRANSFORM --from=a WITH p TO /b\nEXPORT /',
+  // TRANSFORM over a directory (issue #127): --include/--exclude and where they are refused.
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=*.jpg --exclude=x/ --include=*.png ./a WITH p TO /b/*.webp\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=#x ./a WITH p TO /b\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=x WITH p TO /b FOR i IN l\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=x <<EOF WITH p TO /b\nx\nEOF\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=x ./a WITH p TO /b FOR i IN l\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include ./a WITH p TO /b\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=/ --from=bad! ./a WITH p TO /b\nEXPORT /',
   'EXPORT / AS oci COMPRESSION', 'EXPORT / AS oci COMPRESSION zstd', 'EXPORT / AS', 'EXPORT / AS rar', 'EXPORT /\nEXPORT /', 'EXPORT /../x',
   'COPY 😀 /😀\nEXPORT /x 😀', 'ARG 😀\nEXPORT /', 'ARG a😀\nEXPORT /', 'COPY a /b\u00a0c\nEXPORT /', 'COPY\u3000a /b\nEXPORT /',
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',

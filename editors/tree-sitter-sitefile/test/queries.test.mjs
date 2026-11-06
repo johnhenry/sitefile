@@ -50,6 +50,7 @@ test('highlights: keywords, names, values and template tags', () => {
     ['attribute', 'overwrite'],
     ['attribute', 'parents'],
     ['string.special', '*.md'],
+    ['string.special', '*.jpg'],
     ['number', '0755'],
     ['function', 'og'],
     ['function.call', 'magick'],

@@ -2899,6 +2899,23 @@
               }
             },
             {
+              "match": "(?<![^\\s])(--)(include|exclude)(=)(\\S+)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "string.unquoted.glob.sitefile"
+                }
+              }
+            },
+            {
               "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
               "captures": {
                 "1": {
