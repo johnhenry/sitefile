@@ -202,8 +202,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
   - `SECRET`: see Build secrets below.
+  - `SCHEMA`: see Schemas below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
   - `<uri>` is a context-relative path, an `https://` URL (`http://` only with
@@ -386,6 +387,74 @@ line and column.
 - `SORT BY` applies to any list import (markdown, json, yaml, csv); the value
   must be a list of objects. Numbers **and numeric strings** (such as CSV
   cells) compare numerically.
+
+### Schemas: `IMPORT … SCHEMA <file>` (see `examples/blog/`)
+Like Astro's content collections, an import of documents can declare what their
+fields must look like, so a typo in a post's frontmatter fails the build instead
+of rendering an empty title:
+
+```
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
+```
+
+```yaml
+# post.schema.yaml
+required: [title, date]
+properties:
+  title: string
+  date: date
+  draft: boolean
+  tags: {type: list, items: string}
+  status: {enum: [draft, published]}
+```
+
+- **Where**: `SCHEMA <file>` is a clause of `IMPORT … AS markdown|json|yaml|csv`
+  (`E_VALIDATION` for other kinds), given at most once, in any order with the
+  other clauses. `<file>` is an operand (`${NAME}` works), a context-relative
+  `.yaml`, `.yml` or `.json` file (`E_VALIDATION` otherwise; a URL is
+  `E_PROTOCOL`; the usual local sandbox applies). YAML schemas use the YAML
+  subset of `AS yaml`; JSON ones are parsed as JSON.
+- **The schema** is a small, deterministic subset of JSON Schema, the same in
+  both implementations: a mapping with
+  - `required`: a list of keys every document must have. A key whose value is
+    `null` counts as missing, and so does an empty CSV cell.
+  - `properties`: a mapping from a key to a rule, either a type name
+    (`title: string`) or a mapping with any of
+    - `type`: `string`, `number`, `boolean`, `date` (a string that is
+      `YYYY-MM-DD` or an RFC 3339 date-time, exactly what FEED accepts, so an
+      impossible date such as `2026-02-30` fails) or `list`;
+    - `items` (with `type: list`): the type of every element (`string`,
+      `number`, `boolean` or `date`);
+    - `enum`: a non-empty list of allowed strings, numbers or booleans; for a
+      `list` value, the allowed elements.
+  Keys not listed are not checked, and a listed key that is missing (or `null`)
+  is only an error when it is `required`. There are no other keywords (no
+  `pattern`: the two implementations would need the same regular expression
+  engine; no nested objects); an unknown key, type or malformed rule is
+  `E_SCHEMA` at the `SCHEMA` clause, naming the schema file and the property.
+- **What is checked**: each element of a list import (every Markdown document,
+  each element of a JSON/YAML array or directory collection, each CSV row), or
+  the single document of a one-file import. An element that is not an object is
+  `E_TYPE`. Markdown documents are checked as templates see them, so a `date`
+  taken from the file name satisfies `required: [date]`. CSV cells are always
+  strings, so in a CSV import `number` also accepts a numeric string (as
+  `SORT BY` reads them), `boolean` the strings `true` and `false`, and `enum`
+  entries match their text.
+- **Errors**: the first mismatch fails the build with `E_SCHEMA` at the IMPORT
+  line, naming the document (its `path` inside the import, or `#n` for the n-th
+  element of an array or CSV file), the key, what was expected and what was
+  found:
+  `IMPORT posts: document '/2026-01-05-hello.md' has no 'title' (required by schema './post.schema.yaml')`,
+  `IMPORT posts: document '/a.md' has 'date' string 'soon'; it should be a date (YYYY-MM-DD or an RFC 3339 date-time)`,
+  `IMPORT posts: document '/a.md' has 'tags' item 2 number 3; it should be a string`,
+  `IMPORT items: document '#2' has 'size' string 'xl'; it should be one of s, m, l`.
+  Imports are checked in Sitefile order and documents in path order (before
+  `SORT BY`), after every import has been read.
+- Checking happens whenever the imports are read (`build`, `serve`, `inspect`,
+  `why`), not in `validate`, which never reads files. The schema file is
+  read on every build (also in watch mode, where a change to it triggers a
+  rebuild like any other file); `graph` shows it as a `local:` input of the
+  import.
 
 ### Plugins: PLUGIN and TRANSFORM (see `docs/PLUGINS.md`, `examples/motion/`)
 - `PLUGIN name FROM ./plugins/x.mjs|x.wasm [INTEGRITY sha256:…]` declares a renderer:

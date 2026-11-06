@@ -8,8 +8,8 @@ FROM scratch
 ARG SITE_TITLE = "Field Notes"
 ARG SITE_URL = "https://blog.example.com"
 
-# Newest first, for the index, every post page and the feed.
-IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+# Newest first, for the index, every post page and the feed; post.schema.yaml checks each post's frontmatter.
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
 
 COPY ./public/ /
 RENDER --escape=html ./templates/index.html TO /index.html

@@ -873,6 +873,32 @@
           }
         ]
       },
+      "schema": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
       "secret": {
         "multiple": true,
         "required": false,
@@ -2148,6 +2174,10 @@
   },
   {
     "type": "RUN",
+    "named": false
+  },
+  {
+    "type": "SCHEMA",
     "named": false
   },
   {

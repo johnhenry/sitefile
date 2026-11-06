@@ -5,7 +5,7 @@ use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{ImportSecret, 
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
-    SortBy, Source, StageRef, TransformOption, ValueType,
+    SchemaClause, SortBy, Source, StageRef, TransformOption, ValueType,
 };
 use crate::language::scanner::{logical_lines, Cursor};
 use crate::resources::ignore::is_ignore_pattern;
@@ -22,7 +22,7 @@ pub const INSTRUCTIONS: [&str; 15] = [
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
 /// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
-pub const IMPORT_CLAUSES: [&str; 4] = ["AS", "INTEGRITY", "SORT", "SECRET"];
+pub const IMPORT_CLAUSES: [&str; 5] = ["AS", "INTEGRITY", "SORT", "SCHEMA", "SECRET"];
 /// What follows `SECRET <id> AS`.
 pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
@@ -193,6 +193,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let mut as_kind: Option<ImportKind> = None;
     let mut integrity: Option<String> = None;
     let mut sort: Option<SortBy> = None;
+    let mut schema: Option<SchemaClause> = None;
     let mut secrets: Vec<ImportSecret> = Vec::new();
     while !c.at_end() {
         let at = c.span();
@@ -227,6 +228,11 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
                 false
             };
             sort = Some(SortBy { key, descending, span: at });
+        } else if c.keyword("SCHEMA") {
+            if schema.is_some() {
+                return Err(SitefileError::at(E_SYNTAX, "SCHEMA given twice", &at));
+            }
+            schema = Some(SchemaClause { path: c.operand("schema path")?, span: at });
         } else if c.keyword("SECRET") {
             let s = parse_secret_clause(c, at.clone())?;
             if secrets.iter().any(|p| p.header.to_lowercase() == s.header.to_lowercase()) {
@@ -235,10 +241,10 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             secrets.push(s);
         } else {
             let w = c.word();
-            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY or SECRET)"), &at));
+            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)"), &at));
         }
     }
-    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets })
+    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets })
 }
 
 /// Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them.
@@ -959,7 +965,7 @@ mod tests {
         parse_err("IMPORT d FROM ./x INTEGRITY sha256:abc", E_SYNTAX, 1, 29, "sha256");
         parse_err(&format!("IMPORT d FROM ./x INTEGRITY {}", digest.to_uppercase()), E_SYNTAX, 1, 29, "");
         parse_err("IMPORT d FROM ./x INTEGRITY ${X}", E_SYNTAX, 1, 29, "");
-        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY or SECRET)");
+        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)");
         let Instruction::Import { sort, .. } = one("IMPORT p FROM ./p AS markdown SORT BY date DESC") else { panic!() };
         let s = sort.unwrap();
         assert!(s.key == "date" && s.descending && s.span.column == 31);
@@ -1219,7 +1225,7 @@ mod tests {
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER X:y"), "invalid header name 'X:y'");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER Host"), "header 'Host' is set by sitefile and cannot carry a secret");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER authorization"), "header 'authorization' is set by two SECRET clauses");
-        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY or SECRET)");
+        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)");
     }
 
     #[test]

@@ -130,6 +130,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   let as: ImportKind | undefined;
   let integrity: string | undefined;
   let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
+  let schema: { path: Operand; span: SourceSpan } | undefined;
   const secrets: ImportSecret[] = [];
   while (!c.atEnd()) {
     const at = c.span;
@@ -153,13 +154,16 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       const key = c.ident('sort key');
       const descending = c.keyword('DESC') ? true : (c.keyword('ASC'), false);
       sort = { key, descending, span: at };
+    } else if (c.keyword('SCHEMA')) {
+      if (schema !== undefined) throw c.error('E_SYNTAX', 'SCHEMA given twice', at);
+      schema = { path: c.operand('schema path'), span: at };
     } else if (c.keyword('SECRET')) {
       const s = parseSecretClause(c, at);
       const prior = secrets.find((p) => p.header.toLowerCase() === s.header.toLowerCase());
       if (prior) throw c.error('E_SYNTAX', `header '${s.header}' is set by two SECRET clauses`, at);
       secrets.push(s);
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY or SECRET)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY, SCHEMA or SECRET)`, at);
     }
   }
   return {
@@ -170,6 +174,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     ...(as !== undefined && { as }),
     ...(integrity !== undefined && { integrity }),
     ...(sort !== undefined && { sort }),
+    ...(schema !== undefined && { schema }),
     ...(secrets.length > 0 && { secrets }),
   };
 }

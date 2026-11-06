@@ -1,0 +1,327 @@
+{
+ "1": {
+  "text": "# Frontmatter checked against a schema file.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Frontmatter checked against a schema file.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./posts",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "markdown",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "SORT",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "BY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "date",
+    "meta.instruction.import.sitefile variable.other.property.sort-key.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "DESC",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "SCHEMA",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./post.schema.yaml",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "IMPORT people FROM ./people.csv AS csv schema \"./schemas/${KIND}.json\"",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "people",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./people.csv",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "csv",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "schema",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "./schemas/",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "KIND",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    ".json",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "RENDER --escape=html ./post.html TO /posts/${post.slug}/index.html FOR post IN posts",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./post.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/posts/",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "slug",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "FOR",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.render.sitefile variable.other.definition.loop.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "IN",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.render.sitefile variable.other.readwrite.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

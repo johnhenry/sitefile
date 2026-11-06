@@ -20,7 +20,8 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
         Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
         Instruction::Let { value, .. } => vec![(value, false)],
-        Instruction::Import { uri, .. } | Instruction::Plugin { uri, .. } => vec![(uri, false)],
+        Instruction::Import { uri, schema, .. } => std::iter::once(uri).chain(schema.as_ref().map(|s| &s.path)).map(|o| (o, false)).collect(),
+        Instruction::Plugin { uri, .. } => vec![(uri, false)],
         Instruction::Copy { source, dest, .. } => src(source).map(|o| (o, false)).into_iter().chain([(dest, false)]).collect(),
         Instruction::Render { template, dest, .. } => {
             src(template).map(|o| (o, false)).into_iter().chain([(dest, true)]).collect()
@@ -258,7 +259,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.vars.insert(name);
             }
-            Instruction::Import { name, span, as_kind, sort, .. } => {
+            Instruction::Import { name, span, as_kind, sort, schema, .. } => {
                 if scope.taken(name) {
                     return Err(duplicate(name, span));
                 }
@@ -268,6 +269,15 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                             E_VALIDATION,
                             format!("IMPORT {name}: SORT BY applies to lists: AS markdown, json, yaml or csv"),
                             &sort.span,
+                        ));
+                    }
+                }
+                if let Some(schema) = schema {
+                    if !sortable(*as_kind) {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!("IMPORT {name}: SCHEMA applies to documents and lists: AS markdown, json, yaml or csv"),
+                            &schema.span,
                         ));
                     }
                 }

@@ -60,8 +60,18 @@ pub struct ImportSpec {
     pub as_kind: Option<ImportKind>,
     pub integrity: Option<String>,
     pub sort: Option<ImportSort>,
+    /// `SCHEMA <path>`: every document must match the schema file.
+    pub schema: Option<ImportSchema>,
     /// Build secrets sent as request headers (ids and header names only; values come from --secret).
     pub secrets: Vec<SecretRef>,
+    pub span: SourceSpan,
+}
+
+/// An `IMPORT … SCHEMA` clause as planned: `uri` as written (for messages), `path` context-relative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportSchema {
+    pub uri: String,
+    pub path: String,
     pub span: SourceSpan,
 }
 
@@ -349,9 +359,13 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let raw = evaluate_operand(value, &vars)?;
                 bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort, secrets } => {
+            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
+                let schema_planned = match schema {
+                    Some(s) => Some(schema_spec(name, &s.path, &vars, &s.span)?),
+                    None => None,
+                };
                 if matches!(location, ImportLocation::Local { .. }) && !secrets.is_empty() {
                     return Err(SitefileError::at(
                         E_VALIDATION,
@@ -379,6 +393,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     as_kind: *as_kind,
                     integrity: integrity.clone(),
                     sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
+                    schema: schema_planned,
                     secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
                     span: span.clone(),
                 };
@@ -592,6 +607,20 @@ fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Re
     Ok(dest.path)
 }
 
+/// `IMPORT … SCHEMA <path>`: a local `.json`, `.yaml` or `.yml` file in the build context.
+fn schema_spec(name: &str, op: &Operand, vars: &Env, span: &SourceSpan) -> Result<ImportSchema> {
+    let uri = evaluate_operand(op, vars)?;
+    if url_scheme(&uri).is_some() {
+        return Err(SitefileError::at(E_PROTOCOL, format!("IMPORT {name}: SCHEMA must be a local file in the build context, not a URL"), &op.span));
+    }
+    let path = normalize_local(&uri, Some(&op.span))?.path;
+    let lower = path.to_ascii_lowercase();
+    if ![".json", ".yaml", ".yml"].iter().any(|e| lower.ends_with(e)) {
+        return Err(SitefileError::at(E_VALIDATION, format!("IMPORT {name}: SCHEMA '{uri}' must be a .json, .yaml or .yml file"), &op.span));
+    }
+    Ok(ImportSchema { uri, path, span: span.clone() })
+}
+
 fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
     if crate::resources::git::is_git_uri(uri) {
         return Ok(ImportLocation::Git(crate::resources::git::parse_git_uri(uri, Some(span))?));
@@ -766,6 +795,9 @@ impl ImportSpec {
         }
         if let Some(s) = &self.sort {
             m.insert("sort".into(), json!({ "key": s.key, "descending": s.descending }));
+        }
+        if let Some(s) = &self.schema {
+            m.insert("schema".into(), json!({ "uri": s.uri, "path": s.path, "span": span_json(&s.span) }));
         }
         if !self.secrets.is_empty() {
             m.insert(

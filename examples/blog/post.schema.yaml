@@ -1,0 +1,8 @@
+# What every post's frontmatter must look like (IMPORT … SCHEMA, docs/LANGUAGE.md).
+# `date` usually comes from the file name (2026-01-05-hello-world.md).
+required: [title, date]
+properties:
+  title: string
+  description: string
+  date: date
+  tags: {type: list, items: string}

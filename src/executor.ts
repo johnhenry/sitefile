@@ -39,6 +39,8 @@ import { Store } from './store.js';
 import { begin, type Profiler } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { checkSchema, compileSchema } from './schema.js';
+import { parseYaml } from './yaml.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -339,6 +341,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     importSpans[i]?.end({ kind: r.res.kind });
     return r;
   });
+  // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
+  for (const [i, spec] of p.imports.entries()) if (spec.schema) await checkImportSchema(spec, resolved[i]!.res, local);
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!.res)]));
   // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
   const resourceKeys = new Map<string, string>(memo ? p.imports.map((s, i) => [s.name, resolved[i]!.key]) : []);
@@ -1459,6 +1463,26 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
     }
     return files;
   });
+}
+
+/** `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents. */
+async function checkImportSchema(spec: ImportSpec, res: Resource, local: LocalContext): Promise<void> {
+  const schema = spec.schema!;
+  const what = `IMPORT ${spec.name}`;
+  if (res.kind !== 'value') {
+    throw new SitefileError('E_TYPE', `${what}: SCHEMA checks documents, but the import is a ${res.kind}`, spec.span);
+  }
+  const file = await local.readFile(schema.path, schema.span);
+  const text = decodeUtf8(file.bytes, `schema '${schema.uri}'`, schema.span);
+  let value: unknown;
+  if (/\.json$/i.test(schema.path)) {
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      throw new SitefileError('E_SCHEMA', `${what}: schema '${schema.uri}' is not valid JSON: ${(e as Error).message}`, schema.span, { cause: e });
+    }
+  } else value = parseYaml(text, schema.uri);
+  checkSchema(res.value, compileSchema(value, schema.uri, what, schema.span), what, res.format === 'csv', spec.span);
 }
 
 /** Apply an import's SORT BY to a markdown collection. */

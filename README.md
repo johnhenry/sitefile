@@ -33,7 +33,7 @@ no runtime dependencies.
 | `FROM scratch\|<dir>\|<stage>\|image <ref> [AT <dir>] [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported; `image` starts from a site image's files (a theme: `examples/theme`, `examples/themed-site`), locked in `Sitefile.lock` when it comes from a registry |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
-| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
+| `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]] [SCHEMA <file>]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter (`SCHEMA` checks it against a YAML/JSON schema); `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |

@@ -16,7 +16,7 @@ export function operandsOf(ins: Instruction): Operand[] {
     case 'LET':
       return [ins.value];
     case 'IMPORT':
-      return [ins.uri];
+      return ins.schema ? [ins.uri, ins.schema.path] : [ins.uri];
     case 'COPY':
       return isInline(ins.source) ? [ins.dest] : [ins.source, ins.dest];
     case 'RENDER':
@@ -158,6 +158,9 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         }
         if (ins.sort && !SORTABLE.has(ins.as ?? '')) {
           throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY applies to lists: AS markdown, json, yaml or csv`, ins.sort.span);
+        }
+        if (ins.schema && !SORTABLE.has(ins.as ?? '')) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SCHEMA applies to documents and lists: AS markdown, json, yaml or csv`, ins.schema.span);
         }
         imports.add(ins.name);
         break;

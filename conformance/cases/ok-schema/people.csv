@@ -1,0 +1,4 @@
+name,age,admin,role
+Al, 41 ,true,dev
+Bo,,false,1
+Cy,7,,

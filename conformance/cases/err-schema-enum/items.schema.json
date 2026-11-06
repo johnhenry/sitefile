@@ -1,0 +1,1 @@
+{"properties": {"name": "string", "size": {"type": "string", "enum": ["s", "m", "l"]}}}

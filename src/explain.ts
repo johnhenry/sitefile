@@ -126,6 +126,9 @@ export function planGraph(p: Plan): Graph {
   };
   const list = (name: string): string | undefined => (imports.has(name) ? `import:${name}` : undefined);
 
+  // An IMPORT … SCHEMA reads its schema file.
+  for (const i of p.imports) if (i.schema) edge(local(i.schema.path), `import:${i.name}`, 'input');
+
   const staged: GraphNode[] = [];
   const images: GraphNode[] = [];
   p.stages.forEach((stage, si) => {

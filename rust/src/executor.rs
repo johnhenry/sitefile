@@ -656,6 +656,12 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let mut resource_list: Vec<(String, Resource)> = Vec::new();
     // Incremental rebuilds: what each import is (its spec and the digest of what it read).
     let mut resource_keys: HashMap<String, String> = HashMap::new();
+    // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
+    for (spec, (res, _)) in p.imports.iter().zip(&resolved) {
+        if spec.schema.is_some() {
+            check_import_schema(spec, res, &local)?;
+        }
+    }
     for (spec, (res, key)) in p.imports.iter().zip(resolved) {
         let res = sorted(spec, res)?;
         resources.insert(spec.name.clone(), res.clone());
@@ -1384,6 +1390,25 @@ fn with_commit(res: Resource, commit: &str) -> Resource {
             Resource::Value { format, value, provenance }
         }
     }
+}
+
+/// `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents.
+fn check_import_schema(spec: &ImportSpec, res: &Resource, local: &LocalContext) -> Result<()> {
+    let Some(schema) = &spec.schema else { return Ok(()) };
+    let what = format!("IMPORT {}", spec.name);
+    let Resource::Value { format, value, .. } = res else {
+        return Err(SitefileError::at(E_TYPE, format!("{what}: SCHEMA checks documents, but the import is a {}", res.kind()), &spec.span));
+    };
+    let Resource::File { bytes, .. } = local.read_file(&schema.path, Some(&schema.span))? else { unreachable!("read_file returns a file") };
+    let text = decode_utf8(&bytes, &format!("schema '{}'", schema.uri), Some(&schema.span))?;
+    let parsed = if schema.path.to_ascii_lowercase().ends_with(".json") {
+        serde_json::from_str::<Value>(&text)
+            .map_err(|e| SitefileError::at(E_SCHEMA, format!("{what}: schema '{}' is not valid JSON: {e}", schema.uri), &schema.span))?
+    } else {
+        crate::yaml::parse_yaml(&text, &schema.uri)?
+    };
+    let compiled = crate::schema::compile_schema(&parsed, &schema.uri, &what, &schema.span)?;
+    crate::schema::check_schema(value, &compiled, &what, *format == ValueFormat::Csv, &spec.span)
 }
 
 /// Apply an import's SORT BY to a list value.
