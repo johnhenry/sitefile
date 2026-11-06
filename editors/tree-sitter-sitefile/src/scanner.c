@@ -25,6 +25,7 @@ enum TokenType {
   LINE_CONTINUATION,
   CONTINUATION_NEWLINE,
   COMMENT,
+  DIRECTIVE,
   HEREDOC_MARKER,
   HEREDOC_MARKER_STRIP,
   HEREDOC_DELIMITER,
@@ -226,9 +227,26 @@ bool tree_sitter_sitefile_external_scanner_scan(void *payload, TSLexer *lexer, c
   while (is_blank(lexer->lookahead)) skip(lexer);
 
   if (line_start && lexer->lookahead == '#' && valid[COMMENT]) {
+    // `#[ \t]*sitefile[ \t]*=` (ASCII case-insensitive): the version directive.
+    static const char NAME[] = "sitefile";
+    advance(lexer);
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t') advance(lexer);
+    unsigned matched = 0;
+    while (matched < 8 && !at_line_end(lexer)) {
+      int32_t c = lexer->lookahead;
+      if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+      if (c != NAME[matched]) break;
+      matched++;
+      advance(lexer);
+    }
+    bool directive = false;
+    if (matched == 8) {
+      while (lexer->lookahead == ' ' || lexer->lookahead == '\t') advance(lexer);
+      directive = lexer->lookahead == '=';
+    }
     while (!at_line_end(lexer)) advance(lexer);
     lexer->mark_end(lexer);
-    lexer->result_symbol = COMMENT;
+    lexer->result_symbol = directive && valid[DIRECTIVE] ? DIRECTIVE : COMMENT;
     if (s->continuing) s->comment_pending = true;
     return true;
   }

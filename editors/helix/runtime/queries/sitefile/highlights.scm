@@ -8,6 +8,9 @@
 
 (comment) @comment
 
+; `# sitefile=1`: the syntax version directive.
+(directive) @keyword.directive
+
 (line_continuation) @punctuation.special
 
 ; Instructions and clauses (case-insensitive in the source).

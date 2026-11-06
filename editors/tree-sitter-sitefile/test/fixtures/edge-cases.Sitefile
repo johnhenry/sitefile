@@ -1,4 +1,5 @@
 # Edge cases for the grammar. This file parses cleanly (test/parse-files.test.mjs).
+# sitefile=1
 arg title = 'Literal ${not interpolated}'
 ARG COUNT: number = 3
 ARG DRAFT : boolean = false

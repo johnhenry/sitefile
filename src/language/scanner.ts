@@ -49,6 +49,16 @@ function heredocMarkers(text: string): Array<{ at: number; length: number; strip
   return out;
 }
 
+/** The language version this implementation reads (`# sitefile=1`; a file without the directive is this version). */
+export const SYNTAX_VERSION = '1';
+
+/**
+ * The version directive `# sitefile=N` (name case-insensitive, spaces or tabs around `=`), matched on a
+ * comment line from its `#`. Group 1 is everything after `=`.
+ * Other comments, `# sitefile-lint: …` included, are ordinary comments here.
+ */
+export const VERSION_DIRECTIVE = /^#[ \t]*[Ss][Ii][Tt][Ee][Ff][Ii][Ll][Ee][ \t]*=([\s\S]*)$/;
+
 const IDENT_START = /[A-Za-z_]/;
 const IDENT_CHAR = /[A-Za-z0-9_]/;
 const WS = /\s/;
@@ -63,9 +73,31 @@ function trailingBackslashes(s: string): number {
  * Split source into logical lines. Blank lines and comment lines (first non-blank
  * char `#`) are skipped, also inside continuations. A line ending in an odd number
  * of `\` continues; pieces are trimmed at the join and joined with one space.
+ * A `# sitefile=N` comment is the syntax version directive: it must come before
+ * the first instruction, at most once, and name a supported version.
  */
 export function logicalLines(source: string, file = 'Sitefile'): LogicalLine[] {
   const out: LogicalLine[] = [];
+  let sawVersion = false;
+  /** A comment line: check a `# sitefile=N` directive (only allowed before the first instruction). */
+  const directive = (raw: string, line: number, late: boolean): void => {
+    const hash = raw.indexOf('#');
+    const m = VERSION_DIRECTIVE.exec(raw.slice(hash));
+    if (!m) return;
+    const at = { file, line, column: hash + 1 };
+    if (late) throw new SitefileError('E_SYNTAX', "the '# sitefile=' directive must come before the first instruction", at);
+    if (sawVersion) throw new SitefileError('E_SYNTAX', "'# sitefile=' given twice", at);
+    sawVersion = true;
+    const lead = m[1]!.length - m[1]!.trimStart().length;
+    const version = m[1]!.trim();
+    const vat = { file, line, column: hash + m[0].length - m[1]!.length + lead + 1 };
+    if (!/^[1-9][0-9]*$/.test(version)) {
+      throw new SitefileError('E_SYNTAX', `invalid syntax version '${version}' in '# sitefile=' (expected a whole number such as ${SYNTAX_VERSION})`, vat);
+    }
+    if (version !== SYNTAX_VERSION) {
+      throw new SitefileError('E_UNSUPPORTED', `this Sitefile uses syntax version ${version}; this sitefile supports version ${SYNTAX_VERSION} (upgrade sitefile)`, vat);
+    }
+  };
   let text = '';
   let positions: Pos[] = [];
   let end: Pos = { line: 1, column: 1 };
@@ -96,7 +128,11 @@ export function logicalLines(source: string, file = 'Sitefile'): LogicalLine[] {
       return;
     }
     const trimmed = raw.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) return;
+    if (trimmed.startsWith('#')) {
+      directive(raw, line, out.length > 0 || continuing);
+      return;
+    }
+    if (trimmed === '') return;
     const cont = trailingBackslashes(raw) % 2 === 1;
     const body = cont ? raw.slice(0, -1) : raw;
     let start = 0;

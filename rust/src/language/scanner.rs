@@ -155,9 +155,73 @@ fn span_of(file: &str, p: Pos) -> SourceSpan {
     SourceSpan::new(file, p.line, p.column)
 }
 
+/// The language version this implementation reads (`# sitefile=1`; a file without the directive is this version).
+pub const SYNTAX_VERSION: &str = "1";
+
+/// `VERSION_DIRECTIVE` in scanner.ts: on a comment line from its `#`, `#[ \t]*sitefile[ \t]*=` (name
+/// ASCII case-insensitive). Returns the char index just after `=`.
+pub fn version_directive(from_hash: &[char]) -> Option<usize> {
+    let mut i = 1;
+    while matches!(from_hash.get(i), Some(' ' | '\t')) {
+        i += 1;
+    }
+    let name: String = from_hash.iter().skip(i).take(8).collect();
+    if !name.eq_ignore_ascii_case("sitefile") {
+        return None;
+    }
+    i += 8;
+    while matches!(from_hash.get(i), Some(' ' | '\t')) {
+        i += 1;
+    }
+    (from_hash.get(i) == Some(&'=')).then_some(i + 1)
+}
+
+fn utf16_len(chars: &[char]) -> u32 {
+    chars.iter().map(|c| c.len_utf16() as u32).sum()
+}
+
+/// A comment line: check a `# sitefile=N` directive (only allowed before the first instruction).
+fn directive(raw: &str, line: u32, file: &str, late: bool, saw_version: &mut bool) -> Result<()> {
+    let chars: Vec<char> = raw.chars().collect();
+    let Some(hash) = chars.iter().position(|c| *c == '#') else { return Ok(()) };
+    let Some(eq) = version_directive(&chars[hash..]) else { return Ok(()) };
+    let col = |k: usize| utf16_len(&chars[..k]) + 1;
+    let at = SourceSpan::new(file, line, col(hash));
+    if late {
+        return Err(SitefileError::at(E_SYNTAX, "the '# sitefile=' directive must come before the first instruction", &at));
+    }
+    if *saw_version {
+        return Err(SitefileError::at(E_SYNTAX, "'# sitefile=' given twice", &at));
+    }
+    *saw_version = true;
+    let rest = &chars[hash + eq..];
+    let lead = rest.iter().take_while(|c| is_js_space(**c)).count();
+    let value: String = rest.iter().collect();
+    let version = js_trim(&value);
+    let vat = SourceSpan::new(file, line, col(hash + eq + lead));
+    let digits = version.starts_with(|c: char| ('1'..='9').contains(&c)) && version.chars().all(|c| c.is_ascii_digit());
+    if !digits {
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            format!("invalid syntax version '{version}' in '# sitefile=' (expected a whole number such as {SYNTAX_VERSION})"),
+            &vat,
+        ));
+    }
+    if version != SYNTAX_VERSION {
+        return Err(SitefileError::at(
+            E_UNSUPPORTED,
+            format!("this Sitefile uses syntax version {version}; this sitefile supports version {SYNTAX_VERSION} (upgrade sitefile)"),
+            &vat,
+        ));
+    }
+    Ok(())
+}
+
 /// Split source into logical lines. Blank lines and comment lines (first non-blank
 /// char `#`) are skipped, also inside continuations. A line ending in an odd number
 /// of `\` continues; pieces are trimmed at the join and joined with one space.
+/// A `# sitefile=N` comment is the syntax version directive: it must come before
+/// the first instruction, at most once, and name a supported version.
 pub fn logical_lines(source: &str, file: &str) -> Result<Vec<LogicalLine>> {
     let mut out: Vec<LogicalLine> = Vec::new();
     let mut text: Vec<char> = Vec::new();
@@ -166,6 +230,7 @@ pub fn logical_lines(source: &str, file: &str) -> Result<Vec<LogicalLine>> {
     let mut continuing = false;
     // Set while reading a heredoc body: lines are taken verbatim until the delimiter.
     let mut heredoc_body: Option<OpenHeredoc> = None;
+    let mut saw_version = false;
 
     let mut physical = physical_lines(source);
     // A trailing newline is not an extra (empty) line of a heredoc body.
@@ -195,7 +260,11 @@ pub fn logical_lines(source: &str, file: &str) -> Result<Vec<LogicalLine>> {
             continue;
         }
         let trimmed = js_trim(raw);
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.starts_with('#') {
+            directive(raw, line, file, !out.is_empty() || continuing, &mut saw_version)?;
+            continue;
+        }
+        if trimmed.is_empty() {
             continue;
         }
         let chars: Vec<char> = raw.chars().collect();
@@ -577,6 +646,28 @@ mod tests {
 
     fn texts(src: &str) -> Vec<String> {
         logical_lines(src, "Sitefile").unwrap().iter().map(|l| l.text()).collect()
+    }
+
+    #[test]
+    fn version_directive() {
+        let at = |src: &str| {
+            logical_lines(src, "Sitefile").map(|_| ()).map_err(|e| (e.code, e.span.map(|s| (s.line, s.column)), e.detail))
+        };
+        for ok in ["# sitefile=1\nEXPORT /", "#sitefile=1", "# SiteFile = 1 ", "\t#\tsitefile\t=\t1", "\u{feff}# sitefile=1", "# a\n\n# sitefile=1\nEXPORT /"] {
+            assert_eq!(at(ok), Ok(()), "{ok:?}");
+        }
+        for other in ["# sitefile: 2", "# sitefile-lint: disable=x", "# sitefiles=2", "# \u{17f}itefile=2", "COPY <<EOF /a\n# sitefile=2\nEOF"] {
+            assert_eq!(at(other), Ok(()), "{other:?}");
+        }
+        let (code, span, detail) = at("# sitefile=2\nEXPORT /").unwrap_err();
+        assert_eq!((code, span), (E_UNSUPPORTED, Some((1, 12))));
+        assert_eq!(detail, "this Sitefile uses syntax version 2; this sitefile supports version 1 (upgrade sitefile)");
+        assert_eq!(at("  # sitefile= 01").unwrap_err().1, Some((1, 15)));
+        assert_eq!(at("\u{3000}# sitefile=x").unwrap_err().1, Some((1, 13)));
+        assert_eq!(at("# sitefile=1\n# sitefile=1").unwrap_err().2, "'# sitefile=' given twice");
+        let (code, span, _) = at("COPY a /a\n  # sitefile=1").unwrap_err();
+        assert_eq!((code, span), (E_SYNTAX, Some((2, 3))));
+        assert_eq!(at("COPY a \\\n# sitefile=1\n /a").unwrap_err().1, Some((2, 1)));
     }
 
     #[test]

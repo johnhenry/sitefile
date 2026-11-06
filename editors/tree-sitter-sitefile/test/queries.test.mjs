@@ -36,6 +36,7 @@ test('highlights: keywords, names, values and template tags', () => {
     ['keyword', 'INTEGRITY'],
     ['keyword.repeat', 'FOR'],
     ['comment', '# a comment inside a continuation'],
+    ['keyword.directive', '# sitefile=1'],
     ['variable', 'title'],
     ['type.builtin', 'number'],
     ['type.builtin', 'JSON'],

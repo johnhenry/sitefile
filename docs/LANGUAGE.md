@@ -42,6 +42,26 @@ These pin down what the draft above leaves open. Tests cover each rule.
   a continuation are skipped; a `\` on the last line just ends the instruction.
 - A line whose first non-blank character is `#` is a comment, also inside a
   continuation. `#` elsewhere is ordinary text (URLs contain `#`).
+- **Syntax version directive.** A comment `# sitefile=1` (like Dockerfile's
+  `# syntax=`) pins the language version the file is written for, so the
+  syntax can change later without breaking existing files. A file without it
+  is version 1, the only version so far.
+  - It is a comment line that starts `#`, then `sitefile` (ASCII
+    case-insensitive), then `=`, with spaces or tabs allowed around the name and
+    `=`: `# sitefile=1`, `#sitefile = 1`. The rest of the line, trimmed, is the
+    version. Other comments (`# sitefile: 1`, `# sitefile-lint: …`) are ordinary
+    comments.
+  - It must come before the first instruction (blank lines and other comments
+    may precede it) and appear at most once; otherwise `E_SYNTAX`
+    (`the '# sitefile=' directive must come before the first instruction`,
+    `'# sitefile=' given twice`). Inside a heredoc body it is body text.
+  - The version is a whole number without leading zeros (`E_SYNTAX`:
+    `invalid syntax version '1.0' in '# sitefile=' (expected a whole number such as 1)`).
+    A version this sitefile does not read fails with `E_UNSUPPORTED` at the
+    version: `this Sitefile uses syntax version 2; this sitefile supports version 1 (upgrade sitefile)`.
+  - Editors read it too: the language server reports these errors and shows
+    the directive's docs on hover; the TextMate and tree-sitter grammars
+    highlight it as a directive.
 - Flags (`--overwrite`, `--escape=…`) come before operands. Unknown or repeated
   flags are syntax errors.
 - Value words (ARG/LET types, IMPORT `AS` kinds, `--escape` values,
@@ -496,8 +516,8 @@ gitignore subset:
   `externalParameters.strictPins: true` and gives each remote dependency an
   annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for the
   base); without `--strict-pins` the provenance is unchanged.
-  There is no Sitefile-level switch yet (the flag needs no new syntax;
-  a future `# sitefile=N` directive may add one). Typical CI use:
+  There is no Sitefile-level switch yet (the flag needs no new syntax; the
+  `# sitefile=N` directive only pins the language version). Typical CI use:
   `sitefile build --frozen-lockfile --strict-pins`.
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
   for https in addition to Node's default store (bundled roots plus
