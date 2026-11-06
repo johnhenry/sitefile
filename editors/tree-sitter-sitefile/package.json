@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-sitefile",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Sitefile, the Docker-inspired static site builder",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnhenry/sitefile.git",
+    "directory": "editors/tree-sitter-sitefile"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate --abi 14",
+    "test": "tree-sitter test && node --test test/*.test.mjs",
+    "sync-queries": "node scripts/sync-queries.mjs"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.27.1"
+  }
+}

@@ -1,0 +1,15 @@
+; Multi-line instructions (heredocs and continuations) fold.
+[
+  (from_instruction)
+  (stage_instruction)
+  (arg_instruction)
+  (let_instruction)
+  (import_instruction)
+  (copy_instruction)
+  (render_instruction)
+  (transform_instruction)
+  (plugin_instruction)
+  (tool_instruction)
+  (export_instruction)
+  (unsupported_instruction)
+] @fold

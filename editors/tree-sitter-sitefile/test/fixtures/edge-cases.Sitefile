@@ -1,0 +1,60 @@
+# Edge cases for the grammar. This file parses cleanly (test/parse-files.test.mjs).
+arg title = 'Literal ${not interpolated}'
+ARG COUNT: number = 3
+ARG DRAFT : boolean = false
+  LET Greeting: string = "Hello, ${title}\n\"quoted\""
+LET URL = https://example.com/a#b?c=${COUNT}
+IMPORT data FROM ./data.json AS JSON \
+  # a comment inside a continuation
+  INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa \
+
+  SORT BY order asc
+import notes from ./notes as yaml sort by title
+IMPORT f FROM ./a.txt AS file
+IMPORT t FROM ./a.txt AS text
+IMPORT tr FROM ./a.zip AS tree
+IMPORT md FROM ./posts AS markdown
+IMPORT c FROM ./t.csv AS csv
+IMPORT w FROM ./b.wbn AS wbn
+STAGE build FROM scratch
+Copy --overwrite ./with\ space.txt /dest/
+COPY f: /f.txt
+COPY <<-EOF /tabs.txt
+	indented with tabs
+	${raw, not a template}
+	EOF
+COPY <<JSON /data.json
+{"title": "${not substituted}"}
+JSON
+render --escape=HTML <<-html to /page.html
+	<a href="${data.link}">${title|raw}</a>
+	<p>$${literal}</p>
+	html
+RENDER <<MARKDOWN TO /notes.md
+${#each notes as n}
+- ${n.title}${#if !n.draft} (published)${/if}
+${/each}
+${#if data.items.0}${data.items.0.name}${else}none${/if}
+MARKDOWN
+RENDER --from=build ./t.html TO /x/${n.slug}.html FOR n IN notes
+RENDER <<JS TO /app.js
+const total = ${COUNT};
+const tpl = `unclosed template literal
+JS
+RENDER <<YML TO /site.yml
+title: ${title}
+YML
+RENDER <<SVG TO /logo.svg
+<svg xmlns="http://www.w3.org/2000/svg"><text>${title}</text></svg>
+SVG
+RENDER <<HTML TO /unclosed.html
+<div class="never closed
+HTML
+FROM build AS final
+PLUGIN og FROM ./plugins/og.mjs INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c
+TOOL magick
+TRANSFORM <<TXT WITH og TO /og.svg OPTIONS size=12 label="a b"
+${raw text for the plugin}
+TXT
+TRANSFORM ./in.png WITH magick TO /out.webp OPTIONS q=80 ARGS {input} -quality {option.q} {output}
+EXPORT /site.tar.gz AS tar.gz

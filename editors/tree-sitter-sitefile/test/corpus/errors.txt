@@ -1,0 +1,75 @@
+==================
+Unterminated heredoc
+:error
+==================
+
+COPY <<EOF /a.txt
+never closed
+
+---
+
+
+
+==================
+Unterminated string
+:error
+==================
+
+COPY "unterminated /x
+EXPORT /
+
+---
+
+
+
+==================
+Missing operand does not swallow the next line
+==================
+
+STAGE x FROM
+EXPORT /
+
+---
+
+(source_file
+  (stage_instruction
+    name: (identifier))
+  (ERROR)
+  (export_instruction
+    path: (path)))
+
+==================
+Unknown instruction
+:error
+==================
+
+FOO bar
+EXPORT /
+
+---
+
+
+
+==================
+Invalid template tag is contained in the body
+==================
+
+RENDER <<HTML TO /x.html
+<p>${a + b}</p>
+HTML
+EXPORT /
+
+---
+
+(source_file
+  (render_instruction
+    source: (heredoc_start
+      delimiter: (heredoc_delimiter))
+    target: (path)
+    body: (heredoc_body)
+    (ERROR
+      (identifier)
+      (heredoc_body))
+    end: (heredoc_end))
+  (export_instruction
+    path: (path)))

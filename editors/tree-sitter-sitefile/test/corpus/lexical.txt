@@ -1,0 +1,154 @@
+==================
+Comments: first non-blank character only
+==================
+
+# a comment
+   # an indented comment
+LET URL = https://example.com/a#b
+TRANSFORM WITH badge TO /b.svg OPTIONS color=#6d28d9
+
+---
+
+(source_file
+  (comment)
+  (comment)
+  (let_instruction
+    (identifier)
+    (url))
+  (transform_instruction
+    (identifier)
+    (path)
+    (options_clause
+      (option
+        (identifier)
+        (word)))))
+
+==================
+Blank lines between instructions
+==================
+
+
+FROM scratch
+
+
+EXPORT /
+
+---
+
+(source_file
+  (from_instruction
+    (scratch))
+  (export_instruction
+    (path)))
+
+==================
+Line continuations, with comments and blank lines inside
+==================
+
+IMPORT data FROM ./data.json AS json \
+  # a comment inside a continuation
+  INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa \
+
+  SORT BY order asc
+EXPORT /
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (line_continuation)
+    (comment)
+    (integrity)
+    (line_continuation)
+    (sort_clause
+      (identifier)))
+  (export_instruction
+    (path)))
+
+==================
+An even number of backslashes does not continue
+==================
+
+COPY ./a\\ /b
+EXPORT /
+
+---
+
+(source_file
+  (copy_instruction
+    (path
+      (escape_sequence))
+    (path))
+  (export_instruction
+    (path)))
+
+==================
+A backslash on the last line ends the instruction
+==================
+
+EXPORT / \
+
+---
+
+(source_file
+  (export_instruction
+    (path))
+  (line_continuation))
+
+==================
+Strings
+==================
+
+ARG a = "Hello, ${title}\n\"quoted\""
+ARG b = 'Literal ${not interpolated}'
+ARG c = "a $ b"
+
+---
+
+(source_file
+  (arg_instruction
+    (identifier)
+    (string
+      (string_content)
+      (substitution
+        (identifier))
+      (escape_sequence)
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)))
+  (arg_instruction
+    (identifier)
+    (raw_string))
+  (arg_instruction
+    (identifier)
+    (string
+      (string_content)
+      (string_content)
+      (string_content))))
+
+==================
+Bare words: escapes, dollars and substitutions
+==================
+
+COPY ./with\ space.txt /dest/${NAME}$x/
+LET w = ${A}-${B}
+
+---
+
+(source_file
+  (copy_instruction
+    (path
+      (escape_sequence))
+    (path
+      (substitution
+        (identifier))))
+  (let_instruction
+    (identifier)
+    (word
+      (substitution
+        (identifier))
+      (substitution
+        (identifier)))))
