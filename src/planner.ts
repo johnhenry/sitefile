@@ -150,6 +150,11 @@ export interface Plan {
   /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
   readonly headers: readonly HeaderSpec[];
   readonly warnings: readonly string[];
+  /**
+   * `--target <stage>`: the build stops after this stage and exports its whole tree (see {@link targetPlan}).
+   * Undefined for a normal build.
+   */
+  readonly target?: string;
 }
 
 const URL_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
@@ -352,6 +357,26 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
   return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, redirects, headers, warnings };
+}
+
+/**
+ * `--target <name>`: keep the stages up to and including the named one, and export that stage's whole tree
+ * (`/`) instead of the EXPORT path. The EXPORT's format and its options (AS, BASE, AT, COMPRESSION) still apply;
+ * the `/_redirects` and `/_headers` files EXPORT writes are not (they belong to the EXPORT path). An unknown
+ * name is a usage error that lists the named stages.
+ */
+export function targetPlan(p: Plan, name: string): Plan {
+  const index = p.stages.findIndex((s) => s.name === name);
+  if (index === -1) {
+    const names = p.stages.flatMap((s) => (s.name === undefined ? [] : [s.name]));
+    throw new SitefileError(
+      'E_USAGE',
+      names.length
+        ? `--target '${name}' does not name a stage (stages: ${names.join(', ')})`
+        : `--target '${name}' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`,
+    );
+  }
+  return { ...p, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
 }
 
 /** `TO <dest>` of SITEMAP/FEED (a file path), or the default. */

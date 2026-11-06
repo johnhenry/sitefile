@@ -6,9 +6,9 @@
 ## Building
 
 ```
-sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [options]
-sitefile validate [context] [--json]
-sitefile inspect  [context] [--json]
+sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [--target stage] [options]
+sitefile validate [context] [--json] [--target stage]
+sitefile inspect  [context] [--json] [--target stage]
 ```
 
 `build` accepts these image-related options on top of the ones in the README:
@@ -35,12 +35,43 @@ sitefile inspect  [context] [--json]
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
+### Build target: `--target <stage>`
+
+Like `docker build --target`, `--target <stage>` builds up to a **named** stage (`FROM … AS name` or
+`STAGE name`) and stops there, for debugging and partial builds. `build`, `validate`, `inspect` and
+`serve --watch` accept it (with `build --watch` every rebuild uses it).
+
+- **What runs**: the stages from the first one through the target, in source order. Later stages are not
+  run. The Sitefile is still parsed, validated and planned as a whole (an error anywhere in it fails the
+  build), every `IMPORT` is resolved and `Sitefile.lock` is used as for a full build, and `TOOL`/JS `PLUGIN`
+  permissions (`--allow-exec`, `--allow-plugin`) are checked for the whole Sitefile.
+- **What is exported**: the target stage's **whole tree**, from `/`, not the `EXPORT` path (an earlier stage
+  rarely has files there). The `EXPORT` instruction's **format and options still apply** (`AS zip`,
+  `AS oci` with `BASE`/`AT`/`COMPRESSION`, `wbn` `BASE`), and `--format`, `-o` extensions, `--base-url`,
+  `--oci-root`, `-t` and the other export flags work as usual; the default destination is the usual one
+  (`<context>/dist`, or `dist.<ext>` for the EXPORT format). The `/_redirects` and `/_headers` files that
+  `REDIRECT`/`HEADER` make are **not** written: they belong to the EXPORT path of a full build.
+  Naming the last stage still exports its whole tree, without the EXPORT path or site files.
+- **validate**: plans up to the target and reports it: `Sitefile: OK (0 imports, 2 operations, 2 stages,
+  target assets)` (operations and stages up to the target). `--json` adds `"target": "<name>"`, lists only
+  those stages, and gives `"export": "/"`.
+- **Errors**: a name that is not a stage is a usage error (exit 2) listing the named stages:
+  `error: --target 'nope' does not name a stage (stages: theme, assets)`, or
+  `error: --target 'x' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`.
+  An unnamed stage cannot be a target. On `serve`, `--target` needs `--watch`.
+- A target stage with no files warns `--target <name>: stage '<name>' contains no files`.
+
+```bash
+sitefile inspect examples/multistage --target theme      # the 'theme' stage's files
+sitefile build examples/multistage --target assets -o /tmp/assets
+```
+
 ## Watch mode
 
 ```
 sitefile build --watch [context] [build options]
-sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V]... [--build-arg-file f]...
-                       [--no-cache] [--no-lockfile] [context]
+sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -65,7 +96,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V].
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
-  foreground: `-d` and `--name` are refused, and `-f`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
   `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload

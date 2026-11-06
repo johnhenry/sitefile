@@ -26,6 +26,8 @@ Usage:
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
+      --target <stage>         stop after the named stage and export its whole tree instead of
+                               the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
@@ -85,6 +87,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       allowPositionals: true,
       options: {
         file: { type: 'string', short: 'f' },
+        target: { type: 'string' },
         out: { type: 'string', short: 'o' },
         tag: { type: 'string', short: 't', multiple: true },
         format: { type: 'string' },
@@ -176,6 +179,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     const options: BuildOptions = {
       contextDir: context,
       ...(o.file ? { sitefile: o.file } : {}),
+      ...(o.target !== undefined ? { target: o.target } : {}),
       buildArgs,
       outDir: out,
       fetchPolicy: {
@@ -247,7 +251,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
-              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
+              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath, ...(p.target !== undefined ? { target: p.target } : {}) },
               null,
               2,
             ) + '\n',
@@ -255,7 +259,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         } else {
           const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
           process.stdout.write(
-            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
+            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''}${p.target !== undefined ? `, target ${p.target}` : ''})\n`,
           );
         }
         return 0;

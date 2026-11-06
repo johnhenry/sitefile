@@ -109,9 +109,9 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
-               [--no-cache] [--watch]
-sitefile validate [context] [--json]
-sitefile inspect  [context] [--json]
+               [--no-cache] [--watch] [--target stage]
+sitefile validate [context] [--json] [--target stage]
+sitefile inspect  [context] [--json] [--target stage]
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
@@ -122,6 +122,10 @@ sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
 sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
+
+`--target <stage>` (like `docker build --target`) stops after a named stage and exports that stage's whole
+tree, in the EXPORT format but without the EXPORT path or `_redirects`/`_headers`; an unknown name is a usage
+error listing the stages. See [docs/CLI.md](docs/CLI.md#build-target---target-stage).
 
 ## Watch mode
 

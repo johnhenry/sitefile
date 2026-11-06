@@ -189,13 +189,14 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("spa"),
     flag("watch"),
     string_s("file", 'f'),
+    string("target"),
     strings("build-arg"),
     strings("build-arg-file"),
     flag("no-cache"),
     flag("no-lockfile"),
 ];
 /// serve flags that only mean something with --watch.
-const WATCH_ONLY: &[&str] = &["file", "build-arg", "build-arg-file", "no-cache", "no-lockfile"];
+const WATCH_ONLY: &[&str] = &["file", "target", "build-arg", "build-arg-file", "no-cache", "no-lockfile"];
 pub const SERVE: Command = Command {
     name: "serve",
     summary: "serve an image or directory over HTTP",
@@ -208,6 +209,7 @@ pub const SERVE: Command = Command {
         "--spa             serve /index.html for unknown paths without a file extension",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
+        "--target <stage>             build up to this stage and serve its whole tree (--watch)",
         "--build-arg <NAME=value>     set an ARG (--watch; repeatable)",
         "--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)",
         "--no-cache        do not use the TRANSFORM result cache (--watch)",
@@ -307,6 +309,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let mut run_build = || -> BuildOutcome {
         let attempt = || -> Result<Tree> {
             let mut options = BuildOptions { context_dir: context.clone(), sitefile: file.clone(), build_args: collect_build_args(&arg_files, &arg_flags)?, ..Default::default() };
+            options.target = v.str("target").map(str::to_string);
             if v.flag("no-lockfile") {
                 options.lockfile = LockfileSetting::Disabled;
             }

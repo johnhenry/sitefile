@@ -5,7 +5,7 @@ import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { plan, targetPlan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
@@ -36,6 +36,8 @@ export interface BuildOptions {
   /** Sitefile path. Default: `<contextDir>/Sitefile`. */
   readonly sitefile?: string;
   readonly buildArgs?: Readonly<Record<string, string>>;
+  /** `--target <stage>`: build up to this named stage and export its whole tree (planner `targetPlan`). */
+  readonly target?: string;
   /** Export destination; skipped when walking the context if it lies inside it. */
   readonly outDir?: string;
   readonly fetchPolicy?: Partial<FetchPolicy>;
@@ -133,13 +135,19 @@ export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'si
 /** Parse, validate and evaluate variables, without reading any sources. */
 export async function planBuild(options: BuildOptions): Promise<Plan> {
   const { program } = await loadProgram(options);
-  return plan(program, options.buildArgs ?? {});
+  return planFor(program, options);
+}
+
+/** The plan of a program for these options (`target` applied). */
+function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'target'>): Plan {
+  const p = plan(program, options.buildArgs ?? {});
+  return options.target === undefined ? p : targetPlan(p, options.target);
 }
 
 /** Run a build in memory. */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   const { program, sitefilePath, label } = await loadProgram(options);
-  const p = plan(program, options.buildArgs ?? {});
+  const p = planFor(program, options);
   const warnings: string[] = [];
   const warn = (m: string): void => {
     warnings.push(m);
@@ -217,7 +225,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
   tree = withSiteRules(tree, p, label);
   const output = tree.subtree(p.exportPath);
-  if (output.size === 0) warn(`EXPORT ${p.exportPath} contains no files`);
+  if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
