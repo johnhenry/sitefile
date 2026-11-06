@@ -1,0 +1,12 @@
+# --strict-pins composes: with --target (every IMPORT counts, even later stages'), graph/why,
+# --cache-from (cache refs are not inputs) and --provenance (each dependency says what pinned it).
+ARG TITLE = "pinned"
+IMPORT data FROM ${HTTPS}/r/data.json AS json
+IMPORT css FROM ${HTTPS}/style.css INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c
+STAGE assets
+COPY css: /style.css
+STAGE site FROM assets
+RENDER --escape=html <<HTML TO /index.html
+<h1>${TITLE}: ${data.title}</h1>
+HTML
+EXPORT / AS oci BASE ${REGISTRY}/conf/base:1 AT /srv/www

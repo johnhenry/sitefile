@@ -18,7 +18,7 @@ use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, 
 use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
-use crate::planner::{plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
+use crate::planner::{plan, target_plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
 use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
@@ -62,6 +62,8 @@ pub struct BuildOptions {
     /// Sitefile path. Default: `<context_dir>/Sitefile`.
     pub sitefile: Option<String>,
     pub build_args: BuildArgs,
+    /// `--target <stage>`: build up to this named stage and export its whole tree (planner `target_plan`).
+    pub target: Option<String>,
     /// Export destination; skipped when walking the context if it lies inside it.
     pub out_dir: Option<String>,
     pub fetch_policy: FetchPolicy,
@@ -90,6 +92,8 @@ pub struct BuildOptions {
     pub tool_policy: ToolPolicy,
     /// Directory of the TRANSFORM result cache; `None` disables caching.
     pub cache_dir: Option<PathBuf>,
+    /// Consulted on a local cache miss and told about every entry used (`--cache-from` / `--cache-to`). Needs `cache_dir`.
+    pub remote_cache: Option<Arc<dyn crate::plugins::cache::RemoteCache>>,
     pub on_warning: Option<Callback>,
     /// Informational lines (the path each allowed tool resolved to).
     pub on_notice: Option<Callback>,
@@ -101,6 +105,8 @@ pub struct BuildOptions {
     pub skip_base: bool,
     /// Registry hosts reachable over plain http (for BASE pulls).
     pub insecure_registries: Vec<String>,
+    /// Keep every intermediate tree in [`BuildResult::steps`] (for `sitefile why`).
+    pub record_steps: bool,
 }
 
 impl Default for BuildOptions {
@@ -109,6 +115,7 @@ impl Default for BuildOptions {
             context_dir: ".".into(),
             sitefile: None,
             build_args: BuildArgs::new(),
+            target: None,
             out_dir: None,
             fetch_policy: DEFAULT_FETCH_POLICY,
             archive_limits: DEFAULT_ARCHIVE_LIMITS,
@@ -124,12 +131,14 @@ impl Default for BuildOptions {
             allow_all_plugins: false,
             tool_policy: DEFAULT_TOOL_POLICY,
             cache_dir: None,
+            remote_cache: None,
             on_warning: None,
             on_notice: None,
             platform: None,
             base_image: None,
             skip_base: false,
             insecure_registries: Vec::new(),
+            record_steps: false,
         }
     }
 }
@@ -157,6 +166,11 @@ pub struct BuildResult {
     pub base: Option<BaseImage>,
     pub tools: Vec<ResolvedTool>,
     pub transform_stats: TransformStats,
+    /// With `record_steps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
+    /// operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
+    pub steps: Option<Vec<Vec<Tree>>>,
+    /// `--strict-pins`: how each remote input was pinned (recorded in the provenance).
+    pub pins: Option<Pins>,
 }
 
 pub struct Loaded {
@@ -243,7 +257,16 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>) -> Result<Loaded>
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
     let loaded = load_program(&options.context_dir, options.sitefile.as_deref())?;
-    plan(&loaded.program, &options.build_args)
+    plan_for(&loaded.program, options)
+}
+
+/// The plan of a program for these options (`target` applied).
+fn plan_for(program: &Program, options: &BuildOptions) -> Result<Plan> {
+    let p = plan(program, &options.build_args)?;
+    match &options.target {
+        Some(t) => target_plan(p, t),
+        None => Ok(p),
+    }
 }
 
 type Warn = Callback;
@@ -287,14 +310,34 @@ fn base_ref_of(options: &BuildOptions, p: &Plan) -> Option<String> {
     options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
 }
 
+/// How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name
+/// (`integrity` or `lockfile`), and the BASE (`digest` or `lockfile`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pins {
+    pub imports: Vec<(String, &'static str)>,
+    pub base: Option<&'static str>,
+}
+
+impl Pins {
+    pub fn import(&self, name: &str) -> Option<&'static str> {
+        self.imports.iter().find(|(n, _)| n == name).map(|(_, b)| *b)
+    }
+}
+
 /// `--strict-pins`: every remote input must be pinned, so the build is reproducible. A remote IMPORT
 /// needs INTEGRITY or a `Sitefile.lock` entry; a BASE image needs `@sha256:` or a lockfile `images`
 /// entry. `lock` is `None` with --no-lockfile (only the Sitefile's own pins count then). Checked in
 /// source order, before anything is fetched; the first unpinned input fails with E_UNPINNED.
-pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Result<()> {
+pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Result<Pins> {
+    let mut pins = Pins::default();
     for spec in &p.imports {
         let ImportLocation::Remote { url } = &spec.location else { continue };
-        if spec.integrity.is_some() || lock.is_some_and(|l| l.get(url).is_some()) {
+        if spec.integrity.is_some() {
+            pins.imports.push((spec.name.clone(), "integrity"));
+            continue;
+        }
+        if lock.is_some_and(|l| l.get(url).is_some()) {
+            pins.imports.push((spec.name.clone(), "lockfile"));
             continue;
         }
         return Err(SitefileError::at(
@@ -306,10 +349,15 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
             &spec.span,
         ));
     }
-    let Some(input) = base else { return Ok(()) };
+    let Some(input) = base else { return Ok(pins) };
     let b = base_ref(input, None)?;
-    if b.r.digest.is_some() || lock.is_some_and(|l| l.get_image(&b.lock_key).is_some()) {
-        return Ok(());
+    if b.r.digest.is_some() {
+        pins.base = Some("digest");
+        return Ok(pins);
+    }
+    if lock.is_some_and(|l| l.get_image(&b.lock_key).is_some()) {
+        pins.base = Some("lockfile");
+        return Ok(pins);
     }
     Err(SitefileError::plain(
         E_UNPINNED,
@@ -327,13 +375,13 @@ pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
         Some(path) => Some(Lockfile::load(path)?),
         None => None,
     };
-    check_pins(p, lock.as_ref(), base_ref_of(options, p).as_deref())
+    check_pins(p, lock.as_ref(), base_ref_of(options, p).as_deref()).map(|_| ())
 }
 
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
-    let p = plan(&program, &options.build_args)?;
+    let p = plan_for(&program, options)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Warn = {
         let warnings = warnings.clone();
@@ -385,9 +433,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     };
     // BASE: the image to build on (resolved after the files, below).
     let base_ref = base_ref_of(options, &p);
-    if options.strict_pins {
-        check_pins(&p, lock.as_ref(), base_ref.as_deref())?;
-    }
+    let pins = if options.strict_pins { Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?) } else { None };
     let lock = Mutex::new(lock);
 
     let env = ImportEnv {
@@ -420,10 +466,11 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         plugins: PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m)),
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
         tool_policy: options.tool_policy,
-        cache: options.cache_dir.as_ref().map(TransformCache::new),
+        cache: options.cache_dir.as_ref().map(|d| TransformCache::new(d).with_remote(options.remote_cache.clone())),
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
     };
+    let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
             register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
@@ -431,8 +478,15 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         let mut tree = Tree::empty();
         for stage in &p.stages {
             tree = exec.start_stage(stage)?;
+            let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 tree = exec.execute(op, tree)?;
+                if let Some(r) = record.as_mut() {
+                    r.push(tree.clone());
+                }
+            }
+            if let (Some(all), Some(r)) = (steps.as_mut(), record) {
+                all.push(r);
             }
             if let Some(name) = &stage.name {
                 exec.stages.insert(name.clone(), tree.clone());
@@ -456,7 +510,10 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     let tree = with_site_rules(tree, &p, &label)?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
-        warn(&format!("EXPORT {} contains no files", p.export_path));
+        warn(&match &p.target {
+            None => format!("EXPORT {} contains no files", p.export_path),
+            Some(t) => format!("--target {t}: stage '{t}' contains no files"),
+        });
     }
 
     // BASE: the image to build on, resolved after the files so a failing build never pulls anything.
@@ -488,7 +545,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         _ => false,
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
-    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats })
+    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats, steps, pins })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
@@ -531,6 +588,8 @@ pub struct ExportTarget {
     pub oci_ref_name: Option<String>,
     /// Replace a non-empty destination outside the context.
     pub force: bool,
+    /// oci: attach a provenance and/or SBOM attestation (`--provenance`, `--sbom`).
+    pub attest: crate::export::attest::AttestRequest,
 }
 
 pub struct ExportedBuild {
@@ -544,6 +603,29 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+}
+
+/// The attestations (`--provenance`, `--sbom`) of an image built from
+/// `result`: in-toto statements whose subject is the image manifest. They
+/// never change the image itself.
+pub fn image_attestations(
+    result: &BuildResult,
+    manifest_digest: &str,
+    manifest_bytes: &[u8],
+    config_bytes: &[u8],
+    root: &str,
+    options: &BuildOptions,
+    request: crate::export::attest::AttestRequest,
+) -> Result<Vec<crate::export::attest::Referrer>> {
+    use crate::export::attest::{build_facts, make_attestations, AttestSubject};
+    if !request.any() {
+        return Ok(Vec::new());
+    }
+    let facts = build_facts(result, &options.context_dir, options.sitefile.as_deref(), &options.build_args, options.platform.as_deref())?;
+    let cfg = crate::export::oci::parse_config(config_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("image config: {e}")))?;
+    let title = cfg.labels.get(crate::export::oci::ann::TITLE).map(String::as_str);
+    let subject = AttestSubject { digest: manifest_digest, size: manifest_bytes.len() as u64, files: &result.output, root, title };
+    Ok(make_attestations(&subject, &facts, request, source_date_epoch()?))
 }
 
 /// OCI options for the build's exported tree (shared by `-t` image storage).
@@ -587,8 +669,9 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
             None => Vec::new(),
         };
         let ref_name = target.oci_ref_name.as_deref();
+        let referrers = image_attestations(&result, &img.manifest_digest, &img.manifest_bytes, &img.config_bytes, &img.root, options, target.attest)?;
         if out_dir.to_lowercase().ends_with(".tar") {
-            let data = oci_archive(img.parts(), ref_name, source_date_epoch()?, &base_blobs)?;
+            let data = oci_archive(img.parts(), ref_name, source_date_epoch()?, &base_blobs, &referrers)?;
             let written = export_file(&data, out, &export_options)?;
             let digest = sha256(&data);
             return Ok(ExportedBuild {
@@ -600,7 +683,7 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
                 manifest_digest: Some(img.manifest_digest.clone()),
             });
         }
-        let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs)?, out, &export_options)?;
+        let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?, out, &export_options)?;
         return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()) });
     }
     if !is_archive_format(format) {

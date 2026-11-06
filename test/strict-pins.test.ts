@@ -9,6 +9,7 @@ import { isSitefileError } from '../src/errors.js';
 import { sha256 } from '../src/digest.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 import { startMockRegistry } from './helpers/mock-registry.js';
+import { extractArchive } from '../src/resources/archive.js';
 
 // --strict-pins (issue #95): every remote input needs a pin; checked before anything is fetched.
 
@@ -118,6 +119,49 @@ test('BASE images: a tag needs a lockfile entry, a digest pin needs none', async
     assert.equal(r2.code, 1);
     assert.match(r2.stderr, /E_UNPINNED/);
     await assert.rejects(fs.stat(path.join(pinned, 'Sitefile.lock')));
+  } finally {
+    await reg.close();
+  }
+});
+
+test('composes: --target checks every IMPORT, graph and why check pins, provenance records them', async () => {
+  const reg = await startMockRegistry();
+  try {
+    const seeded = reg.seedImage('lib/base', '1', { layers: [{ '/etc/motd': 'base\n' }], config: { Cmd: ['serve'] } });
+    const home = await tmpDir();
+    const sf = `STAGE early\nCOPY ./public/ /\nSTAGE late FROM early\nIMPORT lib FROM ${base}/lib.js\nCOPY lib: /lib.js\nEXPORT / AS oci BASE ${reg.host}/lib/base:1\n`;
+    const ctx = await site(sf);
+    // --target stops before the import's stage, but every IMPORT still counts
+    const t = await runCli(home, ['build', ctx, '-o', path.join(ctx, 'early'), '--target', 'early', ...cliNet, '--strict-pins']);
+    assert.equal(t.code, 1);
+    assert.match(t.stderr, /E_UNPINNED.*IMPORT lib/);
+    for (const cmd of [['graph', ctx], ['why', '/lib.js', ctx, ...cliNet]]) {
+      const r = await runCli(home, [...cmd, '--strict-pins']);
+      assert.equal(r.code, 1, cmd.join(' '));
+      assert.match(r.stderr, /E_UNPINNED/);
+    }
+    assert.equal((await runCli(home, ['build', ctx, '-o', path.join(ctx, 'a.oci.tar'), ...cliNet])).code, 0);
+    const out = path.join(ctx, 'b.oci.tar');
+    const b = await runCli(home, ['build', ctx, '-o', out, ...cliNet, '--strict-pins', '--frozen-lockfile', '--provenance']);
+    assert.equal(b.code, 0, b.stderr);
+    const files = await extractArchive(new Uint8Array(await fs.readFile(out)), 'x');
+    const json = (d: string) => JSON.parse(new TextDecoder().decode(files.get(`/blobs/sha256/${d.slice(7)}`)!.bytes));
+    const index = JSON.parse(new TextDecoder().decode(files.get('/index.json')!.bytes));
+    const statement = json(json(index.manifests[1].digest).layers[0].digest);
+    const def = statement.predicate.buildDefinition;
+    assert.equal(def.externalParameters.strictPins, true);
+    const deps = def.resolvedDependencies as Array<Record<string, any>>;
+    assert.deepEqual(deps.find((d) => d.name === 'import:lib')?.annotations, { 'dev.sitefile.pin': 'lockfile' });
+    assert.deepEqual(deps.find((d) => d.name === 'base'), {
+      name: 'base',
+      uri: `${reg.host}/lib/base:1`,
+      digest: { sha256: seeded.manifestDigest.slice(7) },
+      annotations: { 'dev.sitefile.pin': 'lockfile' },
+    });
+    // without --strict-pins the provenance is unchanged
+    const plain = path.join(ctx, 'c.oci.tar');
+    assert.equal((await runCli(home, ['build', ctx, '-o', plain, ...cliNet, '--provenance'])).code, 0);
+    assert.doesNotMatch((await fs.readFile(plain)).toString('latin1'), /strictPins|dev\.sitefile\.pin/);
   } finally {
     await reg.close();
   }

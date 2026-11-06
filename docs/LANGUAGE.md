@@ -189,7 +189,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
     byte for byte); elsewhere it is plain text.
   - See `examples/inline/`.
 - `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
-  instruction, exactly once; it exports from the last stage. The format
+  instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
+  tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
   tree is mounted at and is required by `wbn` (from here or `--base-url`).
@@ -488,7 +489,14 @@ gitignore subset:
   count. Local imports never need one. `--strict-pins` conflicts with
   `--update-lock` (a usage error), since that would accept changed content.
   `inspect` and non-oci exports never resolve a `BASE`, so it is not checked
-  there. There is no Sitefile-level switch yet (the flag needs no new syntax;
+  there. `graph --strict-pins` checks like `validate`; `why` and `--target`
+  builds check every `IMPORT` of the Sitefile (a target still resolves them all).
+  `--cache-from`/`--cache-to` references are caches, not inputs, and are never
+  checked. With `--provenance`, a strict build sets
+  `externalParameters.strictPins: true` and gives each remote dependency an
+  annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for the
+  base); without `--strict-pins` the provenance is unchanged.
+  There is no Sitefile-level switch yet (the flag needs no new syntax;
   a future `# sitefile=N` directive may add one). Typical CI use:
   `sitefile build --frozen-lockfile --strict-pins`.
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
@@ -504,6 +512,8 @@ gitignore subset:
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  A gzip stream may hold several members; zero bytes after the last one are
+  ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
@@ -577,13 +587,15 @@ and tar timestamps instead.
   credentials in URLs are dropped). Git labels are off by default because they
   change the image ID on every commit even when the files are identical, and
   finding the checkout reads outside the build context. Build-arg values
-  are never written. The config, manifest and index are canonical JSON (sorted
+  are never written into the image (`--provenance` records the non-secret
+  ones in a separate attestation, [CLI.md](CLI.md#attestations)). The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
   layout, below); any other `--out` with `--format oci` is an *OCI layout
   directory*: `oci-layout`, `index.json` (one manifest entry, annotated
-  `org.opencontainers.image.ref.name` when you pass `-t`) and
-  `blobs/sha256/<hex>`. **The image contains only files**: it has no
+  `org.opencontainers.image.ref.name` when you pass `-t`; with `--provenance` /
+  `--sbom`, the attestation manifests follow it, see
+  [CLI.md](CLI.md#attestations)) and `blobs/sha256/<hex>`. **The image contains only files**: it has no
   entrypoint and is not runnable on its own. Use it as a source of files, e.g.
   `COPY --from=<image> /srv/www /usr/share/nginx/html` in a Dockerfile, **unless
   you give it a `BASE`**:

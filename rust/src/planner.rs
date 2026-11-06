@@ -215,6 +215,30 @@ pub struct Plan {
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
     pub headers: Vec<HeaderSpec>,
     pub warnings: Vec<String>,
+    /// `--target <stage>`: the build stops after this stage and exports its whole tree (see [`target_plan`]).
+    pub target: Option<String>,
+}
+
+/// `--target <name>`: keep the stages up to and including the named one, and export that stage's whole tree
+/// (`/`) instead of the EXPORT path. The EXPORT's format and its options (AS, BASE, AT, COMPRESSION) still apply;
+/// the `/_redirects` and `/_headers` files EXPORT writes are not (they belong to the EXPORT path). An unknown
+/// name is a usage error that lists the named stages.
+pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
+    let Some(index) = p.stages.iter().position(|s| s.name.as_deref() == Some(name)) else {
+        let names: Vec<&str> = p.stages.iter().filter_map(|s| s.name.as_deref()).collect();
+        let msg = if names.is_empty() {
+            format!("--target '{name}' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)")
+        } else {
+            format!("--target '{name}' does not name a stage (stages: {})", names.join(", "))
+        };
+        return Err(SitefileError::plain(E_USAGE, msg));
+    };
+    p.stages.truncate(index + 1);
+    p.export_path = "/".into();
+    p.redirects.clear();
+    p.headers.clear();
+    p.target = Some(name.to_string());
+    Ok(p)
 }
 
 /// `^([A-Za-z][A-Za-z0-9+.-]*):\/\/`: the scheme of a URL.
@@ -507,6 +531,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
         redirects,
         headers,
         warnings,
+        target: None,
     })
 }
 
@@ -764,19 +789,23 @@ impl Plan {
         self.var_order.iter().filter_map(|n| self.vars.get(n).map(|v| (n.as_str(), v)))
     }
 
-    /// The object `sitefile validate --json` prints: `{file, vars, imports, stages, export}`.
+    /// The object `sitefile validate --json` prints: `{file, vars, imports, stages, export}` (and `target` with `--target`).
     pub fn validate_json(&self) -> Value {
         let mut vars = Map::new();
         for (k, v) in self.ordered_vars() {
             vars.insert(k.to_string(), scalar_json(v));
         }
-        json!({
+        let mut v = json!({
             "file": self.file,
             "vars": Value::Object(vars),
             "imports": self.imports.iter().map(ImportSpec::to_json).collect::<Vec<_>>(),
             "stages": self.stages.iter().map(Stage::to_json).collect::<Vec<_>>(),
             "export": self.export_path,
-        })
+        });
+        if let (Some(t), Value::Object(m)) = (&self.target, &mut v) {
+            m.insert("target".into(), json!(t));
+        }
+        v
     }
 }
 
@@ -977,5 +1006,21 @@ mod tests {
         assert!(text.starts_with(r#"{"file":"Sitefile","vars":{"N":3,"F":1.5},"imports":[{"name":"d","uri":"./d.json","location":{"kind":"local","path":"d.json"},"as":"json","span":{"file":"Sitefile","line":4,"column":1}}],"stages":[{"name":"s","base":{"kind":"scratch"},"operations":[{"kind":"COPY","source":{"kind":"import","name":"d","path":"/","span":{"file":"Sitefile","line":5,"column":18}},"dest":"/d.json","destIsDir":false,"overwrite":true,"#), "{text}");
         assert!(text.contains(r#"{"kind":"RENDER","template":{"kind":"inline","text":"x\n","delimiter":"T","bodyLine":7,"span":{"file":"Sitefile","line":6,"column":8}},"dest":"/a","escape":"none","overwrite":false,"#), "{text}");
         assert!(text.ends_with(r#""export":"/"}"#), "{text}");
+    }
+
+    #[test]
+    fn target_plan_keeps_stages_up_to_the_target() {
+        let p = plan_of("STAGE a\nCOPY ./x /x\nSTAGE b FROM a\nREDIRECT /o /n\nHEADER /* X-A: 1\nEXPORT /site AS zip", &[]).unwrap();
+        let t = target_plan(p.clone(), "a").unwrap();
+        assert_eq!(t.stages.iter().map(|s| s.name.as_deref()).collect::<Vec<_>>(), [Some("a")]);
+        assert_eq!((t.export_path.as_str(), t.export_format), ("/", ExportFormat::Zip));
+        assert!(t.redirects.is_empty() && t.headers.is_empty());
+        assert_eq!(t.target.as_deref(), Some("a"));
+        assert!(serde_json::to_string(&t.validate_json()).unwrap().ends_with(r#""export":"/","target":"a"}"#));
+        assert_eq!(target_plan(p.clone(), "b").unwrap().stages.len(), 2);
+        let e = target_plan(p, "c").unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), (ErrorCode::E_USAGE, "--target 'c' does not name a stage (stages: a, b)"));
+        let unnamed = plan_of("FROM scratch\nEXPORT /", &[]).unwrap();
+        assert!(target_plan(unnamed, "a").unwrap_err().detail.contains("the Sitefile has no named stages"));
     }
 }

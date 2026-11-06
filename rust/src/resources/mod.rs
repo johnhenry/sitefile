@@ -8,3 +8,5 @@ pub mod lockfile;
 pub mod netpolicy;
 pub mod types;
 pub mod wbn_reader;
+#[cfg(test)]
+mod archive_differential;

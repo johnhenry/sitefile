@@ -1,0 +1,11 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/first", "--allow-plugins", "--no-lockfile", "--cache-to", "${REGISTRY}/conf/rand-${IMPL}:1"],
+    {
+      "args": ["build", "${CTX}", "-o", "${OUT}/from-ts", "--allow-plugins", "--no-lockfile", "--cache-from", "${REGISTRY}/conf/rand-ts:1"],
+      "env": { "SITEFILE_HOME": "${TMP}/home2" }
+    }
+  ],
+  "outputs": [["from-ts", "tree"]]
+}

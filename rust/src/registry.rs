@@ -46,6 +46,7 @@
 
 use crate::digest::{is_integrity, sha256};
 use crate::error::{ErrorCode::*, Result, SitefileError};
+use crate::export::attest::{referrers_tag, Referrer, ReferrerDescriptor};
 use crate::export::oci::{media, parse_config, parse_manifest, parse_platform, Descriptor, ParsedManifest};
 use crate::refs::{canonical_ref, is_component, is_tag, parse_ref, ref_key, with_default_registry, ImageRef};
 use crate::resources::https::{redact_url, tls_config, GuardedResolver};
@@ -1156,6 +1157,13 @@ impl RegistryClient {
 
     /// `PUT` a manifest at a tag or digest; returns the digest the registry confirms.
     pub fn put_manifest(&self, repo: &str, reference: &str, bytes: &[u8], media_type: &str) -> Result<String> {
+        Ok(self.put_manifest_full(repo, reference, bytes, media_type)?.0)
+    }
+
+    /// [`Self::put_manifest`], also returning the `OCI-Subject` response header: a
+    /// registry that implements the referrers API sets it when the manifest has
+    /// a `subject` (distribution spec v1.1).
+    pub fn put_manifest_full(&self, repo: &str, reference: &str, bytes: &[u8], media_type: &str) -> Result<(String, Option<String>)> {
         if !valid_reference(reference) {
             return Err(SitefileError::plain(E_USAGE, format!("invalid reference '{reference}'")));
         }
@@ -1172,7 +1180,8 @@ impl RegistryClient {
                 format!("{}/{repo}: the registry stored the manifest as {}, expected {digest}", self.registry, clean(c)),
             ));
         }
-        Ok(digest)
+        let subject = res.header("oci-subject").map(str::to_string);
+        Ok((digest, subject))
     }
 }
 
@@ -1417,6 +1426,8 @@ pub struct PushResult {
     pub uploaded: usize,
     pub mounted: usize,
     pub existing: usize,
+    /// Attestations pushed (as OCI 1.1 referrers of the image).
+    pub attestations: usize,
 }
 
 /// Push a stored image `id` to `r` (a registry reference): blobs that are
@@ -1490,7 +1501,68 @@ pub fn push_image(
     if digest != id {
         return Err(SitefileError::plain(E_INTEGRITY, format!("the registry reports digest {digest}, expected {id}")));
     }
+    counts.attestations = push_referrers(client, repo, id, &store.referrers(id)?, &say)?;
     Ok((digest, manifest_bytes.len() as u64, counts))
+}
+
+/// Push attestations as OCI 1.1 referrers of `subject` (distribution spec
+/// v1.1): each artifact manifest (with its blobs) by digest. A registry with
+/// the referrers API answers with an `OCI-Subject` header; for the others the
+/// referrers tag schema is used: the image index at tag `sha256-<hex>` lists
+/// them (merged with what it already lists).
+pub fn push_referrers(client: &RegistryClient, repo: &str, subject: &str, referrers: &[Referrer], say: &dyn Fn(&str)) -> Result<usize> {
+    let mut fallback: Vec<&ReferrerDescriptor> = Vec::new();
+    for r in referrers {
+        let blob = |d: &str| r.blobs.iter().find(|(k, _)| k == d).map(|(_, b)| b);
+        let Some(manifest_bytes) = blob(&r.descriptor.digest) else {
+            return Err(SitefileError::plain(E_STORE, format!("attestation {} is missing from the local store; cannot push", r.descriptor.digest)));
+        };
+        let m = parse_manifest(manifest_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("attestation {}: {e}", r.descriptor.digest)))?;
+        for d in std::iter::once(&m.config).chain(m.layers.iter()) {
+            if client.has_blob(repo, &d.digest)? {
+                continue;
+            }
+            let Some(bytes) = blob(&d.digest) else {
+                return Err(SitefileError::plain(E_STORE, format!("blob {} is missing from the local store; cannot push", d.digest)));
+            };
+            client.push_blob(repo, d, &Body::Bytes(bytes), None)?;
+        }
+        let (digest, oci_subject) = client.put_manifest_full(repo, &r.descriptor.digest, manifest_bytes, media::MANIFEST)?;
+        if digest != r.descriptor.digest {
+            return Err(SitefileError::plain(E_INTEGRITY, format!("the registry reports digest {digest}, expected {}", r.descriptor.digest)));
+        }
+        let what = r.descriptor.predicate_type().map(str::to_string).or_else(|| r.descriptor.artifact_type.clone()).unwrap_or_else(|| "artifact".into());
+        say(&format!("{}: attestation pushed ({what})", short_id(&r.descriptor.digest)));
+        if oci_subject.is_none() {
+            fallback.push(&r.descriptor);
+        }
+    }
+    if !fallback.is_empty() {
+        let tag = referrers_tag(subject);
+        let mut listed: Vec<Value> = Vec::new();
+        match client.get_manifest(repo, &tag) {
+            Ok(cur) => {
+                if let Some(list) = serde_json::from_slice::<Value>(&cur.bytes).ok().and_then(|j| j.get("manifests").and_then(Value::as_array).cloned()) {
+                    listed = list.into_iter().filter(Value::is_object).collect();
+                }
+            }
+            // No referrers tag yet: start a new one.
+            Err(e) if e.code == E_NOT_FOUND => {}
+            Err(e) => return Err(e),
+        }
+        let missing: Vec<&&ReferrerDescriptor> = fallback.iter().filter(|f| !listed.iter().any(|l| l.get("digest").and_then(Value::as_str) == Some(f.digest.as_str()))).collect();
+        if missing.is_empty() {
+            say(&format!("referrers tag {tag}: up to date"));
+        } else {
+            let mut manifests = listed;
+            manifests.extend(missing.iter().map(|d| d.to_json()));
+            let n = manifests.len();
+            let bytes = crate::export::oci::canonical_json(&serde_json::json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": manifests })).into_bytes();
+            client.put_manifest(repo, &tag, &bytes, media::INDEX)?;
+            say(&format!("referrers tag {tag}: {n} attestation{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    Ok(referrers.len())
 }
 
 // ================================================================ commands
@@ -1655,6 +1727,8 @@ pub(crate) mod mock {
         pub corrupt: Option<String>,
         /// Answer GET manifest by digest with these bytes.
         pub swap_manifest: Option<Vec<u8>>,
+        /// Act as a registry with the OCI 1.1 referrers API: a PUT manifest with a subject answers OCI-Subject.
+        pub referrers_api: bool,
     }
 
     impl Default for MockOptions {
@@ -1667,6 +1741,7 @@ pub(crate) mod mock {
                 redirect_blobs_to: None,
                 corrupt: None,
                 swap_manifest: None,
+                referrers_api: false,
             }
         }
     }
@@ -1883,6 +1958,9 @@ pub(crate) mod mock {
         pub fn has_manifest(&self, key: &str) -> bool {
             self.state.lock().unwrap().manifests.contains_key(key)
         }
+        pub fn manifest(&self, key: &str) -> Option<Vec<u8>> {
+            self.state.lock().unwrap().manifests.get(key).cloned()
+        }
         pub fn set_manifest(&self, key: &str, bytes: &[u8]) {
             self.state.lock().unwrap().manifests.insert(key.to_string(), bytes.to_vec());
         }
@@ -2058,8 +2136,14 @@ pub(crate) mod mock {
             if !rest.starts_with("sha256:") {
                 st.manifests.insert(format!("{repo}:{rest}"), req.body.clone());
             }
+            let referrers_api = st.options.referrers_api;
             drop(st);
-            return respond(s, 201, b"", &[("docker-content-digest", d)], false);
+            let subject = serde_json::from_slice::<Value>(&req.body).ok().and_then(|j| j["subject"]["digest"].as_str().map(str::to_string));
+            let mut headers = vec![("docker-content-digest", d)];
+            if let Some(sub) = subject.filter(|_| referrers_api) {
+                headers.push(("oci-subject", sub));
+            }
+            return respond(s, 201, b"", &headers, false);
         }
         if kind == "manifests" && (m == "GET" || m == "HEAD") {
             let key = if rest.starts_with("sha256:") { format!("{repo}@{rest}") } else { format!("{repo}:{rest}") };
@@ -2189,6 +2273,62 @@ mod tests {
     }
 
     // ------------------------------------------------------------ push / pull
+
+    fn attest(store: &Store, id: &str) -> Vec<String> {
+        use crate::export::attest::{attestation_referrer, CYCLONEDX, SLSA};
+        let size = store.read_blob(id, None).unwrap().len() as u64;
+        let refs = vec![attestation_referrer(id, size, SLSA, json!({ "p": 1 })), attestation_referrer(id, size, CYCLONEDX, json!({ "s": 1 }))];
+        store.put_referrers(id, &refs).unwrap();
+        refs.iter().map(|r| r.descriptor.digest.clone()).collect()
+    }
+
+    #[test]
+    fn attestations_push_as_referrers_with_the_fallback_tag() {
+        use crate::export::attest::{empty_digest, referrers_tag};
+        let reg = MockRegistry::start(MockOptions::default());
+        let store = new_store();
+        let id = build_blog(&store, "blog:1");
+        let digests = attest(&store, &id);
+        let remote = format!("{}/team/blog:1", reg.host);
+        store.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
+        let p = push_with(&store, &remote, clean_env()).unwrap();
+        let tag = referrers_tag(&id);
+        let n = p.lines.len();
+        assert_eq!(p.lines[n - 4], format!("{}: attestation pushed (https://slsa.dev/provenance/v1)", short_id(&digests[0])));
+        assert_eq!(p.lines[n - 3], format!("{}: attestation pushed (https://cyclonedx.org/bom)", short_id(&digests[1])));
+        assert_eq!(p.lines[n - 2], format!("referrers tag {tag}: 2 attestations"));
+        assert!(p.lines[n - 1].starts_with(&format!("1: digest: {id} size: ")));
+        assert_eq!(sha256(&reg.manifest("team/blog:1").unwrap()), id, "the tag still names the image");
+        let idx: Value = serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
+        let listed: Vec<&str> = idx["manifests"].as_array().unwrap().iter().map(|m| m["digest"].as_str().unwrap()).collect();
+        assert_eq!(listed, digests.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(reg.has_blob(&empty_digest()));
+        for d in &digests {
+            assert!(reg.has_manifest(&format!("team/blog@{d}")));
+        }
+        // entries another tool listed are kept; a repeat push changes nothing
+        let foreign = json!({ "mediaType": media::MANIFEST, "digest": format!("sha256:{}", "b".repeat(64)), "size": 1, "artifactType": "application/example" });
+        reg.set_manifest(&format!("team/blog:{tag}"), serde_json::to_string(&json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": [foreign] })).unwrap().as_bytes());
+        push_with(&store, &remote, clean_env()).unwrap();
+        let idx: Value = serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
+        assert_eq!(idx["manifests"].as_array().unwrap().len(), 3);
+        assert_eq!(idx["manifests"][0]["digest"], foreign["digest"]);
+        let p3 = push_with(&store, &remote, clean_env()).unwrap();
+        assert!(p3.lines.contains(&format!("referrers tag {tag}: up to date")));
+    }
+
+    #[test]
+    fn registries_with_the_referrers_api_get_no_fallback_tag() {
+        let reg = MockRegistry::start(MockOptions { referrers_api: true, ..Default::default() });
+        let store = new_store();
+        let id = build_blog(&store, "blog:1");
+        attest(&store, &id);
+        let remote = format!("{}/team/blog:2", reg.host);
+        store.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
+        let p = push_with(&store, &remote, clean_env()).unwrap();
+        assert!(!p.lines.iter().any(|l| l.starts_with("referrers tag")));
+        assert!(reg.manifest(&format!("team/blog:{}", crate::export::attest::referrers_tag(&id))).is_none());
+    }
 
     #[test]
     fn push_then_pull_round_trips_with_the_same_digest() {
