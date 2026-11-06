@@ -1,9 +1,34 @@
 # The Rust implementation
 
 `rust/` is a port of the TypeScript reference implementation (`src/`). Both
-are maintained: same language, same CLI, same output. The TypeScript version
-remains the reference; when they disagree, the TypeScript behaviour is the
-specification until it is deliberately changed in both.
+are maintained: same language, same CLI, same output.
+
+## Roles (decided in #82)
+
+- **The Rust binary is the product.** It's what releases ship for macOS
+  and Linux, and what editors run (`sitefile lsp`). Install instructions,
+  benchmarks and editor setup assume it.
+- **TypeScript is the reference specification and the library.**
+  - When the two disagree, the TypeScript behaviour is the specification
+    until it is deliberately changed in both.
+  - `src/index.ts` is the supported programmatic API.
+  - The npm tarball attached to each release is a secondary way to run the
+    CLI.
+- **Parity rules stay.**
+  - Every language and CLI feature lands in both implementations, in the same
+    PR, with conformance cases.
+  - Output bytes, error codes and messages must match.
+  - The differential fixtures are generated from TypeScript and checked by
+    Rust.
+- **Tooling exceptions are Rust-only by design:**
+  - the language server;
+  - the wasm module disk cache;
+  - other features that only make sense for a long-running or installed
+    binary.
+
+  Each is listed in this file and must not change build output.
+- **New features are written against TypeScript first** (it defines the
+  expected behaviour), then ported. A PR is complete only when both pass.
 
 ```bash
 cd rust
