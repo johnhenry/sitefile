@@ -293,6 +293,9 @@ pub enum Instruction {
         each: Option<ForEach>,
         /// argv template of a TOOL (`{input}`, `{output}`, `{option.key}`).
         args: Option<Vec<Operand>>,
+        /// `--include` / `--exclude` patterns (`.sitefileignore` syntax) for a directory source.
+        include: Vec<String>,
+        exclude: Vec<String>,
         overwrite: bool,
     },
     /// `SITEMAP [--overwrite] BASE <url> [TO <dest>]` (dest defaults to `/sitemap.xml`).

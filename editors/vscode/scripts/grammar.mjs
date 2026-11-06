@@ -27,7 +27,7 @@ export const KEYWORDS = {
   flags: {
     COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
-    TRANSFORM: ['overwrite', 'from'],
+    TRANSFORM: ['overwrite', 'from', 'include', 'exclude'],
     SITEMAP: ['overwrite'],
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],
@@ -118,9 +118,10 @@ function flags(instr) {
       },
     });
   }
-  if (known.includes('exclude')) {
+  const patterns = known.filter((f) => f === 'exclude' || f === 'include');
+  if (patterns.length) {
     pats.push({
-      match: `${W}(--)(exclude)(=)(\\S+)`,
+      match: `${W}(--)(${patterns.join('|')})(=)(\\S+)`,
       captures: {
         1: { name: S('punctuation.definition.flag') },
         2: { name: S('variable.parameter.flag') },
@@ -129,7 +130,7 @@ function flags(instr) {
       },
     });
   }
-  const bare = known.filter((f) => !['escape', 'from', 'chmod', 'exclude'].includes(f));
+  const bare = known.filter((f) => !['escape', 'from', 'chmod', 'exclude', 'include'].includes(f));
   if (bare.length) {
     pats.push({
       match: `${W}(--)(${bare.join('|')})${WE}`,

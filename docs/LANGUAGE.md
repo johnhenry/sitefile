@@ -394,12 +394,53 @@ line and column.
   a local `.mjs` module in its own folder (not the context root), or a
   WebAssembly module with no imports (anywhere; see docs/PLUGINS.md). URLs fail
   with `E_PROTOCOL`. Plugin names share the ARG/LET/IMPORT/stage namespace.
-- `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH name TO <dest>
-  [OPTIONS key=value …] [FOR item IN list]` sends the source (a file, an
-  inline body, or a value import) and the options to the plugin and writes
-  what it returns: one file at `<dest>`, or several under `<dest>/`. Without a
-  source, the plugin gets the `FOR` element, or only its options. `<dest>` and
-  option values may use `${item.key}`.
+- `TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…]
+  [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list]` sends
+  the source (a file, an inline body, or a value import) and the options to the
+  plugin and writes what it returns: one file at `<dest>`, or several under
+  `<dest>/`. Without a source, the plugin gets the `FOR` element, or only its
+  options. `<dest>` and option values may use `${item.key}`.
+- **A directory source** (a context directory, `name:` / `name:/dir` of a tree
+  import, or `--from=stage /dir`) calls the plugin **once per file**, in path
+  order (UTF-8 bytes), each call with its own `input` (`input.path` is the
+  source label plus the file's relative path, e.g. `./photos/trip/a.jpg`):
+  `TRANSFORM ./photos/ WITH image TO /img/ OPTIONS widths=400,800`. Local
+  directories honour `.sitefileignore`, like COPY.
+  - **Destinations.** By default each file gets the directory
+    `<dest>/<relative dir>/` (`./photos/trip/a.jpg` with `TO /img/` gets
+    `/img/trip`; a trailing `/` on `<dest>` is optional) and the plugin names
+    the files, as for one file with a directory destination. A last segment
+    `*` writes one file per input under its own relative path (`TO /css/*`);
+    `*.ext` replaces its extension (`TO /thumbs/*.png` writes
+    `/thumbs/trip/a.png`; `a.tar.gz` becomes `a.tar.png`, a name without an
+    extension gets one), so the plugin sees a file destination and picks the
+    format from it. A `*` destination with a source that is not a directory is
+    `E_TYPE`.
+  - **`--include=<pattern>`** keeps only the files some pattern matches and
+    **`--exclude=<pattern>`** leaves files out (both repeatable,
+    `.sitefileignore` lines relative to the source directory, as for COPY's
+    `--exclude`): `TRANSFORM --include=*.jpg --exclude=drafts/ ./photos/ …`.
+    With a file source or a value import they are `E_TYPE`; without a source,
+    with an inline body or with `FOR` they are `E_SYNTAX`. A directory with no
+    files left is a warning.
+  - A directory source with `FOR` is `E_TYPE` (each file is already one call).
+    A `TOOL` writes one file per input, so it needs `TO <dir>/*` or
+    `TO <dir>/*.ext` (`E_PLUGIN` otherwise).
+  - Calls run up to 4 at a time (wasm plugins and tools; a JavaScript plugin's
+    one process takes one call at a time); the files, warnings, `--profile`
+    events (one per file, with an `input` arg) and errors come in path order
+    either way. A failing file fails the build with its error prefixed by the
+    file (`./photos/notes.txt: PLUGIN image: not a PNG, JPEG, GIF or WebP
+    image`); the first failing file in path order is the one reported.
+  - Each file is cached and memoized on its own: the cache key is the one a
+    single-file TRANSFORM of that file to the same destination has (so they
+    share results), and a `--watch` rebuild re-runs only the files that
+    changed. Each output's origin names its input (`Sitefile:9 TRANSFORM
+    ./photos/a.jpg`), which `sitefile why` shows.
+  - Two files may write the same path only with identical content
+    (`./photos/a.jpg` and `./photos/a.png` both writing `/img/a.json` is
+    `E_CONFLICT` naming both, `--overwrite` or not); conflicts with files
+    already in the tree follow the usual rules.
 - Plugins run in a separate Node process with `--permission`: read access to
   their own folder only; no writes, processes, workers, network or
   environment; a per-call time limit (`--plugin-timeout`). Failures are

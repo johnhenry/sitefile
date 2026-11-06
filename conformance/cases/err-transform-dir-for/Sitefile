@@ -1,0 +1,5 @@
+# A directory source runs once per file, so it cannot be combined with FOR.
+PLUGIN image FROM ./plugins/image.wasm
+IMPORT items FROM ./items.json AS json
+TRANSFORM ./src/ WITH image TO /out/${i}/ FOR i IN items
+EXPORT /

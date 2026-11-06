@@ -94,3 +94,8 @@ export class Profiler {
 export function begin(p: Profiler | undefined, name: string, cat: string, args?: ProfileArgs): ProfileSpan {
   return p ? p.begin(name, cat, args) : NOOP;
 }
+
+/** Reserve an event's place now (its clock starts with `start()`): a no-op without a profiler. */
+export function reserve(p: Profiler | undefined, name: string, cat: string, args?: ProfileArgs): ProfileSpan {
+  return p ? p.reserve(name, cat, args) : NOOP;
+}
