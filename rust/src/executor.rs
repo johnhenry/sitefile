@@ -30,6 +30,7 @@ use crate::render::{decode_utf8, parse_render_template, render_template, resolve
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::https::{fetch_remote_with, FetchRequest};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
+use crate::resources::ignore::IgnoreRules;
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
 use crate::resources::lockfile::{GitLockEntry, LockEntry, Lockfile};
 use crate::resources::git::{fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport};
@@ -1614,6 +1615,21 @@ impl<'a> Scope<'a> {
     }
 }
 
+/// The path `--parents` keeps: context-relative for a local source, inside the import or stage otherwise (`""` for a root).
+fn source_path(r: &SourceRef) -> String {
+    match r {
+        SourceRef::Local { path, .. } => path.clone(),
+        SourceRef::Inline { .. } => String::new(),
+        SourceRef::Stage { path, .. } | SourceRef::Import { path, .. } => path.trim_start_matches('/').to_string(),
+    }
+}
+
+/// A directory source without the files `exclude` (COPY --exclude) matches, relative to its root.
+fn excluding(tree: Tree, exclude: Option<&IgnoreRules>) -> Result<Tree> {
+    let Some(rules) = exclude else { return Ok(tree) };
+    Tree::from_files(tree.entries().filter(|(p, _)| !rules.excludes(&p[1..])).map(|(p, n)| (p.clone(), n.clone())))
+}
+
 enum Source {
     File {
         bytes: Arc<[u8]>,
@@ -1735,7 +1751,8 @@ impl<'a> Exec<'a> {
         }
     }
 
-    fn read_source(&self, r: &SourceRef, origin: &str) -> Result<Source> {
+    /// `exclude` (COPY --exclude) drops the matching files of a directory source (a local one is walked without them).
+    fn read_source(&self, r: &SourceRef, origin: &str, exclude: Option<&IgnoreRules>) -> Result<Source> {
         match r {
             SourceRef::Inline { text, delimiter, body_line, .. } => Ok(Source::File {
                 bytes: Arc::from(text.as_bytes()),
@@ -1748,7 +1765,7 @@ impl<'a> Exec<'a> {
             SourceRef::Local { path, span } => {
                 let label = format!("./{path}");
                 if self.local.stat(path, Some(span))? == EntryKind::Directory {
-                    let Resource::Tree { tree, provenance } = self.local.read_tree(path, origin, Some(span))? else { unreachable!() };
+                    let Resource::Tree { tree, provenance } = self.local.read_tree_excluding(path, origin, Some(span), exclude)? else { unreachable!() };
                     return Ok(Source::Tree { tree, label, digest: provenance.digest });
                 }
                 let Resource::File { bytes, mode, basename, provenance } = self.local.read_file(path, Some(span))? else { unreachable!() };
@@ -1762,7 +1779,7 @@ impl<'a> Exec<'a> {
                     return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None, digest: String::new() });
                 }
                 if tree.is_directory(path) {
-                    return Ok(Source::Tree { tree: tree.subtree(path), label, digest: String::new() });
+                    return Ok(Source::Tree { tree: excluding(tree.subtree(path), exclude)?, label, digest: String::new() });
                 }
                 Err(SitefileError::at(E_NOT_FOUND, format!("'{path}' does not exist in stage '{name}'"), span))
             }
@@ -1789,7 +1806,7 @@ impl<'a> Exec<'a> {
                             return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None, digest: String::new() });
                         }
                         if tree.is_directory(path) {
-                            return Ok(Source::Tree { tree: tree.subtree(path), label, digest: String::new() });
+                            return Ok(Source::Tree { tree: excluding(tree.subtree(path), exclude)?, label, digest: String::new() });
                         }
                         Err(SitefileError::at(E_NOT_FOUND, format!("'{path}' does not exist in import '{name}'"), span))
                     }
@@ -1939,9 +1956,15 @@ impl<'a> Exec<'a> {
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
-            Operation::Copy { source, dest, dest_is_dir, span, .. } => {
-                let src = self.read_source(source, &origin)?;
-                let into_dir = matches!(src, Source::File { .. }) && (*dest_is_dir || tree.is_directory(dest));
+            Operation::Copy { source, dest, dest_is_dir, exclude, chmod, parents, span, .. } => {
+                let rules = (!exclude.is_empty()).then(|| IgnoreRules::from_patterns(exclude));
+                let src = self.read_source(source, &origin, rules.as_ref())?;
+                // --parents: the source's own path (inside the context, import or stage) is kept under the destination.
+                let kept = if *parents { source_path(source) } else { String::new() };
+                if let (Some(_), Source::File { label, .. }) = (&rules, &src) {
+                    return Err(SitefileError::at(E_TYPE, format!("--exclude filters a directory, but '{label}' is a file"), source.span()));
+                }
+                let into_dir = matches!(src, Source::File { .. }) && (*parents || *dest_is_dir || tree.is_directory(dest));
                 let key = memoized.then(|| {
                     let shape = if matches!(src, Source::File { .. }) { into_dir.to_string() } else { "tree".into() };
                     memo_key(&["copy", op_id, &self.source_key(source, &src), &shape])
@@ -1954,23 +1977,31 @@ impl<'a> Exec<'a> {
                         if into_dir && inline.is_some() {
                             return Err(SitefileError::at(E_PATH, format!("'{dest}' is a directory; an inline {label} body needs a file destination"), span));
                         }
-                        let target = if into_dir { join_virtual(dest, &basename) } else { dest.clone() };
-                        vec![(target, make_file(bytes, origin, mode))]
+                        let target = if into_dir { join_virtual(dest, if kept.is_empty() { &basename } else { &kept }) } else { dest.clone() };
+                        vec![(target, make_file(bytes, origin, chmod.unwrap_or(mode)))]
                     }
                     Source::Tree { tree: src, label, .. } => {
                         if src.is_empty() {
-                            (self.warn)(&format!("{origin}: '{label}' contains no files"));
+                            (self.warn)(&if rules.is_some() {
+                                format!("{origin}: --exclude leaves no files of '{label}' to copy")
+                            } else {
+                                format!("{origin}: '{label}' contains no files")
+                            });
                         }
-                        src.mounted_at(dest)
+                        let at = if kept.is_empty() { dest.clone() } else { join_virtual(dest, &kept) };
+                        src.mounted_at(&at)
                             .into_iter()
-                            .map(|(p, n)| (p, Arc::new(FileNode { bytes: n.bytes.clone(), mode: n.mode, digest: n.digest.clone(), origin: origin.clone() })))
+                            .map(|(p, n)| {
+                                let mode = chmod.unwrap_or(n.mode);
+                                (p, Arc::new(FileNode { bytes: n.bytes.clone(), mode, digest: n.digest.clone(), origin: origin.clone() }))
+                            })
                             .collect()
                     }
                 };
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
             Operation::Render { template, dest, each, escape, span, .. } => {
-                let src = self.read_source(template, &origin)?;
+                let src = self.read_source(template, &origin, None)?;
                 let template_key = if memoized { self.source_key(template, &src) } else { String::new() };
                 let Source::File { bytes, inline, label, .. } = src else {
                     return Err(SitefileError::at(E_TYPE, format!("RENDER template '{}' is a directory, not a file", src.label()), template.span()));
@@ -2157,7 +2188,7 @@ impl<'a> Exec<'a> {
             if let Some(v) = value_import {
                 data = Some(v);
             } else {
-                let src = self.read_source(src_ref, &origin)?;
+                let src = self.read_source(src_ref, &origin, None)?;
                 if self.memo.is_some() {
                     src_key = self.source_key(src_ref, &src);
                 }

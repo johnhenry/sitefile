@@ -15,6 +15,7 @@ import { findSitefiles, grammarDir, parseOk, repoRoot } from './helpers.mjs';
 /** Rejected by src/language/parser.ts with E_SYNTAX (relative to the repository root). */
 const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-compression/Sitefile', // COMPRESSION zstd: the grammar accepts any word here
+  'conformance/cases/err-copy-chmod/Sitefile', // --chmod=600: the grammar accepts any flag value
   'conformance/cases/err-from-missing-base/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile', // STATUS 200: the grammar accepts any word here
   'conformance/cases/err-secret-reserved/Sitefile', // SECRET … AS HEADER Content-Length: the grammar accepts any header name
@@ -33,6 +34,7 @@ const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-template/Sitefile'];
 /** E_SYNTAX files the grammar is lenient about (the parser checks a value word). */
 const LENIENT = new Set([
   'conformance/cases/err-compression/Sitefile',
+  'conformance/cases/err-copy-chmod/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile',
   'conformance/cases/err-secret-reserved/Sitefile',
   'conformance/cases/err-syntax-directive-late/Sitefile',

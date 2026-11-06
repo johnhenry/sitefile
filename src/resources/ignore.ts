@@ -34,6 +34,21 @@ export class IgnoreRules {
     return new IgnoreRules(rules);
   }
 
+  /** Rules from `COPY --exclude` patterns, one `.sitefileignore` line each (see `isIgnorePattern`). */
+  static fromPatterns(patterns: readonly string[]): IgnoreRules {
+    return new IgnoreRules(patterns.map(parseLine).filter((r): r is Rule => r !== undefined));
+  }
+
+  /**
+   * Whether `rel` (a POSIX path relative to the rules' root) is excluded, counting excluded parent
+   * directories: what a directory walk that does not descend into excluded directories would skip.
+   */
+  excludes(rel: string): boolean {
+    const segs = rel.split('/');
+    for (let i = 1; i < segs.length; i++) if (this.ignores(segs.slice(0, i).join('/'), true)) return true;
+    return this.ignores(rel, false);
+  }
+
   get size(): number {
     return this.rules.length;
   }
@@ -47,6 +62,11 @@ export class IgnoreRules {
     }
     return ignored;
   }
+}
+
+/** Whether `text` is a `.sitefileignore` rule (not blank, a `#` comment, or only `!` and `/`). */
+export function isIgnorePattern(text: string): boolean {
+  return parseLine(text) !== undefined;
 }
 
 function parseLine(raw: string): Rule | undefined {

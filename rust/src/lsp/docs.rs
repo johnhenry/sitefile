@@ -25,7 +25,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "COPY",
-        "COPY [--overwrite] [--from=stage] <source> <dest>",
+        "COPY [--overwrite] [--from=stage] [--exclude=<pattern>…] [--chmod=644|755] [--parents] <source> <dest>",
         "Places a file or directory into the stage's tree. `<source>` is a context path, `name:` / `name:/inner` for an import, a path in an earlier stage with `--from`, or an inline `<<NAME` body. `<dest>` is absolute; a trailing `/` means a directory.",
     ),
     (
@@ -127,6 +127,9 @@ const FLAGS: &[(&str, &str)] = &[
     ("overwrite", "`--overwrite`: replace files that already exist at the destination (otherwise a different file there is `E_CONFLICT`)."),
     ("from", "`--from=stage`: read the source from the final tree of an earlier, completed stage (an absolute path inside it)."),
     ("escape", "`--escape=none|html`: with `html`, `& < > \" '` are escaped in every substituted value (`${x|raw}` opts out)."),
+    ("exclude", "`--exclude=<pattern>` (repeatable): skip files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.md`, `drafts/`, `!keep.md`)."),
+    ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
+    ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
 ];
 
 const IMPORT_KINDS: &[(&str, &str)] = &[

@@ -1,0 +1,16 @@
+# COPY --exclude, --chmod and --parents on local, import and stage sources.
+STAGE assets
+IMPORT site FROM ./site
+COPY --exclude=vendor/ --exclude=drafts ./site /www/
+FROM scratch
+COPY --exclude=*.md --exclude=drafts/ --exclude=vendor --exclude=/css/draft.css ./site /
+COPY --exclude=**/*.css --exclude=!site.css --exclude=vendor site:/ /imported/
+COPY --from=assets --exclude=*.md /www/ /from-stage/
+COPY --chmod=755 ./tools/run.sh /bin/
+COPY --chmod=0644 --parents ./site/css /kept/
+COPY --parents --from=assets /www/css/site.css /kept-stage/
+COPY --chmod=755 <<SH /hello.sh
+echo hello
+SH
+COPY --exclude=* ./site /empty/
+EXPORT /

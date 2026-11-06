@@ -112,13 +112,16 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
                 }),
             ),
         ]),
-        Instruction::Copy { span: sp, source: src, dest, from, overwrite } => obj(vec![
+        Instruction::Copy { span: sp, source: src, dest, from, overwrite, exclude, chmod, parents } => obj(vec![
             ("kind", s("COPY")),
             ("span", Some(span(sp))),
             ("source", Some(source(src))),
             ("dest", Some(operand(dest))),
             ("overwrite", Some(json!(overwrite))),
             ("from", stage_ref(from)),
+            ("exclude", (!exclude.is_empty()).then(|| json!(exclude))),
+            ("chmod", chmod.map(|m| json!(m))),
+            ("parents", parents.then(|| json!(true))),
         ]),
         Instruction::Render { span: sp, template, dest, from, escape, each: e, overwrite } => obj(vec![
             ("kind", s("RENDER")),

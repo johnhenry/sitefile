@@ -24,6 +24,7 @@ import { Lockfile } from './resources/lockfile.js';
 import { findVendorDir, Vendor } from './resources/vendor.js';
 import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
+import { IgnoreRules } from './resources/ignore.js';
 import type { Scalar } from './values.js';
 import { exportDirectory, exportFile, isExporterTempName } from './exporter.js';
 import { sourceDateEpoch } from './archive-writers.js';
@@ -1375,22 +1376,28 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
 
   if (op.kind === 'COPY') {
-    const src = await readSource(op.source, origin, env);
+    const exclude = op.exclude ? IgnoreRules.fromPatterns(op.exclude) : undefined;
+    const src = await readSource(op.source, origin, env, exclude);
+    // --parents: the source's own path (inside the context, import or stage) is kept under the destination.
+    const kept = op.parents ? sourcePath(op.source) : '';
     if (src.kind === 'file') {
-      const intoDir = op.destIsDir || tree.isDirectory(op.dest);
+      if (exclude) {
+        throw new SitefileError('E_TYPE', `--exclude filters a directory, but '${src.label}' is a file`, op.source.span);
+      }
+      const intoDir = op.parents || op.destIsDir || tree.isDirectory(op.dest);
       const key = env.memo ? memoKey('copy', opId, sourceKey(op.source, src, env), String(intoDir)) : undefined;
       return memoFiles(env, key, async () => {
         if (intoDir && src.inline) {
           throw new SitefileError('E_PATH', `'${op.dest}' is a directory; an inline ${src.label} body needs a file destination`, op.span);
         }
-        const dest = intoDir ? joinVirtual(op.dest, src.basename) : op.dest;
-        return [[dest, makeFile(src.bytes, origin, src.mode)]];
+        const dest = intoDir ? joinVirtual(op.dest, kept || src.basename) : op.dest;
+        return [[dest, makeFile(src.bytes, origin, op.chmod ?? src.mode)]];
       });
     }
     const key = env.memo ? memoKey('copy', opId, sourceKey(op.source, src, env), 'tree') : undefined;
     return memoFiles(env, key, async () => {
-      if (src.tree.size === 0) env.warn(`${origin}: '${src.label}' contains no files`);
-      return src.tree.mountedAt(op.dest).map(([p, n]): [string, FileNode] => [p, { ...n, origin }]);
+      if (src.tree.size === 0) env.warn(exclude ? `${origin}: --exclude leaves no files of '${src.label}' to copy` : `${origin}: '${src.label}' contains no files`);
+      return src.tree.mountedAt(kept ? joinVirtual(op.dest, kept) : op.dest).map(([p, n]): [string, FileNode] => [p, { ...n, mode: op.chmod ?? n.mode, origin }]);
     });
   }
 
@@ -1458,7 +1465,20 @@ function sorted(spec: ImportSpec, res: Resource): Resource {
   return { ...res, value: sortDocuments(res.value as MarkdownDocument[], spec.sort.key, spec.sort.descending) };
 }
 
-async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise<Source> {
+/** The path `--parents` keeps: context-relative for a local source, inside the import or stage otherwise ('' for a root). */
+function sourcePath(ref: SourceRef): string {
+  if (ref.kind === 'local') return ref.path;
+  if (ref.kind === 'inline') return '';
+  return ref.path.replace(/^\/+/, '');
+}
+
+/** A directory source without the files `exclude` (COPY --exclude) matches, relative to its root. */
+function excluding(tree: Tree, exclude: IgnoreRules | undefined): Tree {
+  if (!exclude) return tree;
+  return Tree.fromFiles(tree.entries().filter(([p]) => !exclude.excludes(p.slice(1))));
+}
+
+async function readSource(ref: SourceRef, origin: string, env: ExecEnv, exclude?: IgnoreRules): Promise<Source> {
   if (ref.kind === 'inline') {
     const bytes = new TextEncoder().encode(ref.text);
     const inline = { file: env.label, firstLine: ref.bodyLine };
@@ -1467,7 +1487,7 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
   if (ref.kind === 'local') {
     const label = './' + ref.path;
     if ((await env.local.stat(ref.path, ref.span)) === 'directory') {
-      const t = await env.local.readTree(ref.path, origin, ref.span);
+      const t = await env.local.readTree(ref.path, origin, ref.span, exclude);
       return { kind: 'tree', tree: t.tree, label, digest: t.provenance.digest };
     }
     const f = await env.local.readFile(ref.path, ref.span);
@@ -1479,7 +1499,7 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
     const label = `--from=${ref.name} ${ref.path}`;
     const node = tree.get(ref.path);
     if (node) return { kind: 'file', bytes: node.bytes, mode: node.mode, basename: basenameVirtual(ref.path), label };
-    if (tree.isDirectory(ref.path)) return { kind: 'tree', tree: tree.subtree(ref.path), label };
+    if (tree.isDirectory(ref.path)) return { kind: 'tree', tree: excluding(tree.subtree(ref.path), exclude), label };
     throw new SitefileError('E_NOT_FOUND', `'${ref.path}' does not exist in stage '${ref.name}'`, ref.span);
   }
 
@@ -1499,7 +1519,7 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
     case 'tree': {
       const node = res.tree.get(ref.path);
       if (node) return { kind: 'file', bytes: node.bytes, mode: node.mode, basename: basenameVirtual(ref.path), label };
-      if (res.tree.isDirectory(ref.path)) return { kind: 'tree', tree: res.tree.subtree(ref.path), label };
+      if (res.tree.isDirectory(ref.path)) return { kind: 'tree', tree: excluding(res.tree.subtree(ref.path), exclude), label };
       throw new SitefileError('E_NOT_FOUND', `'${ref.path}' does not exist in import '${ref.name}'`, ref.span);
     }
   }

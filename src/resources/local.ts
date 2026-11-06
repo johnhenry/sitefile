@@ -215,13 +215,14 @@ export class LocalContext {
     };
   }
 
-  async readTree(rel: string, origin: string, span?: SourceSpan): Promise<TreeResource> {
+  /** `exclude` (COPY --exclude) skips paths relative to `rel`, like `.sitefileignore` rules (excluded directories are not read). */
+  async readTree(rel: string, origin: string, span?: SourceSpan, exclude?: IgnoreRules): Promise<TreeResource> {
     const { real, st } = await this.resolve(rel, span);
     if (LocalContext.kindOf(st, rel, span) !== 'directory') {
       throw new SitefileError('E_UNSUPPORTED_FILE', `'${display(rel)}' is a file, not a directory`, span);
     }
     const files: Array<[string, FileNode]> = [];
-    await this.walk(real, rel, '', origin, new Set([real]), files, span);
+    await this.walk(real, rel, '', origin, new Set([real]), files, span, exclude);
     const tree = Tree.fromFiles(files);
     return { kind: 'tree', tree, provenance: { uri: rel === '' ? './' : './' + rel, digest: tree.digest() } };
   }
@@ -240,6 +241,7 @@ export class LocalContext {
     ancestors: Set<string>,
     out: Array<[string, FileNode]>,
     span: SourceSpan | undefined,
+    exclude?: IgnoreRules,
   ): Promise<void> {
     const entries = await fs.readdir(realDir, { withFileTypes: true });
     const names = entries.map((d) => d.name).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -269,6 +271,7 @@ export class LocalContext {
       }
 
       if (this.rules.ignores(childCtx, st.isDirectory())) continue;
+      if (exclude?.ignores(childTree, st.isDirectory())) continue;
 
       if (st.isFile()) {
         this.checkHardlink(st, childCtx, span);
@@ -278,7 +281,7 @@ export class LocalContext {
         if (ancestors.has(childReal)) continue; // directory symlink cycle
         ancestors.add(childReal);
         try {
-          await this.walk(childReal, childCtx, childTree, origin, ancestors, out, span);
+          await this.walk(childReal, childCtx, childTree, origin, ancestors, out, span, exclude);
         } finally {
           ancestors.delete(childReal);
         }

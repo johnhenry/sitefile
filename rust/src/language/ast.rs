@@ -259,7 +259,18 @@ pub enum Instruction {
         /// `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets).
         secrets: Vec<ImportSecret>,
     },
-    Copy { span: SourceSpan, source: Source, dest: Operand, from: Option<StageRef>, overwrite: bool },
+    /// `exclude`: `--exclude` patterns (`.sitefileignore` syntax, relative to the source directory);
+    /// `chmod`: `--chmod=644|755`; `parents`: `--parents` (keep the source's path under `dest`).
+    Copy {
+        span: SourceSpan,
+        source: Source,
+        dest: Operand,
+        from: Option<StageRef>,
+        overwrite: bool,
+        exclude: Vec<String>,
+        chmod: Option<u32>,
+        parents: bool,
+    },
     Render {
         span: SourceSpan,
         template: Source,

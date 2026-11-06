@@ -20,6 +20,7 @@ IMPORT w FROM ./b.wbn AS wbn
 STAGE build FROM scratch
 Copy --overwrite ./with\ space.txt /dest/
 COPY f: /f.txt
+COPY --exclude=*.md --exclude=drafts/ --chmod=0755 --parents ./src /kept/
 COPY <<-EOF /tabs.txt
 	indented with tabs
 	${raw, not a template}

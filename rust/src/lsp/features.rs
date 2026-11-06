@@ -162,9 +162,9 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         }
         let items = flags_of(kw)
             .iter()
-            .filter(|(name, _)| !prior.iter().any(|w| w.text.starts_with(&format!("--{name}"))))
+            .filter(|(name, shape)| *shape == Shape::Repeat || !prior.iter().any(|w| w.text.starts_with(&format!("--{name}"))))
             .map(|(name, shape)| Item {
-                label: if *shape == Shape::Value { format!("--{name}=") } else { format!("--{name}") },
+                label: if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=") },
                 kind: CIK_KEYWORD,
                 detail: docs::flag(name).map(str::to_string),
                 insert: None,
@@ -679,7 +679,9 @@ mod tests {
     #[test]
     fn flags_in_context() {
         assert_eq!(labels("RENDER --"), ["--escape=", "--overwrite", "--from="]);
-        assert_eq!(labels("COPY --overwrite --"), ["--from="]);
+        assert_eq!(labels("COPY --overwrite --"), ["--from=", "--exclude=", "--chmod=", "--parents"]);
+        // --exclude is repeatable.
+        assert_eq!(labels("COPY --exclude=a --chmod=644 --"), ["--overwrite", "--from=", "--exclude=", "--parents"]);
         assert!(labels("EXPORT --").is_empty());
     }
 
