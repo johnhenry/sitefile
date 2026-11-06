@@ -4,6 +4,7 @@
 
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
+use crate::paths::nfc;
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::types::{Provenance, Resource};
 use crate::tree::{make_file, Node, Tree};
@@ -55,6 +56,17 @@ const ELOOP: i32 = 62;
 
 fn display(rel: &str) -> String {
     if rel.is_empty() { ".".into() } else { format!("./{rel}") }
+}
+
+fn normalization_collision(rel: &str, span: Option<&SourceSpan>) -> SitefileError {
+    SitefileError::new(
+        E_PATH_COLLISION,
+        format!(
+            "'{}' names more than one file in the build context: their names differ only in Unicode normalization (NFC/NFD); rename one",
+            display(rel)
+        ),
+        span.cloned(),
+    )
 }
 
 /// `posix.normalize(p)` for a relative or absolute POSIX path.
@@ -126,13 +138,13 @@ impl LocalContext {
             }
             let bytes = fs::read(&real)
                 .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("cannot read '{}': {e}", display(SITEFILEIGNORE))))?;
-            rules = IgnoreRules::parse(&String::from_utf8_lossy(&bytes));
+            rules = IgnoreRules::parse(&nfc(&String::from_utf8_lossy(&bytes)));
         }
         let ignore_list = options.ignore.clone().unwrap_or_else(|| vec![".git".to_string()]);
         let ignore = ignore_list
             .iter()
             .map(|p| {
-                let n = posix_normalize(p);
+                let n = posix_normalize(&nfc(p));
                 let n = n.trim_start_matches("./");
                 let n = n.trim_start_matches('/');
                 n.trim_end_matches('/').to_string()
@@ -178,9 +190,53 @@ impl LocalContext {
         }
     }
 
+    /// The host path of the context-relative (NFC) path `rel`. A non-ASCII
+    /// segment is matched by NFC form against its directory listing, so a file
+    /// is found whichever normalization its on-disk name uses (macOS stores
+    /// what it was given, often NFD; Linux compares bytes). Two names in one
+    /// directory with the same NFC form are E_PATH_COLLISION. A segment with
+    /// no match is joined as is, so the caller sees the usual not-found error.
+    fn host_path(&self, rel: &str, span: Option<&SourceSpan>) -> Result<PathBuf> {
+        if rel.is_empty() {
+            return Ok(self.root.clone());
+        }
+        if rel.is_ascii() {
+            return Ok(self.root.join(rel));
+        }
+        let mut cur = self.root.clone();
+        let mut done = String::new();
+        for seg in rel.split('/') {
+            if !done.is_empty() {
+                done.push('/');
+            }
+            done.push_str(seg);
+            if seg.is_ascii() {
+                cur.push(seg);
+                continue;
+            }
+            let mut matches: Vec<std::ffi::OsString> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&cur) {
+                for d in rd.flatten() {
+                    let name = d.file_name();
+                    if name.to_str().is_some_and(|n| nfc(n) == seg) {
+                        matches.push(name);
+                    }
+                }
+            }
+            if matches.len() > 1 {
+                return Err(normalization_collision(&done, span));
+            }
+            match matches.pop() {
+                Some(m) => cur.push(m),
+                None => cur.push(seg),
+            }
+        }
+        Ok(cur)
+    }
+
     /// Resolve a context-relative path to its real path and stats, enforcing the sandbox.
     fn resolve(&self, rel: &str, span: Option<&SourceSpan>, link_name: Option<&str>) -> Result<(PathBuf, Metadata)> {
-        let abs = if rel.is_empty() { self.root.clone() } else { self.root.join(rel) };
+        let abs = self.host_path(rel, span)?;
         let real = match fs::canonicalize(&abs) {
             Ok(r) => r,
             Err(e) => {
@@ -315,13 +371,20 @@ impl LocalContext {
             entries.push((name, is_link));
         }
         entries.sort();
-        for (name, is_link) in entries {
+        // Tree paths are NFC, so two names that differ only in normalization (possible
+        // on Linux, not on macOS) would be one path: refuse rather than pick one.
+        let mut seen: HashSet<String> = HashSet::new();
+        for (raw, is_link) in entries {
+            let name = nfc(&raw).into_owned();
+            if !seen.insert(name.clone()) {
+                return Err(normalization_collision(&if ctx_rel.is_empty() { name } else { format!("{ctx_rel}/{name}") }, span));
+            }
             let child_ctx = if ctx_rel.is_empty() { name.clone() } else { format!("{ctx_rel}/{name}") };
             let child_tree = if tree_rel.is_empty() { name.clone() } else { format!("{tree_rel}/{name}") };
             if self.is_ignored(&child_ctx) {
                 continue;
             }
-            let mut child_real = real_dir.join(&name);
+            let mut child_real = real_dir.join(&raw);
             let st: Metadata;
             if is_link {
                 let (r, s) = self.resolve(&child_ctx, span, Some(&display(&child_ctx)))?;
@@ -427,6 +490,68 @@ pub(crate) mod tests {
     }
     fn tree_paths(c: &LocalContext) -> Vec<String> {
         paths(&tree_of(c.read_tree("", "test", None).unwrap()).0)
+    }
+
+    const NFC: &str = "caf\u{e9}";
+    const NFD: &str = "cafe\u{301}";
+
+    /// True when this file system can hold `a` and `b` as two names in one directory.
+    fn holds_both(dir: &Path, a: &str, b: &str) -> bool {
+        let probe = dir.join("probe");
+        fs::create_dir(&probe).unwrap();
+        fs::write(probe.join(a), "1").unwrap();
+        let ok = fs::OpenOptions::new().write(true).create_new(true).open(probe.join(b)).is_ok()
+            && fs::read_dir(&probe).unwrap().count() == 2;
+        fs::remove_dir_all(&probe).unwrap();
+        ok
+    }
+
+    #[test]
+    fn files_are_found_whichever_normalization_disk_and_sitefile_use() {
+        // On macOS the file system finds either spelling; on Linux host_path matches NFC forms.
+        for (on_disk, named) in [(NFD, NFC), (NFC, NFD), (NFD, NFD)] {
+            with_temp(|ctx, _| {
+                fs::create_dir(ctx.join(on_disk)).unwrap();
+                fs::write(ctx.join(on_disk).join(format!("{on_disk}.txt")), "hi").unwrap();
+                let c = open(ctx);
+                let rel = crate::paths::normalize_local(&format!("{named}/{named}.txt"), None).unwrap().path;
+                let (bytes, _, base, _) = file_of(c.read_file(&rel, None).unwrap());
+                assert_eq!(bytes, b"hi");
+                assert_eq!(base, format!("{NFC}.txt"));
+                let (t, _) = tree_of(c.read_tree("", "test", None).unwrap());
+                assert_eq!(paths(&t), vec![format!("/{NFC}/{NFC}.txt")]);
+            });
+        }
+    }
+
+    #[test]
+    fn names_that_differ_only_in_normalization_collide() {
+        with_temp(|ctx, _| {
+            if !holds_both(ctx, NFC, NFD) {
+                return; // macOS: the file system refuses the second name
+            }
+            fs::write(ctx.join(NFC), "1").unwrap();
+            fs::write(ctx.join(NFD), "2").unwrap();
+            let c = open(ctx);
+            let e = c.read_tree("", "test", None).unwrap_err();
+            assert_eq!(e.code, E_PATH_COLLISION);
+            assert!(e.detail.contains("differ only in Unicode normalization"), "{}", e.detail);
+            assert_eq!(code(c.read_file(NFC, None)), E_PATH_COLLISION);
+        });
+    }
+
+    #[test]
+    fn names_that_differ_only_in_case_collide_in_the_tree() {
+        with_temp(|ctx, _| {
+            if !holds_both(ctx, "A.txt", "a.txt") {
+                return; // case-insensitive file system
+            }
+            fs::write(ctx.join("A.txt"), "1").unwrap();
+            fs::write(ctx.join("a.txt"), "2").unwrap();
+            let e = open(ctx).read_tree("", "test", None).unwrap_err();
+            assert_eq!(e.code, E_PATH_COLLISION);
+            assert!(e.detail.starts_with("'/a.txt' differs only in case from '/A.txt'"), "{}", e.detail);
+        });
     }
 
     #[test]

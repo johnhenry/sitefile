@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { build, type BuildOptions } from '../src/executor.js';
@@ -24,8 +24,9 @@ async function project(files: Record<string, string>): Promise<string> {
   return dir;
 }
 const text = (b: Uint8Array | undefined): string => new TextDecoder().decode(b);
+// These tests exercise JS plugins, so they allow them (as --allow-plugins would) unless a test says otherwise.
 async function run(files: Record<string, string>, extra: Partial<BuildOptions> = {}) {
-  return build({ contextDir: await project(files), lockfile: false, ...extra });
+  return build({ contextDir: await project(files), lockfile: false, allowAllPlugins: true, ...extra });
 }
 async function rejects(files: Record<string, string>, code: ErrorCode, match?: RegExp, extra: Partial<BuildOptions> = {}): Promise<void> {
   await assert.rejects(run(files, extra), (e: unknown) => {
@@ -168,6 +169,33 @@ test('plugin errors, bad results, timeouts and placement rules', async () => {
   const good = 'export function transform() { return "ok"; }';
   const r = await run(site(good, ` INTEGRITY ${sha256(good)}`));
   assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
+});
+
+test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before anything starts', async () => {
+  const site = (body: string): Record<string, string> => ({
+    'plugins/up.mjs': 'export function transform(r) { return r.input.text.toUpperCase(); }',
+    'plugins/other.mjs': 'export function transform() { return "o"; }',
+    'a.txt': 'a',
+    Sitefile: `FROM scratch\nPLUGIN up FROM ./plugins/up.mjs\n${body}TRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /`,
+  });
+  const denied = /: PLUGIN up runs JavaScript, which must be allowed explicitly: add --allow-plugin up \(or --allow-plugins to allow every PLUGIN\); WebAssembly plugins need no flag/;
+  // Denied before any import is resolved: the (unreachable) URL import is never fetched.
+  await rejects(site('IMPORT x FROM https://127.0.0.1:1/x.txt\n'), 'E_UNSUPPORTED', denied, { allowAllPlugins: false });
+  await assert.rejects(run(site(''), { allowAllPlugins: false }), (e: unknown) => isSitefileError(e) && e.span?.line === 2);
+  // Naming another plugin does not allow this one, and the declared order decides which fails first.
+  await rejects(site('PLUGIN other FROM ./plugins/other.mjs\n'), 'E_UNSUPPORTED', denied, { allowAllPlugins: false, allowPlugin: ['other'] });
+  await rejects(site('PLUGIN other FROM ./plugins/other.mjs\n'), 'E_UNSUPPORTED', /: PLUGIN other runs JavaScript/, { allowAllPlugins: false, allowPlugin: ['up'] });
+  await rejects(site(''), 'E_USAGE', /--allow-plugin expects a PLUGIN name/, { allowAllPlugins: false, allowPlugin: ['bad-name'] });
+  const warnings: string[] = [];
+  const named = await run(site(''), { allowAllPlugins: false, allowPlugin: ['up', 'unused'], onWarning: (m) => warnings.push(m) });
+  assert.equal(text(named.output.get('/a.out')?.bytes), 'A');
+  assert.ok(warnings.includes('--allow-plugin unused does not match any PLUGIN and was ignored'), warnings.join('\n'));
+  const all = await run(site('PLUGIN other FROM ./plugins/other.mjs\n'), { allowAllPlugins: true });
+  assert.equal(text(all.output.get('/a.out')?.bytes), 'A');
+  // A '.wasm' name that is a symlink to a JS module still runs as JavaScript, so it still needs the flag.
+  const dir = await project({ 'plugins/up.mjs': 'export function transform() { return "js"; }', 'a.txt': 'a', Sitefile: 'FROM scratch\nPLUGIN up FROM ./plugins/up.wasm\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /' });
+  await symlink('up.mjs', path.join(dir, 'plugins', 'up.wasm'));
+  await assert.rejects(build({ contextDir: dir, lockfile: false }), (e: unknown) => isSitefileError(e) && e.code === 'E_UNSUPPORTED' && denied.test(e.message));
 });
 
 test('plugin console output becomes build warnings, not output', async () => {

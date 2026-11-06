@@ -92,6 +92,18 @@ const INSTRUCTIONS = {
   TOOL: () => `TOOL ${pick(NAMES)}${maybe(' extra', 0.1)}`,
   EXPORT: () =>
     `EXPORT ${pick(['/', '/', '/sub', './x', '/${x}', 'out', '"/"'])}${maybe(() => ` AS ${pick(FORMATS)}`, 0.4)}${maybe(() => ` BASE ${pick(['https://e.x/', 'http://e.x', '${x}'])}`, 0.15)}${maybe(() => ` AT ${pick(['/srv/www', 'rel', '/'])}`, 0.15)}${maybe(() => ` COMPRESSION ${pick(['gzip', 'none', 'NONE', 'zstd'])}`, 0.15)}`,
+  SITEMAP: () => `SITEMAP ${flags(['--overwrite', '--bogus'])}${maybe(() => `BASE ${pick(['https://e.x/', 'https://e.x', 'http://e.x/a/', 'ftp://e.x', '${x}', 'e.x', '""'])}`, 0.9)}${maybe(() => ` TO ${pick(PATHS)}`, 0.4)}`,
+  FEED: () => {
+    let s = `FEED ${flags(['--overwrite'])}${pick(NAMES)}`;
+    if (chance(0.9)) s += ` BASE ${pick(['https://e.x', 'https://e.x/', 'e.x', '${x}'])}`;
+    if (chance(0.9)) s += ` LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html', 'p/${item.slug}', '/${x}', 'https://e.x/a', '/a'])}`;
+    if (chance(0.4)) s += ` TO ${pick(PATHS)}`;
+    if (chance(0.4)) s += ` TITLE ${pick(['"My & <feed>"', 'Notes', '${x}', '""'])}`;
+    if (chance(0.15)) s += ` ${pick(['TITLE x TO /f.xml', 'LINK /a', 'BOGUS'])}`;
+    return s;
+  },
+  REDIRECT: () => `REDIRECT ${flags(['--overwrite'])}${pick(['/old', '/a/*', '/${x}', 'old', '/a b', ...PATHS])} ${pick(['/new', 'https://e.x/:splat', '/b', '', '/c\\n'])}${maybe(() => ` STATUS ${pick(['301', '302', '303', '307', '308', '200', '418', 'x', '301!'])}`, 0.4)}`,
+  HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
   // Rejected keywords.
   RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
   NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
@@ -101,7 +113,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY',
+  'FROM', 'STAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -211,6 +223,10 @@ function validProgram() {
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
     () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
+    () => `SITEMAP ${maybe('--overwrite ')}BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' TO /map.xml')}`,
+    () => (lists.includes('posts') ? `FEED posts BASE https://e.x LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html'])}${maybe(' TO /atom.xml')}${maybe(` TITLE "${v()} & notes"`)}` : 'COPY ./f /f'),
+    () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
+    () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
     stage,
   ];
   if (chance(0.5)) lines.push(stage());

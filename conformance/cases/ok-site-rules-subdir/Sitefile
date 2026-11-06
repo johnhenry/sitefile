@@ -1,0 +1,6 @@
+COPY <<X /www/index.html
+hi
+X
+REDIRECT /a /b
+HEADER /* A: 1
+EXPORT /www

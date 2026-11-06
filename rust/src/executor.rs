@@ -15,7 +15,7 @@ use crate::export::archive_writers::{source_date_epoch, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions};
 use crate::export::formats::{encode_tree, is_archive_format, EncodeOptions};
 use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions};
-use crate::language::ast::{ExportFormat, ImportKind, OciCompression, Operand, Program, TemplatePart};
+use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
 use crate::planner::{plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
@@ -31,8 +31,9 @@ use crate::resources::lockfile::{LockEntry, Lockfile};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
+use crate::site::{atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry};
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
-use crate::values::{Env, Scalar};
+use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -78,6 +79,11 @@ pub struct BuildOptions {
     pub allow_hardlinks: bool,
     /// `--allow-exec` entries: `name` or `name=/absolute/path`.
     pub allow_exec: Vec<String>,
+    /// `--allow-plugin` entries: JavaScript PLUGINs allowed to run, by declared name.
+    /// WebAssembly plugins need no permission.
+    pub allow_plugin: Vec<String>,
+    /// `--allow-plugins`: allow every JavaScript PLUGIN.
+    pub allow_all_plugins: bool,
     pub tool_policy: ToolPolicy,
     /// Directory of the TRANSFORM result cache; `None` disables caching.
     pub cache_dir: Option<PathBuf>,
@@ -110,6 +116,8 @@ impl Default for BuildOptions {
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             allow_hardlinks: false,
             allow_exec: Vec::new(),
+            allow_plugin: Vec::new(),
+            allow_all_plugins: false,
             tool_policy: DEFAULT_TOOL_POLICY,
             cache_dir: None,
             on_warning: None,
@@ -279,6 +287,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         warn(w);
     }
     let tools = resolve_tools(&p, options, &warn)?;
+    let plugin_permission = check_plugins(&p, options, &warn)?;
 
     let context_real = std::fs::canonicalize(&options.context_dir)
         .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
@@ -353,7 +362,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     };
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
-            register_plugin(spec, &local, &mut exec.plugins)?;
+            register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
         }
         let mut tree = Tree::empty();
         for stage in &p.stages {
@@ -380,6 +389,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     if tree.is_file(&p.export_path) {
         return Err(SitefileError::plain(E_EXPORT, format!("EXPORT path '{}' is a file; export a directory", p.export_path)));
     }
+    let tree = with_site_rules(tree, &p, &label)?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
         warn(&format!("EXPORT {} contains no files", p.export_path));
@@ -420,6 +430,25 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
     Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats })
+}
+
+/// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
+fn with_site_rules(mut tree: Tree, p: &Plan, label: &str) -> Result<Tree> {
+    let redirects = redirects_file(p.redirects.iter().map(|r| (r.from.as_str(), r.to.as_str(), r.status)));
+    let headers = headers_file(p.headers.iter().map(|h| (h.pattern.as_str(), h.name.as_str(), h.value.as_str())));
+    /// (file name, content, each rule's `--overwrite` and span, instruction)
+    type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
+    let files: [SiteFile; 2] = [
+        ("_redirects", redirects, p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(), "REDIRECT"),
+        ("_headers", headers, p.headers.iter().map(|h| (h.overwrite, &h.span)).collect(), "HEADER"),
+    ];
+    for (name, text, rules, kind) in files {
+        let Some((_, first)) = rules.first() else { continue };
+        let policy = policy_of(rules.iter().any(|(o, _)| *o));
+        let node = make_file(text.into_bytes(), format!("{label}:{} {kind}", first.line), 0o644);
+        tree = tree.with_files([(join_virtual(&p.export_path, name), node)], policy, Some(first))?;
+    }
+    Ok(tree)
 }
 
 // ---------------------------------------------------------------- export
@@ -714,7 +743,7 @@ fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
 // ---------------------------------------------------------------- plugins and tools
 
 /// Check a plugin file (sandbox, own folder, integrity) and register it.
-fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHost) -> Result<()> {
+fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHost, permission: &PluginPermission) -> Result<()> {
     let span = Some(&spec.span);
     let (real, bytes) = local.real_file(&spec.path, span)?;
     if let Some(i) = &spec.integrity {
@@ -726,6 +755,8 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
         host.register(&spec.name, real, Some(spec.span.clone()), Some(bytes));
         return Ok(());
     }
+    // It runs as JavaScript (also a '.wasm' path that is a symlink to a JS file), so it needs the opt-in.
+    permission.check(spec)?;
     // A JS plugin may read its whole folder, so that folder must not be the context itself.
     if real.parent() == Some(local.root()) {
         let base = real.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -742,6 +773,55 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
 fn is_identifier(s: &str) -> bool {
     let mut c = s.chars();
     c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// Which JavaScript PLUGINs `--allow-plugin` / `--allow-plugins` let run.
+struct PluginPermission {
+    all: bool,
+    names: Vec<String>,
+}
+
+impl PluginPermission {
+    fn check(&self, spec: &PluginSpec) -> Result<()> {
+        if self.all || self.names.contains(&spec.name) {
+            return Ok(());
+        }
+        Err(SitefileError::at(
+            E_UNSUPPORTED,
+            format!(
+                "PLUGIN {0} runs JavaScript, which must be allowed explicitly: add --allow-plugin {0} (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag",
+                spec.name
+            ),
+            &spec.span,
+        ))
+    }
+}
+
+/// Check every JavaScript PLUGIN against `--allow-plugin` / `--allow-plugins` before
+/// anything is read or started. A wasm plugin (a module that imports nothing) runs
+/// without permission. Returns the check, which register_plugin repeats on the real path.
+fn check_plugins(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<PluginPermission> {
+    let mut names: Vec<String> = Vec::new();
+    for name in &options.allow_plugin {
+        if !is_identifier(name) {
+            return Err(SitefileError::plain(E_USAGE, format!("--allow-plugin expects a PLUGIN name (an identifier), got '{name}'")));
+        }
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    let permission = PluginPermission { all: options.allow_all_plugins, names };
+    for spec in &p.plugins {
+        if !spec.path.ends_with(".wasm") {
+            permission.check(spec)?;
+        }
+    }
+    for name in &permission.names {
+        if !p.plugins.iter().any(|s| &s.name == name) {
+            warn(&format!("--allow-plugin {name} does not match any PLUGIN and was ignored"));
+        }
+    }
+    Ok(permission)
 }
 
 /// Match each declared TOOL to a `--allow-exec` entry and resolve it to a real path.
@@ -1020,6 +1100,11 @@ impl<'a> Exec<'a> {
         let origin = format!("{}:{} {}", self.label, op.span().line, op.keyword());
         match op {
             Operation::Transform { .. } => self.execute_transform(op, tree),
+            Operation::Feed { .. } => self.execute_feed(op, tree),
+            Operation::Sitemap { base, dest, overwrite, span } => {
+                let xml = sitemap_xml(&tree, base);
+                tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
+            }
             Operation::Copy { source, dest, dest_is_dir, overwrite, span } => {
                 let policy = policy_of(*overwrite);
                 match self.read_source(source, &origin)? {
@@ -1107,6 +1192,63 @@ impl<'a> Exec<'a> {
                 tree.with_files(files, policy, Some(span))
             }
         }
+    }
+
+    fn execute_feed(&mut self, op: &Operation, tree: Tree) -> Result<Tree> {
+        let Operation::Feed { list, base, link, dest, title, overwrite, span } = op else { unreachable!() };
+        let origin = format!("{}:{} FEED", self.label, span.line);
+        let scope = self.scope();
+        let items = scope.value_of(list, &[], span, false)?;
+        let Some(Value::Array(items)) = items.as_deref() else {
+            return Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{list}' is not a list (import a directory AS markdown)"), span));
+        };
+        if items.is_empty() {
+            (self.warn)(&format!("{origin}: '{list}' is empty, so the feed has no entries"));
+        }
+        let mut entries = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let Value::Object(doc) = item else {
+                return Err(SitefileError::at(
+                    E_TYPE,
+                    format!("FEED {list}: element {} is not a document (an object with title and date)", i + 1),
+                    span,
+                ));
+            };
+            let name = match doc.get("path") {
+                Some(Value::String(p)) => p.clone(),
+                _ => format!("#{}", i + 1),
+            };
+            let text = |key: &str| -> Result<Option<String>> {
+                match doc.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => Ok(Some(js_string_of(v))),
+                    Some(_) => Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{key}' of document '{name}' is not text"), span)),
+                }
+            };
+            let required = |key: &str| -> Result<String> {
+                text(key)?.ok_or_else(|| {
+                    SitefileError::at(E_VALIDATION, format!("FEED {list}: document '{name}' has no '{key}' (add it to its frontmatter)"), span)
+                })
+            };
+            let title = required("title")?;
+            let raw_date = required("date")?;
+            let Some(date) = parse_feed_date(&raw_date) else {
+                return Err(SitefileError::at(
+                    E_VALIDATION,
+                    format!("FEED {list}: document '{name}' has date '{raw_date}'; expected YYYY-MM-DD or an RFC 3339 date-time"),
+                    span,
+                ));
+            };
+            let raw = scope.with_item(FEED_ITEM, item).interpolate(link)?;
+            let l = normalize_virtual(&raw, Some(&link.span), "FEED LINK")?;
+            let path = if l.path == "/" || !l.trailing_slash { l.path } else { format!("{}/", l.path) };
+            let author = text("author")?.filter(|a| !a.is_empty());
+            let summary = text("excerpt")?.filter(|s| !s.is_empty());
+            let content = text("content")?;
+            entries.push(FeedEntry { title, url: page_url(base, &path), date, author, summary, content });
+        }
+        let xml = atom_xml(title, &format!("{base}/"), &page_url(base, dest), &entries);
+        tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
     }
 
     fn execute_transform(&mut self, op: &Operation, tree: Tree) -> Result<Tree> {

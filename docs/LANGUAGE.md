@@ -12,6 +12,7 @@ Instructions:
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
+- `SITEMAP`, `FEED`, `REDIRECT` and `HEADER` (sitemap.xml, an Atom feed, `_redirects`, `_headers`): see Site files below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -292,6 +293,9 @@ line and column.
   environment; a per-call time limit (`--plugin-timeout`). Failures are
   `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
   pin plugins with `INTEGRITY`.
+- A JavaScript plugin runs only if the CLI allows it with `--allow-plugin name`
+  (or `--allow-plugins`); otherwise the build fails with `E_UNSUPPORTED` at the
+  `PLUGIN` line, naming the flag. A WebAssembly plugin needs no flag.
 
 - `TOOL name` declares an external program (`name` is an identifier and the
   program's file name, e.g. `ffmpeg`). It runs only if the CLI allows it with
@@ -309,12 +313,120 @@ line and column.
   outputs are `E_PLUGIN`. See `docs/PLUGINS.md`.
 - Results are cached between builds (`docs/PLUGINS.md`, "Caching").
 
+### Site files: SITEMAP, FEED, REDIRECT and HEADER (see `examples/blog/`)
+Common files a static host reads, generated from the tree and the imports.
+Every one takes `--overwrite` (see Writes and conflicts) and operands that may
+use `${NAME}`.
+
+- `SITEMAP [--overwrite] BASE <url> [TO <dest>]` writes a
+  [sitemaps.org](https://www.sitemaps.org/protocol.html) file (default
+  `/sitemap.xml`) listing every `.html` file in the **current stage's tree at
+  that point** (so put it after the pages are written), except `/404.html`,
+  sorted by path (UTF-8 bytes). `/index.html` is listed as `<base>/`,
+  `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
+  segment is percent-encoded like `encodeURIComponent`, and the result is XML
+  escaped. There is no `lastmod` (the output depends only on the tree).
+- `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
+  with a host and no credentials, query, fragment, whitespace or control
+  characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
+  `https://example.com/blog/` and `https://example.com/blog` are the same.
+- `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`
+  (clauses in this order) writes an [Atom 1.0](https://www.rfc-editor.org/rfc/rfc4287)
+  feed (default `/feed.xml`) with one entry per element of a list import,
+  **in list order** (use `SORT BY date DESC`). `<import>` must be an IMPORT on
+  an earlier line (`E_UNDEFINED`) whose value is a list of objects (`E_TYPE`),
+  usually `AS markdown`.
+  - Each element needs `title` and `date` (text, numbers or booleans):
+    `FEED posts: document '/a.md' has no 'date' (add it to its frontmatter)`
+    (`E_VALIDATION`). A Markdown document's `date` comes from its file name when
+    the frontmatter has none. `date` is `YYYY-MM-DD` (midnight UTC) or an
+    RFC 3339 date-time (`2026-01-05T10:30:00Z`, `…+02:00`, a space or `T`
+    separator, optional seconds and fraction); anything else, or an impossible
+    date, is `E_VALIDATION`.
+  - `LINK` is evaluated per element with `${item}` / `${item.key}` (only LINK
+    may use `item`; it shadows nothing else). The result must be an absolute
+    artifact path (`E_PATH` otherwise) and becomes `<base><path>` like a
+    sitemap entry, so `/posts/${item.slug}/index.html` links to `…/posts/x/`.
+  - The feed's `id` is its own URL (`<base><dest>`), with `<link href="<base>/">`
+    and a `rel="self"` link; `updated` is the newest entry date (compared as
+    instants, so time zones are respected; ties keep the first), or
+    `1970-01-01T00:00:00Z` for an empty list (which also warns). Each entry
+    has `title`, `link` and `id` (the entry URL), `updated` (the date, with
+    `T00:00:00Z` added to a plain date), `author` when the element has a
+    non-empty `author`, `summary` from a non-empty `excerpt`, and
+    `content type="html"` from `content` (the rendered Markdown). `TITLE`
+    defaults to the BASE URL. Characters XML 1.0 forbids become U+FFFD.
+- `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]` and
+  `HEADER [--overwrite] <path-pattern> <Name>: <value …>` accumulate, **in
+  source order and from every stage**, into `/_redirects` and `/_headers` in
+  the [Netlify](https://docs.netlify.com/routing/redirects/) /
+  [Cloudflare Pages](https://developers.cloudflare.com/pages/configuration/redirects/)
+  formats. They are written **at EXPORT**, at the root of the exported
+  directory (`EXPORT /www` gets `/www/_redirects`), after every stage has
+  run.
+  - `/_redirects` has one `from to status` line per REDIRECT (the status is
+    always written; the default is 301). `from` must be an absolute path and
+    `to` an absolute path or an `http(s)://host…` URL; neither may contain
+    spaces or control characters (`E_VALIDATION`). Host syntax such as
+    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
+    understands exact paths and a trailing `/*` (docs/CLI.md).
+  - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
+    word ending in `:` (`E_SYNTAX` if there is none), the value is the rest of
+    the line, its words joined with one space and trimmed. The name must be an
+    HTTP token (`E_VALIDATION`), and the value must be non-empty and contain no
+    control characters other than tab, so CR/LF cannot inject headers. The
+    pattern is an absolute path like `from`. `/_headers` has one block per
+    pattern, in order of first use: the pattern, then `  Name: value` lines in
+    source order.
+  - If the tree already has `/_redirects` or `/_headers` (from a COPY, say),
+    the normal conflict rules apply: identical bytes are fine, different
+    content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
+    HEADER) lines has `--overwrite`, which replaces the file.
+
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that
   keeps the first writer as the owner.
 - Writing different content fails with `E_CONFLICT` naming the first owner,
   unless the instruction has `--overwrite`.
 - A file can never replace a directory or the reverse.
+- Two paths that differ only in case fail with `E_PATH_COLLISION` at the
+  write that creates the second one, with that instruction's line and column
+  and both spellings: `Sitefile:3:1: '/a.html' differs only in case from
+  '/A.html' (written by Sitefile:2 COPY); case-insensitive file systems cannot
+  hold both`. Directories count too: after `/Docs/x`, writing `/docs/y` fails
+  (`'/docs' differs only in case from '/Docs' (created by …)`), as do a file
+  `/docs` or `/DOCS/x/z`. `--overwrite` does not change this: it replaces a
+  file at the *same* path, and a differently cased path is a second file that
+  case-insensitive file systems (the macOS and Windows defaults) cannot hold
+  next to the first, whether it arrives by directory export or by unpacking a
+  zip, tar or OCI image. Rename one of them. The same check
+  applies to every tree (directory walks, archive imports, plugin outputs,
+  pulled images), so an archive or OCI export can never hold such a pair.
+- "Differ only in case" means equal under Unicode **simple case folding**:
+  each code point is mapped through `CaseFolding.txt` entries with status `C`
+  or `S` (Unicode 17.0.0), after NFC (below). So `Σ`, `σ` and `ς` are one
+  name, as are `K` and the Kelvin sign `K` (U+212A), but full and Turkic
+  foldings are not applied: `ß` and `ss`, `İ` and `i` are different names. Both
+  implementations use the same generated table (`tools/gen-casefold.mjs`).
+  A file system that folds more widely than this is caught at export time
+  instead (see "Export").
+
+### Unicode normalization of paths
+- Every virtual path is Unicode **NFC**: COPY/RENDER/EXPORT operands and other
+  Sitefile paths, file and directory names read from the context, archive
+  and web bundle entry names, paths a plugin returns, rendered destinations
+  built from data, and request paths in `serve`. NFC and NFD spellings
+  (`café` as U+00E9 or as `e` + U+0301) are therefore the same path and give
+  the same tree, the same output bytes and the same image ID on every OS;
+  macOS, which often hands out NFD names, and Linux agree.
+- A local source is found whichever normalization its on-disk name uses and
+  whichever the Sitefile uses: a non-ASCII path segment is matched by NFC form
+  against its directory listing (macOS does this itself; on Linux Sitefile
+  does). Two names in one context directory that differ only in normalization
+  (possible on Linux) are `E_PATH_COLLISION`, both in directory walks and when
+  one of them is named explicitly.
+- Within one archive, two entries that differ only in normalization are the
+  same path (a duplicate entry, `E_CONFLICT`).
 
 ### Local sources
 - Absolute paths and `..` that escapes the context fail with `E_PATH_ESCAPE`.
@@ -385,6 +497,8 @@ gitignore subset:
   imports, and the import's provenance digest is the archive's digest.
 - Directories are implicit. Modes are reduced to `0644`/`0755`. A single
   top-level directory is **not** stripped: `COPY name:/top/ /` does that.
+- Entry names are normalized to NFC, and names that differ only in case are
+  `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
   device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
@@ -527,6 +641,12 @@ directories (see below); the single rename is atomic.
 
 ### Export
 - Output is written to a temporary sibling directory, then swapped in.
+- If the destination file system still treats two tree paths as one name
+  (one that folds case or normalizes Unicode more widely than the checks in
+  "Writes and conflicts"), the export fails with `E_EXPORT` naming the
+  artifact path (`cannot write '/a.html': the destination file system already
+  has an entry by that name …`), never the temporary path, and the previous
+  output is left in place.
 - An existing non-empty destination is replaced only when it is inside the
   build context, or with `--force`. A destination that is, or contains, the
   context is always refused.

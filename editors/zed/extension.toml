@@ -11,7 +11,7 @@ repository = "https://github.com/johnhenry/sitefile"
 # the grammar changes. For local development see README.md.
 [grammars.sitefile]
 repository = "https://github.com/johnhenry/sitefile"
-rev = "ebbf616167ee6fdfc7792d37fd63fc5ba2163a5a"
+rev = "bb194aff34a3479a36eec2439165006342eba783"
 path = "editors/tree-sitter-sitefile"
 
 # `sitefile lsp` from the Rust binary (docs/LSP.md). src/lib.rs finds

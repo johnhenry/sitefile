@@ -13,6 +13,10 @@
   (transform_instruction)
   (plugin_instruction)
   (tool_instruction)
+  (sitemap_instruction)
+  (feed_instruction)
+  (redirect_instruction)
+  (header_instruction)
   (export_instruction)
   (unsupported_instruction)
 ] @fold

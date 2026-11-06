@@ -1,0 +1,4 @@
+FROM scratch
+PLUGIN up FROM ./plugins/up.mjs
+TRANSFORM ./a.txt WITH up TO /a.txt
+EXPORT /

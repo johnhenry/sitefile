@@ -189,6 +189,61 @@ export interface TransformInstruction {
   readonly overwrite: boolean;
 }
 
+/** `SITEMAP [--overwrite] BASE <url> [TO <dest>]`: write a sitemaps.org file listing the stage's `.html` files. */
+export interface SitemapInstruction {
+  readonly kind: 'SITEMAP';
+  readonly span: SourceSpan;
+  readonly base: Operand;
+  /** Default `/sitemap.xml`. */
+  readonly dest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/**
+ * `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`: an Atom feed
+ * from a list import. LINK is evaluated per element, with the element as `${item…}`.
+ */
+export interface FeedInstruction {
+  readonly kind: 'FEED';
+  readonly span: SourceSpan;
+  readonly list: string;
+  readonly listSpan: SourceSpan;
+  readonly base: Operand;
+  readonly link: Operand;
+  /** Default `/feed.xml`. */
+  readonly dest?: Operand;
+  readonly title?: Operand;
+  readonly overwrite: boolean;
+}
+
+/** The loop variable LINK of a FEED uses for the current element. */
+export const FEED_ITEM = 'item';
+
+/** `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]`: a line of `/_redirects`. */
+export interface RedirectInstruction {
+  readonly kind: 'REDIRECT';
+  readonly span: SourceSpan;
+  readonly from: Operand;
+  readonly to: Operand;
+  readonly status: RedirectStatus;
+  readonly overwrite: boolean;
+}
+
+export type RedirectStatus = 301 | 302 | 303 | 307 | 308;
+export const REDIRECT_STATUSES: readonly RedirectStatus[] = [301, 302, 303, 307, 308];
+
+/** `HEADER [--overwrite] <path-pattern> <Name>: <value …>`: a header in `/_headers`. */
+export interface HeaderInstruction {
+  readonly kind: 'HEADER';
+  readonly span: SourceSpan;
+  readonly pattern: Operand;
+  /** The header name without its trailing `:`. */
+  readonly name: Operand;
+  /** The rest of the line; the words are joined with one space. */
+  readonly value: readonly Operand[];
+  readonly overwrite: boolean;
+}
+
 export type Instruction =
   | FromInstruction
   | ArgInstruction
@@ -199,6 +254,10 @@ export type Instruction =
   | PluginInstruction
   | ToolInstruction
   | TransformInstruction
+  | SitemapInstruction
+  | FeedInstruction
+  | RedirectInstruction
+  | HeaderInstruction
   | ExportInstruction;
 
 /** A parsed and semantically validated Sitefile. */

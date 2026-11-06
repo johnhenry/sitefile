@@ -85,6 +85,14 @@ pub struct PruneResult {
     pub bytes: u64,
 }
 
+/// See [`Store::gc_view`].
+#[derive(Debug, Clone, Default)]
+pub struct GcView {
+    pub live: BTreeSet<String>,
+    /// `(image ID, blob hexes)` of each untagged image.
+    pub untagged: Vec<(String, Vec<String>)>,
+}
+
 /// `$SITEFILE_HOME`, else `~/.sitefile`.
 pub fn resolve_store_home() -> PathBuf {
     resolve_store_home_from(std::env::var("SITEFILE_HOME").ok().as_deref())
@@ -167,6 +175,12 @@ impl Store {
             Err(e) => return Err(store_error(format!("cannot open the store at '{}': {e}", s.home.display()))),
         }
         Ok(s)
+    }
+
+    /// The store at `home` if one exists there (nothing is created).
+    pub fn open_existing(home: impl AsRef<Path>) -> Option<Store> {
+        let home = crate::export::exporter::resolve_path(home.as_ref());
+        fs::metadata(home.join("blobs").join("sha256")).ok().filter(|m| m.is_dir()).map(|_| Store { home })
     }
 
     /// Open the store at `$SITEFILE_HOME` or `~/.sitefile`.
@@ -281,10 +295,21 @@ impl Store {
         let bp = self.blob_file(digest)?;
         if let Ok(st) = fs::metadata(&bp) {
             if st.is_file() && st.len() == bytes.len() as u64 {
+                self.touch_blob(digest);
                 return Ok(());
             }
         }
         self.write_atomic(&bp, bytes)
+    }
+
+    /// Mark a blob as just used (its mtime is the recency the size limit goes
+    /// by, see cache_limit.rs; atime is often disabled). Never fails.
+    pub fn touch_blob(&self, digest: &str) {
+        if let Ok(p) = self.blob_file(digest) {
+            if let Ok(f) = fs::OpenOptions::new().write(true).open(p) {
+                let _ = f.set_modified(SystemTime::now());
+            }
+        }
     }
 
     /// True when the blob exists with the given size (content is verified when it was written).
@@ -605,6 +630,41 @@ impl Store {
     }
 
     /// Drop untagged images from the index, then delete every blob no remaining image uses.
+    /// What the size limit may evict: the blob hexes of tagged images (never
+    /// evicted), and each untagged image with the blobs it uses. An unreadable
+    /// tagged manifest is an error (its blobs are unknown, so nothing may go).
+    pub fn gc_view(&self) -> Result<GcView> {
+        let entries = self.read_index()?;
+        let blobs_of = |id: &str| -> Result<Vec<String>> {
+            let m = parse_manifest(&self.read_blob(id, None)?).map_err(|e| store_error(format!("image {} is corrupt: {e}", short_id(id))))?;
+            Ok(std::iter::once(id).chain(std::iter::once(m.config.digest.as_str())).chain(m.layers.iter().map(|l| l.digest.as_str())).map(|d| d[7..].to_string()).collect())
+        };
+        let mut live = BTreeSet::new();
+        let tagged: BTreeSet<&str> = entries.iter().filter(|e| e.ref_name.is_some()).map(|e| e.digest.as_str()).collect();
+        for id in &tagged {
+            live.extend(blobs_of(id)?);
+        }
+        let mut untagged = Vec::new();
+        let mut seen = BTreeSet::new();
+        for e in entries.iter().filter(|e| e.ref_name.is_none()) {
+            if !seen.insert(e.digest.clone()) || live.contains(&e.digest[7..]) {
+                continue;
+            }
+            let blobs = blobs_of(&e.digest).unwrap_or_else(|_| vec![e.digest[7..].to_string()]);
+            untagged.push((e.digest.clone(), blobs));
+        }
+        Ok(GcView { live, untagged })
+    }
+
+    /// Remove an untagged image from the index (its blobs stay). The caller holds the lock.
+    pub fn drop_untagged_locked(&self, id: &str) -> Result<()> {
+        let entries = self.read_index()?;
+        if entries.iter().any(|e| e.digest == id && e.ref_name.is_some()) {
+            return Ok(());
+        }
+        self.write_index(entries.into_iter().filter(|e| e.digest != id).collect())
+    }
+
     pub fn prune(&self) -> Result<PruneResult> {
         self.with_lock(|| {
             let entries = self.read_index()?;

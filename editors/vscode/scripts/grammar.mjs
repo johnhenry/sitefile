@@ -14,19 +14,24 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
+  redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
     COPY: ['overwrite', 'from'],
     RENDER: ['escape', 'overwrite', 'from'],
     TRANSFORM: ['overwrite', 'from'],
+    SITEMAP: ['overwrite'],
+    FEED: ['overwrite'],
+    REDIRECT: ['overwrite'],
+    HEADER: ['overwrite'],
   },
 };
 
@@ -244,6 +249,31 @@ export function buildGrammar() {
           instruction('TRANSFORM', [...flags('TRANSFORM'), { include: '#heredoc-transform' }, { include: '#transform-clauses' }]),
           instruction('PLUGIN', [head('entity.name.function.plugin'), kw(['FROM']), integrity, { include: '#operands' }]),
           instruction('TOOL', [head('entity.name.function.tool')]),
+          instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
+          instruction('FEED', [
+            // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]
+            {
+              match: `\\G((?:\\s+--\\S+)*)\\s+(${IDENT})${WE}`,
+              captures: { 1: { patterns: flags('FEED') }, 2: { name: S('variable.other.readwrite.import') } },
+            },
+            ...flags('FEED'),
+            kw(['BASE', 'LINK', 'TO', 'TITLE']),
+            { include: '#operands' },
+          ]),
+          instruction('REDIRECT', [
+            ...flags('REDIRECT'),
+            valueAfter('STATUS', KEYWORDS.redirectStatuses, 'constant.numeric.status', 'invalid.illegal.status'),
+            { include: '#operands' },
+          ]),
+          instruction('HEADER', [
+            ...flags('HEADER'),
+            // HEADER <pattern> Name: value…
+            {
+              match: `${W}([!#$%&'*+.^_\`|~0-9A-Za-z-]+)(:)${WE}`,
+              captures: { 1: { name: S('entity.other.attribute-name.header') }, 2: { name: S('punctuation.separator.header') } },
+            },
+            { include: '#operands' },
+          ]),
           instruction('EXPORT', [
             valueAfter('AS', KEYWORDS.exportFormats, 'support.type.export-format', 'invalid.illegal.export-format'),
             valueAfter('COMPRESSION', KEYWORDS.compressions, 'constant.language.compression', 'invalid.illegal.compression'),

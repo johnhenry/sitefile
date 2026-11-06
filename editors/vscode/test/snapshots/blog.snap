@@ -468,59 +468,346 @@
   ]
  },
  "17": {
-  "text": "RENDER --escape=html ./templates/feed.xml TO /feed.xml",
+  "text": "",
   "tokens": [
    [
-    "RENDER",
-    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
-   ],
-   [
-    " ",
-    "meta.instruction.render.sitefile"
-   ],
-   [
-    "--",
-    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
-   ],
-   [
-    "escape",
-    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
-   ],
-   [
-    "=",
-    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
-   ],
-   [
-    "html",
-    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
-   ],
-   [
-    " ",
-    "meta.instruction.render.sitefile"
-   ],
-   [
-    "./templates/feed.xml",
-    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
-   ],
-   [
-    " ",
-    "meta.instruction.render.sitefile"
-   ],
-   [
-    "TO",
-    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
-   ],
-   [
-    " ",
-    "meta.instruction.render.sitefile"
-   ],
-   [
-    "/feed.xml",
-    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+    "",
+    ""
    ]
   ]
  },
  "18": {
+  "text": "# An Atom feed of the posts (newest first, as imported), and a sitemap of",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " An Atom feed of the posts (newest first, as imported), and a sitemap of",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "19": {
+  "text": "# every page rendered so far. Both write absolute URLs under SITE_URL.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " every page rendered so far. Both write absolute URLs under SITE_URL.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "20": {
+  "text": "FEED posts BASE ${SITE_URL} LINK /posts/${item.slug}/index.html TITLE ${SITE_TITLE}",
+  "tokens": [
+   [
+    "FEED",
+    "meta.instruction.feed.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.feed.sitefile variable.other.readwrite.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "BASE",
+    "meta.instruction.feed.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "SITE_URL",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "LINK",
+    "meta.instruction.feed.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "/posts/",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "item",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "slug",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.feed.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "TITLE",
+    "meta.instruction.feed.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.feed.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "SITE_TITLE",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.feed.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ]
+  ]
+ },
+ "21": {
+  "text": "SITEMAP BASE ${SITE_URL}",
+  "tokens": [
+   [
+    "SITEMAP",
+    "meta.instruction.sitemap.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.sitemap.sitefile"
+   ],
+   [
+    "BASE",
+    "meta.instruction.sitemap.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.sitemap.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.sitemap.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "SITE_URL",
+    "meta.instruction.sitemap.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.sitemap.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ]
+  ]
+ },
+ "22": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "23": {
+  "text": "# Old URLs and response headers, for hosts that read _redirects / _headers",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Old URLs and response headers, for hosts that read _redirects / _headers",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "24": {
+  "text": "# (Netlify, Cloudflare Pages; `sitefile serve` honours them too).",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " (Netlify, Cloudflare Pages; `sitefile serve` honours them too).",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "25": {
+  "text": "REDIRECT /feed /feed.xml",
+  "tokens": [
+   [
+    "REDIRECT",
+    "meta.instruction.redirect.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "/feed",
+    "meta.instruction.redirect.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "/feed.xml",
+    "meta.instruction.redirect.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "26": {
+  "text": "REDIRECT /posts/hello/* /posts/hello-world/:splat STATUS 302",
+  "tokens": [
+   [
+    "REDIRECT",
+    "meta.instruction.redirect.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "/posts/hello/*",
+    "meta.instruction.redirect.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "/posts/hello-world/:splat",
+    "meta.instruction.redirect.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "STATUS",
+    "meta.instruction.redirect.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.redirect.sitefile"
+   ],
+   [
+    "302",
+    "meta.instruction.redirect.sitefile constant.numeric.status.sitefile"
+   ]
+  ]
+ },
+ "27": {
+  "text": "HEADER /*.css Cache-Control: public, max-age=3600",
+  "tokens": [
+   [
+    "HEADER",
+    "meta.instruction.header.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.header.sitefile"
+   ],
+   [
+    "/*.css",
+    "meta.instruction.header.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.header.sitefile"
+   ],
+   [
+    "Cache-Control",
+    "meta.instruction.header.sitefile entity.other.attribute-name.header.sitefile"
+   ],
+   [
+    ":",
+    "meta.instruction.header.sitefile punctuation.separator.header.sitefile"
+   ],
+   [
+    " public, max-age=3600",
+    "meta.instruction.header.sitefile"
+   ]
+  ]
+ },
+ "28": {
+  "text": "HEADER /* X-Frame-Options: DENY",
+  "tokens": [
+   [
+    "HEADER",
+    "meta.instruction.header.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.header.sitefile"
+   ],
+   [
+    "/*",
+    "meta.instruction.header.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.header.sitefile"
+   ],
+   [
+    "X-Frame-Options",
+    "meta.instruction.header.sitefile entity.other.attribute-name.header.sitefile"
+   ],
+   [
+    ":",
+    "meta.instruction.header.sitefile punctuation.separator.header.sitefile"
+   ],
+   [
+    " DENY",
+    "meta.instruction.header.sitefile"
+   ]
+  ]
+ },
+ "29": {
   "text": "EXPORT /",
   "tokens": [
    [

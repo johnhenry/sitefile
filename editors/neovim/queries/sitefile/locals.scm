@@ -16,4 +16,5 @@
 (template_substitution name: (identifier) @local.reference)
 (reference name: (identifier) @local.reference)
 (for_clause list: (identifier) @local.reference)
+(feed_instruction list: (identifier) @local.reference)
 (resource_ref import: (identifier) @local.reference)

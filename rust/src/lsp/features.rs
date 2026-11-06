@@ -3,7 +3,11 @@
 //! the document does not parse; hover adds values from the last plan.
 
 use crate::language::ast::{is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
-use crate::language::parser::{flags_of, Shape, EXPORT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, SORT_ORDERS, TRANSFORM_CLAUSES};
+use crate::language::ast::REDIRECT_STATUSES;
+use crate::language::parser::{
+    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+    TRANSFORM_CLAUSES,
+};
 use crate::lsp::diagnostics::Analysis;
 use crate::lsp::docs;
 use crate::lsp::index::{Def, Index, Instr, SymKind, Word};
@@ -238,6 +242,35 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             _ => Vec::new(),
         },
         "COPY" | "RENDER" | "TRANSFORM" => operation_items(ins, &prior, &prev, ix, &imports, typed),
+        "SITEMAP" | "FEED" | "REDIRECT" => {
+            let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
+            let clauses: &[&str] = match kw {
+                "SITEMAP" => &SITEMAP_CLAUSES,
+                "FEED" => &FEED_CLAUSES,
+                _ => &REDIRECT_CLAUSES,
+            };
+            // Operands that come before the clauses: FEED's import, REDIRECT's from and to.
+            let lead = match kw {
+                "FEED" => 1,
+                "REDIRECT" => 2,
+                _ => 0,
+            };
+            if kw == "FEED" && ops.is_empty() {
+                def_items(&imports(), "")
+            } else if kw == "REDIRECT" && prev == "STATUS" {
+                kw_items(REDIRECT_STATUSES.map(|s| s.to_string()).iter().map(String::as_str), CIK_ENUM_MEMBER)
+            } else if ops.len() < lead || clauses.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                // Clauses come in order (BASE and LINK are required): offer the next ones.
+                let last = ops.iter().filter_map(|w| clauses.iter().position(|c| w == c)).max();
+                match last.map(|l| clauses[l]) {
+                    None if kw != "REDIRECT" => kw_items(["BASE"], CIK_KEYWORD),
+                    Some("BASE") if kw == "FEED" => kw_items(["LINK"], CIK_KEYWORD),
+                    _ => kw_items(clauses[last.map(|l| l + 1).unwrap_or(0)..].iter().copied(), CIK_KEYWORD),
+                }
+            }
+        }
         _ => Vec::new(),
     };
     Completion { items, start }
@@ -653,6 +686,20 @@ mod tests {
         assert_eq!(labels("TRANSFORM ./a WITH og "), ["TO"]);
         assert_eq!(labels("TRANSFORM ./a WITH og TO /b "), ["OPTIONS", "FOR", "ARGS"]);
         assert_eq!(labels("TRANSFORM ./a WITH og TO /b OPTIONS a=1 "), ["FOR", "ARGS"]);
+        // SITEMAP, FEED and REDIRECT clauses, in order
+        assert_eq!(labels("SITEMAP "), ["BASE"]);
+        assert_eq!(labels("SITEMAP --overwrite "), ["BASE"]);
+        assert!(labels("SITEMAP BASE ").is_empty());
+        assert_eq!(labels("SITEMAP BASE https://x "), ["TO"]);
+        assert_eq!(labels("IMPORT posts FROM ./p AS markdown\nFEED "), ["posts"]);
+        assert_eq!(labels("FEED posts "), ["BASE"]);
+        assert_eq!(labels("FEED posts BASE https://x "), ["LINK"]);
+        assert_eq!(labels("FEED posts BASE https://x LINK /a "), ["TO", "TITLE"]);
+        assert_eq!(labels("FEED posts BASE https://x LINK /a TO /f.xml "), ["TITLE"]);
+        assert!(labels("REDIRECT /a ").is_empty());
+        assert_eq!(labels("REDIRECT /a /b "), ["STATUS"]);
+        assert_eq!(labels("REDIRECT /a /b STATUS "), ["301", "302", "303", "307", "308"]);
+        assert_eq!(labels("HEADER --"), ["--overwrite"]);
     }
 
     #[test]

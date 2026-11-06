@@ -1,0 +1,8 @@
+FROM scratch
+# gen/nfd/café.txt is NFD on disk, gen/nfc/café.txt is NFC (case.json creates both).
+COPY ./gen/nfd/café.txt /named-nfd/
+COPY ./gen/nfd/café.txt /named-nfc/
+COPY ./gen/nfc/café.txt /résumé/café.txt
+COPY ./gen/ /walked/
+COPY ./gen/nfd/café.txt /café.txt
+EXPORT /

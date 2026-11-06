@@ -1,0 +1,3 @@
+IMPORT posts FROM ./posts AS markdown
+FEED posts BASE https://x.example LINK /${item.slug}.html
+EXPORT /

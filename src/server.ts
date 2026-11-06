@@ -1,7 +1,9 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
+import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
 import type { Tree } from './tree.js';
+import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 
 export interface SiteServerOptions {
@@ -11,6 +13,45 @@ export interface SiteServerOptions {
   readonly log?: (line: string) => void;
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
   readonly serverId?: string;
+  /**
+   * `serve --watch`: answer {@link RELOAD_PATH} with an event stream and add
+   * {@link RELOAD_SCRIPT} to HTML responses. Never set otherwise, and never written to exports.
+   */
+  readonly liveReload?: LiveReload;
+}
+
+/** Reserved for the live-reload event stream while `serve --watch` runs. */
+export const RELOAD_PATH = '/__sitefile/reload';
+/** Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`. */
+export const RELOAD_SCRIPT = `<script>new EventSource("${RELOAD_PATH}").onmessage=function(){location.reload()}</script>`;
+
+/** Open live-reload streams; {@link LiveReload.reload} tells every page to reload. */
+export class LiveReload {
+  private readonly clients = new Set<http.ServerResponse>();
+
+  /** Hold `res` open as a text/event-stream until the client goes away. */
+  attach(res: http.ServerResponse, headers: Record<string, string>): void {
+    res.writeHead(200, { ...headers, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    res.write('retry: 1000\n\n');
+    this.clients.add(res);
+    res.on('close', () => this.clients.delete(res));
+  }
+
+  reload(): void {
+    for (const c of this.clients) c.write('data: reload\n\n');
+  }
+
+  get size(): number {
+    return this.clients.size;
+  }
+}
+
+/** `html` with {@link RELOAD_SCRIPT} inserted before the last `</body` (ASCII case-insensitive), else appended. */
+export function injectReloadScript(html: Uint8Array): Uint8Array {
+  const buf = Buffer.from(html.buffer, html.byteOffset, html.byteLength);
+  const at = buf.toString('latin1').toLowerCase().lastIndexOf('</body');
+  const script = Buffer.from(RELOAD_SCRIPT);
+  return at === -1 ? Buffer.concat([buf, script]) : Buffer.concat([buf.subarray(0, at), script, buf.subarray(at)]);
 }
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
@@ -31,7 +72,8 @@ export function safeSegments(rawPath: string): string[] | undefined {
     }
     // A decoded '/', '\\', NUL, control character, '.' or '..' could change what is read.
     if (seg === '.' || seg === '..' || /[\\/\u0000-\u001f\u007f]/.test(seg)) return undefined;
-    out.push(seg);
+    // Tree paths are NFC; a request for an NFD spelling finds the same file.
+    out.push(nfc(seg));
   }
   return out;
 }
@@ -49,10 +91,28 @@ function printable(s: string): string {
 /**
  * An HTTP server for an immutable Tree. GET and HEAD only; nothing outside the tree is
  * ever reachable because lookups are exact map keys built from validated segments.
+ * Honours `/404.html`, `/_redirects` and `/_headers` (which it never serves), and answers
+ * `/about` with `/about.html` when there is no such file or directory.
  */
-export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): http.Server {
+export function createSiteServer(site: Tree | (() => Tree), options: SiteServerOptions = {}): http.Server {
+  // A function is read per request (`serve --watch` swaps in each good rebuild).
+  const current = typeof site === 'function' ? site : (): Tree => site;
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
+  // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
+  let rulesTree: Tree | undefined;
+  let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };
+  const rulesFor = (t: Tree): typeof rules => {
+    if (t !== rulesTree) {
+      const text = (p: string): string => {
+        const f = t.get(p);
+        return f ? new TextDecoder().decode(f.bytes) : '';
+      };
+      rules = { redirects: parseRedirectRules(text('/_redirects')), headers: parseHeaderRules(text('/_headers')) };
+      rulesTree = t;
+    }
+    return rules;
+  };
 
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
@@ -77,34 +137,81 @@ export function createSiteServer(tree: Tree, options: SiteServerOptions = {}): h
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
+    const tree = current();
+    const { redirects, headers: headerRules } = rulesFor(tree);
+    const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
 
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
     const end = Math.min(q === -1 ? url.length : q, hash === -1 ? url.length : hash);
     const rawPath = url.slice(0, end);
+    if (options.liveReload && rawPath === RELOAD_PATH) {
+      if (method === 'HEAD') return finish(200, { 'content-type': 'text/event-stream' }, undefined);
+      return options.liveReload.attach(res, base); // not access-logged: one long request per open page
+    }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
     const segs = safeSegments(rawPath);
     if (!segs) return page(400, BAD_REQUEST_PAGE);
     const trailingSlash = rawPath.endsWith('/');
     const vpath = '/' + segs.join('/');
+    // `_headers` patterns match the request path (with its trailing slash).
+    const custom = headersFor(headerRules, vpath + (trailingSlash && segs.length > 0 ? '/' : ''));
 
-    let served: string | undefined = tree.isFile(vpath) && !(trailingSlash && vpath !== '/') ? vpath : undefined;
-    if (!served && tree.isDirectory(vpath)) {
-      if (!trailingSlash) {
-        const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
-        return finish(301, { location, 'content-length': 0 }, undefined);
+    const sendFile = (status: number, served: string): void => {
+      const file = tree.get(served)!;
+      const type = mimeTypeFor(served);
+      const live = options.liveReload !== undefined && type.startsWith('text/html');
+      const body = live ? injectReloadScript(file.bytes) : file.bytes;
+      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
+      // An injected page is a different representation of the file: give it its own ETag.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag }, body);
+    };
+    /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
+    const resolve = (p: string, slash: boolean): string | undefined => {
+      if (isFile(p) && !(slash && p !== '/')) return p;
+      if (!slash && p !== '/' && isFile(`${p}.html`)) return `${p}.html`;
+      if (slash && tree.isDirectory(p)) {
+        const index = p === '/' ? '/index.html' : `${p}/index.html`;
+        if (isFile(index)) return index;
       }
-      const index = vpath === '/' ? '/index.html' : `${vpath}/index.html`;
-      if (tree.isFile(index)) served = index;
-    }
-    if (!served && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && tree.isFile('/index.html')) served = '/index.html';
-    const file = served === undefined ? undefined : tree.get(served);
-    if (served === undefined || !file) return page(404, NOT_FOUND_PAGE);
+      return undefined;
+    };
+    /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
+    const redirect = (forced: boolean): boolean => {
+      for (const r of redirects) {
+        if (r.force !== forced) continue;
+        const rest = matchRedirect(r, vpath);
+        if (rest === undefined) continue;
+        const target = r.splat ? r.to.split(':splat').join(rest.split('/').map(encodeURIComponent).join('/')) : r.to;
+        if (r.status !== 200 && r.status !== 404) {
+          finish(r.status, { location: target.includes('?') ? target : target + search, 'content-length': 0 }, undefined);
+          return true;
+        }
+        // 200 (rewrite) and 404: serve the target path's file with that status.
+        const tq = target.indexOf('?');
+        const tpath = tq === -1 ? target : target.slice(0, tq);
+        const tsegs = safeSegments(tpath);
+        const served = tsegs ? resolve('/' + tsegs.join('/'), tpath.endsWith('/')) : undefined;
+        if (served === undefined) continue;
+        sendFile(r.status, served);
+        return true;
+      }
+      return false;
+    };
 
-    const etag = `"${file.digest.replace(/^sha256:/, '')}"`;
-    const type = mimeTypeFor(served);
-    if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { etag }, undefined);
-    finish(200, { etag, 'content-type': type, 'content-length': file.bytes.byteLength }, file.bytes);
+    if (redirect(true)) return;
+    let served = resolve(vpath, trailingSlash);
+    if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
+      const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
+      return finish(301, { location, 'content-length': 0 }, undefined);
+    }
+    if (served === undefined && redirect(false)) return;
+    if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
+    if (served !== undefined) return sendFile(200, served);
+    if (isFile('/404.html')) return sendFile(404, '/404.html');
+    page(404, NOT_FOUND_PAGE, custom);
   };
 
   const server = http.createServer(handler);

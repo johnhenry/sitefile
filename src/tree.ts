@@ -1,6 +1,6 @@
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
-import { ancestorsVirtual } from './paths.js';
+import { foldCase, nfc } from './paths.js';
 
 /** An immutable file inside a tree. */
 export interface FileNode {
@@ -15,6 +15,30 @@ export interface FileNode {
 
 export type ConflictPolicy = 'error' | 'overwrite';
 
+/** The spelling of a path (file or implicit directory) that owns its case-folded key. */
+interface Owner {
+  readonly path: string;
+  readonly origin: string;
+  readonly dir: boolean;
+}
+
+/**
+ * A path and its ancestors, as [path, foldCase(path)] pairs from the
+ * shortest ancestor to the path itself. Folding is per segment, so prefix
+ * lengths never depend on how folding changes a string's length.
+ */
+function prefixes(path: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  let raw = '';
+  let folded = '';
+  for (const seg of path.slice(1).split('/')) {
+    raw += '/' + seg;
+    folded += '/' + foldCase(seg);
+    out.push([raw, folded]);
+  }
+  return out;
+}
+
 export function makeFile(bytes: Uint8Array, origin: string, mode = 0o644): FileNode {
   return { bytes, mode: mode & 0o111 ? 0o755 : 0o644, digest: sha256(bytes), origin };
 }
@@ -25,11 +49,13 @@ export function makeFile(bytes: Uint8Array, origin: string, mode = 0o644): FileN
  * a new Tree.
  */
 export class Tree {
-  static readonly empty = new Tree(new Map(), new Set());
+  static readonly empty = new Tree(new Map(), new Set(), new Map());
 
   private constructor(
     private readonly files: ReadonlyMap<string, FileNode>,
     private readonly dirs: ReadonlySet<string>,
+    /** foldCase(path) -> the one spelling of it in this tree (files and directories). */
+    private readonly folded: ReadonlyMap<string, Owner>,
   ) {}
 
   get size(): number {
@@ -55,23 +81,44 @@ export class Tree {
   }
 
   /**
-   * Add files. Writing identical content (digest and mode) is a no-op that
-   * keeps the first owner. Different content fails with E_CONFLICT unless the
-   * policy is 'overwrite'. A file can never replace a directory or vice versa.
+   * Add files. Paths are normalized to NFC. Writing identical content (digest
+   * and mode) is a no-op that keeps the first owner. Different content fails
+   * with E_CONFLICT unless the policy is 'overwrite'. A file can never replace
+   * a directory or vice versa. A path (or one of its directories) that equals
+   * an existing one under simple case folding but is spelled differently
+   * fails with E_PATH_COLLISION whatever the policy: case-insensitive file
+   * systems cannot hold both.
    */
   withFiles(additions: Iterable<readonly [string, FileNode]>, policy: ConflictPolicy, span?: SourceSpan): Tree {
     const files = new Map(this.files);
     const dirs = new Set(this.dirs);
-    for (const [path, node] of additions) {
+    const folded = new Map(this.folded);
+    for (const [rawPath, node] of additions) {
+      const path = nfc(rawPath);
       if (path === '/' || dirs.has(path)) {
         throw new SitefileError('E_CONFLICT', `cannot write file '${path}': it is a directory`, span);
       }
-      for (const a of ancestorsVirtual(path)) {
+      const chain = prefixes(path);
+      const ancestors = chain.slice(0, -1);
+      for (const [a] of ancestors) {
         const f = files.get(a);
         if (f) {
           throw new SitefileError(
             'E_CONFLICT',
             `cannot write '${path}': '${a}' is a file (written by ${f.origin})`,
+            span,
+          );
+        }
+      }
+      for (const [p, key] of chain) {
+        const prior = folded.get(key);
+        if (prior && prior.path !== p) {
+          const by = `${prior.dir ? 'created' : 'written'} by ${prior.origin}`;
+          throw new SitefileError(
+            'E_PATH_COLLISION',
+            p === path
+              ? `'${path}' differs only in case from '${prior.path}' (${by}); case-insensitive file systems cannot hold both`
+              : `cannot write '${path}': '${p}' differs only in case from '${prior.path}' (${by}); case-insensitive file systems cannot hold both`,
             span,
           );
         }
@@ -88,9 +135,14 @@ export class Tree {
         }
       }
       files.set(path, node);
-      for (const a of ancestorsVirtual(path)) dirs.add(a);
+      folded.set(chain[chain.length - 1]![1], { path, origin: node.origin, dir: false });
+      for (const [a, key] of ancestors) {
+        if (dirs.has(a)) continue;
+        dirs.add(a);
+        folded.set(key, { path: a, origin: node.origin, dir: true });
+      }
     }
-    return new Tree(files, dirs);
+    return new Tree(files, dirs, folded);
   }
 
   /** The files under a directory, re-rooted at `/`. */
