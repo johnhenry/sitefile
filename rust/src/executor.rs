@@ -4,7 +4,7 @@
 //! Messages and warnings match the TypeScript implementation word for word;
 //! `../conformance` checks it.
 
-use crate::base_image::{read_layer_blobs, resolve_base, ResolveBaseOptions};
+use crate::base_image::{base_ref, read_layer_blobs, resolve_base, ResolveBaseOptions};
 use crate::build_args::BuildArgs;
 use crate::registry::RegistryOptions;
 use crate::store::Store;
@@ -72,6 +72,9 @@ pub struct BuildOptions {
     pub frozen_lockfile: bool,
     /// Re-record unpinned URLs whose content changed.
     pub update_lock: bool,
+    /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
+    /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
+    pub strict_pins: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -112,6 +115,7 @@ impl Default for BuildOptions {
             lockfile: LockfileSetting::Default,
             frozen_lockfile: false,
             update_lock: false,
+            strict_pins: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             allow_hardlinks: false,
@@ -266,6 +270,66 @@ fn realpath_loose(p: &Path) -> PathBuf {
     }
 }
 
+/// The lockfile a build would use: `Sitefile.lock` next to the Sitefile, unless disabled.
+fn lock_path_for(setting: &LockfileSetting, sitefile_path: &Path) -> Option<PathBuf> {
+    match setting {
+        LockfileSetting::Disabled => None,
+        LockfileSetting::Path(p) => Some(p.clone()),
+        LockfileSetting::Default => Some(sitefile_path.parent().unwrap_or(Path::new("/")).join("Sitefile.lock")),
+    }
+}
+
+/// The BASE image a build resolves: `--base`, else `EXPORT ... AS oci BASE`, unless skipped.
+fn base_ref_of(options: &BuildOptions, p: &Plan) -> Option<String> {
+    if options.skip_base {
+        return None;
+    }
+    options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
+}
+
+/// `--strict-pins`: every remote input must be pinned, so the build is reproducible. A remote IMPORT
+/// needs INTEGRITY or a `Sitefile.lock` entry; a BASE image needs `@sha256:` or a lockfile `images`
+/// entry. `lock` is `None` with --no-lockfile (only the Sitefile's own pins count then). Checked in
+/// source order, before anything is fetched; the first unpinned input fails with E_UNPINNED.
+pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Result<()> {
+    for spec in &p.imports {
+        let ImportLocation::Remote { url } = &spec.location else { continue };
+        if spec.integrity.is_some() || lock.is_some_and(|l| l.get(url).is_some()) {
+            continue;
+        }
+        return Err(SitefileError::at(
+            E_UNPINNED,
+            format!(
+                "IMPORT {}: '{url}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>, or record it in Sitefile.lock with a build without --strict-pins",
+                spec.name
+            ),
+            &spec.span,
+        ));
+    }
+    let Some(input) = base else { return Ok(()) };
+    let b = base_ref(input, None)?;
+    if b.r.digest.is_some() || lock.is_some_and(|l| l.get_image(&b.lock_key).is_some()) {
+        return Ok(());
+    }
+    Err(SitefileError::plain(
+        E_UNPINNED,
+        format!(
+            "BASE {input}: '{}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins",
+            b.lock_key
+        ),
+    ))
+}
+
+/// `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching.
+pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
+    let sitefile_path = resolve_path(Path::new(&options.sitefile.clone().unwrap_or_else(|| join_path(&options.context_dir, "Sitefile"))));
+    let lock = match lock_path_for(&options.lockfile, &sitefile_path) {
+        Some(path) => Some(Lockfile::load(path)?),
+        None => None,
+    };
+    check_pins(p, lock.as_ref(), base_ref_of(options, p).as_deref())
+}
+
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
@@ -315,15 +379,15 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         &context_real,
         &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
     )?;
-    let lock_path = match &options.lockfile {
-        LockfileSetting::Disabled => None,
-        LockfileSetting::Path(p) => Some(p.clone()),
-        LockfileSetting::Default => Some(sitefile_path.parent().unwrap_or(Path::new("/")).join("Sitefile.lock")),
-    };
-    let lock = match lock_path {
+    let lock = match lock_path_for(&options.lockfile, &sitefile_path) {
         Some(p) => Some(Lockfile::load(p)?),
         None => None,
     };
+    // BASE: the image to build on (resolved after the files, below).
+    let base_ref = base_ref_of(options, &p);
+    if options.strict_pins {
+        check_pins(&p, lock.as_ref(), base_ref.as_deref())?;
+    }
     let lock = Mutex::new(lock);
 
     let env = ImportEnv {
@@ -396,11 +460,6 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     }
 
     // BASE: the image to build on, resolved after the files so a failing build never pulls anything.
-    let base_ref = if options.skip_base {
-        None
-    } else {
-        options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
-    };
     let mut lock = lock.into_inner().unwrap_or(None);
     let base = match base_ref {
         Some(r) => {
@@ -1466,6 +1525,67 @@ mod tests {
         assert_eq!(url_basename("https://h.example/a/b.json?x=1"), "b.json");
         assert_eq!(url_basename("https://h.example/dir/"), "dir");
         assert_eq!(url_basename("https://h.example"), "");
+    }
+
+    fn strict_ctx(sitefile: &str, lock: Option<&str>) -> (PathBuf, BuildOptions) {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("sitefile-pins-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Sitefile"), sitefile).unwrap();
+        if let Some(l) = lock {
+            std::fs::write(dir.join("Sitefile.lock"), l).unwrap();
+        }
+        let mut o = BuildOptions { context_dir: dir.display().to_string(), strict_pins: true, ..Default::default() };
+        // Nothing listens on port 9: a fetch fails with E_FETCH, so E_UNPINNED proves the check ran first.
+        o.fetch_policy.allow_private_network = true;
+        (dir, o)
+    }
+
+    const URL: &str = "https://127.0.0.1:9/lib.js";
+    const PIN: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn strict_pins_refuses_unpinned_imports_before_fetching() {
+        let (dir, o) = strict_ctx(&format!("FROM scratch\nIMPORT p FROM ./\nIMPORT lib FROM {URL}\nEXPORT /\n"), None);
+        let e = build(&o).err().unwrap();
+        assert_eq!(e.code, E_UNPINNED);
+        assert_eq!(e.span.as_ref().map(|s| s.line), Some(3));
+        assert!(e.detail.starts_with(&format!("IMPORT lib: '{URL}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>")), "{}", e.detail);
+        // INTEGRITY is a pin: the build gets as far as fetching
+        let (_, o) = strict_ctx(&format!("FROM scratch\nIMPORT lib FROM {URL} INTEGRITY {PIN}\nEXPORT /\n"), None);
+        assert_eq!(build(&o).err().unwrap().code, E_FETCH);
+        // so is a lockfile entry, unless --no-lockfile
+        let lock = format!(r#"{{"version":1,"resources":{{"{URL}":{{"integrity":"{PIN}","size":1,"resolved":"{URL}"}}}}}}"#);
+        let (_, o) = strict_ctx(&format!("FROM scratch\nIMPORT lib FROM {URL}\nEXPORT /\n"), Some(&lock));
+        assert_eq!(build(&o).err().unwrap().code, E_FETCH);
+        assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
+        let o = BuildOptions { lockfile: LockfileSetting::Disabled, ..o };
+        assert_eq!(build(&o).err().unwrap().code, E_UNPINNED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn strict_pins_checks_the_base_image() {
+        let tagged = "FROM scratch\nEXPORT / AS oci BASE 127.0.0.1:9/lib/base:1\n";
+        let (_, o) = strict_ctx(tagged, None);
+        let e = check_plan_pins(&o, &plan_build(&o).unwrap()).unwrap_err();
+        assert_eq!(e.code, E_UNPINNED);
+        assert_eq!(
+            e.detail,
+            "BASE 127.0.0.1:9/lib/base:1: '127.0.0.1:9/lib/base:1' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins"
+        );
+        // skipped bases (non-oci exports, inspect) are not checked
+        let skip = BuildOptions { skip_base: true, ..o.clone() };
+        assert!(check_plan_pins(&skip, &plan_build(&skip).unwrap()).is_ok());
+        // a lockfile entry or a digest pins it; --base is checked like the Sitefile's BASE
+        let lock = format!(r#"{{"version":1,"resources":{{}},"images":{{"127.0.0.1:9/lib/base:1":{{"digest":"{PIN}"}}}}}}"#);
+        let (_, o) = strict_ctx(tagged, Some(&lock));
+        assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
+        let other = BuildOptions { base_image: Some("127.0.0.1:9/lib/base:2".into()), ..o };
+        assert_eq!(check_plan_pins(&other, &plan_build(&other).unwrap()).unwrap_err().code, E_UNPINNED);
+        let (_, o) = strict_ctx(&format!("FROM scratch\nEXPORT / AS oci BASE 127.0.0.1:9/lib/base:1@{PIN}\n"), None);
+        assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
     }
 
     #[test]

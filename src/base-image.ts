@@ -1,6 +1,6 @@
 import { SitefileError, type SourceSpan } from './errors.js';
 import type { BaseImage, Descriptor } from './oci.js';
-import { parseRef, withDefaultRegistry } from './ref.js';
+import { parseRef, withDefaultRegistry, type ImageRef } from './ref.js';
 import { resolveCredentials, type Credentials } from './registry-auth.js';
 import { pullImage, resolveDigest } from './registry-ops.js';
 import { RegistryClient, type RegistryOptions } from './registry.js';
@@ -36,6 +36,21 @@ export interface ResolveBaseOptions {
   readonly span?: SourceSpan | undefined;
 }
 
+/** A BASE reference (a bare name means Docker Hub), how it is shown, and its `Sitefile.lock` `images` key. */
+export function baseRef(input: string, span?: SourceSpan): { ref: ImageRef; registry: string; display: string; lockKey: string } {
+  let ref: ImageRef;
+  try {
+    ref = withDefaultRegistry(parseRef(input));
+  } catch (e) {
+    if (e instanceof SitefileError) throw new SitefileError(e.code, `BASE: ${e.detail}`, span, { cause: e });
+    throw e;
+  }
+  const registry = ref.registry as string;
+  const display = `${registry}/${ref.name}${ref.tag !== undefined || ref.digest === undefined ? `:${ref.tag ?? 'latest'}` : ''}`;
+  const lockKey = `${registry}/${ref.name}:${ref.tag ?? 'latest'}`;
+  return { ref, registry, display, lockKey };
+}
+
 /**
  * Resolve `EXPORT ... AS oci BASE <image>` to a base image whose blobs are in the local store.
  *
@@ -47,16 +62,7 @@ export interface ResolveBaseOptions {
  * A bare name (`nginx:alpine`) means Docker Hub (`docker.io/library/nginx`).
  */
 export async function resolveBase(input: string, o: ResolveBaseOptions): Promise<BaseImage> {
-  let ref;
-  try {
-    ref = withDefaultRegistry(parseRef(input));
-  } catch (e) {
-    if (e instanceof SitefileError) throw new SitefileError(e.code, `BASE: ${e.detail}`, o.span, { cause: e });
-    throw e;
-  }
-  const registry = ref.registry as string;
-  const display = `${registry}/${ref.name}${ref.tag !== undefined || ref.digest === undefined ? `:${ref.tag ?? 'latest'}` : ''}`;
-  const lockKey = `${registry}/${ref.name}:${ref.tag ?? 'latest'}`;
+  const { ref, registry, display, lockKey } = baseRef(input, o.span);
   const client = makeClient(registry, o.registry ?? {});
 
   let rootDigest: string | undefined = ref.digest;

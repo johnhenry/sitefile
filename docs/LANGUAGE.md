@@ -479,6 +479,18 @@ gitignore subset:
   sha256 and size. An unpinned URL already in the lockfile must match it
   (`E_LOCK_MISMATCH`; rerun with `--update-lock`). `--frozen-lockfile` fails
   instead of adding entries (`E_LOCK_MISSING`).
+- `--strict-pins` (build, validate, inspect) enforces reproducibility, like
+  Nix's fixed-output derivations: every remote input must already be pinned,
+  or the command fails with `E_UNPINNED` **before anything is fetched**. A
+  remote `IMPORT` is pinned by `INTEGRITY` or a `Sitefile.lock` entry for its
+  URL; the `BASE` image of an `oci` export (or `--base`) by `@sha256:` or a
+  lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
+  count. Local imports never need one. `--strict-pins` conflicts with
+  `--update-lock` (a usage error), since that would accept changed content.
+  `inspect` and non-oci exports never resolve a `BASE`, so it is not checked
+  there. There is no Sitefile-level switch yet (the flag needs no new syntax;
+  a future `# sitefile=N` directive may add one). Typical CI use:
+  `sitefile build --frozen-lockfile --strict-pins`.
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
   for https in addition to Node's default store (bundled roots plus
   `NODE_EXTRA_CA_CERTS` / `--use-system-ca`), for tests and enterprise private

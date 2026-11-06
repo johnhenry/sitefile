@@ -33,6 +33,7 @@ sitefile inspect  [context] [--json]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` checks the same without building (it reads `Sitefile.lock`). Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
 ## Watch mode

@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
-import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
+import { build, buildToDirectory, checkPlanPins, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv } from './base-image.js';
@@ -59,6 +59,8 @@ Options:
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
+      --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
+                               BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
       --no-lockfile            do not read or write Sitefile.lock
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
@@ -106,6 +108,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
+        'strict-pins': { type: 'boolean' },
         'no-lockfile': { type: 'boolean' },
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
@@ -133,6 +136,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   }
   if (extra.length) return usageError(`unexpected arguments: ${extra.join(' ')}`);
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
+  if (o['strict-pins'] && o['update-lock']) return usageError('--strict-pins and --update-lock conflict');
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
@@ -201,6 +205,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
+      strictPins: !!o['strict-pins'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
     };
 
@@ -244,6 +249,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       case 'validate': {
         const p = await planBuild(options);
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        if (o['strict-pins']) await checkPlanPins(options, p);
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
