@@ -293,6 +293,9 @@ line and column.
   environment; a per-call time limit (`--plugin-timeout`). Failures are
   `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
   pin plugins with `INTEGRITY`.
+- A JavaScript plugin runs only if the CLI allows it with `--allow-plugin name`
+  (or `--allow-plugins`); otherwise the build fails with `E_UNSUPPORTED` at the
+  `PLUGIN` line, naming the flag. A WebAssembly plugin needs no flag.
 
 - `TOOL name` declares an external program (`name` is an identifier and the
   program's file name, e.g. `ffmpeg`). It runs only if the CLI allows it with
@@ -386,6 +389,44 @@ use `${NAME}`.
 - Writing different content fails with `E_CONFLICT` naming the first owner,
   unless the instruction has `--overwrite`.
 - A file can never replace a directory or the reverse.
+- Two paths that differ only in case fail with `E_PATH_COLLISION` at the
+  write that creates the second one, with that instruction's line and column
+  and both spellings: `Sitefile:3:1: '/a.html' differs only in case from
+  '/A.html' (written by Sitefile:2 COPY); case-insensitive file systems cannot
+  hold both`. Directories count too: after `/Docs/x`, writing `/docs/y` fails
+  (`'/docs' differs only in case from '/Docs' (created by …)`), as do a file
+  `/docs` or `/DOCS/x/z`. `--overwrite` does not change this: it replaces a
+  file at the *same* path, and a differently cased path is a second file that
+  case-insensitive file systems (the macOS and Windows defaults) cannot hold
+  next to the first, whether it arrives by directory export or by unpacking a
+  zip, tar or OCI image. Rename one of them. The same check
+  applies to every tree (directory walks, archive imports, plugin outputs,
+  pulled images), so an archive or OCI export can never hold such a pair.
+- "Differ only in case" means equal under Unicode **simple case folding**:
+  each code point is mapped through `CaseFolding.txt` entries with status `C`
+  or `S` (Unicode 17.0.0), after NFC (below). So `Σ`, `σ` and `ς` are one
+  name, as are `K` and the Kelvin sign `K` (U+212A), but full and Turkic
+  foldings are not applied: `ß` and `ss`, `İ` and `i` are different names. Both
+  implementations use the same generated table (`tools/gen-casefold.mjs`).
+  A file system that folds more widely than this is caught at export time
+  instead (see "Export").
+
+### Unicode normalization of paths
+- Every virtual path is Unicode **NFC**: COPY/RENDER/EXPORT operands and other
+  Sitefile paths, file and directory names read from the context, archive
+  and web bundle entry names, paths a plugin returns, rendered destinations
+  built from data, and request paths in `serve`. NFC and NFD spellings
+  (`café` as U+00E9 or as `e` + U+0301) are therefore the same path and give
+  the same tree, the same output bytes and the same image ID on every OS;
+  macOS, which often hands out NFD names, and Linux agree.
+- A local source is found whichever normalization its on-disk name uses and
+  whichever the Sitefile uses: a non-ASCII path segment is matched by NFC form
+  against its directory listing (macOS does this itself; on Linux Sitefile
+  does). Two names in one context directory that differ only in normalization
+  (possible on Linux) are `E_PATH_COLLISION`, both in directory walks and when
+  one of them is named explicitly.
+- Within one archive, two entries that differ only in normalization are the
+  same path (a duplicate entry, `E_CONFLICT`).
 
 ### Local sources
 - Absolute paths and `..` that escapes the context fail with `E_PATH_ESCAPE`.
@@ -456,6 +497,8 @@ gitignore subset:
   imports, and the import's provenance digest is the archive's digest.
 - Directories are implicit. Modes are reduced to `0644`/`0755`. A single
   top-level directory is **not** stripped: `COPY name:/top/ /` does that.
+- Entry names are normalized to NFC, and names that differ only in case are
+  `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
   device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
@@ -598,6 +641,12 @@ directories (see below); the single rename is atomic.
 
 ### Export
 - Output is written to a temporary sibling directory, then swapped in.
+- If the destination file system still treats two tree paths as one name
+  (one that folds case or normalizes Unicode more widely than the checks in
+  "Writes and conflicts"), the export fails with `E_EXPORT` naming the
+  artifact path (`cannot write '/a.html': the destination file system already
+  has an entry by that name …`), never the temporary path, and the previous
+  output is left in place.
 - An existing non-empty destination is replaced only when it is inside the
   build context, or with `--force`. A destination that is, or contains, the
   context is always refused.

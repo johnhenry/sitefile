@@ -3,6 +3,7 @@ import { join, sep, relative, posix } from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { sha256 } from '../digest.js';
 import { Tree, makeFile, type FileNode } from '../tree.js';
+import { nfc } from '../paths.js';
 import { IgnoreRules } from './ignore.js';
 import type { FileResource, TreeResource } from './types.js';
 
@@ -20,6 +21,16 @@ export interface LocalContextOptions {
 }
 
 export const SITEFILEIGNORE = '.sitefileignore';
+
+const NON_ASCII = /[^\x00-\x7f]/;
+
+function normalizationCollision(rel: string, span?: SourceSpan): SitefileError {
+  return new SitefileError(
+    'E_PATH_COLLISION',
+    `'${display(rel)}' names more than one file in the build context: their names differ only in Unicode normalization (NFC/NFD); rename one`,
+    span,
+  );
+}
 
 function errCode(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | null)?.code;
@@ -49,7 +60,7 @@ export class LocalContext {
     private readonly rules: IgnoreRules,
     private readonly allowHardlinks: boolean,
   ) {
-    this.ignore = ignore.map((p) => posix.normalize(p).replace(/^\.\/+/, '').replace(/\/+$/, '')).filter((p) => p !== '' && p !== '.');
+    this.ignore = ignore.map((p) => posix.normalize(nfc(p)).replace(/^\.\/+/, '').replace(/\/+$/, '')).filter((p) => p !== '' && p !== '.');
   }
 
   static async open(dir: string, options?: LocalContextOptions): Promise<LocalContext> {
@@ -77,7 +88,7 @@ export class LocalContext {
         );
       });
       if (!st.isFile()) throw new SitefileError('E_UNSUPPORTED_FILE', `'${SITEFILEIGNORE}' is not a regular file`);
-      rules = IgnoreRules.parse(await fs.readFile(real, 'utf8'));
+      rules = IgnoreRules.parse(nfc(await fs.readFile(real, 'utf8')));
     }
     return new LocalContext(root, options?.ignore ?? ['.git'], rules, options?.allowHardlinks ?? false);
   }
@@ -113,12 +124,39 @@ export class LocalContext {
     return { real, bytes: f.bytes };
   }
 
+  /**
+   * The host path of the context-relative (NFC) path `rel`. A non-ASCII
+   * segment is matched by NFC form against its directory listing, so a file
+   * is found whichever normalization its on-disk name uses (macOS stores what
+   * it was given, often NFD; Linux compares bytes). Two names in one
+   * directory with the same NFC form are E_PATH_COLLISION. A segment with no
+   * match is joined as is, so the caller sees the usual ENOENT.
+   */
+  private async hostPath(rel: string, span?: SourceSpan): Promise<string> {
+    if (rel === '') return this.root;
+    if (!NON_ASCII.test(rel)) return join(this.root, ...rel.split('/'));
+    let cur = this.root;
+    let done = '';
+    for (const seg of rel.split('/')) {
+      done = done === '' ? seg : `${done}/${seg}`;
+      if (!NON_ASCII.test(seg)) {
+        cur = join(cur, seg);
+        continue;
+      }
+      const names = await fs.readdir(cur).catch(() => [] as string[]);
+      const matches = names.filter((n) => nfc(n) === seg);
+      if (matches.length > 1) throw normalizationCollision(done, span);
+      cur = join(cur, matches[0] ?? seg);
+    }
+    return cur;
+  }
+
   private async resolve(rel: string, span?: SourceSpan, linkName?: string): Promise<{ real: string; st: Stats }> {
-    const abs = rel === '' ? this.root : join(this.root, ...rel.split('/'));
     let real: string;
     try {
-      real = await fs.realpath(abs);
+      real = await fs.realpath(await this.hostPath(rel, span));
     } catch (e) {
+      if (e instanceof SitefileError) throw e;
       const code = errCode(e);
       if (code === 'ENOENT' || code === 'ENOTDIR') {
         throw new SitefileError(
@@ -206,13 +244,19 @@ export class LocalContext {
     const entries = await fs.readdir(realDir, { withFileTypes: true });
     const names = entries.map((d) => d.name).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const byName = new Map(entries.map((d) => [d.name, d]));
-    for (const name of names) {
-      const dirent = byName.get(name)!;
+    // Tree paths are NFC, so two names that differ only in normalization (possible
+    // on Linux, not on macOS) would be one path: refuse rather than pick one.
+    const seen = new Set<string>();
+    for (const raw of names) {
+      const dirent = byName.get(raw)!;
+      const name = nfc(raw);
+      if (seen.has(name)) throw normalizationCollision(ctxRel === '' ? name : `${ctxRel}/${name}`, span);
+      seen.add(name);
       const childCtx = ctxRel === '' ? name : `${ctxRel}/${name}`;
       const childTree = treeRel === '' ? name : `${treeRel}/${name}`;
       if (this.isIgnored(childCtx)) continue;
 
-      let childReal = join(realDir, name);
+      let childReal = join(realDir, raw);
       let st: Stats;
       if (dirent.isSymbolicLink()) {
         const r = await this.resolve(childCtx, span, display(childCtx));

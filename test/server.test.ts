@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, listen, safeSegments } from '../src/server.js';
+import { closeServer, createSiteServer, listen, LiveReload, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -465,4 +465,25 @@ test('serve: _headers: glob patterns, joined values, protected names and invalid
     assert.equal(r.status, 304);
     assert.equal(r.headers['cache-control'], 'public, max-age=60, immutable');
   });
+});
+
+test('live reload: 404.html is injected too, and a swapped tree brings its own _redirects', async () => {
+  const mk = (files: Record<string, string>): Tree => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  let current = mk({ '/index.html': 'home', '/404.html': '<p>gone</p></body>', '/_redirects': '/a /b 302\n' });
+  const s = createSiteServer(() => current, { liveReload: new LiveReload() });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    let r = await req(port, '/missing');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, `<p>gone</p>${RELOAD_SCRIPT}</body>`);
+    assert.equal(r.headers['content-length'], String(Buffer.byteLength(r.body)));
+    assert.equal((await req(port, '/a')).headers.location, '/b');
+    current = mk({ '/index.html': 'v2', '/_redirects': '/a /c 301\n' });
+    r = await req(port, '/a');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/c');
+    assert.equal((await req(port, '/')).body, `v2${RELOAD_SCRIPT}`);
+  } finally {
+    await closeServer(s);
+  }
 });

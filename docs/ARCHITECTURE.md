@@ -12,6 +12,7 @@ A general-purpose static artifact composer, initially optimized for websites. Do
 - Acquisition, transformation, and placement are distinct operations internally.
 - No implicit network access during rendering.
 - Paths are POSIX-style within virtual trees; host paths are restricted to declared context.
+- Virtual paths are Unicode NFC, and no two paths in a tree are equal under simple case folding, so an artifact can be materialized on case-insensitive and normalizing file systems.
 - Build args are public; secrets never become part of artifact metadata or cache keys in plaintext.
 
 ## Logical modules

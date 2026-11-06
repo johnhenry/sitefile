@@ -1,0 +1,97 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { SitefileError } from '../errors.js';
+import { resolveStoreHome } from '../store.js';
+import { isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
+
+export interface BuildOutcome {
+  /** CLI exit code of the build: 0 ok, 1 build error (already printed), 2 usage error (already printed). */
+  readonly code: number;
+  /** Paths the build writes (the export destination): changes there never trigger a rebuild. */
+  readonly wrote?: readonly string[];
+}
+
+export interface WatchLoopOptions {
+  /** The build context, as given (shown in messages). */
+  readonly context: string;
+  /** `-f`: the Sitefile path (default `<context>/Sitefile`). */
+  readonly sitefile?: string;
+  /** `--build-arg-file` files; they are re-read on every build. */
+  readonly argFiles: readonly string[];
+  readonly build: () => Promise<BuildOutcome>;
+  /** After the first build, before the "Watching" line (serve starts listening here). */
+  readonly onStarted?: () => Promise<void>;
+  /** For tests: resolves to stop the loop (default: SIGINT or SIGTERM). */
+  readonly stop?: Promise<void>;
+}
+
+const MSG_CHANGE = 'Change detected, rebuilding\n';
+const MSG_FAILED = 'Build failed; keeping the last good output\n';
+
+function signalled(): Promise<void> {
+  return new Promise((resolve) => {
+    process.once('SIGINT', () => resolve());
+    process.once('SIGTERM', () => resolve());
+  });
+}
+
+/**
+ * `build --watch` / `serve --watch`: build once, then rebuild whenever a file in the
+ * context, the Sitefile or a --build-arg-file changes (debounced; changes during a build
+ * coalesce into one follow-up). A failed rebuild is reported and the loop keeps going.
+ * Returns the exit code: 0 on Ctrl-C, 2 when the first build is a usage error.
+ */
+export async function watchLoop(o: WatchLoopOptions): Promise<number> {
+  const st = await fs.stat(o.context).catch(() => undefined);
+  if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${o.context}' is not a directory`);
+  const root = await fs.realpath(o.context);
+  const sitefile = await resolveReal(o.sitefile ?? path.join(o.context, 'Sitefile'));
+  const argFiles = await Promise.all(o.argFiles.map(resolveReal));
+  // The build itself writes the export, Sitefile.lock and (maybe) the store; none of that is input.
+  const ignored = new Set<string>([await resolveReal(resolveStoreHome()), path.join(path.dirname(sitefile), 'Sitefile.lock')]);
+  const relevant = (p: string): boolean => !isIgnoredChange(p, [root], ignored);
+
+  let finish!: (code: number) => void;
+  const finished = new Promise<number>((r) => (finish = r));
+  let first = true;
+  const scheduler = new RebuildScheduler(async (changed) => {
+    if (!first) {
+      if (!changed.some(relevant)) return; // only our own writes
+      process.stdout.write(MSG_CHANGE);
+    }
+    const r = await o.build();
+    for (const w of r.wrote ?? []) {
+      ignored.add(path.resolve(w));
+      ignored.add(await resolveReal(w));
+    }
+    if (!first) {
+      if (r.code !== 0) process.stderr.write(MSG_FAILED);
+      return;
+    }
+    first = false;
+    if (r.code === 2) return finish(2);
+    try {
+      await o.onStarted?.();
+    } catch (e) {
+      if (!(e instanceof SitefileError)) throw e;
+      process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+      return finish(1);
+    }
+    process.stdout.write(`Watching ${o.context} for changes (Ctrl-C to stop)\n`);
+  });
+  const close = watchPaths({
+    dirs: [root],
+    files: [sitefile, ...argFiles],
+    onChange: (p) => {
+      if (relevant(p)) scheduler.notify(p);
+    },
+  });
+  void (o.stop ?? signalled()).then(() => finish(0));
+  try {
+    await scheduler.run();
+    return await finished;
+  } finally {
+    close();
+    scheduler.close();
+  }
+}

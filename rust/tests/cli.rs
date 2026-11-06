@@ -139,6 +139,30 @@ fn errors_print_code_and_location_usage_errors_exit_2() {
 }
 
 #[test]
+fn case_only_collisions_fail_at_the_second_write() {
+    // Issue #71: this used to fail in the exporter with a raw EEXIST on a temp path (macOS).
+    let work = Tmp::new();
+    let dir = work.path().join("case");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/A.html"), "A").unwrap();
+    fs::write(dir.join("src/a2.html"), "b").unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nCOPY ./src/A.html /A.html\nCOPY ./src/a2.html /a.html\nEXPORT / AS directory\n").unwrap();
+    let r = sitefile(&work, &["build", s(&dir), "--no-lockfile"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.starts_with("error[E_PATH_COLLISION]: "), "{}", r.stderr);
+    assert!(r.stderr.contains("Sitefile:3:1: '/a.html' differs only in case from '/A.html' (written by "), "{}", r.stderr);
+    assert!(!r.stderr.contains("sitefile-tmp"), "{}", r.stderr);
+
+    // NFD in the Sitefile gives an NFC output path.
+    fs::write(dir.join("Sitefile"), "FROM scratch\nCOPY ./src/A.html /cafe\u{301}.html\nEXPORT /\n").unwrap();
+    let out = work.path().join("out");
+    let r = sitefile(&work, &["build", s(&dir), "--no-lockfile", "-o", s(&out)]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let names: Vec<String> = fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(names, vec!["caf\u{e9}.html".to_string()]);
+}
+
+#[test]
 fn refuses_to_replace_a_non_empty_directory_outside_the_context_without_force() {
     let work = Tmp::new();
     let ctx = example(&work, "hello");
@@ -265,7 +289,7 @@ fn motion_renders_animated_svgs_through_a_sandboxed_plugin() {
         return;
     }
     let ctx = example(&work, "motion");
-    let r = sitefile(&work, &["build", s(&ctx)]);
+    let r = sitefile(&work, &["build", s(&ctx), "--allow-plugin", "motion"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let title = read(ctx.join("dist/title.svg"));
     assert!(title.starts_with("<?xml") && title.contains("<svg") && title.contains("@keyframes") && title.trim_end().ends_with("</svg>"));
@@ -286,6 +310,54 @@ fn wasm_draws_badges_with_a_webassembly_plugin() {
     let svg = read(ctx.join("dist/badges/why-wasm.svg"));
     assert!(svg.starts_with("<svg ") && svg.contains("aria-label=\"reading time: 1 min · "), "{svg}");
     assert!(read(ctx.join("dist/badges/built-with.svg")).contains("sitefile + wasm"));
+}
+
+#[test]
+fn js_plugin_needs_allow_plugin() {
+    let work = Tmp::new();
+    let dir = work.path().join("plug");
+    fs::create_dir_all(dir.join("plugins")).unwrap();
+    fs::write(dir.join("a.txt"), "a").unwrap();
+    fs::write(dir.join("plugins/up.mjs"), "export function transform(r) { return r.input.text.toUpperCase(); }\n").unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nPLUGIN up FROM ./plugins/up.mjs\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /\n").unwrap();
+    let flag_hint = "PLUGIN up runs JavaScript, which must be allowed explicitly: add --allow-plugin up (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag";
+    // Denied before node is needed, so this part runs without node too.
+    let denied = sitefile(&work, &["build", s(&dir)]);
+    assert_eq!(denied.code, 1);
+    assert!(denied.stderr.contains("error[E_UNSUPPORTED]: ") && denied.stderr.contains(&format!("Sitefile:2:1: {flag_hint}")), "{}", denied.stderr);
+    let other = sitefile(&work, &["build", s(&dir), "--allow-plugin", "other"]);
+    assert_eq!(other.code, 1);
+    assert!(other.stderr.contains(flag_hint), "{}", other.stderr);
+    let bad = sitefile(&work, &["build", s(&dir), "--allow-plugin", "bad-name"]);
+    assert_eq!(bad.code, 2);
+    assert!(bad.stderr.contains("--allow-plugin expects a PLUGIN name (an identifier), got 'bad-name'"), "{}", bad.stderr);
+    // validate never runs plugins.
+    assert_eq!(sitefile(&work, &["validate", s(&dir)]).code, 0);
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("skipped the allowed builds: node is not installed");
+        return;
+    }
+    let named = sitefile(&work, &["build", s(&dir), "--allow-plugin", "up", "--allow-plugin", "unused"]);
+    assert_eq!(named.code, 0, "{}", named.stderr);
+    assert!(named.stderr.contains("warning: --allow-plugin unused does not match any PLUGIN and was ignored"), "{}", named.stderr);
+    assert_eq!(read(dir.join("dist/a.out")), "A");
+    let all = sitefile(&work, &["build", s(&dir), "--allow-plugins", "--force"]);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wasm_named_symlink_to_a_js_plugin_still_needs_allow_plugin() {
+    let work = Tmp::new();
+    let dir = work.path().join("plug");
+    fs::create_dir_all(dir.join("plugins")).unwrap();
+    fs::write(dir.join("a.txt"), "a").unwrap();
+    fs::write(dir.join("plugins/up.mjs"), "export function transform() { return 'js'; }\n").unwrap();
+    std::os::unix::fs::symlink("up.mjs", dir.join("plugins/up.wasm")).unwrap();
+    fs::write(dir.join("Sitefile"), "FROM scratch\nPLUGIN up FROM ./plugins/up.wasm\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /\n").unwrap();
+    let denied = sitefile(&work, &["build", s(&dir)]);
+    assert_eq!(denied.code, 1);
+    assert!(denied.stderr.contains("error[E_UNSUPPORTED]") && denied.stderr.contains("add --allow-plugin up"), "{}", denied.stderr);
 }
 
 #[test]
@@ -477,4 +549,74 @@ fn site_file_errors() {
     let out = work.path().join("ov");
     assert_eq!(sitefile(&work, &["build", s(&ctx), "-o", s(&out), "--no-lockfile"]).code, 0);
     assert_eq!(read(out.join("_headers")), "/*\n  A: 1\n");
+}
+
+fn sitefile_env(work: &Tmp, args: &[&str], env: &[(&str, &str)]) -> Out {
+    let mut c = Command::new(BIN);
+    c.args(args).current_dir(repo_root()).env("SITEFILE_HOME", work.path().join(".home"));
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c.output().expect("run sitefile");
+    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }
+}
+
+fn backdate(p: &Path, secs: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
+}
+
+#[test]
+fn cache_size_limit_evicts_after_build_and_cache_du_reports() {
+    let work = Tmp::new();
+    let ctx = example(&work, "hello");
+    let home = work.path().join(".home");
+    let tc = home.join("cache/transform");
+    for (k, ch) in [("old", 'o'), ("new", 'n')] {
+        let bytes = ch.to_string().repeat(2000);
+        let hex = sitefile::digest::hex_of(&sitefile::digest::sha256(bytes.as_bytes())).to_string();
+        fs::create_dir_all(tc.join("blobs")).unwrap();
+        fs::create_dir_all(tc.join("entries")).unwrap();
+        fs::write(tc.join("blobs").join(&hex), &bytes).unwrap();
+        fs::write(tc.join("entries").join(format!("{k}.json")), format!(r#"{{"version":1,"kind":"file","files":[["","{hex}",2000]]}}"#)).unwrap();
+        backdate(&tc.join("blobs").join(&hex), 7200);
+        backdate(&tc.join("entries").join(format!("{k}.json")), if k == "old" { 7200 } else { 3600 });
+    }
+    let du = sitefile_env(&work, &["cache", "du", "--json"], &[("SITEFILE_CACHE_MAX", "3K")]);
+    assert_eq!(du.code, 0, "{}", du.stderr);
+    let j: serde_json::Value = serde_json::from_str(&du.stdout).unwrap();
+    assert_eq!(j["limit"], 3072);
+    let names: Vec<&str> = j["caches"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["transform", "wasm", "store", "servers"]);
+    assert_eq!(j["caches"][0]["items"], 2);
+    let text = sitefile_env(&work, &["cache", "ls"], &[("SITEFILE_CACHE_MAX", "3K")]);
+    let lines: Vec<Vec<&str>> = text.stdout.lines().map(|l| l.split_whitespace().collect()).collect();
+    assert_eq!(lines[0], ["CACHE", "ITEMS", "SIZE", "EVICTABLE", "PATH"], "{}", text.stdout);
+    assert_eq!(lines[1][..2], ["transform", "2"], "{}", text.stdout);
+    assert!(text.stdout.contains("\nLimit: 3KiB (SITEFILE_CACHE_MAX; "), "{}", text.stdout);
+
+    let out = ctx.join("dist");
+    let b = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out)], &[("SITEFILE_CACHE_MAX", "3K")]);
+    assert_eq!(b.code, 0, "{}", b.stderr);
+    assert!(b.stderr.starts_with("Evicted 1 cache item (2.") && b.stderr.ends_with("kB) to stay under SITEFILE_CACHE_MAX=3KiB\n"), "{}", b.stderr);
+    assert!(!tc.join("entries/old.json").exists());
+    assert!(tc.join("entries/new.json").exists());
+
+    let bad = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out), "--force"], &[("SITEFILE_CACHE_MAX", "huge")]);
+    assert_eq!(bad.code, 0, "{}", bad.stderr);
+    assert!(bad.stderr.starts_with("warning: SITEFILE_CACHE_MAX='huge' is not a size"), "{}", bad.stderr);
+
+    fs::create_dir_all(home.join("blobs/sha256")).unwrap();
+    fs::write(home.join("blobs/sha256").join("f".repeat(64)), "x".repeat(5000)).unwrap();
+    fs::write(home.join("index.json"), "{not json").unwrap();
+    let broken = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out), "--force"], &[("SITEFILE_CACHE_MAX", "1K")]);
+    assert_eq!(broken.code, 0, "{}", broken.stderr);
+    assert!(broken.stderr.lines().any(|l| l.starts_with("warning: cache size limit not applied: ") && l.contains("index.json is corrupt")), "{}", broken.stderr);
+
+    assert_eq!(sitefile(&work, &["cache", "prune", "--max-size", "0"]).code, 2);
+    assert_eq!(sitefile(&work, &["cache", "prune", "--max-size", "1M", "--older-than", "1"]).code, 2);
+    fs::remove_file(home.join("index.json")).unwrap();
+    let pr = sitefile(&work, &["cache", "prune", "--max-size", "1M"]);
+    assert_eq!(pr.code, 0, "{}", pr.stderr);
+    assert_eq!(pr.stdout, "Evicted 0 items\nTotal reclaimed space: 0B\n");
 }

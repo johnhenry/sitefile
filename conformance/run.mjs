@@ -14,10 +14,16 @@
 // OCI outputs (compare: 'oci') are compared by manifest digest (the image ID)
 // and config digest (diff_ids, labels, platform).
 //
-// A case directory may hold case.json: { args, env, out, compare, command, links }.
+// A case directory may hold case.json: { args, env, out, compare, command, links,
+// files, expectPaths }.
 // `command` ("validate" or "inspect") runs that command instead of build and
 // compares exit code and stdout. `links` lists [existing, new] hard links to
-// create before the case runs and remove after it.
+// create before the case runs and remove after it. `files` maps context paths
+// to contents, created before the case and removed after it (with the
+// top-level directory each one creates), for names that should not be
+// committed as written (NFD file names: write them with JSON \u escapes).
+// `expectPaths` lists output paths (exact code points, as read back from the
+// directory listing) that both implementations' tree output must contain.
 //
 // Network cases (case.json "network": true, conformance/cases/net-*; format in
 // conformance/network.mjs) run a list of CLI steps (build, push, pull, save)
@@ -63,7 +69,7 @@ function cases() {
     ex('multistage'),
     ex('blog'),
     ex('data'),
-    ex('motion'),
+    ex('motion', { args: ['--allow-plugin', 'motion'] }),
     ex('wasm'),
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
     ex('hello', { suffix: ':tar', out: 'site.tar', compare: 'archive' }),
@@ -121,7 +127,7 @@ async function dirDigest(dir) {
   }
   await walk(dir, '');
   files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return { digest: 'sha256:' + createHash('sha256').update(files.map((f) => `${f[0]}\0${f[1]}\0${f[2]}\n`).join('')).digest('hex'), files: files.length };
+  return { paths: files.map((f) => f[0]), digest: 'sha256:' + createHash('sha256').update(files.map((f) => `${f[0]}\0${f[1]}\0${f[2]}\n`).join('')).digest('hex'), files: files.length };
 }
 
 async function outputOf(kind, outPath) {
@@ -165,6 +171,14 @@ try {
     // Hard links are created here: git does not keep them.
     const links = (c.links ?? []).map(([from, to]) => [path.join(c.context, from), path.join(c.context, to)]);
     for (const [from, to] of links) await fs.link(from, to).catch(() => undefined);
+    // Generated files: remove each top-level entry they create (and only those).
+    const generated = [];
+    for (const [rel, content] of Object.entries(c.files ?? {})) {
+      const top = path.join(c.context, rel.split('/')[0]);
+      if (!generated.includes(top) && (await fs.lstat(top).catch(() => undefined)) === undefined) generated.push(top);
+      await fs.mkdir(path.dirname(path.join(c.context, rel)), { recursive: true });
+      await fs.writeFile(path.join(c.context, rel), content);
+    }
     try {
       for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
         const out = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'), c.out ?? 'dist');
@@ -173,7 +187,9 @@ try {
           command === 'build'
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
             : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
-        const res = await run(cmd, argv, c.env ?? {});
+        // Each implementation gets its own SITEFILE_HOME: builds write the TRANSFORM cache and apply
+        // the cache size limit there, and must never touch ~/.sitefile.
+        const res = await run(cmd, argv, { SITEFILE_HOME: path.join(tmp, impl, '.home'), ...(c.env ?? {}) });
         r[impl] = { code: res.code, error: errorLine(res.stderr), warnings: warningLines(res.stderr), ms: res.ms, spawnError: res.spawnError };
         if (res.code === 0) {
           r[impl].output =
@@ -184,12 +200,21 @@ try {
       }
     } finally {
       for (const [, to] of links) await fs.rm(to, { force: true });
+      for (const top of generated) await fs.rm(top, { recursive: true, force: true });
+    }
+    const missing = {};
+    for (const impl of ['ts', 'rust']) {
+      const have = r[impl].output?.paths;
+      const absent = have ? (c.expectPaths ?? []).filter((p) => !have.includes(p)) : [];
+      if (absent.length) missing[impl] = absent;
+      delete r[impl].output?.paths;
     }
     const same =
       !r.rust.spawnError &&
       r.ts.code === r.rust.code &&
       r.ts.warnings === r.rust.warnings &&
-      (r.ts.code === 0 ? r.ts.output?.digest === r.rust.output?.digest : r.ts.error === r.rust.error);
+      (r.ts.code === 0 ? r.ts.output?.digest === r.rust.output?.digest : r.ts.error === r.rust.error) &&
+      Object.keys(missing).length === 0;
     if (!same && compare === 'stdout' && r.ts.output?.stdout !== undefined && r.rust.output?.stdout !== undefined) {
       const a = r.ts.output.stdout.split('\n');
       const b = r.rust.output.stdout.split('\n');
@@ -201,6 +226,7 @@ try {
     const tag = same ? 'PASS' : 'FAIL';
     console.log(`${tag}  ${c.name}`);
     if (!same) {
+      for (const [impl, absent] of Object.entries(missing)) console.log(`        ${impl.padEnd(4)} output lacks ${absent.map((p) => JSON.stringify(p)).join(', ')}`);
       for (const impl of ['ts', 'rust']) {
         const x = r[impl];
         console.log(`        ${impl.padEnd(4)} exit ${x.code} ${x.spawnError ?? (x.code === 0 ? `${x.output?.files} files ${x.output?.digest}` : x.error)}${x.warnings ? ` [${x.warnings.replace(/\n/g, ' | ')}]` : ''}`);

@@ -58,6 +58,14 @@ export interface BuildOptions {
    * like the CLI's `--allow-exec`. A TOOL not listed here fails the build.
    */
   readonly allowExec?: readonly string[];
+  /**
+   * JavaScript PLUGINs allowed to run, by declared name, like the CLI's `--allow-plugin`.
+   * A JS PLUGIN not listed here (and without `allowAllPlugins`) fails the build.
+   * WebAssembly plugins need no permission.
+   */
+  readonly allowPlugin?: readonly string[];
+  /** Allow every JavaScript PLUGIN, like the CLI's `--allow-plugins`. */
+  readonly allowAllPlugins?: boolean;
   /** External tool limits (per-call timeout, maximum output size). */
   readonly toolPolicy?: Partial<ToolPolicy>;
   /** Directory of the TRANSFORM result cache. Omit to disable caching (the CLI sets `$SITEFILE_HOME/cache/transform`). */
@@ -139,6 +147,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   };
   p.warnings.forEach(warn);
   const tools = await resolveTools(p, options, warn);
+  const pluginAllowed = checkPlugins(p, options, warn);
 
   const contextReal = await realpath(options.contextDir).catch((e: unknown) => {
     throw new SitefileError('E_NOT_FOUND', `build context '${options.contextDir}' does not exist`, undefined, { cause: e });
@@ -190,7 +199,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   };
   let tree = Tree.empty;
   try {
-    for (const spec of p.plugins) await registerPlugin(spec, local, plugins);
+    for (const spec of p.plugins) await registerPlugin(spec, local, plugins, pluginAllowed);
     for (const stage of p.stages) {
       tree = await startStage(stage, execEnv);
       for (const op of stage.operations) tree = await execute(op, tree, execEnv);
@@ -429,7 +438,7 @@ type Source =
   | { readonly kind: 'tree'; readonly tree: Tree; readonly label: string };
 
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
-async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost): Promise<void> {
+async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost, allowed: (spec: PluginSpec) => void): Promise<void> {
   const { real, bytes } = await local.realFile(spec.path, spec.span);
   if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
   if (real.endsWith('.wasm')) {
@@ -438,6 +447,8 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
     host.register(spec.name, real, spec.span, bytes);
     return;
   }
+  // It runs as JavaScript (also a '.wasm' path that is a symlink to a JS file), so it needs the opt-in.
+  allowed(spec);
   // A JS plugin may read its whole folder, so that folder must not be the context itself.
   if (path.dirname(real) === local.root) {
     throw new SitefileError(
@@ -447,6 +458,31 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
     );
   }
   host.register(spec.name, real, spec.span);
+}
+
+/**
+ * Check every JavaScript PLUGIN against `--allow-plugin` / `--allow-plugins` before
+ * anything is read or started. A wasm plugin (a module that imports nothing) runs
+ * without permission. Returns the check, which registerPlugin repeats on the real path.
+ */
+function checkPlugins(p: Plan, options: BuildOptions, warn: (m: string) => void): (spec: PluginSpec) => void {
+  const names = new Set<string>();
+  for (const name of options.allowPlugin ?? []) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new SitefileError('E_USAGE', `--allow-plugin expects a PLUGIN name (an identifier), got '${name}'`);
+    names.add(name);
+  }
+  const all = options.allowAllPlugins ?? false;
+  const allowed = (spec: PluginSpec): void => {
+    if (all || names.has(spec.name)) return;
+    throw new SitefileError(
+      'E_UNSUPPORTED',
+      `PLUGIN ${spec.name} runs JavaScript, which must be allowed explicitly: add --allow-plugin ${spec.name} (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag`,
+      spec.span,
+    );
+  };
+  for (const spec of p.plugins) if (!spec.path.endsWith('.wasm')) allowed(spec);
+  for (const name of names) if (!p.plugins.some((s) => s.name === name)) warn(`--allow-plugin ${name} does not match any PLUGIN and was ignored`);
+  return allowed;
 }
 
 /** Match each declared TOOL to a `--allow-exec` entry and resolve it to a real path. */

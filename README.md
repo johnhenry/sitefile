@@ -36,7 +36,7 @@ no runtime dependencies.
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter; `AS yaml`/`csv`/`wbn` give data for templates |
 | `COPY [--overwrite] [--from=<stage>] <source> <dest>` | yes; source is a local path, `name:/path`, `<<EOF` inline content, or with `--from` an absolute path in an earlier stage |
 | `RENDER [--escape=html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]` | yes; template is a file or `<<EOF` inline body; `${NAME}`, `${json.path}`, `${#each}`, `${#if}`, `${x\|raw}`; `FOR` renders one page per element |
-| `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module or an import-free WebAssembly module (see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
+| `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
@@ -81,6 +81,14 @@ TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter
 TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
 ```
 
+A JavaScript plugin is code from the repository you are building, so it runs only when you allow it:
+
+```
+sitefile build --allow-plugin motion     # or --allow-plugins for every PLUGIN
+```
+
+WebAssembly plugins (`PLUGIN … FROM ./x.wasm`) import nothing, can only compute, and need no flag (see `examples/wasm/`).
+
 External programs are explicit opt-ins: declare a `TOOL`, and allow it on the command line.
 
 ```
@@ -100,7 +108,8 @@ TRANSFORM results are cached in `$SITEFILE_HOME/cache/transform` (`--no-cache` t
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
-               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache]
+               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
+               [--no-cache] [--watch]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 
@@ -108,9 +117,24 @@ sitefile inspect  [context] [--json]
 sitefile build [context] -t name[:tag]        # also store the build as an image
 sitefile images | image inspect|diff|prune | tag | rmi | save
 sitefile cache info | cache prune [--older-than days]   # TRANSFORM result cache
+sitefile cache du                                       # cache sizes; SITEFILE_CACHE_MAX bounds them (default 1G)
 sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
+sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
+
+## Watch mode
+
+```bash
+sitefile build --watch examples/hello     # rebuild dist/ whenever the context, Sitefile or a --build-arg-file changes
+sitefile serve --watch examples/hello     # build in memory, serve on 127.0.0.1, reload open pages after each rebuild
+```
+
+Rebuilds are debounced (100 ms) and changes made during a build become one follow-up build. The output
+directory, `.git`, `Sitefile.lock` and the store are not watched. A failed rebuild prints the error and keeps the
+last good output (exports are swapped in atomically; `serve --watch` keeps serving the last good build). Live
+reload is a small script added to HTML responses only under `serve --watch`, listening on the reserved
+`/__sitefile/reload` event stream; it is never written to exports. See [docs/CLI.md](docs/CLI.md#watch-mode).
 
 ## Images and servers
 
@@ -146,6 +170,9 @@ move images to and from any OCI registry. See
   time and on every redirect), size- and time-limited, never decompressed or executed.
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
 - Writing different content to an existing path fails unless `--overwrite` is given.
+  Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
+  (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same
+  files and image IDs on macOS, Windows and Linux.
 - Export is staged in a temporary sibling and swapped in; a non-empty destination
   outside the context is only replaced with `--force`.
 - Archive exports (`zip`, `tar`, `tgz`, `wbn`) write one file via a temporary sibling and

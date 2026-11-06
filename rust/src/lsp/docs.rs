@@ -41,7 +41,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     (
         "PLUGIN",
         "PLUGIN name FROM ./plugins/x.mjs|x.wasm [INTEGRITY sha256:…]",
-        "Declares a sandboxed renderer: a local ES module or an import-free WebAssembly module. URLs are not allowed. See docs/PLUGINS.md.",
+        "Declares a sandboxed renderer: a local ES module or an import-free WebAssembly module. URLs are not allowed. A JavaScript plugin runs only when the CLI allows it with `--allow-plugin name` (or `--allow-plugins`); a wasm plugin needs no flag. See docs/PLUGINS.md.",
     ),
     (
         "TOOL",

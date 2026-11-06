@@ -1,0 +1,6 @@
+FROM scratch
+# Refused before the import is resolved: the error is the PLUGIN, not the address.
+IMPORT x FROM https://127.0.0.1:1/x.txt
+PLUGIN up FROM ./plugins/up.mjs
+TRANSFORM ./a.txt WITH up TO /a.txt
+EXPORT /

@@ -133,6 +133,7 @@ export async function pullImage(store: Store, client: RegistryClient, ref: Image
       const d = unique[next++];
       if (!d) return;
       if (await store.hasBlob(d.digest, d.size)) {
+        await store.touchBlob(d.digest); // recently used: protected from the cache size limit
         say(`${shortId(d.digest)}: already exists`);
         continue;
       }
