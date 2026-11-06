@@ -1,0 +1,10 @@
+{
+  "profile": true,
+  "copy": {
+    "plugins/image.wasm": "plugins/image/image.wasm",
+    "in/a.png": "plugins/image/testdata/tiny.png",
+    "in/b/tiny.jpg": "plugins/image/testdata/tiny.jpg",
+    "in/b/c/rotated.jpg": "plugins/image/testdata/rotated.jpg",
+    "in/drafts/x.gif": "plugins/image/testdata/tiny.gif"
+  }
+}

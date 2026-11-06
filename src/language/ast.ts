@@ -205,9 +205,10 @@ export interface TransformOption {
 }
 
 /**
- * `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH <plugin> TO <dest>
- *   [OPTIONS key=value …] [FOR item IN list] [ARGS <argument> …]`
- * ARGS (last on the line) is the argv template when `<plugin>` is a TOOL.
+ * `TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…] [<source>]
+ *   WITH <plugin> TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS <argument> …]`
+ * ARGS (last on the line) is the argv template when `<plugin>` is a TOOL. A directory source runs
+ * the plugin once per file (`--include`/`--exclude` pick the files).
  */
 export interface TransformInstruction {
   readonly kind: 'TRANSFORM';
@@ -222,6 +223,10 @@ export interface TransformInstruction {
   readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
   /** argv template of a TOOL: `{input}`, `{output}` and `{option.key}` are replaced by the host. */
   readonly args?: readonly Operand[];
+  /** `--include` patterns (`.sitefileignore` syntax): a directory source's files to keep. */
+  readonly include?: readonly string[];
+  /** `--exclude` patterns (`.sitefileignore` syntax): a directory source's files to leave out. */
+  readonly exclude?: readonly string[];
   readonly overwrite: boolean;
 }
 

@@ -17,7 +17,7 @@ export const KEYWORDS = {
   flags: {
     COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
-    TRANSFORM: ['overwrite', 'from'],
+    TRANSFORM: ['overwrite', 'from', 'include', 'exclude'],
     SITEMAP: ['overwrite'],
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],

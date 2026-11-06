@@ -48,7 +48,8 @@ pub const COPY_FLAGS: &[(&str, Shape)] = &[
     ("parents", Shape::Bare),
 ];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
-pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const TRANSFORM_FLAGS: &[(&str, Shape)] =
+    &[("overwrite", Shape::Bare), ("from", Shape::Value), ("include", Shape::Repeat), ("exclude", Shape::Repeat)];
 
 /// The leading flags `keyword` accepts (empty for instructions without flags).
 pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
@@ -367,17 +368,23 @@ fn chmod_mode(value: &str) -> Option<u32> {
     }
 }
 
-fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, COPY_FLAGS)?;
-    for e in flags.all("exclude") {
+/// Repeatable pattern flags (`--exclude`, `--include`), in the order given: each value must be a `.sitefileignore` rule.
+fn check_patterns<'a>(patterns: impl Iterator<Item = &'a ParsedFlag>) -> Result<()> {
+    for e in patterns {
         if !is_ignore_pattern(&e.value) {
             return Err(SitefileError::at(
                 E_SYNTAX,
-                format!("--exclude={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.value),
+                format!("--{}={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.name, e.value),
                 &e.span,
             ));
         }
     }
+    Ok(())
+}
+
+fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, COPY_FLAGS)?;
+    check_patterns(flags.all("exclude"))?;
     let chmod = match flags.get("chmod") {
         None => None,
         Some(f) => Some(chmod_mode(&f.value).ok_or_else(|| {
@@ -470,6 +477,8 @@ fn parse_args(c: &mut Cursor) -> Result<Vec<Operand>> {
 
 fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, TRANSFORM_FLAGS)?;
+    let patterns: Vec<&ParsedFlag> = flags.0.iter().filter(|f| f.name == "include" || f.name == "exclude").collect();
+    check_patterns(patterns.iter().copied())?;
     // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
     let source = if c.keyword("WITH") { None } else { Some(inline_or_operand(c, "source")?) };
     if source.is_some() {
@@ -537,6 +546,22 @@ fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             return Err(SitefileError::at(E_SYNTAX, "--from needs a source path", &f.span));
         }
     }
+    // --include/--exclude pick the files of a directory source, which runs the plugin once per file.
+    if let Some(first) = patterns.first() {
+        let name = first.name;
+        match &source {
+            None => return Err(SitefileError::at(E_SYNTAX, format!("--{name} needs a source directory"), &first.span)),
+            Some(Source::Inline(_)) => {
+                return Err(SitefileError::at(E_SYNTAX, format!("--{name} cannot be combined with an inline (<<) body"), &first.span))
+            }
+            Some(_) if each.is_some() => {
+                return Err(SitefileError::at(E_SYNTAX, format!("--{name} filters a directory source, which cannot be combined with FOR"), &first.span))
+            }
+            Some(_) => {}
+        }
+    }
+    let include: Vec<String> = flags.all("include").map(|f| f.value.clone()).collect();
+    let exclude: Vec<String> = flags.all("exclude").map(|f| f.value.clone()).collect();
     let from = stage_ref(&flags)?;
     Ok(Instruction::Transform {
         span,
@@ -548,6 +573,8 @@ fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         options,
         each,
         args,
+        include,
+        exclude,
         overwrite: flags.has("overwrite"),
     })
 }

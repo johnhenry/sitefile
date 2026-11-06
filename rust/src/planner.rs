@@ -157,6 +157,9 @@ pub enum Operation {
         each: Option<TransformEach>,
         /// argv template when `plugin` names a TOOL.
         args: Option<Vec<Operand>>,
+        /// A directory source's files to keep / leave out (`.sitefileignore` patterns, relative to it).
+        include: Vec<String>,
+        exclude: Vec<String>,
         overwrite: bool,
         span: SourceSpan,
     },
@@ -476,7 +479,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 plugins.push(PluginSpec { name: name.clone(), path: rel, integrity: integrity.clone(), span: span.clone() });
             }
             Instruction::Tool { span, name } => tools.push(ToolSpec { name: name.clone(), span: span.clone() }),
-            Instruction::Transform { span, source, from, plugin, dest, options, each, args, overwrite, .. } => {
+            Instruction::Transform { span, source, from, plugin, dest, options, each, args, include, exclude, overwrite, .. } => {
                 let source = match source {
                     Some(s) => Some(source_ref(s, &vars, &imports, from.as_ref())?),
                     None => None,
@@ -488,6 +491,8 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     options: options.iter().map(|o| PlanOption { key: o.key.clone(), value: o.value.clone() }).collect(),
                     each: each.as_ref().map(|e| TransformEach { as_name: e.as_name.clone(), list: e.list.clone() }),
                     args: args.clone(),
+                    include: include.clone(),
+                    exclude: exclude.clone(),
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
@@ -837,7 +842,7 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Transform { source, plugin, dest, options, each, args, overwrite, span } => {
+            Operation::Transform { source, plugin, dest, options, each, args, include, exclude, overwrite, span } => {
                 if let Some(s) = source {
                     m.insert("source".into(), s.to_json());
                 }
@@ -850,6 +855,12 @@ impl Operation {
                 }
                 if let Some(a) = args {
                     m.insert("args".into(), Value::Array(a.iter().map(operand_json).collect()));
+                }
+                if !include.is_empty() {
+                    m.insert("include".into(), json!(include));
+                }
+                if !exclude.is_empty() {
+                    m.insert("exclude".into(), json!(exclude));
                 }
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));

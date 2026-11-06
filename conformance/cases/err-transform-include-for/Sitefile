@@ -1,0 +1,5 @@
+# --exclude picks the files of a directory source: never with FOR (E_SYNTAX).
+PLUGIN image FROM ./plugins/image.wasm
+IMPORT items FROM ./items.json AS json
+TRANSFORM --exclude=*.md ./src/ WITH image TO /out/${i}/ FOR i IN items
+EXPORT /

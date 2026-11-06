@@ -522,9 +522,14 @@ impl Why<'_> {
                         inputs.push(format!("list {}", e.list));
                     }
                 }
-                Operation::Transform { source, plugin, each, .. } => {
+                Operation::Transform { source, plugin, each, span, .. } => {
+                    // A directory TRANSFORM names the input file in each output's origin.
+                    let per_file = format!("{} TRANSFORM ", self.at(span.line));
                     if let Some(s) = source {
-                        inputs.push(read_label(s));
+                        inputs.push(match written.origin.strip_prefix(&per_file) {
+                            Some(file) => file.to_string(),
+                            None => read_label(s),
+                        });
                     }
                     inputs.push(format!("{} {plugin}", if self.tools.contains(plugin.as_str()) { "tool" } else { "plugin" }));
                     if let Some(e) = each {
