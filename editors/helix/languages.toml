@@ -7,6 +7,13 @@ injection-regex = "^sitefile$"
 file-types = ["sitefile", "Sitefile", { glob = "Sitefile" }, { glob = "Sitefile.*" }]
 comment-token = "#"
 indent = { tab-width = 2, unit = "  " }
+language-servers = ["sitefile-lsp"]
+
+# `sitefile lsp` from the Rust binary (docs/LSP.md); `sitefile` must be on PATH
+# (or put its full path in `command`).
+[language-server.sitefile-lsp]
+command = "sitefile"
+args = ["lsp"]
 
 [[grammar]]
 name = "sitefile"

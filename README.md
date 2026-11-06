@@ -169,25 +169,28 @@ sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
 
 ## Editor support
 
-[editors/vscode/](editors/vscode/) is a VS Code extension with syntax
-highlighting for Sitefiles: instructions, clauses, operands, `${…}`
-interpolation, and heredoc bodies with the embedded language picked by the
-delimiter (`<<HTML`, `<<CSS`, …). It isn't published; build and install it
-locally:
+Highlighting works on its own; the language features (diagnostics,
+completion, hover, go to definition, references, rename, outline) come from
+the Rust binary's language server, `sitefile lsp`
+([docs/LSP.md](docs/LSP.md)), so put it on `PATH` with
+`cargo install --path rust` or point the editor at it.
 
-```bash
-(cd editors/vscode && npm install && npm run package)
-code --install-extension editors/vscode/sitefile-0.1.0.vsix
-```
+- **VS Code**: [editors/vscode/](editors/vscode/), a TextMate grammar plus a
+  language client that starts `sitefile lsp` (`sitefile.server.path`). Not
+  published; `(cd editors/vscode && npm install && npm run package)`, then
+  `code --install-extension editors/vscode/sitefile-0.2.0.vsix`.
+- **Zed**: [editors/zed/](editors/zed/), tree-sitter highlighting and the
+  `sitefile-lsp` language server; **zed: install dev extension** on
+  `editors/zed`.
+- **Neovim**: [editors/neovim/](editors/neovim/), tree-sitter queries and a
+  `vim.lsp.config` snippet for `sitefile lsp`.
+- **Helix**: [editors/helix/](editors/helix/), queries and a `languages.toml`
+  with the grammar and the `sitefile-lsp` server.
 
-Without it, `"files.associations": { "Sitefile": "dockerfile" }` is a usable
-stopgap.
-
-[editors/tree-sitter-sitefile/](editors/tree-sitter-sitefile/) is a
-tree-sitter grammar with highlight, injection, fold and outline queries. It
-powers the [Zed extension](editors/zed/) (install it with **zed: install dev
-extension** on `editors/zed`) and the [Neovim](editors/neovim/) and
-[Helix](editors/helix/) setups, whose READMEs list the configuration to add.
+The grammar behind Zed, Neovim and Helix is
+[editors/tree-sitter-sitefile/](editors/tree-sitter-sitefile/). Without an
+extension, `"files.associations": { "Sitefile": "dockerfile" }` is a usable
+stopgap in VS Code.
 
 ## Docs
 
