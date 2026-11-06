@@ -10,9 +10,9 @@
 ; Instructions and clauses (case-insensitive in the source).
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
-  "SITEMAP" "FEED" "REDIRECT" "HEADER"
+  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE"
+  "LINK" "TITLE" "STATUS" "IMAGE" "MANIFEST"
 ] @keyword
 
 (for_clause [ "FOR" "IN" ] @keyword.repeat)

@@ -150,6 +150,13 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("args", args.as_ref().map(|a| Value::Array(a.iter().map(operand).collect()))),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::Fingerprint { span: sp, patterns, manifest, overwrite } => obj(vec![
+            ("kind", s("FINGERPRINT")),
+            ("span", Some(span(sp))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("manifest", manifest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

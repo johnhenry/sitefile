@@ -359,3 +359,26 @@ HEADER /assets/* Cache-Control: public, max-age=31536000
     (word)
     (word)
     (word)))
+
+================================================================================
+FINGERPRINT with flags, several patterns and a manifest
+================================================================================
+
+FINGERPRINT /assets/ /**/*.css
+fingerprint --overwrite /${D}/*.js "/x y/" manifest /asset-manifest.json
+
+---
+
+(source_file
+  (fingerprint_instruction
+    (path)
+    (path))
+  (fingerprint_instruction
+    (flag
+      (flag_name))
+    (path
+      (substitution
+        (identifier)))
+    (string
+      (string_content))
+    (path)))

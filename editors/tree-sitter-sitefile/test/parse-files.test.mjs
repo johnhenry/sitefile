@@ -15,6 +15,7 @@ import { findSitefiles, grammarDir, parseOk, repoRoot } from './helpers.mjs';
 /** Rejected by src/language/parser.ts with E_SYNTAX (relative to the repository root). */
 const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-compression/Sitefile', // COMPRESSION zstd: the grammar accepts any word here
+  'conformance/cases/err-fingerprint-syntax/Sitefile', // FINGERPRINT MANIFEST /m.json: the grammar reads MANIFEST as a pattern
   'conformance/cases/err-from-missing-base/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile', // STATUS 200: the grammar accepts any word here
   'conformance/cases/err-sitemap-syntax/Sitefile',
@@ -27,8 +28,8 @@ const EXPECTED_SYNTAX_ERRORS = [
 /** An inline RENDER template with an invalid tag (E_TEMPLATE in src/render.ts). */
 const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-template/Sitefile'];
 
-/** E_SYNTAX files the grammar is lenient about (the parser checks a value word). */
-const LENIENT = new Set(['conformance/cases/err-compression/Sitefile', 'conformance/cases/err-redirect-status/Sitefile']);
+/** E_SYNTAX files the grammar is lenient about (the parser checks a value word, or reads a keyword as a pattern). */
+const LENIENT = new Set(['conformance/cases/err-compression/Sitefile', 'conformance/cases/err-fingerprint-syntax/Sitefile', 'conformance/cases/err-redirect-status/Sitefile']);
 
 const repoFiles = [...findSitefiles(path.join(repoRoot, 'examples')), ...findSitefiles(path.join(repoRoot, 'conformance/cases'))];
 // Our fixtures, plus the VS Code grammar's (when present): the same rules, two grammars.

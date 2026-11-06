@@ -64,6 +64,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseRedirect(c, span);
     case 'HEADER':
       return parseHeader(c, span);
+    case 'FINGERPRINT':
+      return parseFingerprint(c, span);
     case 'RUN':
       throw c.error('E_UNSUPPORTED', 'RUN is not supported: Sitefile never runs shell commands', span);
   }
@@ -407,6 +409,17 @@ function parseHeader(c: Cursor, span: SourceSpan): Instruction {
   while (!c.atEnd()) value.push(c.operand('header value'));
   if (value.length === 0) throw c.error('E_SYNTAX', 'expected header value');
   return { kind: 'HEADER', span, pattern, name: { parts, span: raw.span }, value, overwrite: flags.has('overwrite') };
+}
+
+/** `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` */
+function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const patterns: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('MANIFEST')) patterns.push(c.operand('path pattern'));
+  if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (FINGERPRINT /assets/ or FINGERPRINT /**/*.css)');
+  const manifest = c.keyword('MANIFEST') ? c.operand('manifest destination') : undefined;
+  c.expectEnd();
+  return { kind: 'FINGERPRINT', span, patterns, ...(manifest ? { manifest } : {}), overwrite: flags.has('overwrite') };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {

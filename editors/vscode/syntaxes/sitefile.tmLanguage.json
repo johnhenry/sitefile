@@ -2869,6 +2869,50 @@
           ]
         },
         {
+          "name": "meta.instruction.fingerprint.sitefile",
+          "begin": "^\\s*((?i:FINGERPRINT))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "match": "(?<![^\\s])((?i:MANIFEST))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.feed.sitefile",
           "begin": "^\\s*((?i:FEED))(?=\\s|$)",
           "beginCaptures": {

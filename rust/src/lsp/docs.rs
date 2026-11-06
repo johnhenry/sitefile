@@ -69,6 +69,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Adds a response header for paths matching the pattern (`*` matches anything) to `/_headers`, written at EXPORT; one block per pattern, in source order.",
     ),
     (
+        "FINGERPRINT",
+        "FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]",
+        "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten.",
+    ),
+    (
         "EXPORT",
         "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
         "Exports `<path>` of the last stage. Exactly one, and the last instruction. The CLI's `--out`, `--format` and `--base-url` override it.",
@@ -109,6 +114,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "LINK", "`LINK <path>`: each entry's page, evaluated per element (`/posts/${item.slug}/index.html`); `…/index.html` becomes `…/`."),
     ("FEED", "TO", "`TO <dest>`: the feed file (default `/feed.xml`)."),
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
+    ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -210,8 +216,8 @@ mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
-        TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SITEMAP_CLAUSES,
+        SORT_ORDERS, TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -246,7 +252,12 @@ mod tests {
         for c in TRANSFORM_CLAUSES {
             assert!(clause("TRANSFORM", c).is_some(), "{c}");
         }
-        for (kw, clauses) in [("SITEMAP", &SITEMAP_CLAUSES[..]), ("FEED", &FEED_CLAUSES[..]), ("REDIRECT", &REDIRECT_CLAUSES[..])] {
+        for (kw, clauses) in [
+            ("SITEMAP", &SITEMAP_CLAUSES[..]),
+            ("FEED", &FEED_CLAUSES[..]),
+            ("REDIRECT", &REDIRECT_CLAUSES[..]),
+            ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
+        ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");
             }

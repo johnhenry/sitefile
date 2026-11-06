@@ -1,0 +1,5 @@
+COPY <<X /a.css
+x
+X
+FINGERPRINT /ok/ assets/*.css
+EXPORT /
