@@ -2,7 +2,8 @@
 
 Tree-sitter highlighting, injections (heredoc bodies by delimiter) and locals
 for [Sitefile](https://github.com/johnhenry/sitefile), using the grammar in
-[`editors/tree-sitter-sitefile`](../tree-sitter-sitefile/).
+[`editors/tree-sitter-sitefile`](../tree-sitter-sitefile/), plus the language
+server `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).
 
 ## Setup
 
@@ -21,6 +22,27 @@ for [Sitefile](https://github.com/johnhenry/sitefile), using the grammar in
    hx --grammar fetch && hx --grammar build
    hx --health sitefile
    ```
+
+## Language server
+
+[`languages.toml`](languages.toml) also registers the server and attaches it
+to Sitefiles:
+
+```toml
+[language-server.sitefile-lsp]
+command = "sitefile"
+args = ["lsp"]
+
+[[language]]
+name = "sitefile"
+language-servers = ["sitefile-lsp"]
+```
+
+It needs the `sitefile` Rust binary on `PATH` (`cargo install --path rust`
+from a clone), or its full path in `command`. `hx --health sitefile` shows
+whether Helix finds it.
+
+## Local grammar
 
 For a local clone, use `source = { path = "/path/to/sitefile/editors/tree-sitter-sitefile" }`
 in the `[[grammar]]` entry instead of `git`/`rev`/`subpath`.

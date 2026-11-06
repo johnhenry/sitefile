@@ -1,6 +1,9 @@
 node_modules/**
+src/**
 test/**
 scripts/**
+dist/serverCommand.mjs
+tsconfig.json
 *.vsix
 .gitignore
 package-lock.json

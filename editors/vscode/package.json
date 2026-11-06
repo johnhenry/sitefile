@@ -1,8 +1,8 @@
 {
   "name": "sitefile",
   "displayName": "Sitefile",
-  "description": "Syntax highlighting for Sitefile, the Docker-inspired static site builder",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and language server support for Sitefile, the Docker-inspired static site builder",
+  "version": "0.2.0",
   "publisher": "johnhenry",
   "license": "MIT",
   "repository": {
@@ -11,7 +11,7 @@
     "directory": "editors/vscode"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -20,15 +20,67 @@
     "sitefile",
     "static site",
     "dockerfile",
-    "textmate"
+    "textmate",
+    "lsp"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:sitefile"
   ],
   "scripts": {
     "build:grammar": "node scripts/build-grammar.mjs",
-    "test": "node --test test/",
+    "typecheck": "tsc -p .",
+    "build": "npm run typecheck && node scripts/build-extension.mjs",
+    "vscode:prepublish": "npm run build",
+    "test": "npm run build && node --test test/",
     "package": "vsce package --skip-license",
     "preview": "node test/preview.mjs"
   },
   "contributes": {
+    "commands": [
+      {
+        "command": "sitefile.restartServer",
+        "title": "Restart Language Server",
+        "category": "Sitefile"
+      }
+    ],
+    "configuration": {
+      "title": "Sitefile",
+      "properties": {
+        "sitefile.server.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start the Sitefile language server (`sitefile lsp`) for Sitefiles. Highlighting works without it."
+        },
+        "sitefile.server.path": {
+          "type": "string",
+          "default": "sitefile",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `sitefile` Rust binary: a command name looked up on `PATH`, an absolute path, or a path relative to the first workspace folder (`~` expands to the home directory). Install it with `cargo install --path rust` from a clone of the repository."
+        },
+        "sitefile.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "scope": "machine-overridable",
+          "description": "Arguments passed to the server binary."
+        },
+        "sitefile.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the messages between VS Code and the language server to the \"Sitefile Language Server\" output channel."
+        }
+      }
+    },
     "languages": [
       {
         "id": "sitefile",
@@ -74,9 +126,18 @@
     ]
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/vscode": "^1.82.0",
     "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
     "shiki": "^4.6.0",
+    "typescript": "^7.0.2",
+    "vscode-jsonrpc": "^10.0.0",
+    "vscode-languageserver-protocol": "^3.18.5",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

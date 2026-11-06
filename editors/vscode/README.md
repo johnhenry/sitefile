@@ -1,8 +1,10 @@
 # Sitefile for VS Code
 
-Syntax highlighting for [Sitefile](https://github.com/johnhenry/sitefile), the
-Docker-inspired static site builder. Declarative only: a TextMate grammar and a
-language configuration, no extension code.
+Syntax highlighting and language server support for
+[Sitefile](https://github.com/johnhenry/sitefile), the Docker-inspired static
+site builder. Highlighting is a TextMate grammar; diagnostics, completion,
+hover, go to definition, references, rename and the outline come from the
+Rust binary's language server, `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).
 
 Files named `Sitefile`, `*.sitefile`, `Sitefile.*` and `*.Sitefile` open as
 Sitefile.
@@ -46,6 +48,44 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
   `TRANSFORM` bodies are written byte for byte, so `${…}` there is not
   highlighted.
 
+## Requirements
+
+Highlighting needs nothing else. The language features need the `sitefile`
+Rust binary (the crate in `rust/`, binary name `sitefile`) on your `PATH`:
+
+```bash
+cargo install --path rust        # from a clone of the repository; installs ~/.cargo/bin/sitefile
+```
+
+or build it (`cd rust && cargo build --release`) and point
+`sitefile.server.path` at `rust/target/release/sitefile`. The TypeScript CLI
+(the npm package's `sitefile` command) has no language server; if it is the
+`sitefile` on your `PATH`, set the path to the Rust binary explicitly.
+
+If the binary can't be found or started, the extension shows one warning with
+a **Configure path** button and keeps highlighting. A server that crashes is
+restarted at most 4 times in 3 minutes; then run **Sitefile: Restart Language
+Server** from the command palette (changing a `sitefile.server.*` setting also
+restarts it).
+
+## Settings
+
+| Setting | Default | |
+| --- | --- | --- |
+| `sitefile.server.enabled` | `true` | Start the language server for Sitefiles. |
+| `sitefile.server.path` | `"sitefile"` | A command on `PATH`, an absolute path, or a path relative to the first workspace folder (`~` expands). |
+| `sitefile.server.args` | `["lsp"]` | Arguments, passed as is (the server also accepts `--stdio`). |
+| `sitefile.trace.server` | `"off"` | `messages` or `verbose` logs the LSP traffic to the **Sitefile Language Server** output channel. |
+
+```json
+{
+  "sitefile.server.path": "~/src/sitefile/rust/target/release/sitefile",
+  "sitefile.trace.server": "messages"
+}
+```
+
+The client handles `file` and `untitled` Sitefile documents.
+
 ## Install locally
 
 The extension is not on the Marketplace. Build the package and install it:
@@ -53,11 +93,11 @@ The extension is not on the Marketplace. Build the package and install it:
 ```bash
 cd editors/vscode
 npm install
-npm run package          # writes sitefile-0.1.0.vsix
-code --install-extension sitefile-0.1.0.vsix
+npm run package          # builds dist/extension.js, writes sitefile-0.2.0.vsix
+code --install-extension sitefile-0.2.0.vsix
 ```
 
-(From the repository root: `code --install-extension editors/vscode/sitefile-0.1.0.vsix`.)
+(From the repository root: `code --install-extension editors/vscode/sitefile-0.2.0.vsix`.)
 
 ## Without the extension
 
@@ -72,11 +112,17 @@ Dockerfile highlighting is a reasonable stopgap. In your VS Code settings:
 
 ## Development
 
+The client is `src/extension.ts`; the settings logic it uses (command
+resolution, restart budget, document selector) is the `vscode`-free
+`src/serverCommand.ts`. `npm run build` typechecks and bundles them with
+esbuild into `dist/extension.js` (with `vscode-languageclient` inlined, so the
+`.vsix` ships no `node_modules`); `vscode:prepublish` runs it.
+
 The grammar is generated: edit `scripts/grammar.mjs`, then
 
 ```bash
 npm run build:grammar    # writes syntaxes/*.json
-npm test                 # grammar tests (vscode-textmate + vscode-oniguruma)
+npm test                 # build, then grammar, client and server tests
 UPDATE_SNAPSHOTS=1 npm test   # accept intended token changes
 npm run preview          # test/preview.html, rendered with shiki
 ```
@@ -87,3 +133,12 @@ fail when the parser accepts an instruction, clause keyword, value word or flag
 the grammar doesn't know, when the committed JSON is out of date, or (after a
 root `npm run build`) when a valid fixture no longer parses. Embedded grammars
 are stubs in the tests; the preview uses the real ones.
+
+The client tests don't download VS Code: `test/server-command.test.mjs` unit-tests
+the command resolution, `test/extension-smoke.test.mjs` loads the bundle with a
+stub `vscode` module (missing-binary warning, disabled server), and
+`test/lsp-server.test.mjs` spawns the real `../../rust/target/release/sitefile lsp`
+(built with cargo if missing, or `$SITEFILE_LSP_BIN`) with the extension's
+command, document language id and `initializationOptions`, and runs
+initialize → didOpen → diagnostics → completion → hover → shutdown over
+`vscode-languageserver-protocol`.

@@ -84,6 +84,43 @@ capture names there are already nvim-treesitter's); don't edit them here.
 Injected heredoc bodies need the parsers for those languages (`html`, `css`,
 `javascript`, `markdown`, `json`, `yaml`, `xml`).
 
+## Language server
+
+Diagnostics, completion, hover, go to definition, references, rename and
+document symbols come from `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).
+It needs the `sitefile` Rust binary on `PATH` (`cargo install --path rust`
+from a clone) or its full path in `cmd`. The filetype from step 2 must be set.
+
+Neovim 0.11+ (`vim.lsp.config`):
+
+```lua
+vim.lsp.config('sitefile_lsp', {
+  cmd = { 'sitefile', 'lsp' },
+  filetypes = { 'sitefile' },
+  root_markers = { 'Sitefile', '.git' },
+})
+vim.lsp.enable('sitefile_lsp')
+```
+
+With nvim-lspconfig on older Neovim, register a custom server:
+
+```lua
+local configs = require('lspconfig.configs')
+if not configs.sitefile_lsp then
+  configs.sitefile_lsp = {
+    default_config = {
+      cmd = { 'sitefile', 'lsp' },
+      filetypes = { 'sitefile' },
+      root_dir = require('lspconfig.util').root_pattern('Sitefile', '.git'),
+      single_file_support = true,
+    },
+  }
+end
+require('lspconfig').sitefile_lsp.setup({})
+```
+
+`:checkhealth vim.lsp` (or `:LspInfo`) shows whether it attached.
+
 ## Differences from the canonical queries
 
 None: the canonical queries use nvim-treesitter capture names. The one custom

@@ -15,25 +15,22 @@ the Sitefile language is identical in both implementations, and the server is
 an editor tool built on the Rust parser. The TypeScript CLI answers
 `sitefile lsp` with a usage error that points here.
 
-## Starting it from an editor
+## Editor setup
 
-Any LSP client can run the command `sitefile lsp --stdio` (the Rust binary on
-`PATH`, or its full path) for files named `Sitefile` or `*.sitefile`. For
-example, in Neovim:
+The server is the `sitefile` **Rust** binary; put it on `PATH` with
+`cargo install --path rust` (from a clone) or give editors its full path.
+Every client runs `sitefile lsp` (`--stdio` is accepted too) for files named
+`Sitefile`, `*.sitefile` or `*.Sitefile`.
 
-```lua
-vim.lsp.start({ name = 'sitefile', cmd = { 'sitefile', 'lsp', '--stdio' }, root_dir = vim.fn.getcwd() })
-```
+| Editor | Setup |
+| --- | --- |
+| VS Code | [editors/vscode](../editors/vscode/README.md): the extension starts the server (`sitefile.server.path`, `sitefile.server.args`, `sitefile.trace.server`; command **Sitefile: Restart Language Server**). |
+| Zed | [editors/zed](../editors/zed/README.md): the extension registers `sitefile-lsp` and finds `sitefile` on `PATH` (or `lsp.sitefile-lsp.binary.path`). |
+| Neovim | [editors/neovim](../editors/neovim/README.md#language-server): `vim.lsp.config('sitefile_lsp', { cmd = { 'sitefile', 'lsp' }, filetypes = { 'sitefile' } })`, or an nvim-lspconfig custom server. |
+| Helix | [editors/helix](../editors/helix/README.md#language-server): `[language-server.sitefile-lsp]` with `command = "sitefile"`, `args = ["lsp"]`, and `language-servers = ["sitefile-lsp"]` on the language. |
 
-and in Helix (`languages.toml`):
-
-```toml
-[language-server.sitefile]
-command = "sitefile"
-args = ["lsp", "--stdio"]
-```
-
-VS Code and Zed extensions are tracked separately (issue #63).
+Any other LSP client: command `sitefile lsp`, stdio transport, language id
+`sitefile`. The server needs no `initializationOptions` and ignores them.
 
 ## Features
 
