@@ -4,17 +4,21 @@
 //! `serve -d` re-runs this executable as `sitefile __serve-worker <id>`; the
 //! worker shares the TypeScript version's state files in `$SITEFILE_HOME/servers`.
 
-use super::args::{flag, flag_s, string, string_s, OptSpec, Parsed};
+use super::args::{flag, flag_s, string, string_s, strings, OptSpec, Parsed};
 use super::common::{err, js_to_number, out, pretty_json, require_args, table, usage, Command};
 use crate::error::{ErrorCode::*, Result, SitefileError};
-use crate::server::{format_url, listen, SiteServerOptions};
+use crate::build_args::collect_build_args;
+use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
+use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
+use crate::tree::Tree;
+use crate::watch::{watch_loop, BuildOutcome, WatchOptions};
 use crate::servers::{is_running, load_served_tree, pid_alive, Bind, ServerRegistry, ServerSource, ServerState};
 use crate::store::{now_iso, Store};
 use serde_json::{Map, Value};
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 // ------------------------------------------------------------ signals
@@ -35,7 +39,7 @@ extern "C" fn on_signal(sig: i32) {
 }
 
 /// Catch SIGINT and SIGTERM; [`received`] then returns the signal's name.
-fn catch_signals() {
+pub(crate) fn catch_signals() {
     // SAFETY: the handler only stores into an atomic, which is async-signal-safe.
     unsafe {
         signal(SIGINT, on_signal);
@@ -43,7 +47,7 @@ fn catch_signals() {
     }
 }
 
-fn received() -> Option<&'static str> {
+pub(crate) fn received() -> Option<&'static str> {
     match RECEIVED.load(Ordering::SeqCst) {
         SIGINT => Some("SIGINT"),
         SIGTERM => Some("SIGTERM"),
@@ -178,23 +182,50 @@ fn start_detached(reg: &ServerRegistry, state: &ServerState) -> Result<ServerSta
 
 // ------------------------------------------------------------ serve
 
-const SERVE_OPTS: &[OptSpec] = &[string("name"), string_s("publish", 'p'), flag_s("detach", 'd'), flag("spa")];
+const SERVE_OPTS: &[OptSpec] = &[
+    string("name"),
+    string_s("publish", 'p'),
+    flag_s("detach", 'd'),
+    flag("spa"),
+    flag("watch"),
+    string_s("file", 'f'),
+    strings("build-arg"),
+    strings("build-arg-file"),
+    flag("no-cache"),
+    flag("no-lockfile"),
+];
+/// serve flags that only mean something with --watch.
+const WATCH_ONLY: &[&str] = &["file", "build-arg", "build-arg-file", "no-cache", "no-lockfile"];
 pub const SERVE: Command = Command {
     name: "serve",
     summary: "serve an image or directory over HTTP",
-    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>",
-    description: "Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.",
+    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>  |  serve --watch [options] [context]",
+    description: "Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.",
     flags: &[
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
+        "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
+        "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
+        "--build-arg <NAME=value>     set an ARG (--watch; repeatable)",
+        "--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)",
+        "--no-cache        do not use the TRANSFORM result cache (--watch)",
+        "--no-lockfile     do not read or write Sitefile.lock (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
 };
 
 fn run_serve(v: &Parsed) -> Result<i32> {
+    if v.flag("watch") {
+        return serve_watch(v);
+    }
+    for f in WATCH_ONLY {
+        if v.has(f) {
+            return usage(format!("--{f} needs --watch"));
+        }
+    }
     require_args(&v.positionals, 1, 1, "an image reference or ./directory")?;
     let bind = parse_publish(v.str("publish"))?;
     let name = v.str("name");
@@ -212,7 +243,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
-        let server = listen(Arc::new(tree), SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None }, &bind.host, bind.port)?;
+        let server = listen(Arc::new(tree), SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None, live_reload: None }, &bind.host, bind.port)?;
         out(&format!("Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n", format_url(&server.host, server.port)));
         wait_for_signal();
         server.close();
@@ -250,6 +281,78 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     }
 }
 
+/// `serve --watch [context]`: build in memory, serve, rebuild on change, live reload.
+fn serve_watch(v: &Parsed) -> Result<i32> {
+    require_args(&v.positionals, 0, 1, "a build context directory")?;
+    if v.flag("detach") {
+        return usage("--watch cannot be combined with -d");
+    }
+    if v.has("name") {
+        return usage("--name needs -d (only detached servers are tracked)");
+    }
+    let bind = parse_publish(v.str("publish"))?;
+    let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
+    let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
+    let arg_files = v.strs("build-arg-file");
+    let arg_flags = v.strs("build-arg");
+    if is_wildcard(&bind.host) {
+        err(&format!("warning: binding {}: the site will be reachable from other machines\n", bind.host));
+    }
+    catch_signals();
+
+    let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
+    let live = LiveReload::new();
+    let mut server: Option<crate::server::ListeningServer> = None;
+    let started = std::cell::Cell::new(false);
+    let mut run_build = || -> BuildOutcome {
+        let attempt = || -> Result<Tree> {
+            let mut options = BuildOptions { context_dir: context.clone(), sitefile: file.clone(), build_args: collect_build_args(&arg_files, &arg_flags)?, ..Default::default() };
+            if v.flag("no-lockfile") {
+                options.lockfile = LockfileSetting::Disabled;
+            }
+            if !v.flag("no-cache") {
+                options.cache_dir = Some(super::cache::transform_cache_dir());
+            }
+            options.skip_base = true;
+            let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
+            options.on_notice = Some(notice);
+            let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
+            options.on_warning = Some(warning);
+            Ok(build(&options)?.output)
+        };
+        match attempt() {
+            Ok(tree) => {
+                let n = tree.len();
+                out(&format!("Built {n} file{} ({})\n", if n == 1 { "" } else { "s" }, tree.digest()));
+                if let Ok(mut t) = current.write() {
+                    *t = Arc::new(tree);
+                }
+                if started.get() {
+                    live.reload();
+                }
+                BuildOutcome { code: 0, wrote: Vec::new() }
+            }
+            Err(e) => BuildOutcome { code: super::common::report(&e), wrote: Vec::new() },
+        }
+    };
+    let mut on_started = || -> Result<()> {
+        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
+        let opts = SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None, live_reload: Some(live.clone()) };
+        let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
+        let n = current.read().map(|t| t.len()).unwrap_or(0);
+        out(&format!("Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n", format_url(&s.host, s.port)));
+        server = Some(s);
+        started.set(true);
+        Ok(())
+    };
+    let code = watch_loop(&WatchOptions { context: &context, sitefile: file.as_deref(), arg_files: &arg_files }, &mut run_build, &mut on_started, &|| received().is_some())?;
+    live.close();
+    if let Some(s) = server {
+        s.close();
+    }
+    Ok(code)
+}
+
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
     let stamp = |m: &str| out(&format!("{} {m}\n", now_iso()));
@@ -276,7 +379,7 @@ pub fn serve_worker(id: &str) -> i32 {
         let tree = load_served_tree(&reg.store, &state.source)?;
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
-        let server = listen(Arc::new(tree), SiteServerOptions { spa: state.spa, log: Some(log), server_id: Some(id.to_string()) }, &state.bind.host, state.bind.port)?;
+        let server = listen(Arc::new(tree), SiteServerOptions { spa: state.spa, log: Some(log), server_id: Some(id.to_string()), live_reload: None }, &state.bind.host, state.bind.port)?;
         let (host, port) = (server.host.clone(), server.port);
         reg.update(id, |s| {
             s.pid = std::process::id() as i64;

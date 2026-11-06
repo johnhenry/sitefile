@@ -132,3 +132,27 @@ export function parseEnvFile(text: string, label: string): Record<string, string
   }
   return out;
 }
+
+/**
+ * The CLI's build args: `--build-arg-file` files in order (later files win), then
+ * `--build-arg NAME=value` (or `NAME`, read from the environment), which win over files.
+ * Malformed flags are E_USAGE errors.
+ */
+export async function collectBuildArgs(files: readonly string[], flags: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const file of files) Object.assign(out, await loadBuildArgFile(file));
+  for (const kv of flags) {
+    const eq = kv.indexOf('=');
+    if (eq === -1) {
+      // --build-arg NAME: take the value from the environment, as Docker does.
+      if (!KEY_RE.test(kv)) throw new SitefileError('E_USAGE', `--build-arg expects NAME=value or NAME, got '${kv}'`);
+      const v = env[kv];
+      if (v === undefined) throw new SitefileError('E_USAGE', `--build-arg ${kv}: environment variable ${kv} is not set`);
+      out[kv] = v;
+      continue;
+    }
+    if (eq === 0) throw new SitefileError('E_USAGE', `--build-arg expects NAME=value, got '${kv}'`);
+    out[kv.slice(0, eq)] = kv.slice(eq + 1);
+  }
+  return out;
+}

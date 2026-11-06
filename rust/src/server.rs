@@ -9,8 +9,8 @@ use crate::tree::Tree;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,105 @@ pub struct SiteServerOptions {
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
     pub server_id: Option<String>,
+    /// `serve --watch`: answer [`RELOAD_PATH`] with an event stream and add
+    /// [`RELOAD_SCRIPT`] to HTML responses. Never set otherwise, and never written to exports.
+    pub live_reload: Option<Arc<LiveReload>>,
+}
+
+/// The tree a server answers from; `serve --watch` swaps in each good rebuild.
+pub type SharedTree = Arc<RwLock<Arc<Tree>>>;
+
+/// Reserved for the live-reload event stream while `serve --watch` runs.
+pub const RELOAD_PATH: &str = "/__sitefile/reload";
+/// Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`.
+pub const RELOAD_SCRIPT: &str = "<script>new EventSource(\"/__sitefile/reload\").onmessage=function(){location.reload()}</script>";
+
+/// Open live-reload streams; [`LiveReload::reload`] tells every page to reload.
+#[derive(Default)]
+pub struct LiveReload {
+    generation: Mutex<u64>,
+    changed: Condvar,
+    closed: AtomicBool,
+    clients: AtomicUsize,
+}
+
+impl LiveReload {
+    pub fn new() -> Arc<LiveReload> {
+        Arc::new(LiveReload::default())
+    }
+
+    pub fn reload(&self) {
+        if let Ok(mut g) = self.generation.lock() {
+            *g += 1;
+        }
+        self.changed.notify_all();
+    }
+
+    /// End every open stream.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    /// Open streams.
+    pub fn clients(&self) -> usize {
+        self.clients.load(Ordering::SeqCst)
+    }
+
+    /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
+    fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
+        let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\ncache-control: no-cache\r\n");
+        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+            head.push_str(&format!("x-sitefile-server: {id}\r\n"));
+        }
+        head.push_str("content-type: text/event-stream\r\nconnection: close\r\n\r\nretry: 1000\n\n");
+        if out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_err() {
+            return;
+        }
+        self.clients.fetch_add(1, Ordering::SeqCst);
+        let mut seen = self.generation.lock().map(|g| *g).unwrap_or(0);
+        loop {
+            let Ok(g) = self.generation.lock() else { break };
+            let Ok((g, _)) = self.changed.wait_timeout_while(g, Duration::from_secs(15), |g| *g == seen && !self.closed.load(Ordering::SeqCst)) else { break };
+            let now = *g;
+            drop(g);
+            if self.closed.load(Ordering::SeqCst) {
+                break;
+            }
+            // a comment line every 15 s finds clients that went away
+            let msg: &[u8] = if now != seen { b"data: reload\n\n" } else { b": ping\n\n" };
+            seen = now;
+            if out.write_all(msg).and_then(|_| out.flush()).is_err() {
+                break;
+            }
+        }
+        self.clients.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// `html` with [`RELOAD_SCRIPT`] inserted before the last `</body` (ASCII case-insensitive), else appended.
+pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
+    let needle = b"</body";
+    let at = (0..html.len().saturating_sub(needle.len() - 1)).rev().find(|&i| html[i..i + needle.len()].eq_ignore_ascii_case(needle));
+    let mut out = Vec::with_capacity(html.len() + RELOAD_SCRIPT.len());
+    match at {
+        Some(i) => {
+            out.extend_from_slice(&html[..i]);
+            out.extend_from_slice(RELOAD_SCRIPT.as_bytes());
+            out.extend_from_slice(&html[i..]);
+        }
+        None => {
+            out.extend_from_slice(html);
+            out.extend_from_slice(RELOAD_SCRIPT.as_bytes());
+        }
+    }
+    out
+}
+
+/// The request path: `url` up to `?` or `#`.
+fn raw_path_of(url: &str) -> &str {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    &url[..end]
 }
 
 const NOT_FOUND_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
@@ -153,6 +252,10 @@ pub fn handle_request(tree: &Tree, options: &SiteServerOptions, method: &str, ur
         (Some(q), Some(h)) if h > q => &url[q..h],
         (Some(q), _) => &url[q..],
     };
+    if options.live_reload.is_some() && raw_path == RELOAD_PATH {
+        // GET is streamed by the connection loop; HEAD only gets the headers.
+        return finish(200, vec![("content-type", "text/event-stream".into())], None);
+    }
     let Some(segs) = safe_segments(raw_path) else { return page(400, BAD_REQUEST_PAGE, vec![]) };
     let trailing = raw_path.ends_with('/');
     let vpath = format!("/{}", segs.join("/"));
@@ -179,15 +282,15 @@ pub fn handle_request(tree: &Tree, options: &SiteServerOptions, method: &str, ur
     let Some((served, file)) = served.and_then(|s| tree.get(&s).cloned().map(|f| (s, f))) else {
         return page(404, NOT_FOUND_PAGE, vec![]);
     };
-    let etag = format!("\"{}\"", file.digest.strip_prefix("sha256:").unwrap_or(&file.digest));
+    let mime = mime_type_for(&served);
+    let live = options.live_reload.is_some() && mime.starts_with("text/html");
+    // An injected page is a different representation of the file: give it its own ETag.
+    let etag = format!("\"{}{}\"", file.digest.strip_prefix("sha256:").unwrap_or(&file.digest), if live { "-live" } else { "" });
     if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
         return finish(304, vec![("etag", etag)], None);
     }
-    finish(
-        200,
-        vec![("etag", etag), ("content-type", mime_type_for(&served).into()), ("content-length", file.bytes.len().to_string())],
-        Some(file.bytes.to_vec()),
-    )
+    let body = if live { inject_reload_script(&file.bytes) } else { file.bytes.to_vec() };
+    finish(200, vec![("etag", etag), ("content-type", mime.into()), ("content-length", body.len().to_string())], Some(body))
 }
 
 const MAX_HEAD: usize = 64 * 1024;
@@ -259,7 +362,7 @@ fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::
     Ok(Some(Ok(Request { method: method.into(), url: url.into(), headers, keep_alive, body_len, chunked })))
 }
 
-fn serve_connection(stream: TcpStream, tree: &Tree, options: &SiteServerOptions) {
+fn serve_connection(stream: TcpStream, tree: &SharedTree, options: &SiteServerOptions) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
     let Ok(mut out) = stream.try_clone() else { return };
@@ -278,7 +381,15 @@ fn serve_connection(stream: TcpStream, tree: &Tree, options: &SiteServerOptions)
         if req.body_len > 0 && keep && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err() {
             keep = false;
         }
-        let res = handle_request(tree, options, &req.method, &req.url, &req.headers);
+        if let Some(live) = options.live_reload.as_ref().filter(|_| req.method == "GET" && raw_path_of(&req.url) == RELOAD_PATH) {
+            live.stream(&mut out, options); // not access-logged: one long request per open page
+            break;
+        }
+        let current = match tree.read() {
+            Ok(t) => t.clone(),
+            Err(_) => break,
+        };
+        let res = handle_request(&current, options, &req.method, &req.url, &req.headers);
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -313,6 +424,11 @@ pub struct ListeningServer {
 /// Listen on host:port (port 0 = any free port) and serve `tree`.
 /// Address in use and permission errors become E_SERVER.
 pub fn listen(tree: Arc<Tree>, options: SiteServerOptions, host: &str, port: u16) -> Result<ListeningServer> {
+    listen_shared(Arc::new(RwLock::new(tree)), options, host, port)
+}
+
+/// [`listen`] on a tree that can be replaced while the server runs (each request reads it once).
+pub fn listen_shared(tree: SharedTree, options: SiteServerOptions, host: &str, port: u16) -> Result<ListeningServer> {
     let fail = |e: &io::Error| {
         let why = match e.kind() {
             io::ErrorKind::AddrInUse => format!("port {port} on {host} is already in use"),
@@ -488,7 +604,7 @@ mod tests {
     fn with_server(spa: bool, f: impl FnOnce(u16, &Arc<Mutex<Vec<String>>>)) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l2 = log.clone();
-        let opts = SiteServerOptions { spa, log: Some(Arc::new(move |line: &str| l2.lock().unwrap().push(line.to_string()))), server_id: None };
+        let opts = SiteServerOptions { spa, log: Some(Arc::new(move |line: &str| l2.lock().unwrap().push(line.to_string()))), server_id: None, live_reload: None };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
         s.close();
@@ -630,7 +746,7 @@ mod tests {
     fn keep_alive_serves_several_requests_and_probes_are_not_logged() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l2 = log.clone();
-        let opts = SiteServerOptions { spa: false, log: Some(Arc::new(move |l: &str| l2.lock().unwrap().push(l.to_string()))), server_id: Some("abcdef012345".into()) };
+        let opts = SiteServerOptions { spa: false, log: Some(Arc::new(move |l: &str| l2.lock().unwrap().push(l.to_string()))), server_id: Some("abcdef012345".into()), live_reload: None };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
         c.write_all(b"GET /app.js HTTP/1.1\r\nhost: x\r\n\r\nHEAD / HTTP/1.1\r\nhost: x\r\nx-sitefile-probe: abcdef012345\r\nconnection: close\r\n\r\n").unwrap();
@@ -656,5 +772,67 @@ mod tests {
         assert!(e.detail.contains("already in use"), "{}", e.detail);
         assert_eq!(format_url("0.0.0.0", 8080), "http://127.0.0.1:8080/");
         assert_eq!(format_url("::1", 1), "http://[::1]:1/");
+    }
+
+    #[test]
+    fn inject_reload_script_before_last_body() {
+        let inj = |s: &str| String::from_utf8(inject_reload_script(s.as_bytes())).unwrap();
+        assert_eq!(inj("<p>a</p></BODY></html>"), format!("<p>a</p>{RELOAD_SCRIPT}</BODY></html>"));
+        assert_eq!(inj("<body></body><!-- </body> --></body>"), format!("<body></body><!-- </body> -->{RELOAD_SCRIPT}</body>"));
+        assert_eq!(inj("<h1>x</h1>"), format!("<h1>x</h1>{RELOAD_SCRIPT}"));
+        assert_eq!(inj(""), RELOAD_SCRIPT);
+        assert!(RELOAD_SCRIPT.contains(RELOAD_PATH));
+    }
+
+    #[test]
+    fn live_reload_injects_html_only_and_swaps_trees() {
+        let live = LiveReload::new();
+        let opts = SiteServerOptions { live_reload: Some(live.clone()), ..Default::default() };
+        let h = HashMap::new();
+        let tree = site();
+        let r = handle_request(&tree, &opts, "GET", "/", &h);
+        assert_eq!(String::from_utf8(r.body.clone()).unwrap(), format!("<h1>home</h1>{RELOAD_SCRIPT}"));
+        assert_eq!(r.header("content-length"), Some(r.body.len().to_string().as_str()));
+        let etag = r.header("etag").unwrap().to_string();
+        assert!(etag.ends_with("-live\""));
+        let mut inm = HashMap::new();
+        inm.insert("if-none-match".to_string(), etag);
+        assert_eq!(handle_request(&tree, &opts, "GET", "/", &inm).status, 304);
+        assert_eq!(handle_request(&tree, &opts, "GET", "/style.css", &h).body, b"a{}");
+        assert_eq!(handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h).header("content-type"), Some("text/event-stream"));
+        // without --watch: no script, and the path is an ordinary (missing) file
+        let plain = SiteServerOptions::default();
+        assert_eq!(handle_request(&tree, &plain, "GET", "/", &h).body, b"<h1>home</h1>");
+        assert_eq!(handle_request(&tree, &plain, "GET", RELOAD_PATH, &h).status, 404);
+
+        // over a socket: the stream gets `data: reload`, and a swapped tree is served
+        let shared: SharedTree = Arc::new(RwLock::new(tree));
+        let srv = listen_shared(shared.clone(), opts, "127.0.0.1", 0).unwrap();
+        let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        c.write_all(format!("GET {RELOAD_PATH} HTTP/1.1\r\nhost: x\r\n\r\n").as_bytes()).unwrap();
+        let mut got = String::new();
+        let read_until = |c: &mut TcpStream, got: &mut String, want: &str| {
+            while !got.contains(want) {
+                let mut b = [0u8; 512];
+                let n = c.read(&mut b).unwrap();
+                assert!(n > 0);
+                got.push_str(&String::from_utf8_lossy(&b[..n]));
+            }
+        };
+        read_until(&mut c, &mut got, "retry: 1000\n\n");
+        assert!(got.contains("content-type: text/event-stream"));
+        for _ in 0..200 {
+            if live.clients() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        *shared.write().unwrap() = Arc::new(Tree::from_files([("/index.html".to_string(), make_file(b"<h1>v2</h1>".to_vec(), "t", 0o644))]).unwrap());
+        live.reload();
+        read_until(&mut c, &mut got, "data: reload\n\n");
+        assert_eq!(get(srv.port, "/").body, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
+        live.close();
+        srv.close();
     }
 }
