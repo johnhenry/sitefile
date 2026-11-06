@@ -189,7 +189,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
     byte for byte); elsewhere it is plain text.
   - See `examples/inline/`.
 - `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
-  instruction, exactly once; it exports from the last stage. The format
+  instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
+  tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
   tree is mounted at and is required by `wbn` (from here or `--base-url`).

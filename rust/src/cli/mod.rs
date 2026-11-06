@@ -70,6 +70,8 @@ Usage:
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
+      --target <stage>         stop after the named stage and export its whole tree instead of
+                               the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
@@ -121,6 +123,7 @@ Options:
 
 const BUILD_OPTS: &[OptSpec] = &[
     string_s("file", 'f'),
+    string("target"),
     string_s("out", 'o'),
     strings_s("tag", 't'),
     string("format"),
@@ -358,7 +361,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
         }
     }
     let file = o.str("file").filter(|s| !s.is_empty()).map(str::to_string);
-    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, ..Default::default() };
+    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, target: o.str("target").map(str::to_string), ..Default::default() };
     // The default destination depends on the format, which the Sitefile may set.
     let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() { Some(plan_build(&options)?.export_format) } else { None };
     let out_dir = match out_flag {
@@ -466,11 +469,12 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
                 let ops: usize = p.stages.iter().map(|s| s.operations.len()).sum();
                 let n = p.imports.len();
                 out(&format!(
-                    "{}: OK ({n} import{}, {ops} operation{}{})\n",
+                    "{}: OK ({n} import{}, {ops} operation{}{}{})\n",
                     p.file,
                     if n == 1 { "" } else { "s" },
                     if ops == 1 { "" } else { "s" },
-                    if p.stages.len() > 1 { format!(", {} stages", p.stages.len()) } else { String::new() }
+                    if p.stages.len() > 1 { format!(", {} stages", p.stages.len()) } else { String::new() },
+                    p.target.as_ref().map(|t| format!(", target {t}")).unwrap_or_default()
                 ));
             }
             Ok(0)

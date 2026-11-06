@@ -1,0 +1,1 @@
+{"args": ["--target", "build"], "expectPaths": ["/out/index.html", "/out/about.html"]}

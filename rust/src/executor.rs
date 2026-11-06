@@ -18,7 +18,7 @@ use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, 
 use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
-use crate::planner::{plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
+use crate::planner::{plan, target_plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
 use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
@@ -62,6 +62,8 @@ pub struct BuildOptions {
     /// Sitefile path. Default: `<context_dir>/Sitefile`.
     pub sitefile: Option<String>,
     pub build_args: BuildArgs,
+    /// `--target <stage>`: build up to this named stage and export its whole tree (planner `target_plan`).
+    pub target: Option<String>,
     /// Export destination; skipped when walking the context if it lies inside it.
     pub out_dir: Option<String>,
     pub fetch_policy: FetchPolicy,
@@ -106,6 +108,7 @@ impl Default for BuildOptions {
             context_dir: ".".into(),
             sitefile: None,
             build_args: BuildArgs::new(),
+            target: None,
             out_dir: None,
             fetch_policy: DEFAULT_FETCH_POLICY,
             archive_limits: DEFAULT_ARCHIVE_LIMITS,
@@ -239,7 +242,16 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>) -> Result<Loaded>
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
     let loaded = load_program(&options.context_dir, options.sitefile.as_deref())?;
-    plan(&loaded.program, &options.build_args)
+    plan_for(&loaded.program, options)
+}
+
+/// The plan of a program for these options (`target` applied).
+fn plan_for(program: &Program, options: &BuildOptions) -> Result<Plan> {
+    let p = plan(program, &options.build_args)?;
+    match &options.target {
+        Some(t) => target_plan(p, t),
+        None => Ok(p),
+    }
 }
 
 type Warn = Callback;
@@ -269,7 +281,7 @@ fn realpath_loose(p: &Path) -> PathBuf {
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
-    let p = plan(&program, &options.build_args)?;
+    let p = plan_for(&program, options)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Warn = {
         let warnings = warnings.clone();
@@ -392,7 +404,10 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     let tree = with_site_rules(tree, &p, &label)?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
-        warn(&format!("EXPORT {} contains no files", p.export_path));
+        warn(&match &p.target {
+            None => format!("EXPORT {} contains no files", p.export_path),
+            Some(t) => format!("--target {t}: stage '{t}' contains no files"),
+        });
     }
 
     // BASE: the image to build on, resolved after the files so a failing build never pulls anything.
