@@ -480,6 +480,25 @@ gitignore subset:
   sha256 and size. An unpinned URL already in the lockfile must match it
   (`E_LOCK_MISMATCH`; rerun with `--update-lock`). `--frozen-lockfile` fails
   instead of adding entries (`E_LOCK_MISSING`).
+- `--strict-pins` (build, validate, inspect) enforces reproducibility, like
+  Nix's fixed-output derivations: every remote input must already be pinned,
+  or the command fails with `E_UNPINNED` **before anything is fetched**. A
+  remote `IMPORT` is pinned by `INTEGRITY` or a `Sitefile.lock` entry for its
+  URL; the `BASE` image of an `oci` export (or `--base`) by `@sha256:` or a
+  lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
+  count. Local imports never need one. `--strict-pins` conflicts with
+  `--update-lock` (a usage error), since that would accept changed content.
+  `inspect` and non-oci exports never resolve a `BASE`, so it is not checked
+  there. `graph --strict-pins` checks like `validate`; `why` and `--target`
+  builds check every `IMPORT` of the Sitefile (a target still resolves them all).
+  `--cache-from`/`--cache-to` references are caches, not inputs, and are never
+  checked. With `--provenance`, a strict build sets
+  `externalParameters.strictPins: true` and gives each remote dependency an
+  annotation `dev.sitefile.pin` (`integrity`, `lockfile`, or `digest` for the
+  base); without `--strict-pins` the provenance is unchanged.
+  There is no Sitefile-level switch yet (the flag needs no new syntax;
+  a future `# sitefile=N` directive may add one). Typical CI use:
+  `sitefile build --frozen-lockfile --strict-pins`.
 - Library option `fetchPolicy.ca` (PEM string or Buffer) trusts an extra CA
   for https in addition to Node's default store (bundled roots plus
   `NODE_EXTRA_CA_CERTS` / `--use-system-ca`), for tests and enterprise private

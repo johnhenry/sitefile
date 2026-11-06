@@ -47,6 +47,8 @@ pub mod executor;
 pub mod outdated;
 pub mod explain;
 pub mod plugins;
+pub mod memo;
+pub mod profile;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)

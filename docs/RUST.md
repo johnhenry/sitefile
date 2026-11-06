@@ -54,6 +54,8 @@ to find in the other:
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 | `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
+| `profile` (`--profile` Chrome trace) | `profile.ts` |
+| `memo` (incremental rebuilds in watch mode) | `memo.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
 ## Tooling exception: the language server
@@ -97,6 +99,15 @@ file's mtime, and the shared cache size limit (`SITEFILE_CACHE_MAX`, see
 implementations measure and evict this directory, so `cache du` and the
 eviction results are the same whichever one runs.
 
+## Incremental rebuilds
+
+`rust/src/memo.rs` ports `src/memo.ts` (design in [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)): the same
+steps are memoized under the same rules, with the same reuse states in `--profile` traces. The keys themselves differ
+(Rust hashes the `Debug` form of the planned operation and the ARG/LET values sorted by name; TypeScript a JSON form),
+which is fine: they never leave the process, and only outputs must match. The memo is shared behind a `Mutex` because
+imports resolve on threads; nothing is computed while it is locked. `rust/tests/incremental.rs` runs the same
+randomized edit-and-compare test as `test/incremental.test.ts`.
+
 ## Unicode paths
 
 Paths are normalized to NFC and compared under Unicode simple case folding
@@ -133,6 +144,8 @@ paths").
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
   line, and identical output trees; `validate`/`inspect`/`graph`/`why` cases compare stdout.
+  Cases with `"profile": true` also compare the `--profile` trace with every
+  `ts`/`dur` removed (timings are the one thing allowed to differ).
   Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
   throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
   and an in-process mock OCI registry, then cover remote `IMPORT` with and

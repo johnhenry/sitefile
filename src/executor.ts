@@ -25,10 +25,13 @@ import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
 import { buildFacts, makeAttestations, type AttestRequest, type Referrer } from './attest.js';
 import { ANN, buildOciImage, imageMeta, layoutTree, ociArchive, parseConfig, type BaseImage, type OciImage } from './oci.js';
-import { readLayerBlobs, resolveBase } from './base-image.js';
+import { baseRef as parseBaseRef, readLayerBlobs, resolveBase } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
+import { begin, type Profiler } from './profile.js';
+import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
+import type { TemplateNode } from './render.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -50,6 +53,11 @@ export interface BuildOptions {
   readonly frozenLockfile?: boolean;
   /** Re-record unpinned URLs whose content changed. */
   readonly updateLock?: boolean;
+  /**
+   * `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
+   * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
+   */
+  readonly strictPins?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
@@ -88,6 +96,15 @@ export interface BuildOptions {
   readonly store?: Store;
   /** Informational lines (e.g. the path each allowed tool resolved to). */
   readonly onNotice?: (message: string) => void;
+  /** `--profile`: record a timing trace of the build here (src/profile.ts). */
+  readonly profiler?: Profiler;
+  /** Other paths this command writes (e.g. the --profile file): skipped when walking the context, like `outDir`. */
+  readonly alsoWrites?: readonly string[];
+  /**
+   * Incremental rebuilds: reuse the results of steps whose inputs did not change since an
+   * earlier build with the same memo (watch mode keeps one per session; src/memo.ts).
+   */
+  readonly memo?: BuildMemo;
   /** Keep every intermediate tree in {@link BuildResult.steps} (for `sitefile why`). */
   readonly recordSteps?: boolean;
 }
@@ -107,11 +124,15 @@ export interface BuildResult {
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
   readonly transformStats: TransformStats;
+  /** With `memo`: how many steps were reused and how many ran. */
+  readonly memoStats?: MemoStats;
   /**
    * With `recordSteps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
    * operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
    */
   readonly steps?: readonly (readonly Tree[])[];
+  /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
+  readonly pins?: Pins;
 }
 
 export interface TransformStats extends CacheStats {
@@ -154,10 +175,40 @@ function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'ta
   return options.target === undefined ? p : targetPlan(p, options.target);
 }
 
+/** The lockfile a build would use: `Sitefile.lock` next to the Sitefile, unless disabled. */
+function lockPathFor(options: Pick<BuildOptions, 'lockfile'>, sitefilePath: string): string | undefined {
+  return options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
+}
+
+/** `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching. */
+export async function checkPlanPins(options: BuildOptions, p: Plan): Promise<void> {
+  const sitefilePath = path.resolve(options.sitefile ?? path.join(options.contextDir, 'Sitefile'));
+  const lockPath = lockPathFor(options, sitefilePath);
+  const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
+  void checkPins(p, lock, options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined)));
+}
+
 /** Run a build in memory. */
 export async function build(options: BuildOptions): Promise<BuildResult> {
+  const memo = options.memo;
+  if (!memo) return buildOnce(options);
+  memo.begin();
+  let ok = false;
+  try {
+    const r = await buildOnce(options);
+    ok = true;
+    return { ...r, memoStats: { ...memo.stats } };
+  } finally {
+    memo.finish(ok);
+  }
+}
+
+async function buildOnce(options: BuildOptions): Promise<BuildResult> {
+  const prof = options.profiler;
+  const parseSpan = begin(prof, 'parse', 'build');
   const { program, sitefilePath, label } = await loadProgram(options);
   const p = planFor(program, options);
+  parseSpan.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
   const warnings: string[] = [];
   const warn = (m: string): void => {
     warnings.push(m);
@@ -186,16 +237,47 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       }
     }
   }
+  for (const w of options.alsoWrites ?? []) {
+    const rel = path.relative(contextReal, await realpathLoose(path.resolve(w)));
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) ignore.push(rel.split(path.sep).join('/'));
+  }
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
-  const lockPath =
-    options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
+  const lockPath = lockPathFor(options, sitefilePath);
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
 
-  const env: ImportEnv = { local, policy, archiveLimits, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
-  const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
-  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!)]));
+  // BASE: the image to build on (resolved after the files, below).
+  const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
+  const pins = options.strictPins ? checkPins(p, lock, baseRef) : undefined;
+
+  const memo = options.memo;
+  const env: ImportEnv = {
+    local,
+    policy,
+    archiveLimits,
+    lock,
+    label,
+    warn,
+    frozen: !!options.frozenLockfile,
+    update: !!options.updateLock,
+    ...(memo ? { memo } : {}),
+  };
+  // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
+  const importSpans = p.imports.map((spec, i) => {
+    prof?.nameThread(i + 2, `import ${spec.name}`);
+    return prof ? prof.reserve(`import ${spec.name}`, 'import', { uri: spec.uri, as: spec.as ?? 'file' }, i + 2) : undefined;
+  });
+  const resolved = await mapLimit(p.imports, options.concurrency ?? 4, async (spec, i) => {
+    importSpans[i]?.start();
+    const r = await resolveImport(spec, env);
+    importSpans[i]?.end({ kind: r.res.kind });
+    return r;
+  });
+  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!.res)]));
+  // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
+  const resourceKeys = new Map<string, string>(memo ? p.imports.map((s, i) => [s.name, resolved[i]!.key]) : []);
+  const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
 
   const stageTrees = new Map<string, Tree>();
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
@@ -214,20 +296,40 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     pluginDigests: new Map(),
     stats,
     ...(cache ? { cache } : {}),
+    ...(prof ? { profiler: prof } : {}),
+    ...(memo ? { memo } : {}),
+    resourceKeys,
+    envKey,
+    stageKeys: new Map(),
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
   try {
-    for (const spec of p.plugins) await registerPlugin(spec, local, plugins, pluginAllowed);
-    for (const stage of p.stages) {
-      tree = await startStage(stage, execEnv);
+    for (const spec of p.plugins) {
+      const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
+      await registerPlugin(spec, local, plugins, pluginAllowed);
+      s.end();
+    }
+    for (const [i, stage] of p.stages.entries()) {
+      const s = begin(prof, `stage ${stage.name ?? '#' + (i + 1)}`, 'stage', { from: stageFrom(stage) });
+      const start = await startStage(stage, execEnv);
+      tree = start.tree;
+      let key = start.key;
       const record = steps ? [tree] : undefined;
       steps?.push(record!);
       for (const op of stage.operations) {
-        tree = await execute(op, tree, execEnv);
+        const o = begin(prof, `${label}:${op.span.line} ${op.kind}`, 'operation', { line: op.span.line });
+        const r = await executeOp(op, tree, key, execEnv);
+        tree = r.tree;
+        key = r.key;
         record?.push(tree);
+        o.end({ files: tree.size, ...(r.memo ? { memo: r.memo } : {}) });
       }
-      if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+      if (stage.name !== undefined) {
+        stageTrees.set(stage.name, tree);
+        execEnv.stageKeys.set(stage.name, key);
+      }
+      s.end({ files: tree.size });
     }
   } finally {
     plugins.close();
@@ -245,7 +347,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
-  const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
+  const baseSpan = baseRef ? begin(prof, `BASE ${baseRef}`, 'import') : undefined;
   const base = baseRef
     ? await resolveBase(baseRef, {
         store: options.store ?? (await Store.open()),
@@ -260,9 +362,45 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
         warn,
       })
     : undefined;
+  baseSpan?.end();
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}), ...(pins ? { pins } : {}) };
+}
+
+/** How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name, and the BASE. */
+export interface Pins {
+  readonly imports: Readonly<Record<string, 'integrity' | 'lockfile'>>;
+  readonly base?: 'digest' | 'lockfile';
+}
+
+/**
+ * `--strict-pins`: every remote input must be pinned, so the build is reproducible. A remote IMPORT
+ * needs INTEGRITY or a `Sitefile.lock` entry; a BASE image needs `@sha256:` or a lockfile `images`
+ * entry. `lock` is undefined with --no-lockfile (only the Sitefile's own pins count then). Checked in
+ * source order, before anything is fetched; the first unpinned input fails with E_UNPINNED.
+ */
+export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string | undefined): Pins {
+  const imports: Record<string, 'integrity' | 'lockfile'> = {};
+  for (const spec of p.imports) {
+    if (spec.location.kind !== 'remote') continue;
+    if (spec.integrity) imports[spec.name] = 'integrity';
+    else if (lock?.get(spec.location.url)) imports[spec.name] = 'lockfile';
+    if (imports[spec.name]) continue;
+    throw new SitefileError(
+      'E_UNPINNED',
+      `IMPORT ${spec.name}: '${spec.location.url}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>, or record it in Sitefile.lock with a build without --strict-pins`,
+      spec.span,
+    );
+  }
+  if (baseRef === undefined) return { imports };
+  const { ref, lockKey } = parseBaseRef(baseRef);
+  if (ref.digest !== undefined) return { imports, base: 'digest' };
+  if (lock?.getImage(lockKey)) return { imports, base: 'lockfile' };
+  throw new SitefileError(
+    'E_UNPINNED',
+    `BASE ${baseRef}: '${lockKey}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins`,
+  );
 }
 
 export interface ExportTarget {
@@ -305,6 +443,19 @@ export async function buildToDirectory(
 ): Promise<ExportedBuild> {
   const result = await build(options);
   const format = options.format ?? result.plan.exportFormat;
+  const span = begin(options.profiler, 'export', 'export', { format });
+  try {
+    return await exportBuild(result, format, options);
+  } finally {
+    span.end();
+  }
+}
+
+async function exportBuild(
+  result: BuildResult,
+  format: ExportFormat,
+  options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
+): Promise<ExportedBuild> {
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
@@ -366,10 +517,28 @@ interface ImportEnv {
   readonly warn: (m: string) => void;
   readonly frozen: boolean;
   readonly update: boolean;
+  readonly memo?: BuildMemo;
 }
 
-async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource> {
+/**
+ * Read an import. `key` identifies the result for incremental rebuilds: the import's spec
+ * (with its Sitefile position) and the digest of the bytes or tree it read. With a memo,
+ * conversions (parsing Markdown, data and archives) whose key is unchanged are reused.
+ */
+async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: Resource; key: string }> {
   const origin = `${env.label}:${spec.span.line} IMPORT ${spec.name}`;
+  const id = env.memo ? valueKey(spec) : '';
+  const keyOf = (raw: string): string => (env.memo ? memoKey('import', env.label, id, raw) : '');
+  // A collection's documents are memoized one by one, as children of the import's entry.
+  const convert = <T extends Resource>(key: string, compute: (docs?: DocumentMemo) => T): T =>
+    env.memo ? env.memo.memoize(key, (children) => compute(env.memo!.documents(children))) : compute();
+  const convertBytes = async (key: string, compute: () => Promise<Resource>): Promise<Resource> => {
+    const hit = env.memo?.get<Resource>(key);
+    if (hit) return hit;
+    const r = await compute();
+    env.memo?.set(key, r);
+    return r;
+  };
   if (spec.location.kind === 'local') {
     const rel = spec.location.path;
     const kind = await env.local.stat(rel, spec.span);
@@ -377,25 +546,41 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
       if (spec.as === 'markdown') {
         if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
         const tree = await env.local.readTree(rel, origin, spec.span);
-        const value = markdownCollection(tree.tree, spec.uri.replace(/\/+$/, ''), spec.span);
-        return { kind: 'value', format: 'markdown', value, provenance: tree.provenance };
+        const key = keyOf(tree.provenance.digest);
+        return {
+          key,
+          res: convert(key, (docs) => {
+            const value = markdownCollection(tree.tree, spec.uri.replace(/\/+$/, ''), spec.span, docs);
+            return { kind: 'value', format: 'markdown', value, provenance: tree.provenance };
+          }),
+        };
       }
       if (spec.as === 'json' || spec.as === 'yaml') {
         if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
+        const format = spec.as;
         const tree = await env.local.readTree(rel, origin, spec.span);
-        const value = dataCollection(tree.tree, spec.as, spec.uri.replace(/\/+$/, ''), spec.span);
-        return { kind: 'value', format: spec.as, value, provenance: tree.provenance };
+        const key = keyOf(tree.provenance.digest);
+        return {
+          key,
+          res: convert(key, (docs) => {
+            const value = dataCollection(tree.tree, format, spec.uri.replace(/\/+$/, ''), spec.span, docs);
+            return { kind: 'value', format, value, provenance: tree.provenance };
+          }),
+        };
       }
       if (spec.as && spec.as !== 'tree') {
         throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a directory and cannot be imported AS ${spec.as}`, spec.span);
       }
       if (spec.integrity) throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: INTEGRITY applies to files, not directories`, spec.span);
-      return env.local.readTree(rel, origin, spec.span);
+      const tree = await env.local.readTree(rel, origin, spec.span);
+      return { key: keyOf(tree.provenance.digest), res: tree };
     }
     const file = await env.local.readFile(rel, spec.span);
     if (spec.integrity) verifyIntegrity(file.bytes, spec.integrity, spec.uri, spec.span);
-    if (!spec.as || spec.as === 'file') return file;
-    return bytesToResource(file.bytes, spec.as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span, env.archiveLimits);
+    const key = keyOf(`${file.provenance.digest}\0${file.mode}\0${file.basename}`);
+    if (!spec.as || spec.as === 'file') return { key, res: file };
+    const as = spec.as;
+    return { key, res: await convertBytes(key, () => bytesToResource(file.bytes, as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span, env.archiveLimits)) };
   }
 
   const url = spec.location.url;
@@ -422,7 +607,8 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<Resource
   }
   env.lock?.record(url, { integrity: digest, size: bytes.byteLength, resolved: finalUrl });
   const basename = path.posix.basename(new URL(finalUrl).pathname) || spec.name;
-  return bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits);
+  const key = keyOf(`${digest}\0${finalUrl}`);
+  return { key, res: await convertBytes(key, () => bytesToResource(bytes, as, { uri: url, resolvedUrl: finalUrl, basename }, spec.span, env.archiveLimits)) };
 }
 
 // ---------------------------------------------------------------- operations
@@ -442,26 +628,42 @@ interface ExecEnv {
   /** Digest of each plugin's folder (cache key); undefined when the folder was too large to hash. */
   readonly pluginDigests: Map<string, string | undefined>;
   readonly stats: TransformStats;
+  readonly profiler?: Profiler;
+  /** Incremental rebuilds (with `BuildOptions.memo`): the memo and the keys of what operations read. */
+  readonly memo?: BuildMemo;
+  /** Import name -> its key (resolveImport). */
+  readonly resourceKeys: ReadonlyMap<string, string>;
+  /** The Sitefile label and its ARG/LET values. */
+  readonly envKey: string;
+  /** Stage name -> the key of its final tree. */
+  readonly stageKeys: Map<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
 }
 
-/** The tree a stage starts from. */
-async function startStage(stage: Stage, env: ExecEnv): Promise<Tree> {
+/** The tree a stage starts from, and its key. */
+async function startStage(stage: Stage, env: ExecEnv): Promise<{ tree: Tree; key: string }> {
   const base = stage.base;
   switch (base.kind) {
     case 'scratch':
-      return Tree.empty;
+      return { tree: Tree.empty, key: env.memo ? memoKey('scratch', env.envKey) : '' };
     case 'stage':
-      return env.stages.get(base.name) ?? fail(base.name, stage.span);
+      return { tree: env.stages.get(base.name) ?? fail(base.name, stage.span), key: env.stageKeys.get(base.name) ?? '' };
     case 'local': {
       const display = base.path === '' ? './' : './' + base.path;
       if ((await env.local.stat(base.path, stage.span)) !== 'directory') {
         throw new SitefileError('E_TYPE', `FROM '${display}' is a file; FROM needs a directory`, stage.span);
       }
-      return (await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span)).tree;
+      const t = await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span);
+      return { tree: t.tree, key: env.memo ? memoKey('from', env.envKey, String(stage.span.line), base.path, t.provenance.digest) : '' };
     }
   }
+}
+
+/** What a stage starts from, for the trace. */
+function stageFrom(stage: Stage): string {
+  const b = stage.base;
+  return b.kind === 'scratch' ? 'scratch' : b.kind === 'stage' ? b.name : b.path === '' ? './' : './' + b.path;
 }
 
 function fail(name: string, span: SourceSpan): never {
@@ -475,10 +677,143 @@ type Source =
       readonly mode: number;
       readonly basename: string;
       readonly label: string;
+      /** Local files: the content digest (memo keys). */
+      readonly digest?: string;
       /** Set for heredoc bodies: where the content sits in the Sitefile, for template error positions. */
       readonly inline?: { readonly file: string; readonly firstLine: number };
     }
-  | { readonly kind: 'tree'; readonly tree: Tree; readonly label: string };
+  | { readonly kind: 'tree'; readonly tree: Tree; readonly label: string; readonly digest?: string };
+
+type Files = Array<[string, FileNode]>;
+
+/** An operation's files, before they are added to the tree. `key`: memoized under it (undefined: not memoizable). */
+interface Produced {
+  readonly files: Files;
+  readonly key?: string;
+  readonly hit?: boolean;
+}
+
+/** An ExecEnv whose warnings are also recorded (a memoized step replays them). */
+type RecEnv = ExecEnv & { readonly warnings: string[]; readonly unrecorded: (m: string) => void };
+
+function recording(env: ExecEnv): RecEnv {
+  const warnings: string[] = [];
+  return {
+    ...env,
+    warnings,
+    unrecorded: env.warn,
+    warn: (m) => {
+      warnings.push(m);
+      env.warn(m);
+    },
+  };
+}
+
+/**
+ * Run `compute` unless `key` is memoized. A hit replays the warnings the step printed
+ * after those this run already printed before the lookup (the same code ran up to here,
+ * so they are a prefix). `store` says whether the result may be reused (a plugin can opt out).
+ */
+async function memoFiles(
+  env: RecEnv,
+  key: string | undefined,
+  compute: (children: string[]) => Promise<Files>,
+  store: () => boolean = () => true,
+): Promise<Produced> {
+  if (!env.memo || key === undefined) return { files: await compute([]) };
+  const hit = env.memo.get<{ files: Files; warnings: readonly string[] }>(key);
+  if (hit) {
+    for (const w of hit.warnings.slice(env.warnings.length)) env.warn(w);
+    return { files: hit.files, key, hit: true };
+  }
+  const children: string[] = [];
+  const files = await compute(children);
+  if (!store()) return { files };
+  env.memo.set(key, { files, warnings: [...env.warnings] }, children);
+  return { files, key };
+}
+
+/** What a source reference reads, for memo keys (the operation's own text covers inline bodies and paths). */
+function sourceKey(ref: SourceRef, src: Source | undefined, env: ExecEnv): string {
+  switch (ref.kind) {
+    case 'inline':
+      return 'inline';
+    case 'local':
+      return `local\0${src?.digest ?? ''}`;
+    case 'stage':
+      return `stage\0${env.stageKeys.get(ref.name) ?? ''}`;
+    case 'import':
+      return `import\0${env.resourceKeys.get(ref.name) ?? ''}`;
+  }
+}
+
+/** Names an operand interpolates. */
+function operandNames(ops: ReadonlyArray<Operand | undefined>, out = new Set<string>()): Set<string> {
+  for (const op of ops) for (const part of op?.parts ?? []) if (part.kind !== 'text') out.add(part.name);
+  return out;
+}
+
+/**
+ * The keys of the imports an operation may read, by name (ARG/LET values are in its opId).
+ * `except`: a loop variable, which hides an import of the same name.
+ */
+function namesKey(env: ExecEnv, names: Iterable<string>, except?: string): string {
+  const list = [...new Set(names)].filter((n) => n !== except).sort();
+  return memoKey('names', ...list.flatMap((n) => [n, env.resourceKeys.get(n) ?? '']));
+}
+
+/** Top-level names a template reads (variables, #each lists, #if conditions). */
+function templateNames(nodes: readonly TemplateNode[], out = new Set<string>()): Set<string> {
+  for (const n of nodes) {
+    if (n.kind === 'var') out.add(n.name);
+    else if (n.kind === 'each') {
+      out.add(n.list.name);
+      templateNames(n.body, out);
+      templateNames(n.empty, out);
+    } else if (n.kind === 'if') {
+      out.add(n.cond.name);
+      templateNames(n.then, out);
+      templateNames(n.otherwise, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Run one operation: produce its files, then add them to the tree. With a memo, a step whose
+ * key (the operation and everything it reads) is unchanged reuses its files, and one whose
+ * input tree is also unchanged reuses the resulting tree. The key of the result chains the
+ * input tree's key with the step's, like image layers.
+ */
+async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEnv): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss' }> {
+  const policy = op.overwrite ? 'overwrite' : 'error';
+  const memo = env.memo;
+  if (!memo) return { tree: op.kind === 'SITEMAP' ? sitemap(op, tree, env) : tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+  const opId = memoKey('op', env.envKey, valueKey(op));
+  if (op.kind === 'SITEMAP') {
+    // Reads the whole tree: only the chain key can say it is unchanged.
+    const key = memoKey('chain', prevKey, opId);
+    const hit = memo.get<Tree>(key);
+    if (hit) return { tree: hit, key, memo: 'hit' };
+    const out = sitemap(op, tree, env);
+    memo.set(key, out);
+    return { tree: out, key, memo: 'miss' };
+  }
+  const p = await produce(op, tree, recording(env), opId);
+  // Not memoizable (e.g. a plugin that opted out of caching): chain on what it produced instead.
+  const stepKey = p.key ?? memoKey('files', ...p.files.flatMap(([f, n]) => [f, String(n.mode), n.digest, n.origin]));
+  const key = memoKey('chain', prevKey, stepKey);
+  const hit = memo.get<Tree>(key);
+  if (hit) return { tree: hit, key, memo: 'hit' };
+  const out = tree.withFiles(p.files, policy, op.span);
+  memo.set(key, out);
+  return { tree: out, key, memo: p.hit ? 'files' : 'miss' };
+}
+
+function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
+  const origin = `${env.label}:${op.span.line} SITEMAP`;
+  return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(sitemapXml(tree, op.base)), origin)]], op.overwrite ? 'overwrite' : 'error', op.span);
+}
 
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
 async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost, allowed: (spec: PluginSpec) => void): Promise<void> {
@@ -566,9 +901,8 @@ function interpolate(op: Operand, env: ExecEnv): string {
   return out;
 }
 
-async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, tree: Tree, env: ExecEnv): Promise<Tree> {
+async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, env: RecEnv, opId: string): Promise<Produced> {
   const origin = `${env.label}:${op.span.line} TRANSFORM`;
-  const policy = op.overwrite ? 'overwrite' : 'error';
   let items: unknown[] = [undefined];
   if (op.each) {
     const list = valueOf(op.each.list, [], op.span, false, env);
@@ -582,6 +916,7 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
   // The source is the same for every element; read it once.
   let input: PluginRequest['input'];
   let data: unknown;
+  let srcKey = '';
   if (op.source) {
     const ref = op.source;
     const res = ref.kind === 'import' ? env.resources.get(ref.name) : undefined;
@@ -600,6 +935,7 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
         text = undefined;
       }
       input = { path: src.label, name: src.basename || src.label, bytes: src.bytes, ...(text !== undefined ? { text } : {}) };
+      if (env.memo) srcKey = sourceKey(ref, src, env);
     }
   }
 
@@ -609,85 +945,114 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
   }
   const inputDigest = input ? sha256(input.bytes) : undefined;
   let pluginDigest: string | undefined;
-  if (env.cache && !tool) {
+  if ((env.cache || env.memo) && !tool) {
     if (!env.pluginDigests.has(op.plugin)) {
       // A wasm plugin is just its module; a JS plugin can read its whole folder.
       const wasm = env.plugins.wasmBytes(op.plugin);
       const dir = env.plugins.folderOf(op.plugin);
       const digest = wasm ? sha256(wasm) : dir ? await digestFolder(dir) : undefined;
       env.pluginDigests.set(op.plugin, digest);
-      if (digest === undefined) env.warn(`${origin}: PLUGIN ${op.plugin}'s folder is too large to hash; its results are not cached`);
+      if (digest === undefined && env.cache) env.warn(`${origin}: PLUGIN ${op.plugin}'s folder is too large to hash; its results are not cached`);
     }
     pluginDigest = env.pluginDigests.get(op.plugin);
   }
 
-  const files: Array<[string, FileNode]> = [];
-  for (const item of items) {
-    const itemEnv: ExecEnv = op.each ? { ...env, loop: { name: op.each.as, value: item } } : env;
-    const rawDest = interpolate(op.dest, itemEnv);
-    const dest = normalizeVirtual(rawDest, op.dest.span, 'TRANSFORM destination');
-    const options: Record<string, string> = Object.create(null) as Record<string, string>;
-    for (const o of op.options) options[o.key] = interpolate(o.value, itemEnv);
-    const request: PluginRequest = {
-      apiVersion: 1,
-      dest: dest.path,
-      options,
-      ...(input ? { input } : {}),
-      ...(data !== undefined ? { data } : {}),
-      ...(op.each ? { item } : {}),
-    };
-    let args: string[] | undefined;
-    if (tool) {
-      if (dest.trailingSlash) throw new SitefileError('E_PLUGIN', `TOOL ${op.plugin} writes one file, but '${rawDest}' is a directory destination`, op.dest.span);
-      args = (op.args ?? []).map((a) => interpolate(a, itemEnv));
-    }
-    // Everything the result can depend on: the code (plugin folder digest, or tool binary + argv) and the request.
-    const cacheable = env.cache !== undefined && (tool !== undefined || pluginDigest !== undefined);
-    const key = cacheable
-      ? cacheKey({
-          code: tool ? { tool: { path: tool.path, size: tool.size, mtimeMs: tool.mtimeMs }, args } : { plugin: pluginDigest },
-          request: {
-            dest: dest.path,
-            options,
-            input: input && { path: input.path, name: input.name, digest: inputDigest },
-            data,
-            item,
-          },
-        })
-      : undefined;
-    let result: PluginResult | undefined = key ? await env.cache!.get(key) : undefined;
-    if (!result) {
-      if (tool) {
-        env.stats.toolRuns++;
-        result = await runTool(
-          tool,
-          { args: args!, dest: dest.path, options, ...(input ? { input: { name: input.name, bytes: input.bytes } } : {}) },
-          env.toolPolicy,
-          (l) => env.warn(l),
-          op.span,
-        );
-      } else {
-        result = await env.plugins.call(op.plugin, request, op.span);
-      }
-      if (key && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(key, result);
-    }
-    if (result.kind === 'file') {
-      if (dest.trailingSlash) {
-        throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned one file, but '${rawDest}' is a directory destination`, op.dest.span);
-      }
-      files.push([dest.path, makeFile(result.bytes, origin)]);
-    } else {
-      // { files }: placed under the destination directory.
-      for (const [rel, bytes] of result.files) {
-        const p = normalizeVirtual(`${dest.path === '/' ? '' : dest.path}/${rel}`, op.dest.span, `file '${rel}' returned by PLUGIN ${op.plugin}`).path;
-        if (rel.includes('..') || rel.startsWith('/')) {
-          throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned an unsafe path '${rel}'`, op.span);
+  // Incremental rebuilds: the same code (plugin digest, or tool binary), source, data, list and interpolated names.
+  const code = tool ? `tool\0${tool.path}\0${tool.size}\0${tool.mtimeMs}` : pluginDigest !== undefined ? `plugin\0${pluginDigest}` : undefined;
+  const memo = env.memo && code !== undefined ? env.memo : undefined;
+  const operandRefs = operandNames([op.dest, ...op.options.map((o) => o.value), ...(op.args ?? [])], new Set(data !== undefined && op.source?.kind === 'import' ? [op.source.name] : []));
+  const key = memo ? memoKey('transform', opId, srcKey, code!, namesKey(env, op.each ? new Set([...operandRefs, op.each.list]) : operandRefs)) : undefined;
+  // One FOR element's files: the same request gives the same result (the list itself is not read).
+  const itemBase = memo && op.each ? memoKey('transform-item', opId, srcKey, code!, namesKey(env, operandRefs, op.each.as)) : undefined;
+  const storable = (): boolean => tool !== undefined || env.plugins.cacheable(op.plugin);
+  return memoFiles(
+    env,
+    key,
+    async (children) => {
+      const files: Files = [];
+      for (const item of items) {
+        const itemKey = itemBase !== undefined ? memoKey(itemBase, valueKey(item)) : undefined;
+        const reused = itemKey !== undefined ? memo!.get<Files>(itemKey, children) : undefined;
+        if (reused) {
+          files.push(...reused);
+          continue;
         }
-        files.push([p, makeFile(bytes, origin)]);
+        const itemFiles: Files = [];
+        const itemEnv: ExecEnv = op.each ? { ...env, loop: { name: op.each.as, value: item } } : env;
+        const rawDest = interpolate(op.dest, itemEnv);
+        const dest = normalizeVirtual(rawDest, op.dest.span, 'TRANSFORM destination');
+        const options: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const o of op.options) options[o.key] = interpolate(o.value, itemEnv);
+        const request: PluginRequest = {
+          apiVersion: 1,
+          dest: dest.path,
+          options,
+          ...(input ? { input } : {}),
+          ...(data !== undefined ? { data } : {}),
+          ...(op.each ? { item } : {}),
+        };
+        let args: string[] | undefined;
+        if (tool) {
+          if (dest.trailingSlash) throw new SitefileError('E_PLUGIN', `TOOL ${op.plugin} writes one file, but '${rawDest}' is a directory destination`, op.dest.span);
+          args = (op.args ?? []).map((a) => interpolate(a, itemEnv));
+        }
+        // Everything the result can depend on: the code (plugin folder digest, or tool binary + argv) and the request.
+        const cacheable = env.cache !== undefined && (tool !== undefined || pluginDigest !== undefined);
+        const cached = cacheable
+          ? cacheKey({
+              code: tool ? { tool: { path: tool.path, size: tool.size, mtimeMs: tool.mtimeMs }, args } : { plugin: pluginDigest },
+              request: {
+                dest: dest.path,
+                options,
+                input: input && { path: input.path, name: input.name, digest: inputDigest },
+                data,
+                item,
+              },
+            })
+          : undefined;
+        const call = begin(env.profiler, `TRANSFORM ${op.plugin} ${dest.path}`, 'transform', { plugin: op.plugin, tool: tool !== undefined, dest: dest.path });
+        let result: PluginResult | undefined = cached ? await env.cache!.get(cached) : undefined;
+        const cacheState = !cached ? 'off' : result ? 'hit' : 'miss';
+        if (!result) {
+          if (tool) {
+            env.stats.toolRuns++;
+            result = await runTool(
+              tool,
+              { args: args!, dest: dest.path, options, ...(input ? { input: { name: input.name, bytes: input.bytes } } : {}) },
+              env.toolPolicy,
+              // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
+              (l) => env.unrecorded(l),
+              op.span,
+            );
+          } else {
+            result = await env.plugins.call(op.plugin, request, op.span);
+          }
+          if (cached && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(cached, result);
+        }
+        call.end({ cache: cacheState });
+        if (result.kind === 'file') {
+          if (dest.trailingSlash) {
+            throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned one file, but '${rawDest}' is a directory destination`, op.dest.span);
+          }
+          itemFiles.push([dest.path, makeFile(result.bytes, origin)]);
+        } else {
+          // { files }: placed under the destination directory.
+          for (const [rel, bytes] of result.files) {
+            const p = normalizeVirtual(`${dest.path === '/' ? '' : dest.path}/${rel}`, op.dest.span, `file '${rel}' returned by PLUGIN ${op.plugin}`).path;
+            if (rel.includes('..') || rel.startsWith('/')) {
+              throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned an unsafe path '${rel}'`, op.span);
+            }
+            itemFiles.push([p, makeFile(bytes, origin)]);
+          }
+        }
+        if (itemKey !== undefined && storable()) memo!.set(itemKey, itemFiles);
+        files.push(...itemFiles);
       }
-    }
-  }
-  return tree.withFiles(files, policy, op.span);
+      return files;
+    },
+    // A plugin that answered `cache: false` is not reused either.
+    storable,
+  );
 }
 
 /** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
@@ -706,7 +1071,7 @@ function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
   return tree;
 }
 
-async function executeFeed(op: Extract<Operation, { kind: 'FEED' }>, tree: Tree, env: ExecEnv): Promise<Tree> {
+function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): Files {
   const origin = `${env.label}:${op.span.line} FEED`;
   const list = valueOf(op.list, [], op.span, false, env);
   if (!Array.isArray(list)) {
@@ -752,32 +1117,37 @@ async function executeFeed(op: Extract<Operation, { kind: 'FEED' }>, tree: Tree,
     });
   });
   const xml = atomXml({ title: op.title, siteUrl: op.base + '/', selfUrl: pageUrl(op.base, op.dest), entries });
-  return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(xml), origin)]], op.overwrite ? 'overwrite' : 'error', op.span);
+  return [[op.dest, makeFile(new TextEncoder().encode(xml), origin)]];
 }
 
-async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
-  if (op.kind === 'TRANSFORM') return executeTransform(op, tree, env);
-  if (op.kind === 'FEED') return executeFeed(op, tree, env);
-  const origin = `${env.label}:${op.span.line} ${op.kind}`;
-  const policy = op.overwrite ? 'overwrite' : 'error';
-
-  if (op.kind === 'SITEMAP') {
-    return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(sitemapXml(tree, op.base)), origin)]], policy, op.span);
+/** The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo). */
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
+  if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
+  // A feed reads its list and what its LINK names.
+  if (op.kind === 'FEED') {
+    const key = env.memo ? memoKey('feed', opId, namesKey(env, operandNames([op.link], new Set([op.list])))) : undefined;
+    return memoFiles(env, key, async () => feedFiles(op, env));
   }
+  const origin = `${env.label}:${op.span.line} ${op.kind}`;
 
   if (op.kind === 'COPY') {
     const src = await readSource(op.source, origin, env);
     if (src.kind === 'file') {
       const intoDir = op.destIsDir || tree.isDirectory(op.dest);
-      if (intoDir && src.inline) {
-        throw new SitefileError('E_PATH', `'${op.dest}' is a directory; an inline ${src.label} body needs a file destination`, op.span);
-      }
-      const dest = intoDir ? joinVirtual(op.dest, src.basename) : op.dest;
-      return tree.withFiles([[dest, makeFile(src.bytes, origin, src.mode)]], policy, op.span);
+      const key = env.memo ? memoKey('copy', opId, sourceKey(op.source, src, env), String(intoDir)) : undefined;
+      return memoFiles(env, key, async () => {
+        if (intoDir && src.inline) {
+          throw new SitefileError('E_PATH', `'${op.dest}' is a directory; an inline ${src.label} body needs a file destination`, op.span);
+        }
+        const dest = intoDir ? joinVirtual(op.dest, src.basename) : op.dest;
+        return [[dest, makeFile(src.bytes, origin, src.mode)]];
+      });
     }
-    if (src.tree.size === 0) env.warn(`${origin}: '${src.label}' contains no files`);
-    const files = src.tree.mountedAt(op.dest).map(([p, n]): [string, FileNode] => [p, { ...n, origin }]);
-    return tree.withFiles(files, policy, op.span);
+    const key = env.memo ? memoKey('copy', opId, sourceKey(op.source, src, env), 'tree') : undefined;
+    return memoFiles(env, key, async () => {
+      if (src.tree.size === 0) env.warn(`${origin}: '${src.label}' contains no files`);
+      return src.tree.mountedAt(op.dest).map(([p, n]): [string, FileNode] => [p, { ...n, origin }]);
+    });
   }
 
   const src = await readSource(op.template, origin, env);
@@ -788,34 +1158,48 @@ async function execute(op: Operation, tree: Tree, env: ExecEnv): Promise<Tree> {
   const parts = src.inline
     ? parseRenderTemplate(text, src.inline.file, src.inline.firstLine)
     : parseRenderTemplate(text, src.label);
-  if (!op.each) {
-    const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env));
-    return tree.withFiles([[op.dest, makeFile(new TextEncoder().encode(out), origin)]], policy, op.span);
-  }
+  const templateKey = env.memo ? sourceKey(op.template, src, env) : '';
+  // What the template names, the FOR list and the destination's variables (ARG/LET values are in opId).
+  const key = env.memo
+    ? memoKey('render', opId, templateKey, namesKey(env, op.each ? operandNames([op.each.dest], templateNames(parts).add(op.each.list)) : templateNames(parts)))
+    : undefined;
+  return memoFiles(env, key, async (children) => {
+    if (!op.each) {
+      const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env));
+      return [[op.dest, makeFile(new TextEncoder().encode(out), origin)]];
+    }
 
-  // RENDER … FOR item IN list: one file per element, the destination interpolated per element.
-  const { as, list, dest } = op.each;
-  const items = valueOf(list, [], op.span, false, env);
-  if (!Array.isArray(items)) {
-    throw new SitefileError('E_TYPE', `FOR ${as} IN ${list}: '${list}' is not a list (import a directory AS markdown, or a JSON array)`, op.span);
-  }
-  if (items.length === 0) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
-  const files: Array<[string, FileNode]> = [];
-  for (const item of items) {
-    const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
-    let raw = '';
-    for (const part of dest.parts) {
-      if (part.kind === 'text') raw += part.value;
-      else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
+    // RENDER … FOR item IN list: one file per element, the destination interpolated per element.
+    const { as, list, dest } = op.each;
+    const items = valueOf(list, [], op.span, false, env);
+    if (!Array.isArray(items)) {
+      throw new SitefileError('E_TYPE', `FOR ${as} IN ${list}: '${list}' is not a list (import a directory AS markdown, or a JSON array)`, op.span);
     }
-    const target = normalizeVirtual(raw, dest.span, `RENDER destination for ${as}`);
-    if (target.trailingSlash) {
-      throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
+    if (items.length === 0) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+    // Incremental rebuilds: an element's page depends on the template, the element and the imports the
+    // template names (other than the loop variable), so editing one document re-renders one page.
+    const memo = env.memo;
+    const refsKey = memo ? namesKey(env, templateNames(parts), as) : '';
+    const files: Files = [];
+    for (const item of items) {
+      const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
+      let raw = '';
+      for (const part of dest.parts) {
+        if (part.kind === 'text') raw += part.value;
+        else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
+      }
+      const target = normalizeVirtual(raw, dest.span, `RENDER destination for ${as}`);
+      if (target.trailingSlash) {
+        throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
+      }
+      const page = (): FileNode => {
+        const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv));
+        return makeFile(new TextEncoder().encode(out), origin);
+      };
+      files.push([target.path, memo ? memo.memoize(memoKey('item', opId, templateKey, refsKey, valueKey(item)), page, children) : page()]);
     }
-    const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv));
-    files.push([target.path, makeFile(new TextEncoder().encode(out), origin)]);
-  }
-  return tree.withFiles(files, policy, op.span);
+    return files;
+  });
 }
 
 /** Apply an import's SORT BY to a markdown collection. */
@@ -839,10 +1223,11 @@ async function readSource(ref: SourceRef, origin: string, env: ExecEnv): Promise
   if (ref.kind === 'local') {
     const label = './' + ref.path;
     if ((await env.local.stat(ref.path, ref.span)) === 'directory') {
-      return { kind: 'tree', tree: (await env.local.readTree(ref.path, origin, ref.span)).tree, label };
+      const t = await env.local.readTree(ref.path, origin, ref.span);
+      return { kind: 'tree', tree: t.tree, label, digest: t.provenance.digest };
     }
     const f = await env.local.readFile(ref.path, ref.span);
-    return { kind: 'file', bytes: f.bytes, mode: f.mode, basename: f.basename, label };
+    return { kind: 'file', bytes: f.bytes, mode: f.mode, basename: f.basename, label, digest: `${f.provenance.digest}\0${f.mode}\0${f.basename}` };
   }
 
   if (ref.kind === 'stage') {
@@ -911,13 +1296,13 @@ function valueOf(name: string, p: readonly string[], span: SourceSpan, loose: bo
 
 // ---------------------------------------------------------------- helpers
 
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
   const worker = async (): Promise<void> => {
     while (next < items.length) {
       const i = next++;
-      out[i] = await fn(items[i]!);
+      out[i] = await fn(items[i]!, i);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
