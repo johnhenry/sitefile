@@ -27,6 +27,10 @@
 // committed as written (NFD file names: write them with JSON \u escapes).
 // `expectPaths` lists output paths (exact code points, as read back from the
 // directory listing) that both implementations' tree output must contain.
+// `command: "bake"` copies the case directory once per implementation and runs
+// `sitefile bake <args>` there (so the default sitefile.bake.yaml and relative paths
+// apply); it compares exit code, the whole stdout and stderr, and the tree of `out`
+// (default `dist`) in the copy when it exists.
 // `profile: true` adds `--profile <file>` and requires the same trace from both,
 // ignoring each event's `ts` and `dur` (names, categories, threads, args and order
 // must match; also when the build fails).
@@ -97,6 +101,11 @@ function cases() {
     ex('multistage', { suffix: ':profile', profile: true }),
     ex('wasm', { suffix: ':profile', profile: true }),
     ex('data', { suffix: ':profile-zip', out: 'site.zip', compare: 'archive', profile: true }),
+    // sitefile bake: four variants of one Sitefile (matrix, inherits, groups); --print shows the plan.
+    ex('bake', { command: 'bake' }),
+    ex('bake', { suffix: ':en', command: 'bake', args: ['en', '-j', '1'] }),
+    ex('bake', { suffix: ':print', command: 'bake', args: ['--print'] }),
+    ex('bake', { suffix: ':print-json', command: 'bake', args: ['--print', '--json', 'site-fr-production', 'en'] }),
   ];
   return list;
 }
@@ -115,10 +124,10 @@ async function caseDirs() {
   return out;
 }
 
-function run(cmd, argv, env) {
+function run(cmd, argv, env, cwd = root) {
   return new Promise((resolve) => {
     const start = process.hrtime.bigint();
-    execFile(cmd[0], [...cmd.slice(1), ...argv], { cwd: root, env: { ...process.env, ...env }, maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
+    execFile(cmd[0], [...cmd.slice(1), ...argv], { cwd, env: { ...process.env, ...env }, maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
       const ms = Number(process.hrtime.bigint() - start) / 1e6;
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr, ms, spawnError: err && typeof err.code === 'string' ? err.message : undefined });
     });
@@ -167,6 +176,32 @@ async function outputOf(kind, outPath) {
 const errorLine = (stderr) => stderr.split('\n').find((l) => l.startsWith('error')) ?? '';
 const warningLines = (stderr) => stderr.split('\n').filter((l) => l.startsWith('warning')).join('\n');
 
+/** A `command: "bake"` case: run both implementations in their own copy of the case directory. */
+async function runBakeCase(c) {
+  const r = {};
+  for (const [impl, cmd] of [['ts', TS], ['rust', RUST]]) {
+    const work = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'));
+    await fs.rm(work, { recursive: true, force: true });
+    await fs.cp(c.context, work, { recursive: true, filter: (src) => path.basename(src) !== 'dist' });
+    const res = await run(cmd, ['bake', ...(c.args ?? [])], { SITEFILE_HOME: path.join(tmp, impl, '.home'), ...(c.env ?? {}) }, work);
+    const tree = await outputOf('tree', path.join(work, c.out ?? 'dist')).catch(() => ({ digest: 'none', files: 0 }));
+    r[impl] = { code: res.code, stdout: res.stdout, stderr: res.stderr, spawnError: res.spawnError, output: tree };
+  }
+  const detail = [];
+  if (r.ts.code !== r.rust.code) detail.push(`exit ts ${r.ts.code}, rust ${r.rust.code}`);
+  for (const k of ['stdout', 'stderr']) {
+    if (r.ts[k] === r.rust[k]) continue;
+    const a = r.ts[k].split('\n');
+    const b = r.rust[k].split('\n');
+    const i = a.findIndex((l, n) => l !== b[n]);
+    detail.push(`first ${k} difference at line ${i + 1}:\nts   ${a[i]}\nrust ${b[i]}`);
+  }
+  if (r.ts.output.digest !== r.rust.output.digest) detail.push(`output ts ${r.ts.output.files} files ${r.ts.output.digest}, rust ${r.rust.output.files} files ${r.rust.output.digest}`);
+  if (r.rust.spawnError) detail.push(`rust: ${r.rust.spawnError}`);
+  const summary = (x) => ({ code: x.code, error: errorLine(x.stderr), output: { digest: x.output.digest, files: x.output.files } });
+  return { name: c.name, compare: 'bake', pass: detail.length === 0, detail, ts: summary(r.ts), rust: summary(r.rust) };
+}
+
 const results = [];
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
 let servers; // started on the first network case (conformance/servers.mjs)
@@ -179,6 +214,13 @@ try {
       results.push({ name: res.name, compare: res.compare, pass: res.pass, ts: res.ts, rust: res.rust });
       console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
       for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+      continue;
+    }
+    if (c.command === 'bake') {
+      const res = await runBakeCase(c);
+      results.push(res);
+      console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
+      if (!res.pass) for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
       continue;
     }
     const command = c.command ?? 'build';

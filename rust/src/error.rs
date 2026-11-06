@@ -51,6 +51,7 @@ codes!(
     E_PLUGIN,
     E_EXPORT, E_EXPORT_UNSAFE,
     E_STORE, E_SERVER, E_REGISTRY, E_AUTH,
+    E_BAKE,
     E_USAGE,
 );
 
