@@ -52,6 +52,7 @@ to find in the other:
 | `site` (SITEMAP, FEED, `_redirects`/`_headers` writers); the rules section of `server` | `site.ts`; `serve-rules.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
+| `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
@@ -131,7 +132,7 @@ paths").
 - **Conformance** (`node conformance/run.mjs`): builds every example (and zip,
   tar, tar.gz, wbn and OCI variants) and every directory in `conformance/cases`
   with both CLIs, and requires the same exit code, the same `error[CODE]: …`
-  line, and identical output trees; `validate`/`inspect` cases compare stdout.
+  line, and identical output trees; `validate`/`inspect`/`graph`/`why` cases compare stdout.
   Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
   throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
   and an in-process mock OCI registry, then cover remote `IMPORT` with and

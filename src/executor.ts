@@ -85,6 +85,8 @@ export interface BuildOptions {
   readonly store?: Store;
   /** Informational lines (e.g. the path each allowed tool resolved to). */
   readonly onNotice?: (message: string) => void;
+  /** Keep every intermediate tree in {@link BuildResult.steps} (for `sitefile why`). */
+  readonly recordSteps?: boolean;
 }
 
 export interface BuildResult {
@@ -102,6 +104,11 @@ export interface BuildResult {
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
   readonly transformStats: TransformStats;
+  /**
+   * With `recordSteps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
+   * operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
+   */
+  readonly steps?: readonly (readonly Tree[])[];
 }
 
 export interface TransformStats extends CacheStats {
@@ -206,11 +213,17 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     ...(cache ? { cache } : {}),
   };
   let tree = Tree.empty;
+  const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
   try {
     for (const spec of p.plugins) await registerPlugin(spec, local, plugins, pluginAllowed);
     for (const stage of p.stages) {
       tree = await startStage(stage, execEnv);
-      for (const op of stage.operations) tree = await execute(op, tree, execEnv);
+      const record = steps ? [tree] : undefined;
+      steps?.push(record!);
+      for (const op of stage.operations) {
+        tree = await execute(op, tree, execEnv);
+        record?.push(tree);
+      }
       if (stage.name !== undefined) stageTrees.set(stage.name, tree);
     }
   } finally {
@@ -246,7 +259,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     : undefined;
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
 }
 
 export interface ExportTarget {

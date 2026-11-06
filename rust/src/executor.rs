@@ -100,6 +100,8 @@ pub struct BuildOptions {
     pub skip_base: bool,
     /// Registry hosts reachable over plain http (for BASE pulls).
     pub insecure_registries: Vec<String>,
+    /// Keep every intermediate tree in [`BuildResult::steps`] (for `sitefile why`).
+    pub record_steps: bool,
 }
 
 impl Default for BuildOptions {
@@ -129,6 +131,7 @@ impl Default for BuildOptions {
             base_image: None,
             skip_base: false,
             insecure_registries: Vec::new(),
+            record_steps: false,
         }
     }
 }
@@ -156,6 +159,9 @@ pub struct BuildResult {
     pub base: Option<BaseImage>,
     pub tools: Vec<ResolvedTool>,
     pub transform_stats: TransformStats,
+    /// With `record_steps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
+    /// operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
+    pub steps: Option<Vec<Vec<Tree>>>,
 }
 
 pub struct Loaded {
@@ -372,6 +378,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
     };
+    let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
             register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
@@ -379,8 +386,15 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         let mut tree = Tree::empty();
         for stage in &p.stages {
             tree = exec.start_stage(stage)?;
+            let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 tree = exec.execute(op, tree)?;
+                if let Some(r) = record.as_mut() {
+                    r.push(tree.clone());
+                }
+            }
+            if let (Some(all), Some(r)) = (steps.as_mut(), record) {
+                all.push(r);
             }
             if let Some(name) = &stage.name {
                 exec.stages.insert(name.clone(), tree.clone());
@@ -444,7 +458,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         _ => false,
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
-    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats })
+    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats, steps })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
