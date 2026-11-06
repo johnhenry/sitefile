@@ -335,6 +335,33 @@ pub fn parse_env_file(text: &str, label: &str) -> Result<BuildArgs> {
     Ok(out)
 }
 
+/// The CLI's build args: `--build-arg-file` files in order (later files win), then
+/// `--build-arg NAME=value` (or `NAME`, read from the environment), which win over
+/// files. Malformed flags are E_USAGE errors.
+pub fn collect_build_args(files: &[String], flags: &[String]) -> Result<BuildArgs> {
+    let mut out = BuildArgs::new();
+    for file in files {
+        out.extend_from(&load_build_arg_file(file)?);
+    }
+    for kv in flags {
+        match kv.find('=') {
+            None => {
+                // --build-arg NAME: take the value from the environment, as Docker does.
+                if !is_ident(kv) {
+                    return Err(SitefileError::plain(E_USAGE, format!("--build-arg expects NAME=value or NAME, got '{kv}'")));
+                }
+                match std::env::var(kv) {
+                    Ok(v) => out.set(kv.clone(), v),
+                    Err(_) => return Err(SitefileError::plain(E_USAGE, format!("--build-arg {kv}: environment variable {kv} is not set"))),
+                }
+            }
+            Some(0) => return Err(SitefileError::plain(E_USAGE, format!("--build-arg expects NAME=value, got '{kv}'"))),
+            Some(eq) => out.set(kv[..eq].to_string(), kv[eq + 1..].to_string()),
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

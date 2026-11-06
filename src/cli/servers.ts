@@ -4,10 +4,15 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
-import { closeServer, createSiteServer, formatUrl, listen } from '../server.js';
+import { collectBuildArgs } from '../build-args.js';
+import { build } from '../executor.js';
+import { closeServer, createSiteServer, formatUrl, listen, LiveReload } from '../server.js';
 import { isRunning, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
-import { requireArgs, str, table, usage, type Command, type ParsedValues } from './common.js';
+import { Tree } from '../tree.js';
+import { transformCacheDir } from './cache.js';
+import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
+import { watchLoop } from './watch.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -83,17 +88,36 @@ async function startDetached(reg: ServerRegistry, state: ServerState): Promise<S
 const run: Command = {
   name: 'serve',
   summary: 'serve an image or directory over HTTP',
-  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>',
+  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>  |  serve --watch [options] [context]',
   description:
-    'Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.',
+    'Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
+    '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
+    '--build-arg <NAME=value>     set an ARG (--watch; repeatable)',
+    '--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)',
+    '--no-cache        do not use the TRANSFORM result cache (--watch)',
+    '--no-lockfile     do not read or write Sitefile.lock (--watch)',
   ],
-  options: { name: { type: 'string' }, publish: { type: 'string', short: 'p' }, detach: { type: 'boolean', short: 'd' }, spa: { type: 'boolean' } },
+  options: {
+    name: { type: 'string' },
+    publish: { type: 'string', short: 'p' },
+    detach: { type: 'boolean', short: 'd' },
+    spa: { type: 'boolean' },
+    watch: { type: 'boolean' },
+    file: { type: 'string', short: 'f' },
+    'build-arg': { type: 'string', multiple: true },
+    'build-arg-file': { type: 'string', multiple: true },
+    'no-cache': { type: 'boolean' },
+    'no-lockfile': { type: 'boolean' },
+  },
   async run(v, pos) {
+    if (v.watch) return serveWatch(v, pos);
+    for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference or ./directory');
     const bind = parsePublish(str(v.publish));
     const name = str(v.name);
@@ -140,6 +164,64 @@ const run: Command = {
     }
   },
 };
+
+/** serve flags that only mean something with --watch. */
+const WATCH_ONLY = ['file', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile'] as const;
+
+/** `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. */
+async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
+  requireArgs(pos, 0, 1, 'a build context directory');
+  if (v.detach) usage('--watch cannot be combined with -d');
+  if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
+  const bind = parsePublish(str(v.publish));
+  const context = pos[0] ?? '.';
+  const file = str(v.file);
+  const argFiles = strs(v['build-arg-file']);
+  const argFlags = strs(v['build-arg']);
+  if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
+
+  let current: Tree = Tree.empty;
+  let started = false;
+  const live = new LiveReload();
+  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, log: (l) => process.stdout.write(`${l}\n`) });
+  try {
+    return await watchLoop({
+      context,
+      ...(file ? { sitefile: file } : {}),
+      argFiles,
+      build: async () => {
+        try {
+          const r = await build({
+            contextDir: context,
+            ...(file ? { sitefile: file } : {}),
+            buildArgs: await collectBuildArgs(argFiles, argFlags),
+            ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
+            ...(v['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
+            skipBase: true,
+            onNotice: (m) => process.stderr.write(`${m}\n`),
+            onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
+          });
+          current = r.output;
+          process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
+          if (started) live.reload();
+          return { code: 0 };
+        } catch (e) {
+          if (!(e instanceof SitefileError)) throw e;
+          if (e.code === 'E_USAGE') return { code: usageError(e.detail) };
+          process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+          return { code: 1 };
+        }
+      },
+      onStarted: async () => {
+        const addr = await listen(server, bind.host, bind.port);
+        started = true;
+        process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+      },
+    });
+  } finally {
+    if (started) await closeServer(server);
+  }
+}
 
 const ps: Command = {
   name: 'servers',

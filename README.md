@@ -93,7 +93,7 @@ TRANSFORM results are cached in `$SITEFILE_HOME/cache/transform` (`--no-cache` t
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
-               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache]
+               [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--no-cache] [--watch]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
 
@@ -102,8 +102,22 @@ sitefile build [context] -t name[:tag]        # also store the build as an image
 sitefile images | image inspect|diff|prune | tag | rmi | save
 sitefile cache info | cache prune [--older-than days]   # TRANSFORM result cache
 sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
+sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
+
+## Watch mode
+
+```bash
+sitefile build --watch examples/hello     # rebuild dist/ whenever the context, Sitefile or a --build-arg-file changes
+sitefile serve --watch examples/hello     # build in memory, serve on 127.0.0.1, reload open pages after each rebuild
+```
+
+Rebuilds are debounced (100 ms) and changes made during a build become one follow-up build. The output
+directory, `.git`, `Sitefile.lock` and the store are not watched. A failed rebuild prints the error and keeps the
+last good output (exports are swapped in atomically; `serve --watch` keeps serving the last good build). Live
+reload is a small script added to HTML responses only under `serve --watch`, listening on the reserved
+`/__sitefile/reload` event stream; it is never written to exports. See [docs/CLI.md](docs/CLI.md#watch-mode).
 
 ## Images and servers
 

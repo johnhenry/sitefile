@@ -42,6 +42,7 @@ pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod plugins;
+pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)
 pub mod lsp;

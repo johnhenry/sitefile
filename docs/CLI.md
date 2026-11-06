@@ -33,6 +33,56 @@ sitefile inspect  [context] [--json]
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
+## Watch mode
+
+```
+sitefile build --watch [context] [build options]
+sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V]... [--build-arg-file f]...
+                       [--no-cache] [--no-lockfile] [context]
+```
+
+`build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
+`serve --watch` builds the context **in memory** (like `inspect`; no export is written), serves the result like
+`serve`, and reloads open pages after each good rebuild.
+
+- **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
+  and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
+- **What is not**: the export destination and the exporter's temporary siblings (`.<out>.sitefile-tmp-*`,
+  `.<out>.sitefile-old-*`), anything under a `.git` directory, `Sitefile.lock` (the build writes it) and the
+  store (`$SITEFILE_HOME`). A build's own writes never trigger another build.
+- **Debounce**: a rebuild starts once nothing has changed for 100 ms, so saving several files is one rebuild.
+  Changes that arrive while a build runs are coalesced into one follow-up build.
+- **Messages**: `Change detected, rebuilding` before each rebuild, then the usual `Exported ...` line
+  (`serve --watch`: `Built N files (sha256:...)`). After the first build: `Watching <context> for changes (Ctrl-C to
+  stop)`.
+- **Failures**: a failed rebuild prints its `error[CODE]: ...` line and `Build failed; keeping the last good
+  output`, and the loop keeps watching. Exports are atomic (written to a temporary sibling and swapped in), so
+  `dist/` is either the previous good output or the new one, never half-written; `serve --watch` keeps serving the
+  last good build. If the *first* build fails, `build --watch` keeps watching and `serve --watch` serves an empty
+  site until a build succeeds. A usage error in the first build (for example a malformed `--build-arg`) exits with
+  code 2. A context that is not a directory is `E_NOT_FOUND`.
+- **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
+  errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
+  foreground: `-d` and `--name` are refused, and `-f`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
+
+### Live reload
+
+Only under `serve --watch`:
+
+- `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
+  `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
+  sends nothing. The stream is not written to the access log.
+- Every `text/html` file response gets one script tag, inserted before the last `</body>` (ASCII
+  case-insensitive), or appended when there is none:
+  `<script>new EventSource("/__sitefile/reload").onmessage=function(){location.reload()}</script>`.
+  `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached un-injected copy is not
+  reused. Other files are served unchanged.
+- Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
+
+Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
+(recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)).
+
 ## Transform cache
 
 TRANSFORM results (plugins and `TOOL`s) are cached in `$SITEFILE_HOME/cache/transform` (default `~/.sitefile/cache/transform`),
@@ -164,6 +214,7 @@ TypeScript CLI prints a usage error pointing to `rust/target/release/sitefile ls
 
 ```
 sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
+sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...

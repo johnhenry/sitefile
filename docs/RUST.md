@@ -26,6 +26,7 @@ to find in the other:
 | `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
+| `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `lsp::*` (the language server) | none: Rust only, see below |
 
 ## Tooling exception: the language server
@@ -110,6 +111,15 @@ flate2. A change to the encoder must be made in both files; regenerate
   rather than Node's bundled copy.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
+- **Watch mode change detection.** `build --watch` and `serve --watch` behave the
+  same (paths watched and ignored, 100 ms debounce, coalescing, messages), but
+  the TypeScript CLI is notified by `fs.watch` (recursive) while the Rust CLI
+  polls: every 100 ms it walks the context, the Sitefile and the
+  `--build-arg-file` files (symlinks are not followed) and compares size,
+  mtime, ctime, inode and type. Rust's std has no file notification API, and a
+  crate such as `notify` would be a new dependency for little gain, so a
+  rebuild in Rust starts up to ~100 ms later, and a very large context costs a
+  directory walk per poll.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in
   `serve -p`, `toPrecision` rounding ties in `images` sizes, very deep emphasis
   nesting in Markdown.
