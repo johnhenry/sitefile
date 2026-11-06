@@ -56,6 +56,23 @@ pub enum ValueType {
     Boolean,
 }
 
+impl ValueType {
+    /// Every type (the parser and the language server share this list).
+    pub const ALL: [ValueType; 3] = [ValueType::String, ValueType::Number, ValueType::Boolean];
+    /// Case-insensitive (Unicode lowercase, as JavaScript's `toLowerCase`).
+    pub fn parse(s: &str) -> Option<ValueType> {
+        let lower = s.to_lowercase();
+        Self::ALL.into_iter().find(|t| t.as_str() == lower)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ValueType::String => "string",
+            ValueType::Number => "number",
+            ValueType::Boolean => "boolean",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportKind {
     File,
@@ -69,18 +86,21 @@ pub enum ImportKind {
 }
 
 impl ImportKind {
+    /// Every kind, in the order docs/LANGUAGE.md lists them.
+    pub const ALL: [ImportKind; 8] = [
+        ImportKind::File,
+        ImportKind::Text,
+        ImportKind::Json,
+        ImportKind::Yaml,
+        ImportKind::Csv,
+        ImportKind::Markdown,
+        ImportKind::Wbn,
+        ImportKind::Tree,
+    ];
+    /// Case-insensitive (ASCII).
     pub fn parse(s: &str) -> Option<ImportKind> {
-        Some(match s.to_ascii_lowercase().as_str() {
-            "file" => ImportKind::File,
-            "text" => ImportKind::Text,
-            "json" => ImportKind::Json,
-            "tree" => ImportKind::Tree,
-            "markdown" => ImportKind::Markdown,
-            "yaml" => ImportKind::Yaml,
-            "csv" => ImportKind::Csv,
-            "wbn" => ImportKind::Wbn,
-            _ => return None,
-        })
+        let lower = s.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|k| k.as_str() == lower)
     }
     pub fn as_str(self) -> &'static str {
         match self {
@@ -102,6 +122,22 @@ pub enum EscapeMode {
     Html,
 }
 
+impl EscapeMode {
+    /// Every `--escape=` value.
+    pub const ALL: [EscapeMode; 2] = [EscapeMode::None, EscapeMode::Html];
+    /// Case-insensitive (Unicode lowercase, as JavaScript's `toLowerCase`).
+    pub fn parse(s: &str) -> Option<EscapeMode> {
+        let lower = s.to_lowercase();
+        Self::ALL.into_iter().find(|m| m.as_str() == lower)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EscapeMode::None => "none",
+            EscapeMode::Html => "html",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
     Directory,
@@ -113,17 +149,16 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
+    /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
+    pub const ALL: [ExportFormat; 6] =
+        [ExportFormat::Directory, ExportFormat::Zip, ExportFormat::Tar, ExportFormat::Tgz, ExportFormat::Wbn, ExportFormat::Oci];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
-        Some(match name.to_ascii_lowercase().as_str() {
-            "directory" => ExportFormat::Directory,
-            "zip" => ExportFormat::Zip,
-            "tar" => ExportFormat::Tar,
-            "tgz" | "tar.gz" => ExportFormat::Tgz,
-            "wbn" => ExportFormat::Wbn,
-            "oci" => ExportFormat::Oci,
-            _ => return None,
-        })
+        let lower = name.to_ascii_lowercase();
+        if lower == "tar.gz" {
+            return Some(ExportFormat::Tgz);
+        }
+        Self::ALL.into_iter().find(|f| f.as_str() == lower)
     }
     pub fn as_str(self) -> &'static str {
         match self {
@@ -146,12 +181,17 @@ pub enum OciCompression {
 }
 
 impl OciCompression {
+    /// Every `COMPRESSION` value.
+    pub const ALL: [OciCompression; 2] = [OciCompression::Gzip, OciCompression::None];
     /// Case-insensitive.
     pub fn parse(name: &str) -> Option<OciCompression> {
-        match name.to_ascii_lowercase().as_str() {
-            "gzip" => Some(OciCompression::Gzip),
-            "none" => Some(OciCompression::None),
-            _ => None,
+        let lower = name.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|c| c.as_str() == lower)
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OciCompression::Gzip => "gzip",
+            OciCompression::None => "none",
         }
     }
 }

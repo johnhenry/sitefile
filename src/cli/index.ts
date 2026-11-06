@@ -10,7 +10,15 @@ import { cacheSubcommands } from './cache.js';
  */
 const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands].filter(([k]) => !k.includes(' ')));
 
-export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache'];
+export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
+
+/**
+ * The language server exists only in the Rust implementation (a tooling
+ * exception, docs/RUST.md): the language is the same in both, the server is
+ * an editor tool. Here `sitefile lsp` is a usage error that points there.
+ */
+export const LSP_UNAVAILABLE =
+  "'sitefile lsp' (the language server) is provided by the Rust implementation: build it with 'cd rust && cargo build --release' and run 'rust/target/release/sitefile lsp' (see docs/LSP.md)";
 
 export const EXTRA_HELP = `
 Images (local store: $SITEFILE_HOME or ~/.sitefile):
@@ -34,6 +42,9 @@ Serving sites (detached servers are tracked by name):
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
 
+Editor support:
+  sitefile lsp [--stdio]                           language server over stdio (Rust build only; docs/LSP.md)
+
 Run 'sitefile <command> --help' for the options of a command.
 `;
 
@@ -49,6 +60,7 @@ const GROUPS: ReadonlyMap<string, { subs: ReadonlyMap<string, Command>; usage: s
 
 export async function runExtraCommand(argv: readonly string[]): Promise<number> {
   const [name, ...rest] = argv;
+  if (name === 'lsp') return usageError(LSP_UNAVAILABLE);
   const group = name === undefined ? undefined : GROUPS.get(name);
   if (group) {
     const [sub, ...args] = rest;

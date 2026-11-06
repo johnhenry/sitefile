@@ -11,9 +11,59 @@ use crate::language::scanner::{logical_lines, Cursor};
 
 const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 
+// Keyword tables. The parser below matches these words; the language server
+// (`crate::lsp`) completes and documents them from the same lists.
+
+/// Every instruction keyword `parse_instruction` accepts.
+pub const INSTRUCTIONS: [&str; 11] =
+    ["FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "EXPORT"];
+/// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`).
+pub const IMPORT_CLAUSES: [&str; 3] = ["AS", "INTEGRITY", "SORT"];
+/// `SORT BY key` directions.
+pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
+/// Clauses after `EXPORT <path>`, in this order.
+pub const EXPORT_CLAUSES: [&str; 4] = ["AS", "BASE", "AT", "COMPRESSION"];
+/// Clauses after `TRANSFORM … TO <dest>`.
+pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
+/// Leading flags of COPY, RENDER and TRANSFORM.
+pub const COPY_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+
+/// The leading flags `keyword` accepts (empty for instructions without flags).
+pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
+    match keyword.to_uppercase().as_str() {
+        "COPY" => COPY_FLAGS,
+        "RENDER" => RENDER_FLAGS,
+        "TRANSFORM" => TRANSFORM_FLAGS,
+        _ => &[],
+    }
+}
+
 /// Parse Sitefile source into instructions (syntax only; see `validate.rs` for semantics).
 pub fn parse_sitefile(source: &str, file: &str) -> Result<Vec<Instruction>> {
     logical_lines(source, file)?.iter().map(|line| parse_instruction(&mut Cursor::new(line, file))).collect()
+}
+
+/// Like [`parse_sitefile`], but keeps going after a bad instruction: every
+/// logical line is parsed by the same code, and each one that fails adds its
+/// error. A scanner error (an unclosed heredoc, two `<<` bodies) is the only
+/// error then. Used by the language server to report several syntax errors.
+pub fn parse_sitefile_all(source: &str, file: &str) -> std::result::Result<Vec<Instruction>, Vec<SitefileError>> {
+    let lines = logical_lines(source, file).map_err(|e| vec![e])?;
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for line in &lines {
+        match parse_instruction(&mut Cursor::new(line, file)) {
+            Ok(i) => out.push(i),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
 }
 
 fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
@@ -63,11 +113,9 @@ fn parse_binding(c: &mut Cursor, span: SourceSpan, is_arg: bool) -> Result<Instr
     if c.eat(':') {
         let at = c.span();
         let t = c.ident("type", "=")?.to_lowercase();
-        ty = match t.as_str() {
-            "string" => ValueType::String,
-            "number" => ValueType::Number,
-            "boolean" => ValueType::Boolean,
-            _ => {
+        ty = match ValueType::parse(&t) {
+            Some(ty) => ty,
+            None => {
                 return Err(SitefileError::at(
                     E_SYNTAX,
                     format!("unknown type '{t}' (expected string, number or boolean)"),
@@ -144,8 +192,9 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort })
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Shape {
+/// Whether a flag is bare (`--overwrite`) or takes a value (`--from=name`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
     Bare,
     Value,
 }
@@ -213,7 +262,7 @@ fn inline_or_operand(c: &mut Cursor, what: &str) -> Result<Source> {
 }
 
 fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, &[("overwrite", Shape::Bare), ("from", Shape::Value)])?;
+    let flags = parse_flags(c, COPY_FLAGS)?;
     let source = inline_or_operand(c, "source")?;
     let dest = c.operand("destination")?;
     c.expect_end()?;
@@ -231,13 +280,12 @@ fn parse_for(c: &mut Cursor, span: SourceSpan) -> Result<ForEach> {
 }
 
 fn parse_render(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value)])?;
+    let flags = parse_flags(c, RENDER_FLAGS)?;
     let escape = match flags.get("escape") {
         None => EscapeMode::None,
-        Some(f) => match f.value.to_lowercase().as_str() {
-            "none" => EscapeMode::None,
-            "html" => EscapeMode::Html,
-            _ => {
+        Some(f) => match EscapeMode::parse(&f.value) {
+            Some(m) => m,
+            None => {
                 return Err(SitefileError::at(
                     E_SYNTAX,
                     format!("--escape must be none or html, got '{}'", f.value),
@@ -290,7 +338,7 @@ fn parse_args(c: &mut Cursor) -> Result<Vec<Operand>> {
 }
 
 fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, &[("overwrite", Shape::Bare), ("from", Shape::Value)])?;
+    let flags = parse_flags(c, TRANSFORM_FLAGS)?;
     // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
     let source = if c.keyword("WITH") { None } else { Some(inline_or_operand(c, "source")?) };
     if source.is_some() {
@@ -838,5 +886,43 @@ mod tests {
         parse_err("FROM scratch\nCOPY <<A <<B\nA\nEXPORT /", E_SYNTAX, 2, 10, "only one inline (<<) body");
         parse_err("FROM scratch\nCOPY ./a <<EOF\nx\nEOF\nEXPORT /", E_SYNTAX, 2, 10, "an inline <<EOF body can only be the COPY source");
         parse_err("FROM scratch AS s\nFROM scratch\nCOPY --from=s <<EOF /a\nx\nEOF\nEXPORT /", E_SYNTAX, 3, 6, "--from cannot be combined");
+    }
+
+    #[test]
+    fn keyword_tables_match_the_parser() {
+        for kw in INSTRUCTIONS {
+            if let Err(e) = parse_sitefile(kw, "Sitefile") {
+                assert_ne!(e.code, ErrorCode::E_UNKNOWN_INSTRUCTION, "{kw}");
+            }
+        }
+        assert_eq!(parse_sitefile("FOO", "Sitefile").unwrap_err().code, ErrorCode::E_UNKNOWN_INSTRUCTION);
+        for k in ImportKind::ALL {
+            assert_eq!(ImportKind::parse(&k.as_str().to_uppercase()), Some(k));
+        }
+        for f in ExportFormat::ALL {
+            assert_eq!(ExportFormat::parse(f.as_str()), Some(f));
+        }
+        assert_eq!(ExportFormat::parse("TAR.GZ"), Some(ExportFormat::Tgz));
+        for (kw, flags) in [("COPY", COPY_FLAGS), ("RENDER", RENDER_FLAGS), ("TRANSFORM", TRANSFORM_FLAGS)] {
+            assert_eq!(flags_of(kw), flags);
+            for (name, shape) in flags {
+                let flag = if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=x") };
+                let e = parse_sitefile(&format!("{kw} {flag}"), "Sitefile").unwrap_err();
+                assert!(!e.detail.contains("unknown flag"), "{kw} {flag}: {e}");
+            }
+        }
+        for clause in IMPORT_CLAUSES {
+            let e = parse_sitefile(&format!("IMPORT a FROM ./a {clause}"), "Sitefile").unwrap_err();
+            assert!(!e.detail.contains("unexpected"), "{clause}: {e}");
+        }
+    }
+
+    #[test]
+    fn parse_all_reports_every_bad_line() {
+        let errs = parse_sitefile_all("COPY\nFROM scratch\nBOGUS x\nEXPORT / extra", "Sitefile").unwrap_err();
+        let lines: Vec<u32> = errs.iter().map(|e| e.span.as_ref().unwrap().line).collect();
+        assert_eq!(lines, [1, 3, 4]);
+        assert_eq!(parse_sitefile_all("FROM scratch\nEXPORT /", "Sitefile").unwrap().len(), 2);
+        assert_eq!(parse_sitefile_all("COPY <<A /a\nx", "Sitefile").unwrap_err().len(), 1);
     }
 }

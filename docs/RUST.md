@@ -26,6 +26,22 @@ to find in the other:
 | `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
+| `lsp::*` (the language server) | none: Rust only, see below |
+
+## Tooling exception: the language server
+
+`sitefile lsp` (`rust/src/lsp/`, documented in [LSP.md](LSP.md)) exists only
+in the Rust implementation. This is a deliberate exception to "same CLI": the
+Sitefile **language** stays identical in both implementations (the server
+reuses the Rust scanner, parser, validator and planner, whose behaviour
+conformance checks against the TypeScript reference), while the server itself
+is an editor tool with no build output to compare. The TypeScript CLI answers
+`sitefile lsp` with a usage error (exit 2) that points to the Rust binary, and
+both `--help` texts list the command. Keyword tables the server completes from
+(`INSTRUCTIONS`, the flag and clause lists in `language::parser`, `ALL` on the
+enums in `language::ast`) are the ones the Rust parser uses; a language change
+updates them with the parser. The server adds no dependencies: framing is
+hand-rolled and messages use serde_json.
 
 Dependencies (rationale in `rust/Cargo.toml`): serde/serde_json, sha2 (with
 hardware SHA-256), base64, flate2 (zlib-rs, for decompression only), ureq (HTTPS with a custom resolver
