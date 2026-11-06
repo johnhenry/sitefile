@@ -389,6 +389,24 @@ test('a declared index size beyond the input does not allocate', () => {
   assert.throws(() => read(g2), isCode('E_ARCHIVE'));
 });
 
+test('a negative index offset or section length is rejected (it read outside the responses section)', () => {
+  const r = response({ body: 'x' });
+  const nint = Buffer.from([0x20]); // -1
+  const index = cborMap([[cborText('https://x.test/a'), cborArray([nint, cborUint(r.length)])]]);
+  assert.throws(() => read(bundle({ index, responses: cborArray([r]) })), /index offset\/length for 'https:\/\/x.test\/a' is not an unsigned integer/);
+  const g = Buffer.from(bundle(build(simple)));
+  // section-lengths: ["index", n, "responses", m] -> make n negative (uint8 head 0x18 -> nint8 head 0x38)
+  const at = g.indexOf(Buffer.from('index')) + 5;
+  assert.equal(g[at], 0x18);
+  g[at] = 0x38;
+  assert.throws(() => read(g), /malformed section-lengths entry/);
+});
+
+test('header names that are array indices come first, like Object.fromEntries', () => {
+  const b = bundle(build({ 'https://x.test/a': { body: 'x', headers: [['x-b', '1'], ['10', 'a'], ['2', 'b']] } }));
+  assert.deepEqual(Object.keys(read(b).entries[0]!.headers), ['2', '10', 'x-b']);
+});
+
 // --------------------------------------------------------- cross-check tool
 
 test('dump-bundle lists the same URLs as our reader (skipped if not installed)', async (t) => {

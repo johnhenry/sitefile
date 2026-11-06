@@ -5,9 +5,8 @@ use crate::paths::normalize_virtual;
 use crate::resources::types::ArchiveLimits;
 use crate::resources::wbn_reader::{is_web_bundle, read_web_bundle, web_bundle_to_tree};
 use crate::tree::{make_file, Node, Tree};
-use flate2::read::{DeflateDecoder, MultiGzDecoder};
+use flate2::{Decompress, FlushDecompress, Status};
 use std::collections::HashSet;
-use std::io::Read;
 
 /// Below this many output bytes the ratio limit is not enforced (tar block padding compresses extremely well).
 const RATIO_FLOOR: u64 = 1024 * 1024;
@@ -135,23 +134,69 @@ fn archive_path(name: &str, span: Option<&SourceSpan>) -> Result<String> {
 
 // ------------------------------------------------------------------ gzip
 
-/// Read at most `cap` bytes; `Ok(None)` if the stream has more.
-fn read_capped(mut r: impl Read, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
-    let mut out = Vec::new();
-    let n = r.by_ref().take(cap.saturating_add(1)).read_to_end(&mut out)?;
-    Ok(if n as u64 > cap { None } else { Some(out) })
-}
-
 fn gunzip(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
     let by_ratio = (bytes.len() as u64).saturating_mul(limits.max_ratio).max(RATIO_FLOOR);
     // The inflated stream is tar: file data plus headers and padding for every entry.
     let by_total = limits
         .max_total_bytes
         .saturating_add(limits.max_entries.saturating_add(2).saturating_mul(TAR_OVERHEAD_PER_ENTRY));
-    match read_capped(MultiGzDecoder::new(bytes), by_ratio.min(by_total)) {
-        Ok(Some(out)) => Ok(out),
-        Ok(None) => Err(too_large(origin, by_ratio <= by_total, limits, span)),
-        Err(_) => Err(corrupt(origin, "corrupt compressed data", span)),
+    match inflate_like_node(bytes, true, by_ratio.min(by_total)) {
+        Inflated::Done(out) => Ok(out),
+        Inflated::TooLarge => Err(too_large(origin, by_ratio <= by_total, limits, span)),
+        Inflated::Corrupt => Err(corrupt(origin, "corrupt compressed data", span)),
+    }
+}
+
+/// Output buffer size of a Node zlib stream (`zlib.constants.Z_DEFAULT_CHUNK`).
+const NODE_CHUNK: usize = 16 * 1024;
+
+enum Inflated {
+    Done(Vec<u8>),
+    TooLarge,
+    Corrupt,
+}
+
+/// What Node's `zlib.gunzip` (`gzip`) or `zlib.inflateRaw` with
+/// `maxOutputLength: cap` makes of `input`, so both implementations report the
+/// same error (found by differential fuzzing, #81). Node inflates into 16 KiB
+/// buffers and checks the limit each time it hands a buffer on: when one fills,
+/// when the input runs out, and at the end. An error (corrupt data, a bad
+/// check value) inside a buffer wins over output it never handed on; output
+/// before a truncation is handed on first. A gzip member is followed by
+/// another while input remains and the next byte is not 0x00 (trailing zero
+/// padding is ignored); a raw deflate stream ignores anything after its end.
+/// Never inflates more than `cap` + 16 KiB.
+fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
+    let fresh = || if gzip { Decompress::new_gzip(15) } else { Decompress::new(false) };
+    let mut d = fresh();
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; NODE_CHUNK];
+    let mut fill = 0usize;
+    let mut pos = 0usize;
+    loop {
+        let (in0, out0) = (d.total_in(), d.total_out());
+        let status = d.decompress(&input[pos..], &mut buf[fill..], FlushDecompress::None);
+        let (consumed, produced) = ((d.total_in() - in0) as usize, (d.total_out() - out0) as usize);
+        let Ok(status) = status else { return Inflated::Corrupt };
+        pos += consumed;
+        out.extend_from_slice(&buf[fill..fill + produced]);
+        fill += produced;
+        if status == Status::StreamEnd {
+            if gzip && pos < input.len() && input[pos] != 0 {
+                d = fresh(); // the next member, in the same buffer
+                continue;
+            }
+            return if out.len() as u64 > cap { Inflated::TooLarge } else { Inflated::Done(out) };
+        }
+        if fill == NODE_CHUNK {
+            if out.len() as u64 > cap {
+                return Inflated::TooLarge;
+            }
+            fill = 0;
+        } else if pos == input.len() || (consumed == 0 && produced == 0) {
+            // Truncated: what was inflated is handed on, then "unexpected end of file".
+            return if out.len() as u64 > cap { Inflated::TooLarge } else { Inflated::Corrupt };
+        }
     }
 }
 
@@ -165,21 +210,59 @@ fn too_large(origin: &str, ratio: bool, limits: &ArchiveLimits, span: Option<&So
 
 // ------------------------------------------------------------------- tar
 
-/// `parseInt(s.replace(/[\0 ]/g, ''), radix)`: leading digits, None if there are none.
-fn parse_int_prefix(field: &[u8], radix: u32) -> Option<u64> {
+/// `parseInt(field.replace(/[\0 ]/g, ''), radix)` on a Latin-1 header field.
+fn js_parse_int(field: &[u8], radix: u32) -> f64 {
     let s: Vec<u8> = field.iter().copied().filter(|&c| c != 0 && c != b' ').collect();
-    let mut n: u64 = 0;
+    js_parse_int_raw(&s, radix)
+}
+
+/// JavaScript `parseInt(latin1(s), radix)`: leading white space (of which
+/// Latin-1 has tab to CR, space and NBSP), an optional sign, then the longest
+/// run of digits. NaN if there are none.
+fn js_parse_int_raw(s: &[u8], radix: u32) -> f64 {
+    let mut i = s.iter().take_while(|&&c| matches!(c, 0x09..=0x0d | b' ' | 0xa0)).count();
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut n = 0f64;
     let mut any = false;
-    for &c in &s {
+    for &c in &s[i..] {
         match (c as char).to_digit(radix) {
             Some(d) => {
-                n = n.saturating_mul(radix as u64).saturating_add(d as u64);
+                n = n * radix as f64 + d as f64;
                 any = true;
             }
             None => break,
         }
     }
-    any.then_some(n)
+    if !any {
+        f64::NAN
+    } else if neg {
+        -n
+    } else {
+        n
+    }
+}
+
+/// `Number.isSafeInteger`.
+fn is_safe_integer(n: f64) -> bool {
+    n.is_finite() && n.trunc() == n && n.abs() <= 9_007_199_254_740_991.0
+}
+
+/// JavaScript ToInt32 (what `n & mask` applies to a number).
+fn to_int32(n: f64) -> i32 {
+    if !n.is_finite() {
+        return 0;
+    }
+    n.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
 }
 
 fn tar_checksum_ok(b: &[u8], off: usize) -> bool {
@@ -190,23 +273,24 @@ fn tar_checksum_ok(b: &[u8], off: usize) -> bool {
     for i in 0..512 {
         sum += if (148..156).contains(&i) { 32 } else { b[off + i] as u64 };
     }
-    parse_int_prefix(&b[off + 148..off + 156], 8) == Some(sum)
+    js_parse_int(&b[off + 148..off + 156], 8) == sum as f64
 }
 
-/// A numeric header field: octal text, or GNU base-256. None if unparsable.
-fn tar_number(b: &[u8], from: usize, to: usize) -> Option<u64> {
+/// A numeric header field as TypeScript's `tarNumber` reads it: GNU base-256,
+/// or octal text (an empty field is 0). NaN if unparsable; may be negative or
+/// (base-256) rounded beyond 2^53, exactly like the JavaScript number.
+fn tar_number(b: &[u8], from: usize, to: usize) -> f64 {
     if b[from] & 0x80 != 0 {
-        let mut n = (b[from] & 0x7f) as u64; // GNU base-256
+        let mut n = (b[from] & 0x7f) as f64; // GNU base-256
         for &x in &b[from + 1..to] {
-            n = n.checked_mul(256)?.checked_add(x as u64)?;
+            n = n * 256.0 + x as f64;
         }
-        return Some(n);
+        return n;
     }
-    let s: Vec<u8> = b[from..to].iter().copied().filter(|&c| c != 0 && c != b' ').collect();
-    if s.is_empty() {
-        return Some(0);
+    if b[from..to].iter().all(|&c| c == 0 || c == b' ') {
+        return 0.0;
     }
-    parse_int_prefix(&s, 8)
+    js_parse_int(&b[from..to], 8)
 }
 
 fn c_string(b: &[u8]) -> String {
@@ -230,10 +314,11 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
             return Err(corrupt(origin, "invalid tar header checksum", span));
         }
         let ty = b[h + 156];
-        let size = match next_size.or_else(|| tar_number(b, h + 124, h + 136)) {
-            Some(s) if s <= limits.max_total_bytes && s < (1u64 << 53) => s as usize,
-            _ => return Err(limit(origin, format!("archive entry larger than {} bytes", limits.max_total_bytes), span)),
-        };
+        let size = next_size.map(|s| s as f64).unwrap_or_else(|| tar_number(b, h + 124, h + 136));
+        if !is_safe_integer(size) || size < 0.0 || size > limits.max_total_bytes as f64 {
+            return Err(limit(origin, format!("archive entry larger than {} bytes", limits.max_total_bytes), span));
+        }
+        let size = size as usize; // -0 is 0
         if h + 512 + size > b.len() {
             return Err(corrupt(origin, "truncated tar archive", span));
         }
@@ -275,8 +360,8 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
         next_size = None;
         match ty {
             b'0' | 0 | b'7' => {
-                // parseInt NaN & 0o111 is 0: an unparsable mode is 0o644.
-                let mode = tar_number(b, h + 100, h + 108).map(|m| m as u32).unwrap_or(0o644);
+                // makeFile's `mode & 0o111` on the JavaScript number (NaN is 0: 0o644).
+                let mode = if to_int32(tar_number(b, h + 100, h + 108)) & 0o111 != 0 { 0o755 } else { 0o644 };
                 c.add(&name, Kind::File, data, mode)?
             }
             b'5' => c.add(&name, Kind::Dir, data, 0o755)?,
@@ -297,27 +382,6 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
     Ok(())
 }
 
-/// `parseInt(text, 10)`: optional leading whitespace and sign, then digits.
-fn parse_decimal_prefix(s: &[u8]) -> Option<i64> {
-    let s = String::from_utf8_lossy(s);
-    let t = s.trim_start();
-    let (neg, digits) = match t.as_bytes().first() {
-        Some(b'-') => (true, &t[1..]),
-        Some(b'+') => (false, &t[1..]),
-        _ => (false, t),
-    };
-    let mut n: i64 = 0;
-    let mut any = false;
-    for ch in digits.bytes() {
-        if !ch.is_ascii_digit() {
-            break;
-        }
-        n = n.saturating_mul(10).saturating_add((ch - b'0') as i64);
-        any = true;
-    }
-    any.then_some(if neg { -n } else { n })
-}
-
 fn parse_pax(data: &[u8], origin: &str, span: Option<&SourceSpan>) -> Result<(Option<String>, Option<u64>)> {
     let mut path: Option<String> = None;
     let mut size: Option<u64> = None;
@@ -325,13 +389,12 @@ fn parse_pax(data: &[u8], origin: &str, span: Option<&SourceSpan>) -> Result<(Op
     while pos < data.len() {
         let sp = data[pos..].iter().position(|&x| x == b' ').map(|i| pos + i);
         let Some(sp) = sp else { break };
-        let len = match parse_decimal_prefix(&data[pos..sp]) {
-            Some(l) if l > (sp - pos) as i64 => l as usize,
-            _ => break,
-        };
-        if pos.saturating_add(len) > data.len() {
+        // parseInt(latin1, 10); NaN fails the comparison too.
+        let len = js_parse_int_raw(&data[pos..sp], 10);
+        if !(len > (sp - pos) as f64) || pos as f64 + len > data.len() as f64 {
             break;
         }
+        let len = len as usize;
         let (start, end) = (sp + 1, pos + len - 1); // drop trailing newline
         let kv = if end > start { String::from_utf8_lossy(&data[start..end]).into_owned() } else { String::new() };
         let eq = kv.find('=');
@@ -464,10 +527,10 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
             0 => raw.to_vec(),
             8 => {
                 // Headers can lie: never inflate more than the declared size.
-                match read_capped(DeflateDecoder::new(raw), (e.usize_ as u64).max(1)) {
-                    Ok(Some(d)) => d,
-                    Ok(None) => return Err(too_large(origin, false, &limits, span)),
-                    Err(_) => return Err(bad("corrupt compressed data".into())),
+                match inflate_like_node(raw, false, (e.usize_ as u64).max(1)) {
+                    Inflated::Done(d) => d,
+                    Inflated::TooLarge => return Err(too_large(origin, false, &limits, span)),
+                    Inflated::Corrupt => return Err(bad("corrupt compressed data".into())),
                 }
             }
             m => return Err(bad(format!("zip entry '{}' uses unsupported compression method {m}", e.name))),
@@ -831,6 +894,61 @@ pub(crate) mod tests {
         let pax = |body: &str| tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", &pax_record(body)) }, te("a", "x")]);
         rejects(&pax(" size=abc\n"), E_ARCHIVE, "malformed pax size 'abc'", L);
         rejects(&pax(" novalue\n"), E_ARCHIVE, "malformed pax header record", L);
+    }
+
+    #[test]
+    fn a_pax_record_without_a_space_ends_the_header() {
+        let t = x(&tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", "10 path=p\ntail") }, te("a", "x")])).unwrap();
+        assert_eq!(paths(&t), ["/p"]);
+        let t = x(&tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", "nospace") }, te("a", "x")])).unwrap();
+        assert_eq!(paths(&t), ["/a"]);
+    }
+
+    #[test]
+    fn tar_numeric_fields_are_read_like_parse_int() {
+        let entry = |size: &[u8], mode: &[u8]| {
+            let mut h = tar_header(&te("f", ""), 3);
+            h[124..136].fill(0);
+            h[124..124 + size.len()].copy_from_slice(size);
+            h[100..108].fill(0);
+            h[100..100 + mode.len()].copy_from_slice(mode);
+            with_checksum(&mut h);
+            h.extend(b"abc");
+            h.extend(vec![0u8; 509 + 1024]);
+            h
+        };
+        let t = x(&entry(b" \xa0+3", b"\x0b-5")).unwrap();
+        let f = t.get("/f").unwrap();
+        assert_eq!(&*f.bytes, b"abc");
+        assert_eq!(f.mode, 0o755); // -5 & 0o111 is non-zero
+        rejects(&entry(b"-3", b"644"), E_ARCHIVE_LIMIT, "archive entry larger than", L);
+    }
+
+    #[test]
+    fn trailing_zeros_after_a_gzip_member_are_ignored() {
+        let gz = gzip(&tar(&[te("a", "x")]));
+        let mut padded = gz.clone();
+        padded.extend([0u8; 9]);
+        assert_eq!(paths(&x(&padded).unwrap()), ["/a"]);
+        let mut junk = gz;
+        junk.extend([1u8, 2, 3]);
+        rejects(&junk, E_ARCHIVE, "corrupt compressed data", L);
+    }
+
+    #[test]
+    fn an_inflate_error_wins_over_output_not_yet_handed_on() {
+        // 20 000 bytes with a bad CRC: Node reports the CRC error unless a full
+        // 16 KiB buffer was already over the limit.
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut gz = gzip(&data);
+        let n = gz.len();
+        gz[n - 6] ^= 1;
+        assert!(matches!(inflate_like_node(&gz, true, 16_384), Inflated::Corrupt));
+        assert!(matches!(inflate_like_node(&gz, true, 16_383), Inflated::TooLarge));
+        // Truncated: everything inflated so far counts.
+        let gz = gzip(&data);
+        assert!(matches!(inflate_like_node(&gz[..gz.len() - 4], true, 19_999), Inflated::TooLarge));
+        assert!(matches!(inflate_like_node(&gz[..gz.len() - 4], true, 20_000), Inflated::Corrupt));
     }
 
     #[test]

@@ -93,62 +93,115 @@ impl Default for Limits {
     }
 }
 
-/// Read a head at `pos`: (major type, argument, next position).
+/// `Number.MAX_SAFE_INTEGER`: TypeScript decodes larger integers as `bigint`.
+pub const MAX_SAFE: u64 = (1 << 53) - 1;
+
+impl Cbor {
+    /// An unsigned integer TypeScript decodes as a `number` (not a `bigint`).
+    pub fn as_number(&self) -> Option<u64> {
+        match self {
+            Cbor::Uint(n) if *n <= MAX_SAFE => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Identity of a map key as a JavaScript `Map` sees it (SameValueZero):
+    /// equal primitives are one key; byte strings, arrays and maps are objects
+    /// and never equal anything else.
+    fn js_key(&self) -> Option<(u8, std::borrow::Cow<'_, str>)> {
+        match self {
+            Cbor::Uint(n) => Some((0, n.to_string().into())),
+            Cbor::Nint(n) => Some((1, n.to_string().into())),
+            Cbor::Text(t) => Some((3, t.as_str().into())),
+            Cbor::Bool(b) => Some((7, if *b { "t" } else { "f" }.into())),
+            Cbor::Null => Some((7, "n".into())),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CborError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (at byte {})", self.message, self.offset)
+    }
+}
+
+/// Read a head at `pos`: (major type, argument, next position). Definite
+/// lengths only: additional info 28-31 (reserved and indefinite) is an error.
 pub fn read_head(b: &[u8], pos: usize) -> Result<(u8, u64, usize), CborError> {
     let e = |m: &str| CborError { message: m.into(), offset: pos };
-    let ib = *b.get(pos).ok_or_else(|| e("truncated"))?;
+    let ib = *b.get(pos).ok_or_else(|| e("unexpected end of input"))?;
     let major = ib >> 5;
     let info = ib & 0x1f;
+    let need = |n: usize| if pos + 1 + n > b.len() { Err(e("unexpected end of input")) } else { Ok(()) };
     let (arg, next) = match info {
         0..=23 => (info as u64, pos + 1),
-        24 => (*b.get(pos + 1).ok_or_else(|| e("truncated"))? as u64, pos + 2),
-        25 => (u16::from_be_bytes(b.get(pos + 1..pos + 3).ok_or_else(|| e("truncated"))?.try_into().unwrap()) as u64, pos + 3),
-        26 => (u32::from_be_bytes(b.get(pos + 1..pos + 5).ok_or_else(|| e("truncated"))?.try_into().unwrap()) as u64, pos + 5),
-        27 => (u64::from_be_bytes(b.get(pos + 1..pos + 9).ok_or_else(|| e("truncated"))?.try_into().unwrap()), pos + 9),
-        _ => return Err(e("indefinite lengths and reserved values are not supported")),
+        24 => {
+            need(1)?;
+            (b[pos + 1] as u64, pos + 2)
+        }
+        25 => {
+            need(2)?;
+            (u16::from_be_bytes([b[pos + 1], b[pos + 2]]) as u64, pos + 3)
+        }
+        26 => {
+            need(4)?;
+            (u32::from_be_bytes(b[pos + 1..pos + 5].try_into().unwrap()) as u64, pos + 5)
+        }
+        27 => {
+            need(8)?;
+            (u64::from_be_bytes(b[pos + 1..pos + 9].try_into().unwrap()), pos + 9)
+        }
+        31 => return Err(e("indefinite-length items are not supported")),
+        _ => return Err(e("reserved additional information")),
     };
     Ok((major, arg, next))
 }
 
 /// Decode one item at the start of `b`; returns the value and where it ended.
+/// A port of `decodeCbor` (src/cbor.ts): the same checks, in the same order,
+/// with the same messages and offsets.
 pub fn decode(b: &[u8], limits: &Limits) -> Result<(Cbor, usize), CborError> {
     let mut items = 0u64;
     decode_at(b, 0, 0, limits, &mut items)
 }
 
 fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> Result<(Cbor, usize), CborError> {
-    if depth >= l.max_depth {
-        return Err(CborError { message: "nested too deeply".into(), offset: pos });
-    }
+    let err = |message: String, offset: usize| CborError { message, offset };
     *items += 1;
     if *items > l.max_items {
-        return Err(CborError { message: "too many items".into(), offset: pos });
+        return Err(err(format!("more than {} items", l.max_items), pos));
     }
     let (major, arg, next) = read_head(b, pos)?;
-    let take = |n: u64| -> Result<(&[u8], usize), CborError> {
-        let n = usize::try_from(n).map_err(|_| CborError { message: "length too large".into(), offset: pos })?;
-        let end = next.checked_add(n).filter(|&e| e <= b.len()).ok_or(CborError { message: "length exceeds input".into(), offset: pos })?;
-        Ok((&b[next..end], end))
+    let remaining = (b.len() - next) as u64;
+    // A declared length can never exceed what is left of the input (every
+    // element or byte takes at least one byte), so nothing is sized from it.
+    let length = |min: u64| -> Result<usize, CborError> {
+        if arg > MAX_SAFE || arg.saturating_mul(min) > remaining {
+            return Err(err("declared length exceeds remaining input".into(), pos));
+        }
+        Ok(arg as usize)
     };
+    let nest = || if depth >= l.max_depth { Err(err(format!("nesting deeper than {}", l.max_depth), pos)) } else { Ok(()) };
     Ok(match major {
         0 => (Cbor::Uint(arg), next),
         1 => (Cbor::Nint(arg), next),
         2 => {
-            let (s, end) = take(arg)?;
-            (Cbor::Bytes(s.to_vec()), end)
+            let n = length(1)?;
+            (Cbor::Bytes(b[next..next + n].to_vec()), next + n)
         }
         3 => {
-            let (s, end) = take(arg)?;
-            let t = std::str::from_utf8(s).map_err(|_| CborError { message: "invalid UTF-8 text".into(), offset: pos })?;
-            (Cbor::Text(t.to_string()), end)
+            let n = length(1)?;
+            let t = std::str::from_utf8(&b[next..next + n]).map_err(|_| err("invalid UTF-8 in text string".into(), next))?;
+            // TextDecoder (without ignoreBOM) drops one leading byte order mark.
+            (Cbor::Text(t.strip_prefix('\u{feff}').unwrap_or(t).to_string()), next + n)
         }
         4 => {
-            if arg > (b.len() - next) as u64 {
-                return Err(CborError { message: "array length exceeds input".into(), offset: pos });
-            }
-            let mut v = Vec::with_capacity(arg as usize);
+            let n = length(1)?;
+            nest()?;
+            let mut v = Vec::with_capacity(n);
             let mut p = next;
-            for _ in 0..arg {
+            for _ in 0..n {
                 let (item, np) = decode_at(b, p, depth + 1, l, items)?;
                 v.push(item);
                 p = np;
@@ -156,31 +209,42 @@ fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> R
             (Cbor::Array(v), p)
         }
         5 => {
-            if arg > ((b.len() - next) / 2) as u64 {
-                return Err(CborError { message: "map length exceeds input".into(), offset: pos });
-            }
-            let mut v: Vec<(Cbor, Cbor)> = Vec::with_capacity(arg as usize);
-            // Keys are compared by their encoded bytes, which is exact for CBOR.
-            let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::with_capacity(arg as usize);
+            let n = length(2)?;
+            nest()?;
+            let mut v: Vec<(Cbor, Cbor)> = Vec::with_capacity(n);
+            // Duplicates are found by their encoded bytes, which is exact for CBOR.
+            let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::with_capacity(n);
+            let mut slots: std::collections::HashMap<(u8, String), usize> = std::collections::HashMap::new();
             let mut p = next;
-            for _ in 0..arg {
+            for _ in 0..n {
                 let (k, np) = decode_at(b, p, depth + 1, l, items)?;
                 if !seen.insert(&b[p..np]) {
-                    return Err(CborError { message: "duplicate map key".into(), offset: p });
+                    return Err(err("duplicate map key".into(), p));
                 }
                 let (val, np2) = decode_at(b, np, depth + 1, l, items)?;
-                v.push((k, val));
+                // Like a JavaScript Map: a key equal to an earlier one (the same
+                // text or number with a longer head) keeps its place and takes the new value.
+                let slot = k.js_key().map(|(t, s)| (t, s.into_owned()));
+                match slot.as_ref().and_then(|s| slots.get(s)) {
+                    Some(&i) => v[i].1 = val,
+                    None => {
+                        if let Some(s) = slot {
+                            slots.insert(s, v.len());
+                        }
+                        v.push((k, val));
+                    }
+                }
                 p = np2;
             }
             (Cbor::Map(v), p)
         }
-        7 => match arg {
-            20 => (Cbor::Bool(false), next),
-            21 => (Cbor::Bool(true), next),
-            22 => (Cbor::Null, next),
-            _ => return Err(CborError { message: "unsupported simple value or float".into(), offset: pos }),
+        6 => return Err(err("tags are not supported".into(), pos)),
+        _ => match b[pos] {
+            0xf4 => (Cbor::Bool(false), next),
+            0xf5 => (Cbor::Bool(true), next),
+            0xf6 => (Cbor::Null, next),
+            _ => return Err(err("unsupported simple value or float".into(), pos)),
         },
-        _ => return Err(CborError { message: "tags are not supported".into(), offset: pos }),
     })
 }
 

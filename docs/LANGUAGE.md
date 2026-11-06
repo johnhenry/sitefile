@@ -493,6 +493,8 @@ gitignore subset:
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  A gzip stream may hold several members; zero bytes after the last one are
+  ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
