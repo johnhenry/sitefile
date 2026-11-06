@@ -202,13 +202,25 @@ export function buildGrammar() {
     name: 'Sitefile',
     scopeName: 'source.sitefile',
     fileTypes: ['Sitefile', 'sitefile'],
-    patterns: [{ include: '#comment' }, { include: '#instructions' }],
+    patterns: [{ include: '#directive' }, { include: '#comment' }, { include: '#instructions' }],
     repository: {
       'heredoc-copy': { patterns: heredocs('raw', [{ include: '#operands' }]) },
       'heredoc-render': { patterns: heredocs('template', [{ include: '#render-clauses' }]) },
       'heredoc-transform': { patterns: heredocs('raw', [{ include: '#transform-clauses' }]) },
       'render-clauses': { patterns: renderClauses },
       'transform-clauses': { patterns: transformClauses },
+      // `# sitefile=1`: the syntax version directive (scanner.ts VERSION_DIRECTIVE).
+      directive: {
+        match: '^\\s*(#)[ \\t]*((?i:sitefile))[ \\t]*(=)[ \\t]*(?:([1-9][0-9]*)[ \\t]*$|(.*)$)',
+        name: S('comment.line.directive'),
+        captures: {
+          1: { name: S('punctuation.definition.comment') },
+          2: { name: S('keyword.other.directive') },
+          3: { name: S('keyword.operator.assignment') },
+          4: { name: S('constant.numeric.version') },
+          5: { name: S('invalid.illegal.version') },
+        },
+      },
       comment: { match: '^\\s*(#).*$', name: S('comment.line.number-sign'), captures: { 1: { name: S('punctuation.definition.comment') } } },
       'continuation-comment': {
         match: '^\\s*(#).*\\n?',

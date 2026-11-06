@@ -212,6 +212,14 @@ pub fn value_type(name: &str) -> Option<&'static str> {
     lookup(TYPES, name)
 }
 
+/// Hover text of the `# sitefile=N` syntax version directive.
+pub fn version_directive() -> String {
+    format!(
+        "```sitefile\n# sitefile={v}\n```\nThe syntax version this file is written for (this sitefile reads version {v}). A comment before the first instruction, at most once; a file without it is version {v}. A newer version fails with `E_UNSUPPORTED` (upgrade sitefile).",
+        v = crate::language::scanner::SYNTAX_VERSION
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,3 @@
+#  sitefile = 1.1
+COPY ./a.txt /a.txt
+EXPORT /

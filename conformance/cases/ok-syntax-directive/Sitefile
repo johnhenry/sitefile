@@ -1,0 +1,8 @@
+# Pins the language version: a later sitefile keeps reading this file as version 1.
+# sitefile=1
+ARG TITLE = "v1"
+COPY ./src/a.txt /a.txt
+RENDER <<HTML TO /index.html
+<h1>${TITLE}</h1>
+HTML
+EXPORT /

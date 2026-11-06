@@ -112,13 +112,15 @@ const INSTRUCTIONS = {
   },
   REDIRECT: () => `REDIRECT ${flags(['--overwrite'])}${pick(['/old', '/a/*', '/${x}', 'old', '/a b', ...PATHS])} ${pick(['/new', 'https://e.x/:splat', '/b', '', '/c\\n'])}${maybe(() => ` STATUS ${pick(['301', '302', '303', '307', '308', '200', '418', 'x', '301!'])}`, 0.4)}`,
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
+  // The syntax version directive (a comment; only valid before the first instruction).
+  DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
   // Rejected keywords.
   RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
   NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
   UNKNOWN: () => `${pick(['WORKDIR', 'ENV', 'ADD', 'Copy', 'copy', 'FROMX', 'É', '--x', 'ſtage', 'İmport', 'ﬁ', 'exec'])} ${pick(PATHS)}`,
 };
 /** Relative weights (instructions not listed get 1). */
-const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4 };
+const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3 };
 /** Keywords mutations may splice in. */
 const WORDS = [
   'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
@@ -172,6 +174,7 @@ function generate(k) {
 
 function program() {
   const lines = [];
+  if (chance(0.2)) lines.push(generate('DIRECTIVE'));
   for (let n = int(3); n > 0; n--) lines.push(generate('ARG'));
   if (chance(0.6)) lines.push(generate(pick(['FROM', 'STAGE'])));
   for (let n = int(7); n > 0; n--) lines.push(chance(0.1) ? generate(pick(['FROM', 'STAGE'])) : instruction());
@@ -185,7 +188,7 @@ function program() {
  * they are used, so mutations then exercise the validator and planner too.
  */
 function validProgram() {
-  const lines = ['ARG TITLE = "Hello"'];
+  const lines = [...(chance(0.25) ? [pick(['# sitefile=1', '#sitefile = 1', '# comment\n# sitefile=1'])] : []), 'ARG TITLE = "Hello"'];
   const vars = ['TITLE'];
   const stages = [];
   const lists = [];
@@ -338,6 +341,7 @@ const EDGE = [
   'COPY 😀 /😀\nEXPORT /x 😀', 'ARG 😀\nEXPORT /', 'ARG a😀\nEXPORT /', 'COPY a /b\u00a0c\nEXPORT /', 'COPY\u3000a /b\nEXPORT /',
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',
   '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
+  '# sitefile=1\nEXPORT /', '# sitefile=2\nEXPORT /', '#sitefile = 1\n#sitefile=1\nEXPORT /', 'EXPORT /\n# sitefile=1', '# sitefile=1.0\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
   // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
   'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',
