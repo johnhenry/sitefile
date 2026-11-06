@@ -404,3 +404,73 @@ fn node_extra_ca_certs_is_trusted_for_remote_imports() {
     assert_eq!(missing.status.code(), Some(1));
     assert!(text(&missing).contains("Warning: Ignoring extra certs from"), "{}", text(&missing));
 }
+
+fn sitefile_env(work: &Tmp, args: &[&str], env: &[(&str, &str)]) -> Out {
+    let mut c = Command::new(BIN);
+    c.args(args).current_dir(repo_root()).env("SITEFILE_HOME", work.path().join(".home"));
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c.output().expect("run sitefile");
+    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }
+}
+
+fn backdate(p: &Path, secs: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
+}
+
+#[test]
+fn cache_size_limit_evicts_after_build_and_cache_du_reports() {
+    let work = Tmp::new();
+    let ctx = example(&work, "hello");
+    let home = work.path().join(".home");
+    let tc = home.join("cache/transform");
+    for (k, ch) in [("old", 'o'), ("new", 'n')] {
+        let bytes = ch.to_string().repeat(2000);
+        let hex = sitefile::digest::hex_of(&sitefile::digest::sha256(bytes.as_bytes())).to_string();
+        fs::create_dir_all(tc.join("blobs")).unwrap();
+        fs::create_dir_all(tc.join("entries")).unwrap();
+        fs::write(tc.join("blobs").join(&hex), &bytes).unwrap();
+        fs::write(tc.join("entries").join(format!("{k}.json")), format!(r#"{{"version":1,"kind":"file","files":[["","{hex}",2000]]}}"#)).unwrap();
+        backdate(&tc.join("blobs").join(&hex), 7200);
+        backdate(&tc.join("entries").join(format!("{k}.json")), if k == "old" { 7200 } else { 3600 });
+    }
+    let du = sitefile_env(&work, &["cache", "du", "--json"], &[("SITEFILE_CACHE_MAX", "3K")]);
+    assert_eq!(du.code, 0, "{}", du.stderr);
+    let j: serde_json::Value = serde_json::from_str(&du.stdout).unwrap();
+    assert_eq!(j["limit"], 3072);
+    let names: Vec<&str> = j["caches"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["transform", "wasm", "store", "servers"]);
+    assert_eq!(j["caches"][0]["items"], 2);
+    let text = sitefile_env(&work, &["cache", "ls"], &[("SITEFILE_CACHE_MAX", "3K")]);
+    let lines: Vec<Vec<&str>> = text.stdout.lines().map(|l| l.split_whitespace().collect()).collect();
+    assert_eq!(lines[0], ["CACHE", "ITEMS", "SIZE", "EVICTABLE", "PATH"], "{}", text.stdout);
+    assert_eq!(lines[1][..2], ["transform", "2"], "{}", text.stdout);
+    assert!(text.stdout.contains("\nLimit: 3KiB (SITEFILE_CACHE_MAX; "), "{}", text.stdout);
+
+    let out = ctx.join("dist");
+    let b = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out)], &[("SITEFILE_CACHE_MAX", "3K")]);
+    assert_eq!(b.code, 0, "{}", b.stderr);
+    assert!(b.stderr.starts_with("Evicted 1 cache item (2.") && b.stderr.ends_with("kB) to stay under SITEFILE_CACHE_MAX=3KiB\n"), "{}", b.stderr);
+    assert!(!tc.join("entries/old.json").exists());
+    assert!(tc.join("entries/new.json").exists());
+
+    let bad = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out), "--force"], &[("SITEFILE_CACHE_MAX", "huge")]);
+    assert_eq!(bad.code, 0, "{}", bad.stderr);
+    assert!(bad.stderr.starts_with("warning: SITEFILE_CACHE_MAX='huge' is not a size"), "{}", bad.stderr);
+
+    fs::create_dir_all(home.join("blobs/sha256")).unwrap();
+    fs::write(home.join("blobs/sha256").join("f".repeat(64)), "x".repeat(5000)).unwrap();
+    fs::write(home.join("index.json"), "{not json").unwrap();
+    let broken = sitefile_env(&work, &["build", s(&ctx), "-o", s(&out), "--force"], &[("SITEFILE_CACHE_MAX", "1K")]);
+    assert_eq!(broken.code, 0, "{}", broken.stderr);
+    assert!(broken.stderr.lines().any(|l| l.starts_with("warning: cache size limit not applied: ") && l.contains("index.json is corrupt")), "{}", broken.stderr);
+
+    assert_eq!(sitefile(&work, &["cache", "prune", "--max-size", "0"]).code, 2);
+    assert_eq!(sitefile(&work, &["cache", "prune", "--max-size", "1M", "--older-than", "1"]).code, 2);
+    fs::remove_file(home.join("index.json")).unwrap();
+    let pr = sitefile(&work, &["cache", "prune", "--max-size", "1M"]);
+    assert_eq!(pr.code, 0, "{}", pr.stderr);
+    assert_eq!(pr.stdout, "Evicted 0 items\nTotal reclaimed space: 0B\n");
+}

@@ -232,7 +232,9 @@ Its results are then never stored or reused (it is started on every build).
 Anything not in the key is invisible to the cache: a tool that reads files
 other than `{input}`, or a different version of a tool installed at the same
 path with the same size and mtime. Use `--no-cache` to bypass (no reads, no
-writes), and `sitefile cache info|prune` to inspect or clear it. The cache
+writes), and `sitefile cache info|prune|du` to inspect or clear it; it is kept
+under `SITEFILE_CACHE_MAX` (default 1 GiB, least recently used entries evicted
+first, see [CLI.md](CLI.md#cache-size-limit)). The cache
 neither reads nor changes `Sitefile.lock`, so `--frozen-lockfile` is unaffected.
 
 ## Not yet
