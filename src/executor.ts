@@ -517,6 +517,8 @@ export interface ExportedBuild extends BuildResult {
   readonly fileDigest?: string;
   /** oci: the image's manifest digest (its image ID). */
   readonly manifestDigest?: string;
+  /** Watch mode: set when the directory export applied only the changes (src/exporter.ts). */
+  readonly incremental?: { readonly written: number; readonly removed: number };
 }
 
 /**
@@ -542,6 +544,9 @@ async function exportBuild(
   options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
 ): Promise<ExportedBuild> {
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
+  // Watch mode: a directory export writes only what changed since the session's last one.
+  const exportState = options.memo?.exportState;
+  if (format !== 'directory') exportState?.clear();
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
@@ -564,8 +569,8 @@ async function exportBuild(
     return { ...result, format, outDir: written.outDir, manifestDigest: img.manifestDigest };
   }
   if (!isArchiveFormat(format)) {
-    const written = await exportDirectory(result.output, options.outDir, exportOptions);
-    return { ...result, format, outDir: written.outDir };
+    const written = await exportDirectory(result.output, options.outDir, { ...exportOptions, ...(exportState ? { incremental: exportState } : {}) });
+    return { ...result, format, outDir: written.outDir, ...(written.incremental ? { incremental: written.incremental } : {}) };
   }
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),

@@ -74,40 +74,45 @@ use the same features).
 ## Incremental rebuilds (watch mode)
 
 `node bench/incremental.mjs [--runs 3] [--only text]` starts `build --watch --profile` on a copy of each generated
-site, makes one edit several times, and reads each rebuild's time from the trace, with the memo (default) and
-without it (`SITEFILE_NO_INCREMENTAL=1`). "Build" is the rebuild without the export (parse, imports, operations: what
-the memo can skip); "Export" writes the whole output and is the same in both modes. Each rebuild's output is checked
-against a clean build. Raw data: `results/incremental.json`.
+site, makes one edit several times, and reads each rebuild's time from the trace, with the memo and incremental
+export (default) and without them (`SITEFILE_NO_INCREMENTAL=1`). "Build" is the rebuild without the export (parse,
+imports, operations: what the memo can skip); "Export, full" writes the whole output to a temporary directory and
+swaps it in, "Export, incremental" checks the previous output and writes only the changed files
+([ARCHITECTURE.md](../docs/ARCHITECTURE.md#incremental-export)). The last rebuild's output is checked against a clean
+build: the same tree digest and the same exported directory, file for file. Raw data: `results/incremental.json`.
 
-Apple M2, median of 3, measured while other builds were running on the machine, so single rows are noisy (the Rust
-blog-1000 "full" rows especially); the pattern held across runs:
+Apple M2, median of 3, measured while other builds were running on the machine, so single rows are noisy (the
+"Build" columns especially); the pattern held across runs:
 
-| Site | Edit | Impl | Build, full | Build, incremental | Speedup | Export | Rebuild, full | Rebuild, incremental | Speedup |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| blog-1000 | one post body | typescript | 2308 ms | 871 ms | 2.7× | 770 ms | 4084 ms | 1376 ms | 3.0× |
-| blog-1000 | one post body | rust | 639 ms | 630 ms | 1.0× | 406 ms | 1041 ms | 1071 ms | 1.0× |
-| blog-1000 | index template | typescript | 2708 ms | 212 ms | 12.8× | 1511 ms | 5033 ms | 1027 ms | 4.9× |
-| blog-1000 | index template | rust | 805 ms | 186 ms | 4.3× | 1144 ms | 1860 ms | 1414 ms | 1.3× |
-| blog-1000 | a file no step reads | typescript | 2805 ms | 299 ms | 9.4× | 1679 ms | 4410 ms | 1921 ms | 2.3× |
-| blog-1000 | a file no step reads | rust | 4723 ms | 124 ms | 38.0× | 1092 ms | 6300 ms | 1014 ms | 6.2× |
-| blog-5000 | one post body | typescript | 3078 ms | 2651 ms | 1.2× | 11044 ms | 14219 ms | 14593 ms | 1.0× |
-| blog-5000 | one post body | rust | 2653 ms | 1336 ms | 2.0× | 6683 ms | 10986 ms | 7932 ms | 1.4× |
-| static-5000 | one static file | typescript | 888 ms | 1313 ms | 0.7× | 3675 ms | 4650 ms | 5358 ms | 0.9× |
-| static-5000 | one static file | rust | 494 ms | 557 ms | 0.9× | 1322 ms | 2371 ms | 1826 ms | 1.3× |
-| csv-2000 | one CSV row | typescript | 40 ms | 45 ms | 0.9× | 911 ms | 933 ms | 1129 ms | 0.8× |
-| csv-2000 | one CSV row | rust | 41 ms | 41 ms | 1.0× | 792 ms | 823 ms | 839 ms | 1.0× |
-| archive-2000 | a file no step reads | typescript | 158 ms | 20 ms | 7.7× | 1842 ms | 2106 ms | 1835 ms | 1.1× |
-| archive-2000 | a file no step reads | rust | 49 ms | 7 ms | 6.8× | 713 ms | 874 ms | 630 ms | 1.4× |
+| Site | Edit | Impl | Build, full | Build, incremental | Speedup | Export, full | Export, incremental | Speedup | Rebuild, full | Rebuild, incremental | Speedup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| blog-1000 | one post body | typescript | 4296 ms | 4786 ms | 0.9× | 1662 ms | 278 ms | 6.0× | 5958 ms | 5125 ms | 1.2× |
+| blog-1000 | one post body | rust | 1903 ms | 1250 ms | 1.5× | 902 ms | 158 ms | 5.7× | 2781 ms | 1408 ms | 2.0× |
+| blog-1000 | index template | typescript | 1649 ms | 204 ms | 8.1× | 1435 ms | 172 ms | 8.3× | 3079 ms | 375 ms | 8.2× |
+| blog-1000 | index template | rust | 1130 ms | 107 ms | 10.6× | 742 ms | 97 ms | 7.7× | 1862 ms | 200 ms | 9.3× |
+| blog-1000 | a file no step reads | typescript | 1645 ms | 303 ms | 5.4× | 1950 ms | 192 ms | 10.2× | 3768 ms | 495 ms | 7.6× |
+| blog-1000 | a file no step reads | rust | 2599 ms | 134 ms | 19.5× | 1149 ms | 186 ms | 6.2× | 3705 ms | 354 ms | 10.5× |
+| blog-5000 | one post body | typescript | 2590 ms | 1876 ms | 1.4× | 7576 ms | 1181 ms | 6.4× | 10166 ms | 2964 ms | 3.4× |
+| blog-5000 | one post body | rust | 2778 ms | 710 ms | 3.9× | 6512 ms | 555 ms | 11.7× | 9290 ms | 1247 ms | 7.5× |
+| static-5000 | one static file | typescript | 1275 ms | 1014 ms | 1.3× | 3821 ms | 231 ms | 16.5× | 5067 ms | 1251 ms | 4.1× |
+| static-5000 | one static file | rust | 1021 ms | 789 ms | 1.3× | 1186 ms | 45 ms | 26.5× | 2355 ms | 834 ms | 2.8× |
+| csv-2000 | one CSV row | typescript | 51 ms | 72 ms | 0.7× | 1841 ms | 76 ms | 24.2× | 1901 ms | 140 ms | 13.5× |
+| csv-2000 | one CSV row | rust | 43 ms | 43 ms | 1.0× | 689 ms | 14 ms | 49.1× | 734 ms | 57 ms | 13.0× |
+| archive-2000 | a file no step reads | typescript | 57 ms | 11 ms | 5.3× | 1443 ms | 51 ms | 28.1× | 1493 ms | 66 ms | 22.6× |
+| archive-2000 | a file no step reads | rust | 32 ms | 8 ms | 3.9× | 652 ms | 15 ms | 44.3× | 685 ms | 23 ms | 30.2× |
 
+- **The export is no longer the bottleneck.** Writing only the changed files makes the export 6-49× faster: what is
+  left is about one `lstat` per output file (the check that the output is as the previous build left it) plus the
+  files that changed. For 2000-5000 small files, where the full export was 70-90% of a rebuild, whole rebuilds are now
+  3-30× faster (csv-2000: 1.9 s to 140 ms in TypeScript, 734 ms to 57 ms in Rust).
 - **The build phase gets much faster when the expensive steps are skipped**: an edit that no step reads, or a
-  template other pages do not use, skips Markdown parsing and the 1000-page RENDER (4–38× on the build phase). Editing
-  one post re-parses one document; its pages still all re-render on blog-1000, whose post template lists every post
-  (a nav), so every page depends on every title. blog-5000 has no nav: only the edited post's page re-renders.
-- **The export now dominates.** It writes every file of the output to a temporary directory and swaps it in
-  atomically, so for 2000–5000 small files (csv-2000, static-5000, blog-5000) it is 70–90% of a rebuild and the
-  overall speedup is small. Cheap templates (csv-2000: 40 ms to render 2000 pages) gain nothing; hashing each element
-  costs about what rendering it does. Every input is still read and hashed, so static-5000's COPY does not get
-  faster. Writing only the changed files while keeping the atomic swap is the next step (follow-up issue).
+  template other pages do not use, skips Markdown parsing and the 1000-page RENDER (5-20× on the build phase).
+  Editing one post re-parses one document; its pages still all re-render on blog-1000, whose post template lists
+  every post (a nav), so every page depends on every title, and the export then writes all 1000 pages (still 6×
+  faster than a full export: it skips the unchanged feed, assets and badges and never removes the old tree).
+  blog-5000 has no nav: only the edited post's page re-renders.
+- **What remains**: every input is still read and hashed (static-5000's COPY reads 5000 files), and cheap templates
+  (csv-2000) gain nothing in the build phase; hashing each element costs about what rendering it does.
 
 ## What profiling changed
 
