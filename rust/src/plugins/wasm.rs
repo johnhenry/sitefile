@@ -275,11 +275,24 @@ impl WasmPlugin {
     }
 
     pub fn call(&mut self, request: &PluginRequest, span: Option<&SourceSpan>) -> Result<PluginResult> {
-        let json = request.to_wire_string().into_bytes();
+        self.prepare(span)?;
+        self.call_prepared(request, span)
+    }
+
+    /// Compile the module (once), so `call_prepared` can run calls from several threads.
+    pub fn prepare(&mut self, span: Option<&SourceSpan>) -> Result<()> {
         if self.module.is_none() {
             self.module = Some(load_module(&self.name, &self.bytes, span)?);
         }
-        let module = self.module.as_ref().expect("compiled above");
+        Ok(())
+    }
+
+    /// One call on the compiled module (`prepare` first): a fresh instance, so calls may run in parallel.
+    pub fn call_prepared(&self, request: &PluginRequest, span: Option<&SourceSpan>) -> Result<PluginResult> {
+        let json = request.to_wire_string().into_bytes();
+        let Some(module) = self.module.as_ref() else {
+            return Err(plugin_err(&self.name, "the module is not compiled", span));
+        };
         let out = run(module, &json, &self.policy).map_err(|why| plugin_err(&self.name, why, span))?;
         self.parse(&out, span)
     }

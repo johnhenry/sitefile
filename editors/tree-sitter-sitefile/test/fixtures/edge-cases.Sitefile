@@ -59,4 +59,5 @@ TRANSFORM <<TXT WITH og TO /og.svg OPTIONS size=12 label="a b"
 ${raw text for the plugin}
 TXT
 TRANSFORM ./in.png WITH magick TO /out.webp OPTIONS q=80 ARGS {input} -quality {option.q} {output}
+TRANSFORM --include=*.jpg --exclude=drafts/ ./photos/ WITH og TO /thumbs/*.png
 EXPORT /site.tar.gz AS tar.gz

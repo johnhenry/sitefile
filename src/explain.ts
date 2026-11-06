@@ -358,7 +358,9 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         inputs.push(readLabel(op.template));
         if (op.each) inputs.push(`list ${op.each.list}`);
       } else if (op.kind === 'TRANSFORM') {
-        if (op.source) inputs.push(readLabel(op.source));
+        // A directory TRANSFORM names the input file in each output's origin.
+        const perFile = `${at(op.span.line)} TRANSFORM `;
+        if (op.source) inputs.push(next.origin.startsWith(perFile) ? next.origin.slice(perFile.length) : readLabel(op.source));
         inputs.push(`${tools.has(op.plugin) ? 'tool' : 'plugin'} ${op.plugin}`);
         if (op.each) inputs.push(`list ${op.each.list}`);
       } else if (op.kind === 'SITEMAP') inputs.push('the .html files in the tree');

@@ -96,6 +96,9 @@ export type Operation =
       readonly each?: { readonly as: string; readonly list: string };
       /** argv template when `plugin` names a TOOL. */
       readonly args?: readonly Operand[];
+      /** A directory source's files to keep / leave out (`.sitefileignore` patterns, relative to it). */
+      readonly include?: readonly string[];
+      readonly exclude?: readonly string[];
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
@@ -331,6 +334,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           options: ins.options.map((o) => ({ key: o.key, value: o.value })),
           ...(ins.each ? { each: { as: ins.each.as, list: ins.each.list } } : {}),
           ...(ins.args ? { args: ins.args } : {}),
+          ...(ins.include ? { include: ins.include } : {}),
+          ...(ins.exclude ? { exclude: ins.exclude } : {}),
           overwrite: ins.overwrite,
           span: ins.span,
         });

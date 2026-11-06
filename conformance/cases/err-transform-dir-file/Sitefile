@@ -1,0 +1,4 @@
+# The plugin fails on one file: the error names it (the first failing file in path order).
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM ./in/ WITH image TO /img/
+EXPORT /

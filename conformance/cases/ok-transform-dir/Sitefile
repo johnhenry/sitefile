@@ -1,0 +1,16 @@
+# TRANSFORM over a directory (issue #127): one image plugin call per file, in
+# path order, with --include/--exclude, each destination form, a stage source,
+# and a profile event per file (case.json: profile).
+STAGE thumbs
+PLUGIN image FROM ./plugins/image.wasm
+TRANSFORM --include=*.png --include=*.gif ./in/ WITH image TO /t/*.png OPTIONS widths=4
+FROM scratch
+# A directory destination per file: /img/<relative dir>/<name>-<width>.<ext> and <name>.json.
+TRANSFORM --exclude=drafts/ --exclude=*.txt ./in/ WITH image TO /img OPTIONS widths=8,16
+# '*.webp': one file per input, its extension replaced; --include keeps only the JPEGs.
+TRANSFORM --include=*.jpg ./in WITH image TO /webp/*.webp OPTIONS widths=10
+# '*': one file per input under its own name (the format follows the extension).
+TRANSFORM --include=b/c/** ./in/ WITH image TO /same/* OPTIONS widths=6
+# A directory of an earlier stage.
+TRANSFORM --from=thumbs /t WITH image TO /again/*.jpg OPTIONS widths=2 background=#ff0000
+EXPORT /

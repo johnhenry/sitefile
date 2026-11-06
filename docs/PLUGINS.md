@@ -52,6 +52,29 @@ Sources work like COPY's: a local path, `name:` / `name:/path` for an import,
 `--from=stage /path`, or an inline `<<EOF` body. With `FOR … IN …` the source
 is optional.
 
+### A directory of files
+
+A directory source calls `transform` once per file, in path order, each with
+its own `input` and `dest` ([LANGUAGE.md](LANGUAGE.md#plugins-plugin-and-transform-see-docspluginsmd-examplesmotion)):
+
+```
+TRANSFORM --include=*.jpg ./photos/ WITH image TO /img/ OPTIONS widths=400,800
+TRANSFORM ./photos/ WITH image TO /img/thumbs/*.png OPTIONS widths=160
+TRANSFORM --exclude=*.min.css ./css/ WITH minify TO /css/*
+```
+
+- `TO /img/`: `dest` is `/img/<relative dir>` (a directory: return `{ files }`).
+- `TO /thumbs/*.png`: `dest` is `/thumbs/<relative dir>/<name>.png` (one file).
+- `TO /css/*`: `dest` is `/css/<relative path>` (one file, same name).
+
+Each call is cached under the same key as a single-file TRANSFORM of that
+file to that destination, so splitting or merging TRANSFORM lines keeps the
+cache. Wasm plugins and tools run up to 4 calls at a time (each wasm call gets
+its own instance anyway); a JavaScript plugin gets one call at a time.
+Results, warnings and errors are always in path order, and a failure names
+the file. Two files whose outputs collide with different content are
+`E_CONFLICT` (rename one or filter with `--include`/`--exclude`).
+
 ### The result
 
 Return one of:
@@ -178,6 +201,10 @@ PLUGIN image FROM ./plugins/image.wasm INTEGRITY sha256:…   # the digest in ex
 TRANSFORM ./photos/sky.jpg WITH image TO /img/ OPTIONS widths=400,800,1200 quality=80
 TRANSFORM ./logo.png WITH image TO /img/ OPTIONS widths=64,128 format=webp,png
 TRANSFORM ./photos/sky.jpg WITH image TO /img/sky-thumb.png OPTIONS widths=160
+# A whole folder: one call per photo (/img/<name>-<width>.jpg, /img/<name>.json) ...
+TRANSFORM --include=*.jpg ./photos/ WITH image TO /img/ OPTIONS widths=400,800
+# ... or one thumbnail per photo, named after it (/img/thumbs/<name>.png).
+TRANSFORM ./photos/ WITH image TO /img/thumbs/*.png OPTIONS widths=160
 ```
 
 Like every wasm plugin it needs no `--allow-plugin`, can't reach files, the
@@ -319,7 +346,10 @@ sitefile build --allow-exec ffmpeg=/opt/bin/ffmpeg # or an absolute path
   stops with `E_UNSUPPORTED` and the exact flag to add. The program is resolved
   to an absolute real path when the build starts, and printed.
 - A TRANSFORM that names a tool takes a source file as for plugins (or none),
-  `OPTIONS`, `FOR`, and last `ARGS …`: the argv template. Placeholders:
+  `OPTIONS`, `FOR`, and last `ARGS …`: the argv template. A directory source
+  runs the tool once per file; it then needs `TO <dir>/*` (same names) or
+  `TO <dir>/*.ext` (`TRANSFORM ./clips/ WITH ffmpeg TO /video/*.mp4 ARGS -i
+  {input} … {output}`), and the tool's output is shown per file in path order. Placeholders:
   `{input}` (the source, copied to a file in a per-call temp directory),
   `{output}` (required; the single file the tool must write; its extension
   comes from `<dest>` so tools can pick a format), and `{option.key}`. Both
