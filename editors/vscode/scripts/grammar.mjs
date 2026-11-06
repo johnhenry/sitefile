@@ -6,11 +6,12 @@
 // - a comment is a line whose first non-blank character is `#` (also inside a
 //   continuation); `#` elsewhere is text;
 // - a line ending in an odd number of `\` continues the instruction;
-// - only COPY, RENDER and TRANSFORM scan for `<<NAME` / `<<-NAME` (NAME is an
-//   identifier, unquoted); the body ends at a line that is exactly NAME
-//   (`<<-` strips leading tabs, not spaces);
-// - RENDER bodies are templates (`${…}`, `${#each}`, `${#if}`, `$${`); COPY and
-//   TRANSFORM bodies are raw bytes, so `${…}` there is not highlighted.
+// - only COPY, RENDER, TRANSFORM and html LET (`LET name: html`) scan for
+//   `<<NAME` / `<<-NAME` (NAME is an identifier, unquoted); the body ends at a
+//   line that is exactly NAME (`<<-` strips leading tabs, not spaces);
+// - RENDER bodies and html fragments (`LET name: html = …` to the end of the
+//   line, or its heredoc) are templates (`${…}`, `${#each}`, `${#if}`, `$${`);
+//   COPY and TRANSFORM bodies are raw bytes, so `${…}` there is not highlighted.
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
@@ -19,7 +20,9 @@ export const KEYWORDS = {
   clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
-  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
+  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html'],
+  /** The LET-only type of an html fragment (`LET name: html`). */
+  fragmentType: 'html',
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
@@ -230,6 +233,16 @@ export function buildGrammar() {
       'heredoc-copy': { patterns: heredocs('raw', [{ include: '#operands' }]) },
       'heredoc-render': { patterns: heredocs('template', [{ include: '#render-clauses' }]) },
       'heredoc-transform': { patterns: heredocs('raw', [{ include: '#transform-clauses' }]) },
+      // `LET name: html <<HTML`: nothing may follow the marker.
+      'heredoc-let': { patterns: heredocs('template', []) },
+      // `LET name: html = <markup>`: the rest of the line is a template (HTML with `${…}`).
+      'fragment-line': {
+        begin: '(=)[ \\t]*(?!<<-?[A-Za-z_])(?=\\S)',
+        beginCaptures: { 1: { name: S('keyword.operator.assignment') } },
+        end: '$',
+        contentName: `${S('meta.fragment.template')} meta.embedded.block.html`,
+        patterns: [{ include: '#template' }, { include: 'text.html.basic' }],
+      },
       'render-clauses': { patterns: renderClauses },
       'transform-clauses': { patterns: transformClauses },
       // `# sitefile=1`: the syntax version directive (scanner.ts VERSION_DIRECTIVE).
@@ -268,6 +281,25 @@ export function buildGrammar() {
         patterns: [
           instruction('FROM', [scratch, imageBase('\\G()'), stageBase('\\G()'), kw(['AT']), { match: `${W}(${ci(['AS'])})(?:\\s+(${IDENT})${WE})?`, captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.section.stage') } } }, { include: '#operands' }]),
           instruction('STAGE', [head('entity.name.section.stage'), imageBase(`${W}(${ci(['FROM'])})`), stageBase(`${W}(${ci(['FROM'])})`), kw(['FROM', 'AT']), scratch, { include: '#operands' }]),
+          // LET name: html …: an html fragment (before the plain LET rule, which would flag the type).
+          {
+            name: S('meta.instruction.let'),
+            begin: `^\\s*(${ci(['LET'])})\\s+(${IDENT})\\s*(:)\\s*(${ci([KEYWORDS.fragmentType])})(?=\\s|$|=)`,
+            beginCaptures: {
+              1: { name: S('keyword.control.instruction') },
+              2: { name: S('variable.other.definition') },
+              3: { name: S('punctuation.separator.type') },
+              4: { name: S('support.type.primitive') },
+            },
+            end: INSTRUCTION_END,
+            patterns: [
+              { include: '#continuation' },
+              { include: '#continuation-comment' },
+              { include: '#heredoc-let' },
+              { match: `=(?=[ \\t]*<<)`, name: S('keyword.operator.assignment') },
+              { include: '#fragment-line' },
+            ],
+          },
           ...['ARG', 'LET'].map((w) =>
             instruction(w, [
               { match: `\\G\\s+(${IDENT})(?=\\s|$|[:=])`, captures: { 1: { name: S('variable.other.definition') } } },
@@ -489,14 +521,15 @@ export function buildGrammar() {
 }
 
 /**
- * Injected into RENDER heredoc bodies so `${…}` is highlighted even inside an
- * embedded language's own strings and tags (e.g. `<a href="${url}">`).
+ * Injected into RENDER heredoc bodies and html fragments so `${…}` is
+ * highlighted even inside an embedded language's own strings and tags
+ * (e.g. `<a href="${url}">`).
  */
 export function buildInjection() {
   return {
     $schema: 'https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json',
     scopeName: 'sitefile.template.injection',
-    injectionSelector: 'L:meta.heredoc.template.sitefile -meta.heredoc.header.sitefile',
+    injectionSelector: 'L:meta.heredoc.template.sitefile -meta.heredoc.header.sitefile, L:meta.fragment.template.sitefile',
     patterns: [{ include: 'source.sitefile#template' }],
   };
 }

@@ -246,6 +246,12 @@ fn block_token(expr: &str, span: &SourceSpan) -> Result<Token> {
 ///
 /// `first_line` > 1 when the template is a heredoc body inside the Sitefile.
 pub fn parse_render_template(text: &str, file: &str, first_line: u32) -> Result<Vec<TemplateNode>> {
+    parse_render_template_at(text, file, first_line, 1)
+}
+
+/// [`parse_render_template`] for a template that starts at UTF-16 column `first_column` of
+/// `first_line` (`LET name: html = …`): columns on its first line are offset by it.
+pub fn parse_render_template_at(text: &str, file: &str, first_line: u32, first_column: u32) -> Result<Vec<TemplateNode>> {
     let b = text.as_bytes();
     let n = b.len();
     let mut tokens: Vec<Token> = Vec::new();
@@ -254,7 +260,8 @@ pub fn parse_render_template(text: &str, file: &str, first_line: u32) -> Result<
     let mut line_start = 0usize;
     let mut i = 0usize;
     let span_at = |idx: usize, line: u32, line_start: usize| -> SourceSpan {
-        SourceSpan::new(file, line, js::utf16_len(&text[line_start..idx]) as u32 + 1)
+        let offset = if line == first_line { first_column - 1 } else { 0 };
+        SourceSpan::new(file, line, js::utf16_len(&text[line_start..idx]) as u32 + 1 + offset)
     };
     fn flush(buf: &mut String, tokens: &mut Vec<Token>) {
         if !buf.is_empty() {
@@ -425,6 +432,78 @@ fn merge_text(nodes: Vec<TemplateNode>) -> Vec<TemplateNode> {
     out
 }
 
+/// How a [`FreeRef`] is used: `${name…}`, the list of `${#each}`, or the condition of `${#if}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefUse {
+    Var,
+    Each,
+    If,
+}
+
+/// A name a template reads from outside itself (not a `${#each}` variable of its own).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreeRef {
+    pub name: String,
+    pub path: Vec<String>,
+    pub span: SourceSpan,
+    pub usage: RefUse,
+}
+
+/// The names a template reads that its own `${#each}` blocks do not bind, in template order.
+pub fn free_refs(nodes: &[TemplateNode]) -> Vec<FreeRef> {
+    fn walk_nodes(list: &[TemplateNode], bound: &mut Vec<String>, out: &mut Vec<FreeRef>) {
+        for n in list {
+            match n {
+                TemplateNode::Text(_) => {}
+                TemplateNode::Var { name, path, span, .. } => {
+                    if !bound.contains(name) {
+                        out.push(FreeRef { name: name.clone(), path: path.clone(), span: span.clone(), usage: RefUse::Var });
+                    }
+                }
+                TemplateNode::Each { list, as_name, body, empty, .. } => {
+                    if !bound.contains(&list.name) {
+                        out.push(FreeRef { name: list.name.clone(), path: list.path.clone(), span: list.span.clone(), usage: RefUse::Each });
+                    }
+                    bound.push(as_name.clone());
+                    walk_nodes(body, bound, out);
+                    bound.pop();
+                    walk_nodes(empty, bound, out);
+                }
+                TemplateNode::If { cond, then, otherwise, .. } => {
+                    if !bound.contains(&cond.name) {
+                        out.push(FreeRef { name: cond.name.clone(), path: cond.path.clone(), span: cond.span.clone(), usage: RefUse::If });
+                    }
+                    walk_nodes(then, bound, out);
+                    walk_nodes(otherwise, bound, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk_nodes(nodes, &mut Vec::new(), &mut out);
+    out
+}
+
+/// What [`render_template_with`] needs beyond values: html fragments (`LET name: html`,
+/// `IMPORT … AS html`).
+pub struct TemplateContext<'a> {
+    /// Whether `name` is an html fragment (checked after loop variables, before `lookup`).
+    pub is_fragment: &'a dyn Fn(&str) -> bool,
+    /// The parsed template of fragment `name` (may fail, e.g. E_TEMPLATE in an imported partial).
+    pub fragment: &'a dyn Fn(&str) -> Result<std::sync::Arc<Vec<TemplateNode>>>,
+}
+
+/// E_TYPE for a fragment used where a value is needed.
+pub fn fragment_not_value(name: &str, span: &SourceSpan) -> SitefileError {
+    SitefileError::at(E_TYPE, format!("'{name}' is an html fragment, not a value; insert it with ${{{name}}}"), span)
+}
+
+/// An error raised inside fragment `name`, with the place it was used added to the message.
+fn in_fragment(e: SitefileError, name: &str, span: &SourceSpan) -> SitefileError {
+    let at = e.span.clone().unwrap_or_else(|| span.clone());
+    SitefileError::at(e.code, format!("{} (in html fragment '{name}' used at {}:{}:{})", e.detail, span.file, span.line, span.column), &at)
+}
+
 // ------------------------------------------------------------------ render
 
 /// Loop variables, innermost first.
@@ -451,6 +530,15 @@ struct Ctx<'c, 'v> {
     lookup: &'c TemplateLookup<'c>,
     values: Option<&'c TemplateValueLookup<'v>>,
     escape: EscapeMode,
+    fragments: Option<&'c TemplateContext<'c>>,
+    /// Fragments being rendered, outermost first (a fragment that reaches itself is an error).
+    using: std::cell::RefCell<Vec<String>>,
+}
+
+impl Ctx<'_, '_> {
+    fn is_fragment(&self, name: &str, scope: Option<&Scope<'_>>) -> bool {
+        Scope::get(scope, name).is_none() && self.fragments.is_some_and(|f| (f.is_fragment)(name))
+    }
 }
 
 /// Render a parsed template. `lookup` resolves scalars; `values` resolves lists
@@ -463,7 +551,19 @@ pub fn render_template<'v>(
     escape: EscapeMode,
     values: Option<&TemplateValueLookup<'v>>,
 ) -> Result<String> {
-    let ctx = Ctx { lookup, values, escape };
+    render_template_with(nodes, lookup, escape, values, None)
+}
+
+/// [`render_template`] with html fragments: `${name}` naming one renders its template in place
+/// (same escape mode, same loop variables); its markup is never escaped, the values it substitutes are.
+pub fn render_template_with<'v>(
+    nodes: &[TemplateNode],
+    lookup: &TemplateLookup<'_>,
+    escape: EscapeMode,
+    values: Option<&TemplateValueLookup<'v>>,
+    fragments: Option<&TemplateContext<'_>>,
+) -> Result<String> {
+    let ctx = Ctx { lookup, values, escape, fragments, using: std::cell::RefCell::new(Vec::new()) };
     // Pages are usually kilobytes; start there to avoid repeated regrowth.
     let mut out = String::with_capacity(16 * 1024);
     run(&ctx, nodes, None, &mut out)?;
@@ -473,6 +573,9 @@ pub fn render_template<'v>(
 fn value_of<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, r: &Ref, loose: bool, scope: Option<&Scope<'s>>) -> Result<Option<Cow<'s, Value>>> {
     if let Some(v) = Scope::get(scope, &r.name) {
         return Ok(walk(v, &r.path, &r.name, &r.span, loose)?.map(Cow::Borrowed));
+    }
+    if ctx.is_fragment(&r.name, None) {
+        return Err(fragment_not_value(&r.name, &r.span));
     }
     match ctx.values {
         None => err(E_TEMPLATE, "this template uses blocks, which need list values", Some(&r.span)),
@@ -485,6 +588,10 @@ fn run<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, list: &[TemplateNode], scope: Option<&Scop
         match n {
             TemplateNode::Text(v) => out.push_str(v),
             TemplateNode::Var { name, path, span, raw } => {
+                if ctx.is_fragment(name, scope) {
+                    render_fragment(ctx, name, path, span, scope, out)?;
+                    continue;
+                }
                 let v = match Scope::get(scope, name) {
                     Some(item) => {
                         // Fast path: a loop variable whose path leads to a string is
@@ -541,6 +648,31 @@ fn run<'s, 'v: 's>(ctx: &Ctx<'_, 'v>, list: &[TemplateNode], scope: Option<&Scop
         }
     }
     Ok(())
+}
+
+fn render_fragment<'s, 'v: 's>(
+    ctx: &Ctx<'_, 'v>,
+    name: &str,
+    path: &[String],
+    span: &SourceSpan,
+    scope: Option<&Scope<'s>>,
+    out: &mut String,
+) -> Result<()> {
+    if !path.is_empty() {
+        return Err(fragment_not_value(name, span));
+    }
+    let chain = {
+        let using = ctx.using.borrow();
+        using.iter().position(|u| u == name).map(|i| using[i..].iter().map(String::as_str).chain([name]).collect::<Vec<_>>().join(" → "))
+    };
+    if let Some(chain) = chain {
+        return err(E_TEMPLATE, format!("html fragment '{name}' uses itself ({chain})"), Some(span));
+    }
+    let Some(f) = ctx.fragments else { return Ok(()) };
+    ctx.using.borrow_mut().push(name.to_string());
+    let result = (f.fragment)(name).and_then(|nodes| run(ctx, &nodes, scope, out));
+    ctx.using.borrow_mut().pop();
+    result.map_err(|e| in_fragment(e, name, span))
 }
 
 fn dotted(r: &Ref) -> String {
@@ -1114,6 +1246,39 @@ mod tests {
     }
 
     #[test]
+    fn fragments_render_in_place_and_report_the_use() {
+        let span = SourceSpan::new("t", 1, 1);
+        let lookup = |name: &str, _: &[String], s: &SourceSpan| -> Result<Scalar> {
+            match name {
+                "T" => Ok(Scalar::Str("<&>".into())),
+                _ => err(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), Some(s)),
+            }
+        };
+        let frag = |name: &str| -> Result<std::sync::Arc<Vec<TemplateNode>>> {
+            Ok(std::sync::Arc::new(match name {
+                "a" => parse_render_template_at("<b title=\"${T}\">${T}</b>", "Sitefile", 4, 15)?,
+                "b" => parse_render_template("[${c}]", "p.html", 1)?,
+                "c" => parse_render_template("${b}", "q.html", 1)?,
+                _ => parse_render_template("${nope}", "Sitefile", 9)?,
+            }))
+        };
+        let ctx = TemplateContext { is_fragment: &|n: &str| matches!(n, "a" | "b" | "c" | "d"), fragment: &frag };
+        let run = |t: &str, e: EscapeMode| render_template_with(&parse_render_template(t, "Sitefile", 1)?, &lookup, e, None, Some(&ctx));
+        assert_eq!(run("${a}|${T}|${a|raw}", EscapeMode::Html).unwrap(), "<b title=\"&lt;&amp;&gt;\">&lt;&amp;&gt;</b>|&lt;&amp;&gt;|<b title=\"&lt;&amp;&gt;\">&lt;&amp;&gt;</b>");
+        assert_eq!(run("${a}", EscapeMode::None).unwrap(), "<b title=\"<&>\"><&></b>");
+        let e = run("x ${d}", EscapeMode::Html).unwrap_err();
+        assert_eq!(e.message(), "Sitefile:9:1: 'nope' is not an ARG, LET or IMPORT (in html fragment 'd' used at Sitefile:1:3)");
+        let e = run("${b}", EscapeMode::Html).unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), (E_TEMPLATE, "html fragment 'b' uses itself (b → c → b) (in html fragment 'c' used at p.html:1:2) (in html fragment 'b' used at Sitefile:1:1)"));
+        assert_eq!(run("${a.x}", EscapeMode::Html).unwrap_err().detail, "'a' is an html fragment, not a value; insert it with ${a}");
+        // An #each variable shadows a fragment of the same name.
+        let values = |_: &str, _: &[String], _: &SourceSpan, _: bool| -> Result<Option<Cow<'_, Value>>> { Ok(Some(Cow::Owned(serde_json::json!(["v"])))) };
+        let nodes = parse_render_template("${#each xs as a}${a}${/each}", "Sitefile", 1).unwrap();
+        assert_eq!(render_template_with(&nodes, &lookup, EscapeMode::Html, Some(&values), Some(&ctx)).unwrap(), "v");
+        let _ = span;
+    }
+
+    #[test]
     fn differential_fixtures() {
         let data = json!({
             "T": "A & <b>", "N": 3, "F": 1.5, "Z": 0, "B": false, "E": "", "nil": null,
@@ -1132,10 +1297,25 @@ mod tests {
                 None => err(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), Some(span)),
             }
         };
+        // html fragments, as in generate.mjs.
+        let fragments = [
+            ("F1", "<b title=\"${T}\">${T}</b>"),
+            ("F2", "[${F1}|${i.t}]"),
+            ("LOOP", "${#each list as x}${x.t}${/each}"),
+            ("REC", "(${REC2})"),
+            ("REC2", "${REC}"),
+            ("BAD", "x ${#if}"),
+        ];
+        let is_fragment = |n: &str| fragments.iter().any(|(k, _)| *k == n);
+        let fragment = |n: &str| -> Result<std::sync::Arc<Vec<TemplateNode>>> {
+            let text = fragments.iter().find(|(k, _)| *k == n).map(|(_, t)| *t).unwrap_or_default();
+            Ok(std::sync::Arc::new(parse_render_template(text, &format!("{n}.html"), 1)?))
+        };
+        let ctx = TemplateContext { is_fragment: &is_fragment, fragment: &fragment };
         fixtures::check("template.json", |t| {
             let nodes = parse_render_template(t, "t.html", 3)?;
-            let html = render_template(&nodes, &lookup, EscapeMode::Html, Some(&values))?;
-            let none = render_template(&nodes, &lookup, EscapeMode::None, Some(&values))?;
+            let html = render_template_with(&nodes, &lookup, EscapeMode::Html, Some(&values), Some(&ctx))?;
+            let none = render_template_with(&nodes, &lookup, EscapeMode::None, Some(&values), Some(&ctx))?;
             Ok(json!([html, none]))
         });
     }

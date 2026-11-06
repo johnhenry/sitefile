@@ -1,0 +1,7 @@
+# A fragment that needs a FOR loop variable, used by a RENDER without one:
+# the error is at the fragment's line and names the use.
+LET card: html = <article>${item.title}</article>
+RENDER --escape=html <<HTML TO /index.html
+<main>${card}</main>
+HTML
+EXPORT /

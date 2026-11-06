@@ -34,7 +34,7 @@ pub struct LogicalLine {
     pub positions: Vec<Pos>,
     /// Position just after the last character (for "expected X" errors at end of line).
     pub end: Pos,
-    /// A heredoc body that followed this line (COPY, RENDER and TRANSFORM only).
+    /// A heredoc body that followed this line (COPY, RENDER, TRANSFORM and html LET only).
     pub heredoc: Option<Heredoc>,
 }
 
@@ -66,8 +66,41 @@ fn is_ident_char(c: Option<char>) -> bool {
     matches!(c, Some(c) if c == '_' || c.is_ascii_alphanumeric())
 }
 
-/// Instructions whose source may be a heredoc.
+/// Instructions whose source may be a heredoc (and `LET name: html`, see [`is_html_let`]).
 const HEREDOC_INSTRUCTIONS: [&str; 3] = ["COPY", "RENDER", "TRANSFORM"];
+
+/// Whether a logical line declares an html fragment, `LET name: html …` (the type ASCII
+/// case-insensitive), whose value may be a heredoc. Other LET lines are not scanned for `<<`.
+pub fn is_html_let(text: &[char]) -> bool {
+    let kw: String = text.iter().take_while(|c| !is_js_space(**c)).collect();
+    if kw.to_uppercase() != "LET" {
+        return false;
+    }
+    let mut i = kw.chars().count();
+    let skip = |i: &mut usize| {
+        while text.get(*i).is_some_and(|c| is_js_space(*c)) {
+            *i += 1;
+        }
+    };
+    skip(&mut i);
+    if !is_ident_start(text.get(i).copied()) {
+        return false;
+    }
+    while is_ident_char(text.get(i).copied()) {
+        i += 1;
+    }
+    skip(&mut i);
+    if text.get(i) != Some(&':') {
+        return false;
+    }
+    i += 1;
+    skip(&mut i);
+    let word: String = text.iter().skip(i).take(4).collect();
+    if !word.eq_ignore_ascii_case("html") || word.chars().count() != 4 {
+        return false;
+    }
+    text.get(i + 4).is_none_or(|c| *c == '=' || is_js_space(*c))
+}
 
 #[derive(Debug, Clone)]
 struct Marker {
@@ -332,7 +365,7 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
         // /^\S+/: an indented first piece has no keyword here.
         let keyword: String =
             logical.chars.iter().take_while(|c| !is_js_space(**c)).collect::<String>().to_uppercase();
-        if HEREDOC_INSTRUCTIONS.contains(&keyword.as_str()) {
+        if HEREDOC_INSTRUCTIONS.contains(&keyword.as_str()) || is_html_let(&logical.chars) {
             let markers = heredoc_markers(&logical.chars);
             if let Some(second) = markers.get(1) {
                 let p = logical.positions[second.at];
@@ -535,6 +568,20 @@ impl<'a> Cursor<'a> {
         let at = self.i;
         let w = self.word();
         Err(self.error_at(E_SYNTAX, format!("unexpected '{w}'"), at))
+    }
+
+    /// Consume the rest of the line (from the next non-whitespace character, trailing whitespace
+    /// dropped): its text, its span, and whether it continues onto another physical line.
+    pub fn rest(&mut self) -> (String, SourceSpan, bool) {
+        self.skip_ws();
+        let start = self.i;
+        let mut stop = self.t.len();
+        while stop > start && is_js_space(self.t[stop - 1]) {
+            stop -= 1;
+        }
+        self.i = self.t.len();
+        let multiline = stop > start && self.line.positions.get(start).map(|p| p.line) != self.line.positions.get(stop - 1).map(|p| p.line);
+        (self.slice(start, stop), self.span_at(start), multiline)
     }
 
     /// Consume this line's heredoc marker if it is the next word.

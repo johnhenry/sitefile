@@ -1,0 +1,16 @@
+# html fragments (issue #106): templates evaluated where a RENDER uses them.
+ARG SITE = "Field Notes"
+IMPORT posts FROM ./posts AS markdown
+IMPORT footer FROM ./partials/footer.html AS html
+LET nav: html = <nav>${#each posts as p}<a href="/${p.slug}/">${p.title}</a>${/each}</nav>
+LET header: html <<HTML
+<header><h1>${SITE}</h1>${nav}</header>
+HTML
+LET card: HTML = <<-CARD
+	<article>${item.title}</article>
+	CARD
+LET plain = <<EOF
+RENDER --escape=html <<HTML TO /${item.slug}/index.html FOR item IN posts
+${header}${card}${footer}
+HTML
+EXPORT /

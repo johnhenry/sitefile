@@ -90,18 +90,18 @@ test('build --profile: imports, stages, operations and the export, in Sitefile o
     'build parse',
     'import import posts',
     'stage stage #1',
-    `operation ${label}:14 COPY`,
-    `operation ${label}:15 RENDER`,
-    `operation ${label}:16 RENDER`,
-    `operation ${label}:20 FEED`,
-    `operation ${label}:21 SITEMAP`,
+    `operation ${label}:30 COPY`,
+    `operation ${label}:31 RENDER`,
+    `operation ${label}:32 RENDER`,
+    `operation ${label}:36 FEED`,
+    `operation ${label}:37 SITEMAP`,
     'export export',
   ]);
   const imp = ev.find((e) => e.name === 'import posts')!;
   assert.equal(imp.tid, 2);
   assert.deepEqual(imp.args, { uri: './posts', as: 'markdown', kind: 'value' });
   assert.ok(ev.some((e) => e.ph === 'M' && e.name === 'thread_name' && e.tid === 2 && e.args['name'] === 'import posts'));
-  assert.deepEqual(ev.find((e) => e.name.endsWith(':21 SITEMAP'))!.args, { line: 21, files: 7 });
+  assert.deepEqual(ev.find((e) => e.name.endsWith(':37 SITEMAP'))!.args, { line: 37, files: 7 });
   assert.deepEqual(ev.find((e) => e.name === 'export')!.args, { format: 'directory' });
   // The command spans everything else.
   const cmd = ev.find((e) => e.cat === 'command')!;

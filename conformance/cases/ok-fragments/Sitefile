@@ -1,0 +1,34 @@
+# html fragments (issue #106): one-line and heredoc LETs, an AS html partial,
+# fragments using fragments, FOR loop variables, #each scope and escaping.
+ARG SITE = "Tom & <Jerry>"
+IMPORT posts FROM ./posts AS markdown SORT BY title
+IMPORT footer FROM ./partials/footer.html AS html
+LET nav: html = <nav>${#each posts as p}<a href="/${p.slug}.html">${p.title}</a>${/each}</nav>
+LET header: HTML <<HTML
+<header title="${SITE}">
+  <h1>${SITE}</h1>
+  ${nav}
+</header>
+HTML
+LET card: html = <<-CARD
+	<article><h2>${item.title}</h2>${#each item.tags as t}<i>${t}</i>${/each}${item.content|raw}</article>
+	CARD
+LET row: html = <li>${x.n}</li>
+
+RENDER --escape=html <<HTML TO /index.html
+${header}
+<main>${SITE}</main>
+${footer}
+HTML
+RENDER --escape=html <<HTML TO /${item.slug}.html FOR item IN posts
+${header}${card}${footer|raw}
+HTML
+RENDER --escape=none <<TXT TO /plain.txt
+${header}
+${SITE}
+TXT
+IMPORT nums FROM ./nums.json AS json
+RENDER --escape=html <<HTML TO /list.html
+<ul>${#each nums as x}${row}${/each}</ul>
+HTML
+EXPORT /

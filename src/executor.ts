@@ -3,15 +3,15 @@ import path from 'node:path';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
-import { parseProgram } from './language/validate.js';
+import { fragmentText, parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, targetPlan, type ImageStageBase, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
-import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
+import { decodeUtf8, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
@@ -342,7 +342,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!.res)]));
   // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
   const resourceKeys = new Map<string, string>(memo ? p.imports.map((s, i) => [s.name, resolved[i]!.key]) : []);
-  const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
+  // html LETs are part of it: they are not values, but a template that uses one renders their text.
+  const envKey = memo ? memoKey('env', label, valueKey([...p.vars]), valueKey([...p.fragments.values()].map((f) => [f.name, f.text]))) : '';
 
   const stageTrees = new Map<string, Tree>();
   const images: FromImageUse[] = [];
@@ -375,6 +376,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     resources,
     stages: stageTrees,
     vars: p.vars,
+    fragments: p.fragments,
+    partials: new Map(),
     label,
     warn,
     plugins,
@@ -865,6 +868,10 @@ interface ExecEnv {
   /** Final trees of the stages finished so far, by name. */
   readonly stages: ReadonlyMap<string, Tree>;
   readonly vars: ReadonlyMap<string, Scalar>;
+  /** html LETs (`LET name: html`), parsed by the planner. */
+  readonly fragments: ReadonlyMap<string, FragmentSpec>;
+  /** `IMPORT … AS html` templates, parsed on first use. */
+  readonly partials: Map<string, readonly TemplateNode[]>;
   readonly label: string;
   readonly warn: (m: string) => void;
   readonly plugins: PluginHost;
@@ -1013,6 +1020,54 @@ function operandNames(ops: ReadonlyArray<Operand | undefined>, out = new Set<str
 function namesKey(env: ExecEnv, names: Iterable<string>, except?: string): string {
   const list = [...new Set(names)].filter((n) => n !== except).sort();
   return memoKey('names', ...list.flatMap((n) => [n, env.resourceKeys.get(n) ?? '']));
+}
+
+/** The html fragments a template context resolves (LETs from the plan, `AS html` imports parsed on first use). */
+function templateContext(env: ExecEnv): TemplateContext {
+  const partial = (name: string): readonly TemplateNode[] | undefined => {
+    const res = env.resources.get(name);
+    if (res?.kind !== 'value' || res.format !== 'html') return undefined;
+    let nodes = env.partials.get(name);
+    if (!nodes) {
+      nodes = parseRenderTemplate(fragmentText(res.value as string), res.provenance.uri);
+      env.partials.set(name, nodes);
+    }
+    return nodes;
+  };
+  return {
+    isFragment: (name) => {
+      if (env.loop?.name === name) return false;
+      if (env.fragments.has(name)) return true;
+      const res = env.resources.get(name);
+      return res?.kind === 'value' && res.format === 'html';
+    },
+    fragment: (name) => env.fragments.get(name)?.nodes ?? partial(name) ?? [],
+  };
+}
+
+/**
+ * The names a template reads, with those of the html fragments it uses (and theirs), for memo keys.
+ * A fragment that does not parse adds nothing: rendering fails on it anyway.
+ */
+function renderNames(nodes: readonly TemplateNode[], env: ExecEnv): Set<string> {
+  const out = templateNames(nodes);
+  const ctx = templateContext(env);
+  const seen = new Set<string>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const name of [...out]) {
+      if (seen.has(name) || !ctx.isFragment!(name)) continue;
+      seen.add(name);
+      try {
+        const before = out.size;
+        templateNames(ctx.fragment!(name), out);
+        grew ||= out.size > before;
+      } catch {
+        // E_TEMPLATE in an imported partial: reported when the RENDER runs.
+      }
+    }
+  }
+  return out;
 }
 
 /** Top-level names a template reads (variables, #each lists, #if conditions). */
@@ -1420,11 +1475,11 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
   const templateKey = env.memo ? sourceKey(op.template, src, env) : '';
   // What the template names, the FOR list and the destination's variables (ARG/LET values are in opId).
   const key = env.memo
-    ? memoKey('render', opId, templateKey, namesKey(env, op.each ? operandNames([op.each.dest], templateNames(parts).add(op.each.list)) : templateNames(parts)))
+    ? memoKey('render', opId, templateKey, namesKey(env, op.each ? operandNames([op.each.dest], renderNames(parts, env).add(op.each.list)) : renderNames(parts, env)))
     : undefined;
   return memoFiles(env, key, async (children) => {
     if (!op.each) {
-      const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env));
+      const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env), templateContext(env));
       return [[op.dest, makeFile(new TextEncoder().encode(out), origin)]];
     }
 
@@ -1438,7 +1493,7 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
     // Incremental rebuilds: an element's page depends on the template, the element and the imports the
     // template names (other than the loop variable), so editing one document re-renders one page.
     const memo = env.memo;
-    const refsKey = memo ? namesKey(env, templateNames(parts), as) : '';
+    const refsKey = memo ? namesKey(env, renderNames(parts, env), as) : '';
     const files: Files = [];
     for (const item of items) {
       const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
@@ -1452,7 +1507,7 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, 
         throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
       }
       const page = (): FileNode => {
-        const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv));
+        const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv), templateContext(itemEnv));
         return makeFile(new TextEncoder().encode(out), origin);
       };
       files.push([target.path, memo ? memo.memoize(memoKey('item', opId, templateKey, refsKey, valueKey(item)), page, children) : page()]);
@@ -1545,6 +1600,7 @@ function lookup(name: string, p: readonly string[], span: SourceSpan, env: ExecE
   if (res.kind !== 'value') {
     throw new SitefileError('E_TYPE', `import '${name}' is a ${res.kind}; templates can only read value imports (text, json, yaml, csv, markdown, wbn)`, span);
   }
+  if (res.format === 'html') throw fragmentNotValue(name, span);
   if (res.format !== 'text') return resolveJsonPath(res.value, p, name, span);
   if (p.length) throw new SitefileError('E_TYPE', `import '${name}' is text; dotted access only works on structured imports (json, yaml, csv, markdown, wbn)`, span);
   return res.value as string;

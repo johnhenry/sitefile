@@ -69,14 +69,15 @@ type Token =
  * - `$${` writes a literal `${`; a `$` not followed by `{` is literal.
  * - Anything else inside `${…}`, or unbalanced blocks, fails with E_TEMPLATE.
  */
-export function parseRenderTemplate(text: string, file: string, firstLine = 1): TemplateNode[] {
+export function parseRenderTemplate(text: string, file: string, firstLine = 1, firstColumn = 1): TemplateNode[] {
   const tokens: Token[] = [];
   let buf = '';
-  // firstLine > 1 when the template is a heredoc body inside the Sitefile.
+  // firstLine > 1 when the template is a heredoc body inside the Sitefile; firstColumn > 1 when it
+  // starts inside a Sitefile line (`LET name: html = …`).
   let line = firstLine;
   let lineStart = 0;
   let i = 0;
-  const spanAt = (idx: number): SourceSpan => ({ file, line, column: idx - lineStart + 1 });
+  const spanAt = (idx: number): SourceSpan => ({ file, line, column: idx - lineStart + 1 + (line === firstLine ? firstColumn - 1 : 0) });
   const flush = (): void => {
     if (buf !== '') tokens.push({ kind: 'text', value: buf });
     buf = '';
@@ -154,6 +155,62 @@ export function parseRenderTemplate(text: string, file: string, firstLine = 1): 
   }
   flush();
   return buildTree(tokens, file, { file, line, column: text.length - lineStart + 1 });
+}
+
+/** A name a template reads from outside itself (not a `${#each}` variable of its own), in template order. */
+export interface FreeRef {
+  readonly name: string;
+  readonly path: readonly string[];
+  readonly span: SourceSpan;
+  /** `var`: `${name…}`; `each`: the list of `${#each}`; `if`: the condition of `${#if}`. */
+  readonly use: 'var' | 'each' | 'if';
+}
+
+/** The names a template reads that its own `${#each}` blocks do not bind, in order. */
+export function freeRefs(nodes: readonly TemplateNode[]): FreeRef[] {
+  const out: FreeRef[] = [];
+  const walkNodes = (list: readonly TemplateNode[], bound: readonly string[]): void => {
+    for (const n of list) {
+      switch (n.kind) {
+        case 'text':
+          break;
+        case 'var':
+          if (!bound.includes(n.name)) out.push({ name: n.name, path: n.path, span: n.span, use: 'var' });
+          break;
+        case 'each':
+          if (!bound.includes(n.list.name)) out.push({ ...n.list, use: 'each' });
+          walkNodes(n.body, [...bound, n.as]);
+          walkNodes(n.empty, bound);
+          break;
+        case 'if':
+          if (!bound.includes(n.cond.name)) out.push({ ...n.cond, use: 'if' });
+          walkNodes(n.then, bound);
+          walkNodes(n.otherwise, bound);
+          break;
+      }
+    }
+  };
+  walkNodes(nodes, []);
+  return out;
+}
+
+/** What renderTemplate needs beyond values: html fragments (`LET name: html`, `IMPORT … AS html`). */
+export interface TemplateContext {
+  /** Whether `name` is an html fragment (checked after loop variables, before `lookup`). */
+  readonly isFragment?: (name: string) => boolean;
+  /** The parsed template of fragment `name` (may throw, e.g. E_TEMPLATE for an imported partial). */
+  readonly fragment?: (name: string) => readonly TemplateNode[];
+}
+
+/** E_TYPE for a fragment used where a value is needed. */
+export function fragmentNotValue(name: string, span: SourceSpan): SitefileError {
+  return new SitefileError('E_TYPE', `'${name}' is an html fragment, not a value; insert it with \${${name}}`, span);
+}
+
+/** An error raised inside fragment `name`, with the place it was used added to the message. */
+function inFragment(e: unknown, name: string, span: SourceSpan): unknown {
+  if (!(e instanceof SitefileError)) return e;
+  return new SitefileError(e.code, `${e.detail} (in html fragment '${name}' used at ${span.file}:${span.line}:${span.column})`, e.span ?? span, { cause: e });
 }
 
 function ref(text: string, span: SourceSpan): Ref {
@@ -252,12 +309,33 @@ export function renderTemplate(
   lookup: TemplateLookup,
   escape: EscapeMode,
   values?: TemplateValueLookup,
+  ctx: TemplateContext = {},
 ): string {
   const scope = new Map<string, unknown>();
+  /** Fragments being rendered, outermost first (a fragment that reaches itself is an error). */
+  const using: string[] = [];
+  const isFragment = (name: string): boolean => !scope.has(name) && (ctx.isFragment?.(name) ?? false);
   const valueOf = (r: Ref, loose: boolean): unknown => {
     if (scope.has(r.name)) return walk(scope.get(r.name), r.path, r.name, r.span, loose);
+    if (isFragment(r.name)) throw fragmentNotValue(r.name, r.span);
     if (!values) throw new SitefileError('E_TEMPLATE', 'this template uses blocks, which need list values', r.span);
     return values(r.name, r.path, r.span, loose);
+  };
+  // A fragment is rendered in place: same escape mode, same loop variables. Its markup is never
+  // escaped; the values it substitutes are.
+  const fragment = (name: string, path: readonly string[], span: SourceSpan): string => {
+    if (path.length > 0) throw fragmentNotValue(name, span);
+    if (using.includes(name)) {
+      throw new SitefileError('E_TEMPLATE', `html fragment '${name}' uses itself (${[...using.slice(using.indexOf(name)), name].join(' → ')})`, span);
+    }
+    using.push(name);
+    try {
+      return run(ctx.fragment!(name));
+    } catch (e) {
+      throw inFragment(e, name, span);
+    } finally {
+      using.pop();
+    }
   };
   const run = (list: readonly TemplateNode[]): string => {
     let out = '';
@@ -267,6 +345,10 @@ export function renderTemplate(
           out += n.value;
           break;
         case 'var': {
+          if (isFragment(n.name)) {
+            out += fragment(n.name, n.path, n.span);
+            break;
+          }
           const v = scope.has(n.name)
             ? resolveJsonPath(scope.get(n.name), n.path, n.name, n.span)
             : lookup(n.name, n.path, n.span);

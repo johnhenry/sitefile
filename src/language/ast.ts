@@ -16,7 +16,7 @@ export interface Operand {
 }
 
 export type ValueType = 'string' | 'number' | 'boolean';
-export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn';
+export type ImportKind = 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn' | 'html';
 export type EscapeMode = 'none' | 'html';
 
 export interface FromInstruction {
@@ -62,6 +62,27 @@ export interface LetInstruction {
   readonly name: string;
   readonly type: ValueType;
   readonly value: Operand;
+}
+
+/**
+ * `LET name: html = <markup>` or `LET name: html <<HTML … HTML`: an HTML fragment, a template that
+ * is not evaluated where it is declared but where a RENDER template uses it (`${name}`), against
+ * that RENDER's tree, loop variables and escape mode. Its markup is inserted as written.
+ */
+export interface FragmentInstruction {
+  readonly kind: 'LET';
+  readonly span: SourceSpan;
+  readonly name: string;
+  readonly type: 'html';
+  readonly body: FragmentBody;
+}
+
+/** The template of an html LET: the rest of its line (`span` is its first character), or a heredoc. */
+export type FragmentBody = { readonly kind: 'line'; readonly text: string; readonly span: SourceSpan } | InlineBody;
+
+/** Whether a LET is an html fragment. */
+export function isFragment(ins: Instruction): ins is FragmentInstruction {
+  return ins.kind === 'LET' && ins.type === 'html';
 }
 
 export interface ImportInstruction {
@@ -282,6 +303,7 @@ export type Instruction =
   | FromInstruction
   | ArgInstruction
   | LetInstruction
+  | FragmentInstruction
   | ImportInstruction
   | CopyInstruction
   | RenderInstruction

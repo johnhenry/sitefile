@@ -24,7 +24,7 @@ import { isIgnorePattern } from '../resources/ignore.js';
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
-const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'];
+const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html'];
 const NOT_YET = new Set(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
@@ -111,7 +111,11 @@ function parseBinding(c: Cursor, span: SourceSpan, kind: 'ARG' | 'LET'): Instruc
   if (c.eat(':')) {
     const at = c.span;
     const t = c.ident('type', '=').toLowerCase();
-    if (!VALUE_TYPES.includes(t)) throw c.error('E_SYNTAX', `unknown type '${t}' (expected string, number or boolean)`, at);
+    if (t === 'html') {
+      if (kind === 'ARG') throw c.error('E_SYNTAX', `ARG ${name} cannot be html: an html value is markup written in the Sitefile (LET ${name}: html = …)`, at);
+      return parseFragment(c, span, name);
+    }
+    if (!VALUE_TYPES.includes(t)) throw c.error('E_SYNTAX', `unknown type '${t}' (expected string, number or boolean${kind === 'LET' ? ', or html' : ''})`, at);
     type = t as ValueType;
   }
   const value = c.eat('=') ? c.operand('value') : undefined;
@@ -121,6 +125,29 @@ function parseBinding(c: Cursor, span: SourceSpan, kind: 'ARG' | 'LET'): Instruc
   }
   if (value === undefined) throw c.error('E_SYNTAX', `LET ${name} requires a value (LET ${name} = ...)`, span);
   return { kind, span, name, type, value };
+}
+
+/**
+ * `LET name: html = <markup>` (the rest of the line is the template) or `LET name: html <<HTML`
+ * (also `= <<HTML`). A one-line fragment cannot use `\` continuations, so its error positions are exact.
+ */
+function parseFragment(c: Cursor, span: SourceSpan, name: string): Instruction {
+  const eq = c.eat('=');
+  const inline = c.inline();
+  if (inline) {
+    c.expectEnd();
+    return { kind: 'LET', span, name, type: 'html', body: inline };
+  }
+  c.expectInlineUsed(`the value of LET ${name}: html`);
+  const at = c.span;
+  const rest = c.rest();
+  if (!eq || rest.text === '') {
+    throw c.error('E_SYNTAX', `LET ${name}: html requires a value (LET ${name}: html = <markup>, or a heredoc: LET ${name}: html <<HTML)`, eq ? at : rest.span);
+  }
+  if (rest.multiline) {
+    throw c.error('E_SYNTAX', `LET ${name}: html on one line cannot continue onto the next line; write it as a heredoc (LET ${name}: html <<HTML)`, rest.span);
+  }
+  return { kind: 'LET', span, name, type: 'html', body: { kind: 'line', text: rest.text, span: rest.span } };
 }
 
 function parseImport(c: Cursor, span: SourceSpan): Instruction {
@@ -137,7 +164,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       if (as !== undefined) throw c.error('E_SYNTAX', 'AS given twice', at);
       const kindAt = c.span;
       const k = c.ident('import kind').toLowerCase();
-      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, yaml, csv, markdown, wbn or tree)`, kindAt);
+      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, yaml, csv, markdown, wbn, html or tree)`, kindAt);
       as = k as ImportKind;
     } else if (c.keyword('INTEGRITY')) {
       if (integrity !== undefined) throw c.error('E_SYNTAX', 'INTEGRITY given twice', at);

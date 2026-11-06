@@ -5,8 +5,28 @@ use crate::language::ast::{
     is_ident, literal_text, stage_names, FromBase, FEED_ITEM, ImportKind, Instruction, Operand, Program, Source, StageRef,
     TemplatePart,
 };
+use crate::language::ast::FragmentBody;
 use crate::language::parser::parse_sitefile;
-use std::collections::{BTreeSet, HashSet};
+use crate::render::{fragment_not_value, free_refs, parse_render_template, parse_render_template_at, RefUse, TemplateNode};
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+/// A fragment's template: a heredoc body or partial file without its final newline (it is inserted inline).
+pub fn fragment_text(text: &str) -> &str {
+    let t = text.strip_suffix('\n').unwrap_or(text);
+    if t.len() < text.len() {
+        t.strip_suffix('\r').unwrap_or(t)
+    } else {
+        t
+    }
+}
+
+/// Parse the template of an html LET (errors point into the Sitefile).
+pub fn parse_fragment_body(body: &FragmentBody, file: &str) -> Result<Vec<TemplateNode>> {
+    match body {
+        FragmentBody::Line { text, span } => parse_render_template_at(text, file, span.line, span.column),
+        FragmentBody::Inline(b) => parse_render_template(fragment_text(&b.text), file, b.body_line),
+    }
+}
 
 /// Each operand of an instruction, and whether it may use a FOR loop variable
 /// (the destination, OPTIONS values and ARGS of RENDER/TRANSFORM).
@@ -20,6 +40,7 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
         Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
         Instruction::Let { value, .. } => vec![(value, false)],
+        Instruction::Fragment { .. } => vec![],
         Instruction::Import { uri, .. } | Instruction::Plugin { uri, .. } => vec![(uri, false)],
         Instruction::Copy { source, dest, .. } => src(source).map(|o| (o, false)).into_iter().chain([(dest, false)]).collect(),
         Instruction::Render { template, dest, .. } => {
@@ -140,6 +161,8 @@ struct Scope<'a> {
     finished_stages: HashSet<&'a str>,
     plugins: HashSet<&'a str>,
     tools: HashSet<&'a str>,
+    /// html LETs and `IMPORT … AS html`: usable only inside RENDER templates.
+    fragments: HashSet<&'a str>,
 }
 
 impl Scope<'_> {
@@ -149,7 +172,48 @@ impl Scope<'_> {
             || self.declared_stages.contains(name)
             || self.plugins.contains(name)
             || self.tools.contains(name)
+            || self.fragments.contains(name)
     }
+    /// Not a value a template can read.
+    fn not_value(&self, name: &str) -> bool {
+        self.declared_stages.contains(name) || self.plugins.contains(name) || self.tools.contains(name)
+    }
+}
+
+fn not_a_list(as_name: &str, list: &str, span: &SourceSpan) -> SitefileError {
+    SitefileError::at(E_TYPE, format!("FOR {as_name} IN {list}: '{list}' is an html fragment, not a list"), span)
+}
+
+/// An html LET is checked where it is declared: its template syntax, and every name it reads that
+/// is declared before it. A name declared later is an error (define before use); a name declared
+/// nowhere is left to the place it is used (a `RENDER … FOR` loop variable, say).
+fn check_fragment(name: &str, body: &FragmentBody, file: &str, scope: &Scope, declared_at: &HashMap<&str, u32>) -> Result<()> {
+    for r in free_refs(&parse_fragment_body(body, file)?) {
+        let n = r.name.as_str();
+        if n == name {
+            return Err(SitefileError::at(E_TEMPLATE, format!("html fragment '{name}' uses itself"), &r.span));
+        }
+        if scope.fragments.contains(n) {
+            if r.usage != RefUse::Var || !r.path.is_empty() {
+                return Err(fragment_not_value(n, &r.span));
+            }
+        } else if scope.vars.contains(n) {
+            if r.usage == RefUse::Var && !r.path.is_empty() {
+                return Err(SitefileError::at(E_TYPE, format!("'{n}' is an ARG/LET value; dotted access only works on JSON imports"), &r.span));
+            }
+        } else if scope.imports.contains(n) {
+            // Its kind (and so whether a template can read it) is known once it is resolved.
+        } else if scope.not_value(n) {
+            return Err(SitefileError::at(E_UNDEFINED, format!("'{n}' is not an ARG, LET or IMPORT"), &r.span));
+        } else if let Some(line) = declared_at.get(n) {
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!("'{n}' is declared on line {line}, after LET {name}: html; a fragment can only use names declared before it"),
+                &r.span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Check semantic rules and wrap the instructions in a [`Program`].
@@ -181,6 +245,17 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
     };
     let all_stages = stage_names(instructions);
     let mut scope = Scope::default();
+    // Where each ARG, LET and IMPORT name is first declared (a fragment may only use names declared before it).
+    let mut declared_at: HashMap<&str, u32> = HashMap::new();
+    for ins in instructions {
+        if let Instruction::Arg { name, span, .. }
+        | Instruction::Let { name, span, .. }
+        | Instruction::Fragment { name, span, .. }
+        | Instruction::Import { name, span, .. } = ins
+        {
+            declared_at.entry(name.as_str()).or_insert(span.line);
+        }
+    }
     let mut current_stage: Option<&str> = None;
     let mut saw_export = false;
 
@@ -209,6 +284,9 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                         format!("dotted access ${{{dotted}}} is only allowed in RENDER templates and for a RENDER … FOR loop variable"),
                         span,
                     ));
+                }
+                if scope.fragments.contains(name.as_str()) {
+                    return Err(SitefileError::at(E_TYPE, format!("'{name}' is an html fragment; html values can only be used in RENDER templates"), span));
                 }
                 if scope.vars.contains(name.as_str()) {
                     continue;
@@ -258,6 +336,13 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.vars.insert(name);
             }
+            Instruction::Fragment { name, span, body } => {
+                if scope.taken(name) {
+                    return Err(duplicate(name, span));
+                }
+                check_fragment(name, body, file, &scope, &declared_at)?;
+                scope.fragments.insert(name);
+            }
             Instruction::Import { name, span, as_kind, sort, .. } => {
                 if scope.taken(name) {
                     return Err(duplicate(name, span));
@@ -271,12 +356,19 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                         ));
                     }
                 }
+                // `AS html`: a file-based fragment, usable only in templates (still an import for `name:` sources).
+                if *as_kind == Some(ImportKind::Html) {
+                    scope.fragments.insert(name);
+                }
                 scope.imports.insert(name);
             }
             Instruction::Copy { source, from, .. } => check_source(source, &scope, from.as_ref(), &all_stages)?,
             Instruction::Render { template, from, each, .. } => {
                 check_source(template, &scope, from.as_ref(), &all_stages)?;
                 if let Some(e) = each {
+                    if scope.fragments.contains(e.list.as_str()) {
+                        return Err(not_a_list(&e.as_name, &e.list, &e.span));
+                    }
                     check_each(&e.as_name, &e.list, &e.span, &scope)?;
                     if all_stages.contains(&e.as_name) {
                         return Err(loop_var_taken(&e.as_name, &e.span));
@@ -316,10 +408,16 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     check_source(s, &scope, from.as_ref(), &all_stages)?;
                 }
                 if let Some(e) = each {
+                    if scope.fragments.contains(e.list.as_str()) {
+                        return Err(not_a_list(&e.as_name, &e.list, &e.span));
+                    }
                     check_each(&e.as_name, &e.list, &e.span, &scope)?;
                 }
             }
             Instruction::Feed { list, list_span, .. } => {
+                if scope.fragments.contains(list.as_str()) {
+                    return Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{list}' is an html fragment, not a list"), list_span));
+                }
                 if !scope.imports.contains(list.as_str()) {
                     return Err(SitefileError::at(
                         E_UNDEFINED,

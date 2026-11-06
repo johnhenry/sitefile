@@ -82,15 +82,19 @@ test('flags per instruction match parseFlags calls', () => {
   }
 });
 
-test('heredocs are scanned on exactly COPY, RENDER and TRANSFORM', () => {
+test('heredocs are scanned on exactly COPY, RENDER, TRANSFORM and html LET', () => {
   const heredoc = constList('HEREDOC_INSTRUCTIONS', scannerTs);
   assert.deepEqual(heredoc.sort(), ['COPY', 'RENDER', 'TRANSFORM']);
+  // `LET name: html` (scanner.ts isHtmlLet) also takes a heredoc.
+  assert.match(scannerTs, /HEREDOC_INSTRUCTIONS\.has\(keyword\) \|\| isHtmlLet\(text\)/);
+  assert.match(scannerTs, /toLowerCase\(\) !== '(\w+)'/);
+  assert.equal(/toLowerCase\(\) !== '(\w+)'/.exec(scannerTs)[1], KEYWORDS.fragmentType);
   const g = JSON.parse(grammarJson);
   const withHeredoc = g.repository.instructions.patterns
     .filter((p) => p.patterns?.some((q) => q.include?.startsWith('#heredoc-')))
     .map((p) => p.name.replace('meta.instruction.', '').replace('.sitefile', '').toUpperCase());
-  assert.deepEqual(withHeredoc.sort(), heredoc);
-  for (const k of heredoc) {
+  assert.deepEqual(withHeredoc.sort(), [...heredoc, 'LET'].sort());
+  for (const k of [...heredoc, 'LET']) {
     assert.ok(g.repository[`heredoc-${k.toLowerCase()}`].patterns.every((p) => p.name.startsWith('meta.heredoc')), k);
   }
 });

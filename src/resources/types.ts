@@ -29,7 +29,8 @@ export interface TreeResource {
 export interface ValueResource {
   readonly kind: 'value';
   /** `markdown`: one document object, or a list of them for a directory. */
-  readonly format: 'text' | 'json' | 'markdown' | 'yaml' | 'csv' | 'wbn';
+  /** `html`: the text of an `IMPORT … AS html` fragment. */
+  readonly format: 'text' | 'json' | 'markdown' | 'yaml' | 'csv' | 'wbn' | 'html';
   readonly value: unknown;
   readonly provenance: Provenance;
 }

@@ -19,14 +19,14 @@ use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, 
 use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
-use crate::planner::{plan, target_plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
+use crate::planner::{plan, target_plan, FragmentSpec, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
 use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
 use crate::plugins::wasm::check_wasm_plugin;
 use crate::profile::{begin, Profiler};
 use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
-use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk, TemplateNode};
+use crate::render::{decode_utf8, fragment_not_value, parse_render_template, render_template_with, resolve_json_path, walk, TemplateContext, TemplateNode};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::https::{fetch_remote_with, FetchRequest};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
@@ -668,7 +668,9 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         Some(_) => {
             let mut vars: Vec<_> = p.vars.iter().collect();
             vars.sort_by(|a, b| a.0.cmp(b.0));
-            memo_key(&["env", &label, &format!("{vars:?}")])
+            // html LETs are part of it: they are not values, but a template that uses one renders their text.
+            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
+            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
         }
         None => String::new(),
     };
@@ -715,11 +717,14 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     };
 
     let plugin_warn = warn.clone();
+    let partials: Partials = Mutex::new(HashMap::new());
     let mut exec = Exec {
         local: &local,
         resources: &resources,
         stages: HashMap::new(),
         vars: &p.vars,
+        fragments: &p.fragments,
+        partials: &partials,
         label: &label,
         warn: warn.clone(),
         plugins: PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m)),
@@ -1534,11 +1539,17 @@ fn resolve_tools(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Vec<Re
 
 // ---------------------------------------------------------------- operations
 
+/// `IMPORT … AS html` templates, parsed on first use.
+type Partials = Mutex<HashMap<String, Arc<Vec<TemplateNode>>>>;
+
 /// Variables visible to interpolation and templates.
 #[derive(Clone, Copy)]
 struct Scope<'a> {
     vars: &'a Env,
     resources: &'a HashMap<String, Resource>,
+    /// html LETs (`LET name: html`), parsed by the planner.
+    fragments: &'a [FragmentSpec],
+    partials: &'a Partials,
     /// The current element of a FOR loop.
     each: Option<(&'a str, &'a Value)>,
 }
@@ -1546,6 +1557,67 @@ struct Scope<'a> {
 impl<'a> Scope<'a> {
     fn with_item(self, name: &'a str, value: &'a Value) -> Scope<'a> {
         Scope { each: Some((name, value)), ..self }
+    }
+
+    /// Whether `name` is an html fragment: an html LET or an `IMPORT … AS html`.
+    fn is_fragment(&self, name: &str) -> bool {
+        if self.each.is_some_and(|(n, _)| n == name) {
+            return false;
+        }
+        self.fragments.iter().any(|f| f.name == name) || matches!(self.resources.get(name), Some(Resource::Value { format: ValueFormat::Html, .. }))
+    }
+
+    /// The parsed template of fragment `name` (an imported partial is parsed on first use).
+    fn fragment(&self, name: &str) -> Result<Arc<Vec<TemplateNode>>> {
+        if let Some(f) = self.fragments.iter().find(|f| f.name == name) {
+            return Ok(f.nodes.clone());
+        }
+        let Some(Resource::Value { format: ValueFormat::Html, value, provenance }) = self.resources.get(name) else {
+            return Ok(Arc::new(Vec::new()));
+        };
+        if let Some(n) = self.partials.lock().ok().and_then(|m| m.get(name).cloned()) {
+            return Ok(n);
+        }
+        let text = crate::language::validate::fragment_text(value.as_str().unwrap_or_default());
+        let nodes = Arc::new(parse_render_template(text, &provenance.uri, 1)?);
+        if let Ok(mut m) = self.partials.lock() {
+            m.insert(name.to_string(), nodes.clone());
+        }
+        Ok(nodes)
+    }
+
+    /// Render a parsed template against this scope (values, blocks and html fragments).
+    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode) -> Result<String> {
+        let ctx = TemplateContext { is_fragment: &|n: &str| self.is_fragment(n), fragment: &|n: &str| self.fragment(n) };
+        render_template_with(
+            nodes,
+            &|n: &str, p: &[String], s: &SourceSpan| self.lookup(n, p, s),
+            escape,
+            Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| self.value_of(n, p, s, l)),
+            Some(&ctx),
+        )
+    }
+
+    /// The names a template reads, with those of the html fragments it uses (and theirs), for memo
+    /// keys. A fragment that does not parse adds nothing: rendering fails on it anyway.
+    fn render_names(&self, nodes: &[TemplateNode]) -> BTreeSet<String> {
+        let mut out = template_names(nodes);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        loop {
+            let before = out.len();
+            for name in out.clone() {
+                if seen.contains(&name) || !self.is_fragment(&name) {
+                    continue;
+                }
+                seen.insert(name.clone());
+                if let Ok(nodes) = self.fragment(&name) {
+                    out.extend(template_names(&nodes));
+                }
+            }
+            if out.len() == before {
+                return out;
+            }
+        }
     }
 
     fn lookup(&self, name: &str, p: &[String], span: &SourceSpan) -> Result<Scalar> {
@@ -1570,6 +1642,9 @@ impl<'a> Scope<'a> {
                 span,
             ));
         };
+        if *format == ValueFormat::Html {
+            return Err(fragment_not_value(name, span));
+        }
         if *format != ValueFormat::Text {
             return resolve_json_path(value, p, name, span);
         }
@@ -1671,6 +1746,8 @@ struct Exec<'a> {
     /// Final trees of the stages finished so far, by name.
     stages: HashMap<String, Tree>,
     vars: &'a Env,
+    fragments: &'a [FragmentSpec],
+    partials: &'a Partials,
     label: &'a str,
     warn: Warn,
     plugins: PluginHost,
@@ -1723,7 +1800,7 @@ fn policy_of(overwrite: bool) -> ConflictPolicy {
 
 impl<'a> Exec<'a> {
     fn scope(&self) -> Scope<'a> {
-        Scope { vars: self.vars, resources: self.resources, each: None }
+        Scope { vars: self.vars, resources: self.resources, fragments: self.fragments, partials: self.partials, each: None }
     }
 
     /// The tree a stage starts from, and its key.
@@ -2020,8 +2097,9 @@ impl<'a> Exec<'a> {
                     None => parse_render_template(&text, &label, 1)?,
                 };
                 // What the template names, the FOR list and the destination's variables (ARG/LET values are in op_id).
+                let scope = self.scope();
                 let key = memoized.then(|| {
-                    let mut names = template_names(&parts);
+                    let mut names = scope.render_names(&parts);
                     if let Some(e) = each {
                         names.insert(e.list.clone());
                         names.extend(operand_names(&[&e.dest]));
@@ -2031,14 +2109,8 @@ impl<'a> Exec<'a> {
                 if let Some(hit) = self.memo_lookup(&key) {
                     return Ok(hit);
                 }
-                let scope = self.scope();
                 let Some(each) = each else {
-                    let out = render_template(
-                        &parts,
-                        &|n: &str, p: &[String], s: &SourceSpan| scope.lookup(n, p, s),
-                        *escape,
-                        Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| scope.value_of(n, p, s, l)),
-                    )?;
+                    let out = scope.render(&parts, *escape)?;
                     let files = vec![(dest.clone(), make_file(out.into_bytes(), origin, 0o644))];
                     return Ok(self.memo_store(key, files, Vec::new(), true));
                 };
@@ -2058,7 +2130,7 @@ impl<'a> Exec<'a> {
                 }
                 // An element's page depends on the template, the element and the imports the template
                 // names (other than the loop variable), so editing one document re-renders one page.
-                let refs_key = if memoized { self.names_key(template_names(&parts), Some(as_name)) } else { String::new() };
+                let refs_key = if memoized { self.names_key(scope.render_names(&parts), Some(as_name)) } else { String::new() };
                 let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
                 let mut files: Files = Vec::new();
                 for item in items {
@@ -2078,12 +2150,7 @@ impl<'a> Exec<'a> {
                     }
                     let item_scope = scope.with_item(as_name, item);
                     let page = || -> Result<Node> {
-                        let out = render_template(
-                            &parts,
-                            &|n: &str, p: &[String], s: &SourceSpan| item_scope.lookup(n, p, s),
-                            *escape,
-                            Some(&|n: &str, p: &[String], s: &SourceSpan, l: bool| item_scope.value_of(n, p, s, l)),
-                        )?;
+                        let out = item_scope.render(&parts, *escape)?;
                         Ok(make_file(out.into_bytes(), origin.clone(), 0o644))
                     };
                     let node = match self.memo {

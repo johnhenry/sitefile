@@ -1,0 +1,11 @@
+# validate: fragments are checked, not evaluated; an unused one is a lint warning.
+ARG SITE = "x"
+IMPORT part FROM ./part.html AS html
+LET header: html = <h1>${SITE}</h1>${part}
+LET unused: html <<HTML
+<p>${SITE}</p>
+HTML
+RENDER --escape=html <<HTML TO /index.html
+${header}
+HTML
+EXPORT /

@@ -1,0 +1,11 @@
+# A fragment can only use names declared before it.
+LET header: html <<HTML
+<header>
+  <h1>${TITLE}</h1>
+</header>
+HTML
+ARG TITLE = "Late"
+RENDER <<HTML TO /index.html
+${header}
+HTML
+EXPORT /

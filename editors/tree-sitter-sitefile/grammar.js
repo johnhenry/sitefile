@@ -10,8 +10,9 @@
  * - a comment is a line whose first non-blank character is `#`, also inside
  *   a continuation; `#` elsewhere is ordinary text; a comment that starts
  *   `# sitefile=` is the syntax version `directive` (`# sitefile=1`);
- * - heredocs `<<NAME` / `<<-NAME` on COPY, RENDER and TRANSFORM: the body ends
- *   at a line that is exactly NAME (`<<-` also strips leading tabs);
+ * - heredocs `<<NAME` / `<<-NAME` on COPY, RENDER, TRANSFORM and html LET: the
+ *   body ends at a line that is exactly NAME (`<<-` also strips leading tabs);
+ * - the rest of a `LET name: html = …` line is a template (`fragment`);
  * - `name:` / `name:/path` import references in source position.
  *
  * Instruction and clause keywords are case-insensitive regexes. Value words
@@ -19,7 +20,7 @@
  * classified by queries/highlights.scm, like the parser does after reading
  * them.
  *
- * RENDER heredoc bodies are templates: `${x}`, `${#each}`, `${#if}`, … are
+ * RENDER and html LET heredoc bodies are templates: `${x}`, `${#each}`, `${#if}`, … are
  * parsed in place as children of `heredoc_body`. Injections (by delimiter:
  * HTML, CSS, JS, …) exclude those children, so the embedded language sees the
  * surrounding text only and template tags keep their own highlighting.
@@ -34,7 +35,7 @@ const IDENT = /[A-Za-z_][A-Za-z0-9_]*/;
 const KEY = /[A-Za-z0-9_-]+/;
 
 /** All keyword tokens, declared first so they win ties with bare words (rule order). */
-const KEYWORD_WORDS = [...new Set([...KEYWORDS.instructions, ...KEYWORDS.clauses, ...KEYWORDS.unsupported])];
+const KEYWORD_WORDS = [...new Set([...KEYWORDS.instructions, ...KEYWORDS.clauses, ...KEYWORDS.unsupported, KEYWORDS.fragmentType.toUpperCase()])];
 const kwRule = (word) => `_kw_${word.toLowerCase()}`;
 const keywordRules = Object.fromEntries(
   KEYWORD_WORDS.map((word) => [kwRule(word), () => token(new RegExp(caseInsensitive(word)))]),
@@ -42,6 +43,9 @@ const keywordRules = Object.fromEntries(
 
 /** A case-insensitive keyword, visible in the tree as the anonymous node "WORD". */
 const kw = ($, word) => alias($[kwRule(word)], word);
+
+/** The `${…}` tags of a template (RENDER bodies, html fragments). */
+const templateTags = ($) => [$.template_substitution, $.template_each, $.template_if, $.template_else, $.template_end];
 
 export default grammar({
   name: 'sitefile',
@@ -61,6 +65,7 @@ export default grammar({
     $.heredoc_end,
     $._resource_name,
     $._blank_lines,
+    $._fragment_text,
     $._error_sentinel,
   ],
 
@@ -129,8 +134,23 @@ export default grammar({
       seq(kw($, 'ARG'), field('name', $.identifier), optional($._type_annotation), optional(seq('=', field('value', $._value)))),
 
     // LET NAME[: type] = value
+    // LET name: html = <markup> | LET name: html [=] <<HTML (an html fragment: a template)
     let_instruction: ($) =>
-      seq(kw($, 'LET'), field('name', $.identifier), optional($._type_annotation), '=', field('value', $._value)),
+      seq(
+        kw($, 'LET'),
+        field('name', $.identifier),
+        choice(
+          seq(optional($._type_annotation), '=', field('value', $._value)),
+          seq(
+            ':',
+            field('type', alias($._kw_html, $.type)),
+            choice(seq('=', field('value', $.fragment)), seq(optional('='), field('source', $.heredoc_start), $._template_heredoc)),
+          ),
+        ),
+      ),
+
+    // The rest of a `LET name: html = …` line: template text and tags.
+    fragment: ($) => repeat1(choice($._fragment_text, $.template_escape, ...templateTags($))),
 
     _type_annotation: ($) => seq(':', field('type', alias($.identifier, $.type))),
 
@@ -306,18 +326,7 @@ export default grammar({
     // RENDER bodies are templates.
     _template_heredoc: ($) => seq($._newline, optional(field('body', $.heredoc_body)), field('end', $.heredoc_end)),
 
-    heredoc_body: ($) =>
-      repeat1(
-        choice(
-          $._template_text,
-          $.template_escape,
-          $.template_substitution,
-          $.template_each,
-          $.template_if,
-          $.template_else,
-          $.template_end,
-        ),
-      ),
+    heredoc_body: ($) => repeat1(choice($._template_text, $.template_escape, ...templateTags($))),
 
     // ${name}, ${name.key.0}, ${name|raw}
     template_substitution: ($) =>

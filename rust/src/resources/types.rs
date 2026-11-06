@@ -25,6 +25,8 @@ pub enum ValueFormat {
     Yaml,
     Csv,
     Wbn,
+    /// The text of an `IMPORT … AS html` fragment.
+    Html,
 }
 
 impl ValueFormat {
@@ -36,6 +38,7 @@ impl ValueFormat {
             ValueFormat::Yaml => "yaml",
             ValueFormat::Csv => "csv",
             ValueFormat::Wbn => "wbn",
+            ValueFormat::Html => "html",
         }
     }
 }

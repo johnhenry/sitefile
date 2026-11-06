@@ -188,3 +188,20 @@ test('# sitefile-lint: comments are highlighted as directives', async () => {
   has(scopesOf(r, 2, 'disable-next-line'), 'keyword.other.directive');
   for (const [, s] of r[2].tokens) hasNot(s, 'directive');
 });
+
+test('html fragments: LET name: html = … is a template line; LET name: html <<NAME a template heredoc', async () => {
+  const r = await tokenize('LET nav: html = <a href="${p.url}">${#each xs as x}${x}${/each}</a>\nLET h: HTML <<T\n<b>${SITE}</b>\nT\nLET c: html = <<-T\n\t${c2}\n\tT\nLET plain = <<EOF\nARG a: html\nEXPORT /\n');
+  has(scopesOf(r, 1, 'LET'), 'keyword.control.instruction');
+  has(scopesOf(r, 1, 'html'), 'support.type.primitive');
+  has(scopesOf(r, 1, 'url'), 'variable.other.property'); // inside an embedded attribute (injection)
+  has(scopesOf(r, 1, '#each'), 'keyword.control.loop');
+  has(scopesOf(r, 2, 'HTML'), 'support.type.primitive');
+  has(scopesOf(r, 2, '<<'), 'keyword.operator.heredoc');
+  has(scopesOf(r, 3, 'SITE'), 'variable.other.readwrite');
+  has(scopesOf(r, 4, 'T'), 'entity.name.tag.heredoc');
+  has(scopesOf(r, 6, 'c2'), 'variable.other.readwrite');
+  // A plain LET is not scanned for heredocs, and ARG cannot be html.
+  hasNot(scopesOf(r, 8, '<<EOF'), 'heredoc');
+  has(scopesOf(r, 9, 'html'), 'invalid.illegal.type');
+  has(scopesOf(r, 10, 'EXPORT'), 'keyword.control.instruction');
+});

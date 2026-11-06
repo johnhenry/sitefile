@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "scopeName": "sitefile.template.injection",
-  "injectionSelector": "L:meta.heredoc.template.sitefile -meta.heredoc.header.sitefile",
+  "injectionSelector": "L:meta.heredoc.template.sitefile -meta.heredoc.header.sitefile, L:meta.fragment.template.sitefile",
   "patterns": [
     {
       "include": "source.sitefile#template"

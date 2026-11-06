@@ -26,7 +26,7 @@ function decodeUtf8(bytes: Uint8Array, uri: string, span?: SourceSpan): string {
 /** Turn fetched or read bytes into a resource of the requested kind. */
 export async function bytesToResource(
   bytes: Uint8Array,
-  kind: 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn',
+  kind: 'file' | 'text' | 'json' | 'tree' | 'markdown' | 'yaml' | 'csv' | 'wbn' | 'html',
   info: BytesInfo,
   span?: SourceSpan,
   archiveLimits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
@@ -50,6 +50,8 @@ export async function bytesToResource(
   }
   const text = decodeUtf8(bytes, info.uri, span);
   if (kind === 'text') return { kind: 'value', format: 'text', value: text, provenance };
+  // A file-based html fragment: its template is parsed where a RENDER uses it.
+  if (kind === 'html') return { kind: 'value', format: 'html', value: text, provenance };
   if (kind === 'yaml') return { kind: 'value', format: 'yaml', value: parseYaml(text, info.uri), provenance };
   if (kind === 'csv') return { kind: 'value', format: 'csv', value: parseCsvRecords(text, info.uri), provenance };
   let value: unknown;

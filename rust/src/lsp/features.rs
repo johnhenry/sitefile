@@ -126,7 +126,7 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
     let ins = &ix.instrs[ins_ix];
     if let Some(body) = &ins.body {
         if body.contains_line(line) {
-            if ins.keyword == "RENDER" {
+            if ins.keyword == "RENDER" || ins.keyword == "LET" {
                 if let Some(partial) = open_interp(prefix) {
                     return complete_interp(ix, ins_ix, partial, col, true);
                 }
@@ -206,11 +206,19 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             _ => Vec::new(),
         },
         "ARG" | "LET" => {
+            // `html` (an html fragment) is a LET type only.
+            let types = || {
+                let mut t: Vec<&str> = ValueType::ALL.map(ValueType::as_str).to_vec();
+                if kw == "LET" {
+                    t.push("html");
+                }
+                kw_items(t, CIK_ENUM_MEMBER)
+            };
             if let Some((_, t)) = typed.split_once(':').filter(|(_, t)| !t.contains('=')) {
-                return Completion { items: kw_items(ValueType::ALL.map(ValueType::as_str), CIK_ENUM_MEMBER), start: col - utf16_len(t) };
+                return Completion { items: types(), start: col - utf16_len(t) };
             }
             if n == 2 && (prior[1].text.ends_with(':') || prev == ":") || n == 3 && prev == ":" {
-                kw_items(ValueType::ALL.map(ValueType::as_str), CIK_ENUM_MEMBER)
+                types()
             } else {
                 Vec::new()
             }
@@ -393,6 +401,12 @@ fn def_markdown(ix: &Index, def: &Def, analysis: Option<&Analysis>) -> String {
     let mut s = format!("**{}** `{}` — line {}\n\n```sitefile\n{}\n```", def.kind.label(), def.name, ins.start_line + 1, ins.text());
     let plan = analysis.and_then(|a| a.plan.as_ref());
     match def.kind {
+        SymKind::Let if ins.is_html_let() => {
+            s.push_str("\n\nhtml fragment: evaluated where a RENDER template uses it (`${name}`), and inserted as markup; the values it substitutes are escaped by that RENDER's `--escape`.");
+            if let Some(b) = &ins.body {
+                s.push_str(&format!("\n\n```html\n{}```", b.text));
+            }
+        }
         SymKind::Arg | SymKind::Let => {
             if analysis.is_some_and(|a| a.required_args.contains(&def.name)) {
                 s.push_str(&format!("\n\nNo default: a build needs `--build-arg {}=<value>`.", def.name));
@@ -813,6 +827,32 @@ mod tests {
         let ix = build(&lines);
         let v = comment_hover(&lines, &ix, 0, 3).unwrap();
         assert!(v["contents"]["value"].as_str().unwrap().contains("`unused-name`"));
+    }
+
+    #[test]
+    fn html_fragments_hover_definition_rename_completion() {
+        let src = "ARG SITE = x\nLET nav: html = <nav>${SITE}</nav>\nLET header: html <<HTML\n<header>${nav}</header>\nHTML\nRENDER --escape=html <<HTML TO /i.html\n${header}${nav}\nHTML\nEXPORT /";
+        let lines = Lines::new(src);
+        let ix = build(&lines);
+        let a = analyze(src, "Sitefile");
+        // Hover at a use shows the fragment and its heredoc body.
+        let h = hover(&ix, Some(&a), 6, 3).unwrap()["contents"]["value"].as_str().unwrap().to_string();
+        assert!(h.contains("**LET** `header` — line 3") && h.contains("html fragment") && h.contains("```html\n<header>${nav}</header>\n```"), "{h}");
+        // Definition from the RENDER body and from inside another fragment's body.
+        assert_eq!(definition(&ix, "file:///S", 6, 11).unwrap()["range"], range(1, 4, 1, 7));
+        assert_eq!(definition(&ix, "file:///S", 3, 11).unwrap()["range"], range(1, 4, 1, 7));
+        // SITE used in a one-line fragment.
+        assert_eq!(definition(&ix, "file:///S", 1, 23).unwrap()["range"], range(0, 4, 0, 8));
+        // Rename `nav`: its LET, the header body and the RENDER body.
+        let e = rename(&ix, "file:///S", 6, 11, "menu").unwrap().unwrap();
+        assert_eq!(e["changes"]["file:///S"].as_array().unwrap().len(), 3);
+        // Completion inside a fragment heredoc body offers names, and `html` after `LET x:`.
+        let l = labels_at("ARG SITE = x\nLET h: html <<H\n${S\nH\nEXPORT /", 2, 3);
+        assert!(l.contains(&"SITE".to_string()), "{l:?}");
+        assert!(labels("LET h: ").contains(&"html".to_string()));
+        assert!(!labels("ARG h: ").contains(&"html".to_string()));
+        // No template error diagnostics beyond validate's.
+        assert!(a.diagnostics.iter().all(|d| d.severity != crate::lsp::diagnostics::ERROR), "{:?}", a.diagnostics);
     }
 
     #[test]

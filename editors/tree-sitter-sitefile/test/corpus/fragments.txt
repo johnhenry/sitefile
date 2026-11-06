@@ -1,0 +1,81 @@
+==================
+One-line html fragment (the rest of the line is a template)
+==================
+
+LET nav: html = <nav title="${T}">${#each posts as p}${p.title} $${x}${/each}</nav>
+
+---
+
+(source_file
+  (let_instruction
+    (identifier)
+    (type)
+    (fragment
+      (template_substitution
+        (identifier))
+      (template_each
+        (reference
+          (identifier))
+        (identifier))
+      (template_substitution
+        (identifier)
+        (key))
+      (template_escape)
+      (template_end))))
+
+==================
+html fragment heredocs (with and without =, <<- strips tabs)
+==================
+
+LET header: HTML <<HTML
+<header>${nav}</header>
+HTML
+LET card: html = <<-CARD
+	<p>${item.title}</p>
+	CARD
+
+---
+
+(source_file
+  (let_instruction
+    (identifier)
+    (type)
+    (heredoc_start
+      (heredoc_delimiter))
+    (heredoc_body
+      (template_substitution
+        (identifier)))
+    (heredoc_end))
+  (let_instruction
+    (identifier)
+    (type)
+    (heredoc_start
+      (heredoc_delimiter))
+    (heredoc_body
+      (template_substitution
+        (identifier)
+        (key)))
+    (heredoc_end)))
+
+==================
+Other LETs keep plain values; IMPORT … AS html
+==================
+
+LET a = <<EOF
+LET b: string = <b>
+IMPORT footer FROM ./partials/footer.html AS html
+
+---
+
+(source_file
+  (let_instruction
+    (identifier)
+    (word))
+  (let_instruction
+    (identifier)
+    (type)
+    (word))
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)))

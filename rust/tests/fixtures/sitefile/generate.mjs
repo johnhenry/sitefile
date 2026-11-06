@@ -48,8 +48,13 @@ const maybe = (s, p = 0.5) => (chance(p) ? (typeof s === 'function' ? s() : s) :
 // ---------------------------------------------------------------- vocabulary
 
 const NAMES = ['a', 'b', 'site', 'posts', 'TITLE', 'x', 'out', 'md', 'og', 'cp', 'post', 'build', '_n', 'A1', 'data', 'item'];
-const TYPES = ['string', 'number', 'boolean', 'String', 'NUMBER', 'int', 'bool'];
-const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml'];
+const TYPES = ['string', 'number', 'boolean', 'String', 'NUMBER', 'int', 'bool', 'html', 'HTML'];
+const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml', 'html'];
+/** Templates of html fragments (issue #106): valid, broken, using names, loop variables and other fragments. */
+const FRAGMENTS = [
+  '<b>${TITLE}</b>', '<a href="/${item.slug}">${item.title}</a>', '${#each posts as p}<i>${p.title}</i>${/each}', '${#if x}y${else}z${/if}',
+  '${a}${b}', '${frag}', '${TITLE.x}', '${#each}', '${x y}', '<p>', '', '$${literal}', '${posts|raw}', 'a <<EOF b', '${x', '<i>${n}</i>',
+];
 const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
 const DIGEST = 'sha256:' + 'ab'.repeat(32);
 const DIGESTS = [DIGEST, DIGEST.toUpperCase(), 'sha256:abc', 'md5:x', '"' + DIGEST + '"', 'sha256:${x}'];
@@ -75,7 +80,18 @@ const INSTRUCTIONS = {
   FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
   STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x'])}`)}`,
   ARG: () => `ARG ${pick(NAMES)}${maybe(() => `${pick([':', ' : ', ': '])}${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = ', '= '])}${pick(VALUES)}`, 0.6)}`,
-  LET: () => `LET ${pick(NAMES)}${maybe(() => `:${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = '])}${pick(VALUES)}`, 0.85)}`,
+  LET: () => {
+    // An html fragment: one line, or a heredoc (sometimes after `=`).
+    if (chance(0.25)) {
+      const name = pick([...NAMES, 'frag']);
+      const type = pick(['html', 'HTML', 'Html', 'html ']);
+      if (chance(0.5)) return `LET ${name}${pick([':', ': ', ' : '])}${type}${pick([' = ', '=', ' ', ' = \\\n '])}${pick(FRAGMENTS)}`;
+      const h = heredoc(FRAGMENTS);
+      pendingBody += h.tail;
+      return `LET ${name}: ${type}${pick([' ', ' = '])}${h.marker}`;
+    }
+    return `LET ${pick(NAMES)}${maybe(() => `:${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = '])}${pick(VALUES)}`, 0.85)}`;
+  },
   IMPORT: () => {
     const clauses = [];
     if (chance(0.6)) clauses.push(`AS ${pick(KINDS)}`);
@@ -140,12 +156,10 @@ function flags(list) {
   return s;
 }
 
-function heredoc() {
+function heredoc(lines = ['body { color: red }', '<h1>${TITLE}</h1>', '{{#each posts as p}}x{{/each}}', '# not a comment', '', '  indented', 'EOF ', 'COPY a b', '\\', '${frag}']) {
   const delim = pick(['EOF', 'CSS', 'HTML', 'A', '_x1']);
   const strip = chance(0.35);
-  const body = Array.from({ length: int(4) }, () =>
-    (strip && chance(0.5) ? '\t' : '') + pick(['body { color: red }', '<h1>${TITLE}</h1>', '{{#each posts as p}}x{{/each}}', '# not a comment', '', '  indented', 'EOF ', delim + 'x', 'COPY a b', '\\']),
-  );
+  const body = Array.from({ length: int(4) }, () => (strip && chance(0.5) ? '\t' : '') + (chance(0.1) ? delim + 'x' : pick(lines)));
   const close = chance(0.9) ? (strip && chance(0.5) ? '\t\t' : '') + delim : pick([delim + ' ', ' ' + delim, delim.toLowerCase(), '']);
   return { marker: `<<${strip ? '-' : ''}${delim}`, tail: '\n' + [...body, close].join('\n') };
 }
@@ -218,6 +232,16 @@ function validProgram() {
     lists.push('data');
   }
   if (chance(0.3)) lines.push('IMPORT site FROM ./site');
+  // html fragments (issue #106), used by the inline RENDER bodies below.
+  const frags = [];
+  if (chance(0.4)) {
+    lines.push(pick(['LET frag: html = <b>${TITLE}</b>', 'LET frag: html <<HTML\n<header>${TITLE}</header>\nHTML', 'LET frag: html = <a href="/${item.slug}">${item.title}</a>', 'LET frag: html = ${#each posts as p}${p.title}${/each}']));
+    frags.push('frag');
+  }
+  if (chance(0.2)) {
+    lines.push('IMPORT part FROM ./partials/p.html AS html');
+    frags.push('part');
+  }
   const plugin = chance(0.3);
   if (plugin) lines.push('PLUGIN og FROM ./plugins/og.mjs');
   const tool = chance(0.3);
@@ -238,6 +262,8 @@ function validProgram() {
     () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
     () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
+    () => (frags.length ? `RENDER --escape=html <<HTML TO /f-${int(9)}.html\n\${${pick(frags)}}${pick(['', '<main>${TITLE}</main>', '${' + pick(frags) + '}'])}\nHTML` : 'COPY ./g /g'),
+    () => (frags.length ? `COPY ./x /\${${pick(frags)}}` : 'COPY ./h /h'),
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
@@ -377,6 +403,16 @@ const EDGE = [
   'STAGE s FROM image ghcr.io/a/b:1 AT /srv/www\nEXPORT /', 'STAGE s FROM image\nEXPORT /', 'STAGE s FROM image t:1 AS x\nEXPORT /', 'FROM image Bad:1\nEXPORT /',
   'ARG V=1\nFROM image theme:${V} AS t\nFROM t\nEXPORT /', 'FROM image t:1 AT rel\nEXPORT /', 'FROM image t@sha256:' + 'a'.repeat(64) + ' AT /x/../y\nEXPORT /',
   'STAGE image\nFROM image\nEXPORT /', 'STAGE image\nFROM image AS b\nEXPORT /', 'FROM image ${NOPE}\nEXPORT /',
+  // html fragments (issue #106).
+  'LET a: html = <b>x</b>\nEXPORT /', 'LET a: html <<H\n<i>\nH\nEXPORT /', 'LET a: html = <<-H\n\t<p>\n\tH\nEXPORT /', 'LET a: html\nEXPORT /',
+  'LET a: html <b>\nEXPORT /', 'ARG a: html\nEXPORT /', 'LET a: html = <i> \\\n <b>\nEXPORT /', 'LET a: html = <b> <<X\nfoo\nX\nEXPORT /',
+  'LET a: html <<X\nfoo\nEXPORT /', 'LET a: html = ${a}\nEXPORT /', 'LET a: html = ${B}\nLET B = 1\nEXPORT /', 'ARG T\nLET a: html = ${T.x}\nEXPORT /',
+  'LET a: html = x\nLET b: html = ${#each a as i}${/each}\nEXPORT /', 'STAGE s\nLET a: html = ${s}\nEXPORT /', 'LET a: html = ${#each}\nEXPORT /',
+  'LET a: html <<H\nok\n  ${x y}\nH\nEXPORT /', 'LET a: html = x\nCOPY ./a /${a}\nEXPORT /', 'IMPORT h FROM ./h.html AS html\nEXPORT /${h}',
+  'IMPORT h FROM ./h.html AS html\nRENDER ./t TO /x FOR i IN h\nEXPORT /', 'LET h: html = x\nFEED h BASE https://e.x LINK /a\nEXPORT /',
+  'IMPORT h FROM ./h.html AS html SORT BY x\nEXPORT /', 'LET a = <<EOF\nEXPORT /', 'LET a: htmlx = 1\nEXPORT /', 'LET a:HTML=<i>\nEXPORT /',
+  'ARG T = x\nLET a: html = <b>${T}</b>\nLET b: html = ${a}${item.title}\nRENDER --escape=html <<H TO /i.html\n${b}\nH\nEXPORT /',
+  'LET a: html = x\nLET a = 1\nEXPORT /', 'LET a: html = x\nRENDER ./t TO /${a}.html\nEXPORT /', 'IMPORT h FROM ./h AS html\nCOPY h: /h\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

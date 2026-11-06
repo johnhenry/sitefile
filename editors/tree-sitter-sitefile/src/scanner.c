@@ -11,6 +11,9 @@
 //   exactly NAME (after stripping leading tabs for `<<-`) is body. RENDER
 //   bodies are split around `${` (template tags are parsed by grammar.js) and
 //   `$${` (template_escape); COPY and TRANSFORM bodies are one raw token.
+// - _fragment_text: the text of a `LET name: html = …` line, split the same way
+//   up to the end of the line. Right after `=`, `<<NAME` is a heredoc marker
+//   instead (`LET name: html = <<HTML`).
 // - _resource_name: the `name` of `name:` / `name:/path` in source position.
 
 #include "tree_sitter/alloc.h"
@@ -35,6 +38,7 @@ enum TokenType {
   HEREDOC_END,
   RESOURCE_NAME,
   BLANK_LINES,
+  FRAGMENT_TEXT,
   ERROR_SENTINEL,
 };
 
@@ -184,6 +188,81 @@ static bool scan_body(Scanner *s, TSLexer *lexer, const bool *valid, bool templa
   }
 }
 
+static void after_line_token(Scanner *s);
+
+/**
+ * Template text of a one-line html fragment, up to `${`, `$${` or the end of the
+ * line (which stays for _newline). `has_text`: characters were already consumed.
+ */
+static bool scan_fragment(TSLexer *lexer, bool has_text) {
+  for (;;) {
+    if (at_line_end(lexer)) {
+      lexer->mark_end(lexer);
+      if (!has_text) return false;
+      lexer->result_symbol = FRAGMENT_TEXT;
+      return true;
+    }
+    if (lexer->lookahead == '$') {
+      lexer->mark_end(lexer);
+      advance(lexer);
+      if (lexer->lookahead == '{') {
+        if (!has_text) return false;
+        lexer->result_symbol = FRAGMENT_TEXT;
+        return true;
+      }
+      if (lexer->lookahead == '$') {
+        advance(lexer);
+        if (lexer->lookahead == '{') {
+          if (has_text) {
+            lexer->result_symbol = FRAGMENT_TEXT;
+            return true;
+          }
+          advance(lexer);
+          lexer->mark_end(lexer);
+          lexer->result_symbol = TEMPLATE_ESCAPE;
+          return true;
+        }
+      }
+      has_text = true;
+      continue;
+    }
+    advance(lexer);
+    has_text = true;
+  }
+}
+
+/**
+ * After `<` (already consumed) where a heredoc marker may start: `<<NAME` /
+ * `<<-NAME` followed by whitespace or the end of the line. Otherwise, where a
+ * fragment's text may start (`LET name: html = <b>`), what was read is text.
+ */
+static bool scan_marker(Scanner *s, TSLexer *lexer, bool fragment) {
+  if (lexer->lookahead != '<') return fragment && scan_fragment(lexer, true);
+  advance(lexer);
+  bool strip = false;
+  if (lexer->lookahead == '-') {
+    advance(lexer);
+    strip = true;
+  }
+  lexer->mark_end(lexer);
+  if (!is_ident_start(lexer->lookahead)) return fragment && scan_fragment(lexer, true);
+  uint8_t length = 0;
+  char delimiter[MAX_DELIMITER];
+  while (is_ident_char(lexer->lookahead)) {
+    if (length == MAX_DELIMITER) return fragment && scan_fragment(lexer, true);
+    delimiter[length++] = (char)lexer->lookahead;
+    advance(lexer);
+  }
+  if (!(is_blank(lexer->lookahead) || at_line_end(lexer) || lexer->lookahead == '\\')) return fragment && scan_fragment(lexer, true);
+  s->mode = MODE_DELIMITER;
+  s->strip = strip;
+  s->delimiter_length = length;
+  memcpy(s->delimiter, delimiter, length);
+  after_line_token(s);
+  lexer->result_symbol = strip ? HEREDOC_MARKER_STRIP : HEREDOC_MARKER;
+  return true;
+}
+
 static void after_line_token(Scanner *s) {
   s->continuing = false;
   s->comment_pending = false;
@@ -209,6 +288,23 @@ bool tree_sitter_sitefile_external_scanner_scan(void *payload, TSLexer *lexer, c
   }
 
   bool line_start = lexer->get_column(lexer) == 0;
+
+  // A one-line html fragment: text up to `${` or the end of the line (leading
+  // blanks included after a tag; skipped after `=`, where a heredoc marker may
+  // come instead).
+  if (valid[FRAGMENT_TEXT] && !recovery && s->mode == MODE_NONE) {
+    bool after_eq = valid[HEREDOC_MARKER] || valid[HEREDOC_MARKER_STRIP];
+    if (after_eq) {
+      while (is_blank(lexer->lookahead)) skip(lexer);
+    }
+    if (!at_line_end(lexer)) {
+      if (after_eq && lexer->lookahead == '<') {
+        advance(lexer);
+        return scan_marker(s, lexer, true);
+      }
+      return scan_fragment(lexer, false);
+    }
+  }
 
   // The newline after a comment line inside a continuation does not end the
   // instruction.
@@ -300,30 +396,7 @@ bool tree_sitter_sitefile_external_scanner_scan(void *payload, TSLexer *lexer, c
 
   if (lexer->lookahead == '<' && (valid[HEREDOC_MARKER] || valid[HEREDOC_MARKER_STRIP])) {
     advance(lexer);
-    if (lexer->lookahead != '<') return false;
-    advance(lexer);
-    bool strip = false;
-    if (lexer->lookahead == '-') {
-      advance(lexer);
-      strip = true;
-    }
-    lexer->mark_end(lexer);
-    if (!is_ident_start(lexer->lookahead)) return false;
-    uint8_t length = 0;
-    char delimiter[MAX_DELIMITER];
-    while (is_ident_char(lexer->lookahead)) {
-      if (length == MAX_DELIMITER) return false;
-      delimiter[length++] = (char)lexer->lookahead;
-      advance(lexer);
-    }
-    if (!(is_blank(lexer->lookahead) || at_line_end(lexer) || lexer->lookahead == '\\')) return false;
-    s->mode = MODE_DELIMITER;
-    s->strip = strip;
-    s->delimiter_length = length;
-    memcpy(s->delimiter, delimiter, length);
-    after_line_token(s);
-    lexer->result_symbol = strip ? HEREDOC_MARKER_STRIP : HEREDOC_MARKER;
-    return true;
+    return scan_marker(s, lexer, false);
   }
 
   if (valid[RESOURCE_NAME] && is_ident_start(lexer->lookahead)) {

@@ -1,0 +1,7 @@
+# An imported partial that reaches itself through another fragment.
+IMPORT outer FROM ./outer.html AS html
+LET inner: html = <div>${outer}</div>
+RENDER <<HTML TO /index.html
+${inner}
+HTML
+EXPORT /

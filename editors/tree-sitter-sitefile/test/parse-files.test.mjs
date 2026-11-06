@@ -28,8 +28,8 @@ const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-syntax/Sitefile',
 ];
 
-/** An inline RENDER template with an invalid tag (E_TEMPLATE in src/render.ts). */
-const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-template/Sitefile'];
+/** An inline RENDER template or html LET with an invalid tag (E_TEMPLATE in src/render.ts). */
+const EXPECTED_TEMPLATE_ERRORS = ['conformance/cases/err-fragment-template/Sitefile', 'conformance/cases/err-template/Sitefile'];
 
 /** E_SYNTAX files the grammar is lenient about (the parser checks a value word). */
 const LENIENT = new Set([
@@ -102,9 +102,12 @@ test('the E_TEMPLATE list matches the template parser', { skip: !existsSync(buil
       continue;
     }
     for (const i of instructions) {
-      if (i.kind !== 'RENDER' || i.template?.kind !== 'inline') continue;
+      // RENDER heredoc bodies and html fragments (`LET name: html`) are templates.
+      const body = i.kind === 'RENDER' ? i.template : i.kind === 'LET' && i.type === 'html' ? i.body : undefined;
+      if (body?.kind !== 'inline' && body?.kind !== 'line') continue;
       try {
-        parseRenderTemplate(i.template.text, f, i.template.bodyLine);
+        if (body.kind === 'line') parseRenderTemplate(body.text, f, body.span.line, body.span.column);
+        else parseRenderTemplate(body.text, f, body.bodyLine);
       } catch (err) {
         if (err?.code === 'E_TEMPLATE') template.push(rel(f));
       }

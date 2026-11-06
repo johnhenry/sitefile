@@ -1,0 +1,4 @@
+# Template syntax is checked at the LET line (validate reports it too).
+ARG TITLE = "x"
+LET header: html = <h1>${TITLE}</h1>${#if}
+EXPORT /

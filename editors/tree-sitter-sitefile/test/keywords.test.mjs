@@ -102,14 +102,18 @@ test('flags per instruction match parseFlags calls', () => {
   for (const f of ['from', 'escape']) assert.ok(highlights.includes(`"${f}"`), `--${f} value highlighting`);
 });
 
-test('heredocs are accepted on exactly COPY, RENDER and TRANSFORM', () => {
+test('heredocs are accepted on exactly COPY, RENDER, TRANSFORM and html LET', () => {
   const heredoc = constList('HEREDOC_INSTRUCTIONS', scannerTs);
   assert.deepEqual([...heredoc].sort(), [...KEYWORDS.heredocInstructions].sort());
+  // `LET name: html` (scanner.ts isHtmlLet) takes a heredoc too.
+  assert.ok(KEYWORDS.heredocLet && /HEREDOC_INSTRUCTIONS\.has\(keyword\) \|\| isHtmlLet\(text\)/.test(scannerTs));
+  assert.equal(/toLowerCase\(\) !== '(\w+)'/.exec(scannerTs)?.[1], KEYWORDS.fragmentType);
+  keywordToken(KEYWORDS.fragmentType.toUpperCase());
   const withHeredoc = Object.entries(grammar.rules)
     .filter(([name, rule]) => name.endsWith('_instruction') && JSON.stringify(rule).includes('"heredoc_start"'))
     .map(([name]) => name.replace('_instruction', '').toUpperCase());
-  assert.deepEqual(withHeredoc.sort(), [...heredoc].sort());
-  // Only RENDER bodies are templates.
-  assert.ok(JSON.stringify(grammar.rules.render_instruction).includes('_template_heredoc'));
+  assert.deepEqual(withHeredoc.sort(), [...heredoc, 'LET'].sort());
+  // RENDER and html LET bodies are templates.
+  for (const k of ['render', 'let']) assert.ok(JSON.stringify(grammar.rules[`${k}_instruction`]).includes('_template_heredoc'), k);
   for (const k of ['copy', 'transform']) assert.ok(JSON.stringify(grammar.rules[`${k}_instruction`]).includes('_raw_heredoc'), k);
 });
