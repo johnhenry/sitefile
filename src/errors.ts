@@ -41,6 +41,8 @@ export type ErrorCode =
   | 'E_INTEGRITY'
   | 'E_LOCK_MISMATCH'
   | 'E_LOCK_MISSING'
+  /** A remote input (IMPORT URL or BASE image) has no pin, under --strict-pins. */
+  | 'E_UNPINNED'
   // archives
   | 'E_ARCHIVE'
   | 'E_ARCHIVE_UNSAFE'

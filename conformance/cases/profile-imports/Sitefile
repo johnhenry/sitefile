@@ -1,0 +1,17 @@
+IMPORT site FROM ./src/site.json AS json
+IMPORT docs FROM ./src/docs AS markdown SORT BY date DESC
+IMPORT rows FROM ./src/rows.csv AS csv
+IMPORT raw FROM ./src/docs
+FROM scratch AS assets
+COPY raw:/ /docs/
+FROM scratch
+COPY --from=assets /docs/ /src/
+RENDER <<T TO /index.html
+<h1>${site.title}</h1>${#each docs as d}<p>${d.title}</p>${/each}${#each rows as r}${r.a}${/each}
+T
+RENDER <<T TO /d/${d.slug}.html FOR d IN docs
+${d.title}
+T
+SITEMAP https://example.com TO /sitemap.xml
+FEED docs BASE https://example.com LINK /d/${item.slug}.html TITLE "Docs" TO /feed.xml
+EXPORT /

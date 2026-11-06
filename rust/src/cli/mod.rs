@@ -12,13 +12,14 @@ pub mod vendor;
 
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
-use crate::executor::{build, build_to_directory, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use crate::executor::{build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
 use crate::export::attest::AttestRequest;
 use crate::export::formats::{default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
 use crate::language::ast::{ExportFormat, OciCompression};
 use crate::refs::{parse_local_ref, ref_key};
 use crate::resources::types::FetchPolicy;
+use crate::profile::Profiler;
 use crate::store::{short_id, Store};
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
 use common::{err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command};
@@ -124,6 +125,8 @@ Options:
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
+      --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
+                               BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
                                to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
@@ -136,6 +139,8 @@ Options:
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --profile <file>         write a timing trace of the build (Chrome trace event JSON:
+                               chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
   -v, --version                show the version
 {EXTRA_HELP}",
@@ -171,6 +176,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("force"),
     flag("frozen-lockfile"),
     flag("update-lock"),
+    flag("strict-pins"),
     flag("no-lockfile"),
     string("vendor-dir"),
     flag("allow-http"),
@@ -181,6 +187,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("json"),
     flag("dot"),
     flag("watch"),
+    string("profile"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
 ];
@@ -360,6 +367,9 @@ fn run_main(argv: &[String]) -> i32 {
     if o.flag("frozen-lockfile") && o.flag("update-lock") {
         return usage_error("--frozen-lockfile and --update-lock conflict");
     }
+    if o.flag("strict-pins") && o.flag("update-lock") {
+        return usage_error("--strict-pins and --update-lock conflict");
+    }
     let (cache_from, cache_to) = (o.strs("cache-from"), o.strs("cache-to"));
     if !cache_from.is_empty() || !cache_to.is_empty() {
         if command != "build" {
@@ -385,23 +395,69 @@ fn run_main(argv: &[String]) -> i32 {
         servers::catch_signals();
         let arg_files = o.strs("build-arg-file");
         let opts = crate::watch::WatchOptions { context: &context, sitefile: o.str("file").filter(|s| !s.is_empty()), arg_files: &arg_files };
+        if o.str("profile") == Some("") {
+            return usage_error("--profile expects a file path");
+        }
+        let memo = crate::memo::watch_memo();
         let mut build = || {
             let mut wrote = Vec::new();
-            let code = run_build_command(&command, &context, None, &o, &mut wrote).unwrap_or_else(|e| report(&e));
-            cache::evict_after_build();
+            let code = run_profiled(&command, &context, None, &o, &mut wrote, memo.clone());
             crate::watch::BuildOutcome { code, wrote }
         };
         return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
     }
-    let code = match run_build_command(&command, &context, why_path.as_deref(), &o, &mut Vec::new()) {
+    if o.str("profile") == Some("") {
+        return usage_error("--profile expects a file path");
+    }
+    run_profiled(&command, &context, why_path.as_deref(), &o, &mut Vec::new(), None)
+}
+
+/// One build/validate/inspect/graph/why run with its cache eviction and, with `--profile`, its trace.
+/// `memo`: results carried between the builds of a watch session (incremental rebuilds).
+fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>, memo: Option<crate::memo::SharedMemo>) -> i32 {
+    let profile = o.str("profile").map(str::to_string);
+    let profiler = profile.as_ref().map(|_| Profiler::new(command));
+    if let Some(p) = &profile {
+        wrote.push(p.clone());
+    }
+    let span = profiler.as_ref().map(|p| p.begin(command, "command", Vec::new()));
+    let mut failed = false;
+    let code = match run_build_command(command, context, why_path, o, wrote, profiler.clone(), memo) {
         Ok(code) => code,
-        Err(e) => report(&e),
+        Err(e) => {
+            failed = true;
+            report(&e)
+        }
     };
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
     if command == "build" || command == "inspect" || command == "why" {
         cache::evict_after_build();
     }
+    if let Some(s) = span {
+        s.end(Vec::new());
+    }
+    if let (Some(p), Some(path)) = (&profiler, &profile) {
+        // A failed build already reported its error; otherwise this is the command's error.
+        if std::fs::write(path, p.to_json()).is_err() && !failed {
+            err(&format!("error[E_EXPORT]: cannot write the --profile file '{path}'\n"));
+            return 1;
+        }
+    }
     code
+}
+
+/// `plan_build`, traced as `parse` with `--profile` (validate, graph).
+fn profiled_plan(options: &BuildOptions) -> Result<crate::planner::Plan> {
+    let span = options.profiler.as_ref().map(|p| p.begin("parse", "build", Vec::new()));
+    let p = plan_build(options)?;
+    if let Some(s) = span {
+        let mut args = vec![("imports", json!(p.imports.len())), ("stages", json!(p.stages.len()))];
+        if let Some(t) = &p.target {
+            args.push(("target", json!(t)));
+        }
+        s.end(args);
+    }
+    Ok(p)
 }
 
 /// `--cache-from` / `--cache-to`: the registry cache for this build, if any (E_USAGE for a bad reference).
@@ -431,7 +487,16 @@ fn registry_cache(o: &args::Parsed) -> Result<Option<Arc<crate::registry_cache::
 
 /// One build/validate/inspect/graph/why run (`why_path`: the path `why` explains); `wrote` receives the export
 /// destination (for --watch).
-fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>) -> Result<i32> {
+#[allow(clippy::too_many_arguments)]
+fn run_build_command(
+    command: &str,
+    context: &str,
+    why_path: Option<&str>,
+    o: &args::Parsed,
+    wrote: &mut Vec<String>,
+    profiler: Option<Arc<Profiler>>,
+    memo: Option<crate::memo::SharedMemo>,
+) -> Result<i32> {
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
@@ -504,8 +569,14 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
     options.insecure_registries = registry::insecure_registries_from_env(&o.strs("insecure-registry"));
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
+    options.strict_pins = o.flag("strict-pins");
     let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     options.on_warning = Some(warning);
+    options.memo = memo;
+    if let Some(p) = profiler {
+        options.also_writes = o.str("profile").map(str::to_string).into_iter().collect();
+        options.profiler = Some(p);
+    }
 
     match command {
         "build" => {
@@ -591,9 +662,12 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
             Ok(0)
         }
         "validate" => {
-            let p = plan_build(&options)?;
+            let p = profiled_plan(&options)?;
             for m in &p.warnings {
                 err(&format!("warning: {m}\n"));
+            }
+            if options.strict_pins {
+                check_plan_pins(&options, &p)?;
             }
             if o.flag("json") {
                 out(&(pretty_json(&p.validate_json()) + "\n"));
@@ -632,9 +706,12 @@ fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &a
             Ok(0)
         }
         "graph" => {
-            let p = plan_build(&options)?;
+            let p = profiled_plan(&options)?;
             for m in &p.warnings {
                 err(&format!("warning: {m}\n"));
+            }
+            if options.strict_pins {
+                check_plan_pins(&options, &p)?;
             }
             let g = crate::explain::plan_graph(&p);
             out(&if o.flag("json") {

@@ -13,7 +13,7 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::export::oci::{BaseImage, Descriptor};
-use crate::refs::{parse_ref, with_default_registry};
+use crate::refs::{parse_ref, with_default_registry, ImageRef};
 use crate::registry::{make_client, process_env, pull_image, resolve_digest, Env, PullImageOptions, RegistryOptions};
 use crate::resources::local::LocalContext;
 use crate::resources::lockfile::{ImageLockEntry, Lockfile};
@@ -50,10 +50,16 @@ impl<'a> ResolveBaseOptions<'a> {
 /// Resolve `input` to a base image whose blobs are in the local store. `lock`
 /// is the build's lockfile (`None` with `--no-lockfile`); a fresh tag resolution
 /// is recorded in it (the caller saves it).
-pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<BaseImage> {
-    let r = parse_ref(input)
-        .map(|r| with_default_registry(&r))
-        .map_err(|e| SitefileError::new(e.code, format!("BASE: {}", e.detail), o.span.clone()))?;
+/// A parsed BASE reference (a bare name means Docker Hub), how it is shown, and its `Sitefile.lock` `images` key.
+pub struct BaseRef {
+    pub r: ImageRef,
+    pub registry: String,
+    pub display: String,
+    pub lock_key: String,
+}
+
+pub fn base_ref(input: &str, span: Option<&SourceSpan>) -> Result<BaseRef> {
+    let r = parse_ref(input).map(|r| with_default_registry(&r)).map_err(|e| SitefileError::new(e.code, format!("BASE: {}", e.detail), span.cloned()))?;
     let registry = r.registry.clone().unwrap_or_default();
     let tag = r.tag.clone().unwrap_or_else(|| "latest".into());
     let display = if r.tag.is_some() || r.digest.is_none() {
@@ -62,6 +68,11 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
         format!("{registry}/{}", r.name)
     };
     let lock_key = format!("{registry}/{}:{tag}", r.name);
+    Ok(BaseRef { r, registry, display, lock_key })
+}
+
+pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<BaseImage> {
+    let BaseRef { r, registry, display, lock_key } = base_ref(input, o.span.as_ref())?;
     let env = o.env.clone().unwrap_or_else(process_env);
     let options = RegistryOptions {
         insecure_registries: insecure_registries_from_env(&o.registry.insecure_registries, &env),

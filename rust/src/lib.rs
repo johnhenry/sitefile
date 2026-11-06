@@ -46,6 +46,8 @@ pub mod cli;
 pub mod executor;
 pub mod explain;
 pub mod plugins;
+pub mod memo;
+pub mod profile;
 pub mod vendor;
 pub mod watch;
 

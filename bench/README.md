@@ -71,6 +71,44 @@ use the same features).
   warm cache) on the same machine; before the change the same run gave ~110 ms
   for Rust, in a noisier session than the 62 ms originally reported.
 
+## Incremental rebuilds (watch mode)
+
+`node bench/incremental.mjs [--runs 3] [--only text]` starts `build --watch --profile` on a copy of each generated
+site, makes one edit several times, and reads each rebuild's time from the trace, with the memo (default) and
+without it (`SITEFILE_NO_INCREMENTAL=1`). "Build" is the rebuild without the export (parse, imports, operations: what
+the memo can skip); "Export" writes the whole output and is the same in both modes. Each rebuild's output is checked
+against a clean build. Raw data: `results/incremental.json`.
+
+Apple M2, median of 3, measured while other builds were running on the machine, so single rows are noisy (the Rust
+blog-1000 "full" rows especially); the pattern held across runs:
+
+| Site | Edit | Impl | Build, full | Build, incremental | Speedup | Export | Rebuild, full | Rebuild, incremental | Speedup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| blog-1000 | one post body | typescript | 2308 ms | 871 ms | 2.7× | 770 ms | 4084 ms | 1376 ms | 3.0× |
+| blog-1000 | one post body | rust | 639 ms | 630 ms | 1.0× | 406 ms | 1041 ms | 1071 ms | 1.0× |
+| blog-1000 | index template | typescript | 2708 ms | 212 ms | 12.8× | 1511 ms | 5033 ms | 1027 ms | 4.9× |
+| blog-1000 | index template | rust | 805 ms | 186 ms | 4.3× | 1144 ms | 1860 ms | 1414 ms | 1.3× |
+| blog-1000 | a file no step reads | typescript | 2805 ms | 299 ms | 9.4× | 1679 ms | 4410 ms | 1921 ms | 2.3× |
+| blog-1000 | a file no step reads | rust | 4723 ms | 124 ms | 38.0× | 1092 ms | 6300 ms | 1014 ms | 6.2× |
+| blog-5000 | one post body | typescript | 3078 ms | 2651 ms | 1.2× | 11044 ms | 14219 ms | 14593 ms | 1.0× |
+| blog-5000 | one post body | rust | 2653 ms | 1336 ms | 2.0× | 6683 ms | 10986 ms | 7932 ms | 1.4× |
+| static-5000 | one static file | typescript | 888 ms | 1313 ms | 0.7× | 3675 ms | 4650 ms | 5358 ms | 0.9× |
+| static-5000 | one static file | rust | 494 ms | 557 ms | 0.9× | 1322 ms | 2371 ms | 1826 ms | 1.3× |
+| csv-2000 | one CSV row | typescript | 40 ms | 45 ms | 0.9× | 911 ms | 933 ms | 1129 ms | 0.8× |
+| csv-2000 | one CSV row | rust | 41 ms | 41 ms | 1.0× | 792 ms | 823 ms | 839 ms | 1.0× |
+| archive-2000 | a file no step reads | typescript | 158 ms | 20 ms | 7.7× | 1842 ms | 2106 ms | 1835 ms | 1.1× |
+| archive-2000 | a file no step reads | rust | 49 ms | 7 ms | 6.8× | 713 ms | 874 ms | 630 ms | 1.4× |
+
+- **The build phase gets much faster when the expensive steps are skipped**: an edit that no step reads, or a
+  template other pages do not use, skips Markdown parsing and the 1000-page RENDER (4–38× on the build phase). Editing
+  one post re-parses one document; its pages still all re-render on blog-1000, whose post template lists every post
+  (a nav), so every page depends on every title. blog-5000 has no nav: only the edited post's page re-renders.
+- **The export now dominates.** It writes every file of the output to a temporary directory and swaps it in
+  atomically, so for 2000–5000 small files (csv-2000, static-5000, blog-5000) it is 70–90% of a rebuild and the
+  overall speedup is small. Cheap templates (csv-2000: 40 ms to render 2000 pages) gain nothing; hashing each element
+  costs about what rendering it does. Every input is still read and hashed, so static-5000's COPY does not get
+  faster. Writing only the changed files while keeping the atomic swap is the next step (follow-up issue).
+
 ## What profiling changed
 
 The first Rust measurements were *slower* than TypeScript on large sites

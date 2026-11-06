@@ -1,0 +1,9 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/site.oci.tar"],
+    ["build", "${CTX}", "-o", "${OUT}/again.oci.tar", "--strict-pins", "--frozen-lockfile"]
+  ],
+  "outputs": [["site.oci.tar", "oci"], ["again.oci.tar", "oci"]],
+  "lock": true
+}
