@@ -1,0 +1,30 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--allow-private-network"
+    ],
+    [
+      "inspect",
+      "${CTX}",
+      "--allow-private-network"
+    ],
+    [
+      "validate",
+      "${CTX}",
+      "--json"
+    ]
+  ],
+  "outputs": [
+    [
+      "dist",
+      "tree"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

@@ -346,7 +346,7 @@
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Hh][Tt][Tt][Pp][Ss]?:\\/\\/[^\\s$\\\\]*"
+        "value": "([Gg][Ii][Tt]\\+)?[Hh][Tt][Tt][Pp][Ss]?:\\/\\/[^\\s$\\\\]*"
       }
     },
     "_word_start": {

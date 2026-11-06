@@ -38,6 +38,7 @@ export async function startServers(root, dir) {
   const { startMockRegistry } = await lib('test/helpers/mock-registry.js');
   const { writeTar } = await lib('src/archive-writers.js');
   const { makeFile, Tree } = await lib('src/tree.js');
+  const gitServer = await lib('test/helpers/git-server.js');
   if (!opensslAvailable()) throw new Error('openssl not found on PATH; the network cases need it to generate a throwaway CA');
 
   const pki = createTestPki();
@@ -53,10 +54,31 @@ export async function startServers(root, dir) {
       writeTar(Tree.fromFiles([['/docs/a.txt', makeFile(enc('archive a\n'), 'conformance')], ['/docs/sub/b.txt', makeFile(enc('archive b\n'), 'conformance')]]), { epoch: 0 }),
     );
 
+    // Git smart HTTP (protocol v2) repositories for the net-git-* cases (test/helpers/git-server.ts).
+    const repo = new gitServer.MemRepo();
+    const shared = 'line shared by both versions\n'.repeat(200);
+    const v1 = repo.commit({
+      'Sitefile': 'FROM scratch\nCOPY ./site/ /\nEXPORT /\n',
+      'site/index.html': '<h1>v1</h1>\n',
+      'site/run.sh': { data: '#!/bin/sh\n', mode: '100755' },
+      'site/home.html': { data: 'index.html', mode: '120000' },
+      'docs/a.md': '---\ntitle: A\n---\n# A\n',
+      'docs/b.md': '---\ntitle: B\n---\n# B\n',
+      'docs/big.txt': shared + 'one\n',
+      'docs/big2.txt': shared + 'two\n',
+      'README.md': 'readme v1\n',
+    });
+    repo.tag('v1', v1);
+    const v2 = repo.commit({ 'Sitefile': 'FROM scratch\nCOPY ./site/ /\nEXPORT /\n', 'site/index.html': '<h1>v2</h1>\n', 'README.md': 'readme v2\n' });
+    const bad = new gitServer.MemRepo();
+    bad.commit({ 'ok.txt': 'ok\n', 'mod': { gitlink: '1'.repeat(40) }, 'esc/link': { data: '../../outside', mode: '120000' } });
+    const gitRepos = new Map([['/repo.git', repo], ['/bad.git', bad], ['/dumb.git', repo]]);
+
     let base = '';
     server = https.createServer({ cert, key }, (req, res) => {
       const url = new URL(req.url ?? '/', base);
       const p = url.pathname;
+      if (gitServer.handleGit(req, res, url, { repos: gitRepos })) return;
       const redirect = (status, location) => {
         res.writeHead(status, { location });
         res.end();
@@ -91,7 +113,7 @@ export async function startServers(root, dir) {
     registry.seedImage('conf/base', '1.5', { layers: [{ '/etc/motd': 'base image 1.5\n' }], config: { Cmd: ['/bin/serve'] } });
 
     return {
-      vars: { HTTPS: base, REGISTRY: registry.host },
+      vars: { HTTPS: base, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2 },
       env: { NODE_EXTRA_CA_CERTS: caFile },
       info: { tarIntegrity: sha(tar), baseDigest: seeded.manifestDigest },
       /** sha256 of the manifest the mock registry holds under `repo:tag` (or `repo@digest`), or null. */

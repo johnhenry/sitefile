@@ -195,6 +195,11 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
   `--strict-pins` refuses any remote import or BASE image that is not pinned
   (`INTEGRITY`, `@sha256:` or a lockfile entry), for reproducible CI builds.
+- `IMPORT … FROM git+https://host/repo.git#ref:path` imports from Git without running
+  `git`: protocol v2 over the same HTTPS client and policy, every object's SHA-1 checked,
+  the commit recorded in `Sitefile.lock`, symlinks kept inside the tree, submodules
+  refused; `sitefile build https://host/repo.git#ref:dir` builds a repository
+  ([docs/LANGUAGE.md](docs/LANGUAGE.md#git-sources-githttps)).
 - `sitefile vendor` stores every remote import (and the BASE image's blobs) under
   `vendor/sitefile/` by content digest; builds then read them from there, verified,
   with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).

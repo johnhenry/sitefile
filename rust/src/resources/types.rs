@@ -11,6 +11,8 @@ pub struct Provenance {
     pub resolved_url: Option<String>,
     /// `sha256:<hex>`: file bytes, tree digest, or the raw bytes a value was parsed from.
     pub digest: String,
+    /// Git imports: the commit the content was read from (40 hex).
+    pub git_commit: Option<String>,
 }
 
 /// The data format of a [`Resource::Value`].

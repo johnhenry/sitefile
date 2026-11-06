@@ -1,0 +1,4 @@
+# A ref the server does not have.
+FROM scratch
+IMPORT x FROM git+${HTTPS}/repo.git#nope
+EXPORT /

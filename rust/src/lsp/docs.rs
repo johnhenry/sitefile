@@ -21,7 +21,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     (
         "IMPORT",
         "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]]",
-        "Names a resource: a context-relative path or an `https://` URL. Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
+        "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
         "COPY",
@@ -81,7 +81,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FROM", "SCRATCH", "`scratch` (the bare word) is an empty tree. `\"scratch\"` is a path."),
     ("STAGE", "FROM", "`FROM base`: `scratch`, an earlier stage, or a context directory. Omitted: `scratch`."),
     ("STAGE", "SCRATCH", "`scratch` (the bare word) is an empty tree."),
-    ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path or an `https://` URL (`http://` only with `--allow-http`)."),
+    ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path, an `https://` URL (`http://` only with `--allow-http`), or `git+https://host/repo.git#ref[:path]` (ref: a branch, tag or 40-hex commit)."),
     ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn or tree. `AS tree` on a file extracts an archive."),
     ("IMPORT", "INTEGRITY", "`INTEGRITY sha256:<64 lowercase hex>`: the content must match; remote pins are recorded in Sitefile.lock."),
     ("IMPORT", "SORT", "`SORT BY key [ASC|DESC]` orders a list import (markdown, json, yaml, csv) by a field; numbers and numeric strings compare numerically."),

@@ -15,6 +15,9 @@ import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk 
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
+import { fetchGitCommit, pinnedGitUrl, selectGitPath, type GitLocation, type GitSelection } from './resources/git.js';
+import { extractArchive } from './resources/archive.js';
+import { writeTar } from './archive-writers.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
 import { findVendorDir, Vendor } from './resources/vendor.js';
@@ -40,6 +43,8 @@ export interface BuildOptions {
   readonly contextDir: string;
   /** Sitefile path. Default: `<contextDir>/Sitefile`. */
   readonly sitefile?: string;
+  /** How messages name the Sitefile (default: its path relative to the working directory). */
+  readonly label?: string;
   readonly buildArgs?: Readonly<Record<string, string>>;
   /** `--target <stage>`: build up to this named stage and export its whole tree (planner `targetPlan`). */
   readonly target?: string;
@@ -158,15 +163,16 @@ interface Loaded {
 }
 
 /** Read, parse and validate a Sitefile. */
-export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'sitefile'>): Promise<Loaded> {
+export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'label'>): Promise<Loaded> {
   const sitefilePath = path.resolve(options.sitefile ?? path.join(options.contextDir, 'Sitefile'));
   let source: string;
   try {
     source = await readFile(sitefilePath, 'utf8');
   } catch (e) {
-    throw new SitefileError('E_NOT_FOUND', `cannot read Sitefile '${sitefilePath}'`, undefined, { cause: e });
+    // A Git context names its Sitefile by the label (the checkout is a temporary directory).
+    throw new SitefileError('E_NOT_FOUND', `cannot read Sitefile '${options.label ?? sitefilePath}'`, undefined, { cause: e });
   }
-  const label = path.relative(process.cwd(), sitefilePath) || path.basename(sitefilePath);
+  const label = options.label ?? (path.relative(process.cwd(), sitefilePath) || path.basename(sitefilePath));
   return { program: parseProgram(source, label), sitefilePath, label };
 }
 
@@ -382,7 +388,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
 
 /** How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name, and the BASE. */
 export interface Pins {
-  readonly imports: Readonly<Record<string, 'integrity' | 'lockfile'>>;
+  readonly imports: Readonly<Record<string, 'integrity' | 'lockfile' | 'commit'>>;
   readonly base?: 'digest' | 'lockfile';
 }
 
@@ -393,8 +399,18 @@ export interface Pins {
  * source order, before anything is fetched; the first unpinned input fails with E_UNPINNED.
  */
 export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string | undefined): Pins {
-  const imports: Record<string, 'integrity' | 'lockfile'> = {};
+  const imports: Record<string, 'integrity' | 'lockfile' | 'commit'> = {};
   for (const spec of p.imports) {
+    if (spec.location.kind === 'git') {
+      if (spec.location.commit !== undefined) imports[spec.name] = 'commit';
+      else if (lock?.getGit(spec.location.url)) imports[spec.name] = 'lockfile';
+      if (imports[spec.name]) continue;
+      throw new SitefileError(
+        'E_UNPINNED',
+        `IMPORT ${spec.name}: '${spec.location.url}' is not pinned (--strict-pins); name a commit (#<40 hex>[:path]), or record it in Sitefile.lock with a build without --strict-pins`,
+        spec.span,
+      );
+    }
     if (spec.location.kind !== 'remote') continue;
     if (spec.integrity) imports[spec.name] = 'integrity';
     else if (lock?.get(spec.location.url)) imports[spec.name] = 'lockfile';
@@ -509,7 +525,7 @@ async function exportBuild(
 export async function imageAttestations(
   result: BuildResult,
   img: Pick<OciImage, 'manifestDigest' | 'manifestBytes' | 'configBytes' | 'root'>,
-  options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'buildArgs' | 'platform'>,
+  options: Pick<BuildOptions, 'contextDir' | 'sitefile' | 'label' | 'buildArgs' | 'platform'>,
   request: AttestRequest,
 ): Promise<Referrer[]> {
   if (!request.provenance && !request.sbom) return [];
@@ -589,6 +605,35 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
     return { key, res: await convertBytes(key, () => bytesToResource(file.bytes, as, { uri: spec.uri, basename: file.basename, mode: file.mode }, spec.span, env.archiveLimits)) };
   }
 
+  if (spec.location.kind === 'git') {
+    const loc = spec.location;
+    const { commit, selection } = await fetchGitImport(spec, loc, env);
+    const resolvedUrl = pinnedGitUrl(loc, commit);
+    if (selection.kind === 'file') {
+      const digest = sha256(selection.bytes);
+      const key = keyOf(`${commit}\0${digest}\0${selection.mode}`);
+      const res = await convertBytes(key, () =>
+        bytesToResource(selection.bytes, spec.as ?? 'file', { uri: spec.uri, resolvedUrl, basename: selection.basename, mode: selection.mode }, spec.span, env.archiveLimits),
+      );
+      return { key, res: { ...res, provenance: { ...res.provenance, gitCommit: commit } } as Resource };
+    }
+    const tree = Tree.fromFiles(selection.files.map(([p, f]) => [p, makeFile(f.bytes, origin, f.mode)] as const));
+    const provenance = { uri: spec.uri, resolvedUrl, digest: tree.digest(), gitCommit: commit };
+    const key = keyOf(`${commit}\0${provenance.digest}`);
+    const base = spec.uri.replace(/\/+$/, '');
+    if (spec.as === 'markdown') {
+      return { key, res: convert(key, (docs) => ({ kind: 'value', format: 'markdown', value: markdownCollection(tree, base, spec.span, docs), provenance })) };
+    }
+    if (spec.as === 'json' || spec.as === 'yaml') {
+      const format = spec.as;
+      return { key, res: convert(key, (docs) => ({ kind: 'value', format, value: dataCollection(tree, format, base, spec.span, docs), provenance })) };
+    }
+    if (spec.as && spec.as !== 'tree') {
+      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: '${spec.uri}' is a directory and cannot be imported AS ${spec.as}`, spec.span);
+    }
+    return { key, res: { kind: 'tree', tree, provenance } };
+  }
+
   const url = spec.location.url;
   const as = spec.as ?? 'file';
   const { bytes, finalUrl } = await fetchRemoteImport(spec, url, env);
@@ -607,6 +652,8 @@ export interface RemoteEnv {
   readonly update: boolean;
   /** Vendored copies (`sitefile vendor`), preferred over the network. */
   readonly vendor?: Vendor | undefined;
+  /** Limits for Git trees (file count, total size; default DEFAULT_ARCHIVE_LIMITS). */
+  readonly archiveLimits?: ArchiveLimits;
 }
 
 /**
@@ -640,6 +687,49 @@ export async function fetchRemoteImport(spec: ImportSpec, url: string, env: Remo
   }
   env.lock?.record(url, { integrity: digest, size: bytes.byteLength, resolved: finalUrl });
   return { bytes, finalUrl };
+}
+
+/** The canonical bytes `sitefile vendor` stores for a Git selection: a file's bytes, or a tree as a deterministic tar. */
+export function gitSelectionBytes(selection: GitSelection): Uint8Array {
+  if (selection.kind === 'file') return selection.bytes;
+  return writeTar(Tree.fromFiles(selection.files.map(([p, f]) => [p, makeFile(f.bytes, 'vendor', f.mode)] as const)), { epoch: 0 });
+}
+
+/**
+ * The content of a Git IMPORT, checked against the lockfile (and recorded there). The commit is the
+ * one in the URL, else the locked one (unless --update-lock), else what the ref names now. A vendored
+ * copy of that commit is read instead of the network (a ref with no lockfile entry uses the vendored
+ * commit, as a BASE tag uses the vendored digest).
+ */
+export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: RemoteEnv): Promise<{ commit: string; selection: GitSelection }> {
+  const url = loc.url;
+  const entry = env.lock?.getGit(url);
+  if (env.frozen && !entry) {
+    throw new SitefileError('E_LOCK_MISSING', `IMPORT ${spec.name}: '${url}' is not in the lockfile (--frozen-lockfile)`, spec.span);
+  }
+  if (entry && loc.commit !== undefined && entry.commit !== loc.commit) {
+    throw new SitefileError('E_LOCK_MISMATCH', `IMPORT ${spec.name}: '${url}' is locked to commit ${entry.commit}; rerun with --update-lock to accept ${loc.commit}`, spec.span);
+  }
+  let want = loc.commit ?? (entry && !env.update ? entry.commit : undefined);
+  const vendored = env.vendor?.git(url);
+  let selection: GitSelection | undefined;
+  if (vendored && env.vendor && (want === undefined ? !env.update : vendored.commit === want)) {
+    want = vendored.commit;
+    selection = await env.vendor.readGit(url, vendored, loc.path.slice(loc.path.lastIndexOf('/') + 1), env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS, spec.span);
+  } else {
+    if (env.vendor) {
+      env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}${vendored ? ` at commit ${want ?? 'the latest'}` : ''}; fetching it (run 'sitefile vendor' to add it)`);
+    }
+    const limits = env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS;
+    const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span }, limits);
+    want = objs.commit;
+    selection = selectGitPath(objs, loc, limits, spec.span);
+  }
+  if (loc.commit === undefined && !entry) {
+    env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name} is not pinned; pin commit ${want} (#${want}${loc.path === '' ? '' : ':' + loc.path}) for a reproducible build`);
+  }
+  env.lock?.recordGit(url, { commit: want });
+  return { commit: want, selection };
 }
 
 // ---------------------------------------------------------------- operations

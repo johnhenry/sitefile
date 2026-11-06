@@ -235,6 +235,32 @@ Decompression (reading archives and pulled images) still uses `node:zlib` and
 flate2. A change to the encoder must be made in both files; regenerate
 `rust/tests/fixtures/deflate/fixtures.json` with its `generate.mjs`.
 
+## Git sources
+
+`IMPORT … FROM git+https://…` and Git URL contexts (#91) are implemented in both CLIs
+(`src/resources/git.ts`, `rust/src/resources/git.rs`) as a client of Git's smart HTTP
+protocol v2, not by running the `git` program:
+
+- **Why not `git`.** A `git` binary would bring hooks, the user's Git config
+  (`url.*.insteadOf`, `http.proxy`, credential helpers, `core.fsmonitor`), filters, and
+  its own network stack that the SSRF check at connect time cannot see; its version and
+  messages differ between machines, so the two CLIs could not be compared byte for byte;
+  and builds would depend on an external program. The protocol subset a build needs is
+  small: one capability `GET`, `ls-refs`, one shallow `fetch` of one commit, packfile
+  parsing with `OFS_DELTA`/`REF_DELTA`, and tree walking (about 600 lines per
+  implementation). Every request goes through the existing HTTPS client, so the network
+  policy is the same as for any remote `IMPORT`. Unsupported servers (dumb HTTP, protocol
+  v0/v1 only, SHA-256 repositories) are refused rather than worked around.
+- **No new crates.** SHA-1 (object ids and the pack checksum) is hand-rolled in
+  `rust/src/sha1.rs` (about 80 lines, checked against the FIPS 180 vectors); `sha1` from
+  RustCrypto would be a new crate for one function. Pack objects are inflated with flate2's
+  `Decompress` (already used for archives), bounded to each object's declared size.
+- **Tests.** `test/helpers/git-server.ts` is an in-memory protocol v2 server that writes packs
+  with OFS/REF delta chains; it backs `test/git.test.ts` and the `net-git-*` conformance cases
+  (`conformance/servers.mjs`). `test/git.test.ts` also checks the pack parser against packs
+  written by `git pack-objects` when `git` is installed (skipped otherwise);
+  `rust/tests/repo_imports.rs` runs the Rust CLI against a small in-test server.
+
 ## Known differences
 
 - **Extra CAs.** Both CLIs trust the PEM file named by `NODE_EXTRA_CA_CERTS`
@@ -259,6 +285,8 @@ flate2. A change to the encoder must be made in both files; regenerate
   crate such as `notify` would be a new dependency for little gain, so a
   rebuild in Rust starts up to ~100 ms later, and a very large context costs a
   directory walk per poll.
+- **zlib error text.** A Git packfile object that fails to inflate is `E_GIT` in both, but the
+  message embeds Node's or flate2's wording.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in
   `serve -p`, `toPrecision` rounding ties in `images` sizes, very deep emphasis
   nesting in Markdown.

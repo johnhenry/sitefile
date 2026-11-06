@@ -129,9 +129,11 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]]`
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
-  - `<uri>` is a context-relative path or an `https://` URL (`http://` only with
-    `--allow-http`). Other schemes fail with `E_PROTOCOL`.
-  - Default kind: `tree` for a local directory, otherwise `file`.
+  - `<uri>` is a context-relative path, an `https://` URL (`http://` only with
+    `--allow-http`), or a Git URL `git+https://host/repo.git#ref:path` (see
+    Git sources below). Other schemes fail with `E_PROTOCOL`.
+  - Default kind: `tree` for a local directory (or a directory in a Git
+    repository), otherwise `file`.
   - `text` must be valid UTF-8; `json` must parse. Both produce **values**:
     they can be read by RENDER templates but not copied (`E_TYPE`).
   - `AS tree` on a **file** (local or remote) means "extract this archive";
@@ -484,7 +486,8 @@ gitignore subset:
   Nix's fixed-output derivations: every remote input must already be pinned,
   or the command fails with `E_UNPINNED` **before anything is fetched**. A
   remote `IMPORT` is pinned by `INTEGRITY` or a `Sitefile.lock` entry for its
-  URL; the `BASE` image of an `oci` export (or `--base`) by `@sha256:` or a
+  URL (a Git import by a commit in its URL or its lockfile entry); the `BASE`
+  image of an `oci` export (or `--base`) by `@sha256:` or a
   lockfile `images` entry. With `--no-lockfile` only the Sitefile's own pins
   count. Local imports never need one. `--strict-pins` conflicts with
   `--update-lock` (a usage error), since that would accept changed content.
@@ -504,6 +507,62 @@ gitignore subset:
   `NODE_EXTRA_CA_CERTS` / `--use-system-ca`), for tests and enterprise private
   CAs. Certificate and hostname verification are never disabled; there is no
   CLI flag for it.
+
+### Git sources (`git+https://…`)
+`IMPORT name FROM git+https://host/repo.git#ref:path` imports a directory (or one file) of a Git
+repository at a commit, and `sitefile build https://host/repo.git#ref:dir` builds a repository
+(see [CLI.md](CLI.md#building-from-a-git-url)).
+- **The URL.** `git+https://` (`git+http://` only with `--allow-http`); any other transport
+  (`git+ssh:`, `git+file:`, `git://`) is `E_PROTOCOL`, as are credentials in the URL and a query
+  string. After `#` come the **ref** and, after the first `:`, the **path** inside the repository:
+  `#main`, `#v1.2:docs`, `#refs/heads/main:site/`, `#:docs` (the remote's HEAD), or no fragment at
+  all (HEAD, whole repository). The ref follows `git check-ref-format` (`E_VALIDATION` otherwise); a
+  path with `..` is `E_PATH_ESCAPE`. `${NAME}` interpolation works as in any operand.
+- **Refs and commits.** A ref of exactly 40 lowercase hex digits is a **commit** (a pin). Any other ref
+  is resolved on the server: `refs/…` exactly, otherwise `refs/tags/<ref>` then `refs/heads/<ref>`
+  (Git's order); annotated tags are peeled to their commit. An unknown ref is `E_NOT_FOUND`.
+- **Sitefile.lock** records each Git URL (as written) with the commit it resolved to, in a `git`
+  section: `"git": {"git+https://host/r.git#main:docs": {"commit": "<40 hex>"}}`. A locked ref is
+  **not** resolved again: the build fetches the locked commit (like Cargo's git dependencies), so a
+  moving branch does not change the build until `--update-lock` re-resolves it. `--frozen-lockfile`
+  requires the entry (`E_LOCK_MISSING`). An unpinned, unlocked ref warns
+  (`IMPORT x is not pinned; pin commit <hex> (#<hex>:path) for a reproducible build`).
+  A URL whose commit differs from its lockfile entry is `E_LOCK_MISMATCH`.
+- **`--strict-pins`**: a commit in the URL or a lockfile entry pins a Git import (`dev.sitefile.pin`
+  is `commit` or `lockfile` in the provenance). `INTEGRITY` does not apply to Git imports
+  (`E_VALIDATION`): the commit id already names the content.
+- **Kinds.** A directory imports as a tree (`AS tree`, the default), or as a Markdown, JSON or YAML
+  collection (`AS markdown|json|yaml`, `SORT BY` as for local directories). A file imports like a
+  downloaded file (`AS file|text|json|yaml|csv|markdown|wbn`, or `AS tree` to extract an archive).
+  Files keep their executable bit (`0755`), everything else is `0644`. The provenance digest is the
+  tree digest (or the file's sha256) and the commit is recorded as `gitCommit` (`--provenance`:
+  `"digest": {"gitCommit": …, "sha256": …}`, `downloadLocation` = the URL with the commit as ref).
+- **Protocol.** Sitefile speaks Git's smart HTTP **protocol v2** itself; no `git` program runs, so
+  there are no hooks, no Git config, no credential helpers and no filters (`.gitattributes` is just a
+  file; Git LFS files arrive as their pointer files). One capability request
+  (`GET <repo>/info/refs?service=git-upload-pack`, `Git-Protocol: version=2`), an `ls-refs` request
+  when the ref is not a commit, and one shallow `fetch` (`want <commit>`, `deepen 1`) of that commit.
+  Dumb HTTP servers and servers without protocol v2 are refused (`E_GIT`), as are SHA-256
+  repositories. All requests use the HTTPS client of remote imports, so the same network policy
+  applies: public addresses only (checked at connect time) unless `--allow-private-network`, TLS
+  verification, the size cap (`--max-download-bytes`, per request) and the timeout. Redirects are
+  followed (and re-checked) for the capability request only; the repository URL it ends at is used
+  for the rest, and a redirect of a `POST` is `E_REDIRECT`.
+- **Verification.** The packfile is parsed by Sitefile (zlib objects, `OFS_DELTA` and `REF_DELTA`,
+  bases inside the pack only); its trailing SHA-1 is checked, every object's id is recomputed from
+  its content, and the commit must be the one asked for, so the files imported are exactly those the
+  commit names. Inflated objects are bounded by the archive limits (`maxTotalBytes`, and
+  `maxEntries` for the files of the tree; `E_ARCHIVE_LIMIT`). A malformed response is `E_GIT`.
+- **What a tree may contain.** The same rules as a local directory and an archive: names are
+  normalized to NFC (two names with one NFC form are `E_PATH_COLLISION`), names equal under case
+  folding are `E_PATH_COLLISION`, and an entry named `.git` (any case), `.`/`..`, or containing a
+  backslash is `E_ARCHIVE_UNSAFE`. **Symbolic links** are resolved like local symlinks, inside the
+  imported tree only: a relative target that stays inside it is followed (files and directories); an
+  absolute target or one that leaves it is `E_PATH_ESCAPE`; a dangling link is `E_NOT_FOUND`; more
+  than 40 links in a row is a loop (`E_UNSUPPORTED_FILE`); a directory link back to one of its own
+  ancestors is skipped. **Submodules** (gitlinks) are refused (`E_UNSUPPORTED_FILE`): import the
+  submodule's repository with its own `IMPORT`.
+- Private repositories need credentials, which URLs may not carry; they are not supported yet.
 
 ### Vendoring (`sitefile vendor`)
 `sitefile vendor [context]` (like `cargo vendor`) downloads every remote input so
@@ -525,6 +584,13 @@ later builds work offline and without the network flags:
     resolved}}, "images": {ref: {digest, platform, manifest}}}` with sorted keys,
     so vendoring the same inputs gives the same bytes. `ref` is the lockfile key
     (`registry/name:tag`), or `registry/name[:tag]@sha256:...` for a digest pin.
+    Git imports add `"git": {url: {commit, kind, integrity, size[, mode]}}` (only
+    when there are any): `kind` is `tree`, stored as a deterministic tar of the
+    imported files (mtime 0, modes `644`/`755`), or `file`, stored as its bytes
+    with its `mode`. A build uses a vendored Git import when its commit is the one
+    the build would fetch (the URL's commit, else the lockfile's); a ref with no
+    lockfile entry uses the vendored commit (and records it), and `--update-lock`
+    resolves the ref on the server again.
   A directory that resolves outside the context, a symlink, or an existing
   non-empty directory without `manifest.json` is refused (`E_PATH_ESCAPE`,
   `E_EXPORT_UNSAFE`).
@@ -581,6 +647,9 @@ checked:
   `1.25-alpine` suggests `1.27-alpine`, never `1.27.1-alpine` or `1.28`. This is a
   heuristic over tag names, not semver: tags carry no ordering metadata. A registry
   that refuses to list tags simply gives none.
+- **Git imports**: the ref is resolved again (one `ls-refs`; nothing is downloaded) and compared with
+  the commit in `Sitefile.lock`: `changed` means the ref has moved. A commit in the URL is
+  `digest-only` (pinned by `commit`, nothing is requested); `pin` and `latest` are commits.
 - A failed fetch or registry call is an `error` row (with its code and message),
   not a failure of the command; the exit code is 0 unless the Sitefile itself
   cannot be read or planned. `--no-lockfile` ignores `Sitefile.lock`.
@@ -591,7 +660,7 @@ checked:
   caches, not inputs.
 - `--json` prints `{"inputs": [{kind, name, source, pin, pinnedBy, latest, status,
   newerTag, error}], "summary": {current, changed, unpinned, digest-only, error}}`;
-  `pinnedBy` is `integrity`, `lockfile`, `digest` or `null`, `error` is
+  `pinnedBy` is `integrity`, `lockfile`, `digest`, `commit` or `null`, `error` is
   `{code, message}` or `null`.
 
 ### Archives (`IMPORT … AS tree` on a file)

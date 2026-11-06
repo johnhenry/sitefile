@@ -117,6 +117,8 @@ pub struct ImportFact {
     pub uri: String,
     pub resolved: Option<String>,
     pub digest: String,
+    /// Git imports: the commit (provenance `digest.gitCommit`).
+    pub git_commit: Option<String>,
 }
 
 /// The image an attestation is about.
@@ -145,7 +147,14 @@ pub fn sitefile_path_of(context_dir: &str, sitefile: Option<&str>) -> std::path:
 }
 
 /// Collect the facts for a finished build. Reads the Sitefile again to digest it.
-pub fn build_facts(result: &BuildResult, context_dir: &str, sitefile: Option<&str>, build_args: &crate::build_args::BuildArgs, platform: Option<&str>) -> Result<BuildFacts> {
+pub fn build_facts(
+    result: &BuildResult,
+    context_dir: &str,
+    sitefile: Option<&str>,
+    label: Option<&str>,
+    build_args: &crate::build_args::BuildArgs,
+    platform: Option<&str>,
+) -> Result<BuildFacts> {
     let file = sitefile_path_of(context_dir, sitefile);
     let bytes = std::fs::read(&file).map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("cannot read Sitefile '{}'", file.display())))?;
     let base_name = file.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -167,7 +176,7 @@ pub fn build_facts(result: &BuildResult, context_dir: &str, sitefile: Option<&st
         .iter()
         .map(|(name, r)| {
             let p = r.provenance();
-            ImportFact { name: name.clone(), uri: p.uri.clone(), resolved: p.resolved_url.clone(), digest: p.digest.clone() }
+            ImportFact { name: name.clone(), uri: p.uri.clone(), resolved: p.resolved_url.clone(), digest: p.digest.clone(), git_commit: p.git_commit.clone() }
         })
         .collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
@@ -181,7 +190,11 @@ pub fn build_facts(result: &BuildResult, context_dir: &str, sitefile: Option<&st
         imports,
         base: result.base.as_ref().map(|b| (b.name.clone(), b.manifest_digest.clone())),
         pins: result.pins.clone(),
-        label: if label_rel.is_empty() { base_name } else { label_rel },
+        label: match label {
+            Some(l) => l.to_string(),
+            None if label_rel.is_empty() => base_name,
+            None => label_rel,
+        },
     })
 }
 
@@ -205,7 +218,11 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
     }
     let mut deps = vec![json!({ "name": "sitefile", "uri": facts.sitefile, "digest": { "sha256": hex(&facts.sitefile_digest) } })];
     for i in &facts.imports {
-        let mut d = json!({ "name": format!("import:{}", i.name), "uri": i.uri, "digest": { "sha256": hex(&i.digest) } });
+        let digest = match &i.git_commit {
+            Some(c) => json!({ "gitCommit": c, "sha256": hex(&i.digest) }),
+            None => json!({ "sha256": hex(&i.digest) }),
+        };
+        let mut d = json!({ "name": format!("import:{}", i.name), "uri": i.uri, "digest": digest });
         if let Some(r) = i.resolved.as_ref().filter(|r| **r != i.uri) {
             d["downloadLocation"] = Value::String(r.clone());
         }
@@ -353,7 +370,7 @@ mod tests {
             args: vec![("TITLE".into(), "Docs".into())],
             redacted_args: vec!["API_TOKEN".into()],
             platform: "linux/amd64".into(),
-            imports: vec![ImportFact { name: "data".into(), uri: "https://x.example/d.json".into(), resolved: Some("https://cdn.example/d.json".into()), digest: sha256(b"{}") }],
+            imports: vec![ImportFact { name: "data".into(), uri: "https://x.example/d.json".into(), resolved: Some("https://cdn.example/d.json".into()), digest: sha256(b"{}"), git_commit: None }],
             base: None,
             pins: None,
             label: "ctx/Sitefile".into(),

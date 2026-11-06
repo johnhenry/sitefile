@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "resources": {},
+  "git": {
+    "git+${HTTPS}/repo.git#main:site": {
+      "commit": "${GIT_V1}"
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# Not used: the steps build Git URL contexts.
+FROM scratch
+EXPORT /

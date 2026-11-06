@@ -5,6 +5,7 @@
 pub mod args;
 pub mod cache;
 pub mod common;
+pub mod git_context;
 pub mod images;
 pub mod outdated;
 pub mod registry;
@@ -83,6 +84,8 @@ Usage:
                                          (text, --json or --dot; no IO, like validate)
   sitefile why <path> [context] [opts]   build in memory and show which instructions wrote an exported
                                          file, from what inputs, and what overwrote it
+  The context may be a Git URL, https://host/repo.git#ref:dir (fetched to a temporary directory;
+  the default --out is then ./dist; see docs/CLI.md).
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
@@ -364,6 +367,15 @@ fn run_main(argv: &[String]) -> i32 {
     if rest.len() > 1 {
         return usage_error(&format!("unexpected arguments: {}", rest[1..].join(" ")));
     }
+    let git_context = git_context::is_git_context(&context);
+    if git_context && o.flag("watch") {
+        return usage_error("--watch needs a local context directory, not a Git URL");
+    }
+    if let (true, Some(f)) = (git_context, o.str("file")) {
+        if f.starts_with('/') || f.split(['\\', '/']).any(|s| s == "..") {
+            return usage_error("with a Git URL context, -f/--file is a path inside the repository");
+        }
+    }
     if o.flag("dot") && command != "graph" {
         return usage_error("--dot is only for graph");
     }
@@ -503,6 +515,25 @@ fn run_build_command(
     profiler: Option<Arc<Profiler>>,
     memo: Option<crate::memo::SharedMemo>,
 ) -> Result<i32> {
+    let mut fetch_policy = crate::resources::types::DEFAULT_FETCH_POLICY;
+    fetch_policy.allow_http = o.flag("allow-http");
+    fetch_policy.allow_private_network = o.flag("allow-private-network");
+    if let Some(m) = o.str("max-download-bytes").filter(|s| !s.is_empty()) {
+        fetch_policy.max_bytes = positive_int(m, "--max-download-bytes")?;
+    }
+    if let Some(t) = o.str("timeout").filter(|s| !s.is_empty()) {
+        fetch_policy.timeout_ms = positive_int(t, "--timeout")?;
+    }
+    // A Git URL context: fetched into a temporary directory, built from there, then removed (on drop).
+    let fetched = if git_context::is_git_context(context) {
+        let g = git_context::materialize_git_context(context, &fetch_policy, &crate::resources::types::DEFAULT_ARCHIVE_LIMITS)?;
+        err(&format!("context: {context} at commit {}\n", g.commit));
+        Some(g)
+    } else {
+        None
+    };
+    let context_owned = fetched.as_ref().map(|g| g.dir.to_string_lossy().into_owned());
+    let context: &str = context_owned.as_deref().unwrap_or(context);
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
@@ -527,24 +558,22 @@ fn run_build_command(
             format_override = format_from_extension(out);
         }
     }
-    let file = o.str("file").filter(|s| !s.is_empty()).map(str::to_string);
+    let file = o.str("file").filter(|s| !s.is_empty()).map(|f| if fetched.is_some() { join_path(context, f) } else { f.to_string() });
     let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, target: o.str("target").map(str::to_string), ..Default::default() };
+    if fetched.is_some() {
+        options.label = Some(o.str("file").unwrap_or("Sitefile").to_string());
+    }
     // The default destination depends on the format, which the Sitefile may set.
     let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() { Some(plan_build(&options)?.export_format) } else { None };
     let out_dir = match out_flag {
         Some(o) => o.to_string(),
+        // A Git context's default destination is in the current directory, not the temporary checkout.
+        None if fetched.is_some() => default_out_name(format_override.or(sitefile_format).unwrap_or(ExportFormat::Directory)).to_string(),
         None => join_path(context, default_out_name(format_override.or(sitefile_format).unwrap_or(ExportFormat::Directory))),
     };
     options.out_dir = Some(out_dir.clone());
     wrote.push(out_dir.clone());
-    options.fetch_policy.allow_http = o.flag("allow-http");
-    options.fetch_policy.allow_private_network = o.flag("allow-private-network");
-    if let Some(m) = o.str("max-download-bytes").filter(|s| !s.is_empty()) {
-        options.fetch_policy.max_bytes = positive_int(m, "--max-download-bytes")?;
-    }
-    if let Some(t) = o.str("timeout").filter(|s| !s.is_empty()) {
-        options.fetch_policy.timeout_ms = positive_int(t, "--timeout")?;
-    }
+    options.fetch_policy = fetch_policy;
     if o.flag("no-lockfile") {
         options.lockfile = LockfileSetting::Disabled;
     }
@@ -658,7 +687,8 @@ fn run_build_command(
                 ),
             };
             out(&line);
-            if r.result.lockfile_written {
+            // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
+            if r.result.lockfile_written && fetched.is_none() {
                 out("Updated Sitefile.lock\n");
             }
             if !tags.is_empty() {

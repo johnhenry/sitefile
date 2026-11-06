@@ -331,6 +331,14 @@ const EDGE = [
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',
   '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
+  // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
+  'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#' + 'ab'.repeat(20) + ':a/b/ AS markdown SORT BY date\nEXPORT /', 'IMPORT d FROM git+http://e.x/r#v1.0:README.md AS text\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#refs/tags/v1\nEXPORT /', 'IMPORT d FROM GIT+HTTPS://e.x/r#:sub\nEXPORT /', 'IMPORT d FROM git+ssh://e.x/r\nEXPORT /',
+  'IMPORT d FROM git+https://u:p@e.x/r\nEXPORT /', 'IMPORT d FROM git+https://e.x/r?x=1\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a..b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main:../x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#-x\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#a b\nEXPORT /',
+  'IMPORT d FROM git+https://e.x/r#main INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'IMPORT d FROM git+https://e.x/r#x.lock\nEXPORT /',
+  'IMPORT d FROM "git+https://e.x/r#main:a\\\\b"\nEXPORT /', 'ARG R = main\nIMPORT d FROM git+https://e.x/r#${R}:docs\nEXPORT /', 'IMPORT d FROM git+:x\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

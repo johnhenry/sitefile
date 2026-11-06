@@ -22,6 +22,7 @@ const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-stage-missing-name/Sitefile',
   'conformance/cases/err-stage-unexpected/Sitefile',
   'conformance/cases/err-syntax/Sitefile',
+  'conformance/cases/profile-imports/Sitefile', // SITEMAP without BASE: the profile of a failing parse
 ];
 
 /** An inline RENDER template with an invalid tag (E_TEMPLATE in src/render.ts). */
