@@ -27,6 +27,7 @@ pub mod frontmatter;
 pub mod markdown;
 pub mod render;
 pub mod yaml;
+pub mod bake;
 
 // Inputs
 pub mod resources;

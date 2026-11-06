@@ -1,0 +1,9 @@
+# Two outputs of one Sitefile from a JSON bake file: a zip of the site (stored as
+# an image too) and the assets stage alone (--target).
+ARG TITLE = "Site"
+ARG MODE = "ok"
+STAGE assets
+COPY ./src/style.css /css/style.css
+FROM assets
+RENDER ./src/page.html TO /index.html
+EXPORT /

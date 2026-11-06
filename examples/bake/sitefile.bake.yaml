@@ -1,0 +1,24 @@
+# Run from this directory (paths are relative to this file):
+#   sitefile bake            build the default group: four sites under dist/
+#   sitefile bake en         only the English variants
+#   sitefile bake --print    show the resolved targets without building
+groups:
+  default: [site]
+  en: [site-en-staging, site-en-production]
+
+targets:
+  # Settings every variant shares. It is not built on its own: the default
+  # group names only 'site'.
+  common:
+    context: .
+    file: Sitefile
+
+  site:
+    inherits: common
+    matrix:
+      locale: [en, fr]
+      env: [staging, production]
+    arg-files: ["env/${env}.env"]
+    args:
+      LOCALE: ${locale}
+    output: dist/${env}/${locale}
