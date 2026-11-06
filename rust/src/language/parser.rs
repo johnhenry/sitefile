@@ -103,8 +103,25 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
     }
 }
 
+/// A FROM base: `scratch`, `image <ref> [AT <dir>]`, or an operand (stage or directory). `image` is the
+/// keyword only when something other than `AS` follows it, so `FROM image` and `FROM image AS x` still
+/// name a stage or directory called `image`.
+fn from_base(c: &mut Cursor) -> Result<FromBase> {
+    if c.keyword("scratch") {
+        return Ok(FromBase::Scratch);
+    }
+    let mark = c.mark();
+    if c.keyword("image") && !c.at_end() && !c.peek_keyword("AS") {
+        let reference = c.operand("image reference")?;
+        let at = if c.keyword("AT") { Some(c.operand("image directory")?) } else { None };
+        return Ok(FromBase::Image { reference, at });
+    }
+    c.reset(mark);
+    Ok(FromBase::Operand(c.operand("base")?))
+}
+
 fn parse_from(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let base = if c.keyword("scratch") { FromBase::Scratch } else { FromBase::Operand(c.operand("base")?) };
+    let base = from_base(c)?;
     let alias = if c.keyword("AS") { Some(c.ident("stage name", "")?) } else { None };
     c.expect_end()?;
     Ok(Instruction::From { span, base, alias, stage_kw: false })
@@ -115,7 +132,7 @@ fn parse_stage(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let alias = c.ident("stage name", "")?;
     let mut base = FromBase::Scratch;
     if c.keyword("FROM") {
-        base = if c.keyword("scratch") { FromBase::Scratch } else { FromBase::Operand(c.operand("base")?) };
+        base = from_base(c)?;
     }
     c.expect_end()?;
     Ok(Instruction::From { span, base, alias: Some(alias), stage_kw: true })
@@ -748,6 +765,24 @@ mod tests {
         parse_err("FROM", E_SYNTAX, 1, 5, "expected base");
         parse_err("FROM scratch AS", E_SYNTAX, 1, 16, "expected stage name");
         parse_err("FROM scratch extra", E_SYNTAX, 1, 14, "unexpected 'extra'");
+    }
+
+    #[test]
+    fn from_image_forms() {
+        let image = |src: &str| match one(src) {
+            Instruction::From { base: FromBase::Image { reference, at }, alias, stage_kw, .. } => (lit(&reference), at.as_ref().map(lit), alias, stage_kw),
+            other => panic!("{src}: {other:?}"),
+        };
+        assert_eq!(image("FROM image ghcr.io/me/theme:1.2 AS theme"), ("ghcr.io/me/theme:1.2".into(), None, Some("theme".into()), false));
+        assert_eq!(image("from IMAGE theme:1 at /srv/www"), ("theme:1".into(), Some("/srv/www".into()), None, false));
+        assert_eq!(image("STAGE site FROM image t:1 AT /x"), ("t:1".into(), Some("/x".into()), Some("site".into()), true));
+        // `image` followed by nothing or AS is still a stage or directory named image.
+        assert!(matches!(one("FROM image"), Instruction::From { base: FromBase::Operand(ref o), .. } if lit(o) == "image"));
+        assert!(matches!(one("FROM image AS x"), Instruction::From { base: FromBase::Operand(ref o), alias: Some(ref a), .. } if lit(o) == "image" && a == "x"));
+        assert!(matches!(one("STAGE s FROM image"), Instruction::From { base: FromBase::Operand(ref o), .. } if lit(o) == "image"));
+        parse_err("FROM image theme:1 AT", E_SYNTAX, 1, 22, "expected image directory");
+        parse_err("FROM image theme:1 extra", E_SYNTAX, 1, 20, "unexpected 'extra'");
+        parse_err("STAGE s FROM image t:1 AS x", E_SYNTAX, 1, 24, "unexpected 'AS'");
     }
 
     #[test]

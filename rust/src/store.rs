@@ -25,7 +25,7 @@ use crate::export::archive_writers::iso_millis;
 use crate::export::attest::{decode_referrers_index, encode_referrers_index, Referrer, ReferrerDescriptor, PREDICATE_ANNOTATION};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files, layout_tree, parse_config, parse_manifest,
+    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files_at, layout_tree, parse_config, parse_manifest,
     site_layer_index, IndexEntry, LayoutParts, OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
 };
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key, ImageRef};
@@ -478,16 +478,19 @@ impl Store {
 
     /// Load an image's files (under its root), verifying manifest, config, layer digest and diff_id.
     pub fn load_tree(&self, id: &str) -> Result<Tree> {
+        self.load_tree_with(id, None, None)
+    }
+
+    /// [`Store::load_tree`] with the origin the files' origins and error messages name (default
+    /// `image:<short id>`) and a directory inside the image to root the tree at (default: its root label).
+    pub fn load_tree_with(&self, id: &str, origin: Option<&str>, root: Option<&str>) -> Result<Tree> {
         let d = self.details(id)?;
+        let origin = origin.map(str::to_string).unwrap_or_else(|| format!("image:{}", short_id(id)));
         let Some(layer) = site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i)) else {
-            return Err(store_error(format!(
-                "image:{}: not a Sitefile image (it has {} layers and no site layer)",
-                short_id(id),
-                d.manifest.layers.len()
-            )));
+            return Err(store_error(format!("{origin}: not a Sitefile image (it has {} layers and no site layer)", d.manifest.layers.len())));
         };
         let bytes = self.read_blob(&layer.digest, Some(layer.size))?;
-        extract_image_files(&d.manifest, &d.config, &bytes, &format!("image:{}", short_id(id)))
+        extract_image_files_at(&d.manifest, &d.config, &bytes, &origin, root)
     }
 
     /// The image as a standalone OCI layout Tree (for `save`), optionally

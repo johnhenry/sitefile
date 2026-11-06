@@ -60,6 +60,8 @@ fn stage_label(stage: &Stage) -> String {
         StageBase::Scratch => "scratch".to_string(),
         StageBase::Local { path } => local_label(path),
         StageBase::Stage { name } => name.clone(),
+        StageBase::Image { reference, at: Some(at), .. } => format!("image {reference} AT {at}"),
+        StageBase::Image { reference, .. } => format!("image {reference}"),
     };
     match &stage.name {
         Some(n) => format!("FROM {base} AS {n}"),
@@ -81,6 +83,7 @@ fn stage_id(stage: &Stage, index: usize) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     Import,
+    Image,
     Plugin,
     Tool,
     Local,
@@ -94,6 +97,7 @@ impl NodeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             NodeKind::Import => "import",
+            NodeKind::Image => "image",
             NodeKind::Plugin => "plugin",
             NodeKind::Tool => "tool",
             NodeKind::Local => "local",
@@ -106,6 +110,7 @@ impl NodeKind {
     fn dot_shape(self) -> &'static str {
         match self {
             NodeKind::Import => "cylinder",
+            NodeKind::Image => "tab",
             NodeKind::Plugin | NodeKind::Tool => "component",
             NodeKind::Local => "folder",
             NodeKind::Operation => "box",
@@ -171,6 +176,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let list = |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
 
     let mut staged: Vec<GraphNode> = Vec::new();
+    let mut images: Vec<GraphNode> = Vec::new();
     for (si, stage) in p.stages.iter().enumerate() {
         let id = stage_id(stage, si);
         let ids: Vec<String> = stage.operations.iter().map(|op| format!("op:{}", op.span().line)).collect();
@@ -184,6 +190,13 @@ pub fn plan_graph(p: &Plan) -> Graph {
                 if let Some(from) = stage_ids.get(name) {
                     edges.add(from, &first, "base");
                 }
+            }
+            StageBase::Image { reference, .. } => {
+                let image_id = format!("image:{reference}");
+                if !images.iter().any(|n| n.id == image_id) {
+                    images.push(GraphNode { id: image_id.clone(), kind: NodeKind::Image, label: format!("image {reference}"), line: Some(stage.span.line) });
+                }
+                edges.add(&image_id, &first, "base");
             }
             StageBase::Scratch => {}
         }
@@ -255,6 +268,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
     for t in &p.tools {
         nodes.push(GraphNode { id: format!("tool:{}", t.name), kind: NodeKind::Tool, label: format!("TOOL {}", t.name), line: Some(t.span.line) });
     }
+    nodes.extend(images);
     nodes.extend(locals);
     nodes.extend(staged);
     nodes.extend(site);
@@ -467,6 +481,16 @@ impl Why<'_> {
                         inputs: vec![local_label(&rest)],
                     });
                 }
+                // The file's origin names the image, its digest and the path inside the layer.
+                StageBase::Image { .. } => events.push(WhyEvent {
+                    location: self.at(stage.span.line),
+                    instruction: stage_label(stage),
+                    stage: display.clone(),
+                    path: file.to_string(),
+                    action: "write",
+                    digest: start.digest.clone(),
+                    inputs: vec![start.origin.clone()],
+                }),
                 StageBase::Scratch => {}
             }
         }

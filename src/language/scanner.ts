@@ -200,6 +200,23 @@ export class Cursor {
     return true;
   }
 
+  /** Whether `kw` (case-insensitive) is the next whole bare word, without consuming it. */
+  peekKeyword(kw: string): boolean {
+    const at = this.i;
+    const found = this.keyword(kw);
+    this.i = at;
+    return found;
+  }
+
+  /** The current position, for {@link reset} (one-token lookahead). */
+  mark(): number {
+    return this.i;
+  }
+
+  reset(mark: number): void {
+    this.i = mark;
+  }
+
   expectKeyword(kw: string): void {
     const at = this.span;
     if (!this.keyword(kw)) throw this.error('E_SYNTAX', `expected ${kw.toUpperCase()}`, at);

@@ -354,13 +354,17 @@ export class Store {
     };
   }
 
-  /** Load an image's files (under its root), verifying manifest, config, layer digest and diff_id. */
-  async loadTree(id: string): Promise<Tree> {
+  /**
+   * Load an image's files (under its root, or under `o.root`), verifying manifest, config, layer digest
+   * and diff_id. `o.origin` is what the files' origins and error messages name (default `image:<short id>`).
+   */
+  async loadTree(id: string, o: { readonly origin?: string; readonly root?: string } = {}): Promise<Tree> {
     const d = await this.details(id);
+    const origin = o.origin ?? `image:${shortId(id)}`;
     const layer = d.manifest.layers[siteLayerIndex(d.manifest, d.config)];
-    if (!layer) throw new SitefileError('E_STORE', `image:${shortId(id)}: not a Sitefile image (it has ${d.manifest.layers.length} layers and no site layer)`);
+    if (!layer) throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (it has ${d.manifest.layers.length} layers and no site layer)`);
     const bytes = await this.readBlob(layer.digest, layer.size);
-    return extractImageFiles(d.manifest, d.config, bytes, `image:${shortId(id)}`);
+    return extractImageFiles(d.manifest, d.config, bytes, origin, o.root);
   }
 
   /**

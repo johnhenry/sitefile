@@ -2,7 +2,7 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveBase } from './base-image.js';
 import { sha256 } from './digest.js';
-import { SitefileError } from './errors.js';
+import { SitefileError, type SourceSpan } from './errors.js';
 import { fetchRemoteImport, loadProgram, type BuildOptions, type RemoteEnv } from './executor.js';
 import { parseManifest } from './oci.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
@@ -62,26 +62,31 @@ export async function vendor(options: BuildOptions): Promise<VendorResult> {
   }
 
   const images: Record<string, VendoredImage> = {};
-  const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
-  if (baseInput !== undefined) {
-    const store = options.store ?? (await Store.open());
-    const platform = options.platform ?? 'linux/amd64';
-    const base = await resolveBase(baseInput, {
-      store,
+  const platform = options.platform ?? 'linux/amd64';
+  let store: Store | undefined;
+  /** Resolve an image as a build would and vendor what an offline pull of it needs. */
+  const vendorImage = async (input: string, lead: string, enforcePlatform: boolean, span?: SourceSpan): Promise<void> => {
+    store ??= options.store ?? (await Store.open());
+    const s = store;
+    const base = await resolveBase(input, {
+      store: s,
       platform,
       lock,
       frozen,
       update,
       registry: { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork },
       warn,
+      lead,
+      enforcePlatform,
+      ...(span ? { span } : {}),
     });
     // resolveBase has validated the reference; this is its lockfile key.
-    const ref = withDefaultRegistry(parseRef(baseInput));
+    const ref = withDefaultRegistry(parseRef(input));
     const registry = ref.registry as string;
     const lockKey = `${registry}/${ref.name}:${ref.tag ?? 'latest'}`;
     const root = ref.digest ?? lock?.getImage(lockKey)?.digest ?? base.manifestDigest;
     const add = async (digest: string, size?: number): Promise<Uint8Array> => {
-      const bytes = await store.readBlob(digest, size);
+      const bytes = await s.readBlob(digest, size);
       blobs.set(digest, bytes);
       return bytes;
     };
@@ -90,7 +95,11 @@ export async function vendor(options: BuildOptions): Promise<VendorResult> {
     for (const d of [m.config, ...m.layers]) await add(d.digest, d.size);
     const key = ref.digest !== undefined ? `${registry}/${ref.name}${ref.tag !== undefined ? `:${ref.tag}` : ''}@${ref.digest}` : lockKey;
     images[key] = { digest: root, platform, manifest: base.manifestDigest };
-  }
+  };
+  // FROM image stage bases with a registry (local-store images are not vendored), then the BASE.
+  for (const st of p.stages) if (st.base.kind === 'image' && !st.base.local) await vendorImage(st.base.ref, `${st.base.lead} image`, false, st.base.span);
+  const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
+  if (baseInput !== undefined) await vendorImage(baseInput, 'BASE', true);
 
   const text = serializeVendorManifest({ version: 1, resources, images });
   const written = await writeVendorDir(contextReal, dir, text, blobs);

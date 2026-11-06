@@ -1,0 +1,6 @@
+{
+  "command": "validate",
+  "args": [
+    "--json"
+  ]
+}

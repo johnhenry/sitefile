@@ -16,7 +16,7 @@
 export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
@@ -179,6 +179,11 @@ const stageBase = (prefix) => ({
   captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.section.stage') } },
 });
 const scratch = { match: `${W}(${KEYWORDS.scratch})${WE}`, captures: { 1: { name: S('constant.language.scratch') } } };
+/** `image <ref>`: `image` is the keyword only when a word other than AS follows it (else a stage or directory). */
+const imageBase = (prefix) => ({
+  match: `${prefix}\\s+(${ci(['image'])})(?=\\s+(?!${ci(['AS'])}${WE})[^\\s\\\\])`,
+  captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('keyword.other.clause') } },
+});
 
 const renderClauses = [forClause, kw(['TO', 'FOR', 'IN']), { include: '#operands' }];
 const transformClauses = [
@@ -213,8 +218,8 @@ export function buildGrammar() {
       continuation: { match: '\\\\$', name: S('constant.character.escape.line-continuation') },
       instructions: {
         patterns: [
-          instruction('FROM', [scratch, stageBase('\\G()'), { match: `${W}(${ci(['AS'])})(?:\\s+(${IDENT})${WE})?`, captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.section.stage') } } }, { include: '#operands' }]),
-          instruction('STAGE', [head('entity.name.section.stage'), stageBase(`${W}(${ci(['FROM'])})`), kw(['FROM']), scratch, { include: '#operands' }]),
+          instruction('FROM', [scratch, imageBase('\\G()'), stageBase('\\G()'), kw(['AT']), { match: `${W}(${ci(['AS'])})(?:\\s+(${IDENT})${WE})?`, captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.section.stage') } } }, { include: '#operands' }]),
+          instruction('STAGE', [head('entity.name.section.stage'), imageBase(`${W}(${ci(['FROM'])})`), stageBase(`${W}(${ci(['FROM'])})`), kw(['FROM', 'AT']), scratch, { include: '#operands' }]),
           ...['ARG', 'LET'].map((w) =>
             instruction(w, [
               { match: `\\G\\s+(${IDENT})(?=\\s|$|[:=])`, captures: { 1: { name: S('variable.other.definition') } } },

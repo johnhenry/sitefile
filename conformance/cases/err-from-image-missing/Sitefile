@@ -1,0 +1,4 @@
+# A local-store image that is not there.
+ARG V=7
+STAGE theme FROM image theme:${V}
+EXPORT /
