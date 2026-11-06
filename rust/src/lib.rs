@@ -44,6 +44,7 @@ pub mod cache_limit;
 pub mod base_image;
 pub mod cli;
 pub mod executor;
+pub mod outdated;
 pub mod plugins;
 pub mod watch;
 

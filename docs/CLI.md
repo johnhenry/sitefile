@@ -35,6 +35,28 @@ sitefile inspect  [context] [--json]
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
+## Checking pins: `outdated`
+
+```
+sitefile outdated [context] [-f Sitefile] [--json] [--build-arg K=V]... [--build-arg-file f]... [--no-lockfile]
+                  [--allow-http] [--allow-private-network] [--max-download-bytes n] [--timeout ms]
+                  [--base image] [--insecure-registry host[:port]]...
+```
+
+Reports every remote `IMPORT` and the `BASE` image without changing anything (see
+[LANGUAGE.md](LANGUAGE.md#checking-pins-sitefile-outdated) for what each status means and what cannot be known):
+
+```
+KIND    NAME  SOURCE                               PINNED        BY         LATEST        STATUS   NEWER TAG
+import  data  https://example.com/data.json        ce4883ce4883  integrity  ce4883ce4883  current  -
+import  css   https://example.com/style.css        9f2b1c9f2b1c  lockfile   3f876f3f876f  changed  -
+base    BASE  docker.io/library/nginx:1.25-alpine  05b54105b541  lockfile   05b54105b541  current  1.27-alpine
+3 remote inputs: 1 changed, 2 current
+```
+
+Digests are shortened to 12 hex digits (`--json` has them in full); an `error` row is followed by a
+`name: error[CODE]: message` line. The exit code is 0 whatever the statuses are.
+
 ## Watch mode
 
 ```

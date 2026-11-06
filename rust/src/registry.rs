@@ -498,6 +498,18 @@ fn valid_repo(repo: &str) -> bool {
     !repo.is_empty() && repo.split('/').all(is_component)
 }
 
+/// The `/v2/...` target of a `Link: </v2/...>; rel="next"` header (same-registry pages only).
+fn next_link(link: &str) -> Option<String> {
+    let start = link.find("</v2/")?;
+    let rest = &link[start + 1..];
+    let end = rest.find('>')?;
+    let after = rest[end + 1..].trim_start();
+    let params = after.strip_prefix(';')?.trim_start();
+    let rel = params.strip_prefix("rel=")?;
+    let rel = rel.strip_prefix('"').unwrap_or(rel);
+    rel.starts_with("next").then(|| rest[..end].to_string())
+}
+
 fn valid_reference(r: &str) -> bool {
     is_tag(r) || is_integrity(r)
 }
@@ -1067,6 +1079,31 @@ impl RegistryClient {
             }
         }
         Ok(ManifestResponse { bytes, digest, media_type })
+    }
+
+    /// `GET /v2/<repo>/tags/list`, following `Link: <...>; rel="next"` pages on this registry (at most
+    /// 10 pages of 1000). Tags that are not valid tag names are dropped.
+    pub fn list_tags(&self, repo: &str) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut url = self.v2(&format!("{}/tags/list?n=1000", self.repo_path(repo)?))?;
+        for _ in 0..10 {
+            let res = self.call("GET", &url, &format!("repository:{repo}:pull"), &[], None, None)?;
+            if res.status() != 200 {
+                return self.fail(res, &format!("GET tags {repo}"));
+            }
+            let link = res.header("link").map(str::to_string);
+            let bytes = read_body(res, self.limits.max_manifest_bytes)?;
+            let j: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| SitefileError::plain(E_REGISTRY, format!("{}/{repo}: the tag list is not valid JSON", self.registry)))?;
+            for t in j.get("tags").and_then(Value::as_array).into_iter().flatten() {
+                if let Some(t) = t.as_str().filter(|t| is_tag(t)) {
+                    out.push(t.to_string());
+                }
+            }
+            let Some(next) = link.as_deref().and_then(next_link) else { break };
+            url = format!("{}{next}", self.init()?.href.trim_end_matches('/'));
+        }
+        Ok(out)
     }
 
     pub fn has_blob(&self, repo: &str, digest: &str) -> Result<bool> {
@@ -1655,6 +1692,8 @@ pub(crate) mod mock {
         pub corrupt: Option<String>,
         /// Answer GET manifest by digest with these bytes.
         pub swap_manifest: Option<Vec<u8>>,
+        /// Largest page of tags/list, whatever ?n= asks for (pagination test).
+        pub tag_page_size: Option<usize>,
     }
 
     impl Default for MockOptions {
@@ -1667,6 +1706,7 @@ pub(crate) mod mock {
                 redirect_blobs_to: None,
                 corrupt: None,
                 swap_manifest: None,
+                tag_page_size: None,
             }
         }
     }
@@ -2005,6 +2045,28 @@ pub(crate) mod mock {
         if path == "/v2/" || path == "/v2" {
             drop(st);
             return respond(s, 200, b"{}", &[], head);
+        }
+        // Tag listing, paginated like the distribution spec: ?n=<count>&last=<tag>, with a Link header to the next page.
+        if let Some(name) = path.strip_prefix("/v2/").and_then(|p| p.strip_suffix("/tags/list")) {
+            let prefix = format!("{name}:");
+            let mut all: Vec<String> = st.manifests.keys().filter_map(|k| k.strip_prefix(&prefix).map(str::to_string)).collect();
+            all.sort();
+            drop(st);
+            if all.is_empty() {
+                return respond(s, 404, br#"{"errors":[{"code":"NAME_UNKNOWN","message":"repository name not known to registry"}]}"#, &[], head);
+            }
+            let from: Vec<String> = match param("last") {
+                Some(last) => all.into_iter().filter(|t| *t > last).collect(),
+                None => all,
+            };
+            let n = param("n").and_then(|n| n.parse::<usize>().ok()).unwrap_or(from.len()).min(o.tag_page_size.unwrap_or(usize::MAX));
+            let page: Vec<String> = from.iter().take(n).cloned().collect();
+            let mut headers = json_h();
+            if from.len() > page.len() {
+                headers.push(("link", format!("</v2/{name}/tags/list?n={n}&last={}>; rel=\"next\"", page.last().cloned().unwrap_or_default())));
+            }
+            let body = serde_json::to_vec(&json!({ "name": name, "tags": page })).unwrap_or_default();
+            return respond(s, 200, &body, &headers, head);
         }
         let Some((_, kind, rest)) = parsed else {
             drop(st);

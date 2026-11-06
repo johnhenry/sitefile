@@ -6,6 +6,7 @@ pub mod args;
 pub mod cache;
 pub mod common;
 pub mod images;
+pub mod outdated;
 pub mod registry;
 pub mod servers;
 
@@ -38,6 +39,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
+
+Pins:
+  sitefile outdated [context] [--json]             compare remote imports and the BASE image with
+                                                   their pins (never changes anything)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -165,6 +170,7 @@ const TOP: &[&Command] = &[
     &servers::PS,
     &registry::PUSH,
     &registry::PULL,
+    &outdated::OUTDATED,
 ];
 
 struct Group {

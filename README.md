@@ -112,6 +112,7 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--no-cache] [--watch]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
+sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image

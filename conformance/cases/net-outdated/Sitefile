@@ -1,0 +1,10 @@
+# sitefile outdated: pinned by INTEGRITY (current, and a stale pin), by Sitefile.lock, unpinned, and a fetch error.
+FROM scratch
+IMPORT data FROM ${HTTPS}/data.json AS json INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa
+IMPORT css FROM ${HTTPS}/style.css INTEGRITY sha256:0000000000000000000000000000000000000000000000000000000000000000
+IMPORT ver FROM ${HTTPS}/r/version.txt AS text
+IMPORT page FROM ${HTTPS}/page.md AS markdown
+IMPORT stale FROM ${HTTPS}/big.bin
+IMPORT gone FROM ${HTTPS}/gone.txt
+IMPORT local FROM ./Sitefile AS text
+EXPORT /
