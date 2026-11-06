@@ -1,0 +1,9 @@
+COPY <<X /a.css
+x
+X
+COPY <<X /manifest.json
+{}
+X
+FINGERPRINT --overwrite /a.css /none/ MANIFEST /manifest.json
+FINGERPRINT /nothing/*.js
+EXPORT /

@@ -125,6 +125,13 @@
         "value": "[Hh][Ee][Aa][Dd][Ee][Rr]"
       }
     },
+    "_kw_fingerprint": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
+      }
+    },
     "_kw_export": {
       "type": "TOKEN",
       "content": {
@@ -277,6 +284,13 @@
       "content": {
         "type": "PATTERN",
         "value": "[Bb][Ee][Aa][Rr][Ee][Rr]"
+      }
+    },
+    "_kw_manifest": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt]"
       }
     },
     "_kw_run": {
@@ -457,6 +471,10 @@
         {
           "type": "SYMBOL",
           "name": "header_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "fingerprint_instruction"
         },
         {
           "type": "SYMBOL",
@@ -1897,6 +1915,72 @@
               "name": "_operand"
             }
           }
+        }
+      ]
+    },
+    "fingerprint_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_fingerprint"
+          },
+          "named": false,
+          "value": "FINGERPRINT"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "FIELD",
+            "name": "flag",
+            "content": {
+              "type": "SYMBOL",
+              "name": "flag"
+            }
+          }
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "FIELD",
+            "name": "pattern",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_operand"
+            }
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_manifest"
+                  },
+                  "named": false,
+                  "value": "MANIFEST"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "manifest",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },

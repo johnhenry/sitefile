@@ -1,4 +1,4 @@
-# SITEMAP, FEED, REDIRECT and HEADER: byte-identical output from both implementations.
+# SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT: byte-identical output from both implementations.
 ARG URL = "https://example.com/site/"
 
 # REDIRECT and HEADER lines from every stage are collected in source order.
@@ -22,4 +22,6 @@ REDIRECT --overwrite /caf%C3%A9 /café/ STATUS 308
 HEADER /assets/* Cache-Control: public,   max-age=31536000
 HEADER /* Referrer-Policy: "strict-origin"
 HEADER /assets/* X-Robots-Tag: noindex
+FINGERPRINT /assets/ /**/*.css
+fingerprint --overwrite /${URL}/*.js "/by path/" manifest /asset-manifest.json
 EXPORT /

@@ -165,7 +165,7 @@ directory holds or which variables a template uses.
   `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
-  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
@@ -218,7 +218,9 @@ tracking of the build: it compares each path before and after every operation of
 - **Inputs** of an entry: `./src/index.html` (a context file, also inside a copied directory or a `FROM ./dir`
   base), `stage build:/out/index.html`, `import theme:/style.css` (or `import data` for a whole import), `<<EOF`
   (an inline body), the template of a RENDER, `plugin <name>`/`tool <name>` and the source of a TRANSFORM,
-  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, and for `/_redirects`/`/_headers`
+  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, `<old path> (renamed)` for a file FINGERPRINT
+  renamed (preceded by the history of the old path), `references to renamed files` for a file whose references it
+  rewrote and `the files it renamed` for its MANIFEST, and for `/_redirects`/`/_headers`
   every REDIRECT/HEADER line (`Sitefile:19 REDIRECT`). Variables a template reads are not listed.
 - **Text**: `<path>  <mode>  <size> bytes  <digest>`, then one numbered line per entry,
   `  1. Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html`, each followed by `       from <input>` lines.

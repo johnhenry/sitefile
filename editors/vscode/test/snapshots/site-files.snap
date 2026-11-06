@@ -1,13 +1,13 @@
 {
  "1": {
-  "text": "# SITEMAP, FEED, REDIRECT and HEADER: byte-identical output from both implementations.",
+  "text": "# SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT: byte-identical output from both implementations.",
   "tokens": [
    [
     "#",
     "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
    ],
    [
-    " SITEMAP, FEED, REDIRECT and HEADER: byte-identical output from both implementations.",
+    " SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT: byte-identical output from both implementations.",
     "comment.line.number-sign.sitefile"
    ]
   ]
@@ -1000,6 +1000,108 @@
   ]
  },
  "25": {
+  "text": "FINGERPRINT /assets/ /**/*.css",
+  "tokens": [
+   [
+    "FINGERPRINT",
+    "meta.instruction.fingerprint.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/assets/",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/**/*.css",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "26": {
+  "text": "fingerprint --overwrite /${URL}/*.js \"/by path/\" manifest /asset-manifest.json",
+  "tokens": [
+   [
+    "fingerprint",
+    "meta.instruction.fingerprint.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.fingerprint.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "overwrite",
+    "meta.instruction.fingerprint.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "URL",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/*.js",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.fingerprint.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "/by path/",
+    "meta.instruction.fingerprint.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.fingerprint.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "manifest",
+    "meta.instruction.fingerprint.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/asset-manifest.json",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "27": {
   "text": "EXPORT /",
   "tokens": [
    [

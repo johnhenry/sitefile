@@ -13,6 +13,7 @@ Instructions:
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
 - `SITEMAP`, `FEED`, `REDIRECT` and `HEADER` (sitemap.xml, an Atom feed, `_redirects`, `_headers`): see Site files below.
+- `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` (content-hashed asset names, with the HTML and CSS that reference them rewritten): see Fingerprinting below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -538,6 +539,100 @@ use `${NAME}`.
     the normal conflict rules apply: identical bytes are fine, different
     content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
     HEADER) lines has `--overwrite`, which replaces the file.
+
+### Fingerprinting: FINGERPRINT (see `examples/blog/`)
+`FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` renames assets to
+content-hashed names (`/style.css` becomes `/style.3f2a9c1b0d.css`) and rewrites
+the references to them, so a host can serve them with
+`Cache-Control: public, max-age=31536000, immutable`. Like SITEMAP it runs
+**at its place in the stage** and reads the stage's tree at that point, so put
+it after the pages and assets are written. It is an instruction rather than an
+EXPORT clause because the result is an ordinary tree: later instructions (a
+SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
+`why` can show the rename.
+
+- **Patterns** (operands, so `${VAR}` works; at least one) are absolute paths
+  matched against the tree's paths segment by segment: `*` matches any run of
+  characters within a segment, `?` one character, and a `**` segment any number
+  of segments (also none); everything else is literal and case-sensitive. A
+  trailing `/` means everything below: `/assets/` is `/assets/**`. A pattern
+  that does not start with `/` is `E_VALIDATION`. `FINGERPRINT /assets/ /**/*.css`.
+- **Never renamed**: HTML pages (`.html`, `.htm`), files named `_redirects` or
+  `_headers`, and the MANIFEST file. Patterns that match nothing else print a
+  warning (`Sitefile:9 FINGERPRINT: no files match /assets/**`).
+- **Names**: `name.<hash>.ext`, with the hash before the last extension
+  (`app.min.js` → `app.min.<hash>.js`), or after the name when there is none
+  (`LICENSE` → `LICENSE.<hash>`, `.env` → `.env.<hash>`). The hash is the first
+  **10** lowercase hex digits of the SHA-256 of the file's final content, so the
+  same content always gets the same name, in both implementations.
+- **CSS first**: a matching CSS file has its own references to other matching
+  files rewritten *before* it is hashed, so its name changes when an image or
+  font it uses changes. Files are therefore hashed in dependency order; a cycle
+  of such references (`a.css` imports `b.css`, which imports `a.css`) is
+  `E_VALIDATION` naming the cycle, since no name could include the hash of the
+  others. Other files are hashed as they are (JavaScript is not scanned).
+- **References**: every `.html`, `.htm` and `.css` file of the tree (renamed or
+  not, valid UTF-8) has each reference to a renamed file rewritten. The
+  scanner (`src/links.ts`, ported as `rust/src/links.rs`, identical results;
+  a differential fixture checks it) finds:
+  - in HTML: `href` (every element but `<base>`), `src`, `srcset` and
+    `imagesrcset` (each candidate URL), `poster`, `xlink:href` and `data` on
+    `<object>`; the CSS of `<style>` elements and `style` attributes. Comments,
+    `<!…>`/`<?…>`, end tags and the contents of `<script>`, `<textarea>`,
+    `<title>` and `<xmp>` are skipped. Attribute values have `&amp;` `&lt;`
+    `&gt;` `&quot;` `&apos;` and numeric character references decoded (others
+    stay as written) and are trimmed of ASCII whitespace. `<base href>` is not
+    honoured.
+  - in CSS: `url(…)` (quoted or not) and the string after `@import`; comments
+    and other strings are skipped, CSS escapes are decoded.
+  - Ignored: empty URLs, `#fragment`s and `?query`s of the same document,
+    `http(s):` and `//host` URLs, and every other scheme (`mailto:`, `data:`,
+    `tel:`, `javascript:`).
+  - A URL resolves against the file that contains it (percent-decoded, NFC,
+    `.`/`..` collapsed); an absolute path (`/img/a.png`) is a URL path of the
+    exported site, so it resolves under the **EXPORT path** (`EXPORT /www`:
+    `/www/img/a.png`), whatever the stage, and `..` never climbs above it
+    (as in a browser). A URL ending in `/` names a directory and is never
+    rewritten. Matching is exact: `IMG/LOGO.PNG` does not name `/img/logo.png`.
+  - **Rewriting** inserts `.<hash>` into the name *as written*, before its
+    extension's dot, and keeps everything else (directories, `?query`,
+    `#fragment`, quotes, escapes, `&#…;` references, percent-encoding):
+    `href="css/site.css?v=1"` → `href="css/site.3f2a9c1b0d.css?v=1"`,
+    `srcset="img/logo%402x.png 2x"` → `img/logo%402x.<hash>.png 2x`. A name
+    whose extension's dot is percent-encoded (`a%2Ecss`) becomes a relative
+    URL to the new file instead.
+- **Moves and conflicts**: each renamed file leaves its old path and keeps its
+  mode; renamed and rewritten files get the origin `Sitefile:<line> FINGERPRINT`.
+  A new name that already holds different content is `E_CONFLICT` unless
+  `--overwrite` (identical content is fine).
+- **`MANIFEST <dest>`** (a file path) writes a JSON object from each old path
+  to its new path, sorted by path (UTF-8 bytes), two-space indented, with a
+  final newline (`{}` when nothing was renamed), under the same conflict rules:
+
+  ```json
+  {
+    "/css/site.css": "/css/site.3f2a9c1b0d.css"
+  }
+  ```
+
+  It is the hook for later steps that need the names (and for subresource
+  integrity, issue #105).
+- **Site files**: a `HEADER` pattern or a `REDIRECT` target that is exactly the
+  URL of a file renamed in the exported stage (or the stages it is built
+  `FROM`) is written to `/_headers` / `/_redirects` with the new URL
+  (`HEADER /css/site.css Cache-Control: …` → `/css/site.<hash>.css`); patterns
+  with wildcards are left as written, and a file renamed twice gets its last
+  name. A `/_redirects` or `/_headers` COPY'd into the tree is not rewritten.
+  A SITEMAP lists only HTML pages, which are never renamed, so it stays valid
+  wherever it runs.
+- **Elsewhere**: `graph` labels the operation `FINGERPRINT /assets/** …` (it
+  reads the stage's tree, so it has no input edges); `why` on a renamed file
+  shows the history of its old path, then `FINGERPRINT …  wrote <new path>`
+  from `<old path> (renamed)`; a page whose references were rewritten shows
+  `overwrote` from `references to renamed files`. In watch mode an unchanged
+  FINGERPRINT step is reused only when the whole tree before it is unchanged
+  (like SITEMAP), and its warnings are printed again. `--target` stops before
+  a later stage's FINGERPRINT like any other operation.
 
 ### Lint rules (`sitefile validate`)
 Like `docker build --check`, `validate` (and the language server) warns about likely mistakes in a Sitefile that is
