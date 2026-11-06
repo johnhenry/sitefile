@@ -8,6 +8,7 @@ pub mod common;
 pub mod images;
 pub mod registry;
 pub mod servers;
+pub mod vendor;
 
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
@@ -38,6 +39,10 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile save <ref> -o out[.zip|.tar|.tar.gz|.wbn]   export an image
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
+
+Offline builds:
+  sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
+                                                   vendor/sitefile; builds then read them from there
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -104,6 +109,8 @@ Options:
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
       --no-lockfile            do not read or write Sitefile.lock
+      --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
+                               to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
@@ -143,6 +150,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("frozen-lockfile"),
     flag("update-lock"),
     flag("no-lockfile"),
+    string("vendor-dir"),
     flag("allow-http"),
     flag("allow-private-network"),
     flag("allow-hardlinks"),
@@ -165,6 +173,7 @@ const TOP: &[&Command] = &[
     &servers::PS,
     &registry::PUSH,
     &registry::PULL,
+    &vendor::VENDOR,
 ];
 
 struct Group {
@@ -378,6 +387,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
     if o.flag("no-lockfile") {
         options.lockfile = LockfileSetting::Disabled;
     }
+    options.vendor_dir = o.str("vendor-dir").map(str::to_string);
     if let Some(t) = o.str("plugin-timeout").filter(|s| !s.is_empty()) {
         let ms = positive_int(t, "--plugin-timeout")?;
         options.plugin_policy.timeout_ms = ms;

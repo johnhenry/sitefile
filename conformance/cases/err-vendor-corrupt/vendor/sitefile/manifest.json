@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "resources": {
+    "https://example.com/js/lib.js": {
+      "integrity": "sha256:a2098bd92b10bf8b816d24b7556b1ce8c49a879d130489065ef1051c17e042f6",
+      "size": 26,
+      "resolved": "https://example.com/js/lib.js"
+    }
+  },
+  "images": {}
+}

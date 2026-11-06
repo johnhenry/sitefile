@@ -60,6 +60,8 @@ Options:
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
       --no-lockfile            do not read or write Sitefile.lock
+      --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
+                               to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
@@ -107,6 +109,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'no-lockfile': { type: 'boolean' },
+        'vendor-dir': { type: 'string' },
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
         'allow-hardlinks': { type: 'boolean' },
@@ -185,6 +188,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
       },
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
+      ...(o['vendor-dir'] !== undefined ? { vendorDir: o['vendor-dir'] } : {}),
       ...(o['plugin-timeout']
         ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
         : {}),

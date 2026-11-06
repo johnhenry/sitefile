@@ -1,0 +1,10 @@
+{
+  "network": true,
+  "steps": [
+    ["vendor", "${CTX}", "--allow-private-network", "--vendor-dir", "deps"],
+    { "args": ["build", "${CTX}", "-o", "${OUT}/site.oci.tar", "--frozen-lockfile", "--vendor-dir", "deps"], "env": { "SITEFILE_HOME": "${TMP}/fresh-home" } }
+  ],
+  "outputs": [["site.oci.tar", "oci"], ["ctx:deps", "tree"]],
+  "stdout": true,
+  "lock": true
+}

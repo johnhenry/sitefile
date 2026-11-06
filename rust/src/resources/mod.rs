@@ -7,4 +7,5 @@ pub mod local;
 pub mod lockfile;
 pub mod netpolicy;
 pub mod types;
+pub mod vendor;
 pub mod wbn_reader;

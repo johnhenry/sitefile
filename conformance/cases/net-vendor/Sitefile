@@ -1,0 +1,14 @@
+# sitefile vendor, then an offline build: no --allow-private-network, so any fetch would be refused.
+FROM scratch
+IMPORT data FROM ${HTTPS}/data.json AS json
+IMPORT css FROM ${HTTPS}/style.css
+IMPORT ver FROM ${HTTPS}/r/version.txt AS text
+IMPORT site FROM ${HTTPS}/site.tar AS tree
+COPY css: /style.css
+COPY site:/docs/ /docs/
+COPY ./ /src/
+RENDER --escape=html <<HTML TO /index.html
+<h1>${data.title}</h1>
+<p>${ver}</p>
+HTML
+EXPORT /

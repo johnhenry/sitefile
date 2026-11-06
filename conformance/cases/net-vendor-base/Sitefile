@@ -1,0 +1,8 @@
+# sitefile vendor with a BASE image: its blobs are vendored, and a build with an empty store uses them.
+FROM scratch
+COPY <<CSS /style.css
+body { margin: 0; }
+CSS
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /remote.css
+EXPORT / AS oci BASE ${REGISTRY}/conf/base:1 AT /srv/www

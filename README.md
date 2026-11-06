@@ -112,6 +112,7 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--no-cache] [--watch]
 sitefile validate [context] [--json]
 sitefile inspect  [context] [--json]
+sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
@@ -169,6 +170,9 @@ move images to and from any OCI registry. See
 - Remote imports are `https:` only, to public addresses only (checked at connect
   time and on every redirect), size- and time-limited, never decompressed or executed.
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
+- `sitefile vendor` stores every remote import (and the BASE image's blobs) under
+  `vendor/sitefile/` by content digest; builds then read them from there, verified,
+  with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
 - Writing different content to an existing path fails unless `--overwrite` is given.
   Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
   (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same
