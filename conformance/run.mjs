@@ -28,7 +28,7 @@
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
 //
-// 39 offline + 21 network cases.
+// 72 offline + 21 network cases.
 //
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 

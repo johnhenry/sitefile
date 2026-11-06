@@ -1,0 +1,365 @@
+// Regenerates the Sitefile parser differential fixtures from the TypeScript reference.
+//
+//   npm ci && npm run build        # at the repository root (builds lib/)
+//   node rust/tests/fixtures/sitefile/generate.mjs
+//
+// Writes, next to this script:
+//   fuzz.json         seeded inputs [{input, parse, plan}] (format: record.mjs)
+//   conformance.json  `sitefile validate` (TypeScript CLI) on every Sitefile under
+//                     conformance/cases and examples: [{dir, args, code, stdout, stderr}]
+// Checked by the Rust tests `language::differential` (parser, validator, planner,
+// parse_sitefile_all and LSP diagnostics) and tests/lsp_parity.rs (Rust CLI and
+// LSP against conformance.json), and by test/parser-fuzz-fixture.test.ts
+// (the TypeScript side still produces fuzz.json).
+//
+// For a larger local run (not committed):
+//   FUZZ_OUT=/tmp/sf-fuzz.json FUZZ_COUNT=50000 FUZZ_SEED=7 node rust/tests/fixtures/sitefile/generate.mjs
+//   (FUZZ_NOISE=0.3 makes 30% of the inputs pure noise; default 0.08)
+//   SITEFILE_PARSER_FUZZ=/tmp/sf-fuzz.json cargo test --release -- --ignored differential_external
+//
+// New instructions: add a generator to INSTRUCTIONS (and its keywords to WORDS).
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadLib, placeholder, record } from './record.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '../../../..');
+const lib = await loadLib(root);
+
+// ---------------------------------------------------------------- random
+
+// Seeded: mulberry32.
+let seed = Number(process.env.FUZZ_SEED ?? 0x5173f11e);
+const rand = () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = seed;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+const int = (n) => Math.floor(rand() * n);
+const pick = (xs) => xs[int(xs.length)];
+const chance = (p) => rand() < p;
+const maybe = (s, p = 0.5) => (chance(p) ? (typeof s === 'function' ? s() : s) : '');
+
+// ---------------------------------------------------------------- vocabulary
+
+const NAMES = ['a', 'b', 'site', 'posts', 'TITLE', 'x', 'out', 'md', 'og', 'cp', 'post', 'build', '_n', 'A1', 'data', 'item'];
+const TYPES = ['string', 'number', 'boolean', 'String', 'NUMBER', 'int', 'bool'];
+const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml'];
+const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
+const DIGEST = 'sha256:' + 'ab'.repeat(32);
+const DIGESTS = [DIGEST, DIGEST.toUpperCase(), 'sha256:abc', 'md5:x', '"' + DIGEST + '"', 'sha256:${x}'];
+const PATHS = [
+  './src', '/index.html', '/', './style.css', 'style.css', '/a/b/', './a b', '../up', '/../x', '/a/./b', 'C:\\x', '/x//y',
+  'posts:', 'site:/about.html', 'data:', 'md:posts', 'https://example.com/a.json', 'http://x/y', 'file:///etc/passwd', '//host/x',
+  '/a/${TITLE}.html', '/${x}', '"/q uoted.html"', "'/single ${x}'", '"/dq ${TITLE}/x"', '/p/${post.slug}.html', '/p/${item}/index.html',
+  '"a\\"b"', '"\\n\\t"', 'a\\ b', '~', '.', '..', '/🙂.html', '/é', '/a?b#c', '"${a}${b}"', '${x}', '""', "''",
+  '/a/../../x', '/./', '/a\\\\b', '"/a\\\\b"', '/%2e%2e/x', '"/x\\u0000"', '/a/b/..', './a/../..', 'a/./b/', '/CON', '/a:b', '/ä/Ä', '/ x', '"/ "',
+];
+const NUMBERS = ['0', '1', '-0', '1e3', '1E3', '0x10', '0b1', '0o7', '.5', '5.', '1_000', 'Infinity', '-Infinity', 'NaN', '1e400', '9007199254740993', '+1', '0.1', '1.50', '1e21', '1e-7', '00', '" 5 "', '""', '"\\t1\\n"', 'abc', '123456789012345678901234', '-', '2e-324'];
+const BOOLEANS = ['true', 'false', 'TRUE', 'True', '1', '0', 'yes', '""', '" true"'];
+const VALUES = ['hello', '"Hello world"', "'single'", '"${TITLE} x"', '${x}', '""', 'é', '"tab\\there"', ...NUMBERS.slice(0, 12), ...BOOLEANS.slice(0, 5)];
+
+/** Instruction lines (one string; heredoc bodies use \n). Add new instructions here. */
+const INSTRUCTIONS = {
+  FROM: () => `FROM ${pick(['scratch', 'scratch', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
+  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${pick(['scratch', ...NAMES, './src', '/x'])}`)}`,
+  ARG: () => `ARG ${pick(NAMES)}${maybe(() => `${pick([':', ' : ', ': '])}${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = ', '= '])}${pick(VALUES)}`, 0.6)}`,
+  LET: () => `LET ${pick(NAMES)}${maybe(() => `:${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = '])}${pick(VALUES)}`, 0.85)}`,
+  IMPORT: () => {
+    const clauses = [];
+    if (chance(0.6)) clauses.push(`AS ${pick(KINDS)}`);
+    if (chance(0.25)) clauses.push(`INTEGRITY ${pick(DIGESTS)}`);
+    if (chance(0.25)) clauses.push(`SORT BY ${pick(['date', 'title', 'x-y', '1'])}${maybe(() => ` ${pick(['DESC', 'ASC', 'desc', 'UP'])}`)}`);
+    if (chance(0.5)) clauses.reverse();
+    return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
+  },
+  COPY: () => `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus'])}${source()} ${pick(PATHS)}`,
+  RENDER: () =>
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+  TRANSFORM: () => {
+    let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
+    if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
+    if (chance(0.3)) s += ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`;
+    if (chance(0.3)) s += ` ARGS ${pick(['-i {input} {output}', '{output}', '{input}', '{option.w} {output}', '"%{pts}" {output}', 'x'])}`;
+    return s;
+  },
+  PLUGIN: () => `PLUGIN ${pick(NAMES)} FROM ${pick(['./plugins/x.mjs', './p.wasm', 'https://e.x/p.mjs', ...PATHS])}${maybe(() => ` INTEGRITY ${pick(DIGESTS)}`, 0.3)}`,
+  TOOL: () => `TOOL ${pick(NAMES)}${maybe(' extra', 0.1)}`,
+  EXPORT: () =>
+    `EXPORT ${pick(['/', '/', '/sub', './x', '/${x}', 'out', '"/"'])}${maybe(() => ` AS ${pick(FORMATS)}`, 0.4)}${maybe(() => ` BASE ${pick(['https://e.x/', 'http://e.x', '${x}'])}`, 0.15)}${maybe(() => ` AT ${pick(['/srv/www', 'rel', '/'])}`, 0.15)}${maybe(() => ` COMPRESSION ${pick(['gzip', 'none', 'NONE', 'zstd'])}`, 0.15)}`,
+  // Rejected keywords.
+  RUN: () => `RUN ${pick(['echo hi', 'make', ''])}`,
+  NOT_YET: () => `${pick(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'])} ${pick(PATHS)}`,
+  UNKNOWN: () => `${pick(['WORKDIR', 'ENV', 'ADD', 'Copy', 'copy', 'FROMX', 'É', '--x', 'ſtage', 'İmport', 'ﬁ', 'exec'])} ${pick(PATHS)}`,
+};
+/** Relative weights (instructions not listed get 1). */
+const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4 };
+/** Keywords mutations may splice in. */
+const WORDS = [
+  'FROM', 'STAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY',
+  // Case mapping that differs between ASCII and Unicode rules.
+  'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
+];
+
+function flags(list) {
+  let s = '';
+  while (chance(0.25)) s += pick(list) + ' ';
+  return s;
+}
+
+function heredoc() {
+  const delim = pick(['EOF', 'CSS', 'HTML', 'A', '_x1']);
+  const strip = chance(0.35);
+  const body = Array.from({ length: int(4) }, () =>
+    (strip && chance(0.5) ? '\t' : '') + pick(['body { color: red }', '<h1>${TITLE}</h1>', '{{#each posts as p}}x{{/each}}', '# not a comment', '', '  indented', 'EOF ', delim + 'x', 'COPY a b', '\\']),
+  );
+  const close = chance(0.9) ? (strip && chance(0.5) ? '\t\t' : '') + delim : pick([delim + ' ', ' ' + delim, delim.toLowerCase(), '']);
+  return { marker: `<<${strip ? '-' : ''}${delim}`, tail: '\n' + [...body, close].join('\n') };
+}
+
+/** A COPY/RENDER/TRANSFORM source: a path, or a heredoc marker (its body goes after the line). */
+let pendingBody = '';
+function source() {
+  if (!chance(0.3)) return pick(PATHS);
+  const h = heredoc();
+  pendingBody += h.tail;
+  return h.marker;
+}
+
+function instruction() {
+  const keys = Object.keys(INSTRUCTIONS);
+  const total = keys.reduce((n, k) => n + (WEIGHTS[k] ?? 1), 0);
+  let r = rand() * total;
+  for (const k of keys) {
+    r -= WEIGHTS[k] ?? 1;
+    if (r <= 0) return generate(k);
+  }
+  return generate('COPY');
+}
+
+function generate(k) {
+  pendingBody = '';
+  const line = INSTRUCTIONS[k]();
+  const body = pendingBody;
+  pendingBody = '';
+  return line + body;
+}
+
+function program() {
+  const lines = [];
+  for (let n = int(3); n > 0; n--) lines.push(generate('ARG'));
+  if (chance(0.6)) lines.push(generate(pick(['FROM', 'STAGE'])));
+  for (let n = int(7); n > 0; n--) lines.push(chance(0.1) ? generate(pick(['FROM', 'STAGE'])) : instruction());
+  if (chance(0.9)) lines.push(generate('EXPORT'));
+  if (chance(0.15)) lines.splice(int(lines.length + 1), 0, pick(['# comment', '   # indented comment', '', '   ', '\t']));
+  return lines;
+}
+
+/**
+ * A program that should mostly validate and plan: names are declared before
+ * they are used, so mutations then exercise the validator and planner too.
+ */
+function validProgram() {
+  const lines = ['ARG TITLE = "Hello"'];
+  const vars = ['TITLE'];
+  const stages = [];
+  const lists = [];
+  if (chance(0.4)) {
+    const ty = pick(['number', 'string', 'boolean']);
+    const values = ty === 'number' ? NUMBERS : ty === 'boolean' ? BOOLEANS : VALUES;
+    lines.push(`${pick(['ARG', 'ARG', 'LET'])} n:${ty}${chance(0.7) ? ` = ${pick(values)}` : ''}`.replace(/^LET (n:\w+)$/, 'LET $1 = 1'));
+    vars.push('n');
+  }
+  if (chance(0.5)) {
+    lines.push('LET slug = "${TITLE}-x"');
+    vars.push('slug');
+  }
+  const v = () => '${' + pick(vars) + '}';
+  if (chance(0.5)) {
+    lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}`);
+    lists.push('posts');
+  }
+  if (chance(0.3)) {
+    lines.push(`IMPORT data FROM ${pick(['./d.json', `https://example.com/d.json INTEGRITY ${DIGEST}`])} AS json`);
+    lists.push('data');
+  }
+  if (chance(0.3)) lines.push('IMPORT site FROM ./site');
+  const plugin = chance(0.3);
+  if (plugin) lines.push('PLUGIN og FROM ./plugins/og.mjs');
+  const tool = chance(0.3);
+  if (tool) lines.push('TOOL cp');
+  const body = () => {
+    const h = heredoc();
+    pendingBody += h.tail;
+    return h.marker;
+  };
+  const stage = () => {
+    const n = `s${stages.length}`;
+    stages.push(n);
+    return chance(0.5) ? `STAGE ${n}${maybe(' FROM scratch')}` : `FROM scratch AS ${n}`;
+  };
+  const ops = [
+    () => `COPY ${maybe('--overwrite ')}${pick(['./src', 'style.css', './a\\ b', `"./q ${v()}"`, 'site:/x', 'site:'])} ${pick(['/', '/css/', `/${v()}.css`, '"/x y/"'])}`,
+    () => `COPY ${body()} /inline-${int(9)}.txt`,
+    () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
+    () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
+    () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
+    () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
+    () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
+    stage,
+  ];
+  if (chance(0.5)) lines.push(stage());
+  for (let n = 1 + int(6); n > 0; n--) {
+    pendingBody = '';
+    const l = pick(ops)();
+    lines.push(l + pendingBody);
+    pendingBody = '';
+  }
+  if (stages.length && chance(0.6)) lines.push('FROM scratch');
+  lines.push(`EXPORT ${pick(['/', '/', '/sub'])}${maybe(() => pick([' AS zip', ' AS tgz', ' AS oci COMPRESSION none', ' AS oci AT /srv/www', ' AS wbn BASE https://e.x/']), 0.3)}`);
+  return lines;
+}
+
+// ---------------------------------------------------------------- mutations
+
+const ATOMS = [
+  ' ', '  ', '\t', '"', "'", '\\', '\\\\', '$', '${', '}', '${}', '${x', '${a.}', '${a.b-c}', '${1}', '$${a}', '\\${a}', '${x.y.z}', '<<', '<<-', '<<EOF',
+  '<<-EOF', '--', '--from=', '=', ':', '#', 'é', '😀', '\u00a0', '\u3000', '\ufeff', '\u2028', '\u0085', '\u200b', '\r', '\n', '\r\n', '\\\n', '/', '..',
+  ...WORDS, ...NAMES,
+];
+
+const words = (line) => line.split(/(\s+)/);
+
+const MUTATIONS = [
+  // tokens
+  (ls) => edit(ls, (w) => { w.splice(2 * int((w.length + 1) / 2), 2); }),
+  (ls) => edit(ls, (w) => { const i = 2 * int((w.length + 1) / 2); w.splice(i, 0, w[i] ?? 'x', ' '); }),
+  (ls) => edit(ls, (w) => { const i = 2 * int((w.length + 1) / 2); if (w[i + 2] !== undefined) [w[i], w[i + 2]] = [w[i + 2], w[i]]; }),
+  (ls) => edit(ls, (w) => { w[2 * int((w.length + 1) / 2)] = pick(ATOMS); }),
+  (ls) => edit(ls, (w) => { w[0] = pick([w[0]?.toLowerCase(), ' ' + w[0], '\t' + w[0], w[0] + 'S']); }),
+  // characters
+  (ls) => edit(ls, null, (s) => { const i = int(s.length + 1); return s.slice(0, i) + pick(ATOMS) + s.slice(i); }),
+  (ls) => edit(ls, null, (s) => { const i = int(s.length); return s.slice(0, i) + s.slice(i + 1); }),
+  (ls) => edit(ls, null, (s) => s.replace(/["']/, '')),
+  (ls) => edit(ls, null, (s) => s + pick(['"', "'", '\\', ' \\', '${', ' #x', '   '])),
+  // whitespace and continuations
+  (ls) => edit(ls, null, (s) => s.replace(/ /g, '\t')),
+  (ls) => edit(ls, null, (s) => { const sp = [...s.matchAll(/ /g)]; if (!sp.length) return s; const i = pick(sp).index; return s.slice(0, i) + pick([' \\\n   ', '\\\n', ' \\\n\n# c\n  ', ' \\\r\n\t']) + s.slice(i + 1); }),
+  (ls) => edit(ls, null, (s) => s + pick([' \\', '\\\\', '\\\\\\'])),
+  // unicode and long lines
+  (ls) => edit(ls, null, (s) => { const i = int(s.length + 1); return s.slice(0, i) + pick(['é', '😀', '\u00a0', '\u3000', '\ufeff', 'ｊ', '\u2028', '\u0301']) + s.slice(i); }),
+  (ls) => edit(ls, (w) => { const i = 2 * int((w.length + 1) / 2); w[i] = (w[i] ?? 'x').repeat(50 + int(300)); }),
+  // lines
+  (ls) => { ls.splice(int(ls.length), 1); },
+  (ls) => { const i = int(ls.length); ls.splice(i, 0, ls[i] ?? 'EXPORT /'); },
+  (ls) => { if (ls.length < 2) return; const i = int(ls.length), j = int(ls.length); [ls[i], ls[j]] = [ls[j], ls[i]]; },
+  (ls) => { ls.splice(int(ls.length + 1), 0, instruction()); },
+  (ls) => { ls.splice(int(ls.length + 1), 0, noise(1 + int(12))); },
+];
+
+/** Apply to a random line: `tokens` edits the whitespace-split words, `chars` the text. */
+function edit(lines, tokens, chars) {
+  if (!lines.length) return;
+  const i = int(lines.length);
+  if (tokens) {
+    const w = words(lines[i]);
+    tokens(w);
+    lines[i] = w.filter((x) => x !== undefined).join('');
+  } else {
+    lines[i] = chars(lines[i]);
+  }
+}
+
+function noise(n) {
+  let s = '';
+  for (let k = 0; k < n; k++) s += pick(ATOMS);
+  return s;
+}
+
+function fuzzCase() {
+  if (chance(NOISE)) return noise(1 + int(30));
+  const valid = chance(0.45);
+  const lines = valid ? validProgram() : program();
+  for (let n = valid ? int(3) : int(4); n > 0; n--) pick(MUTATIONS)(lines);
+  let src = lines.join('\n');
+  if (chance(0.15)) src = src.replace(/\n/g, '\r\n');
+  if (chance(0.5)) src += pick(['\n', '\n\n', '\r\n', '\\\n', ' ']);
+  // Character edits can split a surrogate pair; Rust input is UTF-8, so keep it well-formed.
+  return src.toWellFormed();
+}
+
+// ---------------------------------------------------------------- fixed cases
+
+const EDGE = [
+  '', '\n', 'EXPORT /', 'FROM scratch\nEXPORT /', 'COPY a /b\nEXPORT /', 'ARG X\nEXPORT /${X}', '\ufeffFROM scratch\nEXPORT /',
+  'FROM scratch\r\nCOPY a /b\r\nEXPORT /\r\n', 'COPY \\\n  a \\\n  /b\nEXPORT /', 'COPY a \\', '\\', 'COPY a /b \\\\\nEXPORT /',
+  'COPY <<EOF /a\nx\nEOF\nEXPORT /', 'COPY <<-EOF /a\n\tx\n\t\tEOF\nEXPORT /', 'COPY <<EOF /a\nx', 'COPY <<A <<B /a\nA\nB',
+  'COPY "<<EOF" /a\nEXPORT /', 'RENDER <<H TO /i.html\n{{x}\nH\nEXPORT /', 'RENDER <<H TO /i.html\n{{#each}}\nH\nEXPORT /', 'EXPORT <<X\nX',
+  'COPY <<EOF /a\r\nx\r\nEOF\r\nEXPORT /', 'COPY <<EOF /a\nEOF \nEOF\nEXPORT /', 'copy <<eof /a\nx\neof\nEXPORT /',
+  'LET a = "${a}"\nEXPORT /', 'LET a = 1\nLET a = 2\nEXPORT /', 'ARG a:number = x\nEXPORT /', 'ARG a:bool\nEXPORT /', 'LET a\nEXPORT /',
+  'COPY "${" /a\nEXPORT /', 'COPY ${} /a\nEXPORT /', 'COPY ${a.} /a\nEXPORT /', 'COPY ${a /a\nEXPORT /', 'COPY "abc /a', "COPY 'abc /a",
+  'COPY "a"b /c', 'COPY a\\', 'FROM scratch AS 1x\nEXPORT /', 'STAGE\nEXPORT /', 'STAGE a FROM a\nEXPORT /', 'FROM a AS a\nEXPORT /',
+  'STAGE a\nSTAGE b FROM a\nCOPY --from=a /x /y\nEXPORT /', 'STAGE a\nCOPY --from=a /x /y\nEXPORT /', 'FROM scratch\nFROM scratch\nEXPORT /',
+  'IMPORT p FROM ./posts AS markdown SORT BY date DESC\nRENDER t.html TO /p/${p.slug}.html FOR p IN p\nEXPORT /',
+  'IMPORT p FROM ./posts AS markdown\nRENDER t.html TO /p/${post.slug}.html FOR post IN p\nEXPORT /',
+  'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
+  'PLUGIN p FROM ./p.mjs\nTRANSFORM a WITH p TO /b OPTIONS w=1 w=2\nEXPORT /', 'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input}\nEXPORT /',
+  'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input} {output} {option.q}\nEXPORT /', 'TRANSFORM --from=a WITH p TO /b\nEXPORT /',
+  'EXPORT / AS oci COMPRESSION', 'EXPORT / AS oci COMPRESSION zstd', 'EXPORT / AS', 'EXPORT / AS rar', 'EXPORT /\nEXPORT /', 'EXPORT /../x',
+  'COPY 😀 /😀\nEXPORT /x 😀', 'ARG 😀\nEXPORT /', 'ARG a😀\nEXPORT /', 'COPY a /b\u00a0c\nEXPORT /', 'COPY\u3000a /b\nEXPORT /',
+  'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',
+  '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
+  'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
+];
+
+// ---------------------------------------------------------------- write
+
+const fuzzOut = process.env.FUZZ_OUT;
+const count = Number(process.env.FUZZ_COUNT ?? 400);
+const NOISE = Number(process.env.FUZZ_NOISE ?? 0.08);
+const cases = [];
+const seen = new Set();
+const add = (src) => {
+  if (seen.has(src)) return;
+  seen.add(src);
+  cases.push(record(lib, src));
+};
+if (!fuzzOut) EDGE.forEach(add);
+for (let n = 0; cases.length < (fuzzOut ? 0 : EDGE.length) + count && n < count * 3; n++) add(fuzzCase());
+const crashes = cases.filter((c) => c.parse.crash || c.plan?.crash);
+writeFileSync(fuzzOut ?? path.join(here, 'fuzz.json'), '[\n' + cases.map((c) => JSON.stringify(c)).join(',\n') + '\n]\n');
+const ok = cases.filter((c) => c.parse.ok).length;
+console.log(`${cases.length} inputs (${ok} parse, ${cases.filter((c) => c.plan?.ok).length} plan)${crashes.length ? `, ${crashes.length} TypeScript crashes` : ''}`);
+
+if (!fuzzOut) {
+  // `sitefile validate` (TypeScript CLI) on every Sitefile in the repository.
+  const home = mkdtempSync(path.join(os.tmpdir(), 'sitefile-fuzz-home-'));
+  const dirs = [];
+  for (const base of ['conformance/cases', 'examples']) {
+    for (const d of readdirSync(path.join(root, base)).sort()) {
+      if (statSync(path.join(root, base, d, 'Sitefile'), { throwIfNoEntry: false })?.isFile()) dirs.push(`${base}/${d}`);
+    }
+  }
+  const out = [];
+  for (const dir of dirs) {
+    const src = readFileSync(path.join(root, dir, 'Sitefile'), 'utf8');
+    const args = [];
+    const r = record(lib, src);
+    for (const ins of r.parse.ok ?? []) if (ins.kind === 'ARG' && !ins.defaultValue) args.push('--build-arg', `${ins.name}=${placeholder(ins.type)}`);
+    const r2 = spawnSync(process.execPath, [path.join(root, 'lib/src/cli.js'), 'validate', ...args], {
+      cwd: path.join(root, dir),
+      env: { ...process.env, SITEFILE_HOME: home, NO_COLOR: '1' },
+      encoding: 'utf8',
+    });
+    const { status: code, stdout, stderr } = r2;
+    out.push({ dir, args, code, stdout, stderr });
+  }
+  rmSync(home, { recursive: true, force: true });
+  writeFileSync(path.join(here, 'conformance.json'), '[\n' + out.map((c) => JSON.stringify(c)).join(',\n') + '\n]\n');
+  console.log(`${out.length} Sitefiles validated with the TypeScript CLI`);
+}

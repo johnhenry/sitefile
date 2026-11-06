@@ -76,6 +76,34 @@ and `$/cancelRequest` are ignored (requests are answered synchronously).
   working while the file does not parse. Diagnostics always come from the
   real parser.
 
+## Agreement with `sitefile validate`
+
+Diagnostics come from the same parser, validator and planner as
+`sitefile validate`, and tests hold them to it: for every Sitefile under
+`conformance/cases` and `examples`, and for the parser fuzz inputs
+(`rust/tests/fixtures/sitefile`), the LSP's first error has the code, line,
+column and message that `validate` prints (Rust and TypeScript CLIs alike),
+and its warnings are `validate`'s warnings (`rust/tests/lsp_parity.rs`,
+`language::differential`). The differences are deliberate:
+
+- **Several syntax errors.** `validate` stops at the first error; the LSP
+  reports one per logical line that fails to parse. The first is the same.
+  A scanner error (an unclosed heredoc, two `<<` bodies) is the only error,
+  as in `validate`.
+- **ARGs without a default.** `validate` fails with `E_MISSING_ARG` unless
+  `--build-arg` gives a value. The LSP reports an Information diagnostic
+  instead and checks the rest with a placeholder (`placeholder`, `0`,
+  `false`), which matches `validate --build-arg NAME=placeholder`; an error
+  found that way ends with `(checked with placeholder values for NAME)`.
+- **Template syntax.** The LSP also parses `RENDER` heredoc bodies as
+  templates (`E_TEMPLATE`); `validate` does not (a build does).
+- **Ranges.** An error's range covers the word at its column; an error at
+  the end of a line (`expected TO`) covers the line's last character. An
+  error without a position covers the first line.
+- **Warnings** are the same text, on the whole line they name. A
+  `--build-arg … was ignored` warning cannot occur (the LSP takes no build
+  arguments).
+
 ## Limitations
 
 - After the first validation or planning error, later ones are not reported

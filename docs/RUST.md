@@ -78,13 +78,36 @@ version has no equivalent (V8 compiles wasm quickly).
   `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 92/92 (71 offline, 21 network); the network cases need `openssl`.
+  Currently 93/93 (72 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
   zip and OCI config/index fixtures, and 30 deflate/gzip streams
   (`rust/tests/fixtures/deflate`). The fixture generators are next to
   them (`rust/tests/fixtures/*/generate.mjs`).
+- **Parser fuzzing** (`rust/tests/fixtures/sitefile`): a seeded generator
+  writes Sitefiles that mix valid programs, near-valid mutations (dropped,
+  duplicated and swapped tokens, broken quotes, `<<`/`<<-` heredocs with and
+  without their delimiter, CRLF, tabs, `\` continuations, Unicode
+  whitespace and case mappings, very long lines, `${…}` edge cases,
+  `STAGE`/`FROM` mixes) and noise, with what TypeScript does to each: the
+  validated IR or the error (code, line, column, message), and
+  `sitefile validate`'s result (warnings and `--json` output, or its error).
+  `language::differential` requires the Rust parser, validator and planner
+  to give identical results, and runs every input through
+  `parse_sitefile_all`, the LSP's diagnostics and its editor features
+  (no panics; the diagnostics agree with `validate`). The committed fixture
+  is about 480 inputs; a local run takes any size:
+
+  ```bash
+  FUZZ_OUT=/tmp/sf.json FUZZ_COUNT=50000 FUZZ_SEED=7 node rust/tests/fixtures/sitefile/generate.mjs
+  (cd rust && SITEFILE_PARSER_FUZZ=/tmp/sf.json cargo test --release --lib -- --ignored differential_external)
+  ```
+
+  `test/parser-fuzz-fixture.test.ts` (npm test) fails when the TypeScript
+  side no longer produces the committed results; regenerate with
+  `node rust/tests/fixtures/sitefile/generate.mjs`. New instructions go in
+  the generator's `INSTRUCTIONS` table.
 - **Benchmarks**: `bench/` (see [bench/README.md](../bench/README.md)).
 
 ## Compression

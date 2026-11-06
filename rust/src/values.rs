@@ -177,11 +177,27 @@ pub fn js_number_json(n: f64) -> Value {
 /// JSON such as cache keys and OCI documents.
 pub fn js_json_stringify(value: &Value, sort_keys: bool) -> String {
     let mut out = String::new();
-    write_js_json(&mut out, value, sort_keys);
+    write_js_json(&mut out, value, sort_keys, None, 0);
     out
 }
 
-fn write_js_json(out: &mut String, v: &Value, sort: bool) {
+/// `JSON.stringify(value, null, 2)`: what the CLIs print for `--json` (numbers
+/// and key order as JavaScript has them, e.g. `9007199254740992`, not `…992.0`).
+pub fn js_json_pretty(value: &Value) -> String {
+    let mut out = String::new();
+    write_js_json(&mut out, value, false, Some(2), 0);
+    out
+}
+
+/// A newline and `depth` levels of indentation (nothing when compact).
+fn newline(out: &mut String, indent: Option<usize>, depth: usize) {
+    if let Some(n) = indent {
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', n * depth));
+    }
+}
+
+fn write_js_json(out: &mut String, v: &Value, sort: bool, indent: Option<usize>, depth: usize) {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -198,7 +214,11 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool) {
                 if i > 0 {
                     out.push(',');
                 }
-                write_js_json(out, item, sort);
+                newline(out, indent, depth + 1);
+                write_js_json(out, item, sort, indent, depth + 1);
+            }
+            if !items.is_empty() {
+                newline(out, indent, depth);
             }
             out.push(']');
         }
@@ -212,18 +232,23 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool) {
                 // JS property order: array-index keys first, ascending, then the rest in insertion order.
                 keys.sort_by_key(|k| array_index(k).map_or((1, 0), |i| (0, i)));
             }
-            for (i, k) in keys.into_iter().enumerate() {
+            for (i, k) in keys.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
+                newline(out, indent, depth + 1);
                 write_js_string(out, k);
-                out.push(':');
-                write_js_json(out, &map[k], sort);
+                out.push_str(if indent.is_some() { ": " } else { ":" });
+                write_js_json(out, &map[*k], sort, indent, depth + 1);
+            }
+            if !keys.is_empty() {
+                newline(out, indent, depth);
             }
             out.push('}');
         }
     }
 }
+
 
 /// A canonical array index ("0", "9", "10" … "4294967294"), as ECMAScript defines one.
 fn array_index(k: &str) -> Option<u32> {
@@ -280,6 +305,16 @@ mod tests {
         }
         let o: Value = serde_json::from_str(r#"{"b":1,"10":2,"9":3,"a":4,"4294967295":5,"01":6}"#).unwrap();
         assert_eq!(js_json_stringify(&o, false), r#"{"9":3,"10":2,"b":1,"a":4,"4294967295":5,"01":6}"#);
+    }
+    #[test]
+    fn json_pretty_like_js() {
+        // Reference: JSON.stringify(v, null, 2) in node.
+        let v: Value = serde_json::json!({"a": 9007199254740992.0, "b": [], "c": {}, "d": [1e20, {"e": null}], "f": 1e21});
+        assert_eq!(
+            js_json_pretty(&v),
+            "{\n  \"a\": 9007199254740992,\n  \"b\": [],\n  \"c\": {},\n  \"d\": [\n    100000000000000000000,\n    {\n      \"e\": null\n    }\n  ],\n  \"f\": 1e+21\n}"
+        );
+        assert_eq!(js_json_pretty(&serde_json::json!([])), "[]");
     }
     #[test]
     fn coercion() {

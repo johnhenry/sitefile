@@ -246,7 +246,7 @@ pub fn is_safe_integer(n: f64) -> bool {
 
 /// `JSON.stringify(value, null, 2)`.
 pub fn pretty_json(v: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_default()
+    crate::values::js_json_pretty(v)
 }
 
 #[cfg(test)]
