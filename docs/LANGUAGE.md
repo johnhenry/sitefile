@@ -490,6 +490,40 @@ use `${NAME}`.
     content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
     HEADER) lines has `--overwrite`, which replaces the file.
 
+### Lint rules (`sitefile validate`)
+Like `docker build --check`, `validate` (and the language server) warns about likely mistakes in a Sitefile that is
+otherwise valid. Each warning names a stable rule id:
+`warning: Sitefile:4: [render-escape] RENDER writes /index.html without --escape=html, so substituted values are not HTML-escaped (add --escape=html, or --escape=none if that is intended)`.
+The line is the instruction's first line. Rules read only the Sitefile (no files, network or lockfile), and lint
+warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lint.
+
+| Rule | Warns about |
+| --- | --- |
+| `unused-name` | an `ARG`, `LET`, `IMPORT`, `PLUGIN` or `TOOL` nothing refers to (`${NAME}` in any operand, `name:` sources, `FOR … IN`, `FEED`, `WITH`, names in inline `RENDER` bodies). A template *file* (or one from an import or stage) can read any ARG, LET and value import, so with one in the Sitefile only `file`/`tree` imports, plugins and tools are reported. |
+| `unpinned-import` | a remote `IMPORT` without `INTEGRITY` (`Sitefile.lock` pins it only after the first fetch). |
+| `unpinned-image` | a registry `FROM image <ref>` (not a local-store image) or the `BASE` of `EXPORT … AS oci` without an `@sha256:` digest. |
+| `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
+| `sitemap-order` | a `SITEMAP` followed, in the same stage, by an instruction writing a `.html` file it therefore does not list. |
+| `shadowed-write` | a `RENDER` (without `FOR`) or inline `COPY` whose file a later `RENDER`/inline `COPY` in the same stage replaces with `--overwrite`, so the first write has no effect. |
+
+The unnamed non-final stage warning (above) is a planner warning, printed by `build` too; it is not a lint rule.
+
+**Disabling.** A comment `# sitefile-lint: disable=<rule>[,<rule>…]` anywhere turns the rules off for the whole
+file; `# sitefile-lint: disable-next-line=<rule>[,…]` turns them off for the next instruction only (blank lines and
+other comments in between are skipped). `all` names every rule. The name `sitefile-lint` is ASCII
+case-insensitive, with spaces or tabs allowed around it, the `:` and the `=` (it shares the `sitefile` prefix with the
+`# sitefile=1` version directive, and like any comment it is body text inside a heredoc). A `# sitefile-lint:`
+comment that is neither form, or names an unknown rule, is itself a warning (`[lint-comment]`, which cannot be
+disabled). On the command line, `validate --lint-disable unused-name,render-escape` (repeatable) does the same for
+one run.
+
+```
+# sitefile-lint: disable=unpinned-import
+IMPORT data FROM https://example.com/data.json AS json
+# sitefile-lint: disable-next-line=render-escape
+RENDER ./templates/trusted.html TO /index.html
+```
+
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that
   keeps the first writer as the owner.

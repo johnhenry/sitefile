@@ -9,6 +9,7 @@
 //! This is a Rust-only tooling exception (docs/RUST.md): the language is the
 //! same in both implementations; the server is an editor tool.
 
+pub mod actions;
 pub mod diagnostics;
 pub mod docs;
 pub mod features;
@@ -16,6 +17,7 @@ pub mod framing;
 pub mod index;
 pub mod text;
 
+use crate::resources::lockfile::Lockfile;
 use diagnostics::{analyze, Analysis};
 use index::Index;
 use serde_json::{json, Value};
@@ -64,6 +66,31 @@ impl Document {
 }
 
 /// The last path segment of a `file://` URI, percent-decoded (`Sitefile` otherwise).
+/// The local path of a `file://` URI (percent-decoded), if it is one.
+fn uri_path(uri: &str) -> Option<std::path::PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    Some(std::path::PathBuf::from(percent_decode(rest)))
+}
+
+fn percent_decode(seg: &str) -> String {
+    let bytes = seg.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(b) = hex {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn file_label(uri: &str) -> String {
     let seg = uri.rsplit('/').next().unwrap_or("");
     let bytes = seg.as_bytes();
@@ -120,6 +147,7 @@ fn capabilities() -> Value {
         "referencesProvider": true,
         "documentSymbolProvider": true,
         "renameProvider": { "prepareProvider": true },
+        "codeActionProvider": { "codeActionKinds": ["quickfix"] },
     })
 }
 
@@ -199,6 +227,7 @@ impl Server {
                 | "textDocument/documentSymbol"
                 | "textDocument/prepareRename"
                 | "textDocument/rename"
+                | "textDocument/codeAction"
         );
         if !known {
             return error(id, METHOD_NOT_FOUND, &format!("unhandled method {method}"));
@@ -210,6 +239,16 @@ impl Server {
         };
         if method == "textDocument/documentSymbol" {
             return response(id, features::document_symbols(&doc.lines, &doc.index));
+        }
+        if method == "textDocument/codeAction" {
+            let (Some(first), Some(last)) = (params["range"]["start"]["line"].as_u64(), params["range"]["end"]["line"].as_u64()) else {
+                return error(id, INVALID_PARAMS, "expected textDocument and range");
+            };
+            // The only file the server reads: the Sitefile.lock next to the document, for pins.
+            let lock = uri_path(&uri).and_then(|p| p.parent().map(|d| d.join("Sitefile.lock"))).and_then(|p| Lockfile::load(p).ok());
+            doc.analysis();
+            let Some(analysis) = doc.analysis.as_ref() else { return response(id, json!([])) };
+            return response(id, actions::code_actions(&doc.lines, &doc.index, analysis, &uri, first as u32, last as u32, lock.as_ref()));
         }
         let Some((_, line, col)) = doc_position(params) else {
             return error(id, INVALID_PARAMS, "expected textDocument and position");

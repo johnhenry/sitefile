@@ -137,6 +137,7 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
                                to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
@@ -187,6 +188,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("frozen-lockfile"),
     flag("update-lock"),
     flag("strict-pins"),
+    strings("lint-disable"),
     flag("no-lockfile"),
     string("vendor-dir"),
     flag("allow-http"),
@@ -381,6 +383,13 @@ fn run_main(argv: &[String]) -> i32 {
     }
     if o.flag("strict-pins") && o.flag("update-lock") {
         return usage_error("--strict-pins and --update-lock conflict");
+    }
+    let lint_disabled = lint_rules_off(&o);
+    if o.has("lint-disable") && command != "validate" {
+        return usage_error("--lint-disable is only for validate");
+    }
+    if let Some(id) = lint_disabled.iter().find(|id| *id != "all" && !crate::lint::LINT_RULES.contains(&id.as_str())) {
+        return usage_error(&format!("--lint-disable: unknown lint rule '{id}' (rules: {}, or all)", crate::lint::LINT_RULES.join(", ")));
     }
     let (cache_from, cache_to) = (o.strs("cache-from"), o.strs("cache-to"));
     if !cache_from.is_empty() || !cache_to.is_empty() {
@@ -678,6 +687,9 @@ fn run_build_command(
             for m in &p.warnings {
                 err(&format!("warning: {m}\n"));
             }
+            for m in crate::executor::lint_build(&options, &lint_rules_off(o))? {
+                err(&format!("warning: {m}\n"));
+            }
             if options.strict_pins {
                 check_plan_pins(&options, &p)?;
             }
@@ -779,4 +791,9 @@ mod tests {
         assert!(is_extra_command(Some(&"cache".to_string())));
         assert!(!is_extra_command(Some(&"build".to_string())));
     }
+}
+
+/// `--lint-disable` values: comma-separated rule ids (repeatable).
+fn lint_rules_off(o: &args::Parsed) -> Vec<String> {
+    o.strs("lint-disable").iter().flat_map(|v| v.split(',').map(|s| crate::language::scanner::js_trim(s).to_string()).collect::<Vec<_>>()).collect()
 }

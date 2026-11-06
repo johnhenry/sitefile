@@ -33,7 +33,7 @@ pub struct VendorResult {
 }
 
 pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
-    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Callback = {

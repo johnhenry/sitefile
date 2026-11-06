@@ -5,8 +5,9 @@
 //   { input, parse, plan? }
 //   parse: { ok: [instruction, …] }   the validated IR (parseProgram), spans as [line, column]
 //        | { error: [code, line, column, detail] }
-//   plan:  { ok: [warning, …], json }  only when parse is ok: `sitefile validate`
-//                                     (json: its --json output, spans as [line, column])
+//   plan:  { ok: [warning, …], json, lint }  only when parse is ok: `sitefile validate`
+//                                     (json: its --json output, spans as [line, column];
+//                                     lint: its lint warnings, src/lint.ts)
 //        | { error: [code, line, column, detail] }   (ARGs without a default get
 //                                     the language server's placeholder values)
 // A non-SitefileError exception is recorded as { crash: message } (a bug).
@@ -15,13 +16,14 @@ import { pathToFileURL } from 'node:url';
 
 export async function loadLib(root) {
   const imp = (p) => import(pathToFileURL(path.join(root, 'lib/src', p)).href);
-  const [{ parseSitefile }, { validate }, { plan }, { SitefileError }] = await Promise.all([
+  const [{ parseSitefile }, { validate }, { plan }, { SitefileError }, { lint }] = await Promise.all([
     imp('language/parser.js'),
     imp('language/validate.js'),
     imp('planner.js'),
     imp('errors.js'),
+    imp('lint.js'),
   ]);
-  return { parseSitefile, validate, plan, SitefileError };
+  return { parseSitefile, validate, plan, SitefileError, lint };
 }
 
 /** The value an ARG without a default gets (rust/src/lsp/diagnostics.rs `placeholder`). */
@@ -64,7 +66,7 @@ export function record(lib, input, file = 'Sitefile') {
     const p = lib.plan(program, args);
     // `json`: what `sitefile validate --json` prints (src/cli.ts), spans compacted.
     const json = { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath };
-    out.plan = { ok: p.warnings.map(wf), json: compact(json) };
+    out.plan = { ok: p.warnings.map(wf), json: compact(json), lint: lib.lint(program, p, input).map(wf) };
   } catch (e) {
     out.plan = failure(lib, e);
   }

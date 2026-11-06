@@ -85,6 +85,18 @@ fn stdio_session() {
     assert_eq!(diags["params"]["version"], 2);
     assert_eq!(diags["params"]["diagnostics"], json!([]));
 
+    // A lint warning carries its rule id, and a code action fixes it.
+    assert_eq!(caps["codeActionProvider"]["codeActionKinds"], json!(["quickfix"]));
+    send(&mut stdin, json!({ "jsonrpc": "2.0", "method": "textDocument/didChange", "params": { "textDocument": { "uri": uri, "version": 3 }, "contentChanges": [{ "text": "RENDER <<H TO /a.html\nx\nH\nEXPORT /\n" }] } }));
+    let diags = recv_where(&mut stdout, |m| m["method"] == "textDocument/publishDiagnostics");
+    let d = &diags["params"]["diagnostics"][0];
+    assert_eq!((d["code"].as_str(), d["severity"].as_u64()), (Some("render-escape"), Some(2)));
+    let range = json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } });
+    send(&mut stdin, json!({ "jsonrpc": "2.0", "id": 4, "method": "textDocument/codeAction", "params": { "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": [d] } } }));
+    let a = recv_where(&mut stdout, |m| m["id"] == 4);
+    assert_eq!(a["result"][0]["title"], "Add --escape=html");
+    assert_eq!(a["result"][0]["edit"]["changes"][uri][0]["newText"], " --escape=html");
+
     send(&mut stdin, json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
     let s = recv_where(&mut stdout, |m| m["id"] == 3);
     assert_eq!(s["result"], Value::Null);

@@ -2,7 +2,8 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
-import { build, buildToDirectory, checkPlanPins, planBuild, type BuildOptions } from './executor.js';
+import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, type BuildOptions } from './executor.js';
+import { LINT_RULES } from './lint.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
@@ -83,6 +84,7 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
                                to the context; default vendor/sitefile when it exists; see 'sitefile vendor')
@@ -145,6 +147,7 @@ export async function main(
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'strict-pins': { type: 'boolean' },
+        'lint-disable': { type: 'string', multiple: true },
         'no-lockfile': { type: 'boolean' },
         'vendor-dir': { type: 'string' },
         'allow-http': { type: 'boolean' },
@@ -182,6 +185,13 @@ export async function main(
   if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
   if (o['strict-pins'] && o['update-lock']) return usageError('--strict-pins and --update-lock conflict');
+  const lintDisabled = (o['lint-disable'] ?? []).flatMap((v) => v.split(',').map((s) => s.trim()));
+  if (o['lint-disable'] && command !== 'validate') return usageError('--lint-disable is only for validate');
+  for (const id of lintDisabled) {
+    if (id !== 'all' && !(LINT_RULES as readonly string[]).includes(id)) {
+      return usageError(`--lint-disable: unknown lint rule '${id}' (rules: ${LINT_RULES.join(', ')}, or all)`);
+    }
+  }
   const cacheFrom = o['cache-from'] ?? [];
   const cacheTo = o['cache-to'] ?? [];
   if (cacheFrom.length || cacheTo.length) {
@@ -344,6 +354,7 @@ export async function main(
         const p = await planBuild(options);
         span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        (await lintBuild(options, lintDisabled)).forEach((m) => process.stderr.write(`warning: ${m}\n`));
         if (o['strict-pins']) await checkPlanPins(options, p);
         if (o.json) {
           process.stdout.write(

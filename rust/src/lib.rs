@@ -19,6 +19,7 @@ pub mod values;
 pub mod build_args;
 pub mod language;
 pub mod planner;
+pub mod lint;
 
 // Templates and data formats
 pub mod csv;

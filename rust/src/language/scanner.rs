@@ -223,6 +223,20 @@ fn directive(raw: &str, line: u32, file: &str, late: bool, saw_version: &mut boo
 /// A `# sitefile=N` comment is the syntax version directive: it must come before
 /// the first instruction, at most once, and name a supported version.
 pub fn logical_lines(source: &str, file: &str) -> Result<Vec<LogicalLine>> {
+    logical_lines_with_comments(source, file, &mut Vec::new())
+}
+
+/// A comment line outside heredoc bodies: `text` runs from its `#` to the end of the line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentLine {
+    pub line: u32,
+    /// UTF-16 column of the `#`.
+    pub column: u32,
+    pub text: String,
+}
+
+/// [`logical_lines`], also collecting every comment line (for `# sitefile-lint:`).
+pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<CommentLine>) -> Result<Vec<LogicalLine>> {
     let mut out: Vec<LogicalLine> = Vec::new();
     let mut text: Vec<char> = Vec::new();
     let mut positions: Vec<Pos> = Vec::new();
@@ -261,6 +275,9 @@ pub fn logical_lines(source: &str, file: &str) -> Result<Vec<LogicalLine>> {
         }
         let trimmed = js_trim(raw);
         if trimmed.starts_with('#') {
+            if let Some(hash) = raw.find('#') {
+                comments.push(CommentLine { line, column: utf16_len(&raw[..hash].chars().collect::<Vec<_>>()) + 1, text: raw[hash..].to_string() });
+            }
             directive(raw, line, file, !out.is_empty() || continuing, &mut saw_version)?;
             continue;
         }

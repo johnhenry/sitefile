@@ -7,7 +7,7 @@ const SORTABLE = new Set(['markdown', 'json', 'yaml', 'csv']);
 
 const IMPORT_REF = /^([A-Za-z_][A-Za-z0-9_]*):/;
 
-function operandsOf(ins: Instruction): Operand[] {
+export function operandsOf(ins: Instruction): Operand[] {
   switch (ins.kind) {
     case 'FROM':
       return ins.base === 'scratch' ? [] : isImageBase(ins.base) ? [ins.base.ref, ...(ins.base.at ? [ins.base.at] : [])] : [ins.base];
