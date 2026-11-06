@@ -23,6 +23,7 @@ use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
 use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
 use crate::plugins::wasm::check_wasm_plugin;
+use crate::profile::{begin, Profiler};
 use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::https::fetch_remote;
@@ -102,6 +103,10 @@ pub struct BuildOptions {
     pub skip_base: bool,
     /// Registry hosts reachable over plain http (for BASE pulls).
     pub insecure_registries: Vec<String>,
+    /// `--profile`: record a timing trace of the build here (src/profile.rs).
+    pub profiler: Option<Arc<Profiler>>,
+    /// Other paths this command writes (the --profile file): skipped when walking the context, like `out_dir`.
+    pub also_writes: Vec<String>,
     /// Keep every intermediate tree in [`BuildResult::steps`] (for `sitefile why`).
     pub record_steps: bool,
 }
@@ -134,6 +139,8 @@ impl Default for BuildOptions {
             base_image: None,
             skip_base: false,
             insecure_registries: Vec::new(),
+            profiler: None,
+            also_writes: Vec::new(),
             record_steps: false,
         }
     }
@@ -289,8 +296,15 @@ fn realpath_loose(p: &Path) -> PathBuf {
 
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
+    let prof = options.profiler.as_deref();
+    let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
     let p = plan_for(&program, options)?;
+    let mut parse_args = vec![("imports", json!(p.imports.len())), ("stages", json!(p.stages.len()))];
+    if let Some(t) = &p.target {
+        parse_args.push(("target", json!(t)));
+    }
+    parse_span.end(parse_args);
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Warn = {
         let warnings = warnings.clone();
@@ -332,6 +346,12 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
             }
         }
     }
+    for w in &options.also_writes {
+        let rel = relative_path(&context_real, &realpath_loose(&resolve_path(Path::new(w))));
+        if !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/') {
+            ignore.push(rel);
+        }
+    }
     let local = LocalContext::open(
         &context_real,
         &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
@@ -357,7 +377,31 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         frozen: options.frozen_lockfile,
         update: options.update_lock,
     };
-    let resolved = map_limit(&p.imports, options.concurrency.max(1), |spec| resolve_import(spec, &env))?;
+    // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
+    let import_spans: Vec<_> = p
+        .imports
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            prof.map(|pr| {
+                let tid = i as u64 + 2;
+                pr.name_thread(tid, format!("import {}", spec.name));
+                let as_kind = spec.as_kind.map(|k| k.as_str()).unwrap_or("file");
+                pr.reserve(format!("import {}", spec.name), "import", vec![("uri", json!(spec.uri)), ("as", json!(as_kind))], tid)
+            })
+        })
+        .collect();
+    let indexed: Vec<(usize, &ImportSpec)> = p.imports.iter().enumerate().collect();
+    let resolved = map_limit(&indexed, options.concurrency.max(1), |(i, spec)| {
+        if let Some(s) = &import_spans[*i] {
+            s.start();
+        }
+        let r = resolve_import(spec, &env)?;
+        if let Some(s) = &import_spans[*i] {
+            s.end(vec![("kind", json!(r.kind()))]);
+        }
+        Ok(r)
+    })?;
     let mut resources: HashMap<String, Resource> = HashMap::new();
     let mut resource_list: Vec<(String, Resource)> = Vec::new();
     for (spec, res) in p.imports.iter().zip(resolved) {
@@ -380,21 +424,29 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         cache: options.cache_dir.as_ref().map(|d| TransformCache::new(d).with_remote(options.remote_cache.clone())),
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
+        profiler: prof,
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
+            let s = begin(prof, || format!("PLUGIN {}", spec.name), "plugin", || vec![("path", json!(format!("./{}", spec.path)))]);
             register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
+            s.end(Vec::new());
         }
         let mut tree = Tree::empty();
-        for stage in &p.stages {
+        for (i, stage) in p.stages.iter().enumerate() {
+            let name = stage.name.clone().unwrap_or_else(|| format!("#{}", i + 1));
+            let s = begin(prof, || format!("stage {name}"), "stage", || vec![("from", json!(stage_from(stage)))]);
             tree = exec.start_stage(stage)?;
             let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
+                let line = op.span().line;
+                let o = begin(prof, || format!("{label}:{line} {}", op.keyword()), "operation", || vec![("line", json!(line))]);
                 tree = exec.execute(op, tree)?;
                 if let Some(r) = record.as_mut() {
                     r.push(tree.clone());
                 }
+                o.end(vec![("files", json!(tree.len()))]);
             }
             if let (Some(all), Some(r)) = (steps.as_mut(), record) {
                 all.push(r);
@@ -402,6 +454,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
             if let Some(name) = &stage.name {
                 exec.stages.insert(name.clone(), tree.clone());
             }
+            s.end(vec![("files", json!(tree.len()))]);
         }
         Ok(tree)
     })();
@@ -434,6 +487,10 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
     };
     let mut lock = lock.into_inner().unwrap_or(None);
+    let base_span = match &base_ref {
+        Some(r) => begin(prof, || format!("BASE {r}"), "import", Vec::new),
+        None => crate::profile::Span::none(),
+    };
     let base = match base_ref {
         Some(r) => {
             let store = Store::open_default()?;
@@ -455,6 +512,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
         }
         None => None,
     };
+    base_span.end(Vec::new());
 
     let lockfile_written = match lock.as_mut() {
         Some(l) if !options.frozen_lockfile => l.save()?,
@@ -574,6 +632,13 @@ pub fn oci_options(
 pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
     let result = build(options)?;
     let format = target.format.unwrap_or(result.plan.export_format);
+    let span = begin(options.profiler.as_deref(), || "export".into(), "export", || vec![("format", json!(format.as_str()))]);
+    let r = export_build(result, format, options, out_dir, target);
+    span.end(Vec::new());
+    r
+}
+
+fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
@@ -1056,6 +1121,17 @@ struct Exec<'a> {
     /// Digest of each plugin's code (cache key); None when the folder was too large to hash.
     plugin_digests: HashMap<String, Option<String>>,
     stats: TransformStats,
+    profiler: Option<&'a Profiler>,
+}
+
+/// What a stage starts from, for the trace.
+fn stage_from(stage: &Stage) -> String {
+    match &stage.base {
+        StageBase::Scratch => "scratch".into(),
+        StageBase::Stage { name } => name.clone(),
+        StageBase::Local { path } if path.is_empty() => "./".into(),
+        StageBase::Local { path } => format!("./{path}"),
+    }
 }
 
 fn unknown_stage(name: &str, span: &SourceSpan) -> SitefileError {
@@ -1450,10 +1526,17 @@ impl<'a> Exec<'a> {
             } else {
                 None
             };
+            let call = begin(
+                self.profiler,
+                || format!("TRANSFORM {plugin} {}", d.path),
+                "transform",
+                || vec![("plugin", json!(plugin)), ("tool", json!(tool.is_some())), ("dest", json!(d.path))],
+            );
             let mut result: Option<PluginResult> = match (&key, self.cache.as_mut()) {
                 (Some(k), Some(c)) => c.get(k),
                 _ => None,
             };
+            let cache_state = if key.is_none() { "off" } else if result.is_some() { "hit" } else { "miss" };
             if result.is_none() {
                 let r = if let Some(t) = &tool {
                     self.stats.tool_runs += 1;
@@ -1477,6 +1560,7 @@ impl<'a> Exec<'a> {
                 }
                 result = Some(r);
             }
+            call.end(vec![("cache", json!(cache_state))]);
             match result.expect("set above") {
                 PluginResult::File(bytes) => {
                     if d.trailing_slash {

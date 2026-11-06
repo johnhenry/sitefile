@@ -214,6 +214,42 @@ Only under `serve --watch`:
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
 (recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)).
 
+## Profiling (`--profile`)
+
+```
+sitefile build|inspect|validate|graph [context] --profile trace.json [options]
+sitefile why <path> [context] --profile trace.json [options]
+```
+
+`--profile <file>` writes a timing trace of the command in the [Chrome trace event
+format](https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU) (JSON object form): open it
+in `ui.perfetto.dev`, `chrome://tracing` or speedscope to see which steps are slow. The file is written when the
+command ends, also when the build fails (so you can see how far it got); under `--watch` it is rewritten after every
+build. If it cannot be written, a successful build fails with `error[E_EXPORT]: cannot write the --profile file
+'<file>'` (exit 1); a failed build keeps its own error. A trace file inside the build context is never read as an
+input (like the export destination), and `--watch` ignores its changes.
+
+Every event is a complete event (`"ph": "X"`, `ts` and `dur` in microseconds from the start of the command) on
+`pid` 1. The build runs on `tid` 1; import *N* (0-based, in Sitefile order) runs on `tid` *N*+2, because imports
+resolve concurrently; `thread_name` metadata events name each thread. Events are listed in the order they start in
+the Sitefile (imports in declaration order), so two traces of the same build differ only in `ts` and `dur`; the
+TypeScript and Rust CLIs write the same events, names, categories and args (conformance checks it).
+
+| `cat` | `name` | `args` |
+| --- | --- | --- |
+| `command` | `build`, `inspect`, `validate`, `graph` or `why`: the whole command | |
+| `build` | `parse`: read, parse, validate and plan the Sitefile | `imports`, `stages` (with `--target`, the stages built), `target` (only with `--target`) |
+| `import` | `import <name>` | `uri`, `as` (the `AS` kind, default `file`), `kind` (`file`, `tree` or `value`) |
+| `plugin` | `PLUGIN <name>`: check and register a plugin | `path` |
+| `stage` | `stage <name>` (`stage #N` for an unnamed stage) | `from` (`scratch`, a stage name or `./dir`), `files` (tree size at the end) |
+| `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it) |
+| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
+| `import` | `BASE <image>`: resolve or pull the `oci` BASE | |
+| `export` | `export`: encode and write the output (`build` only) | `format` |
+
+An event the build failed inside has `"incomplete": true` and ends when the trace is written. `<Sitefile>` is the
+Sitefile's path relative to the working directory, as in error messages.
+
 ## Transform cache
 
 TRANSFORM results (plugins and `TOOL`s) are cached in `$SITEFILE_HOME/cache/transform` (default `~/.sitefile/cache/transform`),

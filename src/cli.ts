@@ -17,6 +17,8 @@ import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { SITEFILE_VERSION } from './attest.js';
 import { watchLoop } from './cli/watch.js';
+import { Profiler } from './profile.js';
+import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 
 const VERSION = SITEFILE_VERSION;
@@ -88,6 +90,8 @@ Options:
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --profile <file>         write a timing trace of the build (Chrome trace event JSON:
+                               chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
   -v, --version                show the version
 ${EXTRA_HELP}`;
@@ -140,6 +144,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         json: { type: 'boolean' },
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
+        profile: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -193,6 +198,12 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     }
   }
 
+  if (o.profile === '') return usageError('--profile expects a file path');
+  // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
+  const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
+  if (o.profile !== undefined) run.wrote?.push(o.profile);
+  const commandSpan = profiler?.begin(command, 'command');
+  let failed = false;
   try {
     const remoteCache =
       cacheFrom.length || cacheTo.length
@@ -255,6 +266,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
+      ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
     };
 
     switch (command) {
@@ -312,7 +324,9 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return 0;
       }
       case 'validate': {
+        const span = profiler?.begin('parse', 'build');
         const p = await planBuild(options);
+        span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
         if (o.json) {
           process.stdout.write(
@@ -342,7 +356,9 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return 0;
       }
       case 'graph': {
+        const span = profiler?.begin('parse', 'build');
         const p = await planBuild(options);
+        span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
         const g = planGraph(p);
         process.stdout.write(o.json ? JSON.stringify(g, null, 2) + '\n' : o.dot ? graphDot(g) : graphText(g));
@@ -358,6 +374,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         return usageError(`unknown command '${command}'`);
     }
   } catch (e) {
+    failed = true;
     if (isSitefileError(e)) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
@@ -367,6 +384,15 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   } finally {
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
     if (command === 'build' || command === 'inspect' || command === 'why') await evictAfterBuild();
+    commandSpan?.end();
+    if (profiler && !(await fs.writeFile(o.profile!, profiler.toJSON()).then(() => true, () => false))) {
+      // A failed build already reported its error; otherwise this is the command's error.
+      if (!failed) {
+        process.stderr.write(`error[E_EXPORT]: cannot write the --profile file '${o.profile}'\n`);
+        // eslint-disable-next-line no-unsafe-finally
+        return 1;
+      }
+    }
   }
 }
 

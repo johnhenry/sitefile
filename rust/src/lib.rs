@@ -46,6 +46,7 @@ pub mod cli;
 pub mod executor;
 pub mod explain;
 pub mod plugins;
+pub mod profile;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)

@@ -29,6 +29,7 @@ import { readLayerBlobs, resolveBase } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
+import { begin, type Profiler } from './profile.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -88,6 +89,10 @@ export interface BuildOptions {
   readonly store?: Store;
   /** Informational lines (e.g. the path each allowed tool resolved to). */
   readonly onNotice?: (message: string) => void;
+  /** `--profile`: record a timing trace of the build here (src/profile.ts). */
+  readonly profiler?: Profiler;
+  /** Other paths this command writes (e.g. the --profile file): skipped when walking the context, like `outDir`. */
+  readonly alsoWrites?: readonly string[];
   /** Keep every intermediate tree in {@link BuildResult.steps} (for `sitefile why`). */
   readonly recordSteps?: boolean;
 }
@@ -156,8 +161,11 @@ function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'ta
 
 /** Run a build in memory. */
 export async function build(options: BuildOptions): Promise<BuildResult> {
+  const prof = options.profiler;
+  const parseSpan = begin(prof, 'parse', 'build');
   const { program, sitefilePath, label } = await loadProgram(options);
   const p = planFor(program, options);
+  parseSpan.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
   const warnings: string[] = [];
   const warn = (m: string): void => {
     warnings.push(m);
@@ -186,6 +194,10 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
       }
     }
   }
+  for (const w of options.alsoWrites ?? []) {
+    const rel = path.relative(contextReal, await realpathLoose(path.resolve(w)));
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) ignore.push(rel.split(path.sep).join('/'));
+  }
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
@@ -194,7 +206,17 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
 
   const env: ImportEnv = { local, policy, archiveLimits, lock, label, warn, frozen: !!options.frozenLockfile, update: !!options.updateLock };
-  const resolved = await mapLimit(p.imports, options.concurrency ?? 4, (spec) => resolveImport(spec, env));
+  // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
+  const importSpans = p.imports.map((spec, i) => {
+    prof?.nameThread(i + 2, `import ${spec.name}`);
+    return prof ? prof.reserve(`import ${spec.name}`, 'import', { uri: spec.uri, as: spec.as ?? 'file' }, i + 2) : undefined;
+  });
+  const resolved = await mapLimit(p.imports, options.concurrency ?? 4, async (spec, i) => {
+    importSpans[i]?.start();
+    const r = await resolveImport(spec, env);
+    importSpans[i]?.end({ kind: r.kind });
+    return r;
+  });
   const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!)]));
 
   const stageTrees = new Map<string, Tree>();
@@ -214,20 +236,29 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     pluginDigests: new Map(),
     stats,
     ...(cache ? { cache } : {}),
+    ...(prof ? { profiler: prof } : {}),
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
   try {
-    for (const spec of p.plugins) await registerPlugin(spec, local, plugins, pluginAllowed);
-    for (const stage of p.stages) {
+    for (const spec of p.plugins) {
+      const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
+      await registerPlugin(spec, local, plugins, pluginAllowed);
+      s.end();
+    }
+    for (const [i, stage] of p.stages.entries()) {
+      const s = begin(prof, `stage ${stage.name ?? '#' + (i + 1)}`, 'stage', { from: stageFrom(stage) });
       tree = await startStage(stage, execEnv);
       const record = steps ? [tree] : undefined;
       steps?.push(record!);
       for (const op of stage.operations) {
+        const o = begin(prof, `${label}:${op.span.line} ${op.kind}`, 'operation', { line: op.span.line });
         tree = await execute(op, tree, execEnv);
         record?.push(tree);
+        o.end({ files: tree.size });
       }
       if (stage.name !== undefined) stageTrees.set(stage.name, tree);
+      s.end({ files: tree.size });
     }
   } finally {
     plugins.close();
@@ -246,6 +277,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
   const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
+  const baseSpan = baseRef ? begin(prof, `BASE ${baseRef}`, 'import') : undefined;
   const base = baseRef
     ? await resolveBase(baseRef, {
         store: options.store ?? (await Store.open()),
@@ -260,6 +292,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
         warn,
       })
     : undefined;
+  baseSpan?.end();
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
   return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
@@ -305,6 +338,19 @@ export async function buildToDirectory(
 ): Promise<ExportedBuild> {
   const result = await build(options);
   const format = options.format ?? result.plan.exportFormat;
+  const span = begin(options.profiler, 'export', 'export', { format });
+  try {
+    return await exportBuild(result, format, options);
+  } finally {
+    span.end();
+  }
+}
+
+async function exportBuild(
+  result: BuildResult,
+  format: ExportFormat,
+  options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
+): Promise<ExportedBuild> {
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
@@ -442,6 +488,7 @@ interface ExecEnv {
   /** Digest of each plugin's folder (cache key); undefined when the folder was too large to hash. */
   readonly pluginDigests: Map<string, string | undefined>;
   readonly stats: TransformStats;
+  readonly profiler?: Profiler;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
 }
@@ -462,6 +509,12 @@ async function startStage(stage: Stage, env: ExecEnv): Promise<Tree> {
       return (await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span)).tree;
     }
   }
+}
+
+/** What a stage starts from, for the trace. */
+function stageFrom(stage: Stage): string {
+  const b = stage.base;
+  return b.kind === 'scratch' ? 'scratch' : b.kind === 'stage' ? b.name : b.path === '' ? './' : './' + b.path;
 }
 
 function fail(name: string, span: SourceSpan): never {
@@ -655,7 +708,9 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
           },
         })
       : undefined;
+    const call = begin(env.profiler, `TRANSFORM ${op.plugin} ${dest.path}`, 'transform', { plugin: op.plugin, tool: tool !== undefined, dest: dest.path });
     let result: PluginResult | undefined = key ? await env.cache!.get(key) : undefined;
+    const cacheState = !key ? 'off' : result ? 'hit' : 'miss';
     if (!result) {
       if (tool) {
         env.stats.toolRuns++;
@@ -671,6 +726,7 @@ async function executeTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, t
       }
       if (key && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(key, result);
     }
+    call.end({ cache: cacheState });
     if (result.kind === 'file') {
       if (dest.trailingSlash) {
         throw new SitefileError('E_PLUGIN', `PLUGIN ${op.plugin} returned one file, but '${rawDest}' is a directory destination`, op.dest.span);
@@ -911,13 +967,13 @@ function valueOf(name: string, p: readonly string[], span: SourceSpan, loose: bo
 
 // ---------------------------------------------------------------- helpers
 
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
   const worker = async (): Promise<void> => {
     while (next < items.length) {
       const i = next++;
-      out[i] = await fn(items[i]!);
+      out[i] = await fn(items[i]!, i);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
