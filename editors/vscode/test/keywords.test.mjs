@@ -75,7 +75,7 @@ test('value words: types, import kinds, export formats, compressions, escape mod
 test('flags per instruction match parseFlags calls', () => {
   for (const [instr, fn] of [['COPY', 'parseCopy'], ['RENDER', 'parseRender'], ['TRANSFORM', 'parseTransform']]) {
     const body = parserTs.slice(parserTs.indexOf(`function ${fn}(`));
-    const m = /parseFlags\(c, \{([^}]*)\}\)/.exec(body);
+    const m = /parseFlags\(c, \{([^}]*)\}/.exec(body);
     assert.ok(m, `parseFlags not found in ${fn}`);
     const names = all(/([a-z]+):/g, m[1]);
     assert.deepEqual([...names].sort(), [...KEYWORDS.flags[instr]].sort(), instr);

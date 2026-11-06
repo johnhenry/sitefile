@@ -118,6 +118,12 @@ export type Operation =
       readonly dest: string;
       readonly destIsDir: boolean;
       readonly overwrite: boolean;
+      /** `--exclude` patterns (`.sitefileignore` syntax, relative to the source directory). */
+      readonly exclude?: readonly string[];
+      /** `--chmod`: 0o644 or 0o755 for every copied file. */
+      readonly chmod?: number;
+      /** `--parents`: the source's path is kept under `dest`. */
+      readonly parents?: true;
       readonly span: SourceSpan;
     }
   | {
@@ -279,6 +285,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           dest: dest.path,
           destIsDir: dest.trailingSlash,
           overwrite: ins.overwrite,
+          ...(ins.exclude ? { exclude: ins.exclude } : {}),
+          ...(ins.chmod !== undefined ? { chmod: ins.chmod } : {}),
+          ...(ins.parents ? { parents: true as const } : {}),
           span: ins.span,
         });
         break;

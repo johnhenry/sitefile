@@ -3,7 +3,8 @@ FROM scratch
 RUN npm install
 ARG X: integer = 1
 IMPORT a FROM ./a AS xml INTEGRITY sha256:ABC
-COPY --chmod=644 ./a /a
+COPY --chown=1 ./a /a
+COPY --chmod=600 ./a /a
 RENDER --escape=js ./t TO /t
 RENDER <<HTML TO /x.html
 <p>${a + b}</p>

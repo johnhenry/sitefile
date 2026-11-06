@@ -1,0 +1,2 @@
+COPY --exclude=*.md ./a.txt /
+EXPORT /

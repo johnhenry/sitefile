@@ -8,7 +8,7 @@ Instructions:
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding
 - `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
-- `COPY [--from=<stage>] <source> <destination>`; source can be local path or `name:/path`
+- `COPY [--from=<stage>] [--exclude=<glob>…] [--chmod=644|755] [--parents] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
@@ -218,7 +218,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     archives are never extracted implicitly. See Archives below. A local
     directory with `AS tree` imports the directory as before.
   - Import names must not equal an ARG/LET name or another import.
-- `COPY [--overwrite] [--from=<stage>] <source> <dest>`
+- `COPY [--overwrite] [--from=<stage>] [--exclude=<pattern>]… [--chmod=644|755] [--parents] <source> <dest>`
   - With `--from=<stage>`, `<source>` is an absolute path (starts with `/`, no
     `..`) inside the final tree of an earlier, completed stage: `/out/` or
     `/a.txt`. File, directory, trailing-slash and conflict rules below apply
@@ -233,6 +233,36 @@ These pin down what the draft above leaves open. Tests cover each rule.
     new file's path.
   - **Directory source:** its *contents* are placed under `<dest>`. A trailing
     slash on either side makes no difference.
+  - **`--exclude=<pattern>`** (repeatable, like Dockerfile's `COPY --exclude`)
+    leaves out files of a **directory** source. Each pattern is one
+    `.sitefileignore` line (see below: `*`, `?`, `**`, a trailing `/` for
+    directories, a leading or inner `/` to anchor, `!` to re-include, later
+    patterns win, an excluded directory is not re-entered), matched against
+    paths **relative to the source directory**: `COPY --exclude=*.md
+    --exclude=drafts/ ./site /` copies `site/` without its Markdown files and
+    its `drafts` directory. It applies to local directories (excluded
+    directories are not read at all, so a hard-linked `node_modules` excluded
+    this way does not trigger `E_HARDLINK`), `name:` tree imports and `--from`
+    stage directories, in addition to `.sitefileignore`. The value is the rest
+    of the flag word, literal (no quotes, `${…}` or spaces). A value that is no
+    rule (`--exclude=#x`, `--exclude=/`) is `E_SYNTAX`; a file source is
+    `E_TYPE` (`--exclude filters a directory, but './a.txt' is a file`); with an
+    inline body, `E_SYNTAX`. If nothing is left, the build warns
+    (`--exclude leaves no files of './site' to copy`).
+  - **`--chmod=644|755`** (also `0644`, `0755`) sets the mode of every copied
+    file, including an inline body (`COPY --chmod=755 <<SH /run.sh`). Trees only
+    hold `0644` and `0755` files, so any other value is `E_SYNTAX`
+    (`--chmod must be 644 or 755 …`). The mode is part of the write: the same
+    bytes with a different mode at the same path are `E_CONFLICT` without
+    `--overwrite`.
+  - **`--parents`** keeps the source's own path under `<dest>`, which is then
+    always a directory: `COPY --parents ./src/css/a.css /out` writes
+    `/out/src/css/a.css`, `COPY --parents ./src/css /out/` puts the directory's
+    contents under `/out/src/css/`. The kept path is context-relative for a
+    local source and the path inside the import (`site:/css` → `css`) or stage
+    (`--from=s /www/a` → `www/a`) otherwise; a whole context, import or stage
+    keeps nothing. There is no `/./` pivot. Not allowed with an inline body
+    (`E_SYNTAX`).
 - `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list]`
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).

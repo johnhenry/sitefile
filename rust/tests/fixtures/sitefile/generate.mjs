@@ -62,6 +62,8 @@ const PATHS = [
 ];
 const NUMBERS = ['0', '1', '-0', '1e3', '1E3', '0x10', '0b1', '0o7', '.5', '5.', '1_000', 'Infinity', '-Infinity', 'NaN', '1e400', '9007199254740993', '+1', '0.1', '1.50', '1e21', '1e-7', '00', '" 5 "', '""', '"\\t1\\n"', 'abc', '123456789012345678901234', '-', '2e-324'];
 const BOOLEANS = ['true', 'false', 'TRUE', 'True', '1', '0', 'yes', '""', '" true"'];
+const EXCLUDES = ['*.md', 'drafts/', '!keep.md', '/css/x.css', '**/*.map', '#c', '/', '!', 'a\\ b', '${x}'];
+const MODES = ['644', '0644', '755', '0755', '600', '0o755', '777', 'x'];
 const VALUES = ['hello', '"Hello world"', "'single'", '"${TITLE} x"', '${x}', '""', 'é', '"tab\\there"', ...NUMBERS.slice(0, 12), ...BOOLEANS.slice(0, 5)];
 
 /** `FROM image <ref> [AT <dir>]` references: registry, local-store, digest-pinned and invalid ones. */
@@ -86,7 +88,8 @@ const INSTRUCTIONS = {
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
-  COPY: () => `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus'])}${source()} ${pick(PATHS)}`,
+  COPY: () =>
+    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
     `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
@@ -230,6 +233,8 @@ function validProgram() {
   };
   const ops = [
     () => `COPY ${maybe('--overwrite ')}${pick(['./src', 'style.css', './a\\ b', `"./q ${v()}"`, 'site:/x', 'site:'])} ${pick(['/', '/css/', `/${v()}.css`, '"/x y/"'])}`,
+    () => `COPY ${maybe('--exclude=*.md ')}${maybe('--exclude=drafts/ ')}${maybe(() => `--chmod=${pick(['644', '0755'])} `)}${maybe('--parents ')}${pick(['./src', './src/a.css', 'site:/x', 'site:'])} /out/`,
+    () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
     () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
@@ -345,6 +350,8 @@ const EDGE = [
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',
   '# only a comment', '   \n\t\n', 'ARG X\n', 'COPY --overwrite --overwrite a /b\nEXPORT /', 'COPY --from a /b\nEXPORT /',
   '# sitefile=1\nEXPORT /', '# sitefile=2\nEXPORT /', '#sitefile = 1\n#sitefile=1\nEXPORT /', 'EXPORT /\n# sitefile=1', '# sitefile=1.0\nEXPORT /',
+  'COPY --exclude=*.md --exclude=x/ --chmod=755 --parents ./a /b/\nEXPORT /', 'COPY --chmod=600 a /b\nEXPORT /', 'COPY --exclude=#x a /b\nEXPORT /',
+  'COPY --parents <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --chmod=755 <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --exclude=a --exclude=a ./a /b\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
   // Git imports (issue #91): refs, commit pins, paths, and what the planner refuses.
   'IMPORT d FROM git+https://e.x/r.git#main:docs AS tree\nCOPY d: /\nEXPORT /', 'IMPORT d FROM git+https://e.x/r.git\nEXPORT /',

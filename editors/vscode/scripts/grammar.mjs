@@ -25,7 +25,7 @@ export const KEYWORDS = {
   escapeModes: ['none', 'html'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
-    COPY: ['overwrite', 'from'],
+    COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
     RENDER: ['escape', 'overwrite', 'from'],
     TRANSFORM: ['overwrite', 'from'],
     SITEMAP: ['overwrite'],
@@ -105,7 +105,30 @@ function flags(instr) {
       },
     });
   }
-  const bare = known.filter((f) => f !== 'escape' && f !== 'from');
+  if (known.includes('chmod')) {
+    pats.push({
+      match: `${W}(--)(chmod)(=)(?:(0?(?:644|755))${WE}|(\\S*))`,
+      captures: {
+        1: { name: S('punctuation.definition.flag') },
+        2: { name: S('variable.parameter.flag') },
+        3: { name: S('keyword.operator.assignment') },
+        4: { name: S('constant.numeric.mode') },
+        5: { name: S('invalid.illegal.mode') },
+      },
+    });
+  }
+  if (known.includes('exclude')) {
+    pats.push({
+      match: `${W}(--)(exclude)(=)(\\S+)`,
+      captures: {
+        1: { name: S('punctuation.definition.flag') },
+        2: { name: S('variable.parameter.flag') },
+        3: { name: S('keyword.operator.assignment') },
+        4: { name: S('string.unquoted.glob') },
+      },
+    });
+  }
+  const bare = known.filter((f) => !['escape', 'from', 'chmod', 'exclude'].includes(f));
   if (bare.length) {
     pats.push({
       match: `${W}(--)(${bare.join('|')})${WE}`,

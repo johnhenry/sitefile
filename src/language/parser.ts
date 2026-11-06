@@ -20,6 +20,7 @@ import {
   type StageRef,
   type ValueType,
 } from './ast.js';
+import { isIgnorePattern } from '../resources/ignore.js';
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
@@ -202,16 +203,21 @@ interface Flag {
   readonly span: SourceSpan;
 }
 
-/** Read leading `--flags`; returns name -> flag (value '' for a bare flag). */
-function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value'>): Map<string, Flag> {
+/**
+ * Read leading `--flags`; returns name -> flag (value '' for a bare flag). A `repeat` flag may be
+ * given several times: each one is added to `repeated` (and the map holds the first).
+ */
+function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repeat'>, repeated: Flag[] = []): Map<string, Flag> {
   const out = new Map<string, Flag>();
   for (let f = c.flag(); f; f = c.flag()) {
     const shape = allowed[f.name];
     if (shape === undefined) throw c.error('E_SYNTAX', `unknown flag --${f.name}`, f.span);
-    if (out.has(f.name)) throw c.error('E_SYNTAX', `--${f.name} given twice`, f.span);
+    if (out.has(f.name) && shape !== 'repeat') throw c.error('E_SYNTAX', `--${f.name} given twice`, f.span);
     if (shape === 'bare' && f.value !== undefined) throw c.error('E_SYNTAX', `--${f.name} takes no value`, f.span);
-    if (shape === 'value' && !f.value) throw c.error('E_SYNTAX', `--${f.name} requires a value (--${f.name}=...)`, f.span);
-    out.set(f.name, { value: f.value ?? '', span: f.span });
+    if (shape !== 'bare' && !f.value) throw c.error('E_SYNTAX', `--${f.name} requires a value (--${f.name}=...)`, f.span);
+    const flag = { value: f.value ?? '', span: f.span };
+    if (shape === 'repeat') repeated.push(flag);
+    if (!out.has(f.name)) out.set(f.name, flag);
   }
   return out;
 }
@@ -229,14 +235,43 @@ function noInlineFrom(c: Cursor, source: Operand | InlineBody, flags: Map<string
 }
 
 function parseCopy(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { overwrite: 'bare', from: 'value' });
+  const excludes: Flag[] = [];
+  const flags = parseFlags(c, { overwrite: 'bare', from: 'value', exclude: 'repeat', chmod: 'value', parents: 'bare' }, excludes);
+  for (const e of excludes) {
+    if (!isIgnorePattern(e.value)) throw c.error('E_SYNTAX', `--exclude=${e.value} is not a pattern (it is blank or a # comment in .sitefileignore syntax)`, e.span);
+  }
+  const chmodFlag = flags.get('chmod');
+  let chmod: number | undefined;
+  if (chmodFlag) {
+    chmod = Object.hasOwn(CHMOD_MODES, chmodFlag.value) ? CHMOD_MODES[chmodFlag.value] : undefined;
+    if (chmod === undefined) {
+      throw c.error('E_SYNTAX', `--chmod must be 644 or 755 (files in a Sitefile tree are 0644 or 0755), got '${chmodFlag.value}'`, chmodFlag.span);
+    }
+  }
   const source = c.inline() ?? c.operand('source');
   const dest = c.operand('destination');
   c.expectEnd();
   c.expectInlineUsed('the COPY source');
   noInlineFrom(c, source, flags);
-  return { kind: 'COPY', span, source, dest, overwrite: flags.has('overwrite'), ...stageRef(c, flags) };
+  for (const name of ['exclude', 'parents']) {
+    const f = flags.get(name);
+    if (f && isInline(source)) throw c.error('E_SYNTAX', `--${name} cannot be combined with an inline (<<) body`, f.span);
+  }
+  return {
+    kind: 'COPY',
+    span,
+    source,
+    dest,
+    overwrite: flags.has('overwrite'),
+    ...stageRef(c, flags),
+    ...(excludes.length > 0 && { exclude: excludes.map((e) => e.value) }),
+    ...(chmod !== undefined && { chmod }),
+    ...(flags.has('parents') && { parents: true as const }),
+  };
 }
+
+/** `--chmod` values: Sitefile trees only hold 0644 and 0755 files. */
+const CHMOD_MODES: Readonly<Record<string, number>> = { '644': 0o644, '0644': 0o644, '755': 0o755, '0755': 0o755 };
 
 function parseRender(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { escape: 'value', overwrite: 'bare', from: 'value' });
