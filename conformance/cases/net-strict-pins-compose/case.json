@@ -1,0 +1,13 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/first.oci.tar", "--allow-private-network"],
+    ["build", "${CTX}", "-o", "${OUT}/site.oci.tar", "--allow-private-network", "--frozen-lockfile", "--strict-pins", "--provenance", "--cache-from", "${REGISTRY}/conf/no-such-cache:1"],
+    ["build", "${CTX}", "-o", "${OUT}/assets", "--allow-private-network", "--strict-pins", "--target", "assets"],
+    ["graph", "${CTX}", "--strict-pins", "--json"],
+    ["why", "/index.html", "${CTX}", "--allow-private-network", "--strict-pins"]
+  ],
+  "outputs": [["site.oci.tar", "archive"], ["assets", "tree"]],
+  "stdout": true,
+  "lock": true
+}

@@ -25,7 +25,7 @@ import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
 import { buildFacts, makeAttestations, type AttestRequest, type Referrer } from './attest.js';
 import { ANN, buildOciImage, imageMeta, layoutTree, ociArchive, parseConfig, type BaseImage, type OciImage } from './oci.js';
-import { readLayerBlobs, resolveBase } from './base-image.js';
+import { baseRef as parseBaseRef, readLayerBlobs, resolveBase } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
@@ -53,6 +53,11 @@ export interface BuildOptions {
   readonly frozenLockfile?: boolean;
   /** Re-record unpinned URLs whose content changed. */
   readonly updateLock?: boolean;
+  /**
+   * `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
+   * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
+   */
+  readonly strictPins?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
@@ -126,6 +131,8 @@ export interface BuildResult {
    * operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
    */
   readonly steps?: readonly (readonly Tree[])[];
+  /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
+  readonly pins?: Pins;
 }
 
 export interface TransformStats extends CacheStats {
@@ -166,6 +173,19 @@ export async function planBuild(options: BuildOptions): Promise<Plan> {
 function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'target'>): Plan {
   const p = plan(program, options.buildArgs ?? {});
   return options.target === undefined ? p : targetPlan(p, options.target);
+}
+
+/** The lockfile a build would use: `Sitefile.lock` next to the Sitefile, unless disabled. */
+function lockPathFor(options: Pick<BuildOptions, 'lockfile'>, sitefilePath: string): string | undefined {
+  return options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
+}
+
+/** `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching. */
+export async function checkPlanPins(options: BuildOptions, p: Plan): Promise<void> {
+  const sitefilePath = path.resolve(options.sitefile ?? path.join(options.contextDir, 'Sitefile'));
+  const lockPath = lockPathFor(options, sitefilePath);
+  const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
+  void checkPins(p, lock, options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined)));
 }
 
 /** Run a build in memory. */
@@ -224,9 +244,12 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const archiveLimits: ArchiveLimits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
-  const lockPath =
-    options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
+  const lockPath = lockPathFor(options, sitefilePath);
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
+
+  // BASE: the image to build on (resolved after the files, below).
+  const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
+  const pins = options.strictPins ? checkPins(p, lock, baseRef) : undefined;
 
   const memo = options.memo;
   const env: ImportEnv = {
@@ -324,7 +347,6 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
-  const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
   const baseSpan = baseRef ? begin(prof, `BASE ${baseRef}`, 'import') : undefined;
   const base = baseRef
     ? await resolveBase(baseRef, {
@@ -343,7 +365,42 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   baseSpan?.end();
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}), ...(pins ? { pins } : {}) };
+}
+
+/** How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name, and the BASE. */
+export interface Pins {
+  readonly imports: Readonly<Record<string, 'integrity' | 'lockfile'>>;
+  readonly base?: 'digest' | 'lockfile';
+}
+
+/**
+ * `--strict-pins`: every remote input must be pinned, so the build is reproducible. A remote IMPORT
+ * needs INTEGRITY or a `Sitefile.lock` entry; a BASE image needs `@sha256:` or a lockfile `images`
+ * entry. `lock` is undefined with --no-lockfile (only the Sitefile's own pins count then). Checked in
+ * source order, before anything is fetched; the first unpinned input fails with E_UNPINNED.
+ */
+export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string | undefined): Pins {
+  const imports: Record<string, 'integrity' | 'lockfile'> = {};
+  for (const spec of p.imports) {
+    if (spec.location.kind !== 'remote') continue;
+    if (spec.integrity) imports[spec.name] = 'integrity';
+    else if (lock?.get(spec.location.url)) imports[spec.name] = 'lockfile';
+    if (imports[spec.name]) continue;
+    throw new SitefileError(
+      'E_UNPINNED',
+      `IMPORT ${spec.name}: '${spec.location.url}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>, or record it in Sitefile.lock with a build without --strict-pins`,
+      spec.span,
+    );
+  }
+  if (baseRef === undefined) return { imports };
+  const { ref, lockKey } = parseBaseRef(baseRef);
+  if (ref.digest !== undefined) return { imports, base: 'digest' };
+  if (lock?.getImage(lockKey)) return { imports, base: 'lockfile' };
+  throw new SitefileError(
+    'E_UNPINNED',
+    `BASE ${baseRef}: '${lockKey}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins`,
+  );
 }
 
 export interface ExportTarget {

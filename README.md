@@ -109,7 +109,7 @@ build used, `--cache-from <ref>` reuses them (see [docs/CLI.md](docs/CLI.md#regi
 ```
 sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
-               [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
+               [--frozen-lockfile | --update-lock] [--strict-pins] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
                [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch] [--target stage] [--profile trace.json]
 sitefile validate [context] [--json] [--target stage]
@@ -191,6 +191,8 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 - Remote imports are `https:` only, to public addresses only (checked at connect
   time and on every redirect), size- and time-limited, never decompressed or executed.
 - Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
+  `--strict-pins` refuses any remote import or BASE image that is not pinned
+  (`INTEGRITY`, `@sha256:` or a lockfile entry), for reproducible CI builds.
 - Writing different content to an existing path fails unless `--overwrite` is given.
   Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
   (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same

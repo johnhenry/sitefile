@@ -1,0 +1,5 @@
+FROM scratch
+COPY <<TXT /a.txt
+a
+TXT
+EXPORT / AS oci BASE nginx:alpine

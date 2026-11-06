@@ -2,7 +2,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
-import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
+import { build, buildToDirectory, checkPlanPins, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
@@ -81,6 +81,8 @@ Options:
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
+      --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
+                               BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
       --no-lockfile            do not read or write Sitefile.lock
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
@@ -140,6 +142,7 @@ export async function main(
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
+        'strict-pins': { type: 'boolean' },
         'no-lockfile': { type: 'boolean' },
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
@@ -175,6 +178,7 @@ export async function main(
   if (o.dot && command !== 'graph') return usageError('--dot is only for graph');
   if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
+  if (o['strict-pins'] && o['update-lock']) return usageError('--strict-pins and --update-lock conflict');
   const cacheFrom = o['cache-from'] ?? [];
   const cacheTo = o['cache-to'] ?? [];
   if (cacheFrom.length || cacheTo.length) {
@@ -271,6 +275,7 @@ export async function main(
       registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
+      strictPins: !!o['strict-pins'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
       ...(run.memo ? { memo: run.memo } : {}),
@@ -335,6 +340,7 @@ export async function main(
         const p = await planBuild(options);
         span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        if (o['strict-pins']) await checkPlanPins(options, p);
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
@@ -367,6 +373,7 @@ export async function main(
         const p = await planBuild(options);
         span?.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
         p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        if (o['strict-pins']) await checkPlanPins(options, p);
         const g = planGraph(p);
         process.stdout.write(o.json ? JSON.stringify(g, null, 2) + '\n' : o.dot ? graphDot(g) : graphText(g));
         return 0;

@@ -1,0 +1,5 @@
+{
+  "network": true,
+  "steps": [["build", "${CTX}", "-o", "${OUT}/assets", "--allow-private-network", "--strict-pins", "--target", "assets"]],
+  "lock": true
+}

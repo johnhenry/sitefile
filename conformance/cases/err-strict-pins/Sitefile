@@ -1,0 +1,5 @@
+FROM scratch
+IMPORT local FROM ./Sitefile AS text
+IMPORT css FROM https://example.com/style.css INTEGRITY sha256:0000000000000000000000000000000000000000000000000000000000000000
+IMPORT data FROM https://example.com/data.json AS json
+EXPORT /

@@ -11,7 +11,7 @@ pub mod servers;
 
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
-use crate::executor::{build, build_to_directory, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use crate::executor::{build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
 use crate::export::attest::AttestRequest;
 use crate::export::formats::{default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
@@ -120,6 +120,8 @@ Options:
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
+      --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
+                               BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
       --no-lockfile            do not read or write Sitefile.lock
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
@@ -167,6 +169,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("force"),
     flag("frozen-lockfile"),
     flag("update-lock"),
+    flag("strict-pins"),
     flag("no-lockfile"),
     flag("allow-http"),
     flag("allow-private-network"),
@@ -354,6 +357,9 @@ fn run_main(argv: &[String]) -> i32 {
     }
     if o.flag("frozen-lockfile") && o.flag("update-lock") {
         return usage_error("--frozen-lockfile and --update-lock conflict");
+    }
+    if o.flag("strict-pins") && o.flag("update-lock") {
+        return usage_error("--strict-pins and --update-lock conflict");
     }
     let (cache_from, cache_to) = (o.strs("cache-from"), o.strs("cache-to"));
     if !cache_from.is_empty() || !cache_to.is_empty() {
@@ -553,6 +559,7 @@ fn run_build_command(
     options.insecure_registries = registry::insecure_registries_from_env(&o.strs("insecure-registry"));
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
+    options.strict_pins = o.flag("strict-pins");
     let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     options.on_warning = Some(warning);
     options.memo = memo;
@@ -649,6 +656,9 @@ fn run_build_command(
             for m in &p.warnings {
                 err(&format!("warning: {m}\n"));
             }
+            if options.strict_pins {
+                check_plan_pins(&options, &p)?;
+            }
             if o.flag("json") {
                 out(&(pretty_json(&p.validate_json()) + "\n"));
             } else {
@@ -689,6 +699,9 @@ fn run_build_command(
             let p = profiled_plan(&options)?;
             for m in &p.warnings {
                 err(&format!("warning: {m}\n"));
+            }
+            if options.strict_pins {
+                check_plan_pins(&options, &p)?;
             }
             let g = crate::explain::plan_graph(&p);
             out(&if o.flag("json") {

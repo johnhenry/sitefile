@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
-import type { BuildResult } from './executor.js';
+import type { BuildResult, Pins } from './executor.js';
 import { canonicalJson, MEDIA } from './oci.js';
 import type { Tree } from './tree.js';
 
@@ -79,6 +79,8 @@ export interface BuildFacts {
   /** Imports in declaration order with the digest the build used (Sitefile.lock's for remote ones). */
   readonly imports: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly resolved?: string | undefined; readonly digest: string }>;
   readonly base?: { readonly name: string; readonly digest: string } | undefined;
+  /** `--strict-pins`: how each remote input was pinned (shown in the provenance). */
+  readonly pins?: Pins | undefined;
   /** File origins start with the Sitefile label (relative to the cwd); they are rewritten to `sitefile`. */
   readonly label: string;
 }
@@ -111,7 +113,7 @@ export function sitefilePathOf(contextDir: string, sitefile: string | undefined)
 
 /** Collect the facts for a finished build. Reads the Sitefile again to digest it. */
 export async function buildFacts(
-  result: Pick<BuildResult, 'resources' | 'base'>,
+  result: Pick<BuildResult, 'resources' | 'base' | 'pins'>,
   options: { readonly contextDir: string; readonly sitefile?: string | undefined; readonly buildArgs?: Readonly<Record<string, string>> | undefined; readonly platform?: string | undefined },
 ): Promise<BuildFacts> {
   const file = sitefilePathOf(options.contextDir, options.sitefile);
@@ -140,6 +142,7 @@ export async function buildFacts(
     platform: options.platform ?? 'linux/amd64',
     imports,
     base: result.base ? { name: result.base.name, digest: result.base.manifestDigest } : undefined,
+    pins: result.pins,
     label: path.relative(process.cwd(), file) || path.basename(file),
   };
 }
@@ -154,13 +157,19 @@ function isoOf(epoch: number): string {
 export function provenancePredicate(facts: BuildFacts, epoch: number | undefined): Record<string, unknown> {
   const externalParameters: Record<string, unknown> = { sitefile: facts.sitefile, args: { ...facts.args }, platform: facts.platform };
   if (facts.redactedArgs.length) externalParameters.redactedArgs = [...facts.redactedArgs];
+  // --strict-pins: the build refused unpinned inputs; each remote dependency says what pinned it.
+  if (facts.pins) externalParameters.strictPins = true;
   const deps: Array<Record<string, unknown>> = [{ name: 'sitefile', uri: facts.sitefile, digest: { sha256: hex(facts.sitefileDigest) } }];
   for (const i of facts.imports) {
     const d: Record<string, unknown> = { name: `import:${i.name}`, uri: i.uri, digest: { sha256: hex(i.digest) } };
     if (i.resolved !== undefined && i.resolved !== i.uri) d.downloadLocation = i.resolved;
+    const pin = facts.pins?.imports[i.name];
+    if (pin !== undefined) d.annotations = { 'dev.sitefile.pin': pin };
     deps.push(d);
   }
-  if (facts.base) deps.push({ name: 'base', uri: facts.base.name, digest: { sha256: hex(facts.base.digest) } });
+  if (facts.base) {
+    deps.push({ name: 'base', uri: facts.base.name, digest: { sha256: hex(facts.base.digest) }, ...(facts.pins?.base ? { annotations: { 'dev.sitefile.pin': facts.pins.base } } : {}) });
+  }
   const runDetails: Record<string, unknown> = { builder: { id: ATTEST.builderId, version: { sitefile: SITEFILE_VERSION } } };
   if (epoch !== undefined) runDetails.metadata = { startedOn: isoOf(epoch), finishedOn: isoOf(epoch) };
   return { buildDefinition: { buildType: ATTEST.buildType, externalParameters, resolvedDependencies: deps }, runDetails };

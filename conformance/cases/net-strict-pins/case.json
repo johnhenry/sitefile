@@ -1,0 +1,10 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/dist", "--allow-private-network"],
+    ["build", "${CTX}", "-o", "${OUT}/again", "--allow-private-network", "--frozen-lockfile", "--strict-pins"],
+    ["validate", "${CTX}", "--strict-pins"]
+  ],
+  "outputs": [["dist", "tree"], ["again", "tree"]],
+  "lock": true
+}
