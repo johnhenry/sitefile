@@ -140,7 +140,7 @@ paths").
   `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 120/120 (99 offline, 21 network); the network cases need `openssl`.
+  Currently 121/121 (100 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,
@@ -170,6 +170,38 @@ paths").
   side no longer produces the committed results; regenerate with
   `node rust/tests/fixtures/sitefile/generate.mjs`. New instructions go in
   the generator's `INSTRUCTIONS` table.
+- **Archive and web bundle fuzzing** (`rust/tests/fixtures/archive`): a
+  seeded generator builds tar (ustar and old GNU headers, prefixes, GNU long
+  names, pax records, odd numeric fields), tar.gz (several members, header
+  flags, trailing bytes, bad check values, bombs), zip (stored and deflate,
+  data descriptors, zip64 records, lying sizes and offsets, symlink and
+  special modes, encryption flags, duplicate central records, bombs) and web
+  bundles (b1 and b2, odd CBOR, hosts, URLs, headers and sections), mutates
+  them (bit flips, truncation, inserted, deleted and duplicated bytes,
+  overwritten 16/32-bit fields; tar headers keep a valid checksum), and
+  records what `extractArchive` does with each under default or small
+  limits: the tree (paths, modes, digests) or the error (code and message),
+  plus `readWebBundle`'s entries. Names include case, normalization and
+  Unicode case-folding collisions, unsafe paths and invalid UTF-8.
+  `resources::archive_differential` requires the same result from the Rust
+  readers, no panics, and accepted trees within the limits. The committed
+  fixture is about 420 archives; a local run takes any size:
+
+  ```bash
+  FUZZ_OUT=/tmp/archives.json FUZZ_COUNT=10000 FUZZ_SEED=7 node rust/tests/fixtures/archive/generate.mjs
+  (cd rust && SITEFILE_ARCHIVE_FUZZ=/tmp/archives.json cargo test --release --lib -- --ignored archive_differential_external)
+  ```
+
+  `test/archive-fuzz-fixture.test.ts` (npm test) fails when the TypeScript
+  readers no longer produce the committed results. To agree with Node, the
+  Rust readers emulate it where Node is the reference: `parseInt` on tar
+  numeric fields (leading white space, signs, `mode & 0o111` on the
+  JavaScript number), the CBOR decoder's checks, order and messages
+  (including a leading BOM dropped from text and repeated `Map` keys), the
+  header order of `Object.fromEntries`, Node's gzip member handling and when
+  `maxOutputLength` is reported versus a data error (16 KiB output buffers),
+  and ada's acceptance of ASCII `xn--` host labels that are not valid
+  punycode.
 - **Benchmarks**: `bench/` (see [bench/README.md](../bench/README.md)).
 
 ## Compression

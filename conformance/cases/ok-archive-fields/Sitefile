@@ -1,0 +1,7 @@
+# A tar whose pax header has trailing bytes without a length (the TypeScript
+# reader used to loop forever) and numeric fields read like parseInt (a tab and
+# a sign in the size; a negative mode that still has execute bits).
+FROM scratch
+IMPORT a FROM ./a.tar AS tree
+COPY a:/ /
+EXPORT /
