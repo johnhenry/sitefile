@@ -167,6 +167,22 @@ sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
 (cd rust && cargo build --release) && rust/target/release/sitefile build examples/blog
 ```
 
+## Editor support
+
+[editors/vscode/](editors/vscode/) is a VS Code extension with syntax
+highlighting for Sitefiles: instructions, clauses, operands, `${…}`
+interpolation, and heredoc bodies with the embedded language picked by the
+delimiter (`<<HTML`, `<<CSS`, …). It isn't published; build and install it
+locally:
+
+```bash
+(cd editors/vscode && npm install && npm run package)
+code --install-extension editors/vscode/sitefile-0.1.0.vsix
+```
+
+Without it, `"files.associations": { "Sitefile": "dockerfile" }` is a usable
+stopgap.
+
 ## Docs
 
 - [docs/CLI.md](docs/CLI.md) — every command, the image store layout, reference grammar

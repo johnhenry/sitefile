@@ -1,0 +1,9 @@
+# Custom renderers: a plugin turns text into animated SVG.
+FROM scratch
+ARG TITLE = "Sitefile"
+PLUGIN motion FROM ./plugins/motion.mjs
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter duration=2
+TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS style=wave text=${post.title} FOR post IN posts
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT /

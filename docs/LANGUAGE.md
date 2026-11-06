@@ -183,7 +183,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
     errors report the Sitefile line and column. `COPY` bodies are written byte
     for byte (no `${}` substitution) with mode `0644`, to a file destination
     (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
-  - Only `COPY` and `RENDER` lines are scanned for `<<`; elsewhere it is plain text.
+  - Only `COPY`, `RENDER` and `TRANSFORM` lines are scanned for `<<`
+    (`TRANSFORM <<NAME WITH …` passes the body to the plugin as its source,
+    byte for byte); elsewhere it is plain text.
   - See `examples/inline/`.
 - `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage. The format

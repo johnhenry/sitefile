@@ -1,0 +1,233 @@
+{
+ "1": {
+  "text": "# Uncompressed OCI site layer (plain tar); compared byte for byte.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Uncompressed OCI site layer (plain tar); compared byte for byte.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "COPY ./public/ /",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "./public/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "COPY <<HTML /index.html",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "HTML",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "<!doctype html><title>plain</title><p>uncompressed layer</p>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "!doctype html",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "title",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "plain",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/title",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "uncompressed layer",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "6": {
+  "text": "HTML",
+  "tokens": [
+   [
+    "HTML",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "EXPORT / AS oci AT /usr/share/nginx/html COMPRESSION none",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "oci",
+    "meta.instruction.export.sitefile support.type.export-format.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AT",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/usr/share/nginx/html",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "COMPRESSION",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "none",
+    "meta.instruction.export.sitefile constant.language.compression.sitefile"
+   ]
+  ]
+ }
+}

@@ -1,0 +1,634 @@
+{
+ "1": {
+  "text": "# Every remote import pinned with INTEGRITY.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Every remote import pinned with INTEGRITY.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "IMPORT data FROM ${HTTPS}/data.json AS json INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "HTTPS",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/data.json",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "json",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "INTEGRITY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa",
+    "meta.instruction.import.sitefile constant.other.integrity.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "IMPORT css FROM ${HTTPS}/style.css INTEGRITY sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "css",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "HTTPS",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/style.css",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "INTEGRITY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sha256:3f876ff1240fb2b6e442980f352b6ca1f70e0b8cb0de7b9370d6a1b89e4f1c9c",
+    "meta.instruction.import.sitefile constant.other.integrity.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "IMPORT ver FROM ${HTTPS}/version.txt AS text INTEGRITY sha256:b03d44cd60d71de68a4aca7808c6f768802f6d6c414430ff8ccea10c1aa57b4c",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ver",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "HTTPS",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/version.txt",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "text",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "INTEGRITY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sha256:b03d44cd60d71de68a4aca7808c6f768802f6d6c414430ff8ccea10c1aa57b4c",
+    "meta.instruction.import.sitefile constant.other.integrity.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "COPY css: /style.css",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "css",
+    "meta.instruction.copy.sitefile variable.other.readwrite.import.sitefile"
+   ],
+   [
+    ":",
+    "meta.instruction.copy.sitefile punctuation.separator.resource.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/style.css",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "RENDER --escape=html <<HTML TO /index.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "<h1>${data.title}</h1>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "title",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "9": {
+  "text": "<p>${data.items.0.name}=${data.items.0.n}, ${data.items.1.name}=${data.items.1.n}</p>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "items",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "0",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "name",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "items",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "0",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "n",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    ", ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "items",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "name",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "data",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "items",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "n",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "10": {
+  "text": "<p>${ver}</p>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "ver",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "11": {
+  "text": "HTML",
+  "tokens": [
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "12": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

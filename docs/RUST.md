@@ -62,7 +62,7 @@ version has no equivalent (V8 compiles wasm quickly).
   `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
-  Currently 78/78 (57 offline, 21 network); the network cases need `openssl`.
+  Currently 92/92 (71 offline, 21 network); the network cases need `openssl`.
 - **Differential fixtures** generated from the TypeScript code and checked by
   the Rust unit tests without Node: Markdown (1721 cases), YAML, frontmatter,
   CSV and templates (10 500), plugin cache keys, and byte-exact wbn, tar,

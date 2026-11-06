@@ -1,0 +1,540 @@
+{
+ "1": {
+  "text": "# A blog from Markdown posts with frontmatter.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " A blog from Markdown posts with frontmatter.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "#",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "#   posts/2026-01-05-hello-world.md  ->  /posts/hello-world/index.html",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    "   posts/2026-01-05-hello-world.md  ->  /posts/hello-world/index.html",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "#",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "# Each post's frontmatter (title, description, tags, ...) is available to the",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Each post's frontmatter (title, description, tags, ...) is available to the",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "# templates, alongside slug, date, content (rendered HTML) and excerpt.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " templates, alongside slug, date, content (rendered HTML) and excerpt.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "ARG SITE_TITLE = \"Field Notes\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "SITE_TITLE",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "Field Notes",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "ARG SITE_URL = \"https://blog.example.com\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "SITE_URL",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "https://blog.example.com",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "10": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "11": {
+  "text": "# Newest first, for the index, every post page and the feed.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Newest first, for the index, every post page and the feed.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "12": {
+  "text": "IMPORT posts FROM ./posts AS markdown SORT BY date DESC",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./posts",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "markdown",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "SORT",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "BY",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "date",
+    "meta.instruction.import.sitefile variable.other.property.sort-key.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "DESC",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ]
+  ]
+ },
+ "13": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "14": {
+  "text": "COPY ./public/ /",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "./public/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "15": {
+  "text": "RENDER --escape=html ./templates/index.html TO /index.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./templates/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "16": {
+  "text": "RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./templates/post.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/posts/",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "slug",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "FOR",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "post",
+    "meta.instruction.render.sitefile variable.other.definition.loop.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "IN",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "posts",
+    "meta.instruction.render.sitefile variable.other.readwrite.sitefile"
+   ]
+  ]
+ },
+ "17": {
+  "text": "RENDER --escape=html ./templates/feed.xml TO /feed.xml",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./templates/feed.xml",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/feed.xml",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "18": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

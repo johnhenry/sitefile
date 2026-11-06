@@ -1,0 +1,3158 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sitefile",
+  "scopeName": "source.sitefile",
+  "fileTypes": [
+    "Sitefile",
+    "sitefile"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#instructions"
+    }
+  ],
+  "repository": {
+    "heredoc-copy": {
+      "patterns": [
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:HTML|HTM)$)",
+              "while": "^(?!\\t*(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:CSS)$)",
+              "while": "^(?!\\t*(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "while": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JSON)$)",
+              "while": "^(?!\\t*(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:YAML|YML)$)",
+              "while": "^(?!\\t*(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:SVG|XML)$)",
+              "while": "^(?!\\t*(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile"
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:HTML|HTM)$)",
+              "while": "^(?!(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:CSS)$)",
+              "while": "^(?!(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:MARKDOWN|MD)$)",
+              "while": "^(?!(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JSON)$)",
+              "while": "^(?!(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:YAML|YML)$)",
+              "while": "^(?!(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:SVG|XML)$)",
+              "while": "^(?!(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#operands"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile"
+            }
+          ]
+        }
+      ]
+    },
+    "heredoc-render": {
+      "patterns": [
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:HTML|HTM)$)",
+              "while": "^(?!\\t*(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:CSS)$)",
+              "while": "^(?!\\t*(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "while": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JSON)$)",
+              "while": "^(?!\\t*(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:YAML|YML)$)",
+              "while": "^(?!\\t*(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:SVG|XML)$)",
+              "while": "^(?!\\t*(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<-)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "include": "#template"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:HTML|HTM)$)",
+              "while": "^(?!(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:CSS)$)",
+              "while": "^(?!(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:MARKDOWN|MD)$)",
+              "while": "^(?!(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JSON)$)",
+              "while": "^(?!(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:YAML|YML)$)",
+              "while": "^(?!(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:SVG|XML)$)",
+              "while": "^(?!(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "#template"
+                },
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.template.sitefile",
+          "begin": "(?<=\\s)(<<)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#render-clauses"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "include": "#template"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "heredoc-transform": {
+      "patterns": [
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:HTML|HTM)$)",
+              "while": "^(?!\\t*(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:CSS)$)",
+              "while": "^(?!\\t*(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!\\t*(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "while": "^(?!\\t*(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:JSON)$)",
+              "while": "^(?!\\t*(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:YAML|YML)$)",
+              "while": "^(?!\\t*(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!\\t*(?i:SVG|XML)$)",
+              "while": "^(?!\\t*(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<-)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^\\t*(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile"
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:HTML|HTM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:HTML|HTM)$)",
+              "while": "^(?!(?i:HTML|HTM)$)",
+              "contentName": "meta.embedded.block.html",
+              "patterns": [
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:CSS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:CSS)$)",
+              "while": "^(?!(?i:CSS)$)",
+              "contentName": "meta.embedded.block.css",
+              "patterns": [
+                {
+                  "include": "source.css"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JAVASCRIPT|JS|MJS))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "while": "^(?!(?i:JAVASCRIPT|JS|MJS)$)",
+              "contentName": "meta.embedded.block.javascript",
+              "patterns": [
+                {
+                  "include": "source.js"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:MARKDOWN|MD))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:MARKDOWN|MD)$)",
+              "while": "^(?!(?i:MARKDOWN|MD)$)",
+              "contentName": "meta.embedded.block.markdown",
+              "patterns": [
+                {
+                  "include": "text.html.markdown"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:JSON))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:JSON)$)",
+              "while": "^(?!(?i:JSON)$)",
+              "contentName": "meta.embedded.block.json",
+              "patterns": [
+                {
+                  "include": "source.json"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:YAML|YML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:YAML|YML)$)",
+              "while": "^(?!(?i:YAML|YML)$)",
+              "contentName": "meta.embedded.block.yaml",
+              "patterns": [
+                {
+                  "include": "source.yaml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)((?i:SVG|XML))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "begin": "^(?!(?i:SVG|XML)$)",
+              "while": "^(?!(?i:SVG|XML)$)",
+              "contentName": "meta.embedded.block.xml",
+              "patterns": [
+                {
+                  "include": "text.xml"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "meta.heredoc.raw.sitefile",
+          "begin": "(?<=\\s)(<<)([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.heredoc.sitefile"
+            },
+            "2": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "end": "^(\\2)$",
+          "endCaptures": {
+            "1": {
+              "name": "entity.name.tag.heredoc.sitefile"
+            }
+          },
+          "patterns": [
+            {
+              "name": "meta.heredoc.header.sitefile",
+              "begin": "\\G(?=.)",
+              "end": "(?<!\\\\)$",
+              "patterns": [
+                {
+                  "include": "#continuation"
+                },
+                {
+                  "include": "#transform-clauses"
+                }
+              ]
+            },
+            {
+              "match": "^.+$",
+              "name": "string.unquoted.heredoc.sitefile"
+            }
+          ]
+        }
+      ]
+    },
+    "render-clauses": {
+      "patterns": [
+        {
+          "match": "(?<![^\\s])((?i:FOR))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+((?i:IN))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "2": {
+              "name": "variable.other.definition.loop.sitefile"
+            },
+            "3": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "4": {
+              "name": "variable.other.readwrite.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(?<![^\\s])((?i:TO|FOR|IN))(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            }
+          }
+        },
+        {
+          "include": "#operands"
+        }
+      ]
+    },
+    "transform-clauses": {
+      "patterns": [
+        {
+          "match": "(?<![^\\s])((?i:FOR))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+((?i:IN))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "2": {
+              "name": "variable.other.definition.loop.sitefile"
+            },
+            "3": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "4": {
+              "name": "variable.other.readwrite.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(?<![^\\s])((?i:WITH))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "2": {
+              "name": "entity.name.function.plugin.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(?<![^\\s])((?i:WITH|TO|OPTIONS|FOR|IN|ARGS))(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            }
+          }
+        },
+        {
+          "include": "#option"
+        },
+        {
+          "include": "#placeholder"
+        },
+        {
+          "include": "#scalar"
+        },
+        {
+          "include": "#operands"
+        }
+      ]
+    },
+    "comment": {
+      "match": "^\\s*(#).*$",
+      "name": "comment.line.number-sign.sitefile",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.sitefile"
+        }
+      }
+    },
+    "continuation-comment": {
+      "match": "^\\s*(#).*\\n?",
+      "name": "comment.line.number-sign.sitefile",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.sitefile"
+        }
+      }
+    },
+    "continuation": {
+      "match": "\\\\$",
+      "name": "constant.character.escape.line-continuation.sitefile"
+    },
+    "instructions": {
+      "patterns": [
+        {
+          "name": "meta.instruction.from.sitefile",
+          "begin": "^\\s*((?i:FROM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(scratch)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "constant.language.scratch.sitefile"
+                }
+              }
+            },
+            {
+              "match": "\\G()\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "entity.name.section.stage.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "entity.name.section.stage.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.stage.sitefile",
+          "begin": "^\\s*((?i:STAGE))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "entity.name.section.stage.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:FROM))\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "entity.name.section.stage.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:FROM))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(scratch)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "constant.language.scratch.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.arg.sitefile",
+          "begin": "^\\s*((?i:ARG))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$|[:=])",
+              "captures": {
+                "1": {
+                  "name": "variable.other.definition.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(:)\\s*(?:((?i:string|number|boolean))(?=\\s|$|=)|([^\\s=]*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.separator.type.sitefile"
+                },
+                "2": {
+                  "name": "support.type.primitive.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.type.sitefile"
+                }
+              }
+            },
+            {
+              "match": "=",
+              "name": "keyword.operator.assignment.sitefile"
+            },
+            {
+              "include": "#scalar"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.let.sitefile",
+          "begin": "^\\s*((?i:LET))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$|[:=])",
+              "captures": {
+                "1": {
+                  "name": "variable.other.definition.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(:)\\s*(?:((?i:string|number|boolean))(?=\\s|$|=)|([^\\s=]*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.separator.type.sitefile"
+                },
+                "2": {
+                  "name": "support.type.primitive.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.type.sitefile"
+                }
+              }
+            },
+            {
+              "match": "=",
+              "name": "keyword.operator.assignment.sitefile"
+            },
+            {
+              "include": "#scalar"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.import.sitefile",
+          "begin": "^\\s*((?i:IMPORT))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "variable.other.definition.import.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:FROM))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:file|text|json|tree|markdown|yaml|csv|wbn))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "support.type.import-kind.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.import-kind.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:INTEGRITY))(?:\\s+(?:(sha256:[0-9a-f]{64})(?=\\s|$)|(\\S+)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.other.integrity.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.integrity.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:SORT))\\s+((?i:BY))\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+((?i:ASC|DESC)))?(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "3": {
+                  "name": "variable.other.property.sort-key.sitefile"
+                },
+                "4": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:SORT|BY|ASC|DESC))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.copy.sitefile",
+          "begin": "^\\s*((?i:COPY))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.stage-name.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "include": "#heredoc-copy"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.render.sitefile",
+          "begin": "^\\s*((?i:RENDER))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(escape)(=)(?:((?i:none|html))(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "constant.language.escape-mode.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.escape-mode.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.stage-name.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "include": "#heredoc-render"
+            },
+            {
+              "include": "#render-clauses"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.transform.sitefile",
+          "begin": "^\\s*((?i:TRANSFORM))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                },
+                "4": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "5": {
+                  "name": "invalid.illegal.stage-name.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])(--)(overwrite)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "punctuation.definition.flag.sitefile"
+                },
+                "2": {
+                  "name": "variable.parameter.flag.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])--\\S*",
+              "name": "invalid.illegal.unknown-flag.sitefile"
+            },
+            {
+              "include": "#heredoc-transform"
+            },
+            {
+              "include": "#transform-clauses"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.plugin.sitefile",
+          "begin": "^\\s*((?i:PLUGIN))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "entity.name.function.plugin.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:FROM))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:INTEGRITY))(?:\\s+(?:(sha256:[0-9a-f]{64})(?=\\s|$)|(\\S+)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.other.integrity.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.integrity.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.tool.sitefile",
+          "begin": "^\\s*((?i:TOOL))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "\\G\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "entity.name.function.tool.sitefile"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.export.sitefile",
+          "begin": "^\\s*((?i:EXPORT))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "support.type.export-format.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.export-format.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:COMPRESSION))(?:\\s+(?:((?i:gzip|none))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.language.compression.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.compression.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:BASE|AT))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "match": "^\\s*((?i:RUN|REMOVE|GENERATE|ASSERT|META|EXEC))(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "invalid.illegal.unsupported-instruction.sitefile"
+            }
+          }
+        }
+      ]
+    },
+    "operands": {
+      "patterns": [
+        {
+          "include": "#string-double"
+        },
+        {
+          "include": "#string-single"
+        },
+        {
+          "include": "#url"
+        },
+        {
+          "include": "#resource-ref"
+        },
+        {
+          "include": "#path"
+        },
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#escape"
+        }
+      ]
+    },
+    "scalar": {
+      "patterns": [
+        {
+          "match": "(?<![^\\s=])-?[0-9]+(?:\\.[0-9]+)?(?=\\s|$)",
+          "name": "constant.numeric.sitefile"
+        },
+        {
+          "match": "(?<![^\\s=])(?i:true|false)(?=\\s|$)",
+          "name": "constant.language.boolean.sitefile"
+        }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.sitefile",
+      "begin": "(?<![^\\s=])\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.sitefile"
+        }
+      },
+      "end": "\"|(?<!\\\\)$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.sitefile"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#continuation"
+        },
+        {
+          "include": "#escape"
+        },
+        {
+          "include": "#interpolation"
+        }
+      ]
+    },
+    "string-single": {
+      "name": "string.quoted.single.sitefile",
+      "begin": "(?<![^\\s=])'",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.sitefile"
+        }
+      },
+      "end": "'|(?<!\\\\)$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.sitefile"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#continuation"
+        }
+      ]
+    },
+    "escape": {
+      "match": "\\\\[^\\n]",
+      "name": "constant.character.escape.sitefile"
+    },
+    "url": {
+      "match": "(?<![^\\s=])https?://(?:[^\\s\\\\]|\\\\[^\\n])*",
+      "name": "markup.underline.link.sitefile",
+      "captures": {
+        "0": {
+          "patterns": [
+            {
+              "include": "#interpolation"
+            }
+          ]
+        }
+      }
+    },
+    "resource-ref": {
+      "match": "(?<![^\\s])([A-Za-z_][A-Za-z0-9_]*)(:)(?=/|\\s|$)",
+      "captures": {
+        "1": {
+          "name": "variable.other.readwrite.import.sitefile"
+        },
+        "2": {
+          "name": "punctuation.separator.resource.sitefile"
+        }
+      }
+    },
+    "path": {
+      "match": "(?<![^\\s=:}])(?:\\.\\.?)?/(?:[^\\s\\\\]|\\\\[^\\n])*",
+      "name": "string.unquoted.path.sitefile",
+      "captures": {
+        "0": {
+          "patterns": [
+            {
+              "include": "#interpolation"
+            },
+            {
+              "include": "#escape"
+            }
+          ]
+        }
+      }
+    },
+    "interpolation": {
+      "patterns": [
+        {
+          "match": "(\\$\\{)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)(\\})",
+          "name": "meta.interpolation.sitefile",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.interpolation.begin.sitefile"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#ref"
+                }
+              ]
+            },
+            "3": {
+              "name": "punctuation.definition.interpolation.end.sitefile"
+            }
+          }
+        },
+        {
+          "match": "\\$\\{[^}\\s]*\\}?",
+          "name": "invalid.illegal.interpolation.sitefile"
+        }
+      ]
+    },
+    "ref": {
+      "patterns": [
+        {
+          "match": "(\\.)([A-Za-z0-9_-]+)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.sitefile"
+            },
+            "2": {
+              "name": "variable.other.property.sitefile"
+            }
+          }
+        },
+        {
+          "match": "[A-Za-z_][A-Za-z0-9_]*",
+          "name": "variable.other.readwrite.sitefile"
+        }
+      ]
+    },
+    "option": {
+      "match": "(?<![^\\s])([A-Za-z_][A-Za-z0-9_]*)(=)",
+      "captures": {
+        "1": {
+          "name": "entity.other.attribute-name.option.sitefile"
+        },
+        "2": {
+          "name": "keyword.operator.assignment.sitefile"
+        }
+      }
+    },
+    "placeholder": {
+      "match": "\\{(?:input|output|option\\.[A-Za-z0-9_-]+)\\}",
+      "name": "variable.language.placeholder.sitefile"
+    },
+    "template": {
+      "patterns": [
+        {
+          "match": "\\$\\$\\{",
+          "name": "constant.character.escape.template.sitefile"
+        },
+        {
+          "match": "(\\$\\{)(#each)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\})",
+          "name": "meta.template.block.sitefile",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.template.begin.sitefile"
+            },
+            "2": {
+              "name": "keyword.control.loop.sitefile"
+            },
+            "3": {
+              "patterns": [
+                {
+                  "include": "#ref"
+                }
+              ]
+            },
+            "4": {
+              "name": "keyword.control.loop.sitefile"
+            },
+            "5": {
+              "name": "variable.other.definition.loop.sitefile"
+            },
+            "6": {
+              "name": "punctuation.definition.template.end.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(\\$\\{)(#if)\\s+(!?)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)\\s*(\\})",
+          "name": "meta.template.block.sitefile",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.template.begin.sitefile"
+            },
+            "2": {
+              "name": "keyword.control.conditional.sitefile"
+            },
+            "3": {
+              "name": "keyword.operator.logical.sitefile"
+            },
+            "4": {
+              "patterns": [
+                {
+                  "include": "#ref"
+                }
+              ]
+            },
+            "5": {
+              "name": "punctuation.definition.template.end.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(\\$\\{)(else|/each|/if)(\\})",
+          "name": "meta.template.block.sitefile",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.template.begin.sitefile"
+            },
+            "2": {
+              "name": "keyword.control.template.sitefile"
+            },
+            "3": {
+              "name": "punctuation.definition.template.end.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(\\$\\{)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*)(?:(\\|)(raw))?(\\})",
+          "name": "meta.interpolation.sitefile",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.interpolation.begin.sitefile"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#ref"
+                }
+              ]
+            },
+            "3": {
+              "name": "keyword.operator.pipe.sitefile"
+            },
+            "4": {
+              "name": "support.function.filter.sitefile"
+            },
+            "5": {
+              "name": "punctuation.definition.interpolation.end.sitefile"
+            }
+          }
+        },
+        {
+          "match": "\\$\\{[^}\\n]*\\}",
+          "name": "invalid.illegal.template.sitefile"
+        }
+      ]
+    }
+  }
+}

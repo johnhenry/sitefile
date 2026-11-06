@@ -1,0 +1,82 @@
+{
+  "name": "sitefile",
+  "displayName": "Sitefile",
+  "description": "Syntax highlighting for Sitefile, the Docker-inspired static site builder",
+  "version": "0.1.0",
+  "publisher": "johnhenry",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johnhenry/sitefile.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "sitefile",
+    "static site",
+    "dockerfile",
+    "textmate"
+  ],
+  "scripts": {
+    "build:grammar": "node scripts/build-grammar.mjs",
+    "test": "node --test test/",
+    "package": "vsce package --skip-license",
+    "preview": "node test/preview.mjs"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "sitefile",
+        "aliases": [
+          "Sitefile",
+          "sitefile"
+        ],
+        "filenames": [
+          "Sitefile"
+        ],
+        "extensions": [
+          ".sitefile"
+        ],
+        "filenamePatterns": [
+          "Sitefile.*",
+          "*.Sitefile"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sitefile",
+        "scopeName": "source.sitefile",
+        "path": "./syntaxes/sitefile.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.html": "html",
+          "meta.embedded.block.css": "css",
+          "meta.embedded.block.javascript": "javascript",
+          "meta.embedded.block.markdown": "markdown",
+          "meta.embedded.block.json": "json",
+          "meta.embedded.block.yaml": "yaml",
+          "meta.embedded.block.xml": "xml"
+        }
+      },
+      {
+        "scopeName": "sitefile.template.injection",
+        "path": "./syntaxes/sitefile-template.injection.tmLanguage.json",
+        "injectTo": [
+          "source.sitefile"
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^4.1.0",
+    "shiki": "^4.6.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  }
+}

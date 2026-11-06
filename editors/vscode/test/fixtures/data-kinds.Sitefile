@@ -1,0 +1,16 @@
+FROM scratch
+IMPORT notes FROM ./notes AS yaml SORT BY order
+IMPORT docs FROM ./docs/ AS json
+IMPORT readme FROM ./readme.txt AS text
+IMPORT scores FROM ./scores.csv AS csv SORT BY score DESC
+IMPORT page FROM ./page.md AS markdown
+IMPORT raw FROM ./readme.txt
+RENDER <<T TO /out.txt
+${#each notes as n}${n.slug}|${n.path}|${#if n.title}${n.title}|${n.order}${/if}|${#each n.value as v}${v},${/each}
+${/each}${#each docs as d}${d.slug}:${#if d.title}${d.title}:${d.n}${else}${d.value}${/if}
+${/each}${readme}${#each scores as s}${s.name}=${s.score};${/each}
+${page.title} ${page.slug}
+${page.content|raw}
+T
+COPY raw: /copied/
+EXPORT /

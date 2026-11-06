@@ -1,0 +1,16 @@
+# Multi-stage: assemble pieces in separate stages, then compose the final site.
+ARG TITLE = "Multi-stage"
+
+# Stage 1: seed a stage from a context directory.
+STAGE theme FROM ./theme
+COPY ./pages/index.html /vendor/index.html
+
+# Stage 2: start empty, pull in an earlier stage's files.
+STAGE assets
+COPY --from=theme /css/ /static/
+
+# Final stage: a copy of "assets", plus rendered and copied files.
+FROM assets
+COPY --from=theme /vendor/index.html /raw-index.html
+RENDER --escape=html ./pages/about.html TO /about.html
+EXPORT / AS directory

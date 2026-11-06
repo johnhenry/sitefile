@@ -1,0 +1,255 @@
+{
+ "1": {
+  "text": "# A runnable image on a base pulled from the local mock registry.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " A runnable image on a base pulled from the local mock registry.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "COPY <<CSS /style.css",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "CSS",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/style.css",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "body { margin: 0; }",
+  "tokens": [
+   [
+    "body { margin: 0; }",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.css"
+   ]
+  ]
+ },
+ "5": {
+  "text": "CSS",
+  "tokens": [
+   [
+    "CSS",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "RENDER --escape=html <<HTML TO /index.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "<h1>site on a base</h1>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "site on a base",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "8": {
+  "text": "HTML",
+  "tokens": [
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "EXPORT / AS oci BASE ${REGISTRY}/conf/base:1@sha256:4339e538b564c61d42879b12dd54b7c410545493f0e74c7cb6c5f097fcf2130e AT /srv/www",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "oci",
+    "meta.instruction.export.sitefile support.type.export-format.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "BASE",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.export.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "REGISTRY",
+    "meta.instruction.export.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.export.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "/conf/base:1@sha256:4339e538b564c61d42879b12dd54b7c410545493f0e74c7cb6c5f097fcf2130e",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AT",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/srv/www",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

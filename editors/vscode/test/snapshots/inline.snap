@@ -1,0 +1,684 @@
+{
+ "1": {
+  "text": "# A whole site in one file: the page template and the stylesheet are written",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " A whole site in one file: the page template and the stylesheet are written",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "# inline with heredocs, so there are no other files to keep next to it.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " inline with heredocs, so there are no other files to keep next to it.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "FROM scratch",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "scratch",
+    "meta.instruction.from.sitefile constant.language.scratch.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "ARG TITLE = \"Inline\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "TITLE",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "Inline",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "LET TAGLINE = \"Everything on this page lives in the Sitefile.\"",
+  "tokens": [
+   [
+    "LET",
+    "meta.instruction.let.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "TAGLINE",
+    "meta.instruction.let.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.let.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.let.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "Everything on this page lives in the Sitefile.",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.let.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "7": {
+  "text": "# RENDER: the body is a template, exactly like a template file.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " RENDER: the body is a template, exactly like a template file.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "RENDER --escape=html <<HTML TO /index.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "<!doctype html>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "!doctype html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "10": {
+  "text": "<html lang=\"en\">",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "html lang=\"en\"",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "11": {
+  "text": "<head>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "head",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "12": {
+  "text": "  <meta charset=\"utf-8\">",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "meta charset=\"utf-8\"",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "13": {
+  "text": "  <title>${TITLE}</title>",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "title",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "TITLE",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/title",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "14": {
+  "text": "  <link rel=\"stylesheet\" href=\"/style.css\">",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "link rel=\"stylesheet\" href=\"/style.css\"",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "15": {
+  "text": "</head>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/head",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "16": {
+  "text": "<body>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "body",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "17": {
+  "text": "  <h1>${TITLE}</h1>",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "TITLE",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/h1",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "18": {
+  "text": "  <p>${TAGLINE}</p>",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "TAGLINE",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "19": {
+  "text": "  <p><code>$${TITLE}</code> is replaced at build time.</p>",
+  "tokens": [
+   [
+    "  ",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "code",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "$${",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html constant.character.escape.template.sitefile"
+   ],
+   [
+    "TITLE}",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/code",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    " is replaced at build time.",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html"
+   ],
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/p",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "20": {
+  "text": "</body>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/body",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "21": {
+  "text": "</html>",
+  "tokens": [
+   [
+    "<",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    "/html",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ],
+   [
+    ">",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile meta.embedded.block.html meta.tag.stub"
+   ]
+  ]
+ },
+ "22": {
+  "text": "HTML",
+  "tokens": [
+   [
+    "HTML",
+    "meta.instruction.render.sitefile meta.heredoc.template.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "23": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "24": {
+  "text": "# COPY: the body is written byte for byte (no ${} substitution).",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " COPY: the body is written byte for byte (no ${} substitution).",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "25": {
+  "text": "COPY <<CSS /style.css",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "<<",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile keyword.operator.heredoc.sitefile"
+   ],
+   [
+    "CSS",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile"
+   ],
+   [
+    "/style.css",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.heredoc.header.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "26": {
+  "text": "body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }",
+  "tokens": [
+   [
+    "body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; }",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.css"
+   ]
+  ]
+ },
+ "27": {
+  "text": "h1::after { content: \" ${not substituted}\"; color: #999; }",
+  "tokens": [
+   [
+    "h1::after { content: \" ${not substituted}\"; color: #999; }",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile meta.embedded.block.css"
+   ]
+  ]
+ },
+ "28": {
+  "text": "CSS",
+  "tokens": [
+   [
+    "CSS",
+    "meta.instruction.copy.sitefile meta.heredoc.raw.sitefile entity.name.tag.heredoc.sitefile"
+   ]
+  ]
+ },
+ "29": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "30": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

@@ -1,0 +1,5 @@
+FROM scratch
+TOOL cp
+IMPORT items FROM ./items.json AS json
+TRANSFORM ./t.txt WITH cp TO /out/${i.n}.txt OPTIONS mode=${i.n} FOR i IN items ARGS {input} {output}
+EXPORT /

@@ -1,0 +1,390 @@
+{
+ "1": {
+  "text": "# Multi-stage: assemble pieces in separate stages, then compose the final site.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Multi-stage: assemble pieces in separate stages, then compose the final site.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "ARG TITLE = \"Multi-stage\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "TITLE",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "Multi-stage",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "4": {
+  "text": "# Stage 1: seed a stage from a context directory.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Stage 1: seed a stage from a context directory.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "STAGE theme FROM ./theme",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "./theme",
+    "meta.instruction.stage.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "COPY ./pages/index.html /vendor/index.html",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "./pages/index.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/vendor/index.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "8": {
+  "text": "# Stage 2: start empty, pull in an earlier stage's files.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Stage 2: start empty, pull in an earlier stage's files.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "STAGE assets",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "assets",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "10": {
+  "text": "COPY --from=theme /css/ /static/",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.copy.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/css/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/static/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "11": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "12": {
+  "text": "# Final stage: a copy of \"assets\", plus rendered and copied files.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Final stage: a copy of \"assets\", plus rendered and copied files.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "13": {
+  "text": "FROM assets",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "assets",
+    "meta.instruction.from.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "14": {
+  "text": "COPY --from=theme /vendor/index.html /raw-index.html",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.copy.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/vendor/index.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/raw-index.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "15": {
+  "text": "RENDER --escape=html ./pages/about.html TO /about.html",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "./pages/about.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/about.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "16": {
+  "text": "EXPORT / AS directory",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.export.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "directory",
+    "meta.instruction.export.sitefile support.type.export-format.sitefile"
+   ]
+  ]
+ }
+}
