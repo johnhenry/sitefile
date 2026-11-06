@@ -263,6 +263,15 @@ under `SITEFILE_CACHE_MAX` (default 1 GiB, least recently used entries evicted
 first, see [CLI.md](CLI.md#cache-size-limit)). The cache
 neither reads nor changes `Sitefile.lock`, so `--frozen-lockfile` is unaffected.
 
+The cache can be shared through an OCI registry with `build --cache-from <ref>`
+and `--cache-to <ref>` ([CLI.md](CLI.md#registry-cache)): the same keys, so a
+result computed on one machine is reused on another only when everything in its
+key is equal (a plugin's folder digest is portable; a tool's key includes its
+resolved path, size and mtime, so tool results only match where the same
+binary sits at the same path with the same mtime, such as one CI image). A plugin that exports
+`cache = false` is never pushed. Only use `--cache-from` with a registry
+repository you trust: a cached result is used as if the plugin had returned it.
+
 ## Not yet
 
 - Plugins from URLs or npm packages (local files only for now)

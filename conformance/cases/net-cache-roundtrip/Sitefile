@@ -1,0 +1,7 @@
+FROM scratch
+PLUGIN up FROM ./plugins/up.mjs
+PLUGIN split FROM ./plugins/split.mjs
+TRANSFORM ./a.txt WITH up TO /a.txt
+TRANSFORM ./b.txt WITH split TO /parts/
+COPY ./a.txt /raw.txt
+EXPORT /

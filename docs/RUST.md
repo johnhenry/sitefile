@@ -50,7 +50,7 @@ to find in the other:
 | `resources::*` | `resources/*` |
 | `export::{exporter, archive_writers, wbn, oci, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `site` (SITEMAP, FEED, `_redirects`/`_headers` writers); the rules section of `server` | `site.ts`; `serve-rules.ts` |
-| `plugins::{host, wasm, exec, cache}`, `registry`, `base_image` | `plugins/*`, `registry*.ts`, `base-image.ts` |
+| `plugins::{host, wasm, exec, cache}`, `registry`, `registry_cache`, `base_image` | `plugins/*`, `registry*.ts` (`registry-cache.ts`), `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 | `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
@@ -138,7 +138,10 @@ paths").
   and an in-process mock OCI registry, then cover remote `IMPORT` with and
   without `INTEGRITY`, redirects, SSRF refusal, status and size errors, remote
   archives, `Sitefile.lock` contents (byte for byte), `--frozen-lockfile`,
-  `--update-lock`, `EXPORT … AS oci BASE` and a `push`/`pull`/`save` round trip.
+  `--update-lock`, `EXPORT … AS oci BASE`, a `push`/`pull`/`save` round trip
+  and the registry TRANSFORM cache (`--cache-from`/`--cache-to`: the pushed
+  manifests must have the same digest, and the Rust CLI must reuse results the
+  TypeScript CLI pushed).
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest.
   Every case currently passes (`npm run conformance` prints the counts); the network cases need `openssl`.

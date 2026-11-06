@@ -5,7 +5,9 @@ import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
-import { insecureRegistriesFromEnv } from './base-image.js';
+import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
+import { cacheLimitFromEnv } from './cache-limit.js';
+import { parseCacheRef, RegistryCache } from './registry-cache.js';
 import { parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
@@ -61,6 +63,10 @@ Options:
       --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
+      --cache-from <ref>       also look up TRANSFORM results in this registry cache (build only,
+                               repeatable, first match wins); results are fetched only on a hit
+      --cache-to <ref>         after a successful build, push the TRANSFORM results it used to this
+                               registry cache (build only, once); registry problems only warn
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
       --force                  replace a non-empty --out outside the context
@@ -112,6 +118,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
         'no-cache': { type: 'boolean' },
+        'cache-from': { type: 'string', multiple: true },
+        'cache-to': { type: 'string', multiple: true },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
@@ -149,6 +157,14 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   if (o.dot && command !== 'graph') return usageError('--dot is only for graph');
   if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
+  const cacheFrom = o['cache-from'] ?? [];
+  const cacheTo = o['cache-to'] ?? [];
+  if (cacheFrom.length || cacheTo.length) {
+    if (command !== 'build') return usageError('--cache-from and --cache-to are only for build');
+    if (o.watch) return usageError('--watch cannot be combined with --cache-from or --cache-to');
+    if (o['no-cache']) return usageError('--no-cache cannot be combined with --cache-from or --cache-to');
+    if (cacheTo.length > 1) return usageError('--cache-to can be given only once');
+  }
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
@@ -170,6 +186,17 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   }
 
   try {
+    const remoteCache =
+      cacheFrom.length || cacheTo.length
+        ? new RegistryCache({
+            from: cacheFrom.map((r) => parseCacheRef('--cache-from', r)),
+            to: cacheTo[0] !== undefined ? parseCacheRef('--cache-to', cacheTo[0]) : undefined,
+            client: (registry) => makeClient(registry, { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []), allowPrivateNetwork: !!o['allow-private-network'] }),
+            limit: cacheLimitFromEnv(),
+            warn: (m) => process.stderr.write(`warning: ${m}\n`),
+            notice: (m) => process.stderr.write(`${m}\n`),
+          })
+        : undefined;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
     let formatOverride: ExportFormat | undefined;
@@ -209,6 +236,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
       allowAllPlugins: !!o['allow-plugins'],
       ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
+      ...(remoteCache ? { remoteCache } : {}),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
@@ -227,9 +255,11 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         validateImageTags(tags);
         const labels = parseLabels(o.label ?? []);
         const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
+        await remoteCache?.load();
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
           await storeBuildAsImage(await build(options), tags, imageInfo);
+          await remoteCache?.push(transformCacheDir());
           return 0;
         }
         const r = await buildToDirectory({
@@ -256,6 +286,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         );
         if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
         if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
+        await remoteCache?.push(transformCacheDir());
         return 0;
       }
       case 'validate': {

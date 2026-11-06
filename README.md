@@ -101,6 +101,8 @@ sitefile build --allow-exec ffmpeg
 ```
 
 TRANSFORM results are cached in `$SITEFILE_HOME/cache/transform` (`--no-cache` to skip; `sitefile cache info|prune`).
+CI runs and teammates can share them through an OCI registry: `--cache-to <registry/name:tag>` pushes the results a
+build used, `--cache-from <ref>` reuses them (see [docs/CLI.md](docs/CLI.md#registry-cache)).
 
 ## CLI
 
@@ -109,7 +111,7 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
-               [--no-cache] [--watch] [--target stage]
+               [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch] [--target stage]
 sitefile validate [context] [--json] [--target stage]
 sitefile inspect  [context] [--json] [--target stage]
 sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
