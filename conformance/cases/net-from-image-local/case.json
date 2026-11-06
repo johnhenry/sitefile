@@ -1,0 +1,38 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}/theme",
+      "-t",
+      "theme:1",
+      "-o",
+      "${OUT}/theme"
+    ],
+    [
+      "build",
+      "${CTX}/site",
+      "-o",
+      "${OUT}/site"
+    ],
+    [
+      "build",
+      "${CTX}/site",
+      "-o",
+      "${OUT}/strict",
+      "--strict-pins",
+      "--frozen-lockfile"
+    ]
+  ],
+  "outputs": [
+    [
+      "site",
+      "tree"
+    ],
+    [
+      "strict",
+      "tree"
+    ]
+  ],
+  "lock": true
+}

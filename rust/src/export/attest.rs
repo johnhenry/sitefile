@@ -105,6 +105,8 @@ pub struct BuildFacts {
     pub platform: String,
     pub imports: Vec<ImportFact>,
     pub base: Option<(String, String)>,
+    /// `FROM image` stage bases, in stage order: (FROM line, image name, image digest).
+    pub images: Vec<(u32, String, String)>,
     /// `--strict-pins`: how each remote input was pinned (shown in the provenance).
     pub pins: Option<crate::executor::Pins>,
     /// File origins start with the Sitefile label (relative to the cwd).
@@ -180,6 +182,7 @@ pub fn build_facts(result: &BuildResult, context_dir: &str, sitefile: Option<&st
         platform: platform.unwrap_or("linux/amd64").to_string(),
         imports,
         base: result.base.as_ref().map(|b| (b.name.clone(), b.manifest_digest.clone())),
+        images: result.images.iter().map(|i| (i.line, i.name.clone(), i.digest.clone())).collect(),
         pins: result.pins.clone(),
         label: if label_rel.is_empty() { base_name } else { label_rel },
     })
@@ -210,6 +213,13 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
             d["downloadLocation"] = Value::String(r.clone());
         }
         if let Some(pin) = facts.pins.as_ref().and_then(|p| p.import(&i.name)) {
+            d["annotations"] = json!({ "dev.sitefile.pin": pin });
+        }
+        deps.push(d);
+    }
+    for (line, name, digest) in &facts.images {
+        let mut d = json!({ "name": format!("from:{line}"), "uri": name, "digest": { "sha256": hex(digest) } });
+        if let Some(pin) = facts.pins.as_ref().and_then(|p| p.images.iter().find(|(l, _)| l == line).map(|(_, b)| *b)) {
             d["annotations"] = json!({ "dev.sitefile.pin": pin });
         }
         deps.push(d);
@@ -355,6 +365,7 @@ mod tests {
             platform: "linux/amd64".into(),
             imports: vec![ImportFact { name: "data".into(), uri: "https://x.example/d.json".into(), resolved: Some("https://cdn.example/d.json".into()), digest: sha256(b"{}") }],
             base: None,
+            images: Vec::new(),
             pins: None,
             label: "ctx/Sitefile".into(),
         }
@@ -365,7 +376,7 @@ mod tests {
         let plain = provenance_predicate(&facts(), None);
         assert!(plain["buildDefinition"]["externalParameters"].get("strictPins").is_none());
         assert!(plain["buildDefinition"]["resolvedDependencies"][1].get("annotations").is_none());
-        let pins = crate::executor::Pins { imports: vec![("data".into(), "integrity")], base: Some("digest") };
+        let pins = crate::executor::Pins { imports: vec![("data".into(), "integrity")], base: Some("digest"), images: Vec::new() };
         let f = BuildFacts { pins: Some(pins), base: Some(("r.example/base:1".into(), sha256(b"m"))), ..facts() };
         let p = provenance_predicate(&f, None);
         assert_eq!(p["buildDefinition"]["externalParameters"]["strictPins"], json!(true));

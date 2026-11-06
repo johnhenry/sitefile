@@ -10,6 +10,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use super::incremental::{dirs_of, exported, stamp_of, try_incremental, Applied, SharedExportState, Stamp};
+
 /// Test hook: called after the temp tree is written, right before the final
 /// re-validation and swap. Not exposed by the CLI.
 pub type BeforeSwap = Arc<dyn Fn() + Send + Sync>;
@@ -22,11 +24,23 @@ pub struct ExportOptions {
     pub force: bool,
     #[doc(hidden)]
     pub before_swap: Option<BeforeSwap>,
+    /// Watch mode (directory exports only): what the previous export of this session left on
+    /// disk. When the destination still holds exactly that, only the files that changed are
+    /// written (see `export::incremental`); either way the export is recorded for the next one.
+    pub incremental: Option<SharedExportState>,
+    /// Test hook (incremental export): called after the changed files are staged, before any
+    /// of them is moved into the destination.
+    #[doc(hidden)]
+    pub before_apply: Option<BeforeSwap>,
 }
 
 impl ExportOptions {
     pub fn new(context_dir: impl Into<PathBuf>) -> Self {
-        ExportOptions { context_dir: context_dir.into(), force: false, before_swap: None }
+        ExportOptions { context_dir: context_dir.into(), force: false, before_swap: None, incremental: None, before_apply: None }
+    }
+    pub fn incremental(mut self, state: Option<SharedExportState>) -> Self {
+        self.incremental = state;
+        self
     }
     pub fn force(mut self, force: bool) -> Self {
         self.force = force;
@@ -39,6 +53,8 @@ pub struct ExportResult {
     /// Real absolute path the tree was written to.
     pub out_dir: PathBuf,
     pub files: usize,
+    /// Set when only the changes were applied in place (incremental export).
+    pub incremental: Option<Applied>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +104,7 @@ pub fn random_hex(n: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn show(p: &Path) -> String {
+pub(super) fn show(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
@@ -107,7 +123,7 @@ pub fn occupied(e: io::Error, p: &str) -> std::result::Result<SitefileError, io:
     }
 }
 
-fn unsafe_err(msg: String) -> SitefileError {
+pub(super) fn unsafe_err(msg: String) -> SitefileError {
     SitefileError::plain(E_EXPORT_UNSAFE, msg)
 }
 
@@ -128,16 +144,16 @@ pub fn resolve_path(p: &Path) -> PathBuf {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileId {
+pub(super) struct FileId {
     dev: u64,
     ino: u64,
 }
 
-fn id_of(m: &fs::Metadata) -> FileId {
+pub(super) fn id_of(m: &fs::Metadata) -> FileId {
     FileId { dev: m.dev(), ino: m.ino() }
 }
 
-fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
+pub(super) fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(p) {
         Ok(m) => Ok(Some(m)),
         Err(e) if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::NotADirectory => Ok(None),
@@ -145,11 +161,11 @@ fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
     }
 }
 
-fn is_real_dir(m: &fs::Metadata) -> bool {
+pub(super) fn is_real_dir(m: &fs::Metadata) -> bool {
     !m.file_type().is_symlink() && m.is_dir()
 }
 
-fn is_real_file(m: &fs::Metadata) -> bool {
+pub(super) fn is_real_file(m: &fs::Metadata) -> bool {
     !m.file_type().is_symlink() && m.is_file()
 }
 
@@ -234,7 +250,7 @@ fn verified_parent_id(parent: &Path) -> Result<FileId> {
     Ok(id_of(&st))
 }
 
-fn assert_parent_unchanged(parent: &Path, expected: FileId) -> Result<()> {
+pub(super) fn assert_parent_unchanged(parent: &Path, expected: FileId) -> Result<()> {
     if verified_parent_id(parent)? != expected {
         return Err(unsafe_err(format!("export parent '{}' was replaced during export; aborting", show(parent))));
     }
@@ -243,7 +259,7 @@ fn assert_parent_unchanged(parent: &Path, expected: FileId) -> Result<()> {
 
 /// Threads used for writing and removing many files (filesystem calls dominate
 /// large exports; the TypeScript version makes them one at a time).
-fn io_threads(n: usize) -> usize {
+pub(super) fn io_threads(n: usize) -> usize {
     let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(4);
     cores.min(8).min(n.max(1))
 }
@@ -281,7 +297,7 @@ fn remove_tree_parallel(p: &Path) {
 
 /// Recursively remove `p` only if it is a real directory with identity
 /// `expected`; with no `expected`, only an empty real directory. Best effort.
-fn remove_if_same(p: &Path, expected: Option<FileId>) {
+pub(super) fn remove_if_same(p: &Path, expected: Option<FileId>) {
     let Ok(Some(st)) = lstat_opt(p) else { return };
     if !is_real_dir(&st) {
         return;
@@ -325,7 +341,7 @@ fn check_destination(out: &Path, options: &ExportOptions) -> Result<(PathBuf, Pa
     Ok((out_real, context_real, st))
 }
 
-fn split_parent(out_real: &Path) -> (PathBuf, String) {
+pub(super) fn split_parent(out_real: &Path) -> (PathBuf, String) {
     let parent = out_real.parent().unwrap_or(Path::new("/")).to_path_buf();
     let base = out_real.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     (parent, base)
@@ -339,11 +355,20 @@ fn mkdir_parent(parent: &Path) -> Result<()> {
 /// fresh temporary sibling, which is then swapped in; on failure the previous
 /// destination (if any) is left in place.
 pub fn export_directory(tree: &Tree, out_dir: &Path, options: &ExportOptions) -> Result<ExportResult> {
-    let entries: Vec<(&str, &[u8], u32)> = tree.entries().map(|(p, n)| (p.as_str(), &n.bytes[..], n.mode)).collect();
+    let entries: Vec<(&str, &[u8], u32, &str)> = tree.entries().map(|(p, n)| (p.as_str(), &n.bytes[..], n.mode, n.digest.as_str())).collect();
     export_entries(&entries, out_dir, options)
 }
 
-fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &ExportOptions) -> Result<ExportResult> {
+/// A validated file of the tree being exported.
+pub(super) struct Planned<'a> {
+    pub path: &'a str,
+    pub segments: Vec<&'a str>,
+    pub bytes: &'a [u8],
+    pub mode: u32,
+    pub digest: &'a str,
+}
+
+fn export_entries(entries: &[(&str, &[u8], u32, &str)], out_dir: &Path, options: &ExportOptions) -> Result<ExportResult> {
     let (out_real, context_real, st) = check_destination(out_dir, options)?;
     if let Some(s) = &st {
         if !s.is_dir() {
@@ -364,8 +389,8 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
     }
 
     // --- validate paths before touching the disk
-    let mut planned: Vec<(&str, Vec<&str>, &[u8], u32)> = Vec::with_capacity(entries.len());
-    for &(p, bytes, mode) in entries {
+    let mut planned: Vec<Planned> = Vec::with_capacity(entries.len());
+    for &(p, bytes, mode, digest) in entries {
         let Some(rel) = p.strip_prefix('/') else {
             return Err(SitefileError::plain(E_EXPORT, format!("invalid artifact path '{p}': not absolute")));
         };
@@ -375,8 +400,18 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
                 return Err(SitefileError::plain(E_EXPORT, format!("invalid artifact path '{p}'")));
             }
         }
-        planned.push((p, segments, bytes, mode));
+        planned.push(Planned { path: p, segments, bytes, mode, digest });
     }
+
+    // --- watch mode: apply only the changes when the destination is as we left it
+    let state = options.incremental.clone();
+    let mut state = state.as_ref().map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(state) = state.as_deref_mut() {
+        if let Some(applied) = try_incremental(&planned, &out_real, st.as_ref(), state, options) {
+            return Ok(applied);
+        }
+    }
+    let record = state.is_some();
 
     // --- write into a temp sibling, then swap (see src/exporter.ts for the
     // race-hardening rationale and residual risks; the steps are identical).
@@ -407,49 +442,59 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
     let mut old_moved = false;
     let mut swapped = false;
     let io_fail = |e: io::Error| SitefileError::plain(E_EXPORT, format!("failed to export to '{}': {e}", show(&out_real)));
+    let stamps: std::sync::Mutex<Vec<(usize, Stamp)>> = std::sync::Mutex::new(Vec::new());
     let result = (|| -> Result<()> {
         // Directories first, in order; then the files, in parallel.
         let targets: Vec<PathBuf> = planned
             .iter()
-            .map(|(_, segments, _, _)| {
+            .map(|e| {
                 let mut t = tmp.clone();
-                for s in segments {
+                for s in &e.segments {
                     t.push(s);
                 }
                 t
             })
             .collect();
         let mut made: Option<&Path> = None;
-        for (t, (p, ..)) in targets.iter().zip(planned.iter()) {
+        for (t, e) in targets.iter().zip(planned.iter()) {
             let dir = t.parent().unwrap_or(&tmp);
             if made != Some(dir) {
-                fs::create_dir_all(dir).map_err(|e| occupied(e, p).unwrap_or_else(io_fail))?;
+                fs::create_dir_all(dir).map_err(|err| occupied(err, e.path).unwrap_or_else(io_fail))?;
                 made = Some(dir);
             }
         }
-        let write_one = |target: &Path, bytes: &[u8], mode: u32| -> io::Result<()> {
+        // Watch mode records each file's stamp as written: renaming the temp directory leaves
+        // its files' inodes (and ctimes) as they are now.
+        let write_one = |target: &Path, bytes: &[u8], mode: u32| -> io::Result<Option<Stamp>> {
             let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(target)?;
             f.write_all(bytes)?;
-            f.set_permissions(fs::Permissions::from_mode(mode))
+            f.set_permissions(fs::Permissions::from_mode(mode))?;
+            Ok(if record { Some(stamp_of(&f.metadata()?)) } else { None })
         };
-        let jobs: Vec<(&Path, &str, &[u8], u32)> =
-            targets.iter().zip(planned.iter()).map(|(t, (p, _, bytes, mode))| (t.as_path(), *p, *bytes, *mode)).collect();
+        let jobs: Vec<(usize, &Path, &str, &[u8], u32)> =
+            targets.iter().zip(planned.iter()).enumerate().map(|(i, (t, e))| (i, t.as_path(), e.path, e.bytes, e.mode)).collect();
         let threads = io_threads(jobs.len());
         let first_error: std::sync::Mutex<Option<(io::Error, &str)>> = std::sync::Mutex::new(None);
         std::thread::scope(|sc| {
             for part in jobs.chunks(jobs.len().div_ceil(threads).max(1)) {
-                let (write_one, first_error) = (&write_one, &first_error);
+                let (write_one, first_error, stamps) = (&write_one, &first_error, &stamps);
                 sc.spawn(move || {
-                    for &(target, p, bytes, mode) in part {
+                    let mut mine = Vec::new();
+                    for &(i, target, p, bytes, mode) in part {
                         if first_error.lock().map(|e| e.is_some()).unwrap_or(true) {
                             return;
                         }
-                        if let Err(e) = write_one(target, bytes, mode) {
-                            let mut slot = first_error.lock().unwrap_or_else(|p| p.into_inner());
-                            slot.get_or_insert((e, p));
-                            return;
+                        match write_one(target, bytes, mode) {
+                            Ok(Some(stamp)) => mine.push((i, stamp)),
+                            Ok(None) => {}
+                            Err(e) => {
+                                let mut slot = first_error.lock().unwrap_or_else(|p| p.into_inner());
+                                slot.get_or_insert((e, p));
+                                return;
+                            }
                         }
                     }
+                    stamps.lock().unwrap_or_else(|p| p.into_inner()).extend(mine);
                 });
             }
         });
@@ -518,7 +563,15 @@ fn export_entries(entries: &[(&str, &[u8], u32)], out_dir: &Path, options: &Expo
         // Best effort: the new output is in place. Only delete the exact directory we validated and moved.
         remove_if_same(&old, out_id);
     }
-    Ok(ExportResult { out_dir: out_real, files: planned.len() })
+    if let Some(state) = state.as_deref_mut() {
+        let mut stamps = stamps.into_inner().unwrap_or_else(|p| p.into_inner());
+        stamps.sort_by_key(|(i, _)| *i);
+        if stamps.len() == planned.len() {
+            let files = planned.iter().zip(stamps).map(|(e, (_, stamp))| (e.path, e.digest, e.mode, stamp));
+            exported(state, &out_real, tmp_id, parent_id, files, dirs_of(planned.iter().map(|e| e.path)));
+        }
+    }
+    Ok(ExportResult { out_dir: out_real, files: planned.len(), incremental: None })
 }
 
 /// Write `data` as a single file at `out_file` (zip, tar, tgz, wbn, oci
@@ -662,7 +715,7 @@ pub(crate) mod tests {
         let out = ctx.join("dist");
         let t = tree(&[("/index.html", "<h1>hi</h1>", 0o644), ("/a/b/c.txt", "deep", 0o644), ("/bin/run.sh", "#!/bin/sh\n", 0o755)]);
         let res = export_directory(&t, &out, &opts(ctx)).unwrap();
-        assert_eq!(res, ExportResult { out_dir: out.clone(), files: 3 });
+        assert_eq!(res, ExportResult { out_dir: out.clone(), files: 3, incremental: None });
         assert_eq!(read(&out.join("index.html")), "<h1>hi</h1>");
         assert_eq!(read(&out.join("a/b/c.txt")), "deep");
         assert_eq!(mode(&out.join("bin/run.sh")), 0o755);
@@ -774,7 +827,7 @@ pub(crate) mod tests {
         let d = TmpDir::new("export");
         let out = d.path().join("dist");
         for bad in ["/a\\b", "/a/../b", "relative", "/a//b", "/a/./b"] {
-            let e = export_entries(&[(bad, b"x", 0o644)], &out, &opts(d.path())).unwrap_err();
+            let e = export_entries(&[(bad, b"x", 0o644, "")], &out, &opts(d.path())).unwrap_err();
             assert_eq!(e.code, E_EXPORT, "{bad}");
         }
         assert!(!out.exists());

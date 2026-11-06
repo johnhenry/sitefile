@@ -1,0 +1,32 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site.oci.tar",
+      "--provenance"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/strict.oci.tar",
+      "--provenance",
+      "--strict-pins",
+      "--frozen-lockfile"
+    ]
+  ],
+  "outputs": [
+    [
+      "site.oci.tar",
+      "oci"
+    ],
+    [
+      "strict.oci.tar",
+      "oci"
+    ]
+  ],
+  "lock": true
+}

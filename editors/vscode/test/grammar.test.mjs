@@ -112,6 +112,26 @@ test('template blocks', async () => {
   has(scopesOf(r, 2, '${a + b}'), 'invalid.illegal.template');
 });
 
+test('FROM image <ref> [AT <dir>]: image is a keyword only when a reference follows', async () => {
+  const r = await tokenize(
+    [
+      'FROM image ghcr.io/me/theme:${V} AT /srv/www AS theme',
+      'STAGE site FROM IMAGE theme:1 AT /x',
+      'FROM image AS other',
+      'FROM image',
+    ].join('\n'),
+  );
+  has(scopesOf(r, 1, 'image'), 'keyword.other.clause');
+  has(scopesOf(r, 1, 'V'), 'variable.other.readwrite');
+  has(scopesOf(r, 1, 'AT'), 'keyword.other.clause');
+  has(scopesOf(r, 1, 'theme'), 'entity.name.section.stage');
+  has(scopesOf(r, 2, 'IMAGE'), 'keyword.other.clause');
+  has(scopesOf(r, 2, 'AT'), 'keyword.other.clause');
+  // a stage (or directory) named image
+  has(scopesOf(r, 3, 'image'), 'entity.name.section.stage');
+  has(scopesOf(r, 4, 'image'), 'entity.name.section.stage');
+});
+
 test('operands: strings, escapes, interpolation, integrity, flags and values', async () => {
   const r = await tokenize(
     [

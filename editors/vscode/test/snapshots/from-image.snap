@@ -1,0 +1,233 @@
+{
+ "1": {
+  "text": "# A site on a theme image.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " A site on a theme image.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "ARG THEME = \"1.2\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "THEME",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "1.2",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "STAGE theme FROM image ghcr.io/me/theme:${THEME}",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "image",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ghcr.io/me/theme:",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.stage.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "THEME",
+    "meta.instruction.stage.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.stage.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "FROM image theme:1 AT /srv/www AS local",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "image",
+    "meta.instruction.from.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " theme:1 ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "AT",
+    "meta.instruction.from.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "/srv/www",
+    "meta.instruction.from.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.from.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "local",
+    "meta.instruction.from.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "FROM theme",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.from.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "COPY --from=local /index.html /local.html",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "local",
+    "meta.instruction.copy.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/index.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/local.html",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "7": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

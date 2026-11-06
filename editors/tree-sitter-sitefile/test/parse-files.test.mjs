@@ -25,7 +25,6 @@ const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-syntax-directive-late/Sitefile', // a `# sitefile=` comment after an instruction: the grammar allows a directive anywhere
   'conformance/cases/err-syntax-version-invalid/Sitefile', // `# sitefile = 1.1`: the grammar accepts any directive value
   'conformance/cases/err-syntax/Sitefile',
-  'conformance/cases/profile-imports/Sitefile', // SITEMAP without BASE
 ];
 
 /** An inline RENDER template with an invalid tag (E_TEMPLATE in src/render.ts). */

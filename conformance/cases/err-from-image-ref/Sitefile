@@ -1,0 +1,2 @@
+FROM image Theme:1 AT /srv/www
+EXPORT /

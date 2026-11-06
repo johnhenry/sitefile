@@ -4,7 +4,7 @@
 //! Messages and warnings match the TypeScript implementation word for word;
 //! `../conformance` checks it.
 
-use crate::base_image::{base_ref, read_layer_blobs, resolve_base, ResolveBaseOptions};
+use crate::base_image::{base_ref, base_ref_as, read_layer_blobs, resolve_base, resolve_from_image, FromImage, ResolveBaseOptions};
 use crate::build_args::BuildArgs;
 use crate::registry::RegistryOptions;
 use crate::store::Store;
@@ -194,6 +194,19 @@ pub struct BuildResult {
     pub steps: Option<Vec<Vec<Tree>>>,
     /// `--strict-pins`: how each remote input was pinned (recorded in the provenance).
     pub pins: Option<Pins>,
+    /// The `FROM image` stage bases this build read, in stage order.
+    pub images: Vec<FromImageUse>,
+}
+
+/// A `FROM image` base a build used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromImageUse {
+    /// `registry/name:tag`, or the local name as written.
+    pub name: String,
+    pub digest: String,
+    /// The FROM line.
+    pub line: u32,
+    pub local: bool,
 }
 
 pub struct Loaded {
@@ -339,6 +352,13 @@ fn base_ref_of(options: &BuildOptions, p: &Plan) -> Option<String> {
 pub struct Pins {
     pub imports: Vec<(String, &'static str)>,
     pub base: Option<&'static str>,
+    /// `FROM image` bases with a registry, by FROM line (`digest` or `lockfile`).
+    pub images: Vec<(u32, &'static str)>,
+}
+
+/// The Sitefile.lock `images` key of a registry `FROM image` reference.
+pub fn image_lock_key(reference: &str, lead: &str, span: &SourceSpan) -> Result<String> {
+    Ok(base_ref_as(reference, Some(span), &format!("{lead} image"))?.lock_key)
 }
 
 impl Pins {
@@ -371,6 +391,24 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
             ),
             &spec.span,
         ));
+    }
+    for st in &p.stages {
+        let StageBase::Image { reference, local: false, lead, span, .. } = &st.base else { continue };
+        let b = base_ref_as(reference, Some(span), &format!("{lead} image"))?;
+        if b.r.digest.is_some() {
+            pins.images.push((st.span.line, "digest"));
+        } else if lock.is_some_and(|l| l.get_image(&b.lock_key).is_some()) {
+            pins.images.push((st.span.line, "lockfile"));
+        } else {
+            return Err(SitefileError::at(
+                E_UNPINNED,
+                format!(
+                    "{lead} image {reference}: '{}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins",
+                    b.lock_key
+                ),
+                span,
+            ));
+        }
     }
     let Some(input) = base else { return Ok(pins) };
     let b = base_ref(input, None)?;
@@ -416,7 +454,12 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
     let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
-    let p = plan_for(&program, options)?;
+    let full = plan(&program, &options.build_args)?;
+    let all_stages = full.stages.clone();
+    let p = match &options.target {
+        Some(t) => target_plan(full, t)?,
+        None => full,
+    };
     let mut parse_args = vec![("imports", json!(p.imports.len())), ("stages", json!(p.stages.len()))];
     if let Some(t) = &p.target {
         parse_args.push(("target", json!(t)));
@@ -488,6 +531,13 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     // BASE: the image to build on (resolved after the files, below).
     let base_ref = base_ref_of(options, &p);
     let pins = if options.strict_pins { Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?) } else { None };
+    let mut lock = lock;
+    // A --target build skips later stages; their FROM image lockfile entries are kept all the same.
+    for st in &all_stages[p.stages.len()..] {
+        if let (StageBase::Image { reference, local: false, lead, span, .. }, Some(l)) = (&st.base, lock.as_mut()) {
+            l.mark_image_used(&image_lock_key(reference, lead, span)?);
+        }
+    }
     let lock = Mutex::new(lock);
 
     let env = ImportEnv {
@@ -550,6 +600,47 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         None => String::new(),
     };
 
+    // FROM image stage bases: resolved when their stage starts (registry pull or local store).
+    let image_store: std::cell::OnceCell<Store> = std::cell::OnceCell::new();
+    let used_images: Mutex<Vec<FromImageUse>> = Mutex::new(Vec::new());
+    let image_warn = {
+        let w = warn.clone();
+        move |m: &str| w(m)
+    };
+    let from_image = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan| -> Result<FromImage> {
+        let store = match image_store.get() {
+            Some(s) => s,
+            None => {
+                let s = Store::open_default()?;
+                image_store.get_or_init(|| s)
+            }
+        };
+        let o = ResolveBaseOptions {
+            platform: options.platform.clone(),
+            frozen: options.frozen_lockfile,
+            update: options.update_lock,
+            vendor: vendor.as_ref().map(|v| (v, &local)),
+            registry: RegistryOptions {
+                insecure_registries: options.insecure_registries.clone(),
+                allow_private_network: options.fetch_policy.allow_private_network,
+                ..Default::default()
+            },
+            warn: Some(&image_warn),
+            span: Some(span.clone()),
+            lead: Some(format!("{lead} image")),
+            ..ResolveBaseOptions::new(store)
+        };
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let r = resolve_from_image(reference, at, is_local, guard.as_mut(), &o)?;
+        used_images.lock().unwrap_or_else(|e| e.into_inner()).push(FromImageUse {
+            name: r.name.clone(),
+            digest: r.digest.clone(),
+            line: span.line,
+            local: is_local,
+        });
+        Ok(r)
+    };
+
     let plugin_warn = warn.clone();
     let mut exec = Exec {
         local: &local,
@@ -571,6 +662,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         stage_keys: HashMap::new(),
         recorded: None,
         unrecorded: warn.clone(),
+        from_image: &from_image,
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     let run = (|| -> Result<Tree> {
@@ -621,6 +713,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let stats = exec.stats;
     drop(exec);
     let tree = run?;
+    let images = used_images.into_inner().unwrap_or_default();
 
     if tree.is_file(&p.export_path) {
         return Err(SitefileError::plain(E_EXPORT, format!("EXPORT path '{}' is a file; export a directory", p.export_path)));
@@ -669,7 +762,21 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         _ => false,
     };
     let warnings = warnings.lock().map(|w| w.clone()).unwrap_or_default();
-    Ok(BuildResult { plan: p, tree, output, resources: resource_list, warnings, lockfile_written, base, tools, transform_stats: stats, steps, pins, memo_stats: None })
+    Ok(BuildResult {
+        plan: p,
+        tree,
+        output,
+        resources: resource_list,
+        warnings,
+        lockfile_written,
+        base,
+        tools,
+        transform_stats: stats,
+        steps,
+        pins,
+        memo_stats: None,
+        images,
+    })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
@@ -727,6 +834,8 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+    /// Watch mode: set when the directory export applied only the changes (export::incremental).
+    pub incremental: Option<crate::export::incremental::Applied>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -789,6 +898,13 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
 }
 
 fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
+    // Watch mode: a directory export writes only what changed since the session's last one.
+    let export_state = options.memo.as_ref().map(|m| lock_memo(m).export_state.clone());
+    if format != ExportFormat::Directory {
+        if let Some(s) = &export_state {
+            crate::export::incremental::clear_shared(s);
+        }
+    }
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
@@ -812,14 +928,15 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
                 bytes: Some(written.bytes),
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
+                incremental: None,
             });
         }
         let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?, out, &export_options)?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()) });
+        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()), incremental: None });
     }
     if !is_archive_format(format) {
-        let written = export_directory(&result.output, out, &export_options)?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: None });
+        let written = export_directory(&result.output, out, &export_options.incremental(export_state))?;
+        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: None, incremental: written.incremental });
     }
     let data = encode_tree(
         &result.output,
@@ -831,7 +948,7 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
     )?;
     let written = export_file(&data, out, &export_options)?;
     let digest = sha256(&data);
-    Ok(ExportedBuild { result, format, out_path: written.out_file, bytes: Some(written.bytes), file_digest: Some(digest), manifest_digest: None })
+    Ok(ExportedBuild { result, format, out_path: written.out_file, bytes: Some(written.bytes), file_digest: Some(digest), manifest_digest: None, incremental: None })
 }
 
 // ---------------------------------------------------------------- imports
@@ -1361,6 +1478,8 @@ struct Exec<'a> {
     recorded: Option<Arc<Mutex<Vec<String>>>>,
     /// The warning callback that does not record (a tool's stderr).
     unrecorded: Warn,
+    /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span).
+    from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan) -> Result<FromImage>,
 }
 
 /// What a stage starts from, for the trace.
@@ -1370,6 +1489,8 @@ fn stage_from(stage: &Stage) -> String {
         StageBase::Stage { name } => name.clone(),
         StageBase::Local { path } if path.is_empty() => "./".into(),
         StageBase::Local { path } => format!("./{path}"),
+        StageBase::Image { reference, at: Some(at), .. } => format!("image {reference} AT {at}"),
+        StageBase::Image { reference, .. } => format!("image {reference}"),
     }
 }
 
@@ -1410,6 +1531,15 @@ impl<'a> Exec<'a> {
                     }
                     _ => unreachable!("read_tree returns a tree"),
                 }
+            }
+            StageBase::Image { reference, local, at, lead, span } => {
+                let img = (self.from_image)(reference, at.as_deref(), *local, lead, span)?;
+                let key = if self.memo.is_some() {
+                    memo_key(&["image", &self.env_key, &stage.span.line.to_string(), reference, at.as_deref().unwrap_or(""), &img.digest])
+                } else {
+                    String::new()
+                };
+                Ok((img.tree, key))
             }
         }
     }

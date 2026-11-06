@@ -78,6 +78,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", Some(match base {
                 FromBase::Scratch => json!("scratch"),
                 FromBase::Operand(o) => operand(o),
+                FromBase::Image { reference, at } => obj(vec![("kind", s("image")), ("ref", Some(operand(reference))), ("at", at.as_ref().map(operand))]),
             })),
             ("alias", alias.as_ref().map(|a| json!(a))),
             ("keyword", stage_kw.then(|| json!("STAGE"))),

@@ -1,0 +1,5 @@
+targets:
+  site:
+    matrix:
+      locale: [en, fr]
+    output: dist/${lcoale}

@@ -175,20 +175,34 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
     let prev = prior[n - 1].upper();
     let stages = || def_items(&ix.defs_before(ins.start_line, &[SymKind::Stage]), "");
     let scratch_and_stages = || {
-        let mut v = kw_items(["scratch"], CIK_KEYWORD);
+        let mut v = kw_items(["scratch", "image"], CIK_KEYWORD);
         v.extend(stages());
         v
+    };
+    // `FROM image <ref> [AT <dir>] [AS name]`: clauses after the reference (`i` is the index of `image`).
+    let image_clauses = |i: usize, allow_as: bool| -> Vec<Item> {
+        let after = n - i; // words from `image` on
+        let at_used = prior.get(i + 2).is_some_and(|w| w.upper() == "AT");
+        match (after, prev.as_str()) {
+            (_, "AT") | (_, "AS") | (1, _) => Vec::new(),
+            (2, _) if allow_as => kw_items(["AT", "AS"], CIK_KEYWORD),
+            (2, _) => kw_items(["AT"], CIK_KEYWORD),
+            (4, _) if at_used && allow_as => kw_items(["AS"], CIK_KEYWORD),
+            _ => Vec::new(),
+        }
     };
     let imports = || ix.defs_before(ins.start_line, &[SymKind::Import]);
     let items: Vec<Item> = match kw {
         "FROM" => match n {
             1 => scratch_and_stages(),
+            _ if prior[1].upper() == "IMAGE" => image_clauses(1, true),
             2 => kw_items(["AS"], CIK_KEYWORD),
             _ => Vec::new(),
         },
         "STAGE" => match (n, prev.as_str()) {
             (2, _) => kw_items(["FROM"], CIK_KEYWORD),
             (3, "FROM") => scratch_and_stages(),
+            _ if n > 3 && prior[3].upper() == "IMAGE" => image_clauses(3, false),
             _ => Vec::new(),
         },
         "ARG" | "LET" => {
@@ -667,10 +681,23 @@ mod tests {
     fn stage_names_defined_earlier() {
         let src = "STAGE a\nCOPY x /x\nFROM scratch AS b\nCOPY --from=";
         assert_eq!(labels(src), ["a", "b"]);
-        assert_eq!(labels("STAGE a\nSTAGE c FROM "), ["scratch", "a"]);
-        assert_eq!(labels("STAGE a\nFROM "), ["scratch", "a"]);
+        assert_eq!(labels("STAGE a\nSTAGE c FROM "), ["scratch", "image", "a"]);
+        assert_eq!(labels("STAGE a\nFROM "), ["scratch", "image", "a"]);
         // Only stages before the line.
-        assert_eq!(labels_at("FROM \nSTAGE late", 0, 5), ["scratch"]);
+        assert_eq!(labels_at("FROM \nSTAGE late", 0, 5), ["scratch", "image"]);
+    }
+
+    #[test]
+    fn from_image_clauses() {
+        assert!(labels("FROM image ").is_empty());
+        assert_eq!(labels("FROM image ghcr.io/me/theme:1 "), ["AT", "AS"]);
+        assert!(labels("FROM image t:1 AT ").is_empty());
+        assert_eq!(labels("FROM image t:1 AT /srv/www "), ["AS"]);
+        assert!(labels("FROM image t:1 AS ").is_empty());
+        assert!(labels("STAGE s FROM image ").is_empty());
+        assert_eq!(labels("STAGE s FROM image t:1 "), ["AT"]);
+        assert!(labels("STAGE s FROM image t:1 AT /x ").is_empty());
+        assert_eq!(labels("FROM ./dir "), ["AS"]);
     }
 
     #[test]

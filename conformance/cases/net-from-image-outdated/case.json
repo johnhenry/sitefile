@@ -1,0 +1,16 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "outdated",
+      "${CTX}"
+    ],
+    [
+      "outdated",
+      "${CTX}",
+      "--json"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

@@ -369,9 +369,10 @@ export function siteLayerIndex(m: ParsedManifest, cfg: ParsedConfig): number {
 
 /**
  * Decode a site image's files, verifying the layer digest and diff_id.
- * `layerBytes` are the compressed blob bytes. Returns the tree under the image's root.
+ * `layerBytes` are the compressed blob bytes. Returns the tree under the image's root (its
+ * `dev.sitefile.root` label, else `/`), or under `rootOverride` (`FROM image … AT <dir>`).
  */
-export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, layerBytes: Uint8Array, origin: string): Promise<Tree> {
+export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, layerBytes: Uint8Array, origin: string, rootOverride?: string): Promise<Tree> {
   const idx = siteLayerIndex(m, cfg);
   const layer = m.layers[idx];
   if (idx < 0 || !layer || (layer.mediaType !== MEDIA.layer && layer.mediaType !== MEDIA.layerTar)) {
@@ -389,7 +390,7 @@ export async function extractImageFiles(m: ParsedManifest, cfg: ParsedConfig, la
     }
   }
   if (sha256(tar) !== cfg.diffIds[idx]) throw new SitefileError('E_STORE', `${origin}: layer content does not match the config diff_id`);
-  const root = cfg.labels[ANN.root] ?? '/';
+  const root = rootOverride ?? cfg.labels[ANN.root] ?? '/';
   const all = await extractArchive(tar, origin, { maxEntries: 1_000_000, maxTotalBytes: 8 * 2 ** 30, maxRatio: Number.MAX_SAFE_INTEGER });
   return all.subtree(normalizeVirtual(root).path);
 }

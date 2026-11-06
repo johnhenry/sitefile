@@ -12,6 +12,6 @@ T
 RENDER <<T TO /d/${d.slug}.html FOR d IN docs
 ${d.title}
 T
-SITEMAP https://example.com TO /sitemap.xml
-FEED docs BASE https://example.com LINK /d/${item.slug}.html TITLE "Docs" TO /feed.xml
+SITEMAP BASE https://example.com TO /sitemap.xml
+FEED docs BASE https://example.com LINK /d/${item.slug}.html TO /feed.xml TITLE "Docs"
 EXPORT /

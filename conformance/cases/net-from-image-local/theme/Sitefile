@@ -1,0 +1,8 @@
+FROM scratch
+COPY <<CSS /theme.css
+body { color: #333; }
+CSS
+COPY <<HTML /index.html
+<h1>theme</h1>
+HTML
+EXPORT /

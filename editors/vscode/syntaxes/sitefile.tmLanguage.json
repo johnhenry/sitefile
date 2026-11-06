@@ -2272,6 +2272,17 @@
               }
             },
             {
+              "match": "\\G()\\s+((?i:image))(?=\\s+(?!(?i:AS)(?=\\s|$))[^\\s\\\\])",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
               "match": "\\G()\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
               "captures": {
                 "1": {
@@ -2279,6 +2290,14 @@
                 },
                 "2": {
                   "name": "entity.name.section.stage.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:AT))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
                 }
               }
             },
@@ -2323,6 +2342,17 @@
               }
             },
             {
+              "match": "(?<![^\\s])((?i:FROM))\\s+((?i:image))(?=\\s+(?!(?i:AS)(?=\\s|$))[^\\s\\\\])",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
               "match": "(?<![^\\s])((?i:FROM))\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
               "captures": {
                 "1": {
@@ -2334,7 +2364,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:FROM))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:FROM|AT))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"

@@ -66,10 +66,14 @@ const EXCLUDES = ['*.md', 'drafts/', '!keep.md', '/css/x.css', '**/*.map', '#c',
 const MODES = ['644', '0644', '755', '0755', '600', '0o755', '777', 'x'];
 const VALUES = ['hello', '"Hello world"', "'single'", '"${TITLE} x"', '${x}', '""', 'é', '"tab\\there"', ...NUMBERS.slice(0, 12), ...BOOLEANS.slice(0, 5)];
 
+/** `FROM image <ref> [AT <dir>]` references: registry, local-store, digest-pinned and invalid ones. */
+const IMAGES = ['ghcr.io/me/theme:1.2', 'theme:1', 'theme', `localhost:5000/t@sha256:${'0'.repeat(64)}`, 'Bad:1', '${x}', 'reg.example/a/b:${x}', '"quoted:1"', 'AT', 'a b'];
+const imageBase = () => `${pick(['image', 'IMAGE', 'Image'])} ${pick(IMAGES)}${maybe(() => ` AT ${pick(['/srv/www', '/', 'rel', '/a/../b', '${x}', ''])}`, 0.3)}`;
+
 /** Instruction lines (one string; heredoc bodies use \n). Add new instructions here. */
 const INSTRUCTIONS = {
-  FROM: () => `FROM ${pick(['scratch', 'scratch', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
-  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${pick(['scratch', ...NAMES, './src', '/x'])}`)}`,
+  FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
+  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x'])}`)}`,
   ARG: () => `ARG ${pick(NAMES)}${maybe(() => `${pick([':', ' : ', ': '])}${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = ', '= '])}${pick(VALUES)}`, 0.6)}`,
   LET: () => `LET ${pick(NAMES)}${maybe(() => `:${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = '])}${pick(VALUES)}`, 0.85)}`,
   IMPORT: () => {
@@ -118,7 +122,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -342,6 +346,10 @@ const EDGE = [
   'COPY --exclude=*.md --exclude=x/ --chmod=755 --parents ./a /b/\nEXPORT /', 'COPY --chmod=600 a /b\nEXPORT /', 'COPY --exclude=#x a /b\nEXPORT /',
   'COPY --parents <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --chmod=755 <<EOF /a\nx\nEOF\nEXPORT /', 'COPY --exclude=a --exclude=a ./a /b\nEXPORT /',
   'RENDER --escape=js t TO /x\nEXPORT /', 'RENDER t /x\nEXPORT /', 'RENDER t TO /x FOR a\nEXPORT /', 'IMPORT x FROM ./x AS json AS json\nEXPORT /',
+  'FROM image\nEXPORT /', 'FROM image AS x\nEXPORT /', 'FROM image t:1 AT\nEXPORT /', 'FROM image t:1 AS\nEXPORT /', 'FROM image t:1 extra\nEXPORT /',
+  'STAGE s FROM image ghcr.io/a/b:1 AT /srv/www\nEXPORT /', 'STAGE s FROM image\nEXPORT /', 'STAGE s FROM image t:1 AS x\nEXPORT /', 'FROM image Bad:1\nEXPORT /',
+  'ARG V=1\nFROM image theme:${V} AS t\nFROM t\nEXPORT /', 'FROM image t:1 AT rel\nEXPORT /', 'FROM image t@sha256:' + 'a'.repeat(64) + ' AT /x/../y\nEXPORT /',
+  'STAGE image\nFROM image\nEXPORT /', 'STAGE image\nFROM image AS b\nEXPORT /', 'FROM image ${NOPE}\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

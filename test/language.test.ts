@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
-import { literalText, type Instruction, type Operand, type TemplatePart } from '../src/language/ast.js';
+import { isImageBase, literalText, type Instruction, type Operand, type TemplatePart } from '../src/language/ast.js';
 import { parseSitefile } from '../src/language/parser.js';
 import { logicalLines } from '../src/language/scanner.js';
 import { parseProgram, validate } from '../src/language/validate.js';
@@ -165,7 +165,7 @@ test('instruction span is the keyword and file defaults to Sitefile', () => {
 test('FROM forms', () => {
   assert.deepEqual(one('FROM scratch'), { kind: 'FROM', span: { file: 'Sitefile', line: 1, column: 1 }, base: 'scratch' });
   const f = one('FROM "scratch"');
-  assert.ok(f.kind === 'FROM' && f.base !== 'scratch' && literalText(f.base) === 'scratch');
+  assert.ok(f.kind === 'FROM' && f.base !== 'scratch' && !isImageBase(f.base) && literalText(f.base) === 'scratch');
   const g = one('FROM ./base AS site');
   assert.ok(g.kind === 'FROM' && g.base !== 'scratch' && g.alias === 'site');
   parseErr('FROM', 'E_SYNTAX', 1, 5);
@@ -173,14 +173,34 @@ test('FROM forms', () => {
   parseErr('FROM scratch extra', 'E_SYNTAX', 1, 14);
 });
 
+test('FROM image forms', () => {
+  const lit = (o: unknown): string | undefined => literalText(o as Parameters<typeof literalText>[0]);
+  const a = one('FROM image ghcr.io/me/theme:1.2 AS theme');
+  assert.ok(a.kind === 'FROM' && isImageBase(a.base) && lit(a.base.ref) === 'ghcr.io/me/theme:1.2' && a.base.at === undefined && a.alias === 'theme');
+  const b = one('from IMAGE theme:1 at /srv/www');
+  assert.ok(b.kind === 'FROM' && isImageBase(b.base) && lit(b.base.ref) === 'theme:1' && lit(b.base.at) === '/srv/www' && b.alias === undefined);
+  const c = one('STAGE site FROM image localhost:5000/t@sha256:' + '0'.repeat(64) + ' AT /x');
+  assert.ok(c.kind === 'FROM' && isImageBase(c.base) && lit(c.base.at) === '/x' && c.alias === 'site' && c.keyword === 'STAGE');
+  // `image` followed by nothing or AS is still a stage or directory named image.
+  const d = one('FROM image');
+  assert.ok(d.kind === 'FROM' && d.base !== 'scratch' && !isImageBase(d.base) && literalText(d.base) === 'image');
+  const e = one('FROM image AS x');
+  assert.ok(e.kind === 'FROM' && !isImageBase(e.base) && e.alias === 'x');
+  const f = one('STAGE s FROM image');
+  assert.ok(f.kind === 'FROM' && !isImageBase(f.base) && f.alias === 's');
+  parseErr('FROM image theme:1 AT', 'E_SYNTAX', 1, 22);
+  parseErr('FROM image theme:1 extra', 'E_SYNTAX', 1, 20);
+  parseErr('STAGE s FROM image t:1 AS x', 'E_SYNTAX', 1, 24);
+});
+
 test('STAGE forms', () => {
   // STAGE name == FROM scratch AS name; STAGE name FROM base == FROM base AS name (same IR, plus a keyword marker).
   assert.deepEqual(one('STAGE site'), { kind: 'FROM', span: { file: 'Sitefile', line: 1, column: 1 }, base: 'scratch', alias: 'site', keyword: 'STAGE' });
   assert.deepEqual(one('stage site from scratch'), one('STAGE site'));
   const g = one('STAGE site FROM ./base');
-  assert.ok(g.kind === 'FROM' && g.base !== 'scratch' && literalText(g.base) === './base' && g.alias === 'site' && g.keyword === 'STAGE');
+  assert.ok(g.kind === 'FROM' && g.base !== 'scratch' && !isImageBase(g.base) && literalText(g.base) === './base' && g.alias === 'site' && g.keyword === 'STAGE');
   const h = one('STAGE b FROM a');
-  assert.ok(h.kind === 'FROM' && h.base !== 'scratch' && literalText(h.base) === 'a' && h.alias === 'b');
+  assert.ok(h.kind === 'FROM' && h.base !== 'scratch' && !isImageBase(h.base) && literalText(h.base) === 'a' && h.alias === 'b');
   // FROM … AS is unchanged and carries no marker.
   assert.equal((one('FROM scratch AS site') as { keyword?: string }).keyword, undefined);
   parseErr('STAGE', 'E_SYNTAX', 1, 6, /expected stage name/);

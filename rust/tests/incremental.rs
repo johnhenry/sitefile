@@ -3,12 +3,16 @@
 //! contents and origins, same warnings, same errors) across random edits.
 
 use sitefile::build_args::BuildArgs;
-use sitefile::executor::{build, BuildOptions, BuildResult, Callback, LockfileSetting};
+use sitefile::digest::sha256;
+use sitefile::executor::{build, build_to_directory, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use sitefile::export::exporter::{export_directory, ExportOptions};
+use sitefile::export::incremental::{Applied, ExportState, SharedExportState};
 use sitefile::memo::BuildMemo;
 use sitefile::profile::Profiler;
-use sitefile::tree::Tree;
+use sitefile::tree::{make_file, Tree};
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -292,23 +296,120 @@ fn listing(t: &Tree) -> Vec<String> {
     t.entries().map(|(p, n)| format!("{p} {:o} {} {}", n.mode, n.digest, n.origin)).collect()
 }
 
-fn outcome(mut options: BuildOptions) -> (Outcome, Option<BuildResult>) {
+/// Build, or with `out` build and export there (`--force`); the export says whether it was incremental.
+fn outcome_to(mut options: BuildOptions, out: Option<&Path>) -> (Outcome, Option<(BuildResult, Option<Applied>)>) {
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let w = warnings.clone();
     let cb: Callback = Arc::new(move |m: &str| w.lock().unwrap().push(m.to_string()));
     options.on_warning = Some(cb);
-    match build(&options) {
-        Ok(r) => {
+    let built = match out {
+        None => build(&options).map(|r| (r, None)),
+        Some(out) => build_to_directory(&options, &out.to_string_lossy(), &ExportTarget { force: true, ..Default::default() }).map(|e| (e.result, e.incremental)),
+    };
+    match built {
+        Ok((r, applied)) => {
             let o = Outcome { files: Some(listing(&r.output)), tree: Some(listing(&r.tree)), warnings: warnings.lock().unwrap().clone(), error: None };
-            (o, Some(r))
+            (o, Some((r, applied)))
         }
         Err(e) => (Outcome { files: None, tree: None, warnings: warnings.lock().unwrap().clone(), error: Some(format!("{}: {}", e.code.as_str(), e.message())) }, None),
+    }
+}
+
+/// Everything under `dir`, for byte-for-byte comparison: type, path, permission bits, contents.
+fn list_dir(dir: &Path) -> Option<Vec<String>> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
+        let mut names: Vec<String> = fs::read_dir(dir.join(rel.trim_start_matches('/'))).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        for name in names {
+            let p = format!("{rel}/{name}");
+            let full = dir.join(p.trim_start_matches('/'));
+            let m = fs::symlink_metadata(&full).unwrap();
+            let mode = m.permissions().mode() & 0o7777;
+            if m.file_type().is_symlink() {
+                out.push(format!("l {p} -> {}", fs::read_link(&full).unwrap().display()));
+            } else if m.is_dir() {
+                out.push(format!("d {p} {mode:o}"));
+                walk(dir, &p, out);
+            } else {
+                out.push(format!("f {p} {mode:o} {}", sha256(&fs::read(&full).unwrap())));
+            }
+        }
+    }
+    if !dir.exists() {
+        return None;
+    }
+    let mut out = Vec::new();
+    walk(dir, "", &mut out);
+    Some(out)
+}
+
+const TAMPERS: &[&str] = &["rewrite-same-size", "append", "add-file", "add-dir", "delete-file", "delete-dir", "chmod", "file-to-symlink", "dir-to-symlink"];
+
+/// Modify an exported directory behind the exporter's back (`victim`: a directory outside it).
+fn tamper(out: &Path, victim: &Path, kind: &str, pick: &mut dyn FnMut(usize) -> usize) {
+    let all = list_dir(out).unwrap_or_default();
+    let files: Vec<String> = all.iter().filter(|l| l.starts_with("f ")).map(|l| l.split(' ').nth(1).unwrap().to_string()).collect();
+    let dirs: Vec<String> = all.iter().filter(|l| l.starts_with("d ")).map(|l| l.split(' ').nth(1).unwrap().to_string()).collect();
+    let at = |p: &str| out.join(p.trim_start_matches('/'));
+    if files.is_empty() {
+        return;
+    }
+    let f = at(&files[pick(files.len())]);
+    match kind {
+        "rewrite-same-size" => {
+            // Same size, mtime put back: only the ctime tells.
+            let m = fs::metadata(&f).unwrap();
+            let mut bytes = fs::read(&f).unwrap();
+            if let Some(b) = bytes.first_mut() {
+                *b = if *b == b'X' { b'Y' } else { b'X' };
+            }
+            fs::write(&f, &bytes).unwrap();
+            let mtime = std::time::UNIX_EPOCH + std::time::Duration::new(m.mtime() as u64, m.mtime_nsec() as u32);
+            fs::File::options().write(true).open(&f).unwrap().set_modified(mtime).unwrap();
+        }
+        "append" => {
+            use std::io::Write;
+            fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(b"tampered").unwrap();
+        }
+        "add-file" => {
+            let d = if dirs.is_empty() { out.to_path_buf() } else { at(&dirs[pick(dirs.len())]) };
+            fs::write(d.join("stray.txt"), "stray").unwrap();
+        }
+        "add-dir" => fs::create_dir_all(out.join("stray-dir")).unwrap(),
+        "delete-file" => fs::remove_file(&f).unwrap(),
+        "delete-dir" => {
+            if !dirs.is_empty() {
+                fs::remove_dir_all(at(&dirs[pick(dirs.len())])).unwrap();
+            }
+        }
+        "chmod" => fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap(),
+        "file-to-symlink" => {
+            fs::remove_file(&f).unwrap();
+            std::os::unix::fs::symlink(victim.join("secret.txt"), &f).unwrap();
+        }
+        "dir-to-symlink" => {
+            if !dirs.is_empty() {
+                let d = at(&dirs[pick(dirs.len())]);
+                fs::remove_dir_all(&d).unwrap();
+                std::os::unix::fs::symlink(victim, &d).unwrap();
+            }
+        }
+        _ => unreachable!(),
     }
 }
 
 fn random_edits(seed: u32) {
     let work = Tmp::new();
     let mut site = Site::new(work.0.join("ctx"), seed);
+    // The exports (watch mode writes only the changes; the clean one rewrites everything),
+    // and a directory outside them that tampering points symlinks at.
+    let inc_out = work.0.join("out-incremental");
+    let clean_out = work.0.join("out-clean");
+    let victim = work.0.join("victim");
+    put(&victim.join("secret.txt"), "secret");
+    let victim_before = list_dir(&victim);
+    let mut incremental_exports = 0;
+    let mut tampered = 0;
     let memo = BuildMemo::shared();
     // One seed also uses the TRANSFORM disk cache (shared by both builds, as in watch mode).
     let cache = (seed == 42).then(|| work.0.join("cache"));
@@ -322,20 +423,42 @@ fn random_edits(seed: u32) {
             let n = 1 + site.r.below(3);
             let edits: Vec<&str> = (0..n).map(|_| site.mutate()).collect();
             history.push(edits.join("+"));
+            // Sometimes the export is modified between rebuilds.
+            if site.r.next() < 0.2 {
+                let kind = TAMPERS[site.r.below(TAMPERS.len())];
+                tamper(&inc_out, &victim, kind, &mut |n| site.r.below(n));
+                history.push(format!("tamper:{kind}"));
+                tampered += 1;
+            }
         }
         let mut inc = site.options();
         inc.memo = Some(memo.clone());
         inc.cache_dir = cache.clone();
         let mut clean = site.options();
         clean.cache_dir = cache.clone();
-        let (a, r) = outcome(inc);
-        let (b, _) = outcome(clean);
-        assert_eq!(a, b, "seed {seed}, step {step}: {}", history.join(" > "));
-        if let Some(r) = r {
+        let before = list_dir(&inc_out);
+        let (a, r) = outcome_to(inc, Some(&inc_out));
+        let (b, _) = outcome_to(clean, Some(&clean_out));
+        let at = format!("seed {seed}, step {step}: {}", history.join(" > "));
+        assert_eq!(a, b, "{at}");
+        if let Some((r, applied)) = r {
             reused += r.memo_stats.unwrap().hits;
+            // The export is byte for byte (and mode for mode) the clean one.
+            assert_eq!(list_dir(&inc_out), list_dir(&clean_out), "{at}");
+            if applied.is_some() {
+                incremental_exports += 1;
+            }
+        } else {
+            // A failed build never touches the output.
+            assert_eq!(list_dir(&inc_out), before, "{at}");
         }
+        assert_eq!(list_dir(&victim), victim_before, "{at}");
     }
+    // The memo was used, and exports wrote only the changes (the others: the first export,
+    // large changes such as switching --target, and the exports after tampering).
     assert!(reused > 0);
+    assert!(incremental_exports >= 8, "{incremental_exports} incremental exports");
+    assert!(tampered > 0);
 }
 
 #[test]
@@ -431,4 +554,137 @@ fn watch_memo_respects_sitefile_no_incremental() {
     std::env::set_var("SITEFILE_NO_INCREMENTAL", "1");
     assert!(sitefile::memo::watch_memo().is_none());
     std::env::remove_var("SITEFILE_NO_INCREMENTAL");
+}
+
+// --- incremental export (watch mode) -------------------------------------------------------
+
+fn files(n: usize, extra: &[(&str, &str, u32)]) -> Tree {
+    let mut list = Vec::new();
+    for i in 0..n {
+        let p = format!("/d{}/f{i}.txt", i % 3);
+        if !extra.iter().any(|(q, ..)| *q == p) {
+            list.push((p, make_file(format!("file {i}").into_bytes(), "test", 0o644)));
+        }
+    }
+    for (p, text, mode) in extra {
+        list.push((p.to_string(), make_file(text.as_bytes().to_vec(), "test", *mode)));
+    }
+    Tree::from_files(list).unwrap()
+}
+
+/// An incremental export (its state kept across calls), compared with a clean export after each.
+struct Pair {
+    work: Tmp,
+    ctx: PathBuf,
+    out: PathBuf,
+    state: SharedExportState,
+}
+
+impl Pair {
+    fn new() -> Pair {
+        let work = Tmp::new();
+        let ctx = work.0.join("ctx");
+        fs::create_dir_all(&ctx).unwrap();
+        let out = ctx.join("dist");
+        Pair { work, ctx, out, state: Arc::new(Mutex::new(ExportState::default())) }
+    }
+    fn run_with(&self, t: &Tree, before_apply: Option<Arc<dyn Fn() + Send + Sync>>) -> Option<Applied> {
+        let mut o = ExportOptions::new(&self.ctx).incremental(Some(self.state.clone()));
+        o.before_apply = before_apply;
+        let r = export_directory(t, &self.out, &o).unwrap();
+        let clean = self.ctx.join("clean");
+        export_directory(t, &clean, &ExportOptions::new(&self.ctx)).unwrap();
+        assert_eq!(list_dir(&self.out), list_dir(&clean));
+        r.incremental
+    }
+    fn run(&self, t: &Tree) -> Option<Applied> {
+        self.run_with(t, None)
+    }
+}
+
+fn ino(p: &Path) -> u64 {
+    fs::symlink_metadata(p).unwrap().ino()
+}
+
+const fn applied(written: usize, removed: usize) -> Option<Applied> {
+    Some(Applied { written, removed })
+}
+
+#[test]
+fn incremental_export_writes_only_what_changed() {
+    let p = Pair::new();
+    assert_eq!(p.run(&files(20, &[])), None); // the first export is a full one
+    let one = ino(&p.out.join("d1/f1.txt"));
+    let other = ino(&p.out.join("d0/f0.txt"));
+    assert_eq!(p.run(&files(20, &[])), applied(0, 0));
+    assert_eq!(ino(&p.out.join("d1/f1.txt")), one);
+    assert_eq!(p.run(&files(20, &[("/d1/f1.txt", "edited", 0o644)])), applied(1, 0));
+    assert_ne!(ino(&p.out.join("d1/f1.txt")), one);
+    assert_eq!(ino(&p.out.join("d0/f0.txt")), other);
+    // A mode change alone is a change.
+    assert_eq!(p.run(&files(20, &[("/d1/f1.txt", "edited", 0o755)])), applied(1, 0));
+    assert_eq!(fs::metadata(p.out.join("d1/f1.txt")).unwrap().permissions().mode() & 0o777, 0o755);
+}
+
+#[test]
+fn incremental_export_removes_files_and_emptied_directories() {
+    let p = Pair::new();
+    p.run(&files(20, &[("/x/y/z.txt", "z", 0o644), ("/p", "file", 0o644)]));
+    assert_eq!(p.run(&files(20, &[("/p/q.txt", "now a directory", 0o644)])), applied(1, 2));
+    assert!(!p.out.join("x").exists());
+    assert_eq!(p.run(&files(20, &[("/p", "a file again", 0o644)])), applied(1, 1));
+}
+
+#[test]
+fn incremental_export_large_or_case_changes_are_full() {
+    let p = Pair::new();
+    p.run(&files(20, &[("/About.html", "a", 0o644)]));
+    assert_eq!(p.run(&files(5, &[])), None);
+    p.run(&files(20, &[("/About.html", "a", 0o644)]));
+    // /about.html may be /About.html on this file system: it is never renamed over in place.
+    p.run(&files(20, &[("/about.html", "b", 0o644)]));
+}
+
+#[test]
+fn incremental_export_detects_and_undoes_tampering() {
+    for kind in TAMPERS {
+        let p = Pair::new();
+        let victim = p.work.0.join("victim");
+        put(&victim.join("secret.txt"), "secret");
+        p.run(&files(20, &[]));
+        let mut n = 0;
+        tamper(&p.out, &victim, kind, &mut |len| {
+            n += 1;
+            (n - 1) % len
+        });
+        assert_eq!(p.run(&files(20, &[("/d0/f0.txt", "edit", 0o644)])), None, "{kind}");
+        assert_eq!(list_dir(&victim).unwrap(), [format!("f /secret.txt 644 {}", sha256(b"secret"))], "{kind}");
+        assert_eq!(p.run(&files(20, &[("/d0/f0.txt", "edit 2", 0o644)])), applied(1, 0), "{kind}");
+    }
+}
+
+#[test]
+fn incremental_export_catches_changes_made_while_staging() {
+    let p = Pair::new();
+    p.run(&files(20, &[]));
+    let f = p.out.join("d0/f0.txt");
+    assert_eq!(p.run_with(&files(20, &[("/d0/f0.txt", "edit", 0o644)]), Some(Arc::new(move || fs::write(&f, "someone else").unwrap()))), None);
+    let d = p.out.join("new");
+    assert_eq!(p.run_with(&files(20, &[("/d0/f0.txt", "edit", 0o644), ("/new/a.txt", "a", 0o644)]), Some(Arc::new(move || fs::create_dir(&d).unwrap()))), None);
+    let left: Vec<String> = fs::read_dir(&p.ctx).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.contains("sitefile-")).collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn incremental_export_other_or_replaced_destination_is_full() {
+    let p = Pair::new();
+    let state: SharedExportState = Arc::new(Mutex::new(ExportState::default()));
+    let exp = |to: &str, s: Option<&SharedExportState>| export_directory(&files(20, &[]), &p.ctx.join(to), &ExportOptions::new(&p.ctx).incremental(s.cloned())).unwrap().incremental;
+    exp("a", Some(&state));
+    assert_eq!(exp("b", Some(&state)), None);
+    assert!(exp("b", Some(&state)).is_some());
+    fs::remove_dir_all(p.ctx.join("b")).unwrap();
+    exp("b", None);
+    assert_eq!(exp("b", Some(&state)), None);
+    assert_eq!(exp("b", None), None);
 }

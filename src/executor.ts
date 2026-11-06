@@ -5,7 +5,7 @@ import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, targetPlan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { plan, targetPlan, type ImageStageBase, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
@@ -27,7 +27,7 @@ import { sourceDateEpoch } from './archive-writers.js';
 import { encodeTree, isArchiveFormat } from './export-formats.js';
 import { buildFacts, makeAttestations, type AttestRequest, type Referrer } from './attest.js';
 import { ANN, buildOciImage, imageMeta, layoutTree, ociArchive, parseConfig, type BaseImage, type OciImage } from './oci.js';
-import { baseRef as parseBaseRef, readLayerBlobs, resolveBase } from './base-image.js';
+import { baseRef as parseBaseRef, readLayerBlobs, resolveBase, resolveFromImage, type FromImage } from './base-image.js';
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
@@ -128,6 +128,8 @@ export interface BuildResult {
   readonly lockfileWritten: boolean;
   /** The resolved BASE image (EXPORT ... AS oci BASE <image> or --base), whose blobs are in the store. */
   readonly base?: BaseImage;
+  /** The `FROM image` stage bases this build read, in stage order (name and image digest). */
+  readonly images?: readonly FromImageUse[];
   /** Allow-listed tools this build resolved. */
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
@@ -141,6 +143,16 @@ export interface BuildResult {
   readonly steps?: readonly (readonly Tree[])[];
   /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
   readonly pins?: Pins;
+}
+
+/** A `FROM image` base a build used. */
+export interface FromImageUse {
+  /** `registry/name:tag`, or the local name as written. */
+  readonly name: string;
+  readonly digest: string;
+  /** The FROM line. */
+  readonly line: number;
+  readonly local: boolean;
 }
 
 export interface TransformStats extends CacheStats {
@@ -215,7 +227,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   const prof = options.profiler;
   const parseSpan = begin(prof, 'parse', 'build');
   const { program, sitefilePath, label } = await loadProgram(options);
-  const p = planFor(program, options);
+  const full = plan(program, options.buildArgs ?? {});
+  const p = options.target === undefined ? full : targetPlan(full, options.target);
   parseSpan.end({ imports: p.imports.length, stages: p.stages.length, ...(p.target !== undefined ? { target: p.target } : {}) });
   const warnings: string[] = [];
   const warn = (m: string): void => {
@@ -261,6 +274,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   // BASE: the image to build on (resolved after the files, below).
   const baseRef = options.skipBase ? undefined : (options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined));
   const pins = options.strictPins ? checkPins(p, lock, baseRef) : undefined;
+  // A --target build skips later stages; their FROM image lockfile entries are kept all the same.
+  for (const st of full.stages.slice(p.stages.length)) if (st.base.kind === 'image' && !st.base.local) lock?.markImageUsed(imageLockKey(st.base));
 
   const memo = options.memo;
   const env: ImportEnv = {
@@ -292,6 +307,28 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
 
   const stageTrees = new Map<string, Tree>();
+  const images: FromImageUse[] = [];
+  let imageStore: Store | undefined;
+  const fromImage = async (b: ImageStageBase): Promise<FromImage> => {
+    imageStore ??= options.store ?? (await Store.open());
+    const r = await resolveFromImage(b.ref, b.at, b.local, {
+      store: imageStore,
+      platform: options.platform,
+      lock,
+      frozen: !!options.frozenLockfile,
+      update: !!options.updateLock,
+      vendor,
+      registry: {
+        ...options.registry,
+        allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork,
+      },
+      warn,
+      span: b.span,
+      lead: `${b.lead} image`,
+    });
+    images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local });
+    return r;
+  };
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
@@ -313,6 +350,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     resourceKeys,
     envKey,
     stageKeys: new Map(),
+    fromImage,
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
@@ -378,13 +416,33 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   baseSpan?.end();
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}), ...(pins ? { pins } : {}) };
+  return {
+    plan: p,
+    tree,
+    output,
+    resources,
+    warnings,
+    lockfileWritten,
+    tools,
+    transformStats: stats,
+    ...(base ? { base } : {}),
+    ...(images.length ? { images } : {}),
+    ...(steps ? { steps } : {}),
+    ...(pins ? { pins } : {}),
+  };
 }
 
 /** How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name, and the BASE. */
 export interface Pins {
   readonly imports: Readonly<Record<string, 'integrity' | 'lockfile'>>;
   readonly base?: 'digest' | 'lockfile';
+  /** `FROM image` bases with a registry, by FROM line. */
+  readonly images?: Readonly<Record<number, 'digest' | 'lockfile'>>;
+}
+
+/** The Sitefile.lock `images` key of a registry `FROM image` reference. */
+export function imageLockKey(b: ImageStageBase): string {
+  return parseBaseRef(b.ref, b.span, `${b.lead} image`).lockKey;
 }
 
 /**
@@ -406,10 +464,25 @@ export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string |
       spec.span,
     );
   }
-  if (baseRef === undefined) return { imports };
+  const images: Record<number, 'digest' | 'lockfile'> = {};
+  for (const st of p.stages) {
+    if (st.base.kind !== 'image' || st.base.local) continue;
+    const { ref, lockKey } = parseBaseRef(st.base.ref, st.base.span, `${st.base.lead} image`);
+    if (ref.digest !== undefined) images[st.span.line] = 'digest';
+    else if (lock?.getImage(lockKey)) images[st.span.line] = 'lockfile';
+    else {
+      throw new SitefileError(
+        'E_UNPINNED',
+        `${st.base.lead} image ${st.base.ref}: '${lockKey}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins`,
+        st.base.span,
+      );
+    }
+  }
+  const withImages = Object.keys(images).length ? { imports, images } : { imports };
+  if (baseRef === undefined) return withImages;
   const { ref, lockKey } = parseBaseRef(baseRef);
-  if (ref.digest !== undefined) return { imports, base: 'digest' };
-  if (lock?.getImage(lockKey)) return { imports, base: 'lockfile' };
+  if (ref.digest !== undefined) return { ...withImages, base: 'digest' };
+  if (lock?.getImage(lockKey)) return { ...withImages, base: 'lockfile' };
   throw new SitefileError(
     'E_UNPINNED',
     `BASE ${baseRef}: '${lockKey}' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins`,
@@ -445,6 +518,8 @@ export interface ExportedBuild extends BuildResult {
   readonly fileDigest?: string;
   /** oci: the image's manifest digest (its image ID). */
   readonly manifestDigest?: string;
+  /** Watch mode: set when the directory export applied only the changes (src/exporter.ts). */
+  readonly incremental?: { readonly written: number; readonly removed: number };
 }
 
 /**
@@ -470,6 +545,9 @@ async function exportBuild(
   options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
 ): Promise<ExportedBuild> {
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
+  // Watch mode: a directory export writes only what changed since the session's last one.
+  const exportState = options.memo?.exportState;
+  if (format !== 'directory') exportState?.clear();
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
@@ -492,8 +570,8 @@ async function exportBuild(
     return { ...result, format, outDir: written.outDir, manifestDigest: img.manifestDigest };
   }
   if (!isArchiveFormat(format)) {
-    const written = await exportDirectory(result.output, options.outDir, exportOptions);
-    return { ...result, format, outDir: written.outDir };
+    const written = await exportDirectory(result.output, options.outDir, { ...exportOptions, ...(exportState ? { incremental: exportState } : {}) });
+    return { ...result, format, outDir: written.outDir, ...(written.incremental ? { incremental: written.incremental } : {}) };
   }
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),
@@ -671,6 +749,8 @@ interface ExecEnv {
   readonly stageKeys: Map<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
+  /** Resolve a `FROM image` stage base (registry pull or local store). */
+  readonly fromImage: (base: ImageStageBase) => Promise<FromImage>;
 }
 
 /** The tree a stage starts from, and its key. */
@@ -689,12 +769,17 @@ async function startStage(stage: Stage, env: ExecEnv): Promise<{ tree: Tree; key
       const t = await env.local.readTree(base.path, `${env.label}:${stage.span.line} FROM`, stage.span);
       return { tree: t.tree, key: env.memo ? memoKey('from', env.envKey, String(stage.span.line), base.path, t.provenance.digest) : '' };
     }
+    case 'image': {
+      const img = await env.fromImage(base);
+      return { tree: img.tree, key: env.memo ? memoKey('image', env.envKey, String(stage.span.line), base.ref, base.at ?? '', img.digest) : '' };
+    }
   }
 }
 
 /** What a stage starts from, for the trace. */
 function stageFrom(stage: Stage): string {
   const b = stage.base;
+  if (b.kind === 'image') return `image ${b.ref}${b.at !== undefined ? ` AT ${b.at}` : ''}`;
   return b.kind === 'scratch' ? 'scratch' : b.kind === 'stage' ? b.name : b.path === '' ? './' : './' + b.path;
 }
 

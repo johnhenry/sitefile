@@ -1,0 +1,4 @@
+# sitefile outdated on FROM image bases: an unpinned tag with a newer version tag, and a missing repository.
+STAGE theme FROM image ${REGISTRY}/conf/theme:1
+FROM image ${REGISTRY}/conf/missing:3
+EXPORT /
