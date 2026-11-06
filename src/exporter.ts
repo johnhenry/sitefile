@@ -17,12 +17,25 @@ export interface ExportOptions {
    * @internal
    */
   readonly beforeSwap?: () => Promise<void>;
+  /**
+   * Watch mode (directory exports only): what the previous export of this session left on
+   * disk. When the destination still holds exactly that, only the files that changed are
+   * written ({@link ExportState}); either way the export is recorded for the next one.
+   */
+  readonly incremental?: ExportState;
+  /**
+   * TEST-ONLY. Incremental export: awaited after the changed files are staged, before any
+   * of them is moved into the destination. @internal
+   */
+  readonly beforeApply?: () => Promise<void>;
 }
 
 export interface ExportResult {
   /** Real absolute path the tree was written to. */
   readonly outDir: string;
   readonly files: number;
+  /** Set when only the changes were applied in place (incremental export). */
+  readonly incremental?: { readonly written: number; readonly removed: number };
 }
 
 /**
@@ -94,7 +107,7 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
 
   // --- validate paths before touching the disk ------------------------------
   const entries = tree.entries();
-  const planned: Array<{ path: string; segments: string[]; bytes: Uint8Array; mode: number }> = [];
+  const planned: Planned[] = [];
   for (const [p, node] of entries) {
     if (!p.startsWith('/')) throw new SitefileError('E_EXPORT', `invalid artifact path '${p}': not absolute`);
     const segments = p.slice(1).split('/');
@@ -103,8 +116,16 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
         throw new SitefileError('E_EXPORT', `invalid artifact path '${p}'`);
       }
     }
-    planned.push({ path: p, segments, bytes: node.bytes, mode: node.mode });
+    planned.push({ path: p, segments, bytes: node.bytes, mode: node.mode, digest: node.digest });
   }
+
+  // --- watch mode: apply only the changes when the destination is as we left it
+  const state = options.incremental;
+  if (state) {
+    const applied = await exportIncremental(planned, outReal, st, state, options);
+    if (applied) return applied;
+  }
+  const stamps = state ? new Map<string, Stamp>() : undefined;
 
   // --- write into a temp sibling, then swap ---------------------------------
   //
@@ -166,6 +187,8 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
         throw occupied(e, p);
       }
       await fs.chmod(target, mode);
+      // Renaming the temp directory leaves its files' inodes (and ctimes) as they are now.
+      stamps?.set(p, stampOf(await fs.lstat(target)));
     }
     if (options.beforeSwap) await options.beforeSwap();
 
@@ -221,7 +244,250 @@ export async function exportDirectory(tree: Tree, outDir: string, options: Expor
     // directory we validated and moved.
     await removeIfSame(old, outId);
   }
+  if (state && stamps) {
+    const files = new Map<string, Recorded>();
+    for (const e of planned) files.set(e.path, { digest: e.digest, mode: e.mode, stamp: stamps.get(e.path)! });
+    state.snapshot = { outReal, outId: tmpId, parentId, files, dirs: dirsOf(planned) };
+  }
   return { outDir: outReal, files: planned.length };
+}
+
+// --- incremental export (watch mode) ---------------------------------------
+//
+// A watch session keeps an ExportState: the destination's identity and, for every file it
+// exported, the tree digest and mode plus the file's lstat stamp (dev, ino, size, mtime,
+// ctime, permission bits) as it was right after Sitefile wrote it. The next export of the
+// session first checks that the destination still holds exactly that: the same real
+// directory and parent (dev/ino), every recorded directory and file and nothing else (one
+// readdir per directory), each file with its recorded stamp (one lstat per file; ctime
+// changes on any write, chmod or rename, even when mtime is restored). If so, it writes only
+// the files whose digest or mode changed and removes the files and directories that are
+// gone; otherwise (nothing recorded, the destination moved or was modified, an entry that
+// would collide on a case-folding or normalizing file system, or more than half of the files
+// change) it falls back to the full write-and-swap above.
+//
+// Applying: the changed files are written to a temporary sibling first (the slow part, the
+// destination untouched); then deleted files are unlinked, emptied directories removed
+// (deepest first), new directories created (shallowest first) and each staged file renamed
+// over its path, every step re-checking that what it replaces is the file it recorded. Each
+// file is therefore always either its old or its new version (rename is atomic), and the
+// destination holds a mix of two builds only while those renames run. If a step fails, the
+// full swap runs, which replaces the whole destination atomically.
+
+/** What a watch session's last directory export left on disk; see {@link ExportOptions.incremental}. */
+export class ExportState {
+  /** @internal */
+  snapshot: Snapshot | undefined;
+
+  /** Forget the last export: the next one rewrites everything. */
+  clear(): void {
+    this.snapshot = undefined;
+  }
+}
+
+interface Planned {
+  readonly path: string;
+  readonly segments: string[];
+  readonly bytes: Uint8Array;
+  readonly mode: number;
+  readonly digest: string;
+}
+
+interface Stamp {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly mode: number;
+}
+
+interface Recorded {
+  readonly digest: string;
+  readonly mode: number;
+  readonly stamp: Stamp;
+}
+
+interface Snapshot {
+  readonly outReal: string;
+  readonly outId: FileId;
+  readonly parentId: FileId;
+  /** Artifact path (`/a/b.html`) → what was written there. */
+  readonly files: ReadonlyMap<string, Recorded>;
+  /** Every directory below the destination (`/a`, `/a/b`). */
+  readonly dirs: ReadonlySet<string>;
+}
+
+function stampOf(st: import('node:fs').Stats): Stamp {
+  return { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, mode: st.mode };
+}
+
+function sameStamp(st: import('node:fs').Stats | undefined, r: Stamp): boolean {
+  return (
+    st !== undefined &&
+    st.isFile() &&
+    st.dev === r.dev &&
+    st.ino === r.ino &&
+    st.size === r.size &&
+    st.mtimeMs === r.mtimeMs &&
+    st.ctimeMs === r.ctimeMs &&
+    st.mode === r.mode
+  );
+}
+
+/** Every directory that holds a file of `files`, below the root. */
+function dirsOf(files: readonly { readonly path: string }[]): Set<string> {
+  const dirs = new Set<string>();
+  for (const { path: p } of files) {
+    for (let i = p.indexOf('/', 1); i !== -1; i = p.indexOf('/', i + 1)) dirs.add(p.slice(0, i));
+  }
+  return dirs;
+}
+
+const depth = (p: string): number => p.split('/').length;
+
+/** `fn` over `items`, at most `limit` at a time. */
+async function eachLimit<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/** True if `outReal` holds exactly the recorded directories and files, each file as recorded. */
+async function matchesSnapshot(outReal: string, snap: Snapshot): Promise<boolean> {
+  const files: Array<[string, Stamp]> = [];
+  let dirs = 0;
+  const pending = [''];
+  while (pending.length) {
+    const rel = pending.pop()!;
+    for (const e of await fs.readdir(path.join(outReal, rel), { withFileTypes: true })) {
+      const p = `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (!snap.dirs.has(p)) return false;
+        dirs++;
+        pending.push(p);
+      } else if (e.isFile()) {
+        const r = snap.files.get(p);
+        if (!r) return false;
+        files.push([p, r.stamp]);
+      } else {
+        return false; // a symlink, socket, ...: never ours
+      }
+    }
+  }
+  if (dirs !== snap.dirs.size || files.length !== snap.files.size) return false;
+  let ok = true;
+  await eachLimit(files, 64, async ([p, stamp]) => {
+    if (ok && !sameStamp(await lstatOrUndefined(path.join(outReal, p)), stamp)) ok = false;
+  });
+  return ok;
+}
+
+/**
+ * Apply only the changes since the recorded export (see the comment above). Returns
+ * undefined to ask for the full swap; the destination is then either untouched or, if
+ * applying failed part way, about to be replaced whole.
+ */
+async function exportIncremental(
+  planned: readonly Planned[],
+  outReal: string,
+  st: import('node:fs').Stats | undefined,
+  state: ExportState,
+  options: ExportOptions,
+): Promise<ExportResult | undefined> {
+  const snap = state.snapshot;
+  state.snapshot = undefined; // recorded again only after a successful export
+  if (!snap || !st || snap.outReal !== outReal || st.isSymbolicLink() || !st.isDirectory() || !sameId(idOf(st), snap.outId)) return undefined;
+
+  const next = new Set(planned.map((e) => e.path));
+  const writes = planned.filter((e) => {
+    const r = snap.files.get(e.path);
+    return !r || r.digest !== e.digest || r.mode !== e.mode;
+  });
+  const deletes = [...snap.files.keys()].filter((p) => !next.has(p));
+  if ((writes.length + deletes.length) * 2 > Math.max(planned.length, snap.files.size)) return undefined;
+  const nextDirs = dirsOf(planned);
+  const removeDirs = [...snap.dirs].filter((d) => !nextDirs.has(d)).sort((a, b) => depth(b) - depth(a));
+  const makeDirs = [...nextDirs].filter((d) => !snap.dirs.has(d)).sort((a, b) => depth(a) - depth(b));
+  const parent = path.dirname(outReal);
+  const at = (p: string): string => path.join(outReal, ...p.slice(1).split('/'));
+
+  try {
+    await assertParentUnchanged(parent, snap.parentId);
+    if (!(await matchesSnapshot(outReal, snap))) return undefined;
+    // A new path must not exist yet, except as the very file or directory it replaces;
+    // anything else is another spelling of an existing entry (case folding, Unicode
+    // normalization): the full export reports that as a clean build does.
+    const going = new Set([...deletes, ...removeDirs]);
+    for (const p of [...writes.filter((e) => !snap.files.has(e.path)).map((e) => e.path), ...makeDirs]) {
+      if ((await lstatOrUndefined(at(p))) !== undefined && !going.has(p)) return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  // Stage the new contents next to the destination.
+  const tmp = path.join(parent, `.${path.basename(outReal)}.sitefile-tmp-${randomHex()}`);
+  let tmpId: FileId;
+  try {
+    await fs.mkdir(tmp);
+    const tst = await fs.lstat(tmp);
+    if (!tst.isDirectory() || tst.isSymbolicLink()) return undefined;
+    tmpId = idOf(tst);
+  } catch {
+    await removeIfSame(tmp, undefined);
+    return undefined;
+  }
+  const staged: Array<{ readonly e: Planned; readonly file: string; readonly id: FileId }> = [];
+  try {
+    for (const e of writes) {
+      const file = path.join(tmp, String(staged.length));
+      await fs.writeFile(file, e.bytes, { flag: 'wx' });
+      await fs.chmod(file, e.mode);
+      staged.push({ e, file, id: idOf(await fs.lstat(file)) });
+    }
+    if (options.beforeApply) await options.beforeApply();
+  } catch {
+    await removeIfSame(tmp, tmpId);
+    return undefined;
+  }
+
+  // Apply.
+  const files = new Map(snap.files);
+  try {
+    await assertParentUnchanged(parent, snap.parentId);
+    await assertSameId(outReal, snap.outId, 'export destination');
+    for (const p of deletes) {
+      const t = at(p);
+      if (!sameStamp(await lstatOrUndefined(t), snap.files.get(p)!.stamp)) throw unsafe(`'${t}' changed during export`);
+      await fs.unlink(t);
+      files.delete(p);
+    }
+    for (const d of removeDirs) await fs.rmdir(at(d)); // fails unless emptied
+    for (const d of makeDirs) {
+      await fs.mkdir(at(d));
+      const ds = await fs.lstat(at(d));
+      if (ds.isSymbolicLink() || !ds.isDirectory()) throw unsafe(`'${at(d)}' is not a directory`);
+    }
+    for (const { e, file, id } of staged) {
+      const t = at(e.path);
+      const cur = await lstatOrUndefined(t);
+      const r = snap.files.get(e.path);
+      if (r ? !sameStamp(cur, r.stamp) : cur !== undefined) throw unsafe(`'${t}' changed during export`);
+      await fs.rename(file, t);
+      const now = await fs.lstat(t);
+      if (now.isSymbolicLink() || !now.isFile() || !sameId(idOf(now), id)) throw unsafe(`'${t}' is not the file that was written`);
+      files.set(e.path, { digest: e.digest, mode: e.mode, stamp: stampOf(now) });
+    }
+  } catch {
+    await removeIfSame(tmp, tmpId);
+    return undefined; // the full swap replaces whatever was applied
+  }
+  await removeIfSame(tmp, tmpId);
+  state.snapshot = { outReal, outId: snap.outId, parentId: snap.parentId, files, dirs: nextDirs };
+  return { outDir: outReal, files: planned.length, incremental: { written: writes.length, removed: deletes.length } };
 }
 
 export interface ExportFileResult {

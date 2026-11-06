@@ -351,17 +351,20 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
   and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
-  list). Every input is still read and hashed on every build, and the export is written in full, so the output is
-  byte for byte what a clean build writes, with the same warnings and errors (see
-  [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns this off. With
-  `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
+  list). A directory export writes only the files that changed and removes the ones (and the directories) that are
+  gone, after checking that the output is still exactly what the previous build wrote; otherwise, and for archive
+  formats, it is written in full (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-export)). Every input is still
+  read and hashed on every build, so the output is byte for byte what a clean build writes, with the same warnings
+  and errors (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-rebuilds)). `SITEFILE_NO_INCREMENTAL=1` turns both
+  off. With `--profile`, each operation's event says whether it was reused (`memo`: `hit`, `files` or `miss`).
 - **Messages**: `Change detected, rebuilding` before each rebuild, then the usual `Exported ...` line
   (`serve --watch`: `Built N files (sha256:...)`). After the first build: `Watching <context> for changes (Ctrl-C to
   stop)`.
 - **Failures**: a failed rebuild prints its `error[CODE]: ...` line and `Build failed; keeping the last good
-  output`, and the loop keeps watching. Exports are atomic (written to a temporary sibling and swapped in), so
-  `dist/` is either the previous good output or the new one, never half-written; `serve --watch` keeps serving the
-  last good build. If the *first* build fails, `build --watch` keeps watching and `serve --watch` serves an empty
+  output`, and the loop keeps watching. A failed build never touches `dist/`. A full export is atomic (written to a
+  temporary sibling and swapped in); an incremental one writes the changed files to a temporary sibling first and
+  then renames each into place, so every file is always its old or its new version and the output mixes the two
+  builds only for the moment those renames take; `serve --watch` keeps serving the last good build. If the *first* build fails, `build --watch` keeps watching and `serve --watch` serves an empty
   site until a build succeeds. A usage error in the first build (for example a malformed `--build-arg`) exits with
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage

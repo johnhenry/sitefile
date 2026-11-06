@@ -833,6 +833,8 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+    /// Watch mode: set when the directory export applied only the changes (export::incremental).
+    pub incremental: Option<crate::export::incremental::Applied>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -895,6 +897,13 @@ pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &Export
 }
 
 fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
+    // Watch mode: a directory export writes only what changed since the session's last one.
+    let export_state = options.memo.as_ref().map(|m| lock_memo(m).export_state.clone());
+    if format != ExportFormat::Directory {
+        if let Some(s) = &export_state {
+            crate::export::incremental::clear_shared(s);
+        }
+    }
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
@@ -918,14 +927,15 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
                 bytes: Some(written.bytes),
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
+                incremental: None,
             });
         }
         let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?, out, &export_options)?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()) });
+        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()), incremental: None });
     }
     if !is_archive_format(format) {
-        let written = export_directory(&result.output, out, &export_options)?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: None });
+        let written = export_directory(&result.output, out, &export_options.incremental(export_state))?;
+        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: None, incremental: written.incremental });
     }
     let data = encode_tree(
         &result.output,
@@ -937,7 +947,7 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
     )?;
     let written = export_file(&data, out, &export_options)?;
     let digest = sha256(&data);
-    Ok(ExportedBuild { result, format, out_path: written.out_file, bytes: Some(written.bytes), file_digest: Some(digest), manifest_digest: None })
+    Ok(ExportedBuild { result, format, out_path: written.out_file, bytes: Some(written.bytes), file_digest: Some(digest), manifest_digest: None, incremental: None })
 }
 
 // ---------------------------------------------------------------- imports

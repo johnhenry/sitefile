@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Incremental rebuilds: how long a `build --watch` rebuild takes after one edit,
-// with the in-memory memo (default) and without it (SITEFILE_NO_INCREMENTAL=1),
-// in both implementations.
+// with the in-memory memo and incremental export (default) and without them
+// (SITEFILE_NO_INCREMENTAL=1), in both implementations.
 //
 //   node bench/generate.mjs && node bench/incremental.mjs [--runs 3] [--only text] [--rust path]
 //
@@ -10,10 +10,12 @@
 // build, then makes the same edit --runs times (alternating its content) and reads
 // each rebuild's duration from the trace (the `command` event: the whole build and
 // export, not the watcher's debounce). Prints the medians as a Markdown table and
-// writes bench/results/incremental.json. Every rebuild's output is also checked
-// against a clean build of the edited site (same tree digest).
+// writes bench/results/incremental.json. The last rebuild's output is also checked
+// against a clean build of the edited site: the same tree digest, and the exported
+// directory the same file for file (paths, modes, bytes, no other entries).
 
 import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,6 +67,18 @@ async function trace(file) {
 
 const durOf = (events, cat) => (events.find((e) => e.cat === cat)?.dur ?? 0) / 1000;
 
+/** Every entry under `dir`: type, path, mode and (files) content digest. */
+async function listing(dir, rel = '') {
+  const out = [];
+  for (const e of (await fs.readdir(path.join(dir, rel), { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    const p = `${rel}/${e.name}`;
+    const st = await fs.lstat(path.join(dir, p));
+    if (e.isDirectory()) out.push(`d ${p}`, ...(await listing(dir, p)));
+    else out.push(`${e.isFile() ? 'f' : 'x'} ${p} ${(st.mode & 0o777).toString(8)} ${createHash('sha256').update(await fs.readFile(path.join(dir, p))).digest('hex')}`);
+  }
+  return out;
+}
+
 /** One watch session: the first build, then RUNS edits; returns rebuild times in ms. */
 async function session(impl, site, edit, incremental, tmp) {
   const ctx = path.join(tmp, `${impl}-${incremental ? 'inc' : 'full'}-${site}`);
@@ -109,6 +123,7 @@ async function session(impl, site, edit, incremental, tmp) {
     const digest = (s) => /\((sha256:[0-9a-f]+)\)/.exec(s)?.[1];
     const lastLine = text.trim().split('\n').filter((l) => l.startsWith('Exported ')).pop();
     if (digest(lastLine) !== digest(clean)) throw new Error(`${impl} ${site}: incremental output ${digest(lastLine)} != clean ${digest(clean)}`);
+    if (JSON.stringify(await listing(out)) !== JSON.stringify(await listing(`${ctx}.clean`))) throw new Error(`${impl} ${site}: the exported directory differs from a clean export`);
     return { first: durOf(first, 'command'), times, exports };
   } finally {
     child.kill('SIGINT');
@@ -139,12 +154,14 @@ try {
         // The build without the export (parse, imports, operations): what the memo can skip.
         fullBuildMs: median(full.times.map((t, i) => t - full.exports[i])),
         incrementalBuildMs: median(inc.times.map((t, i) => t - inc.exports[i])),
-        exportMs: median([...full.exports, ...inc.exports]),
+        fullExportMs: median(full.exports),
+        incrementalExportMs: median(inc.exports),
       };
+      row.exportSpeedup = row.fullExportMs / row.incrementalExportMs;
       row.buildSpeedup = row.fullBuildMs / row.incrementalBuildMs;
       results.push(row);
       console.error(
-        `${site} / ${name} / ${impl}: ${row.fullMs.toFixed(0)} -> ${row.incrementalMs.toFixed(0)} ms (${row.speedup.toFixed(1)}x); build ${row.fullBuildMs.toFixed(0)} -> ${row.incrementalBuildMs.toFixed(0)} ms (${row.buildSpeedup.toFixed(1)}x); export ${row.exportMs.toFixed(0)} ms`,
+        `${site} / ${name} / ${impl}: ${row.fullMs.toFixed(0)} -> ${row.incrementalMs.toFixed(0)} ms (${row.speedup.toFixed(1)}x); build ${row.fullBuildMs.toFixed(0)} -> ${row.incrementalBuildMs.toFixed(0)} ms (${row.buildSpeedup.toFixed(1)}x); export ${row.fullExportMs.toFixed(0)} -> ${row.incrementalExportMs.toFixed(0)} ms (${row.exportSpeedup.toFixed(1)}x)`,
       );
     }
   }
@@ -153,11 +170,11 @@ try {
 }
 
 const f = (n) => `${n.toFixed(0)} ms`;
-console.log('| Site | Edit | Impl | Build, full | Build, incremental | Speedup | Export | Rebuild, full | Rebuild, incremental | Speedup |');
-console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+console.log('| Site | Edit | Impl | Build, full | Build, incremental | Speedup | Export, full | Export, incremental | Speedup | Rebuild, full | Rebuild, incremental | Speedup |');
+console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
 for (const r of results) {
   console.log(
-    `| ${r.site} | ${r.edit} | ${r.impl} | ${f(r.fullBuildMs)} | ${f(r.incrementalBuildMs)} | ${r.buildSpeedup.toFixed(1)}× | ${f(r.exportMs)} | ${f(r.fullMs)} | ${f(r.incrementalMs)} | ${r.speedup.toFixed(1)}× |`,
+    `| ${r.site} | ${r.edit} | ${r.impl} | ${f(r.fullBuildMs)} | ${f(r.incrementalBuildMs)} | ${r.buildSpeedup.toFixed(1)}× | ${f(r.fullExportMs)} | ${f(r.incrementalExportMs)} | ${r.exportSpeedup.toFixed(1)}× | ${f(r.fullMs)} | ${f(r.incrementalMs)} | ${r.speedup.toFixed(1)}× |`,
   );
 }
 await fs.mkdir(path.join(root, 'bench', 'results'), { recursive: true });

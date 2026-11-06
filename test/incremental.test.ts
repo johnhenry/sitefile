@@ -1,10 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build, type BuildOptions, type BuildResult } from '../src/executor.js';
+import { build, buildToDirectory, type BuildOptions, type BuildResult } from '../src/executor.js';
+import { sha256 } from '../src/digest.js';
+import { exportDirectory, ExportState } from '../src/exporter.js';
+import { makeFile, Tree, type FileNode } from '../src/tree.js';
 import { BuildMemo, memoKey, valueKey } from '../src/memo.js';
 import { isSitefileError } from '../src/errors.js';
 import { Profiler } from '../src/profile.js';
@@ -54,12 +57,13 @@ interface Outcome {
   readonly result?: BuildResult;
 }
 
-async function outcome(options: BuildOptions): Promise<Outcome> {
+async function outcome(options: BuildOptions, outDir?: string): Promise<Outcome & { incremental?: boolean }> {
   const warnings: string[] = [];
   try {
-    const r = await build({ ...options, onWarning: (m) => warnings.push(m) });
+    const opts = { ...options, onWarning: (m: string) => warnings.push(m) };
+    const r = outDir === undefined ? await build(opts) : await buildToDirectory({ ...opts, outDir, force: true });
     const list = (t: BuildResult['tree']): string[] => t.entries().map(([p, n]) => `${p} ${n.mode.toString(8)} ${n.digest} ${n.origin}`);
-    return { ok: true, files: list(r.output), tree: list(r.tree), warnings, result: r };
+    return { ok: true, files: list(r.output), tree: list(r.tree), warnings, result: r, incremental: 'incremental' in r && r.incremental !== undefined };
   } catch (e) {
     if (!isSitefileError(e)) throw e;
     return { ok: false, warnings, error: `${e.code}: ${e.message}` };
@@ -259,11 +263,86 @@ class Site {
   }
 }
 
+/** Everything under `dir`, for byte-for-byte comparison: type, path, permission bits, contents. */
+async function listDir(dir: string, rel = ''): Promise<string[]> {
+  const out: string[] = [];
+  for (const name of (await readdir(path.join(dir, rel))).sort()) {
+    const p = `${rel}/${name}`;
+    const st = await lstat(path.join(dir, p));
+    const mode = (st.mode & 0o7777).toString(8);
+    if (st.isSymbolicLink()) out.push(`l ${p} -> ${await readlink(path.join(dir, p))}`);
+    else if (st.isDirectory()) out.push(`d ${p} ${mode}`, ...(await listDir(dir, p)));
+    else out.push(`f ${p} ${mode} ${sha256(await readFile(path.join(dir, p)))}`);
+  }
+  return out;
+}
+
+const TAMPERS = ['rewrite-same-size', 'append', 'add-file', 'add-dir', 'delete-file', 'delete-dir', 'chmod', 'file-to-symlink', 'dir-to-symlink'] as const;
+
+/** Modify an exported directory behind the exporter's back (`victim`: a directory outside it). */
+async function tamper(out: string, victim: string, kind: (typeof TAMPERS)[number], pick: <T>(xs: readonly T[]) => T): Promise<void> {
+  const all = await listDir(out);
+  const files = all.filter((l) => l.startsWith('f ')).map((l) => l.split(' ')[1]!);
+  const dirs = all.filter((l) => l.startsWith('d ')).map((l) => l.split(' ')[1]!);
+  const at = (p: string): string => path.join(out, p);
+  if (!files.length) return;
+  const f = pick(files);
+  switch (kind) {
+    case 'rewrite-same-size': {
+      // Same size, mtime put back: only the ctime tells.
+      const st = await lstat(at(f));
+      const bytes = await readFile(at(f));
+      if (bytes.length) bytes[0] = bytes[0] === 0x58 ? 0x59 : 0x58;
+      await writeFile(at(f), bytes);
+      await utimes(at(f), st.atime, st.mtime);
+      break;
+    }
+    case 'append':
+      await writeFile(at(f), 'tampered', { flag: 'a' });
+      break;
+    case 'add-file':
+      await writeFile(path.join(out, dirs.length ? pick(dirs) : '', 'stray.txt'), 'stray');
+      break;
+    case 'add-dir':
+      await mkdir(path.join(out, 'stray-dir'), { recursive: true });
+      break;
+    case 'delete-file':
+      await unlink(at(f));
+      break;
+    case 'delete-dir':
+      if (dirs.length) await rm(at(pick(dirs)), { recursive: true });
+      break;
+    case 'chmod':
+      await chmod(at(f), 0o600);
+      break;
+    case 'file-to-symlink':
+      await unlink(at(f));
+      await symlink(path.join(victim, 'secret.txt'), at(f));
+      break;
+    case 'dir-to-symlink':
+      if (dirs.length) {
+        const d = pick(dirs);
+        await rm(at(d), { recursive: true });
+        await symlink(victim, at(d));
+      }
+      break;
+  }
+}
+
 for (const seed of [1, 7, 42, 1234, 99991]) {
   test(`incremental builds equal clean builds across random edits (seed ${seed})`, async () => {
     const dir = await tmp();
     const site = new Site(path.join(dir, 'ctx'), rng(seed));
     await site.init();
+    // The exports (watch mode writes only the changes; the clean one rewrites everything),
+    // and a directory outside them that tampering points symlinks at.
+    const incOut = path.join(dir, 'out-incremental');
+    const cleanOut = path.join(dir, 'out-clean');
+    const victim = path.join(dir, 'victim');
+    await put(path.join(victim, 'secret.txt'), 'secret');
+    const victimBefore = await listDir(victim);
+    let incrementalExports = 0;
+    let tampered = 0;
     const memo = new BuildMemo();
     // One seed also uses the TRANSFORM disk cache (shared by both builds, as in watch mode).
     const cache = seed === 42 ? { cacheDir: path.join(dir, 'cache') } : {};
@@ -275,9 +354,26 @@ for (const seed of [1, 7, 42, 1234, 99991]) {
       const edits: string[] = [];
       if (step > 0) for (let n = 1 + Math.floor(site.r() * 3); n > 0; n--) edits.push(await site.mutate());
       history.push(step === 0 ? 'initial' : edits.join('+'));
-      const incremental = await outcome({ ...base(), memo });
-      const clean = await outcome(base());
+      // Sometimes the export is modified between rebuilds.
+      if (step > 0 && site.r() < 0.2) {
+        const kind = site.pick(TAMPERS);
+        await tamper(incOut, victim, kind, (xs) => site.pick(xs));
+        history.push(`tamper:${kind}`);
+        tampered++;
+      }
+      const before = await listDir(incOut).catch(() => undefined);
+      const incremental = await outcome({ ...base(), memo }, incOut);
+      const clean = await outcome(base(), cleanOut);
       const where = `seed ${seed}, step ${step}: ${history.join(' > ')}`;
+      if (incremental.ok) {
+        // The export is byte for byte (and mode for mode) the clean one.
+        assert.deepEqual(await listDir(incOut), await listDir(cleanOut), where);
+        if (incremental.incremental) incrementalExports++;
+      } else {
+        // A failed build never touches the output.
+        assert.deepEqual(await listDir(incOut).catch(() => undefined), before, where);
+      }
+      assert.deepEqual(await listDir(victim), victimBefore, where);
       assert.equal(incremental.ok, clean.ok, `${where}\n${incremental.error ?? ''}${clean.error ?? ''}`);
       assert.equal(incremental.error, clean.error, where);
       assert.deepEqual(incremental.warnings, clean.warnings, where);
@@ -285,8 +381,11 @@ for (const seed of [1, 7, 42, 1234, 99991]) {
       assert.deepEqual(incremental.tree, clean.tree, where);
       if (incremental.ok) reused += incremental.result!.memoStats!.hits;
     }
-    // The memo was actually used.
+    // The memo was actually used, and exports wrote only the changes (the others: the first
+    // export, large changes such as switching --target, and the exports after tampering).
     assert.ok(reused > 0);
+    assert.ok(incrementalExports >= 8, `${incrementalExports} incremental exports`);
+    assert.ok(tampered > 0);
   });
 }
 
@@ -376,4 +475,112 @@ test('build --watch keeps a memo; SITEFILE_NO_INCREMENTAL turns it off', async (
     if (saved === undefined) delete process.env['SITEFILE_NO_INCREMENTAL'];
     else process.env['SITEFILE_NO_INCREMENTAL'] = saved;
   }
+});
+
+// --- incremental export (watch mode) -----------------------------------------------------
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function files(n: number, extra: Record<string, string | [string, number]> = {}): Tree {
+  const list: Array<[string, FileNode]> = [];
+  for (let i = 0; i < n; i++) if (!(`/d${i % 3}/f${i}.txt` in extra)) list.push([`/d${i % 3}/f${i}.txt`, makeFile(enc(`file ${i}`), 'test')]);
+  for (const [p, v] of Object.entries(extra)) list.push([p, typeof v === 'string' ? makeFile(enc(v), 'test') : makeFile(enc(v[0]), 'test', v[1])]);
+  return Tree.fromFiles(list);
+}
+
+type Applied = { readonly incremental?: { readonly written: number; readonly removed: number } };
+
+/** An incremental export (its state kept across calls), compared with a clean export after each. */
+async function exportPair(): Promise<{ dir: string; out: string; run: (t: Tree, beforeApply?: () => Promise<void>) => Promise<Applied> }> {
+  const dir = await tmp();
+  const ctx = path.join(dir, 'ctx');
+  const out = path.join(ctx, 'dist');
+  await mkdir(ctx, { recursive: true });
+  const state = new ExportState();
+  const run = async (t: Tree, beforeApply?: () => Promise<void>): Promise<Applied> => {
+    const r = await exportDirectory(t, out, { contextDir: ctx, incremental: state, ...(beforeApply ? { beforeApply } : {}) });
+    const clean = path.join(ctx, 'clean');
+    await exportDirectory(t, clean, { contextDir: ctx });
+    assert.deepEqual(await listDir(out), await listDir(clean));
+    return r;
+  };
+  return { dir, out, run };
+}
+
+const ino = async (p: string): Promise<number> => (await lstat(p)).ino;
+
+test('incremental export: an unchanged export writes nothing; an edit writes one file', async () => {
+  const { out, run } = await exportPair();
+  assert.equal((await run(files(20))).incremental, undefined); // the first export is a full one
+  const one = await ino(path.join(out, 'd1/f1.txt'));
+  const other = await ino(path.join(out, 'd0/f0.txt'));
+  assert.deepEqual((await run(files(20))).incremental, { written: 0, removed: 0 });
+  assert.equal(await ino(path.join(out, 'd1/f1.txt')), one);
+  assert.deepEqual((await run(files(20, { '/d1/f1.txt': 'edited' }))).incremental, { written: 1, removed: 0 });
+  assert.notEqual(await ino(path.join(out, 'd1/f1.txt')), one);
+  assert.equal(await ino(path.join(out, 'd0/f0.txt')), other);
+  // A mode change alone is a change.
+  assert.deepEqual((await run(files(20, { '/d1/f1.txt': ['edited', 0o755] }))).incremental, { written: 1, removed: 0 });
+  assert.equal((await lstat(path.join(out, 'd1/f1.txt'))).mode & 0o777, 0o755);
+});
+
+test('incremental export: removed files go, directories that become empty go, a file can become a directory', async () => {
+  const { out, run } = await exportPair();
+  await run(files(20, { '/x/y/z.txt': 'z', '/p': 'file' }));
+  assert.deepEqual((await run(files(20, { '/p/q.txt': 'now a directory' }))).incremental, { written: 1, removed: 2 });
+  await assert.rejects(lstat(path.join(out, 'x')), { code: 'ENOENT' });
+  // ... and back.
+  assert.deepEqual((await run(files(20, { '/p': 'a file again' }))).incremental, { written: 1, removed: 1 });
+});
+
+test('incremental export: a large change is a full export; so is a change of letter case on a case-insensitive disk', async () => {
+  const { run } = await exportPair();
+  await run(files(20, { '/About.html': 'a' }));
+  assert.equal((await run(files(5))).incremental, undefined);
+  await run(files(20, { '/About.html': 'a' }));
+  // /about.html may be /About.html on this file system: it is never renamed over in place.
+  await run(files(20, { '/about.html': 'b' }));
+});
+
+test('incremental export: changes made to the output between exports are detected and undone', async () => {
+  for (const kind of TAMPERS) {
+    const { dir, out, run } = await exportPair();
+    const victim = path.join(dir, 'victim');
+    await put(path.join(victim, 'secret.txt'), 'secret');
+    await run(files(20));
+    let n = 0;
+    await tamper(out, victim, kind, (xs) => xs[n++ % xs.length]!);
+    assert.equal((await run(files(20, { '/d0/f0.txt': 'edit' }))).incremental, undefined, kind);
+    assert.deepEqual(await listDir(victim), [`f /secret.txt 644 ${sha256(enc('secret'))}`], kind);
+    // Then incremental again.
+    assert.deepEqual((await run(files(20, { '/d0/f0.txt': 'edit 2' }))).incremental, { written: 1, removed: 0 }, kind);
+  }
+});
+
+test('incremental export: a change made while the files are staged is caught before it is replaced', async () => {
+  const { out, run } = await exportPair();
+  await run(files(20));
+  // The file about to be replaced is modified after the check: the full swap runs instead.
+  const r = await run(files(20, { '/d0/f0.txt': 'edit' }), () => writeFile(path.join(out, 'd0/f0.txt'), 'someone else'));
+  assert.equal(r.incremental, undefined);
+  // A directory appears where one is about to be created.
+  const r2 = await run(files(20, { '/d0/f0.txt': 'edit', '/new/a.txt': 'a' }), () => mkdir(path.join(out, 'new')));
+  assert.equal(r2.incremental, undefined);
+  assert.deepEqual((await readdir(path.dirname(out))).filter((n) => n.includes('sitefile-')), []); // no staging left behind
+});
+
+test('incremental export: another destination, a replaced destination, or no state is a full export', async () => {
+  const { dir, run } = await exportPair();
+  await run(files(20));
+  const state = new ExportState();
+  const ctx = path.join(dir, 'ctx');
+  const exp = (to: string, s?: ExportState): Promise<Applied> => exportDirectory(files(20), path.join(ctx, to), { contextDir: ctx, ...(s ? { incremental: s } : {}) });
+  await exp('a', state);
+  assert.equal((await exp('b', state)).incremental, undefined);
+  assert.ok((await exp('b', state)).incremental);
+  // The same path, another directory.
+  await rm(path.join(ctx, 'b'), { recursive: true });
+  await exp('b');
+  assert.equal((await exp('b', state)).incremental, undefined);
+  assert.equal((await exp('b')).incremental, undefined);
 });
