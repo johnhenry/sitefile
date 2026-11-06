@@ -1,6 +1,7 @@
 import { insecureRegistriesFromEnv } from '../base-image.js';
 import { collectBuildArgs } from '../build-args.js';
 import { outdated, type OutdatedReport, type OutdatedStatus } from '../outdated.js';
+import { loadSecrets } from '../secrets.js';
 import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
 import { shortId } from '../store.js';
 import { requireArgs, str, strs, table, usage, type Command } from './common.js';
@@ -39,6 +40,7 @@ const outdatedCommand: Command = {
     '--json                        machine-readable output',
     '--build-arg <NAME=value>      set an ARG (repeatable); --build-arg NAME reads $NAME',
     '--build-arg-file <path>       read ARGs from a .json, .yaml/.yml or .env file (repeatable)',
+    '--secret id=<id>,env=<VAR>    a build secret for IMPORT ... SECRET (or id=<id>,src=<file>; repeatable)',
     '--no-lockfile                 ignore Sitefile.lock (only INTEGRITY and @sha256: count as pins)',
     '--allow-http                  permit plain http:// imports',
     '--allow-private-network       permit loopback/private network addresses',
@@ -52,6 +54,7 @@ const outdatedCommand: Command = {
     json: { type: 'boolean' },
     'build-arg': { type: 'string', multiple: true },
     'build-arg-file': { type: 'string', multiple: true },
+    secret: { type: 'string', multiple: true },
     'no-lockfile': { type: 'boolean' },
     'allow-http': { type: 'boolean' },
     'allow-private-network': { type: 'boolean' },
@@ -70,6 +73,7 @@ const outdatedCommand: Command = {
       contextDir: pos[0] ?? '.',
       ...(file ? { sitefile: file } : {}),
       buildArgs: await collectBuildArgs(strs(v['build-arg-file']), strs(v['build-arg'])),
+      secrets: await loadSecrets(strs(v.secret)),
       fetchPolicy: {
         allowHttp: !!v['allow-http'],
         allowPrivateNetwork: !!v['allow-private-network'],

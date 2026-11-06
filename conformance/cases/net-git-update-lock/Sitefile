@@ -1,0 +1,5 @@
+# A locked ref is not resolved again (main has moved on); --update-lock follows it.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#main:site
+COPY site: /
+EXPORT /

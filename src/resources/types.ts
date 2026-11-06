@@ -7,6 +7,8 @@ export interface Provenance {
   readonly resolvedUrl?: string;
   /** `sha256:<hex>`: file bytes, tree digest, or the raw bytes a value was parsed from. */
   readonly digest: string;
+  /** Git imports: the commit the content was read from (40 hex). */
+  readonly gitCommit?: string;
 }
 
 export interface FileResource {

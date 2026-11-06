@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod bundle_data;
 pub mod convert;
+pub mod git;
 pub mod https;
 pub mod ignore;
 pub mod local;

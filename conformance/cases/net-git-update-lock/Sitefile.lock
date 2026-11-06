@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "resources": {},
+  "git": {
+    "git+${HTTPS}/repo.git#main:site": {
+      "commit": "${GIT_V1}"
+    },
+    "git+${HTTPS}/repo.git#unused": {
+      "commit": "${GIT_V2}"
+    }
+  }
+}

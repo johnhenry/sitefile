@@ -1,0 +1,16 @@
+# Responsive images with the first-party image plugin (plugins/image, a
+# WebAssembly module: it needs no --allow-plugin and can't touch files, the
+# network or the clock). Results are cached by content digest, so an
+# unchanged photo is not decoded again on the next build.
+FROM scratch
+PLUGIN image FROM ./plugins/image.wasm INTEGRITY sha256:9dc3d952f49be96e36bd7153701daf4d557aaf8079ac70cce5ba3eef981d86db
+
+# A photo in three widths, plus /img/sky.json (paths, widths, heights, srcset).
+TRANSFORM ./photos/sky.jpg WITH image TO /img/ OPTIONS widths=400,800,1200 format=jpeg quality=80
+# A transparent graphic at 1x and 2x, as lossless WebP with a PNG fallback.
+TRANSFORM ./photos/badge.png WITH image TO /img/ OPTIONS widths=64,128 format=webp,png
+# One file: the extension picks the format.
+TRANSFORM ./photos/sky.jpg WITH image TO /img/sky-thumb.png OPTIONS widths=160
+
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT /

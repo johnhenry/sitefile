@@ -1,0 +1,7 @@
+# sitefile vendor stores Git imports (a tree as a tar, a file as bytes); the offline build reads them.
+FROM scratch
+IMPORT site FROM git+${HTTPS}/repo.git#v1:site
+IMPORT readme FROM git+${HTTPS}/repo.git#main:README.md
+COPY site: /
+COPY readme: /readme.md
+EXPORT /

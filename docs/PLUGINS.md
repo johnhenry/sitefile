@@ -11,7 +11,9 @@ TRANSFORM ./title.txt WITH motion TO /title.svg OPTIONS style=typewriter duratio
 TRANSFORM WITH motion TO /cards/${post.slug}.svg OPTIONS text=${post.title} FOR post IN posts
 ```
 
-See `examples/motion/` for a complete plugin (text → animated SVG).
+See `examples/motion/` for a complete plugin (text → animated SVG), and
+[The image plugin](#the-image-plugin) for the first-party plugin that resizes
+and converts images.
 
 ## The module
 
@@ -164,6 +166,136 @@ and the module may simply leak its allocations. Calls run in a worker thread
 that is terminated after `--plugin-timeout`; linear memory is capped at 1 GiB
 and results at 64 MiB. Traps, out-of-range results, invalid JSON and
 `{"error"}` all fail the build with `E_PLUGIN`.
+
+## The image plugin
+
+Sitefile ships a first-party WebAssembly plugin for responsive images:
+[`plugins/image/image.wasm`](../plugins/image/), with its Rust source and
+build script next to it. Copy the `.wasm` into your project and pin it:
+
+```
+PLUGIN image FROM ./plugins/image.wasm INTEGRITY sha256:…   # the digest in examples/image/Sitefile
+TRANSFORM ./photos/sky.jpg WITH image TO /img/ OPTIONS widths=400,800,1200 quality=80
+TRANSFORM ./logo.png WITH image TO /img/ OPTIONS widths=64,128 format=webp,png
+TRANSFORM ./photos/sky.jpg WITH image TO /img/sky-thumb.png OPTIONS widths=160
+```
+
+Like every wasm plugin it needs no `--allow-plugin`, can't reach files, the
+network or the clock, and its results are cached by content digest (an
+unchanged photo is not decoded again). The same module runs under V8 and
+wasmtime, so both implementations write identical bytes; the conformance
+suite and both test suites check that with pinned digests. See
+`examples/image/`.
+
+**Formats.**
+
+| | Decode | Encode |
+| --- | --- | --- |
+| PNG | yes (8 and 16 bit, palette, gray, alpha; APNG: first frame) | yes: 8-bit RGB, or RGBA when any pixel is transparent; adaptive filters, the png crate's `Balanced` deflate level |
+| JPEG | yes (baseline and progressive, gray, CMYK) | yes: baseline, `quality` (default 82), 4:2:2 chroma subsampling, JFIF header |
+| GIF | yes (first frame) | no (written as PNG by default) |
+| WebP | yes (lossy and lossless; animated: first frame) | lossless only |
+| AVIF, HEIC, SVG, TIFF | no | no |
+
+There is no pure-Rust lossy WebP or AVIF encoder the plugin could pin, so
+lossless WebP is meant for graphics and screenshots; for photos it is often
+larger than the JPEG. AVIF is out of scope for now. Animated images become
+their first frame. Metadata (EXIF, ICC profiles, text chunks, XMP) is never
+copied; EXIF orientation is applied first, so a portrait photo stays
+portrait. Colors are not converted from embedded ICC profiles (the pixel
+values are kept as they are, which is right for sRGB images).
+
+**Resizing** uses one fixed filter: Lanczos-3 (`sinc(x)·sinc(x/3)`, |x| < 3),
+widened by the scale factor when shrinking, on premultiplied alpha (so
+transparent pixels don't bleed), in sRGB space (no gamma conversion), with
+14-bit integer weights and integer arithmetic. The height keeps the aspect
+ratio, rounded half up. Images are never enlarged: a width larger than the
+source is dropped, and if none is left the source width is used. At the
+source width the pixels are copied unchanged.
+
+**Destinations.**
+
+- `TO /dir/` (anything whose last segment has no image extension): one file
+  per width and format, `<name>-<width>.<ext>` (`ext` is `png`, `jpg` or
+  `webp`), plus a metadata file `<name>.json`. `<name>` is the source's file
+  name without its extension (characters other than letters, digits, `-`,
+  `_` and `.` become `-`), or the `name` option.
+- `TO /file.png|.jpg|.jpeg|.webp`: exactly one image; the extension picks the
+  format, so `format`, `name` and more than one width are errors.
+
+**Options** (all optional; anything else is an error):
+
+| Option | Meaning |
+| --- | --- |
+| `widths=400,800,1200` | output widths, 1 to 16384, at most 16 (sorted, duplicates dropped). Default: the source width |
+| `format=webp,jpeg` | output formats in order: `png`, `jpeg` (or `jpg`), `webp`. Default: JPEG for a JPEG source, WebP for WebP, otherwise PNG |
+| `quality=82` | JPEG quality, 1 to 100 |
+| `background=#ffffff` | color transparent pixels are composited over for JPEG (`#rgb` or `#rrggbb`) |
+| `name=hero` | the file name stem in a directory destination |
+| `max_pixels=40000000` | refuse larger images; at most the default, 40,000,000 |
+
+**Limits.** The image size is read from the file header (PNG IHDR, GIF
+screen descriptor, WebP VP8/VP8L/VP8X, JPEG SOF) before anything is decoded,
+so a decompression bomb (a small file claiming 60000×60000 pixels) is refused
+at once with `E_PLUGIN`. Decoders may allocate at most 512 MiB, the module at
+most 1 GiB, a call is stopped after `--plugin-timeout` (default 60 s; one
+TRANSFORM of a 24 megapixel JPEG to three widths as JPEG and PNG took 5 to 15
+seconds on a laptop, so raise it for very large images or many widths), and
+the result is capped at 64 MiB. In the Rust build, compiling the 800 KB module
+takes a few seconds the first time; it is then kept in the wasm module cache
+(docs/RUST.md). Malformed, truncated or unsupported files fail
+with `E_PLUGIN` and a message such as `not a PNG, JPEG, GIF or WebP image`;
+the decoders are fuzzed lightly (mutated and truncated copies of every test
+image, natively and through both runtimes).
+
+### The metadata file
+
+A directory destination also gets `<name>.json`, for templates and for the
+`img` template helper planned in #105. Version 1:
+
+```json
+{
+  "version": 1,
+  "source": { "name": "sky.jpg", "format": "jpeg", "width": 1600, "height": 1000 },
+  "width": 1200,
+  "height": 750,
+  "src": "/img/sky-1200.jpg",
+  "type": "image/jpeg",
+  "srcset": "/img/sky-400.jpg 400w, /img/sky-800.jpg 800w, /img/sky-1200.jpg 1200w",
+  "sources": [
+    { "type": "image/jpeg", "srcset": "/img/sky-400.jpg 400w, /img/sky-800.jpg 800w, /img/sky-1200.jpg 1200w" }
+  ],
+  "variants": [
+    { "path": "/img/sky-400.jpg", "type": "image/jpeg", "width": 400, "height": 250, "size": 20826 }
+  ]
+}
+```
+
+- `source`: the input's name, decoded format (`png`, `jpeg`, `gif`, `webp`)
+  and size after EXIF orientation.
+- `width`, `height`, `src`, `type`, `srcset`: the largest variant of the
+  **last** format listed (the fallback for a plain `<img>`).
+- `sources`: one entry per format, in `format` order, for `<picture>`
+  `<source>` elements (modern formats first, fallback last).
+- `variants`: every file written, by width then format: its absolute artifact
+  path, media type, size in pixels and in bytes.
+- Paths are where the TRANSFORM wrote the files. A later step that renames
+  them (fingerprinting, #98) must map them. New fields may be added within
+  version 1; a change to existing ones bumps `version`.
+
+Templates can't read files from the tree yet, so for now a page writes its
+`srcset` and `width`/`height` by hand (as `examples/image/templates/index.html`
+does), using the numbers in the metadata file; #105 will read it instead.
+
+**Rebuilding the module.** `plugins/image/build.sh` builds it with
+`cargo build --release --target wasm32-unknown-unknown --locked --offline`
+(crate versions pinned exactly in `Cargo.toml` and `Cargo.lock`; path
+prefixes remapped so the build doesn't embed your home directory), copies it
+to `examples/image/plugins/` and updates the example's `INTEGRITY`.
+`./build.sh --check` only compares the result with the committed module. The
+committed module was built with rustc 1.93.1; another compiler version gives
+a working module with different bytes, and so a different digest and cache
+key. `cargo test` in `plugins/image` runs the native tests and fuzzing.
 
 ## External tools: `TOOL` and `--allow-exec`
 

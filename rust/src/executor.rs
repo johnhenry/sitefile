@@ -28,10 +28,12 @@ use crate::profile::{begin, Profiler};
 use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
 use crate::render::{decode_utf8, parse_render_template, render_template, resolve_json_path, walk, TemplateNode};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
-use crate::resources::https::fetch_remote;
+use crate::resources::https::{fetch_remote_with, FetchRequest};
+use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
-use crate::resources::lockfile::{LockEntry, Lockfile};
+use crate::resources::lockfile::{GitLockEntry, LockEntry, Lockfile};
+use crate::resources::git::{fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport};
 use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
@@ -66,6 +68,11 @@ pub struct BuildOptions {
     pub context_dir: String,
     /// Sitefile path. Default: `<context_dir>/Sitefile`.
     pub sitefile: Option<String>,
+    /// How messages name the Sitefile (default: its path relative to the working directory).
+    pub label: Option<String>,
+    /// Build secrets by id (`--secret id=…,env=…|src=…`, see src/secrets.rs): sent only as the request
+    /// headers that `IMPORT … SECRET` clauses name, and redacted from every warning and error.
+    pub secrets: Secrets,
     pub build_args: BuildArgs,
     /// `--target <stage>`: build up to this named stage and export its whole tree (planner `target_plan`).
     pub target: Option<String>,
@@ -131,6 +138,8 @@ impl Default for BuildOptions {
         BuildOptions {
             context_dir: ".".into(),
             sitefile: None,
+            label: None,
+            secrets: Secrets::default(),
             build_args: BuildArgs::new(),
             target: None,
             out_dir: None,
@@ -272,7 +281,7 @@ pub fn normalize_posix(p: &str) -> String {
 }
 
 /// Read, parse and validate a Sitefile.
-pub fn load_program(context_dir: &str, sitefile: Option<&str>) -> Result<Loaded> {
+pub fn load_program(context_dir: &str, sitefile: Option<&str>, label: Option<&str>) -> Result<Loaded> {
     let given = match sitefile {
         Some(s) => s.to_string(),
         None => join_path(context_dir, "Sitefile"),
@@ -280,9 +289,12 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>) -> Result<Loaded>
     let sitefile_path = resolve_path(Path::new(&given));
     let source = std::fs::read(&sitefile_path)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("cannot read Sitefile '{}'", sitefile_path.display())))?;
+        // A Git context names its Sitefile by the label (the checkout is a temporary directory).
+        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("cannot read Sitefile '{}'", label.map(str::to_string).unwrap_or_else(|| sitefile_path.display().to_string()))))?;
     let rel = relative_path(&cwd(), &sitefile_path);
-    let label = if rel.is_empty() {
+    let label = if let Some(l) = label {
+        l.to_string()
+    } else if rel.is_empty() {
         sitefile_path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     } else {
         rel
@@ -292,7 +304,7 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>) -> Result<Loaded>
 
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
-    let loaded = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let loaded = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     plan_for(&loaded.program, options)
 }
 
@@ -374,6 +386,24 @@ impl Pins {
 pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Result<Pins> {
     let mut pins = Pins::default();
     for spec in &p.imports {
+        if let ImportLocation::Git(g) = &spec.location {
+            if g.commit.is_some() {
+                pins.imports.push((spec.name.clone(), "commit"));
+                continue;
+            }
+            if lock.is_some_and(|l| l.get_git(&g.url).is_some()) {
+                pins.imports.push((spec.name.clone(), "lockfile"));
+                continue;
+            }
+            return Err(SitefileError::at(
+                E_UNPINNED,
+                format!(
+                    "IMPORT {}: '{}' is not pinned (--strict-pins); name a commit (#<40 hex>[:path]), or record it in Sitefile.lock with a build without --strict-pins",
+                    spec.name, g.url
+                ),
+                &spec.span,
+            ));
+        }
         let ImportLocation::Remote { url } = &spec.location else { continue };
         if spec.integrity.is_some() {
             pins.imports.push((spec.name.clone(), "integrity"));
@@ -441,6 +471,38 @@ pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
 
 /// Run a build in memory.
 pub fn build(options: &BuildOptions) -> Result<BuildResult> {
+    // Build secrets never appear in a warning or an error, even when a server echoes one back.
+    if options.secrets.is_empty() {
+        return build_unredacted(options);
+    }
+    let secrets = options.secrets.clone();
+    let mut redacted = options.clone();
+    if let Some(on) = options.on_warning.clone() {
+        let s = secrets.clone();
+        redacted.on_warning = Some(Arc::new(move |m: &str| on(&redact_secrets(m, &s))));
+    }
+    match build_unredacted(&redacted) {
+        Ok(r) => {
+            let warnings = r.warnings.iter().map(|w| redact_secrets(w, &secrets)).collect();
+            Ok(BuildResult { warnings, ..r })
+        }
+        Err(e) => Err(redact_error(e, &secrets)),
+    }
+}
+
+/// `--secret` ids that no IMPORT … SECRET names (likely a typo).
+pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
+    let used: std::collections::HashSet<&str> = p.imports.iter().flat_map(|s| s.secrets.iter().map(|x| x.id.as_str())).collect();
+    let mut ids: Vec<&str> = secrets.ids().collect();
+    ids.sort();
+    for id in ids {
+        if !used.contains(id) {
+            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+        }
+    }
+}
+
+fn build_unredacted(options: &BuildOptions) -> Result<BuildResult> {
     let Some(memo) = &options.memo else { return build_once(options) };
     lock_memo(memo).begin();
     let r = build_once(options);
@@ -453,7 +515,7 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
 fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
-    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref())?;
+    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let full = plan(&program, &options.build_args)?;
     let all_stages = full.stages.clone();
     let p = match &options.target {
@@ -481,6 +543,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     for w in &p.warnings {
         warn(w);
     }
+    warn_unused_secrets(&p, &options.secrets, &warn);
     let tools = resolve_tools(&p, options, &warn)?;
     let plugin_permission = check_plugins(&p, options, &warn)?;
 
@@ -551,6 +614,8 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             frozen: options.frozen_lockfile,
             update: options.update_lock,
             vendor: vendor.as_ref().map(|v| (v, &local)),
+            archive_limits: options.archive_limits,
+            secrets: &options.secrets,
         },
         memo: options.memo.as_deref(),
     };
@@ -854,7 +919,7 @@ pub fn image_attestations(
     if !request.any() {
         return Ok(Vec::new());
     }
-    let facts = build_facts(result, &options.context_dir, options.sitefile.as_deref(), &options.build_args, options.platform.as_deref())?;
+    let facts = build_facts(result, &options.context_dir, options.sitefile.as_deref(), options.label.as_deref(), &options.build_args, options.platform.as_deref())?;
     let cfg = crate::export::oci::parse_config(config_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("image config: {e}")))?;
     let title = cfg.labels.get(crate::export::oci::ann::TITLE).map(String::as_str);
     let subject = AttestSubject { digest: manifest_digest, size: manifest_bytes.len() as u64, files: &result.output, root, title };
@@ -971,6 +1036,82 @@ pub struct RemoteEnv<'a> {
     pub update: bool,
     /// Vendored copies (`sitefile vendor`), preferred over the network.
     pub vendor: Option<(&'a Vendor, &'a LocalContext)>,
+    /// Limits for Git trees (file count, total size).
+    pub archive_limits: ArchiveLimits,
+    /// Build secrets by id (`--secret`), sent as the headers of IMPORT … SECRET clauses.
+    pub secrets: &'a Secrets,
+}
+
+/// The canonical bytes `sitefile vendor` stores for a Git selection: a file's bytes, or a tree as a deterministic tar.
+pub fn git_selection_bytes(selection: &GitSelection) -> Result<Vec<u8>> {
+    match selection {
+        GitSelection::File { bytes, .. } => Ok(bytes.to_vec()),
+        GitSelection::Tree(files) => {
+            let tree = Tree::from_files(files.iter().map(|(p, b, m)| (p.clone(), make_file(b.clone(), "vendor", *m))))?;
+            crate::export::archive_writers::write_tar(&tree, &WriterOptions { epoch: Some(0), dirs: Vec::new() })
+        }
+    }
+}
+
+/// The content of a Git IMPORT, checked against the lockfile (and recorded there): (commit, selection).
+/// See the TypeScript `fetchGitImport`.
+pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_>) -> Result<(String, GitSelection)> {
+    let url = &loc.url;
+    let span = Some(&spec.span);
+    let entry = env.lock.lock().ok().and_then(|l| l.as_ref().and_then(|l| l.get_git(url).cloned()));
+    if env.frozen && entry.is_none() {
+        return Err(SitefileError::at(E_LOCK_MISSING, format!("IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+    }
+    if let (Some(e), Some(c)) = (&entry, &loc.commit) {
+        if &e.commit != c {
+            return Err(SitefileError::at(
+                E_LOCK_MISMATCH,
+                format!("IMPORT {}: '{url}' is locked to commit {}; rerun with --update-lock to accept {c}", spec.name, e.commit),
+                &spec.span,
+            ));
+        }
+    }
+    let mut want: Option<String> = loc.commit.clone().or_else(|| entry.as_ref().filter(|_| !env.update).map(|e| e.commit.clone()));
+    let vendored = env.vendor.and_then(|(v, _)| v.git(url));
+    let use_vendored = match (vendored, &want) {
+        (Some(_), None) => !env.update,
+        (Some(v), Some(w)) => &v.commit == w,
+        (None, _) => false,
+    };
+    let selection = if let (true, Some((v, local)), Some(ve)) = (use_vendored, env.vendor, vendored) {
+        want = Some(ve.commit.clone());
+        let basename = loc.path.rsplit('/').next().unwrap_or("");
+        v.read_git(local, url, ve, basename, &env.archive_limits, span)?
+    } else {
+        if let Some((v, _)) = env.vendor {
+            let at = if vendored.is_some() { format!(" at commit {}", want.as_deref().unwrap_or("the latest")) } else { String::new() };
+            (env.warn)(&format!(
+                "{}:{}: IMPORT {}: '{url}' is not vendored in {}{at}; fetching it (run 'sitefile vendor' to add it)",
+                env.label, spec.span.line, spec.name, v.dir
+            ));
+        }
+        let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+        let transport = GitTransport { origin_headers: &origin_headers, ..GitTransport::new(env.policy, span) };
+        let objs = fetch_git_commit(&loc.repo, &loc.git_ref, want.as_deref(), transport, &env.archive_limits)?;
+        want = Some(objs.commit.clone());
+        select_git_path(&objs, &loc.repo, &loc.path, &env.archive_limits, span)?
+    };
+    let want = want.unwrap_or_default();
+    if loc.commit.is_none() && entry.is_none() {
+        (env.warn)(&format!(
+            "{}:{}: IMPORT {} is not pinned; pin commit {want} (#{want}{}) for a reproducible build",
+            env.label,
+            spec.span.line,
+            spec.name,
+            if loc.path.is_empty() { String::new() } else { format!(":{}", loc.path) }
+        ));
+    }
+    if let Ok(mut l) = env.lock.lock() {
+        if let Some(l) = l.as_mut() {
+            l.record_git(url, GitLockEntry { commit: want.clone() });
+        }
+    }
+    Ok((want, selection))
 }
 
 /// The bytes of a remote IMPORT and its final URL, checked against its INTEGRITY and the lockfile (and
@@ -991,7 +1132,8 @@ pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) ->
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let f = fetch_remote(url, env.policy, span)?;
+            let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let f = fetch_remote_with(url, env.policy, span, &FetchRequest { origin_headers, ..FetchRequest::default() })?;
             (f.bytes, f.final_url)
         }
     };
@@ -1158,6 +1300,54 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                 }
             }
         }
+        ImportLocation::Git(loc) => {
+            let (commit, selection) = fetch_git_import(spec, loc, &env.remote)?;
+            let resolved_url = pinned_git_url(loc, &commit);
+            match selection {
+                GitSelection::File { bytes, mode, basename } => {
+                    let digest = sha256(&bytes);
+                    let key = key_of(&format!("{commit}\0{digest}\0{mode}"));
+                    let info = BytesInfo { uri: spec.uri.clone(), resolved_url: Some(resolved_url), basename, mode: Some(mode) };
+                    let kind = spec.as_kind.unwrap_or(ImportKind::File);
+                    let res = convert(&key, &|_| bytes_to_resource(bytes.to_vec(), kind, &info, span, env.archive_limits))?;
+                    Ok((with_commit(res, &commit), key))
+                }
+                GitSelection::Tree(files) => {
+                    let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, origin.clone(), m))))?;
+                    let provenance = crate::resources::types::Provenance {
+                        uri: spec.uri.clone(),
+                        resolved_url: Some(resolved_url),
+                        digest: tree.digest(),
+                        git_commit: Some(commit.clone()),
+                    };
+                    let key = key_of(&format!("{commit}\0{}", provenance.digest));
+                    let base = trim_trailing_slashes(&spec.uri);
+                    match spec.as_kind {
+                        Some(ImportKind::Markdown) => {
+                            let res = convert(&key, &|docs| {
+                                let list = markdown_collection(&tree, &base, span, docs)?;
+                                Ok(Resource::Value { format: ValueFormat::Markdown, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                            })?;
+                            Ok((res, key))
+                        }
+                        Some(k @ (ImportKind::Json | ImportKind::Yaml)) => {
+                            let (kind, format) = if k == ImportKind::Json { (DataKind::Json, ValueFormat::Json) } else { (DataKind::Yaml, ValueFormat::Yaml) };
+                            let res = convert(&key, &|docs| {
+                                let list = data_collection(&tree, kind, &base, span, docs)?;
+                                Ok(Resource::Value { format, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                            })?;
+                            Ok((res, key))
+                        }
+                        Some(k) if k != ImportKind::Tree => Err(SitefileError::at(
+                            E_TYPE,
+                            format!("IMPORT {}: '{}' is a directory and cannot be imported AS {}", spec.name, spec.uri, k.as_str()),
+                            &spec.span,
+                        )),
+                        _ => Ok((Resource::Tree { tree, provenance }, key)),
+                    }
+                }
+            }
+        }
         ImportLocation::Remote { url } => {
             let kind = spec.as_kind.unwrap_or(ImportKind::File);
             let (bytes, final_url) = fetch_remote_import(spec, url, &env.remote)?;
@@ -1167,6 +1357,23 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             let info = BytesInfo { uri: url.clone(), resolved_url: Some(final_url), basename, mode: None };
             let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
             Ok((res, key))
+        }
+    }
+}
+
+fn with_commit(res: Resource, commit: &str) -> Resource {
+    match res {
+        Resource::File { bytes, mode, basename, mut provenance } => {
+            provenance.git_commit = Some(commit.to_string());
+            Resource::File { bytes, mode, basename, provenance }
+        }
+        Resource::Tree { tree, mut provenance } => {
+            provenance.git_commit = Some(commit.to_string());
+            Resource::Tree { tree, provenance }
+        }
+        Resource::Value { format, value, mut provenance } => {
+            provenance.git_commit = Some(commit.to_string());
+            Resource::Value { format, value, provenance }
         }
     }
 }

@@ -265,6 +265,20 @@
         "value": "[Ii][Mm][Aa][Gg][Ee]"
       }
     },
+    "_kw_secret": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ss][Ee][Cc][Rr][Ee][Tt]"
+      }
+    },
+    "_kw_bearer": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Bb][Ee][Aa][Rr][Ee][Rr]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -353,7 +367,7 @@
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Hh][Tt][Tt][Pp][Ss]?:\\/\\/[^\\s$\\\\]*"
+        "value": "([Gg][Ii][Tt]\\+)?[Hh][Tt][Tt][Pp][Ss]?:\\/\\/[^\\s$\\\\]*"
       }
     },
     "_word_start": {
@@ -847,9 +861,89 @@
                   "type": "SYMBOL",
                   "name": "sort_clause"
                 }
+              },
+              {
+                "type": "FIELD",
+                "name": "secret",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "secret_clause"
+                }
               }
             ]
           }
+        }
+      ]
+    },
+    "secret_clause": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_secret"
+          },
+          "named": false,
+          "value": "SECRET"
+        },
+        {
+          "type": "FIELD",
+          "name": "id",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_as"
+          },
+          "named": false,
+          "value": "AS"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_bearer"
+              },
+              "named": false,
+              "value": "BEARER"
+            },
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_header"
+                  },
+                  "named": false,
+                  "value": "HEADER"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "header",
+                  "content": {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "word"
+                    },
+                    "named": true,
+                    "value": "header_name"
+                  }
+                }
+              ]
+            }
+          ]
         }
       ]
     },

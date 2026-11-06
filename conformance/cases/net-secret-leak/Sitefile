@@ -1,0 +1,4 @@
+# A server reflecting the secret into a redirect URL: the error message is redacted (***).
+FROM scratch
+IMPORT data FROM ${HTTPS}/private/leak SECRET key AS HEADER X-Api-Key
+EXPORT /

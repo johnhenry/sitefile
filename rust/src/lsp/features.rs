@@ -5,7 +5,7 @@
 use crate::language::ast::{is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
 use crate::language::ast::REDIRECT_STATUSES;
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
     TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
@@ -216,18 +216,23 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             }
         }
         "IMPORT" => {
-            let used: Vec<String> = prior.iter().map(|w| w.upper()).collect();
+            // The AS of `SECRET <id> AS …` is not the import's AS clause.
+            let used: Vec<String> =
+                prior.iter().enumerate().filter(|(i, _)| *i < 2 || prior[i - 2].upper() != "SECRET").map(|(_, w)| w.upper()).collect();
             match prev.as_str() {
                 _ if n == 2 => kw_items(["FROM"], CIK_KEYWORD),
+                // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER
+                "AS" if n >= 3 && prior[n - 3].upper() == "SECRET" => kw_items(SECRET_FORMS, CIK_KEYWORD),
+                _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
-                "FROM" | "INTEGRITY" | "BY" => Vec::new(),
+                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" => Vec::new(),
                 _ if n >= 4 => {
                     let mut v: Vec<Item> = Vec::new();
                     if n >= 2 && prior[n - 2].upper() == "BY" {
                         v.extend(kw_items(SORT_ORDERS, CIK_KEYWORD));
                     }
-                    for c in IMPORT_CLAUSES.iter().filter(|c| !used.contains(&c.to_string())) {
+                    for c in IMPORT_CLAUSES.iter().filter(|c| **c == "SECRET" || !used.contains(&c.to_string())) {
                         v.push(if *c == "SORT" {
                             Item { label: "SORT BY".into(), kind: CIK_KEYWORD, detail: None, insert: Some("SORT BY ".into()) }
                         } else {
@@ -656,8 +661,11 @@ mod tests {
     fn clause_values() {
         assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
         assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY"]);
+        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
         assert_eq!(labels("IMPORT p "), ["FROM"]);
         assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));

@@ -1,0 +1,11 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist"
+    ]
+  ]
+}

@@ -1,0 +1,3 @@
+# A malformed --secret is a usage error that does not echo the flag.
+FROM scratch
+EXPORT /
