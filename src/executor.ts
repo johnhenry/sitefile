@@ -5,10 +5,10 @@ import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { plan, targetPlan, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
-import { cacheKey, digestFolder, TransformCache, type CacheStats } from './plugins/cache.js';
+import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk } from './render.js';
@@ -37,6 +37,8 @@ export interface BuildOptions {
   /** Sitefile path. Default: `<contextDir>/Sitefile`. */
   readonly sitefile?: string;
   readonly buildArgs?: Readonly<Record<string, string>>;
+  /** `--target <stage>`: build up to this named stage and export its whole tree (planner `targetPlan`). */
+  readonly target?: string;
   /** Export destination; skipped when walking the context if it lies inside it. */
   readonly outDir?: string;
   readonly fetchPolicy?: Partial<FetchPolicy>;
@@ -71,6 +73,8 @@ export interface BuildOptions {
   readonly toolPolicy?: Partial<ToolPolicy>;
   /** Directory of the TRANSFORM result cache. Omit to disable caching (the CLI sets `$SITEFILE_HOME/cache/transform`). */
   readonly cacheDir?: string;
+  /** Consulted on a local cache miss and told about every entry used (`--cache-from` / `--cache-to`). Needs `cacheDir`. */
+  readonly remoteCache?: RemoteCache;
   readonly onWarning?: (message: string) => void;
   /** oci: `os/arch` of the image (and of the BASE to pull); default linux/amd64. */
   readonly platform?: string;
@@ -84,6 +88,8 @@ export interface BuildOptions {
   readonly store?: Store;
   /** Informational lines (e.g. the path each allowed tool resolved to). */
   readonly onNotice?: (message: string) => void;
+  /** Keep every intermediate tree in {@link BuildResult.steps} (for `sitefile why`). */
+  readonly recordSteps?: boolean;
 }
 
 export interface BuildResult {
@@ -101,6 +107,11 @@ export interface BuildResult {
   readonly tools: readonly ResolvedTool[];
   /** What the TRANSFORMs did: processes started, calls made, cache activity. */
   readonly transformStats: TransformStats;
+  /**
+   * With `recordSteps`: per stage of `plan.stages`, the tree it starts from, then the tree after each of its
+   * operations (`steps[s][i + 1]` follows `operations[i]`). `tree` is the last one plus the EXPORT site files.
+   */
+  readonly steps?: readonly (readonly Tree[])[];
 }
 
 export interface TransformStats extends CacheStats {
@@ -134,13 +145,19 @@ export async function loadProgram(options: Pick<BuildOptions, 'contextDir' | 'si
 /** Parse, validate and evaluate variables, without reading any sources. */
 export async function planBuild(options: BuildOptions): Promise<Plan> {
   const { program } = await loadProgram(options);
-  return plan(program, options.buildArgs ?? {});
+  return planFor(program, options);
+}
+
+/** The plan of a program for these options (`target` applied). */
+function planFor(program: Program, options: Pick<BuildOptions, 'buildArgs' | 'target'>): Plan {
+  const p = plan(program, options.buildArgs ?? {});
+  return options.target === undefined ? p : targetPlan(p, options.target);
 }
 
 /** Run a build in memory. */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   const { program, sitefilePath, label } = await loadProgram(options);
-  const p = plan(program, options.buildArgs ?? {});
+  const p = planFor(program, options);
   const warnings: string[] = [];
   const warn = (m: string): void => {
     warnings.push(m);
@@ -182,7 +199,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const stageTrees = new Map<string, Tree>();
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
-  const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir) : undefined;
+  const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
   const execEnv: ExecEnv = {
     local,
@@ -199,11 +216,17 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     ...(cache ? { cache } : {}),
   };
   let tree = Tree.empty;
+  const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
   try {
     for (const spec of p.plugins) await registerPlugin(spec, local, plugins, pluginAllowed);
     for (const stage of p.stages) {
       tree = await startStage(stage, execEnv);
-      for (const op of stage.operations) tree = await execute(op, tree, execEnv);
+      const record = steps ? [tree] : undefined;
+      steps?.push(record!);
+      for (const op of stage.operations) {
+        tree = await execute(op, tree, execEnv);
+        record?.push(tree);
+      }
       if (stage.name !== undefined) stageTrees.set(stage.name, tree);
     }
   } finally {
@@ -218,7 +241,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
   tree = withSiteRules(tree, p, label);
   const output = tree.subtree(p.exportPath);
-  if (output.size === 0) warn(`EXPORT ${p.exportPath} contains no files`);
+  if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its
   // lockfile entry is saved together with the imports'.
@@ -239,7 +262,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     : undefined;
 
   const lockfileWritten = lock && !options.frozenLockfile ? await lock.save() : false;
-  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}) };
+  return { plan: p, tree, output, resources, warnings, lockfileWritten, tools, transformStats: stats, ...(base ? { base } : {}), ...(steps ? { steps } : {}) };
 }
 
 export interface ExportTarget {

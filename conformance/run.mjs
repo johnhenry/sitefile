@@ -16,10 +16,11 @@
 // artifactType of every other index.json entry (attestations: --provenance,
 // --sbom), which are byte-identical in-toto statements in both implementations.
 //
-// A case directory may hold case.json: { args, env, out, compare, command, links,
-// files, expectPaths }.
-// `command` ("validate" or "inspect") runs that command instead of build and
-// compares exit code and stdout. `links` lists [existing, new] hard links to
+// A case directory may hold case.json: { args, env, out, compare, command, operands,
+// links, files, expectPaths }.
+// `command` ("validate", "inspect", "graph" or "why") runs that command instead of
+// build and compares exit code and stdout; `operands` go between the command and
+// the context (`why <path> <context>`). `links` lists [existing, new] hard links to
 // create before the case runs and remove after it. `files` maps context paths
 // to contents, created before the case and removed after it (with the
 // top-level directory each one creates), for names that should not be
@@ -36,7 +37,7 @@
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
 //
-// 104 offline + 22 network cases.
+// The run prints how many offline and network cases there are.
 //
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 
@@ -194,7 +195,7 @@ try {
         const argv =
           command === 'build'
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
-            : [command, c.context, '--no-lockfile', ...(c.args ?? [])];
+            : [command, ...(c.operands ?? []), c.context, '--no-lockfile', ...(c.args ?? [])];
         // Each implementation gets its own SITEFILE_HOME: builds write the TRANSFORM cache and apply
         // the cache size limit there, and must never touch ~/.sitefile.
         const res = await run(cmd, argv, { SITEFILE_HOME: path.join(tmp, impl, '.home'), ...(c.env ?? {}) });
