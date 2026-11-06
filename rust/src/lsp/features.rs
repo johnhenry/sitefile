@@ -425,7 +425,7 @@ fn md(value: String, line: u32, start: u32, end: u32) -> Value {
     json!({ "contents": { "kind": "markdown", "value": value }, "range": range(line, start, line, end) })
 }
 
-/// Hover on a comment: the `# sitefile=N` directive (not inside a heredoc body).
+/// Hover on a comment: the `# sitefile=N` directive or a `# sitefile-lint:` comment (not inside a heredoc body).
 pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<Value> {
     if ix.instrs.iter().any(|i| i.body.as_ref().is_some_and(|b| b.contains_line(line))) {
         return None;
@@ -436,10 +436,17 @@ pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<V
     }
     let chars: Vec<char> = raw.chars().collect();
     let hash = chars.iter().position(|c| *c == '#')?;
-    version_directive(&chars[hash..])?;
+    let from_hash: String = chars[hash..].iter().collect();
+    let text = if version_directive(&chars[hash..]).is_some() {
+        docs::version_directive()
+    } else if crate::lint::lint_comment(&from_hash).is_some() {
+        docs::lint_comment()
+    } else {
+        return None;
+    };
     let start = utf16_len(&chars[..hash].iter().collect::<String>());
     let end = utf16_len(raw.trim_end_matches(is_js_space));
-    (start <= col && col <= end).then(|| md(docs::version_directive(), line, start, end))
+    (start <= col && col <= end).then(|| md(text, line, start, end))
 }
 
 pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Option<Value> {
@@ -818,6 +825,11 @@ mod tests {
         assert!(h(0, 0).is_none());
         assert!(h(1, 3).is_none());
         assert!(h(3, 3).is_none()); // heredoc body
+        let src = "# sitefile-lint: disable=all\nEXPORT /";
+        let lines = Lines::new(src);
+        let ix = build(&lines);
+        let v = comment_hover(&lines, &ix, 0, 3).unwrap();
+        assert!(v["contents"]["value"].as_str().unwrap().contains("`unused-name`"));
     }
 
     #[test]

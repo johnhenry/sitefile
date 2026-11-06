@@ -1,4 +1,4 @@
-//! Diagnostics from the real pipeline: scan → parse → validate → plan, plus the
+//! Diagnostics from the real pipeline: scan → parse → validate → plan → lint, plus the
 //! template parser for RENDER heredoc bodies. Nothing is executed: planning
 //! binds variables and normalizes paths without IO (no reads, fetches,
 //! plugins or writes).
@@ -105,7 +105,12 @@ fn from_warning(w: &str, file: &str, lines: &Lines) -> Diagnostic {
         Some((n, msg)) => (n.saturating_sub(1), msg.to_string()),
         None => (0, w.to_string()),
     };
-    Diagnostic { line, start: 0, end: lines.width(line), severity: WARNING, code: None, message }
+    // Lint warnings start with their rule id: `[render-escape] …`.
+    let code = message
+        .strip_prefix('[')
+        .and_then(|r| r.split_once("] "))
+        .and_then(|(id, _)| crate::lint::LINT_RULES.iter().copied().chain(["lint-comment"]).find(|r| *r == id));
+    Diagnostic { line, start: 0, end: lines.width(line), severity: WARNING, code, message }
 }
 
 /// A placeholder for an ARG without a default: valid for its type and as a path segment.
@@ -167,6 +172,10 @@ pub fn analyze(text: &str, file: &str) -> Analysis {
         Ok(p) => {
             for w in &p.warnings {
                 out.diagnostics.push(from_warning(w, file, &lines));
+            }
+            // `sitefile validate`'s lint warnings (rust/src/lint.rs).
+            for w in crate::lint::lint(&program, &p, text, &[]) {
+                out.diagnostics.push(from_warning(&w, file, &lines));
             }
             out.plan = Some(p);
         }
@@ -238,6 +247,12 @@ mod tests {
     }
 
     #[test]
+    fn lint_warning_has_its_rule_id() {
+        let d = diags("ARG A = 1\nEXPORT /");
+        assert_eq!(d, [(0, 0, 9, WARNING, Some("unused-name"), "[unused-name] ARG A is never used".into())]);
+    }
+
+    #[test]
     fn planner_warning_is_whole_line() {
         let d = diags("FROM scratch\nCOPY ./a /a\nFROM scratch\nEXPORT /");
         assert_eq!(d.len(), 1);
@@ -254,7 +269,7 @@ mod tests {
 
     #[test]
     fn arg_without_default_is_information() {
-        let a = analyze("ARG SITE_URL\nARG N: number\nCOPY ./${SITE_URL}/ /\nEXPORT /", "Sitefile");
+        let a = analyze("ARG SITE_URL\nARG N: number\nCOPY ./${SITE_URL}/${N} /\nEXPORT /", "Sitefile");
         let d: Vec<_> = a.diagnostics.iter().map(|d| (d.line, d.start, d.end, d.severity, d.code)).collect();
         assert_eq!(d, [(0, 4, 12, INFORMATION, Some("E_MISSING_ARG")), (1, 4, 5, INFORMATION, Some("E_MISSING_ARG"))]);
         assert_eq!(a.required_args, ["SITE_URL", "N"]);
@@ -263,7 +278,7 @@ mod tests {
 
     #[test]
     fn template_errors_in_heredoc_bodies() {
-        let d = diags("FROM scratch\nRENDER <<HTML TO /i.html\n<p>ok</p>\n  ${#if x}\nHTML\nEXPORT /");
+        let d = diags("FROM scratch\nRENDER --escape=html <<HTML TO /i.html\n<p>ok</p>\n  ${#if x}\nHTML\nEXPORT /");
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!((d[0].0, d[0].1, d[0].4), (3, 2, Some("E_TEMPLATE")));
     }

@@ -225,6 +225,7 @@ pub struct Loaded {
     pub program: Program,
     pub sitefile_path: PathBuf,
     pub label: String,
+    pub source: String,
 }
 
 /// `path.relative(from, to)` for absolute, normalized paths.
@@ -302,13 +303,20 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>, label: Option<&st
     } else {
         rel
     };
-    Ok(Loaded { program: parse_program(&source, &label)?, sitefile_path, label })
+    Ok(Loaded { program: parse_program(&source, &label)?, sitefile_path, label, source })
 }
 
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
     let loaded = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     plan_for(&loaded.program, options)
+}
+
+/// `validate`'s lint warnings (`crate::lint`) for the whole Sitefile (a `--target` does not narrow them).
+pub fn lint_build(options: &BuildOptions, disabled: &[String]) -> Result<Vec<String>> {
+    let loaded = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let p = plan(&loaded.program, &options.build_args)?;
+    Ok(crate::lint::lint(&loaded.program, &p, &loaded.source, disabled))
 }
 
 /// The plan of a program for these options (`target` applied).
@@ -518,7 +526,7 @@ fn build_unredacted(options: &BuildOptions) -> Result<BuildResult> {
 fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
-    let Loaded { program, sitefile_path, label } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let full = plan(&program, &options.build_args)?;
     let all_stages = full.stages.clone();
     let p = match &options.target {
@@ -2517,7 +2525,7 @@ fn operand_names(ops: &[&Operand]) -> BTreeSet<String> {
 }
 
 /// Top-level names a template reads (variables, #each lists, #if conditions).
-fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
+pub(crate) fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
     fn walk_nodes(nodes: &[TemplateNode], out: &mut BTreeSet<String>) {
         for n in nodes {
             match n {

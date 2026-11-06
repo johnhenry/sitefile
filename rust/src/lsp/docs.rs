@@ -221,6 +221,14 @@ pub fn value_type(name: &str) -> Option<&'static str> {
     lookup(TYPES, name)
 }
 
+/// Hover text of a `# sitefile-lint:` comment.
+pub fn lint_comment() -> String {
+    format!(
+        "```sitefile\n# sitefile-lint: disable=<rule>[,<rule>…]\n# sitefile-lint: disable-next-line=<rule>[,<rule>…]\n```\nTurns lint rules off for the whole file, or for the next instruction. Rules: {}; `all` names every rule. `sitefile validate --lint-disable` does the same for one run.",
+        crate::lint::LINT_RULES.map(|r| format!("`{r}`")).join(", ")
+    )
+}
+
 /// Hover text of the `# sitefile=N` syntax version directive.
 pub fn version_directive() -> String {
     format!(

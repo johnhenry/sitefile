@@ -281,7 +281,7 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
             Err(m) => return vec![m],
         };
         validate_result = match &planned {
-            Ok(pl) => json!({ "ok": pl.warnings, "json": compact(pl.validate_json()) }),
+            Ok(pl) => json!({ "ok": pl.warnings, "json": compact(pl.validate_json()), "lint": crate::lint::lint(p, pl, src, &[]) }),
             Err(e) => error(e),
         };
         // As text, the way `validate --json` prints it: JavaScript number formatting and key order.
@@ -335,7 +335,9 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
                     bad.push(format!("lsp: unexpected error diagnostic for {src:?}: {d:?}"));
                 }
                 if let Some(w) = validate_result["ok"].as_array() {
-                    let want: Vec<String> = w.iter().map(|w| w.as_str().unwrap().to_string()).collect();
+                    // The planner's warnings, then the lint warnings, as `validate` prints them.
+                    let lint = validate_result["lint"].as_array().cloned().unwrap_or_default();
+                    let want: Vec<String> = w.iter().chain(lint.iter()).map(|w| w.as_str().unwrap().to_string()).collect();
                     if want != warnings {
                         bad.push(format!("lsp warnings for {src:?}\n  want {want:?}\n  got  {warnings:?}"));
                     }

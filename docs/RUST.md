@@ -54,6 +54,7 @@ to find in the other:
 | `plugins::{host, wasm, exec, cache}`, `registry`, `registry_cache`, `base_image` | `plugins/*`, `registry*.ts` (`registry-cache.ts`), `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 | `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
+| `lint` (lint rules of `sitefile validate` and the language server) | `lint.ts` |
 | `watch` (watch mode: polling, ignore rules, rebuild loop) | `watch.ts`, `cli/watch.ts` |
 | `profile` (`--profile` Chrome trace) | `profile.ts` |
 | `memo` (incremental rebuilds in watch mode) | `memo.ts` |
