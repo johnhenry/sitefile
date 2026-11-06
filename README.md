@@ -111,9 +111,11 @@ sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
-               [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch]
-sitefile validate [context] [--json]
-sitefile inspect  [context] [--json]
+               [--no-cache] [--cache-from registry/name:tag]... [--cache-to registry/name:tag] [--watch] [--target stage]
+sitefile validate [context] [--json] [--target stage]
+sitefile inspect  [context] [--json] [--target stage]
+sitefile graph    [context] [--json | --dot]   # dependency graph of imports, stages and operations
+sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 
 # images and servers (see below and docs/CLI.md)
 sitefile build [context] -t name[:tag]        # also store the build as an image
@@ -124,6 +126,11 @@ sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir>
 sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
 ```
+
+`--target <stage>` (like `docker build --target`) stops after a named stage and exports that stage's whole
+tree, in the EXPORT format but without the EXPORT path or `_redirects`/`_headers`; an unknown name is a usage
+error listing the stages. See [docs/CLI.md](docs/CLI.md#build-target---target-stage).
+`sitefile graph` and `sitefile why` are described in [docs/CLI.md](docs/CLI.md#explaining-a-build-graph-and-why).
 
 ## Watch mode
 
@@ -196,7 +203,9 @@ uid/gid 0, modes 0644/0755. See [docs/LANGUAGE.md](docs/LANGUAGE.md#export-forma
 
 `rust/` is a full port, maintained alongside the TypeScript version and checked
 against it by `node conformance/run.mjs` (identical output on every example and
-case). It starts in ~4 ms instead of ~70 ms and is 1.3–2× faster on large
+case). The Rust binary is the shipped product. TypeScript is the reference
+specification and the library API, and both get every feature (see
+[docs/RUST.md](docs/RUST.md#roles-decided-in-82)). It starts in ~4 ms instead of ~70 ms and is 1.3–2× faster on large
 sites, with a fraction of the memory; see [docs/RUST.md](docs/RUST.md) and
 [bench/README.md](bench/README.md).
 

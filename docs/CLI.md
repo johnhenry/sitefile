@@ -6,9 +6,11 @@
 ## Building
 
 ```
-sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [options]
-sitefile validate [context] [--json]
-sitefile inspect  [context] [--json]
+sitefile build [context] [-f Sitefile] [-o out] [--format fmt] [-t name[:tag]]... [--target stage] [options]
+sitefile validate [context] [--json] [--target stage]
+sitefile inspect  [context] [--json] [--target stage]
+sitefile graph    [context] [--json | --dot] [--target stage]
+sitefile why <path> [context] [--json] [--target stage]
 ```
 
 `build` accepts these image-related options on top of the ones in the README:
@@ -37,12 +39,135 @@ sitefile inspect  [context] [--json]
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 
+### Build target: `--target <stage>`
+
+Like `docker build --target`, `--target <stage>` builds up to a **named** stage (`FROM … AS name` or
+`STAGE name`) and stops there, for debugging and partial builds. `build`, `validate`, `inspect` and
+`serve --watch` accept it (with `build --watch` every rebuild uses it).
+
+- **What runs**: the stages from the first one through the target, in source order. Later stages are not
+  run. The Sitefile is still parsed, validated and planned as a whole (an error anywhere in it fails the
+  build), every `IMPORT` is resolved and `Sitefile.lock` is used as for a full build, and `TOOL`/JS `PLUGIN`
+  permissions (`--allow-exec`, `--allow-plugin`) are checked for the whole Sitefile.
+- **What is exported**: the target stage's **whole tree**, from `/`, not the `EXPORT` path (an earlier stage
+  rarely has files there). The `EXPORT` instruction's **format and options still apply** (`AS zip`,
+  `AS oci` with `BASE`/`AT`/`COMPRESSION`, `wbn` `BASE`), and `--format`, `-o` extensions, `--base-url`,
+  `--oci-root`, `-t` and the other export flags work as usual; the default destination is the usual one
+  (`<context>/dist`, or `dist.<ext>` for the EXPORT format). The `/_redirects` and `/_headers` files that
+  `REDIRECT`/`HEADER` make are **not** written: they belong to the EXPORT path of a full build.
+  Naming the last stage still exports its whole tree, without the EXPORT path or site files.
+- **validate**: plans up to the target and reports it: `Sitefile: OK (0 imports, 2 operations, 2 stages,
+  target assets)` (operations and stages up to the target). `--json` adds `"target": "<name>"`, lists only
+  those stages, and gives `"export": "/"`.
+- **Errors**: a name that is not a stage is a usage error (exit 2) listing the named stages:
+  `error: --target 'nope' does not name a stage (stages: theme, assets)`, or
+  `error: --target 'x' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`.
+  An unnamed stage cannot be a target. On `serve`, `--target` needs `--watch`.
+- A target stage with no files warns `--target <name>: stage '<name>' contains no files`.
+
+```bash
+sitefile inspect examples/multistage --target theme      # the 'theme' stage's files
+sitefile build examples/multistage --target assets -o /tmp/assets
+```
+
+## Explaining a build: `graph` and `why`
+
+```
+sitefile graph [context] [--json | --dot] [build options]
+sitefile why <path> [context] [--json] [build options]
+```
+
+Both take the build options (`-f`, `--build-arg`, `--build-arg-file`, `--target`, `--allow-plugin`, ...).
+Their text, `--json` and `--dot` outputs are identical in the TypeScript and Rust CLIs (conformance checks them).
+
+### `sitefile graph`
+
+The dependency graph of the plan, like `bazel query`: what each operation reads and where its tree goes. It
+plans only (like `validate`: nothing is read or fetched), so it shows what the Sitefile names, not what files a
+directory holds or which variables a template uses.
+
+- **Nodes** (`id`, `kind`, `label`, and `line` when there is a Sitefile line):
+  `import:<name>` (`IMPORT posts ./posts AS markdown`), `plugin:<name>`, `tool:<name>`, `local:./<path>` (a context
+  path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
+  `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
+  `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
+  `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
+  (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
+- **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory or an
+  earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
+  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation) and
+  `export` (the last stage and the site files to `export`).
+- **Order**: imports, plugins, tools, local paths (first use), then per stage its operations and the stage, then
+  the site files and `export`. Edges in the order the stages are walked, without duplicates.
+- **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
+  `N nodes, M edges`.
+- `--json`: `{"file", "target"?, "nodes": [{"id", "kind", "label", "line"?}], "edges": [{"from", "to", "kind"}]}`.
+- `--dot`: Graphviz (`sitefile graph --dot | dot -Tsvg > graph.svg`): `rankdir=LR`, a shape per kind (cylinder
+  imports, folder paths, component plugins/tools, box operations, box3d stages, note site files, doubleoctagon
+  export), dashed `input` edges and bold `base`/`export` edges. `--dot` with any other command, or with `--json`,
+  is a usage error.
+
+```
+$ sitefile graph examples/multistage
+local:./theme  ./theme
+local:./pages/index.html  ./pages/index.html
+local:./pages/about.html  ./pages/about.html
+op:6  COPY ./pages/index.html /vendor/index.html
+  <- local:./theme (base)
+  <- local:./pages/index.html (input)
+stage:theme  FROM ./theme AS theme
+  <- op:6 (next)
+...
+export  EXPORT / AS directory
+  <- stage:#3 (export)
+11 nodes, 11 edges
+```
+
+### `sitefile why <path>`
+
+Which instructions wrote an exported file, from what inputs, and what overwrote it (like `ninja -d explain`).
+`why` builds in memory like `inspect` (with a frozen lockfile; nothing is exported) and uses the per-file origin
+tracking of the build: it compares each path before and after every operation of every stage.
+
+- `<path>` is a path in the export (`/index.html`; `index.html` means the same). A path that is not in the
+  output is `error[E_NOT_FOUND]: '/x' is not in the build output`; a directory is
+  `error[E_NOT_FOUND]: '/blog' is a directory in the build output; name a file`; `..` is `E_PATH`. A missing
+  `<path>` is a usage error.
+- **History**, oldest first: every write that changed the file, in the stage where it happened, and, through
+  `COPY --from=<stage>` and `FROM <stage>`, the writes in earlier stages to the file it was copied from. Each
+  entry has the instruction's location (`Sitefile:12`), its label (as in `graph`), the stage (`build`, or `#2`
+  when unnamed), the path in that stage's tree, the action (`write`, or `overwrite` when it replaced different
+  content) and the content digest after it. The last entry wrote the exported file. **Writes of identical content
+  are no-ops** (the first writer stays the owner) and are not listed.
+- **Inputs** of an entry: `./src/index.html` (a context file, also inside a copied directory or a `FROM ./dir`
+  base), `stage build:/out/index.html`, `import theme:/style.css` (or `import data` for a whole import), `<<EOF`
+  (an inline body), the template of a RENDER, `plugin <name>`/`tool <name>` and the source of a TRANSFORM,
+  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, and for `/_redirects`/`/_headers`
+  every REDIRECT/HEADER line (`Sitefile:19 REDIRECT`). Variables a template reads are not listed.
+- **Text**: `<path>  <mode>  <size> bytes  <digest>`, then one numbered line per entry,
+  `  1. Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html`, each followed by `       from <input>` lines.
+- `--json`: `{"path", "mode", "size", "digest", "origin", "history": [{"location", "instruction", "stage", "path",
+  "action", "digest", "inputs": [...]}]}`.
+- With `--target`, `<path>` is a path in the target stage's tree.
+
+```
+$ sitefile why /index.html conformance/cases/why-overwrite
+/index.html  644  16 bytes  sha256:979a05...
+  1. conformance/cases/why-overwrite/Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html
+       from ./src/index.html
+  2. conformance/cases/why-overwrite/Sitefile:7 COPY ./override/index.html /out/index.html  [stage build]  overwrote /out/index.html
+       from ./override/index.html
+  3. conformance/cases/why-overwrite/Sitefile:13 COPY --from=more /out /  [stage site]  wrote /index.html
+       from stage more:/out/index.html
+```
+
 ## Watch mode
 
 ```
 sitefile build --watch [context] [build options]
-sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V]... [--build-arg-file f]...
-                       [--no-cache] [--no-lockfile] [context]
+sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -67,7 +192,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--build-arg K=V].
   code 2. A context that is not a directory is `E_NOT_FOUND`.
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
-  foreground: `-d` and `--name` are refused, and `-f`, `--build-arg`, `--build-arg-file`, `--no-cache` and
+  foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
   `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload

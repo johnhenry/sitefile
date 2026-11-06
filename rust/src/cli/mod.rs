@@ -67,9 +67,15 @@ Usage:
   sitefile build [context] [options]     build and export to --out (default: <context>/dist, or dist.<ext>)
   sitefile validate [context] [options]  parse, validate and evaluate variables (no IO)
   sitefile inspect [context] [options]   build in memory and list the exported files
+  sitefile graph [context] [options]     print the dependency graph of imports, stages and operations
+                                         (text, --json or --dot; no IO, like validate)
+  sitefile why <path> [context] [opts]   build in memory and show which instructions wrote an exported
+                                         file, from what inputs, and what overwrote it
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
+      --target <stage>         stop after the named stage and export its whole tree instead of
+                               the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
@@ -113,7 +119,8 @@ Options:
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
-      --json                   machine-readable output (validate, inspect)
+      --json                   machine-readable output (validate, inspect, graph, why)
+      --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
   -h, --help                   show this help
@@ -125,6 +132,7 @@ Options:
 
 const BUILD_OPTS: &[OptSpec] = &[
     string_s("file", 'f'),
+    string("target"),
     string_s("out", 'o'),
     strings_s("tag", 't'),
     string("format"),
@@ -155,6 +163,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("max-download-bytes"),
     string("timeout"),
     flag("json"),
+    flag("dot"),
     flag("watch"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
@@ -302,9 +311,25 @@ fn run_main(argv: &[String]) -> i32 {
         return if o.flag("help") { 0 } else { 2 };
     }
     let command = command.unwrap_or_default();
-    let context = pos.get(1).cloned().unwrap_or_else(|| ".".into());
-    if pos.len() > 2 {
-        return usage_error(&format!("unexpected arguments: {}", pos[2..].join(" ")));
+    // why <path> [context]
+    let mut rest: Vec<String> = pos[1..].to_vec();
+    let why_path = if command == "why" {
+        if rest.is_empty() {
+            return usage_error("why expects a path in the build output: sitefile why <path> [context]");
+        }
+        Some(rest.remove(0))
+    } else {
+        None
+    };
+    let context = rest.first().cloned().unwrap_or_else(|| ".".into());
+    if rest.len() > 1 {
+        return usage_error(&format!("unexpected arguments: {}", rest[1..].join(" ")));
+    }
+    if o.flag("dot") && command != "graph" {
+        return usage_error("--dot is only for graph");
+    }
+    if o.flag("dot") && o.flag("json") {
+        return usage_error("--dot and --json conflict");
     }
     if o.flag("frozen-lockfile") && o.flag("update-lock") {
         return usage_error("--frozen-lockfile and --update-lock conflict");
@@ -336,18 +361,18 @@ fn run_main(argv: &[String]) -> i32 {
         let opts = crate::watch::WatchOptions { context: &context, sitefile: o.str("file").filter(|s| !s.is_empty()), arg_files: &arg_files };
         let mut build = || {
             let mut wrote = Vec::new();
-            let code = run_build_command(&command, &context, &o, &mut wrote).unwrap_or_else(|e| report(&e));
+            let code = run_build_command(&command, &context, None, &o, &mut wrote).unwrap_or_else(|e| report(&e));
             cache::evict_after_build();
             crate::watch::BuildOutcome { code, wrote }
         };
         return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
     }
-    let code = match run_build_command(&command, &context, &o, &mut Vec::new()) {
+    let code = match run_build_command(&command, &context, why_path.as_deref(), &o, &mut Vec::new()) {
         Ok(code) => code,
         Err(e) => report(&e),
     };
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
-    if command == "build" || command == "inspect" {
+    if command == "build" || command == "inspect" || command == "why" {
         cache::evict_after_build();
     }
     code
@@ -378,8 +403,9 @@ fn registry_cache(o: &args::Parsed) -> Result<Option<Arc<crate::registry_cache::
     Ok(Some(Arc::new(RegistryCache::new(RegistryCacheOptions { from, to, client, limit, warn, notice }))))
 }
 
-/// One build/validate/inspect run; `wrote` receives the export destination (for --watch).
-fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut Vec<String>) -> Result<i32> {
+/// One build/validate/inspect/graph/why run (`why_path`: the path `why` explains); `wrote` receives the export
+/// destination (for --watch).
+fn run_build_command(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>) -> Result<i32> {
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     let build_args = collect_build_args(&o.strs("build-arg-file"), &o.strs("build-arg"))?;
@@ -405,7 +431,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
         }
     }
     let file = o.str("file").filter(|s| !s.is_empty()).map(str::to_string);
-    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, ..Default::default() };
+    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, target: o.str("target").map(str::to_string), ..Default::default() };
     // The default destination depends on the format, which the Sitefile may set.
     let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() { Some(plan_build(&options)?.export_format) } else { None };
     let out_dir = match out_flag {
@@ -447,7 +473,7 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
     options.base_image = o.str("base").map(str::to_string);
     let tags = o.strs("tag");
     // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
-    options.skip_base = command == "inspect" || (command == "build" && format_override.is_some_and(|f| f != ExportFormat::Oci) && tags.is_empty());
+    options.skip_base = command == "inspect" || command == "why" || (command == "build" && format_override.is_some_and(|f| f != ExportFormat::Oci) && tags.is_empty());
     options.insecure_registries = registry::insecure_registries_from_env(&o.strs("insecure-registry"));
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
@@ -527,11 +553,12 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
                 let ops: usize = p.stages.iter().map(|s| s.operations.len()).sum();
                 let n = p.imports.len();
                 out(&format!(
-                    "{}: OK ({n} import{}, {ops} operation{}{})\n",
+                    "{}: OK ({n} import{}, {ops} operation{}{}{})\n",
                     p.file,
                     if n == 1 { "" } else { "s" },
                     if ops == 1 { "" } else { "s" },
-                    if p.stages.len() > 1 { format!(", {} stages", p.stages.len()) } else { String::new() }
+                    if p.stages.len() > 1 { format!(", {} stages", p.stages.len()) } else { String::new() },
+                    p.target.as_ref().map(|t| format!(", target {t}")).unwrap_or_default()
                 ));
             }
             Ok(0)
@@ -554,6 +581,29 @@ fn run_build_command(command: &str, context: &str, o: &args::Parsed, wrote: &mut
                 s.push_str(&format!("{} files, {}\n", files.len(), r.output.digest()));
                 out(&s);
             }
+            Ok(0)
+        }
+        "graph" => {
+            let p = plan_build(&options)?;
+            for m in &p.warnings {
+                err(&format!("warning: {m}\n"));
+            }
+            let g = crate::explain::plan_graph(&p);
+            out(&if o.flag("json") {
+                pretty_json(&crate::explain::graph_json(&g)) + "\n"
+            } else if o.flag("dot") {
+                crate::explain::graph_dot(&g)
+            } else {
+                crate::explain::graph_text(&g)
+            });
+            Ok(0)
+        }
+        "why" => {
+            options.frozen_lockfile = true;
+            options.record_steps = true;
+            let r = build(&options)?;
+            let report = crate::explain::why(&r, why_path.unwrap_or_default(), context)?;
+            out(&if o.flag("json") { pretty_json(&crate::explain::why_json(&report)) + "\n" } else { crate::explain::why_text(&report) });
             Ok(0)
         }
         _ => Ok(usage_error(&format!("unknown command '{command}'"))),

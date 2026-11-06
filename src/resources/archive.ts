@@ -189,7 +189,9 @@ function parsePax(data: Uint8Array, bad: (why: string) => SitefileError): { path
   let pos = 0;
   while (pos < buf.length) {
     const sp = buf.indexOf(0x20, pos);
-    const len = sp < 0 ? 0 : parseInt(buf.toString('latin1', pos, sp), 10);
+    // No length prefix left: stop (without this a record missing its space looped forever).
+    if (sp < 0) break;
+    const len = parseInt(buf.toString('latin1', pos, sp), 10);
     if (!(len > sp - pos) || pos + len > buf.length) break;
     const kv = buf.toString('utf8', sp + 1, pos + len - 1); // drop trailing newline
     const eq = kv.indexOf('=');

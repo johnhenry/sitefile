@@ -175,3 +175,33 @@ test('malformed pax records are E_ARCHIVE, not a size-limit error', async () => 
   await rejects(pax(' size=abc\n'), 'E_ARCHIVE', /malformed pax size 'abc'/);
   await rejects(pax(' novalue\n'), 'E_ARCHIVE', /malformed pax header record/);
 });
+
+test('a pax record without a space after the last complete one ends the header (it used to loop forever)', async () => {
+  const t = await extractArchive(tar([{ name: 'PaxHeader', type: 'x', data: '10 path=p\n' + 'tail' }, { name: 'a', data: 'x' }]), 't');
+  assert.deepEqual(paths(t), ['/p']);
+  const u = await extractArchive(tar([{ name: 'PaxHeader', type: 'x', data: 'nospace' }, { name: 'a', data: 'x' }]), 't');
+  assert.deepEqual(paths(u), ['/a']);
+});
+
+test('tar numeric fields are read like parseInt: white space and signs', async () => {
+  const entry = (size: string, mode: string): Buffer => {
+    const h = tarHeader({ name: 'f' }, 3);
+    h.fill(0, 124, 136).write(size, 124, 'latin1');
+    h.fill(0, 100, 108).write(mode, 100, 'latin1');
+    h.fill(0x20, 148, 156);
+    let sum = 0;
+    for (const x of h) sum += x;
+    h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'latin1');
+    return Buffer.concat([h, Buffer.from('abc'), Buffer.alloc(509 + 1024)]);
+  };
+  const t = await extractArchive(entry(' \u00a0+3', '\v-5'), 't');
+  assert.equal(text(t.get('/f')?.bytes), 'abc');
+  assert.equal(t.get('/f')?.mode, 0o755); // -5 & 0o111 is non-zero
+  await rejects(entry('-3', '644'), 'E_ARCHIVE_LIMIT', /archive entry larger than/);
+});
+
+test('trailing zero bytes after a gzip member are ignored; other trailing bytes must be a member', async () => {
+  const gz = gzipSync(tar([{ name: 'a', data: 'x' }]));
+  assert.deepEqual(paths(await extractArchive(Buffer.concat([gz, Buffer.alloc(9)]), 't')), ['/a']);
+  await rejects(Buffer.concat([gz, Buffer.from([1, 2, 3])]), 'E_ARCHIVE', /corrupt compressed data/);
+});
