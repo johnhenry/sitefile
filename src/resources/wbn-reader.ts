@@ -113,7 +113,8 @@ function read(
   for (let i = 0; i < sl.value.length; i += 2) {
     const name = sl.value[i];
     const length = sl.value[i + 1];
-    if (typeof name !== 'string' || typeof length !== 'number') throw bad('malformed section-lengths entry');
+    // CBOR unsigned integers only: a negative length would move the cursor backwards.
+    if (typeof name !== 'string' || typeof length !== 'number' || length < 0) throw bad('malformed section-lengths entry');
     if (seen.has(name)) throw bad(`duplicate section '${name}'`);
     seen.add(name);
     sections.push({ name, length, start: cursor });
@@ -182,7 +183,10 @@ function read(
       loc = value;
     }
     const [off, len] = loc;
-    if (typeof off !== 'number' || typeof len !== 'number') throw bad(`index offset/length for '${url}' is not an unsigned integer`);
+    // A negative offset or length (CBOR major type 1) would read outside the responses section.
+    if (typeof off !== 'number' || typeof len !== 'number' || off < 0 || len < 0) {
+      throw bad(`index offset/length for '${url}' is not an unsigned integer`);
+    }
     if (off + len > responses.length) throw bad(`response for '${url}' lies outside the responses section`);
 
     const key = `${off}:${len}`;

@@ -12,12 +12,15 @@
 // compressed formats (zip, tar.gz, OCI layers) are checked byte for byte too.
 //
 // OCI outputs (compare: 'oci') are compared by manifest digest (the image ID)
-// and config digest (diff_ids, labels, platform).
+// and config digest (diff_ids, labels, platform), plus the digest and
+// artifactType of every other index.json entry (attestations: --provenance,
+// --sbom), which are byte-identical in-toto statements in both implementations.
 //
-// A case directory may hold case.json: { args, env, out, compare, command, links,
-// files, expectPaths }.
-// `command` ("validate" or "inspect") runs that command instead of build and
-// compares exit code and stdout. `links` lists [existing, new] hard links to
+// A case directory may hold case.json: { args, env, out, compare, command, operands,
+// links, files, expectPaths }.
+// `command` ("validate", "inspect", "graph" or "why") runs that command instead of
+// build and compares exit code and stdout; `operands` go between the command and
+// the context (`why <path> <context>`). `links` lists [existing, new] hard links to
 // create before the case runs and remove after it. `files` maps context paths
 // to contents, created before the case and removed after it (with the
 // top-level directory each one creates), for names that should not be
@@ -37,7 +40,7 @@
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
 //
-// 106 offline + 21 network cases.
+// The run prints how many offline and network cases there are.
 //
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
 
@@ -85,6 +88,11 @@ function cases() {
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
+    ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),
+    ex('blog', { suffix: ':oci-attest-id', out: 'site.oci.tar', args: ['--sbom', '--provenance'], compare: 'oci' }),
+    ex('blog', { suffix: ':oci-attest-epoch-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom'], env: { SOURCE_DATE_EPOCH: '1700000000' }, compare: 'bytes' }),
+    ex('data', { suffix: ':oci-attest-layout', out: 'site-oci', args: ['--format', 'oci', '--provenance', '--sbom', '--oci-root', '/usr/share/nginx/html'], compare: 'tree' }),
     ex('blog', { suffix: ':profile', profile: true }),
     ex('multistage', { suffix: ':profile', profile: true }),
     ex('wasm', { suffix: ':profile', profile: true }),
@@ -150,7 +158,8 @@ async function outputOf(kind, outPath) {
     const index = JSON.parse(text('/index.json'));
     const manifest = JSON.parse(text(blob(index.manifests[0].digest)));
     const refName = index.manifests[0].annotations?.['org.opencontainers.image.ref.name'] ?? '';
-    return { digest: `id ${index.manifests[0].digest} config ${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}`, files: tree.size };
+    const referrers = index.manifests.slice(1).map((m) => ` + ${m.artifactType ?? m.mediaType} ${m.digest}`).join('');
+    return { digest: `id ${index.manifests[0].digest} config ${manifest.config.digest} ${manifest.layers.length} layer(s) ${refName}${referrers}`, files: tree.size };
   }
   return { digest: tree.digest(), files: tree.size };
 }
@@ -194,7 +203,7 @@ try {
         const argv = [
           ...(command === 'build'
             ? ['build', c.context, '-o', out, '--force', '--no-lockfile', ...(c.args ?? [])]
-            : [command, c.context, '--no-lockfile', ...(c.args ?? [])]),
+            : [command, ...(c.operands ?? []), c.context, '--no-lockfile', ...(c.args ?? [])]),
           ...(c.profile ? ['--profile', profile] : []),
         ];
         // Each implementation gets its own SITEFILE_HOME: builds write the TRANSFORM cache and apply

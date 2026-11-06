@@ -1,0 +1,11 @@
+# Provenance and SBOM attestations for an image with remote imports and a BASE
+# from the mock registry; pushed as OCI 1.1 referrers (fallback tag schema).
+FROM scratch
+ARG TITLE = "attested"
+IMPORT data FROM ${HTTPS}/r/data.json AS json
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+RENDER --escape=html <<HTML TO /index.html
+<h1>${TITLE}: ${data.title}</h1>
+HTML
+EXPORT / AS oci BASE ${REGISTRY}/conf/base:1 AT /srv/www

@@ -191,3 +191,22 @@ test('build() with a profiler (library API)', async () => {
     ['6 COPY', undefined],
   ]);
 });
+
+test('--profile with --target traces only the stages built; why and graph are traced too', async () => {
+  const work = await tmp();
+  await writeFile(path.join(work, 'Sitefile'), 'STAGE a FROM scratch\nCOPY <<T /a.txt\nhi\nT\nSTAGE b FROM a\nCOPY --from=a /a.txt /b.txt\nEXPORT /\n');
+  const home = path.join(work, 'home');
+  const prof = path.join(work, 'trace.json');
+  const short = async (): Promise<string[]> => (await trace(prof)).filter((e) => e.ph === 'X').map((e) => `${e.cat} ${e.name.replace(/^.*Sitefile:/, '')}`);
+  const t = await sitefile(['build', work, '-o', path.join(work, 'out'), '--no-lockfile', '--target', 'a', '--profile', prof], home);
+  assert.equal(t.code, 0, t.stderr);
+  assert.deepEqual(await short(), ['command build', 'build parse', 'stage stage a', 'operation 2 COPY', 'export export']);
+  assert.equal((await trace(prof)).find((e) => e.name === 'parse')!.args['target'], 'a');
+  const w = await sitefile(['why', '/b.txt', work, '--no-lockfile', '--profile', prof], home);
+  assert.equal(w.code, 0, w.stderr);
+  assert.match(w.stdout, /b\.txt/);
+  assert.deepEqual(await short(), ['command why', 'build parse', 'stage stage a', 'operation 2 COPY', 'stage stage b', 'operation 6 COPY']);
+  const g = await sitefile(['graph', work, '--profile', prof], home);
+  assert.equal(g.code, 0, g.stderr);
+  assert.deepEqual(await short(), ['command graph', 'build parse']);
+});

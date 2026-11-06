@@ -1,0 +1,13 @@
+# --target build: the build stage's whole tree, not EXPORT /site, and no _redirects.
+STAGE build
+COPY ./src/ /out/
+RENDER <<T TO /out/about.html
+about
+T
+STAGE site
+COPY --from=build /out/ /site/
+COPY <<X /site/later.txt
+written only by the last stage
+X
+REDIRECT /old /new
+EXPORT /site

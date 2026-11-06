@@ -120,6 +120,24 @@ test('engine: push to a real registry:2 container, delete locally, pull back wit
     assert.equal(pl.code, 0, pl.stderr);
     assert.equal(await store.resolve(remote), id);
     assert.ok((await store.loadTree(id)).get('/index.html'));
+
+    // attestations: registry:2 has no referrers API, so they are listed by the sha256-<hex> fallback tag
+    const att = `localhost:${port}/test/att:1`;
+    const ba = await runCli(home, ['build', ctx, '-t', att, '--provenance', '--sbom']);
+    assert.equal(ba.code, 0, ba.stderr);
+    assert.equal(await store.resolve(att), id, 'attestations do not change the image ID');
+    const pa = await runCli(home, ['push', att]);
+    assert.equal(pa.code, 0, pa.stderr);
+    const idx = await fetch(`http://127.0.0.1:${port}/v2/test/att/manifests/sha256-${id.slice(7)}`, { headers: { accept: 'application/vnd.oci.image.index.v1+json' } });
+    assert.equal(idx.status, 200);
+    const listed = ((await idx.json()) as { manifests: Array<{ digest: string; artifactType?: string }> }).manifests;
+    assert.deepEqual(listed.map((m) => m.digest), (await store.referrerDescriptors(id)).map((d) => d.digest));
+    for (const m of listed) {
+      assert.equal(m.artifactType, 'application/vnd.in-toto+json');
+      const r = await fetch(`http://127.0.0.1:${port}/v2/test/att/manifests/${m.digest}`, { headers: { accept: 'application/vnd.oci.image.manifest.v1+json' } });
+      assert.equal(r.status, 200);
+      assert.equal(((await r.json()) as { subject: { digest: string } }).subject.digest, id);
+    }
   } finally {
     await run(e, ['rm', '-f', name]);
   }

@@ -77,6 +77,8 @@ struct Site {
     swapped: bool,
     bad_post: bool,
     arg: String,
+    /// --target: build only the `assets` stage.
+    target: Option<String>,
     next: u32,
 }
 
@@ -95,6 +97,7 @@ impl Site {
             swapped: false,
             bad_post: false,
             arg: "one".into(),
+            target: None,
             next: 0,
         };
         for _ in 0..4 {
@@ -194,7 +197,7 @@ impl Site {
     fn mutate(&mut self) -> &'static str {
         const KINDS: &[&str] = &[
             "post-body", "post-title", "post-date", "add-post", "remove-post", "post-template", "index-template", "public-edit", "public-add",
-            "public-remove", "site-json", "rows", "arg", "sitefile-line", "sitefile-swap", "bad-post", "nothing",
+            "public-remove", "site-json", "rows", "arg", "sitefile-line", "sitefile-swap", "bad-post", "target", "nothing",
         ];
         let kind = KINDS[self.r.below(KINDS.len())];
         let names: Vec<String> = self.posts.keys().cloned().collect();
@@ -263,6 +266,7 @@ impl Site {
             "sitefile-line" => self.extra_line = !self.extra_line,
             "sitefile-swap" => self.swapped = !self.swapped,
             "bad-post" => self.bad_post = !self.bad_post,
+            "target" => self.target = if self.target.is_none() { Some("assets".into()) } else { None },
             _ => {}
         }
         self.write();
@@ -272,7 +276,7 @@ impl Site {
     fn options(&self) -> BuildOptions {
         let mut args = BuildArgs::new();
         args.set("SITE", self.arg.clone());
-        BuildOptions { context_dir: self.dir.to_string_lossy().into_owned(), lockfile: LockfileSetting::Disabled, build_args: args, ..Default::default() }
+        BuildOptions { context_dir: self.dir.to_string_lossy().into_owned(), lockfile: LockfileSetting::Disabled, build_args: args, target: self.target.clone(), ..Default::default() }
     }
 }
 

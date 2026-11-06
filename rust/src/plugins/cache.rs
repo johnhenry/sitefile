@@ -232,9 +232,34 @@ fn is_hex64(s: &str) -> bool {
 
 // ---------------------------------------------------------------------------
 
+/// What an entry records: the result kind (`file` or `files`) and
+/// `(path, blob hex, size)` per file (a `file` result has one, with path '').
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub kind: String,
+    pub files: Vec<(String, String, u64)>,
+}
+
+impl CacheEntry {
+    fn manifest_json(&self) -> Value {
+        let files: Vec<Value> = self.files.iter().map(|(p, h, n)| json!([p, h, n])).collect();
+        json!({ "version": CACHE_VERSION, "kind": self.kind, "files": files })
+    }
+}
+
+/// A second-level cache consulted on a local miss (`--cache-from`, see
+/// `crate::registry_cache`), and told about every entry this build used or
+/// wrote (`--cache-to`).
+pub trait RemoteCache: Send + Sync {
+    /// Fetch the entry for `key` and its blobs (written verified into `blob_dir/<hex>`). Never fails.
+    fn fetch(&self, key: &str, blob_dir: &Path) -> Option<CacheEntry>;
+    fn used(&self, key: &str, entry: &CacheEntry);
+}
+
 pub struct TransformCache {
     pub dir: PathBuf,
     pub stats: CacheStats,
+    remote: Option<std::sync::Arc<dyn RemoteCache>>,
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -242,7 +267,13 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl TransformCache {
     /// `dir` holds `entries/` and `blobs/` (the CLI uses `$SITEFILE_HOME/cache/transform`).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        TransformCache { dir: dir.into(), stats: CacheStats::default() }
+        TransformCache { dir: dir.into(), stats: CacheStats::default(), remote: None }
+    }
+
+    /// Consult `remote` on a local miss and report every entry used or written to it.
+    pub fn with_remote(mut self, remote: Option<std::sync::Arc<dyn RemoteCache>>) -> Self {
+        self.remote = remote;
+        self
     }
 
     fn entry_path(&self, key: &str) -> PathBuf {
@@ -257,16 +288,25 @@ impl TransformCache {
         let raw = match fs::read_to_string(&file) {
             Ok(r) => r,
             Err(_) => {
-                self.stats.misses += 1;
-                return None;
+                let fetched = self.remote.as_ref().and_then(|r| r.fetch(key, &self.dir.join("blobs")));
+                let Some(entry) = fetched else {
+                    self.stats.misses += 1;
+                    return None;
+                };
+                let raw = js_json(&entry.manifest_json());
+                let _ = write_atomic(&file, raw.as_bytes(), false);
+                raw
             }
         };
         match self.load(&raw) {
-            Some(result) => {
+            Some((result, entry)) => {
                 self.stats.hits += 1;
                 // Mark the entry as used (prune --older-than goes by mtime).
                 if let Ok(f) = fs::OpenOptions::new().write(true).open(&file) {
                     let _ = f.set_modified(SystemTime::now());
+                }
+                if let Some(r) = &self.remote {
+                    r.used(key, &entry);
                 }
                 Some(result)
             }
@@ -279,7 +319,7 @@ impl TransformCache {
         }
     }
 
-    fn load(&self, raw: &str) -> Option<PluginResult> {
+    fn load(&self, raw: &str) -> Option<(PluginResult, CacheEntry)> {
         let m: Value = serde_json::from_str(raw).ok()?;
         let m = m.as_object()?;
         if m.get("version").and_then(Value::as_f64) != Some(CACHE_VERSION as f64) {
@@ -294,6 +334,7 @@ impl TransformCache {
             return None;
         }
         let mut loaded: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut entry = CacheEntry { kind: kind.to_string(), files: Vec::new() };
         for f in files {
             let f = f.as_array()?;
             let p = f.first().and_then(Value::as_str)?;
@@ -304,37 +345,38 @@ impl TransformCache {
                 let _ = fs::remove_file(self.blob_path(hex));
                 return None;
             }
+            entry.files.push((p.to_string(), hex.to_string(), bytes.len() as u64));
             loaded.push((p.to_string(), bytes));
         }
-        if kind == "file" {
-            loaded.pop().map(|(_, b)| PluginResult::File(b))
-        } else {
-            Some(PluginResult::Files(loaded))
-        }
+        let result = if kind == "file" { loaded.pop().map(|(_, b)| PluginResult::File(b))? } else { PluginResult::Files(loaded) };
+        Some((result, entry))
     }
 
     /// Store a result. Never fails: a cache that cannot be written (read-only
     /// home, full disk) must not fail the build.
     pub fn put(&mut self, key: &str, result: &PluginResult) {
-        if self.try_put(key, result).is_ok() {
+        if let Ok(entry) = self.try_put(key, result) {
             self.stats.writes += 1;
+            if let Some(r) = &self.remote {
+                r.used(key, &entry);
+            }
         }
     }
 
-    fn try_put(&self, key: &str, result: &PluginResult) -> io::Result<()> {
+    fn try_put(&self, key: &str, result: &PluginResult) -> io::Result<CacheEntry> {
         let (kind, pairs): (&str, Vec<(&str, &[u8])>) = match result {
             PluginResult::File(b) => ("file", vec![("", b.as_slice())]),
             PluginResult::Files(fs) => ("files", fs.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect()),
         };
-        let mut files = Vec::new();
+        let mut entry = CacheEntry { kind: kind.to_string(), files: Vec::new() };
         for (p, bytes) in pairs {
             let digest = sha256(bytes);
             let hex = &digest["sha256:".len()..];
             write_atomic(&self.blob_path(hex), bytes, true)?;
-            files.push(json!([p, hex, bytes.len()]));
+            entry.files.push((p.to_string(), hex.to_string(), bytes.len() as u64));
         }
-        let manifest = json!({ "version": CACHE_VERSION, "kind": kind, "files": files });
-        write_atomic(&self.entry_path(key), js_json(&manifest).as_bytes(), false)
+        write_atomic(&self.entry_path(key), js_json(&entry.manifest_json()).as_bytes(), false)?;
+        Ok(entry)
     }
 
     pub fn info(&self) -> CacheInfo {

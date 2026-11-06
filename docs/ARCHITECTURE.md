@@ -25,7 +25,7 @@ A general-purpose static artifact composer, initially optimized for websites. Do
 7. executor: bounded concurrent graph scheduling.
 8. cache: content-addressed blobs, tree manifests, lockfile.
 9. exporter: atomic directory materialization.
-10. cli: build, validate, inspect.
+10. cli: build, validate, inspect, graph, why.
 
 ## Resource types
 File {digest, bytes, mode, mediaType?}
@@ -70,6 +70,8 @@ content digests of everything it reads, and a later build reuses the result when
   the edited post's page.
 - **TRANSFORM**: memoized only when its code has an identity: a wasm module's digest, a JS plugin's folder digest, a
   tool's path, size and mtime (as for the disk cache); a plugin that answers `cache: false` is never reused.
+- **`--target`** builds only the stages up to the target; every key is per step, so a step is reused exactly when
+  it would compute the same thing whatever the target (the randomized tests switch `--target` between rebuilds).
 - **What a hit replays**: the warnings the step printed (stored with it). A tool's stderr is not replayed, as on a
   TRANSFORM cache hit. Failures are never memoized, so a failing step fails again the same way.
 

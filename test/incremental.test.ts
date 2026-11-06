@@ -78,6 +78,8 @@ class Site {
   swapped = false;
   badPost = false;
   arg = 'one';
+  /** --target: build only the `assets` stage. */
+  target: string | undefined = undefined;
   next = 0;
 
   constructor(
@@ -189,6 +191,7 @@ class Site {
       'sitefile-line',
       'sitefile-swap',
       'bad-post',
+      'target',
       'nothing',
     ] as const);
     switch (kind) {
@@ -245,6 +248,9 @@ class Site {
       case 'bad-post':
         this.badPost = !this.badPost;
         break;
+      case 'target':
+        this.target = this.target === undefined ? 'assets' : undefined;
+        break;
       case 'nothing':
         break;
     }
@@ -261,7 +267,7 @@ for (const seed of [1, 7, 42, 1234, 99991]) {
     const memo = new BuildMemo();
     // One seed also uses the TRANSFORM disk cache (shared by both builds, as in watch mode).
     const cache = seed === 42 ? { cacheDir: path.join(dir, 'cache') } : {};
-    const base = (): BuildOptions => ({ contextDir: site.dir, lockfile: false, buildArgs: { SITE: site.arg }, ...cache });
+    const base = (): BuildOptions => ({ contextDir: site.dir, lockfile: false, buildArgs: { SITE: site.arg }, ...(site.target !== undefined ? { target: site.target } : {}), ...cache });
     let reused = 0;
     const history: string[] = [];
     for (let step = 0; step < 60; step++) {
