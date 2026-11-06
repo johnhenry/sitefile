@@ -22,6 +22,7 @@ import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
+import { loadSecrets } from './secrets.js';
 
 const VERSION = SITEFILE_VERSION;
 
@@ -68,6 +69,9 @@ Options:
       --base-url <url>         https URL ending in '/' the files are mounted at (wbn only);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
+      --secret id=<id>,env=<VAR> | id=<id>,src=<file>
+                               a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
+                               (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
@@ -137,6 +141,7 @@ export async function main(
         'insecure-registry': { type: 'string', multiple: true },
         'build-arg': { type: 'string', multiple: true },
         'build-arg-file': { type: 'string', multiple: true },
+        secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
@@ -253,6 +258,7 @@ export async function main(
         : undefined;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
+    const secrets = await loadSecrets(o.secret ?? []);
     let formatOverride: ExportFormat | undefined;
     if (o.format !== undefined) {
       formatOverride = parseExportFormat(o.format);
@@ -277,6 +283,7 @@ export async function main(
       ...(fetched ? { label: o.file ?? 'Sitefile' } : {}),
       ...(o.target !== undefined ? { target: o.target } : {}),
       buildArgs,
+      ...(secrets.size ? { secrets } : {}),
       outDir: out,
       fetchPolicy,
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),

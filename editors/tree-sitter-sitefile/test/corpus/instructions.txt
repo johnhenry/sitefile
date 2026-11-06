@@ -377,3 +377,26 @@ IMPORT site FROM GIT+HTTPS://example.com/r.git
   (import_instruction
     (identifier)
     (url)))
+
+==================
+IMPORT with build secrets
+==================
+
+IMPORT data FROM https://api.example.com/d.json SECRET key AS HEADER X-Api-Key AS json
+IMPORT docs FROM https://example.com/r SECRET tok as bearer
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (url)
+    (secret_clause
+      (identifier)
+      (header_name))
+    (import_kind))
+  (import_instruction
+    (identifier)
+    (url)
+    (secret_clause
+      (identifier))))

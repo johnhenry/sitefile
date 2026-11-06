@@ -15,6 +15,7 @@ import { decodeUtf8, parseRenderTemplate, renderTemplate, resolveJsonPath, walk 
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
+import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { fetchGitCommit, pinnedGitUrl, selectGitPath, type GitLocation, type GitSelection } from './resources/git.js';
 import { extractArchive } from './resources/archive.js';
 import { writeTar } from './archive-writers.js';
@@ -45,6 +46,11 @@ export interface BuildOptions {
   readonly sitefile?: string;
   /** How messages name the Sitefile (default: its path relative to the working directory). */
   readonly label?: string;
+  /**
+   * Build secrets by id (`--secret id=…,env=…|src=…`, see src/secrets.ts): sent only as the request
+   * headers that `IMPORT … SECRET` clauses name, and redacted from every warning and error.
+   */
+  readonly secrets?: Secrets;
   readonly buildArgs?: Readonly<Record<string, string>>;
   /** `--target <stage>`: build up to this named stage and export its whole tree (planner `targetPlan`). */
   readonly target?: string;
@@ -215,6 +221,22 @@ export async function checkPlanPins(options: BuildOptions, p: Plan): Promise<voi
 
 /** Run a build in memory. */
 export async function build(options: BuildOptions): Promise<BuildResult> {
+  // Build secrets never appear in a warning or an error, even when a server echoes one back.
+  if (options.secrets?.size) {
+    const secrets = options.secrets;
+    const onWarning = options.onWarning;
+    const redacted: BuildOptions = { ...options, ...(onWarning ? { onWarning: (m: string) => onWarning(redactSecrets(m, secrets)) } : {}) };
+    try {
+      const r = await buildUnredacted(redacted);
+      return { ...r, warnings: r.warnings.map((w) => redactSecrets(w, secrets)) };
+    } catch (e) {
+      throw redactError(e, secrets);
+    }
+  }
+  return buildUnredacted(options);
+}
+
+async function buildUnredacted(options: BuildOptions): Promise<BuildResult> {
   const memo = options.memo;
   if (!memo) return buildOnce(options);
   memo.begin();
@@ -241,6 +263,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     options.onWarning?.(m);
   };
   p.warnings.forEach(warn);
+  warnUnusedSecrets(p, options.secrets, warn);
   const tools = await resolveTools(p, options, warn);
   const pluginAllowed = checkPlugins(p, options, warn);
 
@@ -293,6 +316,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     frozen: !!options.frozenLockfile,
     update: !!options.updateLock,
     vendor,
+    ...(options.secrets ? { secrets: options.secrets } : {}),
     ...(memo ? { memo } : {}),
   };
   // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
@@ -732,6 +756,15 @@ export interface RemoteEnv {
   readonly vendor?: Vendor | undefined;
   /** Limits for Git trees (file count, total size; default DEFAULT_ARCHIVE_LIMITS). */
   readonly archiveLimits?: ArchiveLimits;
+  /** Build secrets by id (`--secret`), sent as the headers of IMPORT … SECRET clauses. */
+  readonly secrets?: Secrets | undefined;
+}
+
+/** `--secret` ids that no IMPORT … SECRET names (likely a typo). */
+export function warnUnusedSecrets(p: Plan, secrets: Secrets | undefined, warn: (m: string) => void): void {
+  if (!secrets) return;
+  const used = new Set(p.imports.flatMap((s) => (s.secrets ?? []).map((x) => x.id)));
+  for (const id of [...secrets.keys()].sort()) if (!used.has(id)) warn(`--secret ${id} is not used by any IMPORT … SECRET`);
 }
 
 /**
@@ -747,7 +780,11 @@ export async function fetchRemoteImport(spec: ImportSpec, url: string, env: Remo
   if (env.vendor && !vendored) {
     env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}; fetching it (run 'sitefile vendor' to add it)`);
   }
-  const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchRemote(url, env.policy, spec.span);
+  const fetchIt = (): Promise<{ bytes: Uint8Array; finalUrl: string }> => {
+    const originHeaders = secretHeaders(spec, env.secrets);
+    return fetchRemote(url, env.policy, spec.span, originHeaders ? { originHeaders } : {});
+  };
+  const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchIt();
   const digest = sha256(bytes);
   if (spec.integrity) {
     verifyIntegrity(bytes, spec.integrity, url, spec.span);
@@ -799,7 +836,8 @@ export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: Re
       env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}${vendored ? ` at commit ${want ?? 'the latest'}` : ''}; fetching it (run 'sitefile vendor' to add it)`);
     }
     const limits = env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS;
-    const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span }, limits);
+    const originHeaders = secretHeaders(spec, env.secrets);
+    const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
     want = objs.commit;
     selection = selectGitPath(objs, loc, limits, spec.span);
   }

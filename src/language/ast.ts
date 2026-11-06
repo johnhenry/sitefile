@@ -75,6 +75,19 @@ export interface ImportInstruction {
   readonly integrity?: string;
   /** `SORT BY key [ASC|DESC]`, for `AS markdown` collections. */
   readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
+  /** `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets, sent with remote requests). */
+  readonly secrets?: readonly ImportSecret[];
+}
+
+/** A build secret sent as an HTTP request header of a remote IMPORT. */
+export interface ImportSecret {
+  /** The `--secret id=…` it names. */
+  readonly id: string;
+  /** Header name as written (`Authorization` for BEARER). */
+  readonly header: string;
+  /** `AS BEARER`: the header value is `Bearer <secret>`. */
+  readonly bearer: boolean;
+  readonly span: SourceSpan;
 }
 
 /**

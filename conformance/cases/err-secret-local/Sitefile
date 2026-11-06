@@ -1,0 +1,4 @@
+# SECRET applies to remote imports only.
+FROM scratch
+IMPORT x FROM ./Sitefile AS text SECRET key AS BEARER
+EXPORT /

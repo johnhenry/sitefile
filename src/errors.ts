@@ -45,6 +45,8 @@ export type ErrorCode =
   | 'E_UNPINNED'
   /** A malformed or unsupported Git smart HTTP response or packfile (git+https IMPORT, Git URL contexts). */
   | 'E_GIT'
+  /** A build secret (--secret, IMPORT … SECRET) is missing, unreadable or not usable in a header. */
+  | 'E_SECRET'
   // archives
   | 'E_ARCHIVE'
   | 'E_ARCHIVE_UNSAFE'

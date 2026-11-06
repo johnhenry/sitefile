@@ -37,6 +37,8 @@ export class MemRepo {
   head = 'refs/heads/main';
   /** Deltify objects in sent packs. */
   deltas = true;
+  /** When set, every request must carry this `authorization` header (else 401): a private repository. */
+  auth: string | undefined;
 
   put(type: GitObject['type'], data: Uint8Array): string {
     const id = objectId(type, data);
@@ -275,6 +277,10 @@ export function handleGit(req: IncomingMessage, res: ServerResponse, url: URL, o
   if (match === undefined) return false;
   const repo = opts.repos.get(match)!;
   opts.log?.push({ method: req.method ?? '', path: p + url.search, headers: req.headers });
+  if (repo.auth !== undefined && req.headers.authorization !== repo.auth) {
+    res.writeHead(401, { 'www-authenticate': 'Basic realm="mock"' }).end();
+    return true;
+  }
   if (p.endsWith('/info/refs')) {
     if (url.searchParams.get('service') !== 'git-upload-pack') {
       res.writeHead(403).end();
