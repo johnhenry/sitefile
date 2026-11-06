@@ -650,6 +650,74 @@
   ]
  },
  "23": {
+  "text": "# The stylesheet gets a content-hashed name (style.<hash>.css) that can be",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " The stylesheet gets a content-hashed name (style.<hash>.css) that can be",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "24": {
+  "text": "# cached forever; every page's <link> is rewritten to it.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " cached forever; every page's <link> is rewritten to it.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "25": {
+  "text": "FINGERPRINT /style.css MANIFEST /asset-manifest.json",
+  "tokens": [
+   [
+    "FINGERPRINT",
+    "meta.instruction.fingerprint.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/style.css",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "MANIFEST",
+    "meta.instruction.fingerprint.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.fingerprint.sitefile"
+   ],
+   [
+    "/asset-manifest.json",
+    "meta.instruction.fingerprint.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "26": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "27": {
   "text": "# Old URLs and response headers, for hosts that read _redirects / _headers",
   "tokens": [
    [
@@ -662,7 +730,7 @@
    ]
   ]
  },
- "24": {
+ "28": {
   "text": "# (Netlify, Cloudflare Pages; `sitefile serve` honours them too).",
   "tokens": [
    [
@@ -675,7 +743,7 @@
    ]
   ]
  },
- "25": {
+ "29": {
   "text": "REDIRECT /feed /feed.xml",
   "tokens": [
    [
@@ -700,7 +768,7 @@
    ]
   ]
  },
- "26": {
+ "30": {
   "text": "REDIRECT /posts/hello/* /posts/hello-world/:splat STATUS 302",
   "tokens": [
    [
@@ -741,7 +809,7 @@
    ]
   ]
  },
- "27": {
+ "31": {
   "text": "HEADER /*.css Cache-Control: public, max-age=3600",
   "tokens": [
    [
@@ -774,7 +842,7 @@
    ]
   ]
  },
- "28": {
+ "32": {
   "text": "HEADER /* X-Frame-Options: DENY",
   "tokens": [
    [
@@ -807,7 +875,7 @@
    ]
   ]
  },
- "29": {
+ "33": {
   "text": "EXPORT /",
   "tokens": [
    [

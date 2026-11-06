@@ -43,6 +43,7 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         Instruction::Header { pattern, name, value, .. } => {
             [(pattern, false), (name, false)].into_iter().chain(value.iter().map(|o| (o, false))).collect()
         }
+        Instruction::Fingerprint { patterns, manifest, .. } => patterns.iter().chain(manifest).map(|o| (o, false)).collect(),
         Instruction::Export { path, .. } => vec![(path, false)],
     }
 }
@@ -338,7 +339,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     ));
                 }
             }
-            Instruction::Sitemap { .. } | Instruction::Redirect { .. } | Instruction::Header { .. } => {}
+            Instruction::Sitemap { .. } | Instruction::Redirect { .. } | Instruction::Header { .. } | Instruction::Fingerprint { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}
         }

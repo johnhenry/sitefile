@@ -147,6 +147,11 @@ test('examples/blog builds an index, one page per post and an Atom feed', async 
   const feed = await readFile(path.join(out, 'feed.xml'), 'utf8');
   assert.match(feed, /<updated>2026-03-01T00:00:00Z<\/updated>/);
   assert.equal((feed.match(/<entry>/g) ?? []).length, 3);
+  // FINGERPRINT renamed the stylesheet and pointed every page at it.
+  const manifest = JSON.parse(await readFile(path.join(out, 'asset-manifest.json'), 'utf8')) as Record<string, string>;
+  assert.match(manifest['/style.css']!, /^\/style\.[0-9a-f]{10}\.css$/);
+  assert.ok(index.includes(`href="${manifest['/style.css']}"`) && post.includes(`href="${manifest['/style.css']}"`));
+  await assert.rejects(readFile(path.join(out, 'style.css')));
 });
 
 test('examples/data reads YAML, CSV and a Web Bundle', async () => {

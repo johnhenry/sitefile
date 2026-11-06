@@ -38,12 +38,13 @@ use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
+use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
 use crate::site::{atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry};
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -205,6 +206,8 @@ pub struct BuildResult {
     pub pins: Option<Pins>,
     /// The `FROM image` stage bases this build read, in stage order.
     pub images: Vec<FromImageUse>,
+    /// What each FINGERPRINT renamed (old path, new path), by its line.
+    pub renames: Vec<(u32, Vec<(String, String)>)>,
 }
 
 /// A `FROM image` base a build used.
@@ -742,8 +745,13 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         recorded: None,
         unrecorded: warn.clone(),
         from_image: &from_image,
+        last_renames: None,
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
+    // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
+    let mut renames: Vec<(u32, Vec<(String, String)>)> = Vec::new();
+    let mut stage_renames: HashMap<String, BTreeMap<String, String>> = HashMap::new();
+    let mut current_renames: BTreeMap<String, String> = BTreeMap::new();
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
             let s = begin(prof, || format!("PLUGIN {}", spec.name), "plugin", || vec![("path", json!(format!("./{}", spec.path)))]);
@@ -756,6 +764,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             let s = begin(prof, || format!("stage {name}"), "stage", || vec![("from", json!(stage_from(stage)))]);
             let (start, mut key) = exec.start_stage(stage)?;
             tree = start;
+            current_renames = match &stage.base {
+                StageBase::Stage { name } => stage_renames.get(name).cloned().unwrap_or_default(),
+                _ => BTreeMap::new(),
+            };
             let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 let line = op.span().line;
@@ -763,6 +775,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                 let (out, k, state) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
+                if let Some(r) = exec.last_renames.take() {
+                    current_renames = compose_renames(&current_renames, &r);
+                    renames.push((line, r));
+                }
                 if let Some(r) = record.as_mut() {
                     r.push(tree.clone());
                 }
@@ -776,6 +792,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                 all.push(r);
             }
             if let Some(name) = &stage.name {
+                stage_renames.insert(name.clone(), current_renames.clone());
                 exec.stages.insert(name.clone(), tree.clone());
                 exec.stage_keys.insert(name.clone(), key);
             }
@@ -797,7 +814,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     if tree.is_file(&p.export_path) {
         return Err(SitefileError::plain(E_EXPORT, format!("EXPORT path '{}' is a file; export a directory", p.export_path)));
     }
-    let tree = with_site_rules(tree, &p, &label)?;
+    let tree = with_site_rules(tree, &p, &label, &current_renames)?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
         warn(&match &p.target {
@@ -855,13 +872,27 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         pins,
         memo_stats: None,
         images,
+        renames,
     })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
-fn with_site_rules(mut tree: Tree, p: &Plan, label: &str) -> Result<Tree> {
-    let redirects = redirects_file(p.redirects.iter().map(|r| (r.from.as_str(), r.to.as_str(), r.status)));
-    let headers = headers_file(p.headers.iter().map(|h| (h.pattern.as_str(), h.name.as_str(), h.value.as_str())));
+/// A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
+/// names its new URL.
+fn with_site_rules(mut tree: Tree, p: &Plan, label: &str, renames: &BTreeMap<String, String>) -> Result<Tree> {
+    let url_below = |path: &str| -> Option<String> {
+        if p.export_path == "/" {
+            Some(path.to_string())
+        } else {
+            path.strip_prefix(&format!("{}/", p.export_path)).map(|rest| format!("/{rest}"))
+        }
+    };
+    let urls: HashMap<String, String> = renames.iter().filter_map(|(a, b)| Some((url_below(a)?, url_below(b)?))).collect();
+    let renamed = |s: &str| urls.get(s).cloned().unwrap_or_else(|| s.to_string());
+    let to: Vec<String> = p.redirects.iter().map(|r| renamed(&r.to)).collect();
+    let patterns: Vec<String> = p.headers.iter().map(|h| renamed(&h.pattern)).collect();
+    let redirects = redirects_file(p.redirects.iter().zip(&to).map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)));
+    let headers = headers_file(p.headers.iter().zip(&patterns).map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())));
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
     let files: [SiteFile; 2] = [
@@ -1720,6 +1751,8 @@ struct Exec<'a> {
     unrecorded: Warn,
     /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span).
     from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan) -> Result<FromImage>,
+    /// What the FINGERPRINT that just ran renamed (old path, new path).
+    last_renames: Option<Vec<(String, String)>>,
 }
 
 /// What a stage starts from, for the trace.
@@ -1927,10 +1960,41 @@ impl<'a> Exec<'a> {
             if let Operation::Sitemap { .. } = op {
                 return Ok((self.sitemap(op, tree)?, String::new(), None));
             }
+            if let Operation::Fingerprint { .. } = op {
+                let (out, renames) = self.fingerprint(op, &tree, &*self.warn.clone())?;
+                self.last_renames = Some(renames);
+                return Ok((out, String::new(), None));
+            }
             let p = self.produce(op, &tree, "")?;
             return Ok((tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?, String::new(), None));
         };
         let op_id = memo_key(&["op", &self.env_key, &format!("{op:?}")]);
+        if let Operation::Fingerprint { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<(String, String)>, Vec<String>);
+            if let Some((hit, renames, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                self.last_renames = Some(renames);
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let (out, renames) = self.fingerprint(op, &tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), renames.clone(), warnings), Vec::new());
+            self.last_renames = Some(renames);
+            return Ok((out, key, Some("miss")));
+        }
         if let Operation::Sitemap { .. } = op {
             // Reads the whole tree: only the chain key can say it is unchanged.
             let key = memo_key(&["chain", prev, &op_id]);
@@ -1962,6 +2026,13 @@ impl<'a> Exec<'a> {
         Ok((out, key, Some(if p.hit { "files" } else { "miss" })))
     }
 
+    fn fingerprint(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<(Tree, Vec<(String, String)>)> {
+        let Operation::Fingerprint { patterns, manifest, root, overwrite, span } = op else { unreachable!() };
+        let origin = format!("{}:{} FINGERPRINT", self.label, span.line);
+        let op = FingerprintOp { patterns, manifest: manifest.as_deref(), root, overwrite: *overwrite, span };
+        fingerprint(tree, &op, &origin, warn)
+    }
+
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
         let Operation::Sitemap { base, dest, overwrite, span } = op else { unreachable!() };
         let origin = format!("{}:{} SITEMAP", self.label, span.line);
@@ -1989,6 +2060,7 @@ impl<'a> Exec<'a> {
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
+            Operation::Fingerprint { .. } => unreachable!("FINGERPRINT reads the tree: execute_op runs it"),
             Operation::Copy { source, dest, dest_is_dir, exclude, chmod, parents, span, .. } => {
                 let rules = (!exclude.is_empty()).then(|| IgnoreRules::from_patterns(exclude));
                 let src = self.read_source(source, &origin, rules.as_ref())?;
@@ -2801,7 +2873,8 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Render { overwrite, .. }
         | Operation::Transform { overwrite, .. }
         | Operation::Feed { overwrite, .. }
-        | Operation::Sitemap { overwrite, .. } => *overwrite,
+        | Operation::Sitemap { overwrite, .. }
+        | Operation::Fingerprint { overwrite, .. } => *overwrite,
     }
 }
 
