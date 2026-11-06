@@ -3,6 +3,7 @@ import { createReadStream, promises as fs } from 'node:fs';
 import type { Readable } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
+import { decodeReferrersIndex, encodeReferrersIndex, type Referrer, type ReferrerDescriptor } from './attest.js';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import {
@@ -34,6 +35,8 @@ import type { Tree } from './tree.js';
  *                        "dangling" entry without that annotation. dev.sitefile.created records when
  *                        the image was first stored (bookkeeping only; no digest depends on it).
  *   blobs/sha256/<hex>   manifest, config and layer blobs (identical layers share a blob)
+ *   referrers/sha256/<hex>  attestations of image <hex> (`build -t --provenance/--sbom`): an OCI image
+ *                        index of artifact manifests whose subject is that image (their blobs are in blobs/)
  *   servers/             site server state and logs (see servers.ts)
  *   lock                 advisory lock for mutations
  *
@@ -316,6 +319,7 @@ export class Store {
       await this.putBlob(img.manifestDigest, img.manifestBytes);
       const entries = await this.readIndex();
       if (entries.some((e) => e.digest === img.manifestDigest)) return { id: img.manifestDigest, created: false };
+      await fs.rm(this.referrersFile(img.manifestDigest), { force: true }); // left over from a removed image
       await this.writeIndex([...entries, { digest: img.manifestDigest, size: img.manifestBytes.byteLength, stored: now.toISOString() }]);
       return { id: img.manifestDigest, created: true };
     });
@@ -380,7 +384,82 @@ export class Store {
       },
       refName,
       base,
+      await this.referrers(id),
     );
+  }
+
+  // ------------------------------------------------------------ referrers (attestations)
+
+  private referrersFile(id: string): string {
+    blobPathOf(id); // validates the digest
+    return path.join(this.home, 'referrers', 'sha256', id.slice(7));
+  }
+
+  /** Descriptors of the attestations stored for image `id` (none: empty). */
+  async referrerDescriptors(id: string): Promise<ReferrerDescriptor[]> {
+    let bytes: Buffer;
+    try {
+      bytes = await fs.readFile(this.referrersFile(id));
+    } catch (e) {
+      if (errCode(e) === 'ENOENT') return [];
+      throw storeError(`cannot read the attestations of ${shortId(id)}: ${(e as Error).message}`, e);
+    }
+    try {
+      return decodeReferrersIndex(bytes);
+    } catch (e) {
+      throw storeError(`the attestations of ${shortId(id)} are corrupt: ${(e as Error).message}`, e);
+    }
+  }
+
+  /** The attestations stored for image `id`, with their blobs (digest-verified). */
+  async referrers(id: string): Promise<Referrer[]> {
+    const out: Referrer[] = [];
+    for (const d of await this.referrerDescriptors(id)) {
+      const manifestBytes = await this.readBlob(d.digest, d.size);
+      let m: ParsedManifest;
+      try {
+        m = parseManifest(manifestBytes);
+      } catch (e) {
+        throw storeError(`attestation ${shortId(d.digest)} of ${shortId(id)} is corrupt: ${(e as Error).message}`, e);
+      }
+      const blobs: Array<readonly [string, Uint8Array]> = [[d.digest, manifestBytes]];
+      for (const b of [m.config, ...m.layers]) blobs.push([b.digest, await this.readBlob(b.digest, b.size)]);
+      out.push({ descriptor: d, blobs });
+    }
+    return out;
+  }
+
+  /**
+   * Attach attestations to stored image `id`: their blobs are written, and each replaces a stored
+   * attestation with the same predicate type (others are kept).
+   */
+  async putReferrers(id: string, referrers: readonly Referrer[]): Promise<void> {
+    if (referrers.length === 0) return;
+    await this.withLock(async () => {
+      if (!(await this.readIndex()).some((e) => e.digest === id)) throw new SitefileError('E_NOT_FOUND', `no such image: ${shortId(id)}`);
+      for (const r of referrers) for (const [d, b] of r.blobs) await this.putBlob(d, b);
+      const kind = (d: ReferrerDescriptor): string => `${d.artifactType ?? ''}\0${d.annotations?.['in-toto.io/predicate-type'] ?? ''}`;
+      const fresh = new Set(referrers.map((r) => kind(r.descriptor)));
+      const kept = (await this.referrerDescriptors(id)).filter((d) => !fresh.has(kind(d)) && !referrers.some((r) => r.descriptor.digest === d.digest));
+      const file = this.referrersFile(id);
+      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      await this.writeAtomic(file, encodeReferrersIndex([...kept, ...referrers.map((r) => r.descriptor)]));
+    });
+  }
+
+  /** Blob hexes of the attestations of `id` (manifests, configs, layers); unreadable ones count as none. */
+  private async referrerBlobHexes(id: string): Promise<string[]> {
+    const out: string[] = [];
+    for (const d of await this.referrerDescriptors(id).catch(() => [])) {
+      out.push(d.digest.slice(7));
+      try {
+        const m = parseManifest(await this.readBlob(d.digest, d.size));
+        for (const b of [m.config, ...m.layers]) out.push(b.digest.slice(7));
+      } catch {
+        /* missing or corrupt: nothing more to keep */
+      }
+    }
+    return out;
   }
 
   /** Every stored image, newest first. */
@@ -469,6 +548,7 @@ export class Store {
         }
       }
       await this.writeIndex(entries);
+      await fs.rm(this.referrersFile(id), { force: true });
       return { untagged, deleted: id };
     });
   }
@@ -488,7 +568,7 @@ export class Store {
         if (e instanceof SitefileError) throw e;
         throw storeError(`image ${shortId(id)} is corrupt: ${(e as Error).message}`, e);
       }
-      return [id, m.config.digest, ...m.layers.map((l) => l.digest)].map((d) => d.slice(7));
+      return [...[id, m.config.digest, ...m.layers.map((l) => l.digest)].map((d) => d.slice(7)), ...(await this.referrerBlobHexes(id))];
     };
     const live = new Set<string>();
     for (const id of new Set(entries.filter((e) => e.refName).map((e) => e.digest))) for (const h of await blobsOf(id)) live.add(h);
@@ -500,11 +580,12 @@ export class Store {
     return { live, untagged };
   }
 
-  /** Remove an untagged image from the index (its blobs stay). The caller holds the lock. */
+  /** Remove an untagged image from the index, with its attestation list (its blobs stay). The caller holds the lock. */
   async dropUntaggedLocked(id: string): Promise<void> {
     const entries = await this.readIndex();
     if (entries.some((e) => e.digest === id && e.refName)) return;
     await this.writeIndex(entries.filter((e) => e.digest !== id));
+    await fs.rm(this.referrersFile(id), { force: true });
   }
 
   /** Drop untagged images from the index, then delete every blob no remaining image uses. */
@@ -521,6 +602,12 @@ export class Store {
         live.add(id.slice(7));
         live.add(d.manifest.config.digest.slice(7));
         for (const l of d.manifest.layers) live.add(l.digest.slice(7));
+        for (const h of await this.referrerBlobHexes(id)) live.add(h);
+      }
+      // Attestation lists of images that are gone.
+      const refDir = path.join(this.home, 'referrers', 'sha256');
+      for (const name of await fs.readdir(refDir).catch(() => [] as string[])) {
+        if (HEX64.test(name) && !keep.some((e) => e.digest === `sha256:${name}`)) await fs.rm(path.join(refDir, name), { force: true });
       }
       let blobs = 0;
       let bytes = 0;

@@ -9,6 +9,9 @@
 //!                      image is a "dangling" entry without it; dev.sitefile.created
 //!                      records when the image was first stored
 //! blobs/sha256/<hex>   manifest, config and layer blobs (identical layers share a blob)
+//! referrers/sha256/<hex>  attestations of image <hex> (`build -t --provenance/--sbom`):
+//!                      an OCI image index of artifact manifests whose subject is that
+//!                      image (their blobs are in blobs/)
 //! servers/             site server state and logs (see servers.rs)
 //! lock                 advisory lock for mutations
 //! ```
@@ -19,6 +22,7 @@
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::archive_writers::iso_millis;
+use crate::export::attest::{decode_referrers_index, encode_referrers_index, Referrer, ReferrerDescriptor, PREDICATE_ANNOTATION};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
     ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files, layout_tree, parse_config, parse_manifest,
@@ -428,6 +432,7 @@ impl Store {
             if entries.iter().any(|e| e.digest == img.manifest_digest) {
                 return Ok(AddResult { id: img.manifest_digest.clone(), created: false });
             }
+            let _ = fs::remove_file(self.referrers_file(&img.manifest_digest)?); // left over from a removed image
             entries.push(IndexEntry {
                 digest: img.manifest_digest.clone(),
                 size: img.manifest_bytes.len() as u64,
@@ -513,7 +518,92 @@ impl Store {
             },
             ref_name,
             &base,
+            &self.referrers(id)?,
         )
+    }
+
+    // ------------------------------------------------------------ referrers (attestations)
+
+    fn referrers_file(&self, id: &str) -> Result<PathBuf> {
+        blob_path_of(id)?; // validates the digest
+        Ok(self.home.join("referrers").join("sha256").join(&id[7..]))
+    }
+
+    /// Descriptors of the attestations stored for image `id` (none: empty).
+    pub fn referrer_descriptors(&self, id: &str) -> Result<Vec<ReferrerDescriptor>> {
+        let bytes = match fs::read(self.referrers_file(id)?) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(store_error(format!("cannot read the attestations of {}: {e}", short_id(id)))),
+        };
+        decode_referrers_index(&bytes).map_err(|e| store_error(format!("the attestations of {} are corrupt: {e}", short_id(id))))
+    }
+
+    /// The attestations stored for image `id`, with their blobs (digest-verified).
+    pub fn referrers(&self, id: &str) -> Result<Vec<Referrer>> {
+        let mut out = Vec::new();
+        for d in self.referrer_descriptors(id)? {
+            let manifest_bytes = self.read_blob(&d.digest, Some(d.size))?;
+            let m = parse_manifest(&manifest_bytes)
+                .map_err(|e| store_error(format!("attestation {} of {} is corrupt: {e}", short_id(&d.digest), short_id(id))))?;
+            let mut blobs = vec![(d.digest.clone(), manifest_bytes)];
+            for b in std::iter::once(&m.config).chain(m.layers.iter()) {
+                blobs.push((b.digest.clone(), self.read_blob(&b.digest, Some(b.size))?));
+            }
+            out.push(Referrer { descriptor: d, blobs });
+        }
+        Ok(out)
+    }
+
+    /// Attach attestations to stored image `id`: their blobs are written, and
+    /// each replaces a stored attestation with the same predicate type (others are kept).
+    pub fn put_referrers(&self, id: &str, referrers: &[Referrer]) -> Result<()> {
+        if referrers.is_empty() {
+            return Ok(());
+        }
+        self.with_lock(|| {
+            if !self.read_index()?.iter().any(|e| e.digest == id) {
+                return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {}", short_id(id))));
+            }
+            for r in referrers {
+                for (d, b) in &r.blobs {
+                    self.put_blob(d, b)?;
+                }
+            }
+            let kind = |d: &ReferrerDescriptor| {
+                (d.artifact_type.clone().unwrap_or_default(), d.annotations.as_ref().and_then(|a| a.get(PREDICATE_ANNOTATION)).cloned().unwrap_or_default())
+            };
+            let fresh: Vec<_> = referrers.iter().map(|r| kind(&r.descriptor)).collect();
+            let mut list: Vec<ReferrerDescriptor> = self
+                .referrer_descriptors(id)?
+                .into_iter()
+                .filter(|d| !fresh.contains(&kind(d)) && !referrers.iter().any(|r| r.descriptor.digest == d.digest))
+                .collect();
+            list.extend(referrers.iter().map(|r| r.descriptor.clone()));
+            let file = self.referrers_file(id)?;
+            if let Some(dir) = file.parent() {
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(dir)
+                    .map_err(|e| store_error(format!("cannot create '{}': {e}", dir.display())))?;
+            }
+            self.write_atomic(&file, &encode_referrers_index(&list))
+        })
+    }
+
+    /// Blob hexes of the attestations of `id`; unreadable ones count as none.
+    fn referrer_blob_hexes(&self, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for d in self.referrer_descriptors(id).unwrap_or_default() {
+            out.push(d.digest[7..].to_string());
+            if let Ok(m) = self.read_blob(&d.digest, Some(d.size)).and_then(|b| parse_manifest(&b).map_err(store_error)) {
+                for b in std::iter::once(&m.config).chain(m.layers.iter()) {
+                    out.push(b.digest[7..].to_string());
+                }
+            }
+        }
+        out
     }
 
     /// Every stored image, newest first.
@@ -579,7 +669,7 @@ impl Store {
                 }
             }
             let stored = entries.iter().find(|e| e.digest == id && e.stored.as_deref().is_some_and(|s| !s.is_empty())).and_then(|e| e.stored.clone());
-            next.push(IndexEntry { digest: id.to_string(), size: mine.size, ref_name: Some(key.clone()), stored, extra: BTreeMap::new() });
+            next.push(IndexEntry { digest: id.to_string(), size: mine.size, ref_name: Some(key.clone()), stored, ..Default::default() });
             self.write_index(next)
         })?;
         Ok(key)
@@ -625,6 +715,7 @@ impl Store {
                 }
             }
             self.write_index(entries)?;
+            let _ = fs::remove_file(self.referrers_file(&id)?);
             Ok(RemoveResult { untagged, deleted: Some(id) })
         })
     }
@@ -637,7 +728,10 @@ impl Store {
         let entries = self.read_index()?;
         let blobs_of = |id: &str| -> Result<Vec<String>> {
             let m = parse_manifest(&self.read_blob(id, None)?).map_err(|e| store_error(format!("image {} is corrupt: {e}", short_id(id))))?;
-            Ok(std::iter::once(id).chain(std::iter::once(m.config.digest.as_str())).chain(m.layers.iter().map(|l| l.digest.as_str())).map(|d| d[7..].to_string()).collect())
+            let mut v: Vec<String> =
+                std::iter::once(id).chain(std::iter::once(m.config.digest.as_str())).chain(m.layers.iter().map(|l| l.digest.as_str())).map(|d| d[7..].to_string()).collect();
+            v.extend(self.referrer_blob_hexes(id));
+            Ok(v)
         };
         let mut live = BTreeSet::new();
         let tagged: BTreeSet<&str> = entries.iter().filter(|e| e.ref_name.is_some()).map(|e| e.digest.as_str()).collect();
@@ -662,7 +756,9 @@ impl Store {
         if entries.iter().any(|e| e.digest == id && e.ref_name.is_some()) {
             return Ok(());
         }
-        self.write_index(entries.into_iter().filter(|e| e.digest != id).collect())
+        self.write_index(entries.into_iter().filter(|e| e.digest != id).collect())?;
+        let _ = fs::remove_file(self.referrers_file(id)?);
+        Ok(())
     }
 
     pub fn prune(&self) -> Result<PruneResult> {
@@ -682,6 +778,16 @@ impl Store {
                 live.insert(d.manifest.config.digest[7..].to_string());
                 for l in &d.manifest.layers {
                     live.insert(l.digest[7..].to_string());
+                }
+                live.extend(self.referrer_blob_hexes(&id));
+            }
+            // Attestation lists of images that are gone.
+            if let Ok(rd) = fs::read_dir(self.home.join("referrers").join("sha256")) {
+                for ent in rd.flatten() {
+                    let name = ent.file_name().to_string_lossy().into_owned();
+                    if is_hex64(&name) && !keep.iter().any(|e| e.digest[7..] == name) {
+                        let _ = fs::remove_file(ent.path());
+                    }
                 }
             }
             let (mut blobs, mut bytes) = (0usize, 0u64);
@@ -887,6 +993,39 @@ mod tests {
         assert_eq!(idx[0].ref_name.as_deref(), Some("1"));
         assert!(layout.is_file(&format!("/blobs/sha256/{}", &id[7..])));
         assert_eq!(diff_trees(&a, &b), ["D /gone.txt", "C /index.html", "A /new.txt"]);
+    }
+
+    #[test]
+    fn attestations_are_kept_with_their_image_saved_and_pruned_with_it() {
+        use crate::export::attest::{attestation_referrer, CYCLONEDX, SLSA};
+        let d = TmpDir::new("store");
+        let store = Store::open(d.path()).unwrap();
+        let id = store.add_image(&mk(&[("/index.html", "hi")]), &OciOptions::default()).unwrap().id;
+        let size = store.read_blob(&id, None).unwrap().len() as u64;
+        let prov = attestation_referrer(&id, size, SLSA, serde_json::json!({ "v": 1 }));
+        let sbom = attestation_referrer(&id, size, CYCLONEDX, serde_json::json!({}));
+        store.put_referrers(&id, &[prov.clone(), sbom.clone()]).unwrap();
+        // a newer provenance replaces the old one; the SBOM stays
+        let prov2 = attestation_referrer(&id, size, SLSA, serde_json::json!({ "v": 2 }));
+        store.put_referrers(&id, &[prov2.clone()]).unwrap();
+        let list: Vec<String> = store.referrer_descriptors(&id).unwrap().into_iter().map(|r| r.digest).collect();
+        assert_eq!(list, [sbom.descriptor.digest.clone(), prov2.descriptor.digest.clone()]);
+        // save: listed after the image, with their blobs
+        let layout = store.layout_of(&id, None).unwrap();
+        let idx = decode_index(&layout.get("/index.json").unwrap().bytes).unwrap();
+        assert_eq!(idx.iter().map(|e| e.digest.clone()).collect::<Vec<_>>(), [id.clone(), list[0].clone(), list[1].clone()]);
+        for (dg, _) in &prov2.blobs {
+            assert!(layout.is_file(&format!("/blobs/sha256/{}", &dg[7..])));
+        }
+        // tagged: prune keeps them; untagged: prune drops the list and the blobs
+        store.tag(&id, &parse_local_ref("x:1").unwrap()).unwrap();
+        store.prune().unwrap();
+        assert_eq!(store.referrers(&id).unwrap().len(), 2);
+        assert!(!store.has_blob(&prov.descriptor.digest, None), "the replaced provenance is garbage");
+        store.remove_image("x:1", false).unwrap();
+        store.prune().unwrap();
+        assert!(store.referrer_descriptors(&id).unwrap().is_empty());
+        assert!(!store.has_blob(&sbom.descriptor.digest, None));
     }
 
     #[test]

@@ -189,7 +189,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
     byte for byte); elsewhere it is plain text.
   - See `examples/inline/`.
 - `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
-  instruction, exactly once; it exports from the last stage. The format
+  instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
+  tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
   are case-insensitive. `BASE` (an operand, so `${VAR}` works) is the URL the
   tree is mounted at and is required by `wbn` (from here or `--base-url`).
@@ -523,6 +524,10 @@ later builds work offline and without the network flags:
   no network. Blobs that are not vendored (another platform) are pulled as usual.
 - The vendor directory is never part of a directory copy (`COPY ./ /`), like
   `.git`; a file in it can still be named explicitly.
+- It composes with the other build modes: `--target` builds and `why` resolve
+  every `IMPORT` as a full build does, so they read the same vendored copies;
+  `--cache-from`/`--cache-to` references are TRANSFORM caches, not inputs, so
+  they are neither vendored nor affected by it.
 - **Nothing secret is vendored**: URLs with credentials are rejected before any
   fetch, and registry tokens and passwords stay in memory. `resolved` is the final
   URL after redirects, as `Sitefile.lock` already records it.
@@ -535,6 +540,8 @@ later builds work offline and without the network flags:
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  A gzip stream may hold several members; zero bytes after the last one are
+  ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
@@ -608,13 +615,15 @@ and tar timestamps instead.
   credentials in URLs are dropped). Git labels are off by default because they
   change the image ID on every commit even when the files are identical, and
   finding the checkout reads outside the build context. Build-arg values
-  are never written. The config, manifest and index are canonical JSON (sorted
+  are never written into the image (`--provenance` records the non-secret
+  ones in a separate attestation, [CLI.md](CLI.md#attestations)). The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
   layout, below); any other `--out` with `--format oci` is an *OCI layout
   directory*: `oci-layout`, `index.json` (one manifest entry, annotated
-  `org.opencontainers.image.ref.name` when you pass `-t`) and
-  `blobs/sha256/<hex>`. **The image contains only files**: it has no
+  `org.opencontainers.image.ref.name` when you pass `-t`; with `--provenance` /
+  `--sbom`, the attestation manifests follow it, see
+  [CLI.md](CLI.md#attestations)) and `blobs/sha256/<hex>`. **The image contains only files**: it has no
   entrypoint and is not runnable on its own. Use it as a source of files, e.g.
   `COPY --from=<image> /srv/www /usr/share/nginx/html` in a Dockerfile, **unless
   you give it a `BASE`**:

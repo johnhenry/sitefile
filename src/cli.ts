@@ -5,7 +5,9 @@ import { SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, planBuild, type BuildOptions } from './executor.js';
 import { defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
-import { insecureRegistriesFromEnv } from './base-image.js';
+import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
+import { cacheLimitFromEnv } from './cache-limit.js';
+import { parseCacheRef, RegistryCache } from './registry-cache.js';
 import { parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
@@ -13,9 +15,11 @@ import { parseLocalRef, refKey } from './ref.js';
 import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
+import { SITEFILE_VERSION } from './attest.js';
 import { watchLoop } from './cli/watch.js';
+import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 
-const VERSION = '0.1.0';
+const VERSION = SITEFILE_VERSION;
 
 const HELP = `sitefile ${VERSION} — Docker-inspired static artifact builder
 
@@ -23,9 +27,15 @@ Usage:
   sitefile build [context] [options]     build and export to --out (default: <context>/dist, or dist.<ext>)
   sitefile validate [context] [options]  parse, validate and evaluate variables (no IO)
   sitefile inspect [context] [options]   build in memory and list the exported files
+  sitefile graph [context] [options]     print the dependency graph of imports, stages and operations
+                                         (text, --json or --dot; no IO, like validate)
+  sitefile why <path> [context] [opts]   build in memory and show which instructions wrote an exported
+                                         file, from what inputs, and what overwrote it
 
 Options:
   -f, --file <path>            Sitefile path (default: <context>/Sitefile)
+      --target <stage>         stop after the named stage and export its whole tree instead of
+                               the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
                                a file for zip, tar, tgz, wbn
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
@@ -40,6 +50,11 @@ Options:
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
+      --provenance             attach a SLSA provenance attestation to the oci image (an in-toto
+                               statement: Sitefile digest, build args, imports, BASE, builder)
+      --sbom                   attach an SBOM attestation (CycloneDX: every file with its SHA-256);
+                               both are OCI 1.1 referrers of the image (its ID does not change),
+                               written into the oci export and kept with -t images for push
       --platform <os/arch>     oci image platform (default linux/amd64); with a BASE, the platform pulled
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
@@ -54,6 +69,10 @@ Options:
       --allow-plugins          allow every JavaScript PLUGIN in the Sitefile
       --no-cache               do not read or write the TRANSFORM result cache
                                ($SITEFILE_HOME/cache/transform; see 'sitefile cache --help')
+      --cache-from <ref>       also look up TRANSFORM results in this registry cache (build only,
+                               repeatable, first match wins); results are fetched only on a hit
+      --cache-to <ref>         after a successful build, push the TRANSFORM results it used to this
+                               registry cache (build only, once); registry problems only warn
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
       --force                  replace a non-empty --out outside the context
@@ -67,7 +86,8 @@ Options:
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
-      --json                   machine-readable output (validate, inspect)
+      --json                   machine-readable output (validate, inspect, graph, why)
+      --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
   -h, --help                   show this help
@@ -87,6 +107,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       allowPositionals: true,
       options: {
         file: { type: 'string', short: 'f' },
+        target: { type: 'string' },
         out: { type: 'string', short: 'o' },
         tag: { type: 'string', short: 't', multiple: true },
         format: { type: 'string' },
@@ -95,6 +116,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'oci-compression': { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
+        provenance: { type: 'boolean' },
+        sbom: { type: 'boolean' },
         platform: { type: 'string' },
         base: { type: 'string' },
         'insecure-registry': { type: 'string', multiple: true },
@@ -105,6 +128,8 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
         'no-cache': { type: 'boolean' },
+        'cache-from': { type: 'string', multiple: true },
+        'cache-to': { type: 'string', multiple: true },
         force: { type: 'boolean' },
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
@@ -116,6 +141,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
+        dot: { type: 'boolean' },
         watch: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
@@ -129,13 +155,27 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     process.stdout.write(`${VERSION}\n`);
     return 0;
   }
-  const [command, context = '.', ...extra] = positionals;
+  const [command, ...rest] = positionals;
   if (o.help || !command) {
     process.stdout.write(HELP);
     return o.help ? 0 : 2;
   }
+  // why <path> [context]
+  const whyPath = command === 'why' ? rest.shift() : undefined;
+  if (command === 'why' && whyPath === undefined) return usageError('why expects a path in the build output: sitefile why <path> [context]');
+  const [context = '.', ...extra] = rest;
   if (extra.length) return usageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (o.dot && command !== 'graph') return usageError('--dot is only for graph');
+  if (o.dot && o.json) return usageError('--dot and --json conflict');
   if (o['frozen-lockfile'] && o['update-lock']) return usageError('--frozen-lockfile and --update-lock conflict');
+  const cacheFrom = o['cache-from'] ?? [];
+  const cacheTo = o['cache-to'] ?? [];
+  if (cacheFrom.length || cacheTo.length) {
+    if (command !== 'build') return usageError('--cache-from and --cache-to are only for build');
+    if (o.watch) return usageError('--watch cannot be combined with --cache-from or --cache-to');
+    if (o['no-cache']) return usageError('--no-cache cannot be combined with --cache-from or --cache-to');
+    if (cacheTo.length > 1) return usageError('--cache-to can be given only once');
+  }
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
@@ -157,6 +197,17 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
   }
 
   try {
+    const remoteCache =
+      cacheFrom.length || cacheTo.length
+        ? new RegistryCache({
+            from: cacheFrom.map((r) => parseCacheRef('--cache-from', r)),
+            to: cacheTo[0] !== undefined ? parseCacheRef('--cache-to', cacheTo[0]) : undefined,
+            client: (registry) => makeClient(registry, { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []), allowPrivateNetwork: !!o['allow-private-network'] }),
+            limit: cacheLimitFromEnv(),
+            warn: (m) => process.stderr.write(`warning: ${m}\n`),
+            notice: (m) => process.stderr.write(`${m}\n`),
+          })
+        : undefined;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
     const buildArgs = await collectBuildArgs(o['build-arg-file'] ?? [], o['build-arg'] ?? []);
     let formatOverride: ExportFormat | undefined;
@@ -179,6 +230,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     const options: BuildOptions = {
       contextDir: context,
       ...(o.file ? { sitefile: o.file } : {}),
+      ...(o.target !== undefined ? { target: o.target } : {}),
       buildArgs,
       outDir: out,
       fetchPolicy: {
@@ -196,12 +248,13 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
       allowAllPlugins: !!o['allow-plugins'],
       ...(o['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
+      ...(remoteCache ? { remoteCache } : {}),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
       ...(o.base !== undefined ? { baseImage: o.base } : {}),
       // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
-      ...(command === 'inspect' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
+      ...(command === 'inspect' || command === 'why' || (command === 'build' && formatOverride !== undefined && formatOverride !== 'oci' && !(o.tag ?? []).length) ? { skipBase: true } : {}),
       registry: { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []) },
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
@@ -213,10 +266,25 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         const tags = o.tag ?? [];
         validateImageTags(tags);
         const labels = parseLabels(o.label ?? []);
-        const imageInfo = { contextDir: context, ociRoot: o['oci-root'], ociCompression, platform: o.platform, labels, gitLabels: !!o['git-labels'] };
+        const attest = { provenance: !!o.provenance, sbom: !!o.sbom };
+        if ((attest.provenance || attest.sbom) && !tags.length && (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat) !== 'oci') {
+          return usageError('--provenance and --sbom attach attestations to an oci image: export one (--format oci, -o *.oci.tar, EXPORT ... AS oci) or store one with -t');
+        }
+        const imageInfo = {
+          contextDir: context,
+          ociRoot: o['oci-root'],
+          ociCompression,
+          platform: o.platform,
+          labels,
+          gitLabels: !!o['git-labels'],
+          attest,
+          build: { contextDir: context, ...(o.file ? { sitefile: o.file } : {}), buildArgs },
+        };
+        await remoteCache?.load();
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
           await storeBuildAsImage(await build(options), tags, imageInfo);
+          await remoteCache?.push(transformCacheDir());
           return 0;
         }
         const r = await buildToDirectory({
@@ -231,6 +299,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
           imageLabels: labels,
           gitLabels: !!o['git-labels'],
           ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
+          attest,
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';
         const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
@@ -243,6 +312,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         );
         if (r.lockfileWritten) process.stdout.write('Updated Sitefile.lock\n');
         if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
+        await remoteCache?.push(transformCacheDir());
         return 0;
       }
       case 'validate': {
@@ -251,7 +321,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         if (o.json) {
           process.stdout.write(
             JSON.stringify(
-              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath },
+              { file: p.file, vars: Object.fromEntries(p.vars), imports: p.imports, stages: p.stages, export: p.exportPath, ...(p.target !== undefined ? { target: p.target } : {}) },
               null,
               2,
             ) + '\n',
@@ -259,7 +329,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         } else {
           const opCount = p.stages.reduce((n, st) => n + st.operations.length, 0);
           process.stdout.write(
-            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''})\n`,
+            `${p.file}: OK (${p.imports.length} import${p.imports.length === 1 ? '' : 's'}, ${opCount} operation${opCount === 1 ? '' : 's'}${p.stages.length > 1 ? `, ${p.stages.length} stages` : ''}${p.target !== undefined ? `, target ${p.target}` : ''})\n`,
           );
         }
         return 0;
@@ -275,6 +345,19 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
         }
         return 0;
       }
+      case 'graph': {
+        const p = await planBuild(options);
+        p.warnings.forEach((m) => process.stderr.write(`warning: ${m}\n`));
+        const g = planGraph(p);
+        process.stdout.write(o.json ? JSON.stringify(g, null, 2) + '\n' : o.dot ? graphDot(g) : graphText(g));
+        return 0;
+      }
+      case 'why': {
+        const r = await build({ ...options, frozenLockfile: true, recordSteps: true });
+        const report = why(r, whyPath!, context);
+        process.stdout.write(o.json ? JSON.stringify(report, null, 2) + '\n' : whyText(report));
+        return 0;
+      }
       default:
         return usageError(`unknown command '${command}'`);
     }
@@ -287,7 +370,7 @@ export async function main(argv: readonly string[], run: { readonly once?: boole
     throw e;
   } finally {
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
-    if (command === 'build' || command === 'inspect') await evictAfterBuild();
+    if (command === 'build' || command === 'inspect' || command === 'why') await evictAfterBuild();
   }
 }
 

@@ -481,6 +481,14 @@ export class RegistryClient {
 
   /** `PUT` a manifest at a tag or digest; returns the digest the registry confirms. */
   async putManifest(repo: string, reference: string, bytes: Uint8Array, mediaType: string): Promise<string> {
+    return (await this.putManifestFull(repo, reference, bytes, mediaType)).digest;
+  }
+
+  /**
+   * {@link putManifest}, also returning the `OCI-Subject` response header: a registry that implements
+   * the referrers API sets it when the manifest has a `subject` (distribution spec v1.1).
+   */
+  async putManifestFull(repo: string, reference: string, bytes: Uint8Array, mediaType: string): Promise<{ digest: string; subject: string | undefined }> {
     if (!REF_RE.test(reference)) throw new SitefileError('E_USAGE', `invalid reference '${reference}'`);
     await this.init();
     const res = await this.call('PUT', this.v2(`${this.repoPath(repo)}/manifests/${reference}`), {
@@ -495,6 +503,7 @@ export class RegistryClient {
     if (typeof claimed === 'string' && claimed !== digest) {
       throw new SitefileError('E_INTEGRITY', `${this.registry}/${repo}: the registry stored the manifest as ${clean(claimed)}, expected ${digest}`);
     }
-    return digest;
+    const subject = res.headers['oci-subject'];
+    return { digest, subject: typeof subject === 'string' ? subject : undefined };
   }
 }

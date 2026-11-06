@@ -1,0 +1,12 @@
+{
+  "network": true,
+  "steps": [
+    ["vendor", "${CTX}", "--allow-private-network"],
+    ["build", "${CTX}", "-o", "${OUT}/assets", "--frozen-lockfile", "--target", "assets"],
+    ["why", "/index.html", "${CTX}"],
+    ["build", "${CTX}", "-o", "${OUT}/site", "--frozen-lockfile", "--cache-from", "${REGISTRY}/conf/no-such-cache:1"]
+  ],
+  "outputs": [["assets", "tree"], ["site", "tree"], ["ctx:vendor/sitefile", "tree"]],
+  "stdout": true,
+  "lock": true
+}

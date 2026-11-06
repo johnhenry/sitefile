@@ -9,3 +9,5 @@ pub mod netpolicy;
 pub mod types;
 pub mod vendor;
 pub mod wbn_reader;
+#[cfg(test)]
+mod archive_differential;

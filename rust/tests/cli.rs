@@ -200,6 +200,30 @@ fn archive_outputs_by_extension() {
 }
 
 #[test]
+fn attestations_keep_the_image_id_and_save_round_trips_them() {
+    let work = Tmp::new();
+    let ctx = example(&work, "hello");
+    let plain = work.path().join("plain.oci.tar");
+    let att = work.path().join("att.oci.tar");
+    let saved = work.path().join("saved.oci.tar");
+    let r = sitefile(&work, &["build", s(&ctx), "-o", s(&plain), "--no-cache"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let r2 = sitefile(&work, &["build", s(&ctx), "-o", s(&att), "--no-cache", "--provenance", "--sbom", "-t", "site:1", "--build-arg", "API_TOKEN=hunter2"]);
+    assert_eq!(r2.code, 0, "{}", r2.stderr);
+    let id = |out: &str| out.split("oci image ").nth(1).unwrap()[..71].to_string();
+    assert_eq!(id(&r.stdout), id(&r2.stdout), "the image ID does not change");
+    let bytes = fs::read(&att).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("hunter2"));
+    assert!(String::from_utf8_lossy(&bytes).contains("https://slsa.dev/provenance/v1"));
+    let save = sitefile(&work, &["save", "site:1", "-o", s(&saved)]);
+    assert_eq!(save.code, 0, "{}", save.stderr);
+    assert_eq!(fs::read(&saved).unwrap(), bytes, "save writes the stored attestations back out");
+    let bad = sitefile(&work, &["build", s(&ctx), "-o", s(&work.path().join("d")), "--provenance"]);
+    assert_eq!(bad.code, 2);
+    assert!(bad.stderr.starts_with("error: --provenance and --sbom attach attestations to an oci image"), "{}", bad.stderr);
+}
+
+#[test]
 fn tag_store_and_image_commands() {
     let work = Tmp::new();
     let ctx = example(&work, "hello");
