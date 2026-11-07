@@ -1,0 +1,6 @@
+# IMPORT … AS sitefile from Git (issue #97): the commit and the imported Sitefile's own remote inputs (an https
+# URL, another Git import) are recorded in this Sitefile.lock; a frozen rebuild and inspect use them.
+IMPORT theme FROM git+${HTTPS}/stages.git#main:theme AS sitefile ARG ACCENT=red
+STAGE site FROM theme+assets
+COPY --from=theme+layout / /
+EXPORT /

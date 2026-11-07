@@ -1,0 +1,4 @@
+# An ARG clause of the wrong type for the imported Sitefile's ARG.
+IMPORT theme FROM ./theme AS sitefile ARG N=many
+FROM theme+assets
+EXPORT /

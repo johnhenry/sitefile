@@ -1,0 +1,5 @@
+# sitefile vendor stores the Git Sitefile import and the imported Sitefile's inputs; the offline build reads them.
+IMPORT theme FROM git+${HTTPS}/stages.git#main:theme AS sitefile ARG ACCENT=red
+STAGE site FROM theme+assets
+COPY --from=theme+layout / /
+EXPORT /

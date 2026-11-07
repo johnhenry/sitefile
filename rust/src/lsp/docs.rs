@@ -5,7 +5,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     (
         "FROM",
         "FROM scratch|<base>|image <ref> [AT <dir>] [AS name]",
-        "Starts a stage. `scratch` is an empty tree; a bare name of an earlier stage starts from a copy of its final tree; `image <ref>` starts from the files of an OCI site image (a registry reference is pinned in Sitefile.lock; a name without a registry host is a local-store image); anything else is a context directory (`./name` forces the directory). Without any FROM, an implicit unnamed `FROM scratch` starts at the first non-ARG instruction.",
+        "Starts a stage. `scratch` is an empty tree; a bare name of an earlier stage starts from a copy of its final tree; `<import>+<stage>` starts from a stage of a Sitefile imported `AS sitefile`; `image <ref>` starts from the files of an OCI site image (a registry reference is pinned in Sitefile.lock; a name without a registry host is a local-store image); anything else is a context directory (`./name` forces the directory). Without any FROM, an implicit unnamed `FROM scratch` starts at the first instruction other than ARG and `IMPORT … AS sitefile`.",
     ),
     (
         "STAGE",
@@ -24,8 +24,8 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "IMPORT",
-        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]…",
-        "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
+        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
+        "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file), and sitefile (another Sitefile, whose stages are `name+<stage>`). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
         "COPY",
@@ -100,7 +100,12 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("STAGE", "AT", "`AT <dir>`: the directory inside the image to start from (default: its `dev.sitefile.root` label)."),
     ("STAGE", "SCRATCH", "`scratch` (the bare word) is an empty tree."),
     ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path, an `https://` URL (`http://` only with `--allow-http`), or `git+https://host/repo.git#ref[:path]` (ref: a branch, tag or 40-hex commit)."),
-    ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn, html or tree. `AS tree` on a file extracts an archive; `AS html` makes a file an html fragment."),
+    ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn, html, tree or sitefile. `AS tree` on a file extracts an archive; `AS html` makes a file an html fragment."),
+    (
+        "IMPORT",
+        "ARG",
+        "`ARG NAME=value` (repeatable, `AS sitefile` only): sets an ARG of the imported Sitefile; its other ARGs keep their defaults, and this build's `--build-arg`s never reach it.",
+    ),
     ("IMPORT", "INTEGRITY", "`INTEGRITY sha256:<64 lowercase hex>`: the content must match; remote pins are recorded in Sitefile.lock."),
     ("IMPORT", "SORT", "`SORT BY key [ASC|DESC]` orders a list import (markdown, json, yaml, csv) by a field; numbers and numeric strings compare numerically."),
     ("IMPORT", "BY", "`SORT BY key`: the field to sort by."),
@@ -140,7 +145,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
 
 const FLAGS: &[(&str, &str)] = &[
     ("overwrite", "`--overwrite`: replace files that already exist at the destination (otherwise a different file there is `E_CONFLICT`)."),
-    ("from", "`--from=stage`: read the source from the final tree of an earlier, completed stage (an absolute path inside it)."),
+    ("from", "`--from=stage`: read the source from the final tree of an earlier, completed stage (an absolute path inside it); `--from=<import>+<stage>` reads a stage of a Sitefile imported `AS sitefile`."),
     ("warn", "`--warn` (CHECKLINKS): print each broken link as a warning and keep building."),
     ("external", "`--external` (CHECKLINKS): also request every http(s) link once, under the network policy (`--allow-http`, `--allow-private-network`); a failure or a status of 400 or more is a broken link."),
     ("escape", "`--escape=none|html`: with `html`, `& < > \" '` are escaped in every substituted value (`${x|raw}` opts out)."),
@@ -194,7 +199,16 @@ const IMPORT_KINDS: &[(&str, &str)] = &[
     ("wbn", "A Web Bundle as data: version, primaryUrl and entries."),
     ("html", "An html fragment (a template partial): evaluated where a RENDER template uses it (`${name}`) and inserted as markup; values inside it are escaped by that RENDER."),
     ("tree", "A directory tree; on a file (zip, tar, tar.gz, wbn), extract the archive."),
+    (
+        "sitefile",
+        "Another Sitefile (a context directory, or `git+https://…#ref:dir`): its named stages are `name+<stage>` in `FROM` and `--from`; its paths resolve inside its own directory; `ARG NAME=value` sets its ARGs.",
+    ),
 ];
+
+/// Hover text of `<import>+<stage>`, a stage of a Sitefile imported AS sitefile.
+pub fn imported_stage(import: &str, stage: &str) -> String {
+    format!("```sitefile\n{import}+{stage}\n```\nThe final tree of stage `{stage}` of the Sitefile imported as `{import}` (`IMPORT {import} FROM … AS sitefile`). It is built with that Sitefile's own ARGs and context, up to this stage.")
+}
 
 const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("directory", "A directory of files (the default)."),

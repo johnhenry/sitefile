@@ -73,6 +73,9 @@ content digests of everything it reads, and a later build reuses the result when
   the edited post's page.
 - **TRANSFORM**: memoized only when its code has an identity: a wasm module's digest, a JS plugin's folder digest, a
   tool's path, size and mtime (as for the disk cache); a plugin that answers `cache: false` is never reused.
+- **Imported Sitefiles** (`IMPORT … AS sitefile`): their imports and steps are memoized with the same rules, keyed by
+  the imported Sitefile's own label and ARG/LET values; the key of a stage of theirs that this Sitefile reads is the
+  key of that stage's final tree, so an edit inside the imported directory rebuilds only what depends on it.
 - **`--target`** builds only the stages up to the target; every key is per step, so a step is reused exactly when
   it would compute the same thing whatever the target (the randomized tests switch `--target` between rebuilds).
 - **What a hit replays**: the warnings the step printed (stored with it). A tool's stderr is not replayed, as on a

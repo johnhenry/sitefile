@@ -3,9 +3,10 @@
 //! the two implementations.
 
 use crate::error::{ErrorCode::E_NOT_FOUND, Result, SitefileError};
-use crate::executor::BuildResult;
+use crate::executor::{BuildResult, ImportedSitefile};
+use crate::language::ast::imported_stage;
 use crate::paths::{join_virtual, normalize_virtual};
-use crate::planner::{Operation, Plan, SourceRef, Stage, StageBase};
+use crate::planner::{imported_stage_refs, Operation, Plan, SourceRef, Stage, StageBase};
 use crate::resources::types::Resource;
 use crate::tree::{FileNode, Tree};
 use serde_json::{json, Map, Value};
@@ -179,6 +180,18 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let mut stage_ids: HashMap<String, String> = HashMap::new();
     let list = |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
 
+    // Stages of imported Sitefiles (IMPORT … AS sitefile) are read like stages: one node each, fed by the import.
+    let mut imported_stages: Vec<GraphNode> = Vec::new();
+    for r in imported_stage_refs(&p.stages) {
+        if stage_ids.contains_key(&r.name) {
+            continue;
+        }
+        let id = format!("stage:{}", r.name);
+        let line = p.imports.iter().find(|i| i.name == r.import).map(|i| i.span.line);
+        imported_stages.push(GraphNode { id: id.clone(), kind: NodeKind::Stage, label: format!("stage {} of IMPORT {}", r.stage, r.import), line });
+        edges.add(&format!("import:{}", r.import), &id, "input");
+        stage_ids.insert(r.name.clone(), id);
+    }
     let mut staged: Vec<GraphNode> = Vec::new();
     let mut images: Vec<GraphNode> = Vec::new();
     for (si, stage) in p.stages.iter().enumerate() {
@@ -273,6 +286,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
         nodes.push(GraphNode { id: format!("tool:{}", t.name), kind: NodeKind::Tool, label: format!("TOOL {}", t.name), line: Some(t.span.line) });
     }
     nodes.extend(images);
+    nodes.extend(imported_stages);
     nodes.extend(locals);
     nodes.extend(staged);
     nodes.extend(site);
@@ -404,29 +418,69 @@ fn read_label(r: &SourceRef) -> String {
     }
 }
 
-struct Why<'a> {
-    result: &'a BuildResult,
+/// One Sitefile's view for `why`: the build's own, or one imported AS sitefile (stages shown as `theme+<stage>`).
+#[derive(Clone)]
+struct WhyScope<'a> {
+    plan: &'a Plan,
     steps: &'a [Vec<Tree>],
-    context_dir: &'a str,
-    stage_index: HashMap<&'a str, usize>,
-    tools: HashSet<&'a str>,
+    /// `theme+` for a Sitefile imported as `theme` (empty for the build's own).
+    prefix: String,
+    resources: &'a [(String, Resource)],
+    /// The build's own context directory, or the imported Sitefile.
+    context: WhyContext<'a>,
+    imported: &'a [(String, ImportedSitefile)],
+    /// What each FINGERPRINT of this Sitefile renamed (old path, new path), by its line.
+    renames: &'a [(u32, Vec<(String, String)>)],
 }
 
-impl Why<'_> {
+#[derive(Clone, Copy)]
+enum WhyContext<'a> {
+    Host(&'a str),
+    Unit(&'a ImportedSitefile),
+}
+
+impl<'a> WhyScope<'a> {
     fn at(&self, line: u32) -> String {
-        format!("{}:{line}", self.result.plan.file)
+        format!("{}:{line}", self.plan.file)
     }
-    fn final_of(&self, i: usize) -> &Tree {
+    fn final_of(&self, i: usize) -> &'a Tree {
         self.steps[i].last().expect("a stage has a starting tree")
+    }
+    /// Whether a context-relative path is a directory (a COPY of a directory lists the file inside it).
+    fn is_dir(&self, rel: &str) -> bool {
+        match self.context {
+            WhyContext::Host(dir) => std::fs::metadata(Path::new(dir).join(rel)).map(|m| m.is_dir()).unwrap_or(false),
+            WhyContext::Unit(u) => u.is_directory(rel),
+        }
+    }
+    /// The scope and index of the stage `name` (`build`, or `theme+assets` for a stage of an imported Sitefile).
+    fn locate(&self, name: &str) -> (WhyScope<'a>, usize) {
+        if let Some((import, stage)) = imported_stage(name) {
+            if let Some((_, unit)) = self.imported.iter().find(|(n, _)| n == import) {
+                let scope = WhyScope {
+                    plan: &unit.plan,
+                    steps: unit.steps.as_deref().unwrap_or(&[]),
+                    prefix: format!("{}{import}+", self.prefix),
+                    resources: &unit.resources,
+                    context: WhyContext::Unit(unit),
+                    imported: &unit.imported,
+                    renames: &unit.renames,
+                };
+                let i = unit.plan.stages.iter().position(|s| s.name.as_deref() == Some(stage)).expect("an imported stage that was built");
+                return (scope, i);
+            }
+        }
+        let i = self.plan.stages.iter().position(|s| s.name.as_deref() == Some(name)).expect("a stage that was built");
+        (self.clone(), i)
     }
 
     /// Display and (for a stage) the file a COPY source contributes to `file` written at `dest`.
-    fn copied(&self, r: &SourceRef, dest: &str, file: &str) -> (String, Option<(usize, String)>) {
+    fn copied(&self, r: &SourceRef, dest: &str, file: &str) -> (String, Option<(WhyScope<'a>, usize, String)>) {
         let rel = if file == dest { None } else { Some(below(dest, file)) };
         match r {
             SourceRef::Inline { delimiter, .. } => (format!("<<{delimiter}"), None),
             SourceRef::Local { path, .. } => {
-                let is_dir = std::fs::metadata(Path::new(self.context_dir).join(path)).map(|m| m.is_dir()).unwrap_or(false);
+                let is_dir = self.is_dir(path);
                 let rest = match rel {
                     Some(rel) if is_dir => {
                         if path.is_empty() {
@@ -440,7 +494,7 @@ impl Why<'_> {
                 (local_label(&rest), None)
             }
             SourceRef::Import { name, path, .. } => {
-                let res = self.result.resources.iter().find(|(n, _)| n == name).map(|(_, r)| r);
+                let res = self.resources.iter().find(|(n, _)| n == name).map(|(_, r)| r);
                 let Some(Resource::Tree { tree, .. }) = res else {
                     return (if path == "/" { format!("import {name}") } else { format!("import {name}:{path}") }, None);
                 };
@@ -451,13 +505,13 @@ impl Why<'_> {
                 (format!("import {name}:{inner}"), None)
             }
             SourceRef::Stage { name, path, .. } => {
-                let i = self.stage_index[name.as_str()];
-                let tree = self.final_of(i);
+                let (scope, i) = self.locate(name);
+                let tree = scope.final_of(i);
                 let inner = match rel {
                     Some(rel) if !tree.is_file(path) => under(path, rel),
                     _ => path.clone(),
                 };
-                let from = tree.is_file(&inner).then(|| (i, inner.clone()));
+                let from = tree.is_file(&inner).then(|| (scope, i, inner.clone()));
                 (format!("stage {name}:{inner}"), from)
             }
         }
@@ -465,23 +519,23 @@ impl Why<'_> {
 
     /// The path `file` had before operation `up_to` of stage `si` when a FINGERPRINT there renamed it, and where.
     fn renamed_at(&self, si: usize, file: &str, up_to: usize) -> Option<(usize, String)> {
-        let ops = &self.result.plan.stages[si].operations;
+        let ops = &self.plan.stages[si].operations;
         (0..up_to).rev().find_map(|i| {
             let Operation::Fingerprint { span, .. } = &ops[i] else { return None };
-            let (_, list) = self.result.renames.iter().find(|(line, _)| *line == span.line)?;
+            let (_, list) = self.renames.iter().find(|(line, _)| *line == span.line)?;
             list.iter().find(|(_, to)| to == file).map(|(from, _)| (i, from.clone()))
         })
     }
 
     fn history(&self, si: usize, file: &str) -> Vec<WhyEvent> {
-        self.history_to(si, file, self.result.plan.stages[si].operations.len())
+        self.history_to(si, file, self.plan.stages[si].operations.len())
     }
 
     fn history_to(&self, si: usize, file: &str, up_to: usize) -> Vec<WhyEvent> {
-        let p = &self.result.plan;
+        let p = self.plan;
         let stage = &p.stages[si];
         let trees = &self.steps[si];
-        let display = stage_display(stage, si);
+        let display = format!("{}{}", self.prefix, stage_display(stage, si));
         // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
         if let Some((index, from)) = self.renamed_at(si, file, up_to) {
             let op = &stage.operations[index];
@@ -503,7 +557,10 @@ impl Why<'_> {
         let prev = trees[0].get(file).map(|n| &**n);
         if let Some(start) = prev {
             match &stage.base {
-                StageBase::Stage { name } => events.extend(self.history(self.stage_index[name.as_str()], file)),
+                StageBase::Stage { name } => {
+                    let (scope, i) = self.locate(name);
+                    events.extend(scope.history(i, file));
+                }
                 StageBase::Local { path } => {
                     let rest = if path.is_empty() { file[1..].to_string() } else { format!("{path}{file}") };
                     events.push(WhyEvent {
@@ -534,10 +591,11 @@ impl Why<'_> {
     }
 
     /// The events of operations `from` to `up_to` (exclusive) of stage `si` that changed `file` (`prev`: before them).
-    fn later<'s>(&'s self, si: usize, file: &str, from: usize, up_to: usize, mut prev: Option<&'s FileNode>) -> Vec<WhyEvent> {
-        let stage = &self.result.plan.stages[si];
+    fn later(&self, si: usize, file: &str, from: usize, up_to: usize, mut prev: Option<&'a FileNode>) -> Vec<WhyEvent> {
+        let tools: HashSet<&str> = self.plan.tools.iter().map(|t| t.name.as_str()).collect();
+        let stage = &self.plan.stages[si];
         let trees = &self.steps[si];
-        let display = stage_display(stage, si);
+        let display = format!("{}{}", self.prefix, stage_display(stage, si));
         let mut events = Vec::new();
         for (i, op) in stage.operations.iter().enumerate().take(up_to).skip(from) {
             let next = trees[i + 1].get(file).map(|n| &**n);
@@ -549,8 +607,8 @@ impl Why<'_> {
             match op {
                 Operation::Copy { source, dest, .. } => {
                     let (input, from) = self.copied(source, dest, file);
-                    if let Some((s, path)) = from {
-                        events.extend(self.history(s, &path));
+                    if let Some((scope, s, path)) = from {
+                        events.extend(scope.history(s, &path));
                     }
                     inputs.push(input);
                 }
@@ -569,7 +627,7 @@ impl Why<'_> {
                             None => read_label(s),
                         });
                     }
-                    inputs.push(format!("{} {plugin}", if self.tools.contains(plugin.as_str()) { "tool" } else { "plugin" }));
+                    inputs.push(format!("{} {plugin}", if tools.contains(plugin.as_str()) { "tool" } else { "plugin" }));
                     if let Some(e) = each {
                         inputs.push(format!("list {}", e.list));
                     }
@@ -609,12 +667,14 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
         }
         return Err(SitefileError::plain(E_NOT_FOUND, format!("'{want}' is not in the build output")));
     };
-    let w = Why {
-        result,
+    let w = WhyScope {
+        plan: p,
         steps,
-        context_dir,
-        stage_index: p.stages.iter().enumerate().filter_map(|(i, s)| s.name.as_deref().map(|n| (n, i))).collect(),
-        tools: p.tools.iter().map(|t| t.name.as_str()).collect(),
+        prefix: String::new(),
+        resources: &result.resources,
+        context: WhyContext::Host(context_dir),
+        imported: &result.imported,
+        renames: &result.renames,
     };
     let last = p.stages.len() - 1;
     let full = under(&p.export_path, &want);

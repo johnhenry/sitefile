@@ -1,0 +1,8 @@
+# IMPORT … AS sitefile (issue #97): stages of a local Sitefile that imports another, with ARGs passed down,
+# its own paths, .sitefileignore and data, FROM and --from of imported stages, and a stage it never reads.
+ARG ACCENT = "red"
+IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT} ARG LEVEL=2
+STAGE site FROM theme+assets
+COPY --from=theme+pages /pages/ /p/
+RENDER --escape=html --from=theme+layout /page.html TO /index.html
+EXPORT /

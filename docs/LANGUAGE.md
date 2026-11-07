@@ -3,11 +3,11 @@
 Line-oriented, Dockerfile-inspired, case-insensitive instruction keywords. Quoted strings, comments, and backslash continuations. No implicit shell.
 
 Instructions:
-- `FROM scratch|<local dir>|<stage>|image <ref> [AT <dir>] [AS name]` (optional for a single-stage build: the first instruction other than `ARG` starts an implicit `FROM scratch`)
+- `FROM scratch|<local dir>|<stage>|<import>+<stage>|image <ref> [AT <dir>] [AS name]` (optional for a single-stage build: the first instruction other than `ARG` and `IMPORT … AS sitefile` starts an implicit `FROM scratch`)
 - `STAGE <name> [FROM scratch|<local dir>|<stage>|image <ref> [AT <dir>]]` starts a named stage; same as `FROM <base> AS <name>` (base defaults to `scratch`)
 - `ARG NAME[: type] [= value]` external build parameter
 - `LET NAME = value` local immutable binding; `LET name: html = <markup>` (or a `<<HTML` heredoc) is an html fragment, see HTML fragments below
-- `IMPORT name FROM <uri> [AS json|text|tree|file] [INTEGRITY sha256:<hex>]`
+- `IMPORT name FROM <uri> [AS json|text|tree|file|…|sitefile] [INTEGRITY sha256:<hex>] [ARG NAME=value]…` (`AS sitefile`: another Sitefile, whose stages are `name+<stage>`; see Sitefile imports below)
 - `COPY [--from=<stage>] [--exclude=<glob>…] [--chmod=644|755] [--parents] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
@@ -83,7 +83,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `FROM scratch|<base> [AS name]` starts a **stage**. Each `FROM` starts a new
   stage, and COPY/RENDER apply to the most recent one.
   - **Implicit `FROM scratch`.** If the first instruction other than `ARG`
-    comes before any `FROM`, an unnamed `FROM scratch` stage starts there, so a
+    (and `IMPORT … AS sitefile`, see Sitefile imports) comes before any `FROM`, an unnamed `FROM scratch` stage starts there, so a
     single-stage Sitefile needs no `FROM` at all (`ARG`s before it are global
     build parameters, exactly as before an explicit `FROM scratch`). The
     implicit stage has no source line; messages about it use that first
@@ -206,7 +206,8 @@ These pin down what the draft above leaves open. Tests cover each rule.
   not a type for ARG (`E_SYNTAX`).
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|html|tree] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]…`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|html|tree|sitefile] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]… [ARG NAME=value]…`
+  - `AS sitefile` and `ARG`: see Sitefile imports below.
   - `SECRET`: see Build secrets below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
@@ -224,7 +225,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
 - `COPY [--overwrite] [--from=<stage>] [--exclude=<pattern>]… [--chmod=644|755] [--parents] <source> <dest>`
   - With `--from=<stage>`, `<source>` is an absolute path (starts with `/`, no
     `..`) inside the final tree of an earlier, completed stage: `/out/` or
-    `/a.txt`. File, directory, trailing-slash and conflict rules below apply
+    `/a.txt`. `--from=<import>+<stage>` reads a stage of a Sitefile imported `AS sitefile`. File, directory, trailing-slash and conflict rules below apply
     unchanged. A missing path is `E_NOT_FOUND`; an unknown, current or later
     stage is `E_UNDEFINED` (at the flag).
   - Otherwise `<source>` is a context-relative path, or `name:` / `name:/inner/path` for
@@ -858,7 +859,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 
 | Rule | Warns about |
 | --- | --- |
-| `unused-name` | an `ARG`, `LET`, `IMPORT`, `PLUGIN` or `TOOL` nothing refers to (`${NAME}` in any operand, `name:` sources, `FOR … IN`, `FEED`, `WITH`, names in inline `RENDER` bodies and in html fragments; an html fragment nothing uses is reported like any LET). A template *file* (or one from an import or stage) can read any ARG, LET and value import, so with one in the Sitefile only `file`/`tree` imports, plugins and tools are reported. |
+| `unused-name` | an `ARG`, `LET`, `IMPORT`, `PLUGIN` or `TOOL` nothing refers to (`${NAME}` in any operand, `name:` sources, `FOR … IN`, `FEED`, `WITH`, names in inline `RENDER` bodies and in html fragments (an html fragment nothing uses is reported like any LET), `name+<stage>` for an `IMPORT … AS sitefile`). A template *file* (or one from an import or stage) can read any ARG, LET and value import, so with one in the Sitefile only `file`/`tree` imports, plugins and tools are reported. |
 | `unpinned-import` | a remote `IMPORT` without `INTEGRITY` (`Sitefile.lock` pins it only after the first fetch). |
 | `unpinned-image` | a registry `FROM image <ref>` (not a local-store image) or the `BASE` of `EXPORT … AS oci` without an `@sha256:` digest. |
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
@@ -1062,6 +1063,100 @@ repository at a commit, and `sitefile build https://host/repo.git#ref:dir` build
 - Private repositories need credentials, which URLs may not carry: use a build secret
   (`IMPORT … FROM git+https://… SECRET token AS BEARER`, or `AS HEADER Authorization` with a
   `Basic …` value); it is sent with every Git request to the repository's origin.
+
+### Sitefile imports (`IMPORT … AS sitefile`)
+A Sitefile can use the named stages of another Sitefile, local or in a Git repository, like Earthly targets
+(issue #97), so a theme or a pipeline is written once and shared. See `examples/shared-stages/`.
+
+```
+ARG ACCENT = "rebeccapurple"
+IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT}
+IMPORT tools FROM git+https://github.com/me/site-tools.git#v1.2:stages AS sitefile
+
+STAGE site FROM theme+assets
+RENDER --escape=html --from=theme+layout /page.html TO /index.html
+COPY --from=tools+icons / /icons/
+EXPORT /
+```
+
+- **The import.** `IMPORT <name> FROM <dir> AS sitefile [ARG NAME=value]…` names another build: `<dir>` is its
+  **context directory**, whose `Sitefile` is read. It is a context-relative directory (`./theme`; a file is
+  `E_TYPE`, a directory without a `Sitefile` is `E_NOT_FOUND`) or a Git directory,
+  `git+https://host/repo.git#ref:dir` (see Git sources above; the selection must be a directory). A plain
+  `https://` URL is `E_PROTOCOL`: a published file tree is an image (`FROM image`), not a Sitefile. `INTEGRITY` is
+  `E_VALIDATION` (a Git import is pinned by its commit); `SECRET` works as for any Git import; `SORT BY` and the
+  other kinds' clauses do not apply. Like an `ARG`, an `IMPORT … AS sitefile` may come before the first `FROM`
+  without starting the implicit `FROM scratch` stage, so the first stage can start from one of its stages.
+- **Naming its stages.** `<name>+<stage>` is the final tree of the imported Sitefile's named stage `<stage>`,
+  wherever a stage of this file can be read: `FROM theme+assets`, `STAGE site FROM theme+assets`,
+  `COPY|RENDER|TRANSFORM --from=theme+assets`. `<name>` must be an `IMPORT … AS sitefile` on an earlier line
+  (`E_UNDEFINED` for `--from=`; for a FROM base, `x+y` without such an import is still a context directory, as
+  before). Whether `<stage>` exists is checked when the imported Sitefile is read:
+  `FROM theme+nope: theme/Sitefile has no stage 'nope' (stages: assets, layout)` (`E_UNDEFINED`, at the
+  instruction). Only the imported file's **named** stages are visible; its unnamed stages, its EXPORT and the
+  stages of the Sitefiles it imports are not (re-export one with `STAGE x FROM inner+y`).
+- **Namespacing.** The import's name is one name in this file's namespace (shared with ARG, LET, IMPORT and
+  stages). Nothing else of the imported file (its ARGs, LETs, imports, stages) enters it, so names never clash.
+  `COPY theme:` and `${theme}` do not read a Sitefile import (`E_TYPE`: read one of its stages with
+  `--from=theme+<stage>`), nor do `FOR … IN theme` and `FEED theme` (`E_TYPE`).
+- **ARGs.** The imported Sitefile's ARGs keep their defaults, except those set by the IMPORT's `ARG NAME=value`
+  clauses (repeatable, any order among the other clauses; the value is an operand, so `${VAR}` of this file
+  works). This build's `--build-arg`s never reach it. A clause naming no ARG of the imported file is
+  `E_UNDEFINED` (`IMPORT theme: theme/Sitefile has no ARG NAME`); an ARG without a default and without a clause
+  is `E_MISSING_ARG` (`IMPORT theme: ARG N of theme/Sitefile has no default; set it with ARG N=<value>`); the
+  ARG's type applies (`IMPORT theme ARG N expects a number, got 'x'`). `ARG X` twice is `E_SYNTAX`; `ARG` on
+  another kind of IMPORT is `E_VALIDATION`.
+- **Paths and the sandbox.** The imported Sitefile's own paths resolve against **its** directory, which is its
+  build context: `COPY ./assets/ /` in `theme/Sitefile` reads `theme/assets/`, with the sandbox rules of a context
+  (`..` or a symlink leaving the directory is `E_PATH_ESCAPE`, even when the target is inside this build's
+  context), its own `.sitefileignore`, and this build's export, vendor and `--profile` paths skipped. A Git
+  import's directory is checked out to a temporary directory for the build (its symlinks resolved inside the
+  tree, as for any Git import) and removed afterwards.
+- **Messages and origins** name the imported file: `theme/Sitefile:3` for a local one (the path as this build's
+  own Sitefile is named, plus the directory), `git+https://host/repo.git#<commit>:stages/Sitefile:3` for a Git
+  one (the commit it was read at). Its files keep origins such as `theme/Sitefile:9 COPY`, which `inspect` and
+  `why` show. Its planner warnings (unnamed stages) are printed too.
+- **What may be imported.** Any valid Sitefile without `PLUGIN` or `TOOL` (`E_UNSUPPORTED` at that line: an
+  imported Sitefile, possibly another repository's, cannot run code here). It may use stages, `FROM <dir>`,
+  `FROM image`, local, https and Git imports, and other Sitefile imports. Its EXPORT, REDIRECT and HEADER lines
+  are not used (they belong to its own export). `FINGERPRINT` and `CHECKLINKS` are stage operations, so they run
+  in its stages like any other: a stage that FINGERPRINTs exposes the renamed files, a stage of the importer that
+  starts `FROM theme+site` inherits its renames (so a HEADER or REDIRECT of the importer naming the old URL follows
+  the rename, as for `FROM <stage>`), and `why` shows the rename in the imported Sitefile. `CHECKLINKS` checks the
+  imported stage's tree against the imported file's own EXPORT path, with this build's network policy for
+  `--external`; its warnings and `E_BROKEN_LINK`s name the imported file (`theme/Sitefile:6 CHECKLINKS`).
+- **What is built.** Its IMPORTs are all resolved when it is read (as in a `--target` build), and its stages up to
+  the last one this build reads are built, in order, once: a stage that only a later stage than `--target` reads
+  is not built. Stages of different imports, and of the same Sitefile imported twice (with other ARGs, say), are
+  built separately.
+- **Nesting.** An imported Sitefile may import others; at most 8 levels (`E_VALIDATION`:
+  `IMPORT x: Sitefile imports nest more than 8 levels deep`). Importing a Sitefile that is already being imported
+  (itself with `./`, or the same repository commit and directory) is a cycle: `E_VALIDATION`,
+  `IMPORT me: Sitefile import cycle: Sitefile -> Sitefile`.
+- **Pinning.** There is one lockfile, this build's `Sitefile.lock`: a Git Sitefile import is a `git` entry (its URL
+  as written and the commit), and the remote inputs of every imported Sitefile (its https and Git imports and
+  registry `FROM image`s) are recorded there by URL and reference, like this file's own. An imported Sitefile's
+  own `Sitefile.lock` is not read (like Cargo, only the top-level lockfile counts). `--frozen-lockfile`,
+  `--update-lock` and `--no-lockfile` apply to all of them. `--strict-pins` checks the Git Sitefile import itself
+  before anything is fetched (a commit in the URL or a lockfile entry), and each imported Sitefile's inputs when
+  it is read, before they are fetched; `validate --strict-pins` and `graph --strict-pins` check only this file's.
+- **Elsewhere.** `sitefile vendor` vendors a Git Sitefile import like any Git import (its tree) and, recursively,
+  the remote inputs of every imported Sitefile, so an offline `--frozen-lockfile` build needs no network.
+  `sitefile outdated` lists a Git Sitefile import like a Git import and then the remote inputs of the imported
+  Sitefile (read at the pinned commit, or the ref's latest when unpinned), named `theme+data`, `theme+<stage>` for
+  its FROM images; a Sitefile that cannot be read is an `error` row. `--provenance` lists the import (`import:theme`,
+  digest: the imported Sitefile's sha256, or the checkout's tree digest with `gitCommit` for Git) and the imported
+  Sitefiles' imports as `import:theme+data`, their FROM images as `from:theme:<line>`. `graph` shows a
+  `stage:theme+assets` node (kind `stage`, label `stage assets of IMPORT theme`) fed by `import:theme`, without
+  reading the imported Sitefile; `why` follows a file into the imported Sitefile's stages (stage
+  `theme+assets`, locations in `theme/Sitefile`). In watch mode the imported Sitefile's steps are memoized like
+  this file's (keyed by its label and ARG values), and a local imported directory inside the context is watched
+  with it. `validate` and `graph` never read the imported Sitefile; `build`, `inspect`, `why`, `vendor` and
+  `outdated` do.
+- **Lint and editors.** `unused-name` reports an `IMPORT … AS sitefile` none of whose stages is named. The language
+  server completes `AS sitefile` and `ARG`, documents `<name>+<stage>` on hover, and goes to the stage's
+  definition in a local imported Sitefile (`<dir>/Sitefile` next to the document); the name part goes to the
+  IMPORT.
 
 ### Build secrets (`--secret`, `IMPORT … SECRET`)
 Remote IMPORTs from private APIs and repositories need credentials, which URLs may not carry.

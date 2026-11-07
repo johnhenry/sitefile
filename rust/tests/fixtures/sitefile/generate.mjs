@@ -49,7 +49,7 @@ const maybe = (s, p = 0.5) => (chance(p) ? (typeof s === 'function' ? s() : s) :
 
 const NAMES = ['a', 'b', 'site', 'posts', 'TITLE', 'x', 'out', 'md', 'og', 'cp', 'post', 'build', '_n', 'A1', 'data', 'item'];
 const TYPES = ['string', 'number', 'boolean', 'String', 'NUMBER', 'int', 'bool', 'html', 'HTML'];
-const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml', 'html'];
+const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'JSON', 'xml', 'html', 'sitefile', 'SITEFILE'];
 /** Templates of html fragments (issue #106): valid, broken, using names, loop variables and other fragments. */
 const FRAGMENTS = [
   '<b>${TITLE}</b>', '<a href="/${item.slug}">${item.title}</a>', '${#each posts as p}<i>${p.title}</i>${/each}', '${#if x}y${else}z${/if}',
@@ -58,6 +58,8 @@ const FRAGMENTS = [
   '${file "/img/${item.slug}.png" | img alt="${TITLE}"}', '${file /a.css | stylesheet}', '${file x | bogus}', '${file "/a" | img alt="${frag}"}',
   '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
 ];
+/** Stages of imported Sitefiles (`<import>+<stage>`, issue #97), and near misses. */
+const QUALIFIED = ['site+a', 'a+b', 'data+build', 'a+', '+b', 'a+b+c', 'a++b', 'a+1'];
 const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
 const DIGEST = 'sha256:' + 'ab'.repeat(32);
 const DIGESTS = [DIGEST, DIGEST.toUpperCase(), 'sha256:abc', 'md5:x', '"' + DIGEST + '"', 'sha256:${x}'];
@@ -80,8 +82,8 @@ const imageBase = () => `${pick(['image', 'IMAGE', 'Image'])} ${pick(IMAGES)}${m
 
 /** Instruction lines (one string; heredoc bodies use \n). Add new instructions here. */
 const INSTRUCTIONS = {
-  FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
-  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x'])}`)}`,
+  FROM: () => `FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'scratch', 'image', ...NAMES, ...PATHS, ...QUALIFIED.slice(0, 4)])}${maybe(() => ` AS ${pick(NAMES)}`)}`,
+  STAGE: () => `STAGE ${pick(NAMES)}${maybe(() => ` FROM ${chance(0.15) ? imageBase() : pick(['scratch', 'image', ...NAMES, './src', '/x', ...QUALIFIED])}`)}`,
   ARG: () => `ARG ${pick(NAMES)}${maybe(() => `${pick([':', ' : ', ': '])}${pick(TYPES)}`, 0.3)}${maybe(() => `${pick(['=', ' = ', '= '])}${pick(VALUES)}`, 0.6)}`,
   LET: () => {
     // An html fragment: one line, or a heredoc (sometimes after `=`).
@@ -104,13 +106,17 @@ const INSTRUCTIONS = {
     for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
       clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
     }
+    // ARG clauses of an IMPORT … AS sitefile (issue #97), sometimes twice or malformed.
+    for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
+      clauses.push(`${pick(['ARG', 'arg'])} ${pick(['X=1', 'TITLE = "a b"', 'x=${x}', 'X', '=1', '1x=2', 'X=', 'X:number=1', "A='lit'"])}`);
+    }
     if (chance(0.5)) clauses.reverse();
     return `IMPORT ${pick(NAMES)} FROM ${pick(PATHS)}${clauses.map((c) => ' ' + c).join('')}`;
   },
   COPY: () =>
-    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
+    `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
     const fl = flags(['--overwrite', '--from=' + pick(NAMES), '--include=' + pick(EXCLUDES), '--exclude=' + pick(EXCLUDES), '--include', '--exclude=']);
     let s = `TRANSFORM ${fl}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick([...PATHS, '/img/*.png', '/out/*', '/a/*.'])}`;
@@ -152,7 +158,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -230,6 +236,9 @@ function validProgram() {
     vars.push('slug');
   }
   const v = () => '${' + pick(vars) + '}';
+  // A Sitefile imported AS sitefile (issue #97); it may come before the first stage.
+  const theme = chance(0.3);
+  if (theme) lines.push(`IMPORT theme FROM ${pick(['./theme', 'git+https://e.x/t.git#v1:theme', 'git+https://e.x/t.git'])} AS sitefile${maybe(() => ` ARG ACCENT=${v()}`)}${maybe(' ARG N=2')}`);
   if (chance(0.5)) {
     lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}`);
     lists.push('posts');
@@ -261,6 +270,7 @@ function validProgram() {
   const stage = () => {
     const n = `s${stages.length}`;
     stages.push(n);
+    if (theme && chance(0.3)) return `STAGE ${n} FROM theme+${pick(['assets', 'layout'])}`;
     return chance(0.5) ? `STAGE ${n}${maybe(' FROM scratch')}` : `FROM scratch AS ${n}`;
   };
   const ops = [
@@ -273,6 +283,7 @@ function validProgram() {
     () => (frags.length ? `COPY ./x /\${${pick(frags)}}` : 'COPY ./h /h'),
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
+    () => (theme ? pick(['COPY --from=theme+assets / /t/', 'RENDER --escape=html --from=theme+layout /page.html TO /t.html']) : 'COPY ./v /v'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
     () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
     () => (plugin ? `TRANSFORM ${maybe('--include=*.jpg ')}${maybe('--exclude=drafts/ ')}${pick(['./photos/', './photos', 'site:/img'])} WITH og TO ${pick(['/img/', '/img/*.png', '/t/*'])}` : 'COPY ./v /v'),
@@ -427,8 +438,19 @@ const EDGE = [
   'IMPORT h FROM ./h.html AS html\nRENDER ./t TO /x FOR i IN h\nEXPORT /', 'LET h: html = x\nFEED h BASE https://e.x LINK /a\nEXPORT /',
   'IMPORT h FROM ./h.html AS html SORT BY x\nEXPORT /', 'LET a = <<EOF\nEXPORT /', 'LET a: htmlx = 1\nEXPORT /', 'LET a:HTML=<i>\nEXPORT /',
   'ARG T = x\nLET a: html = <b>${T}</b>\nLET b: html = ${a}${item.title}\nRENDER --escape=html <<H TO /i.html\n${b}\nH\nEXPORT /',
-  'LET a: html = x\nLET a = 1\nEXPORT /', 'RENDER --inline-svg --escape=html <<H TO /a.html\n${file /a.svg | svg}\nH\nEXPORT /',
-  'LET a: html = ${file "/i/${x}.png" | img alt="${y.z}"}\nEXPORT /', 'ARG T\nLET a: html = ${file "/i/${T.x}.png"}\nEXPORT /', 'LET f: html = x\nLET a: html = ${file "/${f}"}\nEXPORT /', 'LET a: html = x\nRENDER ./t TO /${a}.html\nEXPORT /', 'IMPORT h FROM ./h AS html\nCOPY h: /h\nEXPORT /',
+  'LET a: html = x\nLET a = 1\nEXPORT /', 'LET a: html = x\nRENDER ./t TO /${a}.html\nEXPORT /', 'IMPORT h FROM ./h AS html\nCOPY h: /h\nEXPORT /',
+  // IMPORT … AS sitefile and <import>+<stage> (issue #97).
+  'IMPORT t FROM ./theme AS sitefile\nFROM t+assets\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile ARG A=1 ARG B="x y"\nSTAGE s FROM t+a\nCOPY --from=t+b / /b/\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile ARG A=1 ARG A=2\nEXPORT /', 'IMPORT t FROM ./theme AS json ARG A=1\nEXPORT /', 'IMPORT t FROM ./theme ARG A=1 AS sitefile\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /', 'IMPORT t FROM https://e.x/t AS sitefile\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM git+https://e.x/t.git#v1:theme AS sitefile SECRET k AS BEARER\nFROM t+a\nEXPORT /', 'FROM scratch\nCOPY --from=t+a / /\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nCOPY t: /\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nRENDER <<H TO /x FOR i IN t\nx\nH\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nFROM scratch\nFEED t BASE https://e.x LINK /a\nEXPORT /', 'FROM t+a\nEXPORT /', 'IMPORT t FROM ./t.json AS json\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile ARG X\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile ARG X=${NOPE}\nEXPORT /', 'ARG V=1\nIMPORT t FROM ./theme AS sitefile ARG X=${V}\nFROM t+a\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nCOPY --from=t+a+b / /\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE t\nEXPORT /', 'STAGE t\nIMPORT t FROM ./theme AS sitefile\nEXPORT /',
+  'IMPORT t FROM ./theme AS sitefile\nIMPORT d FROM ./d AS json\nFROM t+a\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE s FROM ./t+a\nEXPORT /',
+  'RENDER --inline-svg --escape=html <<H TO /a.html\n${file /a.svg | svg}\nH\nEXPORT /',
+  'LET a: html = ${file "/i/${x}.png" | img alt="${y.z}"}\nEXPORT /', 'ARG T\nLET a: html = ${file "/i/${T.x}.png"}\nEXPORT /', 'LET f: html = x\nLET a: html = ${file "/${f}"}\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

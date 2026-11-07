@@ -3020,12 +3020,18 @@
               }
             },
             {
-              "match": "\\G()\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "match": "\\G()\\s+(?!scratch(?=\\s|$))(?:([A-Za-z_][A-Za-z0-9_]*)(\\+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
                 },
                 "2": {
+                  "name": "variable.other.readwrite.import.sitefile"
+                },
+                "3": {
+                  "name": "punctuation.separator.imported-stage.sitefile"
+                },
+                "4": {
                   "name": "entity.name.section.stage.sitefile"
                 }
               }
@@ -3090,12 +3096,18 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:FROM))\\s+(?!scratch(?=\\s|$))([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:FROM))\\s+(?!scratch(?=\\s|$))(?:([A-Za-z_][A-Za-z0-9_]*)(\\+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
                 },
                 "2": {
+                  "name": "variable.other.readwrite.import.sitefile"
+                },
+                "3": {
+                  "name": "punctuation.separator.imported-stage.sitefile"
+                },
+                "4": {
                   "name": "entity.name.section.stage.sitefile"
                 }
               }
@@ -3291,7 +3303,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:file|text|json|tree|markdown|yaml|csv|wbn|html))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:file|text|json|tree|markdown|yaml|csv|wbn|html|sitefile))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
@@ -3375,6 +3387,31 @@
               }
             },
             {
+              "match": "(?<![^\\s])((?i:ARG))\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(=)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "variable.other.arg.sitefile"
+                },
+                "3": {
+                  "name": "keyword.operator.assignment.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:ARG))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#scalar"
+            },
+            {
               "include": "#operands"
             }
           ]
@@ -3396,7 +3433,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "match": "(?<![^\\s])(--)(from)(=)(?:(?:([A-Za-z_][A-Za-z0-9_]*)(\\+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -3408,9 +3445,15 @@
                   "name": "keyword.operator.assignment.sitefile"
                 },
                 "4": {
-                  "name": "entity.name.section.stage.sitefile"
+                  "name": "variable.other.readwrite.import.sitefile"
                 },
                 "5": {
+                  "name": "punctuation.separator.imported-stage.sitefile"
+                },
+                "6": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "7": {
                   "name": "invalid.illegal.stage-name.sitefile"
                 }
               }
@@ -3512,7 +3555,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "match": "(?<![^\\s])(--)(from)(=)(?:(?:([A-Za-z_][A-Za-z0-9_]*)(\\+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -3524,9 +3567,15 @@
                   "name": "keyword.operator.assignment.sitefile"
                 },
                 "4": {
-                  "name": "entity.name.section.stage.sitefile"
+                  "name": "variable.other.readwrite.import.sitefile"
                 },
                 "5": {
+                  "name": "punctuation.separator.imported-stage.sitefile"
+                },
+                "6": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "7": {
                   "name": "invalid.illegal.stage-name.sitefile"
                 }
               }
@@ -3571,7 +3620,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])(--)(from)(=)(?:([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
+              "match": "(?<![^\\s])(--)(from)(=)(?:(?:([A-Za-z_][A-Za-z0-9_]*)(\\+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)|(\\S*))",
               "captures": {
                 "1": {
                   "name": "punctuation.definition.flag.sitefile"
@@ -3583,9 +3632,15 @@
                   "name": "keyword.operator.assignment.sitefile"
                 },
                 "4": {
-                  "name": "entity.name.section.stage.sitefile"
+                  "name": "variable.other.readwrite.import.sitefile"
                 },
                 "5": {
+                  "name": "punctuation.separator.imported-stage.sitefile"
+                },
+                "6": {
+                  "name": "entity.name.section.stage.sitefile"
+                },
+                "7": {
                   "name": "invalid.illegal.stage-name.sitefile"
                 }
               }
