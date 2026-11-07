@@ -335,7 +335,7 @@ function parseCopy(c: Cursor, span: SourceSpan): Instruction {
 const CHMOD_MODES: Readonly<Record<string, number>> = { '644': 0o644, '0644': 0o644, '755': 0o755, '0755': 0o755 };
 
 function parseRender(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { escape: 'value', overwrite: 'bare', from: 'value' });
+  const flags = parseFlags(c, { escape: 'value', overwrite: 'bare', from: 'value', 'inline-svg': 'bare' });
   const escapeFlag = flags.get('escape');
   const escape = (escapeFlag?.value ?? 'none').toLowerCase();
   if (escapeFlag && escape !== 'none' && escape !== 'html') {
@@ -372,6 +372,7 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
     overwrite: flags.has('overwrite'),
     ...stageRef(c, flags),
     ...(each && { each }),
+    ...(flags.has('inline-svg') && { inlineSvg: true as const }),
   };
 }
 

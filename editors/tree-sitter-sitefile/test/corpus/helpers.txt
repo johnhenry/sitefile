@@ -1,0 +1,73 @@
+==================
+${file …} helpers in a RENDER body (strings, bare words, attributes)
+==================
+
+RENDER --inline-svg <<HTML TO /i.html
+${file "/img/a ${x}.jpg" | img alt="a}b" class=hero hidden} ${file /a.css} ${file}
+${file '/logo.svg' | svg data-x='1'}
+HTML
+
+---
+
+(source_file
+  (render_instruction
+    (flag
+      (flag_name))
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_file
+        (string
+          (string_content)
+          (substitution
+            (identifier))
+          (string_content))
+        (helper)
+        (helper_attribute
+          (attribute_name)
+          (string
+            (string_content)))
+        (helper_attribute
+          (attribute_name)
+          (word))
+        (helper_attribute
+          (attribute_name)))
+      (template_file
+        (word))
+      (template_substitution
+        (identifier))
+      (template_file
+        (raw_string)
+        (helper)
+        (helper_attribute
+          (attribute_name)
+          (raw_string))))
+    (heredoc_end)))
+
+==================
+${file …} in a one-line html fragment
+==================
+
+LET hero: html = <figure>${file "/img/${item.file}" | img alt="${item.alt}"}</figure>
+
+---
+
+(source_file
+  (let_instruction
+    (identifier)
+    (type)
+    (fragment
+      (template_file
+        (string
+          (string_content)
+          (substitution
+            (identifier)
+            (key)))
+        (helper)
+        (helper_attribute
+          (attribute_name)
+          (string
+            (substitution
+              (identifier)
+              (key))))))))

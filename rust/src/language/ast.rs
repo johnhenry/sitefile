@@ -352,6 +352,8 @@ pub enum Instruction {
         escape: EscapeMode,
         each: Option<ForEach>,
         overwrite: bool,
+        /// `--inline-svg`: the template's `${file … | svg}` may paste SVG markup into the page.
+        inline_svg: bool,
     },
     Plugin { span: SourceSpan, name: String, uri: Operand, integrity: Option<String> },
     Tool { span: SourceSpan, name: String },

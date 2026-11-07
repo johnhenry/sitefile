@@ -149,7 +149,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("chmod", chmod.map(|m| json!(m))),
             ("parents", parents.then(|| json!(true))),
         ]),
-        Instruction::Render { span: sp, template, dest, from, escape, each: e, overwrite } => obj(vec![
+        Instruction::Render { span: sp, template, dest, from, escape, each: e, overwrite, inline_svg } => obj(vec![
             ("kind", s("RENDER")),
             ("span", Some(span(sp))),
             ("template", Some(source(template))),
@@ -158,6 +158,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("overwrite", Some(json!(overwrite))),
             ("from", stage_ref(from)),
             ("each", each(e)),
+            ("inlineSvg", inline_svg.then(|| json!(true))),
         ]),
         Instruction::Plugin { span: sp, name, uri, integrity } => obj(vec![
             ("kind", s("PLUGIN")),

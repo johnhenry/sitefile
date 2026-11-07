@@ -269,13 +269,16 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`--from=s /www/a` → `www/a`) otherwise; a whole context, import or stage
     keeps nothing. There is no `/./` pivot. Not allowed with an inline body
     (`E_SYNTAX`).
-- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]` (`BY`, `PAGE`: see Tag pages, pagination and drafts below)
+- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] [--inline-svg] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]` (`BY`, `PAGE`: see Tag pages, pagination and drafts below)
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
   - Templates use `${NAME}` for ARG/LET, `${name}` for a text import, and
     `${name.key.0.key}` for a scalar in a JSON import. `$${` writes a literal
     `${`. Unknown names fail with the template's line and column.
   - `--escape=html` escapes `& < > " '` in every substituted value.
+  - `${file "/path" | helper …}` writes tags and values for files of the
+    stage's tree (see File helpers below); `--inline-svg` lets its `svg`
+    helper paste SVG markup into the page.
 - **Inline content (heredocs).** The source of `COPY` and the template of
   `RENDER` can be written in the Sitefile itself:
 
@@ -431,6 +434,102 @@ HTML
   not in `validate --json`'s `vars`.
 - **Incremental rebuilds** treat a fragment's text like an ARG/LET value, and
   a partial like any import a template reads.
+
+### File helpers: `${file "/path" | img alt="…"}` (see `examples/image/`)
+A template can write the tag for a file: `<img>` with its size, `<link
+rel="stylesheet">` with its integrity, and so on. Tags need the URL a file is
+served at, which an IMPORT does not know (it has not been placed), so a helper
+reads a file **already in the current stage's tree, by its output path**, when
+the RENDER runs:
+
+```
+COPY ./media/ /img/
+COPY ./css/ /css/
+RENDER --escape=html <<HTML TO /index.html
+${file "/img/hero.jpg" | img alt="Our team"}
+${file "/img/intro.mp4" | video controls poster="/img/intro.jpg"}
+${file "/css/site.css" | stylesheet}
+HTML
+```
+```html
+<img src="/img/hero.jpg" width="1600" height="900" alt="Our team" loading="lazy" decoding="async">
+<video src="/img/intro.mp4" controls poster="/img/intro.jpg"></video>
+<link rel="stylesheet" href="/css/site.css" integrity="sha384-…">
+```
+
+- **Syntax.** `${file <path> [| <helper> [<name>[=<value>]]…]}`. `file` is the
+  helper keyword only before a space or tab (`${file}` is still a variable named
+  `file`). The path and attribute values are a `"double-quoted"` string (`\`
+  escapes, `${name}` / `${name.key}` references, which may contain `}`), a
+  `'single-quoted'` one (literal) or a bare word (up to whitespace, `|` or `}`).
+  Attribute names are `[A-Za-z_:][A-Za-z0-9_:.-]*`, each at most once (ASCII
+  case-insensitive); a bare name is a boolean attribute (`controls`). Anything
+  else is `E_TEMPLATE` at the `${`: an unknown helper, attributes on a value
+  helper, an unterminated string.
+- **The file** is an absolute path in the tree at this RENDER (`E_PATH` for a
+  relative one; a directory is `E_TYPE`), normalized like any destination. A
+  path nothing has written yet is `E_NOT_FOUND`: `'/img/hero.jpg' is not in the
+  tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier
+  line)`. Its URL is the path with each segment percent-encoded like
+  `encodeURIComponent` (`/img/my%20photo.jpg`).
+- **Value helpers** produce a value, escaped like any `${…}` (so under
+  `--escape=html` only): none or `url` (the URL), `width` and `height` (of an
+  image, see below), `type` (the media type, by extension), `size` (bytes),
+  `integrity` (`sha384-…` of the bytes), `datauri` (`data:<type>;base64,…`, at
+  most 32768 bytes, `E_TOO_LARGE` otherwise, so a photo is not inlined by
+  accident).
+- **Tag helpers** write markup, inserted as-is also under `--escape=html`;
+  every attribute value in it (the path, `alt`, your attributes) is
+  HTML-escaped. The helper's own attributes come first, then yours in order,
+  then its defaults; one of yours named like an own or default attribute
+  replaces its value in place (`loading=eager`).
+
+  | Helper | Writes |
+  | --- | --- |
+  | `img` | `<img src width height … loading="lazy" decoding="async">` (no width/height for an SVG) |
+  | `video`, `audio` | `<video src …></video>`, `<audio src …></audio>` |
+  | `source` | `<source srcset type …>` for an image (in a `<picture>`), `<source src type …>` otherwise |
+  | `script` | `<script src integrity …></script>` |
+  | `stylesheet` | `<link rel="stylesheet" href integrity …>` |
+  | `preload` | `<link rel="preload" href as …>`: `as` from the extension (style, script, font, image, fetch) or your `as=`; `integrity` for script and style, `crossorigin` for font and fetch |
+  | `modulepreload` | `<link rel="modulepreload" href integrity …>` |
+  | `pre` | `<pre …>` with the file's UTF-8 text, escaped |
+  | `svg` | the SVG file's markup, without its XML declaration, comments before the root and doctype; your attributes go on the root `<svg` |
+
+- **Integrity** is added only where browsers check it: scripts, stylesheets and
+  their preloads. They ignore it on images and media, where `width`/`height`
+  (no layout shift while loading) are what helps. Files are same-origin, so no
+  `crossorigin` is added for integrity; pass `crossorigin=anonymous` when the
+  site is served from elsewhere.
+- **Image sizes** are read from the file header, not by decoding: PNG (IHDR),
+  GIF (screen descriptor), JPEG (the first SOF; EXIF orientation 5-8 swaps
+  width and height, as browsers display it), WebP (VP8, VP8L, VP8X) and AVIF
+  (the primary item's `ispe`; `irot` of a quarter turn swaps them). Reads are
+  bounded by the file and never allocate by the declared size. A file whose
+  bytes are none of these, or whose header is truncated, is `E_DATA` (`'/a.png'
+  is not a valid PNG image: its header is truncated or malformed`); a non-image
+  extension is `E_TYPE`. Both implementations are checked against the same
+  fuzzed headers (`rust/tests/fixtures/media`).
+- **SVG is a script risk**: an SVG file can hold `<script>` and event handlers.
+  `img` of an SVG is safe (browsers do not run scripts in images). The `svg`
+  helper pastes the markup into the page, so it needs `RENDER --inline-svg`;
+  without it the build fails with `E_UNSUPPORTED`. Nothing is sanitized: inline
+  only SVG you trust.
+- **Fragments and loops.** Helpers work in html fragments (evaluated at the
+  use, against that RENDER's tree and flags) and in `RENDER … FOR`, with
+  `${item.key}` in their strings: `${file "/img/${item.file}" | img alt="${item.alt}"}`.
+  A reference that is an html fragment is `E_TYPE`.
+- **Incremental rebuilds**: a RENDER whose template (or a fragment it uses) has
+  a `${file …}` is keyed by its input tree too, so a changed file is seen.
+- **With FINGERPRINT**: a `${file …}` *after* a FINGERPRINT in the stage (or
+  in a stage `FROM` it) may name the file's old path: `${file "/style.css" |
+  stylesheet}` writes the hashed URL (`/style.3f2a…9c.css`) and an `integrity`
+  of the hashed file's bytes, which are what is served. This is the order to
+  use for SRI. A helper *before* a FINGERPRINT writes the path the file has at
+  the RENDER, and the FINGERPRINT rewrites that reference (`src`, `href`,
+  `srcset`) like any other, but `integrity` stays that of the bytes at the
+  RENDER: right for scripts and for stylesheets FINGERPRINT does not change,
+  wrong for a stylesheet whose own `url(…)` references it rewrites.
 
 ### Data files: YAML, CSV and Web Bundles (see `examples/data/`)
 All of these are **values**: templates read them, `FOR` iterates over them,

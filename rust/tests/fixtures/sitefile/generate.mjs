@@ -54,6 +54,9 @@ const KINDS = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn',
 const FRAGMENTS = [
   '<b>${TITLE}</b>', '<a href="/${item.slug}">${item.title}</a>', '${#each posts as p}<i>${p.title}</i>${/each}', '${#if x}y${else}z${/if}',
   '${a}${b}', '${frag}', '${TITLE.x}', '${#each}', '${x y}', '<p>', '', '$${literal}', '${posts|raw}', 'a <<EOF b', '${x', '<i>${n}</i>',
+  // `${file …}` helpers (issue #105).
+  '${file "/img/${item.slug}.png" | img alt="${TITLE}"}', '${file /a.css | stylesheet}', '${file x | bogus}', '${file "/a" | img alt="${frag}"}',
+  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
 ];
 /** Stages of imported Sitefiles (`<import>+<stage>`, issue #97), and near misses. */
 const QUALIFIED = ['site+a', 'a+b', 'data+build', 'a+', '+b', 'a+b+c', 'a++b', 'a+1'];
@@ -119,7 +122,7 @@ const INSTRUCTIONS = {
   COPY: () =>
     `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED)])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}${renderLoop()}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}${renderLoop()}`, 0.3)}`,
   TRANSFORM: () => {
     const fl = flags(['--overwrite', '--from=' + pick(NAMES), '--include=' + pick(EXCLUDES), '--exclude=' + pick(EXCLUDES), '--include', '--exclude=']);
     let s = `TRANSFORM ${fl}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick([...PATHS, '/img/*.png', '/out/*', '/a/*.'])}`;
@@ -290,7 +293,7 @@ function validProgram() {
     () => `COPY ${maybe('--exclude=*.md ')}${maybe('--exclude=drafts/ ')}${maybe(() => `--chmod=${pick(['644', '0755'])} `)}${maybe('--parents ')}${pick(['./src', './src/a.css', 'site:/x', 'site:'])} /out/`,
     () => `COPY --chmod=755 ${body()} /run-${int(9)}.sh`,
     () => `COPY ${body()} /inline-${int(9)}.txt`,
-    () => `RENDER ${maybe('--escape=html ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
+    () => `RENDER ${maybe('--escape=html ')}${maybe('--inline-svg ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (frags.length ? `RENDER --escape=html <<HTML TO /f-${int(9)}.html\n\${${pick(frags)}}${pick(['', '<main>${TITLE}</main>', '${' + pick(frags) + '}'])}\nHTML` : 'COPY ./g /g'),
     () => (frags.length ? `COPY ./x /\${${pick(frags)}}` : 'COPY ./h /h'),
     ...(lists.length
@@ -479,6 +482,8 @@ const EDGE = [
   'IMPORT t FROM ./theme AS sitefile ARG X\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile ARG X=${NOPE}\nEXPORT /', 'ARG V=1\nIMPORT t FROM ./theme AS sitefile ARG X=${V}\nFROM t+a\nEXPORT /',
   'IMPORT t FROM ./theme AS sitefile\nCOPY --from=t+a+b / /\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE t\nEXPORT /', 'STAGE t\nIMPORT t FROM ./theme AS sitefile\nEXPORT /',
   'IMPORT t FROM ./theme AS sitefile\nIMPORT d FROM ./d AS json\nFROM t+a\nEXPORT /', 'IMPORT t FROM ./theme AS sitefile\nSTAGE s FROM ./t+a\nEXPORT /',
+  'RENDER --inline-svg --escape=html <<H TO /a.html\n${file /a.svg | svg}\nH\nEXPORT /',
+  'LET a: html = ${file "/i/${x}.png" | img alt="${y.z}"}\nEXPORT /', 'ARG T\nLET a: html = ${file "/i/${T.x}.png"}\nEXPORT /', 'LET f: html = x\nLET a: html = ${file "/${f}"}\nEXPORT /',
 ];
 
 // ---------------------------------------------------------------- write

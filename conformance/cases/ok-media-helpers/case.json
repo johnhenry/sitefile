@@ -1,0 +1,9 @@
+{
+  "copy": {
+    "photos/sky.jpg": "examples/image/photos/sky.jpg",
+    "photos/badge.png": "examples/image/photos/badge.png",
+    "photos/tiny.gif": "plugins/image/testdata/tiny.gif",
+    "photos/tiny.webp": "plugins/image/testdata/tiny-lossy.webp",
+    "photos/rotated.jpg": "plugins/image/testdata/rotated.jpg"
+  }
+}

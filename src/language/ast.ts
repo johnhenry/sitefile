@@ -178,6 +178,8 @@ export interface RenderInstruction {
   /** `FOR item IN list [BY key] [PAGE n [FIRST <dest>]]`: render once per element, group or page of an imported list. */
   readonly each?: RenderEach;
   readonly overwrite: boolean;
+  /** `--inline-svg`: the template's `${file … | svg}` may paste SVG markup into the page. */
+  readonly inlineSvg?: true;
 }
 
 /** `FOR item IN list [BY key] [PAGE n [FIRST <dest>]]` of a RENDER. */

@@ -664,6 +664,10 @@
           "named": true
         },
         {
+          "type": "template_file",
+          "named": true
+        },
+        {
           "type": "template_if",
           "named": true
         },
@@ -854,6 +858,40 @@
     }
   },
   {
+    "type": "helper_attribute",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "attribute_name",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "heredoc_body",
     "named": true,
     "fields": {},
@@ -875,6 +913,10 @@
         },
         {
           "type": "template_escape",
+          "named": true
+        },
+        {
+          "type": "template_file",
           "named": true
         },
         {
@@ -2016,6 +2058,54 @@
     "fields": {}
   },
   {
+    "type": "template_file",
+    "named": true,
+    "fields": {
+      "attribute": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "helper_attribute",
+            "named": true
+          }
+        ]
+      },
+      "helper": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "helper",
+            "named": true
+          }
+        ]
+      },
+      "path": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "substitution",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "template_if",
     "named": true,
     "fields": {
@@ -2590,6 +2680,10 @@
     "named": false
   },
   {
+    "type": "attribute_name",
+    "named": true
+  },
+  {
     "type": "boolean",
     "named": true
   },
@@ -2620,11 +2714,19 @@
     "named": true
   },
   {
+    "type": "file",
+    "named": false
+  },
+  {
     "type": "flag_name",
     "named": true
   },
   {
     "type": "flag_value",
+    "named": true
+  },
+  {
+    "type": "helper",
     "named": true
   },
   {

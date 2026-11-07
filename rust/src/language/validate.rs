@@ -212,7 +212,7 @@ fn check_fragment(name: &str, body: &FragmentBody, file: &str, scope: &Scope, de
                 return Err(fragment_not_value(n, &r.span));
             }
         } else if scope.vars.contains(n) {
-            if r.usage == RefUse::Var && !r.path.is_empty() {
+            if matches!(r.usage, RefUse::Var | RefUse::Text) && !r.path.is_empty() {
                 return Err(SitefileError::at(E_TYPE, format!("'{n}' is an ARG/LET value; dotted access only works on JSON imports"), &r.span));
             }
         } else if scope.imports.contains(n) {

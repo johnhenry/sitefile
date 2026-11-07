@@ -22,6 +22,6 @@ heights and <code>srcset</code> strings are also in
 <a href="/img/badge.json"><code>/img/badge.json</code></a>; templates can't read
 those files yet, so this page writes them out (the <code>img</code> template
 helper of issue #105 will read them).</p>
-<p><img src="/img/thumbs/sky.png" width="160" height="100" alt="A thumbnail of the same sky"></p>
+<p>${file "/img/thumbs/sky.png" | img alt="A thumbnail of the same sky"}</p>
 </body>
 </html>

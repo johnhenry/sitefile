@@ -166,7 +166,41 @@ const FLAGS: &[(&str, &str)] = &[
     ("include", "`--include=<pattern>` (repeatable, TRANSFORM): keep only the files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.jpg`, `gallery/`); `--exclude` then leaves files out."),
     ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
     ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
+    ("inline-svg", "`--inline-svg`: let the template's `${file \"/x.svg\" | svg}` paste SVG markup into the page. SVG can run scripts, so this is an explicit opt-in; `img` needs no flag."),
 ];
+
+/// The `${file …}` template helpers (src/media.ts).
+const FILE_HELPERS: &[(&str, &str)] = &[
+    ("url", "The file's URL (its tree path, each segment percent-encoded); the same as `${file \"/x\"}`."),
+    ("width", "The image's width in pixels, from its header (PNG, JPEG with EXIF orientation, GIF, WebP, AVIF)."),
+    ("height", "The image's height in pixels, from its header."),
+    ("type", "The file's media type, by extension (`image/png`, `text/css`, …)."),
+    ("size", "The file's size in bytes."),
+    ("integrity", "`sha384-…`: the subresource integrity of the file's bytes."),
+    ("datauri", "A `data:` URL of the file (at most 32768 bytes)."),
+    ("img", "`<img src width height … loading=\"lazy\" decoding=\"async\">`: width and height from the image header. Attributes pass through (`alt=\"…\"`); one named like a default replaces it."),
+    ("video", "`<video src …></video>`."),
+    ("audio", "`<audio src …></audio>`."),
+    ("source", "`<source srcset|src type …>` (srcset for an image, for `<picture>`)."),
+    ("script", "`<script src integrity …></script>` with the file's sha384 integrity."),
+    ("stylesheet", "`<link rel=\"stylesheet\" href integrity …>` with the file's sha384 integrity."),
+    ("preload", "`<link rel=\"preload\" href as …>`: `as` from the extension (or `as=…`); integrity for scripts and styles, `crossorigin` for fonts and fetches."),
+    ("modulepreload", "`<link rel=\"modulepreload\" href integrity …>`."),
+    ("pre", "`<pre …>` with the file's text, escaped."),
+    ("svg", "The SVG file's markup pasted into the page (attributes go on its root). Needs `RENDER --inline-svg`: SVG can run scripts."),
+];
+
+/// Hover text of `file` in `${file …}` and of a helper after its `|`.
+pub fn template_file() -> &'static str {
+    "```sitefile
+${file \"/path\" [| helper [name=\"value\" | name]…]}
+```
+A file of the stage's tree at this RENDER (an absolute path; `${name}` works inside the strings). Alone, its URL; with a helper, a value (`url`, `width`, `height`, `type`, `size`, `integrity`, `datauri`, escaped like any value) or a tag (`img`, `video`, `audio`, `source`, `script`, `stylesheet`, `preload`, `modulepreload`, `pre`, `svg`), inserted as markup with every attribute value escaped."
+}
+
+pub fn file_helper(name: &str) -> Option<&'static str> {
+    lookup(FILE_HELPERS, name)
+}
 
 const IMPORT_KINDS: &[(&str, &str)] = &[
     ("file", "One file, placed with COPY (the default for a file)."),

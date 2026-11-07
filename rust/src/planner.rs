@@ -211,6 +211,8 @@ pub enum Operation {
         each: Option<RenderEach>,
         escape: EscapeMode,
         overwrite: bool,
+        /// `--inline-svg`: `${file … | svg}` may paste SVG markup.
+        inline_svg: bool,
         span: SourceSpan,
     },
 }
@@ -501,7 +503,7 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Render { span, template, dest, from, escape, each, overwrite } => {
+            Instruction::Render { span, template, dest, from, escape, each, overwrite, inline_svg } => {
                 if let Some(e) = each {
                     let template = source_ref(template, &vars, &imports, from.as_ref())?;
                     operations(&mut stages, span)?.push(Operation::Render {
@@ -519,6 +521,7 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                         }),
                         escape: *escape,
                         overwrite: *overwrite,
+                        inline_svg: *inline_svg,
                         span: span.clone(),
                     });
                     continue;
@@ -539,6 +542,7 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     each: None,
                     escape: *escape,
                     overwrite: *overwrite,
+                    inline_svg: *inline_svg,
                     span: span.clone(),
                 });
             }
@@ -1085,7 +1089,7 @@ impl Operation {
                 }
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Render { template, dest, each, escape, overwrite, span } => {
+            Operation::Render { template, dest, each, escape, overwrite, inline_svg, span } => {
                 m.insert("template".into(), template.to_json());
                 m.insert("dest".into(), json!(dest));
                 if let Some(e) = each {
@@ -1108,6 +1112,9 @@ impl Operation {
                 }
                 m.insert("escape".into(), json!(escape_str(*escape)));
                 m.insert("overwrite".into(), json!(overwrite));
+                if *inline_svg {
+                    m.insert("inlineSvg".into(), json!(true));
+                }
                 m.insert("span".into(), span_json(span));
             }
         }

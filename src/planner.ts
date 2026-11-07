@@ -175,6 +175,8 @@ export type Operation =
       };
       readonly escape: EscapeMode;
       readonly overwrite: boolean;
+      /** `--inline-svg`: `${file … | svg}` may paste SVG markup. */
+      readonly inlineSvg?: true;
       readonly span: SourceSpan;
     };
 
@@ -366,6 +368,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
             },
             escape: ins.escape,
             overwrite: ins.overwrite,
+            ...(ins.inlineSvg ? { inlineSvg: true as const } : {}),
             span: ins.span,
           });
           break;
@@ -381,6 +384,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           dest: dest.path,
           escape: ins.escape,
           overwrite: ins.overwrite,
+          ...(ins.inlineSvg ? { inlineSvg: true as const } : {}),
           span: ins.span,
         });
         break;

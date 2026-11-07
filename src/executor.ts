@@ -13,7 +13,7 @@ import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, t
 import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
-import { decodeUtf8, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
+import { decodeUtf8, fileRefs, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
 import { dataCollection, markdownCollection, sortDocuments, type MarkdownDocument } from './resources/documents.js';
 import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
@@ -501,7 +501,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
       steps?.push(record!);
       for (const op of stage.operations) {
         const o = begin(prof, `${label}:${op.span.line} ${op.kind}`, 'operation', { line: op.span.line });
-        const r = await executeOp(op, tree, key, execEnv);
+        const r = await executeOp(op, tree, key, currentRenames.size ? { ...execEnv, renames: currentRenames } : execEnv);
         tree = r.tree;
         key = r.key;
         if (r.renames) {
@@ -1414,7 +1414,7 @@ async function buildUnitStages(unit: Unit, upto: number, env: UnitsEnv): Promise
     let current: ReadonlyMap<string, string> = stage.base.kind === 'stage' ? (unit.stageRenames.get(stage.base.name) ?? new Map()) : new Map();
     const record = unit.steps ? [tree] : undefined;
     for (const op of stage.operations) {
-      const r = await executeOp(op, tree, key, execEnv);
+      const r = await executeOp(op, tree, key, current.size ? { ...execEnv, renames: current } : execEnv);
       tree = r.tree;
       key = r.key;
       if (r.renames) {
@@ -1463,6 +1463,8 @@ interface ExecEnv {
   readonly envKey: string;
   /** Stage name -> the key of its final tree. */
   readonly stageKeys: Map<string, string>;
+  /** What the stage's FINGERPRINTs so far renamed (old path -> new path): `${file "/style.css"}` after one finds the hashed file. */
+  readonly renames?: ReadonlyMap<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
   /** The network policy (CHECKLINKS --external). */
@@ -1620,12 +1622,19 @@ function templateContext(env: ExecEnv): TemplateContext {
   };
 }
 
+/** Whether a template has a `${file …}` (it then reads the tree at its RENDER). */
+function usesFiles(nodes: readonly TemplateNode[]): boolean {
+  return nodes.some((n) => n.kind === 'file' || (n.kind === 'each' && (usesFiles(n.body) || usesFiles(n.empty))) || (n.kind === 'if' && (usesFiles(n.then) || usesFiles(n.otherwise))));
+}
+
 /**
- * The names a template reads, with those of the html fragments it uses (and theirs), for memo keys.
- * A fragment that does not parse adds nothing: rendering fails on it anyway.
+ * The names a template reads, with those of the html fragments it uses (and theirs), for memo keys,
+ * and whether it or one of those fragments reads files. A fragment that does not parse adds nothing:
+ * rendering fails on it anyway.
  */
-function renderNames(nodes: readonly TemplateNode[], env: ExecEnv): Set<string> {
+function renderDeps(nodes: readonly TemplateNode[], env: ExecEnv): { names: Set<string>; files: boolean } {
   const out = templateNames(nodes);
+  let files = usesFiles(nodes);
   const ctx = templateContext(env);
   const seen = new Set<string>();
   for (let grew = true; grew; ) {
@@ -1635,20 +1644,23 @@ function renderNames(nodes: readonly TemplateNode[], env: ExecEnv): Set<string> 
       seen.add(name);
       try {
         const before = out.size;
-        templateNames(ctx.fragment!(name), out);
+        const f = ctx.fragment!(name);
+        templateNames(f, out);
+        files ||= usesFiles(f);
         grew ||= out.size > before;
       } catch {
         // E_TEMPLATE in an imported partial: reported when the RENDER runs.
       }
     }
   }
-  return out;
+  return { names: out, files };
 }
 
 /** Top-level names a template reads (variables, #each lists, #if conditions). */
 export function templateNames(nodes: readonly TemplateNode[], out = new Set<string>()): Set<string> {
   for (const n of nodes) {
     if (n.kind === 'var') out.add(n.name);
+    else if (n.kind === 'file') for (const r of fileRefs(n)) out.add(r.name);
     else if (n.kind === 'each') {
       out.add(n.list.name);
       templateNames(n.body, out);
@@ -1683,7 +1695,7 @@ async function executeOp(
       await checkLinks(op, tree, env, env.warn);
       return { tree, key: '' };
     }
-    return { tree: tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+    return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
   if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
@@ -1718,7 +1730,7 @@ async function executeOp(
     memo.set(key, out);
     return { tree: out, key, memo: 'miss' };
   }
-  const p = await produce(op, tree, recording(env), opId);
+  const p = await produce(op, tree, recording(env), opId, prevKey);
   // Not memoizable (e.g. a plugin that opted out of caching): chain on what it produced instead.
   const stepKey = p.key ?? memoKey('files', ...p.files.flatMap(([f, n]) => [f, String(n.mode), n.digest, n.origin]));
   const key = memoKey('chain', prevKey, stepKey);
@@ -2326,8 +2338,11 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
   return [[op.dest, makeFile(new TextEncoder().encode(xml), origin)]];
 }
 
-/** The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo). */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
+/**
+ * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
+ * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
+ */
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
@@ -2370,14 +2385,17 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
   const parts = src.inline
     ? parseRenderTemplate(text, src.inline.file, src.inline.firstLine)
     : parseRenderTemplate(text, src.label);
-  const templateKey = env.memo ? sourceKey(op.template, src, env) : '';
+  // A template with `${file …}` (itself or in a fragment) reads the tree, so the input tree is part of its key.
+  const deps = env.memo ? renderDeps(parts, env) : undefined;
+  const templateKey = env.memo ? memoKey('template', sourceKey(op.template, src, env), deps!.files ? treeKey : '') : '';
   // What the template names, the FOR list and the destination's variables (ARG/LET values are in opId).
   const key = env.memo
-    ? memoKey('render', opId, templateKey, namesKey(env, op.each ? operandNames([op.each.dest], renderNames(parts, env).add(op.each.list)) : renderNames(parts, env)))
+    ? memoKey('render', opId, templateKey, namesKey(env, op.each ? operandNames([op.each.dest], new Set(deps!.names).add(op.each.list)) : deps!.names))
     : undefined;
+  const fileCtx = { tree: { get: (p: string) => tree.get(p)?.bytes, isDirectory: (p: string) => tree.isDirectory(p), renamed: (p: string) => env.renames?.get(p) }, inlineSvg: op.inlineSvg ?? false };
   return memoFiles(env, key, async (children) => {
     if (!op.each) {
-      const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env), templateContext(env));
+      const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, env), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, env), { ...templateContext(env), ...fileCtx });
       return [[op.dest, makeFile(new TextEncoder().encode(out), origin)]];
     }
 
@@ -2422,13 +2440,13 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     // Incremental rebuilds: an element's page depends on the template, the element and the imports the
     // template names (other than the loop variable), so editing one document re-renders one page.
     const memo = env.memo;
-    const refsKey = memo ? namesKey(env, renderNames(parts, env), as) : '';
+    const refsKey = memo ? namesKey(env, deps!.names, as) : '';
     const files: Files = [];
     for (const { item, path: targetPath } of elements) {
       const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
       const target = { path: targetPath };
       const page = (): FileNode => {
-        const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv), templateContext(itemEnv));
+        const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv), { ...templateContext(itemEnv), ...fileCtx });
         return makeFile(new TextEncoder().encode(out), origin);
       };
       files.push([target.path, memo ? memo.memoize(memoKey('item', opId, templateKey, refsKey, valueKey(item)), page, children) : page()]);

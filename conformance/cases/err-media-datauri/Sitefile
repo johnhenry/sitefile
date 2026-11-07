@@ -1,0 +1,6 @@
+# datauri is capped (32768 bytes), so a photo is not inlined by accident.
+COPY ./sky.jpg /img/sky.jpg
+RENDER --escape=html <<HTML TO /index.html
+<div style="background: url(${file /img/sky.jpg | datauri})"></div>
+HTML
+EXPORT /

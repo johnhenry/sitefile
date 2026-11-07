@@ -129,6 +129,9 @@
 [ "#if" "else" "/if" ] @keyword
 "as" @keyword
 (template_escape) @string.escape
+(template_file "file" @function)
+(template_file helper: (helper) @function)
+(helper_attribute name: (attribute_name) @property)
 
 ; Punctuation and operators
 [ "${" "}" ] @punctuation.special

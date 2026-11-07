@@ -26,10 +26,12 @@ export const KEYWORDS = {
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
+  /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
+  fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
     COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],
-    RENDER: ['escape', 'overwrite', 'from'],
+    RENDER: ['escape', 'overwrite', 'from', 'inline-svg'],
     TRANSFORM: ['overwrite', 'from', 'include', 'exclude'],
     SITEMAP: ['overwrite'],
     FEED: ['overwrite'],
@@ -496,6 +498,28 @@ export function buildGrammar() {
         // RENDER template syntax (src/render.ts).
         patterns: [
           { match: '\\$\\$\\{', name: S('constant.character.escape.template') },
+          {
+            // ${file "<path>" | helper name="value" …} (src/media.ts)
+            name: S('meta.template.file'),
+            begin: '(\\$\\{)(file)(?=[ \\t])',
+            beginCaptures: { 1: { name: S('punctuation.definition.template.begin') }, 2: { name: S('support.function.file') } },
+            end: '(\\})|$',
+            endCaptures: { 1: { name: S('punctuation.definition.template.end') } },
+            patterns: [
+              {
+                match: `(\\|)[ \\t]*(?:(${KEYWORDS.fileHelpers.join('|')})(?![A-Za-z0-9-])|([a-z][a-z0-9-]*))`,
+                captures: { 1: { name: S('keyword.operator.pipe') }, 2: { name: S('support.function.helper') }, 3: { name: S('invalid.illegal.helper') } },
+              },
+              {
+                match: '([A-Za-z_:][A-Za-z0-9_:.-]*)(=)',
+                captures: { 1: { name: S('entity.other.attribute-name.helper') }, 2: { name: S('keyword.operator.assignment') } },
+              },
+              { include: '#string-double' },
+              { include: '#string-single' },
+              { match: '(?<=[ \\t])[A-Za-z_:][A-Za-z0-9_:.-]*(?=[ \\t]|\\}|$)', name: S('entity.other.attribute-name.helper') },
+              { match: '[^\\s"\'|}]+', name: S('string.unquoted.path'), captures: { 0: { patterns: [{ include: '#interpolation' }] } } },
+            ],
+          },
           {
             match: `(\\$\\{)(#each)\\s+(${REF})\\s+(as)\\s+(${IDENT})\\s*(\\})`,
             name: S('meta.template.block'),

@@ -819,6 +819,8 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         resource_keys,
         env_key,
         stage_keys: HashMap::new(),
+        input_key: String::new(),
+        renames: BTreeMap::new(),
         recorded: None,
         unrecorded: warn.clone(),
         from_image: &from_image,
@@ -852,6 +854,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             for op in &stage.operations {
                 let line = op.span().line;
                 let o = begin(prof, || format!("{label}:{line} {}", op.keyword()), "operation", || vec![("line", json!(line))]);
+                exec.renames.clone_from(&current_renames);
                 let (out, k, state) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
@@ -2057,6 +2060,8 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
         resource_keys: unit.resource_keys.clone(),
         env_key: unit.env_key.clone(),
         stage_keys: keys,
+        input_key: String::new(),
+        renames: BTreeMap::new(),
         recorded: None,
         unrecorded: env.remote.warn.clone(),
         from_image: &from_image,
@@ -2076,6 +2081,7 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
             };
             let mut record = unit.steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
+                exec.renames.clone_from(&current);
                 let (out, k, _) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
@@ -2400,9 +2406,15 @@ impl<'a> Scope<'a> {
         Ok(nodes)
     }
 
-    /// Render a parsed template against this scope (values, blocks and html fragments).
-    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode) -> Result<String> {
-        let ctx = TemplateContext { is_fragment: &|n: &str| self.is_fragment(n), fragment: &|n: &str| self.fragment(n) };
+    /// Render a parsed template against this scope (values, blocks, html fragments and, with
+    /// `files`, `${file …}` on the stage's tree and RENDER --inline-svg).
+    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode, files: (&dyn crate::media::TemplateTree, bool)) -> Result<String> {
+        let ctx = TemplateContext {
+            is_fragment: &|n: &str| self.is_fragment(n),
+            fragment: &|n: &str| self.fragment(n),
+            tree: Some(files.0),
+            inline_svg: files.1,
+        };
         render_template_with(
             nodes,
             &|n: &str, p: &[String], s: &SourceSpan| self.lookup(n, p, s),
@@ -2414,8 +2426,10 @@ impl<'a> Scope<'a> {
 
     /// The names a template reads, with those of the html fragments it uses (and theirs), for memo
     /// keys. A fragment that does not parse adds nothing: rendering fails on it anyway.
-    fn render_names(&self, nodes: &[TemplateNode]) -> BTreeSet<String> {
+    /// Also: whether the template, or a fragment it uses, has a `${file …}` (it then reads the tree).
+    fn render_deps(&self, nodes: &[TemplateNode]) -> (BTreeSet<String>, bool) {
         let mut out = template_names(nodes);
+        let mut files = uses_files(nodes);
         let mut seen: BTreeSet<String> = BTreeSet::new();
         loop {
             let before = out.len();
@@ -2426,10 +2440,11 @@ impl<'a> Scope<'a> {
                 seen.insert(name.clone());
                 if let Ok(nodes) = self.fragment(&name) {
                     out.extend(template_names(&nodes));
+                    files |= uses_files(&nodes);
                 }
             }
             if out.len() == before {
-                return out;
+                return (out, files);
             }
         }
     }
@@ -2580,6 +2595,10 @@ struct Exec<'a> {
     env_key: String,
     /// Stage name -> the key of its final tree.
     stage_keys: HashMap<String, String>,
+    /// With a memo: the key of the tree the running operation reads (a RENDER with `${file …}` depends on it).
+    input_key: String,
+    /// What the stage's FINGERPRINTs so far renamed (old path -> new path): `${file "/style.css"}` after one finds the hashed file.
+    renames: BTreeMap<String, String>,
     /// While an operation runs with a memo: the warnings it printed (a memoized step replays them).
     recorded: Option<Arc<Mutex<Vec<String>>>>,
     /// The warning callback that does not record (a tool's stderr).
@@ -2869,6 +2888,7 @@ impl<'a> Exec<'a> {
             lock_memo(memo).set(key.clone(), out.clone(), Vec::new());
             return Ok((out, key, Some("miss")));
         }
+        self.input_key = prev.to_string();
         let p = self.produce_recorded(op, &tree, &op_id)?;
         // Not memoizable (a plugin that opted out of caching): chain on what it produced instead.
         let step_key = match &p.key {
@@ -2977,9 +2997,9 @@ impl<'a> Exec<'a> {
                 };
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
-            Operation::Render { template, dest, each, escape, span, .. } => {
+            Operation::Render { template, dest, each, escape, inline_svg, span, .. } => {
                 let src = self.read_source(template, &origin, None)?;
-                let template_key = if memoized { self.source_key(template, &src) } else { String::new() };
+                let source_key = if memoized { self.source_key(template, &src) } else { String::new() };
                 let Source::File { bytes, inline, label, .. } = src else {
                     return Err(SitefileError::at(E_TYPE, format!("RENDER template '{}' is a directory, not a file", src.label()), template.span()));
                 };
@@ -2989,9 +3009,19 @@ impl<'a> Exec<'a> {
                     None => parse_render_template(&text, &label, 1)?,
                 };
                 // What the template names, the FOR list and the destination's variables (ARG/LET values are in op_id).
+                // A template with `${file …}` (itself or in a fragment) reads the tree, so the input tree is part of its key.
                 let scope = self.scope();
+                let (deps, reads_files) = if memoized { scope.render_deps(&parts) } else { (BTreeSet::new(), false) };
+                let template_key = if memoized {
+                    memo_key(&["template", &source_key, if reads_files { &self.input_key } else { "" }])
+                } else {
+                    String::new()
+                };
+                let renames = self.renames.clone();
+                let file_tree = FileTree { tree, renames: &renames };
+                let files_ctx: (&dyn crate::media::TemplateTree, bool) = (&file_tree, *inline_svg);
                 let key = memoized.then(|| {
-                    let mut names = scope.render_names(&parts);
+                    let mut names = deps.clone();
                     if let Some(e) = each {
                         names.insert(e.list.clone());
                         names.extend(operand_names(&[&e.dest]));
@@ -3002,7 +3032,7 @@ impl<'a> Exec<'a> {
                     return Ok(hit);
                 }
                 let Some(each) = each else {
-                    let out = scope.render(&parts, *escape)?;
+                    let out = scope.render(&parts, *escape, files_ctx)?;
                     let files = vec![(dest.clone(), make_file(out.into_bytes(), origin, 0o644))];
                     return Ok(self.memo_store(key, files, Vec::new(), true));
                 };
@@ -3095,14 +3125,14 @@ impl<'a> Exec<'a> {
                 }
                 // An element's page depends on the template, the element and the imports the template
                 // names (other than the loop variable), so editing one document re-renders one page.
-                let refs_key = if memoized { self.names_key(scope.render_names(&parts), Some(as_name)) } else { String::new() };
+                let refs_key = if memoized { self.names_key(deps, Some(as_name)) } else { String::new() };
                 let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
                 let mut files: Files = Vec::new();
                 for (item, target_path) in &elements {
                     let item: &Value = item;
                     let item_scope = scope.with_item(as_name, item);
                     let page = || -> Result<Node> {
-                        let out = item_scope.render(&parts, *escape)?;
+                        let out = item_scope.render(&parts, *escape, files_ctx)?;
                         Ok(make_file(out.into_bytes(), origin.clone(), 0o644))
                     };
                     let node = match self.memo {
@@ -3814,6 +3844,43 @@ fn operand_names(ops: &[&Operand]) -> BTreeSet<String> {
     out
 }
 
+/// Whether a template has a `${file …}` (it then reads the tree at its RENDER).
+fn uses_files(nodes: &[TemplateNode]) -> bool {
+    nodes.iter().any(|n| match n {
+        TemplateNode::File { .. } => true,
+        TemplateNode::Each { body, empty, .. } => uses_files(body) || uses_files(empty),
+        TemplateNode::If { then, otherwise, .. } => uses_files(then) || uses_files(otherwise),
+        _ => false,
+    })
+}
+
+impl crate::media::TemplateTree for Tree {
+    fn get(&self, path: &str) -> Option<&[u8]> {
+        Tree::get(self, path).map(|n| &n.bytes[..])
+    }
+    fn is_directory(&self, path: &str) -> bool {
+        Tree::is_directory(self, path)
+    }
+}
+
+/// The tree a RENDER's `${file …}` reads, with the stage's FINGERPRINT renames.
+struct FileTree<'a> {
+    tree: &'a Tree,
+    renames: &'a BTreeMap<String, String>,
+}
+
+impl crate::media::TemplateTree for FileTree<'_> {
+    fn get(&self, path: &str) -> Option<&[u8]> {
+        Tree::get(self.tree, path).map(|n| &n.bytes[..])
+    }
+    fn is_directory(&self, path: &str) -> bool {
+        Tree::is_directory(self.tree, path)
+    }
+    fn renamed(&self, path: &str) -> Option<String> {
+        self.renames.get(path).cloned()
+    }
+}
+
 /// Top-level names a template reads (variables, #each lists, #if conditions).
 pub(crate) fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
     fn walk_nodes(nodes: &[TemplateNode], out: &mut BTreeSet<String>) {
@@ -3822,6 +3889,11 @@ pub(crate) fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
                 TemplateNode::Text(_) => {}
                 TemplateNode::Var { name, .. } => {
                     out.insert(name.clone());
+                }
+                TemplateNode::File { path, attrs, .. } => {
+                    for (name, _, _) in crate::render::file_refs(path, attrs) {
+                        out.insert(name.to_string());
+                    }
                 }
                 TemplateNode::Each { list, body, empty, .. } => {
                     out.insert(list.name.clone());

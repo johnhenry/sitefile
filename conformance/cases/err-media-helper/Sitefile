@@ -1,0 +1,3 @@
+# An unknown helper is E_TEMPLATE (checked at the LET for a fragment).
+LET hero: html = <div>${file "/img/hero.jpg" | image alt="x"}</div>
+EXPORT /

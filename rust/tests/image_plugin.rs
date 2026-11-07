@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, Once};
 
 /// Tree digest of examples/image (also pinned in test/image-plugin.test.ts).
-const EXAMPLE_DIGEST: &str = "sha256:3da831b10656d914d7d539df81df6cfc39e4dad74b362426f293b9e24642e864";
+const EXAMPLE_DIGEST: &str = "sha256:baf0163569eb7e57b5f260b39966ff413ae702e37b761d7a5a77da12c0dc4f47";
 /// tiny.jpg at widths 16,24 as jpeg, png and webp (directory mode).
 const TINY_DIGEST: &str = "sha256:ab43d0d4f76f6f28cf1ce0876b71822985342702ae1568817401ca7239f8dfc0";
 

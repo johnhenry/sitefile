@@ -45,7 +45,7 @@ const keywordRules = Object.fromEntries(
 const kw = ($, word) => alias($[kwRule(word)], word);
 
 /** The `${…}` tags of a template (RENDER bodies, html fragments). */
-const templateTags = ($) => [$.template_substitution, $.template_each, $.template_if, $.template_else, $.template_end];
+const templateTags = ($) => [$.template_substitution, $.template_file, $.template_each, $.template_if, $.template_else, $.template_end];
 
 export default grammar({
   name: 'sitefile',
@@ -367,6 +367,26 @@ export default grammar({
         repeat(seq('.', field('key', $.key))),
         optional(seq('|', field('filter', $.identifier))),
         '}',
+      ),
+
+    // ${file "<path>" | helper name="value" bare …}: a file of the RENDER's tree (src/media.ts).
+    // `file` is the helper keyword only before whitespace: `${file}` is a variable named file.
+    template_file: ($) =>
+      seq(
+        '${',
+        alias(token(prec(1, /file[ \t]+/)), 'file'),
+        field('path', $._helper_value),
+        optional(seq('|', field('helper', alias(/[a-z][a-z0-9-]*/, $.helper)), repeat(field('attribute', $.helper_attribute)))),
+        '}',
+      ),
+
+    _helper_value: ($) => choice($.string, $.raw_string, alias(token(/[^\s"'|}$\\]+/), $.word), $.substitution),
+
+    // name="value", name='value', name=value or a bare name
+    helper_attribute: ($) =>
+      seq(
+        field('name', alias(/[A-Za-z_:][A-Za-z0-9_:.-]*/, $.attribute_name)),
+        optional(seq(token.immediate('='), field('value', choice($.string, $.raw_string, alias(token.immediate(/[^\s"'}]+/), $.word))))),
       ),
 
     // ${#each list as item}
