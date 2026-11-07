@@ -45,6 +45,12 @@ jobs:
         with:
           workspaces: rust
 
+      # The plugin-host tests start `node --permission …` (the JavaScript
+      # plugin sandbox); the runner's default Node 20 doesn't have the flag.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
