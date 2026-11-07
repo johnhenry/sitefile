@@ -40,6 +40,9 @@ SITEMAP BASE ${SITE_URL}
 # cached forever; every page's <link> is rewritten to it.
 FINGERPRINT /style.css MANIFEST /asset-manifest.json
 
+# Fail the build if a page links to a file that isn't there.
+CHECKLINKS
+
 # Old URLs and response headers, for hosts that read _redirects / _headers
 # (Netlify, Cloudflare Pages; `sitefile serve` honours them too).
 REDIRECT /feed /feed.xml

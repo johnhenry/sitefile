@@ -139,6 +139,9 @@ pub enum Operation {
     /// and rewrite the HTML and CSS that reference them; `manifest` is where the JSON map of renames goes.
     /// `root` is the EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it.
     Fingerprint { patterns: Vec<String>, manifest: Option<String>, root: String, overwrite: bool, span: SourceSpan },
+    /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
+    /// `redirects` every REDIRECT source in the Sitefile.
+    CheckLinks { warn: bool, external: bool, root: String, redirects: Vec<String>, span: SourceSpan },
     /// sitemaps.org XML of the `.html` files in the tree at this point (`base` is checked, without trailing slashes).
     Sitemap { base: String, dest: String, overwrite: bool, span: SourceSpan },
     /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
@@ -188,6 +191,7 @@ impl Operation {
             | Operation::Render { span, .. }
             | Operation::Sitemap { span, .. }
             | Operation::Fingerprint { span, .. }
+            | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
     }
@@ -198,6 +202,7 @@ impl Operation {
             Operation::Render { .. } => "RENDER",
             Operation::Sitemap { .. } => "SITEMAP",
             Operation::Fingerprint { .. } => "FINGERPRINT",
+            Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
     }
@@ -520,6 +525,16 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
                 operations(&mut stages, span)?.push(Operation::Fingerprint { patterns, manifest, root: "/".into(), overwrite: *overwrite, span: span.clone() });
             }
+            Instruction::CheckLinks { span, warn, external } => {
+                // `root` and `redirects` are filled in below, once every line is planned.
+                operations(&mut stages, span)?.push(Operation::CheckLinks {
+                    warn: *warn,
+                    external: *external,
+                    root: "/".into(),
+                    redirects: Vec::new(),
+                    span: span.clone(),
+                });
+            }
             Instruction::Feed { span, list, base, link, dest, title, overwrite, .. } => {
                 let base = check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/feed.xml", "FEED")?;
@@ -584,8 +599,13 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
     let root = export_path.clone().unwrap_or_else(|| "/".into());
     for st in &mut stages {
         for op in &mut st.operations {
-            if let Operation::Fingerprint { root: r, .. } = op {
-                *r = root.clone();
+            match op {
+                Operation::Fingerprint { root: r, .. } => *r = root.clone(),
+                Operation::CheckLinks { root: r, redirects: rs, .. } => {
+                    *r = root.clone();
+                    *rs = redirects.iter().map(|x| x.from.clone()).collect();
+                }
+                _ => {}
             }
         }
     }
@@ -837,6 +857,13 @@ impl Operation {
         let mut m = Map::new();
         m.insert("kind".into(), json!(self.keyword()));
         match self {
+            Operation::CheckLinks { warn, external, root, redirects, span } => {
+                m.insert("warn".into(), json!(warn));
+                m.insert("external".into(), json!(external));
+                m.insert("root".into(), json!(root));
+                m.insert("redirects".into(), json!(redirects));
+                m.insert("span".into(), span_json(span));
+            }
             Operation::Fingerprint { patterns, manifest, root, overwrite, span } => {
                 m.insert("patterns".into(), json!(patterns));
                 if let Some(d) = manifest {

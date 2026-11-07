@@ -15,7 +15,7 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
   clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
   scratch: 'scratch',
@@ -36,6 +36,7 @@ export const KEYWORDS = {
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
     FINGERPRINT: ['overwrite'],
+    CHECKLINKS: ['warn', 'external'],
   },
 };
 
@@ -351,6 +352,7 @@ export function buildGrammar() {
           instruction('TOOL', [head('entity.name.function.tool')]),
           instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
           instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST']), { include: '#operands' }]),
+          instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]
             {

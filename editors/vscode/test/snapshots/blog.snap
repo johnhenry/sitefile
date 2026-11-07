@@ -718,6 +718,37 @@
   ]
  },
  "27": {
+  "text": "# Fail the build if a page links to a file that isn't there.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Fail the build if a page links to a file that isn't there.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "28": {
+  "text": "CHECKLINKS",
+  "tokens": [
+   [
+    "CHECKLINKS",
+    "meta.instruction.checklinks.sitefile keyword.control.instruction.sitefile"
+   ]
+  ]
+ },
+ "29": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "30": {
   "text": "# Old URLs and response headers, for hosts that read _redirects / _headers",
   "tokens": [
    [
@@ -730,7 +761,7 @@
    ]
   ]
  },
- "28": {
+ "31": {
   "text": "# (Netlify, Cloudflare Pages; `sitefile serve` honours them too).",
   "tokens": [
    [
@@ -743,7 +774,7 @@
    ]
   ]
  },
- "29": {
+ "32": {
   "text": "REDIRECT /feed /feed.xml",
   "tokens": [
    [
@@ -768,7 +799,7 @@
    ]
   ]
  },
- "30": {
+ "33": {
   "text": "REDIRECT /posts/hello/* /posts/hello-world/:splat STATUS 302",
   "tokens": [
    [
@@ -809,7 +840,7 @@
    ]
   ]
  },
- "31": {
+ "34": {
   "text": "HEADER /*.css Cache-Control: public, max-age=3600",
   "tokens": [
    [
@@ -842,7 +873,7 @@
    ]
   ]
  },
- "32": {
+ "35": {
   "text": "HEADER /* X-Frame-Options: DENY",
   "tokens": [
    [
@@ -875,7 +906,7 @@
    ]
   ]
  },
- "33": {
+ "36": {
   "text": "EXPORT /",
   "tokens": [
    [

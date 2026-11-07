@@ -341,6 +341,8 @@ pub enum Instruction {
     /// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext`
     /// and rewrite the HTML and CSS that reference them.
     Fingerprint { span: SourceSpan, patterns: Vec<Operand>, manifest: Option<Operand>, overwrite: bool },
+    /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
+    CheckLinks { span: SourceSpan, warn: bool, external: bool },
     Export {
         span: SourceSpan,
         path: Operand,
@@ -370,6 +372,7 @@ impl Instruction {
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
             | Instruction::Fingerprint { span, .. }
+            | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
     }
@@ -390,6 +393,7 @@ impl Instruction {
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
+            Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }
     }

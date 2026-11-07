@@ -132,6 +132,13 @@
         "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
       }
     },
+    "_kw_checklinks": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Cc][Hh][Ee][Cc][Kk][Ll][Ii][Nn][Kk][Ss]"
+      }
+    },
     "_kw_export": {
       "type": "TOKEN",
       "content": {
@@ -482,6 +489,10 @@
         {
           "type": "SYMBOL",
           "name": "fingerprint_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "checklinks_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2107,6 +2118,31 @@
               "type": "BLANK"
             }
           ]
+        }
+      ]
+    },
+    "checklinks_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_checklinks"
+          },
+          "named": false,
+          "value": "CHECKLINKS"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "FIELD",
+            "name": "flag",
+            "content": {
+              "type": "SYMBOL",
+              "name": "flag"
+            }
+          }
         }
       ]
     },

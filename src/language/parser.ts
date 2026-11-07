@@ -68,6 +68,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseHeader(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
+    case 'CHECKLINKS':
+      return parseCheckLinks(c, span);
     case 'RUN':
       throw c.error('E_UNSUPPORTED', 'RUN is not supported: Sitefile never runs shell commands', span);
   }
@@ -535,6 +537,13 @@ function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
   const manifest = c.keyword('MANIFEST') ? c.operand('manifest destination') : undefined;
   c.expectEnd();
   return { kind: 'FINGERPRINT', span, patterns, ...(manifest ? { manifest } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `CHECKLINKS [--warn] [--external]` */
+function parseCheckLinks(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { warn: 'bare', external: 'bare' });
+  c.expectEnd();
+  return { kind: 'CHECKLINKS', span, warn: flags.has('warn'), external: flags.has('external') };
 }
 
 function parseExport(c: Cursor, span: SourceSpan): Instruction {

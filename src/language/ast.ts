@@ -315,6 +315,16 @@ export interface FingerprintInstruction {
   readonly overwrite: boolean;
 }
 
+/** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
+export interface CheckLinksInstruction {
+  readonly kind: 'CHECKLINKS';
+  readonly span: SourceSpan;
+  /** `--warn`: print each broken link as a warning instead of failing. */
+  readonly warn: boolean;
+  /** `--external`: also request http(s) links (under the network policy). */
+  readonly external: boolean;
+}
+
 export type Instruction =
   | FromInstruction
   | ArgInstruction
@@ -331,6 +341,7 @@ export type Instruction =
   | RedirectInstruction
   | HeaderInstruction
   | FingerprintInstruction
+  | CheckLinksInstruction
   | ExportInstruction;
 
 /** A parsed and semantically validated Sitefile. */

@@ -57,6 +57,8 @@ export type ErrorCode =
   | 'E_FRONTMATTER'
   | 'E_DATA'
   | 'E_PLUGIN'
+  /** CHECKLINKS found references to files that do not exist (or, with --external, URLs that do not answer). */
+  | 'E_BROKEN_LINK'
   // export
   | 'E_EXPORT'
   | 'E_EXPORT_UNSAFE'

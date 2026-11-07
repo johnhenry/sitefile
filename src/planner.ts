@@ -79,6 +79,17 @@ export interface HeaderSpec {
 
 export type Operation =
   | {
+      /** Report the references in the tree's HTML and CSS files that point at nothing. */
+      readonly kind: 'CHECKLINKS';
+      readonly warn: boolean;
+      readonly external: boolean;
+      /** The EXPORT path: absolute references resolve below it. */
+      readonly root: string;
+      /** Every REDIRECT source in the Sitefile: links to them are not broken. */
+      readonly redirects: readonly string[];
+      readonly span: SourceSpan;
+    }
+  | {
       /** Rename the files matching `patterns` to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
       readonly kind: 'FINGERPRINT';
       /** Checked absolute patterns, NFC; a trailing `/` became `/**`. */
@@ -383,6 +394,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         operations().push({ kind: 'FINGERPRINT', patterns, ...(manifest !== undefined ? { manifest } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
         break;
       }
+      case 'CHECKLINKS':
+        // `root` and `redirects` are filled in below, once every line is planned.
+        operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
+        break;
       case 'FEED': {
         const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'FEED BASE', ins.base.span);
         operations().push({
@@ -432,6 +447,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   for (const st of stages) {
     st.operations.forEach((op, i) => {
       if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
   }
   // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
