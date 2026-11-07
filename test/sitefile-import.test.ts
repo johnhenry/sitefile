@@ -156,7 +156,7 @@ test('build: nested imports, cycles and the depth limit', async () => {
   assert.equal(text(r.output.get('/who.txt')?.bytes), 'a\n');
   // why follows the file into the imported Sitefiles.
   const w = why(r, '/who.txt', dir);
-  assert.deepEqual(w.history.map((e) => [e.location.replace(/^.*?(a\/)/, '$1'), e.stage]), [['a/b/Sitefile:6', 'a+b+inner']]);
+  assert.deepEqual(w.history.map((e) => [e.location.replace(/^.*\/(a\/b\/Sitefile:)/, '$1'), e.stage]), [['a/b/Sitefile:6', 'a+b+inner']]);
   assert.deepEqual([...r.resources.keys()], ['a', 'a+b']);
   // A Sitefile importing itself is a cycle.
   await fs.writeFile(path.join(dir, 'Sitefile'), 'IMPORT me FROM ./ AS sitefile\nFROM me+x\nEXPORT /\n');
