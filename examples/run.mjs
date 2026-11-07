@@ -76,6 +76,19 @@ const examples = {
     assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
     assert.ok(files(build('motion', ['--allow-plugin', 'motion'])).some((p) => p.endsWith('.svg')), 'the plugin writes SVG');
   },
+  fileable() {
+    // The plugin reads only its own folder, so fileable is vendored into it first (gitignored).
+    execFileSync(process.execPath, [path.join(here, 'fileable', 'vendor.mjs')], { stdio: 'ignore' });
+    assert.throws(() => build('fileable'), /--allow-plugin fileable/, 'a JavaScript plugin does not run without --allow-plugin');
+    const site = build('fileable', ['--allow-plugin', 'fileable']);
+    assert.deepEqual(files(site).sort(), ['docs/index.html', 'docs/pages/getting-started.html', 'docs/pages/limits.html', 'docs/pages/sandbox.html', 'docs/search.json', 'docs/style.css'], 'the fileable tree lands under TO /docs/');
+    assert.match(read(site, 'docs/pages/sandbox.html'), /<strong>vendored<\/strong>/, 'markdown from the value import is rendered');
+    assert.throws(
+      () => build('fileable', ['--allow-plugin', 'fileable', '--build-arg', 'TEMPLATE=cmd.mjs']),
+      (e) => /E_PLUGIN/.test(e.stderr) && /cannot start processes/.test(e.stderr),
+      "fileable's cmd attribute fails clearly in the sandbox",
+    );
+  },
   wasm() {
     assert.ok(files(build('wasm')).some((p) => p.endsWith('.svg')), 'an import-free WebAssembly plugin runs with no flag');
   },
