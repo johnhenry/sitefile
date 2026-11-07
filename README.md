@@ -451,25 +451,44 @@ tools are code, and run only when you name them on the command line.
 Sitefile is the build orchestrator of the @johnhenry family's static tools. It
 runs the pipeline (pinned imports, stages, templates, sandboxed plugins, checks,
 exports); its siblings write file trees in code and serve the result. It has no
-runtime dependency on either: they meet at file formats, a directory or a `.wbn`
-Web Bundle.
+runtime dependency on either: they meet at file formats, a directory, a zip or
+a `.wbn` Web Bundle.
 
 - **[`@johnhenry/fileable`](https://github.com/johnhenry/fileable)** -- writes
   file trees in JSX (`Dir`, `File`, `Rm`), for scaffolding and codegen. A
-  fileable build's output directory, or its `encode="zip"` archive, is an
-  ordinary Sitefile input: `COPY ./generated/ /`, or `IMPORT gen FROM
-  ./site.zip AS tree` and `COPY gen:/ /` (both give the same output). Its
-  `encode="wbn"` archive is gzip around a Web Bundle, which `AS tree` does not
-  read yet (johnhenry/sitefile#141). Neither package depends on the other.
+  fileable build's output is an ordinary Sitefile input. Neither package
+  depends on the other.
 - **[`@johnhenry/packfile`](https://github.com/johnhenry/packfile)** -- the
-  family's Web Bundle reader and in-memory server. `EXPORT / AS wbn BASE <url>`
-  writes a plain b2 Web Bundle that packfile's `fromWebBundle(buffer, { baseURL })`
-  reads back into exactly the exported files, and `createRouter()` serves as a
-  `(Request) => Response` handler. packfile's own archive format
-  (`fromArchive()`) is gzip around the same bundle under
-  `https://packfile.invalid/`: gzip a Sitefile bundle exported with that BASE and
-  `fromArchive()` reads it as is. `test/packfile-interop.test.ts` checks all
-  three; `@johnhenry/packfile` is a devDependency for that test only.
+  family's Web Bundle reader and in-memory server. It reads what `EXPORT … AS
+  wbn` writes and serves it as a `(Request) => Response` handler.
+
+### Working together: what works today
+
+Checked on 2026-11-07 against `@johnhenry/sitefile` 0.0.0,
+`@johnhenry/fileable` and `@johnhenry/packfile` 0.2.0.
+
+| From | To | How | Status |
+| --- | --- | --- | --- |
+| fileable, loose output | Sitefile | `COPY ./generated/ /` | Works |
+| fileable, `encode="zip"` | Sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
+| fileable, `encode="wbn"` | Sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| Sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`) |
+| Sitefile `.wbn` | packfile `fromArchive()` | gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround; [#143](https://github.com/johnhenry/sitefile/issues/143) (gzip export) and [packfile#18](https://github.com/johnhenry/packfile/issues/18) (any base URL) remove it |
+| Sitefile `HEADER` / `REDIRECT` | packfile's routers | -- | **Not applied:** they're in the bundle only as `/_headers` and `/_redirects` files ([#144](https://github.com/johnhenry/sitefile/issues/144)) |
+| packfile `toArchive()` | Sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
+
+Gotchas when serving a Sitefile bundle with packfile:
+
+- **Pass `createRouter()` a path string for non-ASCII paths.** A `Request`
+  for `/docs/ünï/page.html` returns 404 because the pathname isn't
+  percent-decoded; the string `"/docs/ünï/page.html"` works
+  ([packfile#20](https://github.com/johnhenry/packfile/issues/20)).
+- **`fromWebBundle` skips the bundle's entry at the bare base URL.** Sitefile
+  stores the index page there as well as at `/index.html`; you get it from
+  `index.html`.
+- **The `baseURL` you pass must be the `BASE` you exported with.** Entries
+  under any other origin are skipped, so the wrong base reads back as an
+  empty map, without an error.
 
 ## License
 
