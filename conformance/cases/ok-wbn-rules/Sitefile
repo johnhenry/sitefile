@@ -1,0 +1,20 @@
+# EXPORT … AS wbn bakes HEADER values into each response and exact REDIRECTs
+# into 3xx responses (johnhenry/sitefile#144); splats stay in /_redirects.
+COPY <<X /www/index.html
+<h1>home</h1>
+X
+COPY <<X /www/about/index.html
+<h1>about</h1>
+X
+COPY <<X /www/css/site.css
+p{}
+X
+REDIRECT /old /about/
+REDIRECT /about /elsewhere STATUS 302
+REDIRECT /ext https://other.example/x STATUS 308
+REDIRECT /blog/* /posts/:splat STATUS 302
+HEADER /*.css Cache-Control: public, max-age=3600
+HEADER /* X-Frame-Options: DENY
+HEADER /about/ X-Dir: yes
+HEADER /* X-Frame-Options: SAMEORIGIN
+EXPORT /www AS wbn BASE https://example.com/site/

@@ -496,7 +496,7 @@ fn expand(def: &Definition, bake_dir: &str) -> Result<Vec<(String, Vec<BakeTarge
             }
             let default_out = join_path(
                 "dist",
-                &format!("{name}{}", &default_out_name(parsed)["dist".len()..]),
+                &format!("{name}{}", &default_out_name(parsed, None)["dist".len()..]),
             );
             let file = match &fields.file {
                 Some(f) => join_to(bake_dir, &sub("file", f)?),

@@ -53,6 +53,7 @@
     "prepack": "npm run build"
   },
   "devDependencies": {
+    "@johnhenry/fileable": "^0.1.1",
     "@johnhenry/packfile": "^0.2.0",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"

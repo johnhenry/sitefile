@@ -84,10 +84,10 @@ no runtime dependencies.
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
-| `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`) |
+| `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest |
-| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -163,7 +163,7 @@ build used, `--cache-from <ref>` reuses them (see [docs/CLI.md](docs/CLI.md#regi
 ## CLI
 
 ```
-sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
+sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL] [--compression gzip|none]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--strict-pins] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
@@ -273,6 +273,7 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 sitefile build examples/hello --format zip     # examples/hello/dist.zip
 sitefile build examples/hello -o hello.tar.gz      # format from the extension
 sitefile build examples/hello --format wbn --base-url https://example.com/
+sitefile build examples/hello -o hello.wbn.gz --base-url https://example.com/   # gzip(Web Bundle)
 ```
 
 Archives are reproducible: sorted entries, fixed timestamps (or `SOURCE_DATE_EPOCH`),
@@ -461,20 +462,25 @@ a `.wbn` Web Bundle.
 - **[`@johnhenry/packfile`](https://github.com/johnhenry/packfile)** -- the
   family's Web Bundle reader and in-memory server. It reads what `EXPORT … AS
   wbn` writes and serves it as a `(Request) => Response` handler.
+  `@johnhenry/packfile` is a devDependency here for
+  `test/packfile-interop.test.ts` only.
 
 ### Working together: what works today
 
-Checked on 2026-11-07 against `@johnhenry/sitefile` 0.0.0,
-`@johnhenry/fileable` and `@johnhenry/packfile` 0.2.0.
+Checked on 2026-11-07 against the npm releases (`@johnhenry/sitefile` 0.0.0,
+`@johnhenry/fileable` 0.1.1, `@johnhenry/packfile` 0.2.0) and each
+repository's `main`. "Fixed on main, in the next release" means merged but
+not published: the npm versions still behave as the rest of that row says.
 
 | From | To | How | Status |
 | --- | --- | --- | --- |
 | fileable, loose output | Sitefile | `COPY ./generated/ /` | Works |
 | fileable, `encode="zip"` | Sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
 | fileable, `encode="wbn"` | Sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
-| Sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`) |
-| Sitefile `.wbn` | packfile `fromArchive()` | gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround; [#143](https://github.com/johnhenry/sitefile/issues/143) (gzip export) and [packfile#18](https://github.com/johnhenry/packfile/issues/18) (any base URL) remove it |
-| Sitefile `HEADER` / `REDIRECT` | packfile's routers | -- | **Not applied:** they're in the bundle only as `/_headers` and `/_redirects` files ([#144](https://github.com/johnhenry/sitefile/issues/144)) |
+| fileable tree, rendered during a build | Sitefile | a JavaScript `TRANSFORM` plugin calling fileable's in-memory `toFiles()` | An example on main, not part of the npm package: [`examples/fileable/`](examples/fileable/) ([#145](https://github.com/johnhenry/sitefile/issues/145)). fileable is vendored into the plugin folder; `cmd`, local `src=` and `env://` fail with `E_PLUGIN` |
+| Sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`), and packfile's own tests read a bundle written by Sitefile 0.0.0 |
+| Sitefile `.wbn` | packfile `fromArchive()` | with 0.0.0 / 0.2.0: gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround. **Fixed on main, in the next release:** `EXPORT … AS wbn COMPRESSION gzip` (or `-o site.wbn.gz`) writes the gzip ([#143](https://github.com/johnhenry/sitefile/issues/143)), and `fromArchive()` takes a `baseURL` or the origin of the bundle's primary URL, so any `BASE` reads back ([packfile#18](https://github.com/johnhenry/packfile/issues/18)) |
+| Sitefile `HEADER` / `REDIRECT` | packfile `createWebBundleRouter()` | -- | **Not applied in 0.0.0:** only the `/_headers` and `/_redirects` files are in the bundle. **Fixed on main, in the next release:** each response carries its HEADER values, and exact-path 301/302/303/307/308 REDIRECTs are 3xx responses with `location` ([#144](https://github.com/johnhenry/sitefile/issues/144)). Splats, `200` rewrites and `404` rules stay in `/_redirects` only |
 | packfile `toArchive()` | Sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
 
 Gotchas when serving a Sitefile bundle with packfile:
@@ -486,9 +492,17 @@ Gotchas when serving a Sitefile bundle with packfile:
 - **`fromWebBundle` skips the bundle's entry at the bare base URL.** Sitefile
   stores the index page there as well as at `/index.html`; you get it from
   `index.html`.
-- **The `baseURL` you pass must be the `BASE` you exported with.** Entries
-  under any other origin are skipped, so the wrong base reads back as an
-  empty map, without an error.
+- **The `baseURL` you pass to `fromWebBundle` must be the `BASE` you exported
+  with.** Entries under any other origin are skipped, so the wrong base reads
+  back as an empty map, without an error. packfile's `fromArchive()` on its
+  main branch (next release) defaults to the origin of the primary URL, which
+  Sitefile writes only when the site has `/index.html`; with a `BASE` that has
+  a path (`https://site.example/blog/`), the keys start with `blog/` unless you
+  pass that `baseURL`.
+- **HEADER and REDIRECT need `createWebBundleRouter()`** (on main, next
+  release): `createWebBundleRouter(new wbn.Bundle(bytes), { baseURL })` serves
+  each exchange's own status and headers. `createRouter()` serves a files map,
+  so it answers with the files only.
 
 ## License
 

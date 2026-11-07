@@ -327,6 +327,47 @@ committed module was built with rustc 1.93.1; another compiler version gives
 a working module with different bytes, and so a different digest and cache
 key. `cargo test` in `plugins/image` runs the native tests and fuzzing.
 
+## Example: rendering a fileable tree
+
+[`@johnhenry/fileable`](https://opensource.johnhenry.me/fileable/) describes
+file trees in JSX. `examples/fileable/` is a JavaScript plugin that renders
+such a tree straight into the build and returns it as `{ files }`, with no
+directory or zip on disk in between:
+
+```
+PLUGIN fileable FROM ./plugins/fileable/fileable.mjs
+IMPORT docs FROM ./docs.json AS json
+TRANSFORM docs: WITH fileable TO /docs/ OPTIONS template=docs.mjs title="Fileable docs"
+```
+
+`template` names a module in the plugin's `templates/` folder (a plain file
+name, no directories). Its default export receives `{ options, data, item,
+input, dest }` and returns a fileable tree, built with fileable's
+`h`/`dir`/`file` builders or with JSX compiled ahead of time; the plugin
+renders it with fileable's in-memory `toFiles()` and the tree's paths land
+under `TO`.
+
+It is an example, not part of Sitefile: Sitefile has no runtime dependencies
+and fileable is not one. Because a plugin reads only its own folder,
+fileable has to be in it. `node examples/fileable/vendor.mjs` copies the
+files Node loads for `@johnhenry/fileable/browser` (about 45 files, 600 KB:
+fileable's browser entry point and the parts of marked, minimatch and
+node-html-parser it uses) from the repository's `node_modules`, where
+fileable is a devDependency, into `plugins/fileable/node_modules/`. That copy
+is gitignored and rebuilt by `npm run examples` and `npm run conformance`. In
+your own project, vendor it the same way (or with any bundler) and commit or
+rebuild it; `INTEGRITY` covers only the plugin module, not the vendored
+files.
+
+The browser entry point needs no filesystem, processes or environment, so it
+fits the sandbox. What does need them fails with `E_PLUGIN` and says why:
+fileable's `cmd` attribute (a shell command; a plugin cannot start processes,
+and Node's permission model would refuse `child_process` anyway, so use
+`TOOL` and `--allow-exec`), local `src=` paths and `<Dir from>` (pass the
+content as the TRANSFORM source or a value import instead), `src="env://…"`
+(the environment is empty) and `encode="zip"`/`"wbn"` (let Sitefile write the
+archive). Like every JavaScript plugin it needs `--allow-plugin fileable`.
+
 ## External tools: `TOOL` and `--allow-exec`
 
 Plugins cannot run programs. For real media output (video, audio, images) a

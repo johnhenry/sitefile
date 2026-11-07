@@ -648,6 +648,8 @@ export interface ExportTarget {
   readonly ociRoot?: string;
   /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
   readonly ociCompression?: OciCompression;
+  /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
+  readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
   readonly imageLabels?: Readonly<Record<string, string>>;
   /** Add org.opencontainers.image.source/revision from the git checkout (opt-in). */
@@ -701,7 +703,7 @@ async function exportBuild(
   if (format === 'oci') {
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
-      compression: options.ociCompression ?? result.plan.exportCompression,
+      compression: options.ociCompression ?? sitefileCompression(result.plan, 'oci'),
       platform: options.platform,
       epoch: sourceDateEpoch(),
       base: result.base,
@@ -726,9 +728,18 @@ async function exportBuild(
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),
     baseUrl: options.baseUrl ?? result.plan.exportBase,
+    ...(format === 'wbn' ? { compression: options.wbnCompression ?? sitefileCompression(result.plan, 'wbn') } : {}),
   });
   const written = await exportFile(data, options.outDir, exportOptions);
   return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data) };
+}
+
+/**
+ * The Sitefile's `EXPORT ... COMPRESSION` for an export in `format`: it belongs to the EXPORT's own format,
+ * so a `--format` override to another format does not inherit it (undefined: that format's default).
+ */
+export function sitefileCompression(plan: Pick<Plan, 'exportFormat' | 'exportCompression'>, format: ExportFormat): OciCompression | undefined {
+  return plan.exportFormat === format ? plan.exportCompression : undefined;
 }
 
 /**

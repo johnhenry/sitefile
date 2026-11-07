@@ -206,7 +206,9 @@ impl ExportFormat {
     }
 }
 
-/// OCI site layer encoding: `gzip` (tar+gzip, the default) or `none` (plain tar).
+/// `EXPORT ... COMPRESSION`: for `oci`, the site layer encoding, `gzip` (tar+gzip, the default) or `none`
+/// (plain tar); for `wbn`, `gzip` wraps the bundle in gzip (the family's `.wbn.gz`) and `none` (the default
+/// for wbn, so not this type's `Default`) writes the plain bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OciCompression {
     #[default]

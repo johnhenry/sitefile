@@ -1277,6 +1277,8 @@ pub struct ExportTarget {
     pub oci_root: Option<String>,
     /// oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip).
     pub oci_compression: Option<OciCompression>,
+    /// wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none).
+    pub wbn_compression: Option<OciCompression>,
     /// Extra OCI config labels.
     pub image_labels: std::collections::BTreeMap<String, String>,
     /// Add org.opencontainers.image.source/revision from the git checkout.
@@ -1349,6 +1351,16 @@ pub fn image_attestations(
     ))
 }
 
+/// The Sitefile's `EXPORT ... COMPRESSION` for an export in `format`: it belongs to the EXPORT's own
+/// format, so a `--format` override to another format does not inherit it (None: that format's default).
+pub fn sitefile_compression(plan: &Plan, format: ExportFormat) -> Option<OciCompression> {
+    if plan.export_format == format {
+        plan.export_compression
+    } else {
+        None
+    }
+}
+
 /// OCI options for the build's exported tree (shared by `-t` image storage).
 pub fn oci_options(
     result: &BuildResult,
@@ -1372,7 +1384,7 @@ pub fn oci_options(
         labels: meta.labels,
         base: result.base.clone(),
         compression: compression
-            .or(result.plan.export_compression)
+            .or(sitefile_compression(&result.plan, ExportFormat::Oci))
             .unwrap_or_default(),
     })
 }
@@ -1506,6 +1518,13 @@ fn export_build(
                 .base_url
                 .clone()
                 .or_else(|| result.plan.export_base.clone()),
+            compression: if format == ExportFormat::Wbn {
+                target
+                    .wbn_compression
+                    .or(sitefile_compression(&result.plan, ExportFormat::Wbn))
+            } else {
+                None
+            },
         },
     )?;
     let written = export_file(&data, out, &export_options)?;

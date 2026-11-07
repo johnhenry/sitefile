@@ -71,6 +71,11 @@ const only = flag('--only');
 
 const { extractArchive } = await import(pathToFileURL(path.join(root, 'lib', 'src', 'resources', 'archive.js')).href);
 
+// examples/fileable's plugin reads only its own folder, so @johnhenry/fileable (a devDependency) is vendored into it.
+await new Promise((ok, fail) =>
+  execFile(process.execPath, [path.join(root, 'examples', 'fileable', 'vendor.mjs')], (e, _out, err) => (e ? fail(new Error(`examples/fileable/vendor.mjs: ${err || e.message}`)) : ok())),
+);
+
 /** name → { context, args, env, out: file name or directory, compare: 'tree' | 'archive' | 'bytes' | 'oci' } */
 function cases() {
   const ex = (name, extra = {}) => ({ name: `example/${name}${extra.suffix ?? ''}`, context: path.join(root, 'examples', name), args: [], ...extra });
@@ -104,6 +109,9 @@ function cases() {
     ex('blog'),
     ex('data'),
     ex('motion', { args: ['--allow-plugin', 'motion'] }),
+    // fileable vendored into the plugin folder (above, before the cases run); both CLIs run the plugin with node.
+    ex('fileable', { args: ['--allow-plugin', 'fileable'] }),
+    ex('fileable', { suffix: ':cmd', args: ['--allow-plugin', 'fileable', '--build-arg', 'TEMPLATE=cmd.mjs'] }),
     ex('wasm'),
     ex('image'),
     ex('hello', { suffix: ':zip', out: 'site.zip', compare: 'archive' }),
@@ -116,6 +124,7 @@ function cases() {
     ex('blog', { suffix: ':oci-bytes', out: 'site.oci.tar', compare: 'bytes' }),
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
+    ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
     // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
     ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),

@@ -202,11 +202,18 @@ export interface ExportInstruction {
   readonly base?: Operand;
   /** `AT </srv/www>`: where the files live inside the layer (`oci` only). */
   readonly at?: Operand;
-  /** `COMPRESSION gzip|none`: how the site layer is stored (`oci` only; default gzip). */
+  /**
+   * `COMPRESSION gzip|none` (`oci` and `wbn` only): how the oci site layer is stored (default gzip),
+   * or whether the whole Web Bundle is gzipped (default none).
+   */
   readonly compression?: { readonly value: OciCompression; readonly span: SourceSpan };
 }
 
-/** OCI site layer encoding: `gzip` (tar+gzip, the default) or `none` (plain tar). */
+/**
+ * `EXPORT ... COMPRESSION`: for `oci`, the site layer encoding, `gzip` (tar+gzip, the default) or `none`
+ * (plain tar); for `wbn`, `gzip` wraps the bundle in gzip (the family's `.wbn.gz`) and `none` (the default)
+ * writes the plain bundle.
+ */
 export type OciCompression = 'gzip' | 'none';
 export const OCI_COMPRESSIONS: readonly OciCompression[] = ['gzip', 'none'];
 

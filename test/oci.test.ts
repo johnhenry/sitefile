@@ -171,14 +171,14 @@ test('COMPRESSION none: the site layer is the plain tar (digest = diff_id) and s
   await assert.rejects(extractImageFiles(m, cfg, bad, 'x'), (e) => isSitefileError(e, 'E_STORE'));
 });
 
-test('EXPORT ... COMPRESSION: parsed for oci, rejected elsewhere or for unknown values; --oci-compression overrides', async () => {
+test('EXPORT ... COMPRESSION: parsed for oci (and wbn), rejected elsewhere or for unknown values; --oci-compression overrides', async () => {
   const home = await tmpDir();
   const bad = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS oci COMPRESSION zstd\n');
   const r1 = await runCli(home, ['validate', bad]);
   assert.equal(r1.code, 1);
   assert.match(r1.stderr, /E_SYNTAX.*:3:29: unknown compression 'zstd' \(expected gzip or none\)/);
   const zip = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS zip COMPRESSION none\n');
-  assert.match((await runCli(home, ['validate', zip])).stderr, /E_VALIDATION.*COMPRESSION applies only to AS oci/);
+  assert.match((await runCli(home, ['validate', zip])).stderr, /E_VALIDATION.*COMPRESSION applies only to AS oci and AS wbn/);
   const ok = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS oci AT /srv/site COMPRESSION None\n');
   const out = path.join(await tmpDir(), 'site.oci.tar');
   const layerType = async (args: string[]) => {
@@ -190,6 +190,7 @@ test('EXPORT ... COMPRESSION: parsed for oci, rejected elsewhere or for unknown 
   };
   assert.equal(await layerType([]), MEDIA.layerTar);
   assert.equal(await layerType(['--oci-compression', 'gzip']), MEDIA.layer);
+  assert.equal(await layerType(['--compression', 'gzip']), MEDIA.layer);
   const u = await runCli(home, ['build', ok, '-o', out, '--force', '--oci-compression', 'lz4']);
   assert.equal(u.code, 2);
   assert.match(u.stderr, /--oci-compression expects gzip or none, got 'lz4'/);
@@ -201,6 +202,12 @@ test('EXPORT ... COMPRESSION: parsed for oci, rejected elsewhere or for unknown 
   const saved = path.join(await tmpDir(), 'o');
   assert.equal((await runCli(home, ['save', 'plain:1', '-o', saved])).code, 0);
   assert.ok(await fs.stat(path.join(saved, 'index.html')));
+  // save picks a gzipped wbn from the extension, like build -o.
+  const gz = path.join(await tmpDir(), 'site.wbn.gz');
+  const s = await runCli(home, ['save', 'plain:1', '-o', gz, '--base-url', 'https://example.com/']);
+  assert.equal(s.code, 0, s.stderr);
+  const bytes = await fs.readFile(gz);
+  assert.deepEqual([bytes[0], bytes[1], gunzipSync(bytes)[0]], [0x1f, 0x8b, 0x85]);
 });
 
 test('external OCI validators (skopeo, crane, oras, umoci, podman) when installed', async (t) => {
