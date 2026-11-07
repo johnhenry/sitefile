@@ -85,7 +85,15 @@ fn build_profile_lists_steps_in_sitefile_order() {
     }).collect();
     assert_eq!(
         short,
-        ["command build", "build parse", "import import posts", "stage stage #1", "operation 30 COPY", "operation 31 RENDER", "operation 32 RENDER", "operation 36 FEED", "operation 37 SITEMAP", "operation 41 FINGERPRINT", "operation 44 CHECKLINKS", "export export"]
+        ["command build", "build parse", "import import posts", "stage stage #1", "operation 33 COPY",
+            "operation 35 RENDER",
+            "operation 36 RENDER",
+            "operation 38 RENDER",
+            "operation 42 FEED",
+            "operation 43 SITEMAP",
+            "operation 47 FINGERPRINT",
+            "operation 50 CHECKLINKS",
+            "export export"]
     );
     let label_of = |n: &str| n.rsplit_once(':').map(|(l, _)| l.to_string()).unwrap_or_default();
     let ops: Vec<_> = ev.iter().filter(|e| e["cat"] == "operation").map(|e| label_of(e["name"].as_str().unwrap())).collect();

@@ -17,7 +17,7 @@
 export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
@@ -225,7 +225,9 @@ const imageBase = (prefix) => ({
   captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('keyword.other.clause') } },
 });
 
-const renderClauses = [forClause, kw(['TO', 'FOR', 'IN']), { include: '#operands' }];
+// FOR item IN list [BY key] [PAGE n [FIRST <dest>]]
+const byClause = { match: `${W}(${ci(['BY'])})\\s+(${IDENT})${WE}`, captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('variable.other.property.group-key') } } };
+const renderClauses = [forClause, byClause, kw(['TO', 'FOR', 'IN', 'PAGE', 'FIRST']), { include: '#scalar' }, { include: '#operands' }];
 const transformClauses = [
   forClause,
   { match: `${W}(${ci(['WITH'])})\\s+(${IDENT})${WE}`, captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.function.plugin') } } },
@@ -340,7 +342,7 @@ export function buildGrammar() {
                 4: { name: S('keyword.other.clause') },
               },
             },
-            kw(['SORT', 'BY', 'ASC', 'DESC']),
+            kw(['SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS']),
             {
               // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets)
               match: `${W}(${ci(['SECRET'])})\\s+(${IDENT})\\s+(${ci(['AS'])})\\s+(?:(${ci(['BEARER'])})${WE}|(${ci(['HEADER'])})\\s+(\\S+))`,

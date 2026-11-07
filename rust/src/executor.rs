@@ -682,7 +682,16 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         }
         Ok(r)
     })?;
-    let mut by_name: HashMap<String, (Resource, String)> = indexed.iter().map(|(_, s)| s.name.clone()).zip(resolved).collect();
+    // DRAFTS false drops drafts; then SCHEMA checks run in Sitefile order, on the documents in path order; then SORT BY.
+    let mut by_name: HashMap<String, (Resource, String)> = HashMap::new();
+    for ((_, s), (res, key)) in indexed.iter().zip(resolved) {
+        by_name.insert(s.name.clone(), (without_drafts(s, res)?, key));
+    }
+    for spec in &p.imports {
+        if let (Some(_), Some((res, _))) = (&spec.schema, by_name.get(&spec.name)) {
+            check_import_schema(spec, res, &local)?;
+        }
+    }
 
     // FROM image stage bases: resolved when their stage starts (registry pull or local store).
     let image_store: std::cell::OnceCell<Store> = std::cell::OnceCell::new();
@@ -811,6 +820,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         env_key,
         stage_keys: HashMap::new(),
         input_key: String::new(),
+        renames: BTreeMap::new(),
         recorded: None,
         unrecorded: warn.clone(),
         from_image: &from_image,
@@ -844,6 +854,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             for op in &stage.operations {
                 let line = op.span().line;
                 let o = begin(prof, || format!("{label}:{line} {}", op.keyword()), "operation", || vec![("line", json!(line))]);
+                exec.renames.clone_from(&current_renames);
                 let (out, k, state) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
@@ -1500,6 +1511,44 @@ fn with_commit(res: Resource, commit: &str) -> Resource {
     }
 }
 
+/// `IMPORT … DRAFTS false`: leave out the elements whose `draft` is `true` (or the text `true`, as in a CSV cell).
+fn without_drafts(spec: &ImportSpec, res: Resource) -> Result<Resource> {
+    let Some(keep) = spec.drafts else { return Ok(res) };
+    let Resource::Value { format, value, provenance } = res else { return Ok(res) };
+    let Value::Array(items) = value else {
+        return Err(SitefileError::at(
+            E_TYPE,
+            format!("IMPORT {}: DRAFTS needs a list (a directory of documents, a CSV file or a JSON/YAML array), not a single value", spec.name),
+            &spec.span,
+        ));
+    };
+    let items = if keep {
+        items
+    } else {
+        items.into_iter().filter(|d| !matches!(d.get("draft"), Some(Value::Bool(true))) && d.get("draft").and_then(Value::as_str) != Some("true")).collect()
+    };
+    Ok(Resource::Value { format, value: Value::Array(items), provenance })
+}
+
+/// `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents.
+fn check_import_schema(spec: &ImportSpec, res: &Resource, local: &LocalContext) -> Result<()> {
+    let Some(schema) = &spec.schema else { return Ok(()) };
+    let what = format!("IMPORT {}", spec.name);
+    let Resource::Value { format, value, .. } = res else {
+        return Err(SitefileError::at(E_TYPE, format!("{what}: SCHEMA checks documents, but the import is a {}", res.kind()), &spec.span));
+    };
+    let Resource::File { bytes, .. } = local.read_file(&schema.path, Some(&schema.span))? else { unreachable!("read_file returns a file") };
+    let text = decode_utf8(&bytes, &format!("schema '{}'", schema.uri), Some(&schema.span))?;
+    let parsed = if schema.path.to_ascii_lowercase().ends_with(".json") {
+        serde_json::from_str::<Value>(&text)
+            .map_err(|e| SitefileError::at(E_SCHEMA, format!("{what}: schema '{}' is not valid JSON: {e}", schema.uri), &schema.span))?
+    } else {
+        crate::yaml::parse_yaml(&text, &schema.uri)?
+    };
+    let compiled = crate::schema::compile_schema(&parsed, &schema.uri, &what, &schema.span)?;
+    crate::schema::check_schema(value, &compiled, &what, *format == ValueFormat::Csv, &spec.span)
+}
+
 /// Apply an import's SORT BY to a list value.
 fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
     let Some(sort) = &spec.sort else { return Ok(res) };
@@ -1875,7 +1924,16 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
     let ienv = ImportEnv { local: &local, archive_limits: &env.remote.archive_limits, remote: RemoteEnv { label: &label, ..env.remote }, memo: env.memo };
     let plain: Vec<&ImportSpec> = p.imports.iter().filter(|s| s.as_kind != Some(ImportKind::Sitefile)).collect();
     let resolved = map_limit(&plain, env.concurrency.max(1), |s| resolve_import(s, &ienv))?;
-    let mut by_name: HashMap<String, (Resource, String)> = plain.iter().map(|s| s.name.clone()).zip(resolved).collect();
+    let mut by_name: HashMap<String, (Resource, String)> = HashMap::new();
+    for (s, (res, key)) in plain.iter().zip(resolved) {
+        by_name.insert(s.name.clone(), (without_drafts(s, res)?, key));
+    }
+    // SCHEMA files are read from the imported Sitefile's own context.
+    for s in &plain {
+        if let (Some(_), Some((res, _))) = (&s.schema, by_name.get(&s.name)) {
+            check_import_schema(s, res, &local)?;
+        }
+    }
     let mut resources: Vec<(String, Resource)> = Vec::new();
     let mut resource_keys: HashMap<String, String> = HashMap::new();
     let mut imported: Vec<(String, ImportedSitefile)> = Vec::new();
@@ -2003,6 +2061,7 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
         env_key: unit.env_key.clone(),
         stage_keys: keys,
         input_key: String::new(),
+        renames: BTreeMap::new(),
         recorded: None,
         unrecorded: env.remote.warn.clone(),
         from_image: &from_image,
@@ -2022,6 +2081,7 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
             };
             let mut record = unit.steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
+                exec.renames.clone_from(&current);
                 let (out, k, _) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
@@ -2348,7 +2408,7 @@ impl<'a> Scope<'a> {
 
     /// Render a parsed template against this scope (values, blocks, html fragments and, with
     /// `files`, `${file …}` on the stage's tree and RENDER --inline-svg).
-    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode, files: (&Tree, bool)) -> Result<String> {
+    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode, files: (&dyn crate::media::TemplateTree, bool)) -> Result<String> {
         let ctx = TemplateContext {
             is_fragment: &|n: &str| self.is_fragment(n),
             fragment: &|n: &str| self.fragment(n),
@@ -2537,6 +2597,8 @@ struct Exec<'a> {
     stage_keys: HashMap<String, String>,
     /// With a memo: the key of the tree the running operation reads (a RENDER with `${file …}` depends on it).
     input_key: String,
+    /// What the stage's FINGERPRINTs so far renamed (old path -> new path): `${file "/style.css"}` after one finds the hashed file.
+    renames: BTreeMap<String, String>,
     /// While an operation runs with a memo: the warnings it printed (a memoized step replays them).
     recorded: Option<Arc<Mutex<Vec<String>>>>,
     /// The warning callback that does not record (a tool's stderr).
@@ -2955,7 +3017,9 @@ impl<'a> Exec<'a> {
                 } else {
                     String::new()
                 };
-                let files_ctx = (tree, *inline_svg);
+                let renames = self.renames.clone();
+                let file_tree = FileTree { tree, renames: &renames };
+                let files_ctx: (&dyn crate::media::TemplateTree, bool) = (&file_tree, *inline_svg);
                 let key = memoized.then(|| {
                     let mut names = deps.clone();
                     if let Some(e) = each {
@@ -2983,17 +3047,23 @@ impl<'a> Exec<'a> {
                         span,
                     ));
                 };
-                if items.is_empty() {
+                // BY / PAGE: the loop runs over groups or pages instead of the elements.
+                let what = match &each.by {
+                    Some(b) => format!("FOR {as_name} IN {list} BY {b}"),
+                    None => format!("FOR {as_name} IN {list}"),
+                };
+                let groups = match &each.by {
+                    Some(b) => Some(crate::pages::group_by(items, b, &what, span)?),
+                    None => None,
+                };
+                if items.is_empty() && !(each.page.is_some() && groups.is_none()) {
                     (self.warn)(&format!("{origin}: FOR {as_name} IN {list} renders nothing: '{list}' is empty"));
+                } else if groups.as_ref().is_some_and(|g| g.is_empty()) {
+                    (self.warn)(&format!("{origin}: {what} renders nothing: no element has '{}'", each.by.as_deref().unwrap_or_default()));
                 }
-                // An element's page depends on the template, the element and the imports the template
-                // names (other than the loop variable), so editing one document re-renders one page.
-                let refs_key = if memoized { self.names_key(deps, Some(as_name)) } else { String::new() };
-                let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
-                let mut files: Files = Vec::new();
-                for item in items {
+                let dest_of = |item: &Value, op: &Operand| -> Result<String> {
                     let mut raw = String::new();
-                    for part in &dest_op.parts {
+                    for part in &op.parts {
                         match part {
                             TemplatePart::Text(t) => raw.push_str(t),
                             TemplatePart::Var { name, path, span } => {
@@ -3002,10 +3072,64 @@ impl<'a> Exec<'a> {
                             }
                         }
                     }
-                    let target = normalize_virtual(&raw, Some(&dest_op.span), &format!("RENDER destination for {as_name}"))?;
+                    let target = normalize_virtual(&raw, Some(&op.span), &format!("RENDER destination for {as_name}"))?;
                     if target.trailing_slash {
-                        return Err(SitefileError::at(E_PATH, format!("RENDER destination '{raw}' must be a file path, not a directory"), &dest_op.span));
+                        return Err(SitefileError::at(E_PATH, format!("RENDER destination '{raw}' must be a file path, not a directory"), &op.span));
                     }
+                    Ok(target.path)
+                };
+                // Each element with its destination. Pages get `url`, `prev` and `next` once every page's
+                // destination is known.
+                let mut elements: Vec<(Cow<'_, Value>, String)> = Vec::new();
+                if let Some(pg) = &each.page {
+                    let runs: Vec<(Option<String>, Vec<Value>)> = match &groups {
+                        Some(gs) => gs
+                            .iter()
+                            .map(|g| (g["key"].as_str().map(str::to_string), g["items"].as_array().cloned().unwrap_or_default()))
+                            .collect(),
+                        None => vec![(None, items.clone())],
+                    };
+                    for pages in crate::pages::paginate(&runs, pg.size) {
+                        let mut paths = Vec::with_capacity(pages.len());
+                        for m in &pages {
+                            let v = Value::Object(m.clone());
+                            let op = match (&pg.first, m["number"].as_u64()) {
+                                (Some(f), Some(1)) => f,
+                                _ => dest_op,
+                            };
+                            paths.push(dest_of(&v, op)?);
+                        }
+                        let urls: Vec<String> = paths.iter().map(|p| page_url("", p)).collect();
+                        for (i, (mut m, path)) in pages.into_iter().zip(paths).enumerate() {
+                            m.insert("url".into(), json!(urls[i]));
+                            m.insert("prev".into(), json!(if i > 0 { urls[i - 1].clone() } else { String::new() }));
+                            m.insert("next".into(), json!(urls.get(i + 1).cloned().unwrap_or_default()));
+                            elements.push((Cow::Owned(Value::Object(m)), path));
+                        }
+                    }
+                } else {
+                    match &groups {
+                        Some(gs) => {
+                            for g in gs {
+                                let path = dest_of(g, dest_op)?;
+                                elements.push((Cow::Owned(g.clone()), path));
+                            }
+                        }
+                        None => {
+                            for item in items {
+                                let path = dest_of(item, dest_op)?;
+                                elements.push((Cow::Borrowed(item), path));
+                            }
+                        }
+                    }
+                }
+                // An element's page depends on the template, the element and the imports the template
+                // names (other than the loop variable), so editing one document re-renders one page.
+                let refs_key = if memoized { self.names_key(deps, Some(as_name)) } else { String::new() };
+                let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
+                let mut files: Files = Vec::new();
+                for (item, target_path) in &elements {
+                    let item: &Value = item;
                     let item_scope = scope.with_item(as_name, item);
                     let page = || -> Result<Node> {
                         let out = item_scope.render(&parts, *escape, files_ctx)?;
@@ -3018,7 +3142,7 @@ impl<'a> Exec<'a> {
                         }
                         None => page()?,
                     };
-                    files.push((target.path, node));
+                    files.push((target_path.clone(), node));
                 }
                 Ok(self.memo_store(key, files, children.into_inner().unwrap_or_default(), true))
             }
@@ -3736,6 +3860,24 @@ impl crate::media::TemplateTree for Tree {
     }
     fn is_directory(&self, path: &str) -> bool {
         Tree::is_directory(self, path)
+    }
+}
+
+/// The tree a RENDER's `${file …}` reads, with the stage's FINGERPRINT renames.
+struct FileTree<'a> {
+    tree: &'a Tree,
+    renames: &'a BTreeMap<String, String>,
+}
+
+impl crate::media::TemplateTree for FileTree<'_> {
+    fn get(&self, path: &str) -> Option<&[u8]> {
+        Tree::get(self.tree, path).map(|n| &n.bytes[..])
+    }
+    fn is_directory(&self, path: &str) -> bool {
+        Tree::is_directory(self.tree, path)
+    }
+    fn renamed(&self, path: &str) -> Option<String> {
+        self.renames.get(path).cloned()
     }
 }
 

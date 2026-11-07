@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { escapeHtml } from './render.js';
 import { normalizeVirtual } from './paths.js';
+import { percentDecode } from './links.js';
 
 /** Helpers that produce a value (escaped like any substituted value). */
 export const VALUE_HELPERS = ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset'] as const;
@@ -388,6 +389,8 @@ function tag(
 export interface TemplateTree {
   get(path: string): Uint8Array | undefined;
   isDirectory(path: string): boolean;
+  /** Where a FINGERPRINT earlier in the stage moved `path` (its content-hashed name), if it did. */
+  renamed?(path: string): string | undefined;
 }
 
 /** `as` of a preload, from the extension. */
@@ -405,11 +408,18 @@ export interface HelperOptions {
 export function resolveFile(raw: string, tree: TemplateTree, span: SourceSpan): TreeFile {
   const p = normalizeVirtual(raw, span, '${file} path');
   if (p.path === '/' || tree.isDirectory(p.path)) throw new SitefileError('E_TYPE', `'${p.path}' is a directory; \${file} needs a file`, span);
-  const bytes = tree.get(p.path);
+  let path = p.path;
+  let bytes = tree.get(path);
+  // Renamed by FINGERPRINT: the hashed file, so the URL and integrity are those of what is served.
+  const moved = bytes ? undefined : tree.renamed?.(path);
+  if (moved !== undefined && tree.get(moved)) {
+    path = moved;
+    bytes = tree.get(moved);
+  }
   if (!bytes) {
     throw new SitefileError('E_NOT_FOUND', `'${p.path}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)`, span);
   }
-  return { path: p.path, bytes };
+  return { path, bytes };
 }
 
 /**
@@ -595,18 +605,50 @@ function findMetadata(path: string, helper: string | undefined, tree: TemplateTr
   const ext = extensionOf(path);
   if (ext === 'json') {
     if (helper === undefined || !['width', 'height', 'srcset', 'img'].includes(helper)) return undefined;
-    const bytes = tree.get(path);
-    if (!bytes) return undefined; // resolveFile reports it
-    const v = parseJson(bytes);
+    const at = located(path, tree);
+    if (!at) return undefined; // resolveFile reports it
+    const v = parseJson(at[1]);
     if (!looksLikeMetadata(v)) throw new SitefileError('E_DATA', `'${path}' is not image metadata (the <name>.json the image plugin writes next to the files it makes)`, span);
-    return readMetadata(v, path, span);
+    return moved(readMetadata(v, path, span), tree);
   }
   if (!IMAGE_EXTENSIONS.has(ext)) return undefined;
   const m = metadataPathOf(path);
-  const bytes = tree.get(m);
-  if (!bytes) return undefined;
-  const v = parseJson(bytes);
-  return looksLikeMetadata(v) ? readMetadata(v, m, span) : undefined;
+  const at = m ? located(m, tree) : undefined;
+  if (!at) return undefined;
+  const v = parseJson(at[1]);
+  return looksLikeMetadata(v) ? moved(readMetadata(v, m, span), tree) : undefined;
+}
+
+/** A tree path and its bytes, or where a FINGERPRINT moved it. */
+function located(path: string, tree: TemplateTree): readonly [string, Uint8Array] | undefined {
+  const bytes = tree.get(path);
+  if (bytes) return [path, bytes];
+  const to = tree.renamed?.(path);
+  const b = to === undefined ? undefined : tree.get(to);
+  return b ? [to!, b] : undefined;
+}
+
+/**
+ * Metadata read after a FINGERPRINT: its URLs (`src`, each `srcset` candidate) name the variants by
+ * their old paths, so a variant FINGERPRINT renamed gets the hashed file's URL.
+ */
+function moved(m: ImageMetadata, tree: TemplateTree): ImageMetadata {
+  if (!tree.renamed) return m;
+  const srcset = (set: string): string => set.split(',').map((c) => {
+    const t = c.replace(/^[ \t\n\r\f]+/, '');
+    const end = t.search(/[ \t\n\r\f]/);
+    const u = end < 0 ? t : t.slice(0, end);
+    const to = movedUrl(u, tree);
+    return to === u ? c : c.replace(u, to);
+  }).join(',');
+  return { ...m, src: movedUrl(m.src, tree), srcset: srcset(m.srcset), sources: m.sources.map((x) => ({ type: x.type, srcset: srcset(x.srcset) })) };
+}
+
+/** An absolute URL path FINGERPRINT renamed: the hashed file's URL; any other URL as it is. */
+function movedUrl(url: string, tree: TemplateTree): string {
+  if (!url.startsWith('/')) return url;
+  const to = tree.renamed?.(url.split('/').map(percentDecode).join('/'));
+  return to !== undefined && tree.get(to) ? fileUrl(to) : url;
 }
 
 /** What a helper writes from image metadata: the largest fallback variant, its srcset, and `<picture>` for several formats. */

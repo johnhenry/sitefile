@@ -65,6 +65,7 @@ struct Post {
     date: String,
     body: String,
     tags: Vec<String>,
+    draft: bool,
 }
 
 /// A site using every memoized step: imports of each kind, stages, COPY, RENDER (FOR), FEED, SITEMAP, TRANSFORM.
@@ -81,6 +82,10 @@ struct Site {
     swapped: bool,
     bad_post: bool,
     arg: String,
+    /// --build-arg DRAFTS (IMPORT … DRAFTS ${DRAFTS}).
+    drafts: bool,
+    /// schema.yaml requires a key no post has.
+    bad_schema: bool,
     /// --target: build only the `assets` stage.
     target: Option<String>,
     next: u32,
@@ -101,6 +106,8 @@ impl Site {
             swapped: false,
             bad_post: false,
             arg: "one".into(),
+            drafts: false,
+            bad_schema: false,
             target: None,
             next: 0,
         };
@@ -132,14 +139,18 @@ impl Site {
         let title = format!("Post {i} {}", self.word());
         let body = self.words(8);
         let tags = vec![self.word()];
-        self.posts.insert(format!("2026-01-{day}-p{i}.md"), Post { title, date: format!("2026-02-{day}"), body, tags });
+        self.posts.insert(format!("2026-01-{day}-p{i}.md"), Post { title, date: format!("2026-02-{day}"), body, tags, draft: false });
     }
 
     fn write(&self) {
         let _ = fs::remove_dir_all(self.dir.join("posts"));
         let _ = fs::remove_dir_all(self.dir.join("public"));
         for (name, p) in &self.posts {
-            put(&self.dir.join("posts").join(name), &format!("---\ntitle: \"{}\"\ndate: {}\ntags: [{}]\n---\n# {}\n\n{}\n", p.title, p.date, p.tags.join(", "), p.title, p.body));
+            let draft = if p.draft { "draft: true\n" } else { "" };
+            put(
+                &self.dir.join("posts").join(name),
+                &format!("---\ntitle: \"{}\"\ndate: {}\ntags: [{}]\n{draft}---\n# {}\n\n{}\n", p.title, p.date, p.tags.join(", "), p.title, p.body),
+            );
         }
         if self.bad_post {
             put(&self.dir.join("posts/zz-bad.md"), "---\ntitle: [unclosed\n---\nbody\n");
@@ -157,14 +168,19 @@ impl Site {
         put(&self.dir.join("templates/post.html"), post_templates[self.post_template]);
         put(&self.dir.join("templates/index.html"), index_templates[self.index_template]);
         put(&self.dir.join("data/site.json"), &serde_json::json!({ "title": self.site_title }).to_string());
+        put(
+            &self.dir.join("schema.yaml"),
+            if self.bad_schema { "required: [missing]\n" } else { "required: [title]\nproperties:\n  tags: {type: list, items: string}\n  draft: boolean\n" },
+        );
         let rows: Vec<String> = self.rows.iter().map(|(a, n)| format!("{a},{n}")).collect();
         put(&self.dir.join("data/rows.csv"), &format!("name,n\n{}\n", rows.join("\n")));
         let a = "COPY ./public/ /static/";
         let b = "COPY --from=assets /x/ /assets/";
         let mut lines = vec![
             "ARG SITE = \"S\"",
+            "ARG DRAFTS = \"false\"",
             "PLUGIN badge FROM ./plugins/badge.wasm",
-            "IMPORT posts FROM ./posts AS markdown SORT BY date DESC",
+            "IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./schema.yaml DRAFTS ${DRAFTS}",
             "IMPORT site FROM ./data/site.json AS json",
             "IMPORT rows FROM ./data/rows.csv AS csv",
             "IMPORT pub FROM ./public",
@@ -191,6 +207,13 @@ impl Site {
             "TRANSFORM WITH badge TO /badges/${post.slug}.svg FOR post IN posts",
             "FEED posts BASE https://example.com LINK /posts/${item.slug}.html TITLE \"Feed\"",
             "SITEMAP BASE https://example.com",
+            // Tag pages (two posts a page) and an index paginated by three.
+            "RENDER --escape=html <<T TO /tags/${t.key}/${t.number}.html FOR t IN posts BY tags PAGE 2 FIRST /tags/${t.key}/index.html",
+            "${t.key} ${t.number}/${t.total}:${#each t.items as p}${p.title}${/each} ${t.prev} ${t.next}",
+            "T",
+            "RENDER --escape=html <<T TO /page/${page.number}.html FOR page IN posts PAGE 3",
+            "${#each page.items as p}<a>${p.title}</a>${/each}${page.next}",
+            "T",
             "REDIRECT /old /index.html",
             "EXPORT /",
         ]);
@@ -201,7 +224,8 @@ impl Site {
     fn mutate(&mut self) -> &'static str {
         const KINDS: &[&str] = &[
             "post-body", "post-title", "post-date", "add-post", "remove-post", "post-template", "index-template", "public-edit", "public-add",
-            "public-remove", "site-json", "rows", "arg", "sitefile-line", "sitefile-swap", "bad-post", "target", "nothing",
+            "public-remove", "site-json", "rows", "arg", "sitefile-line", "sitefile-swap", "bad-post", "target", "post-draft", "drafts-arg", "schema",
+            "post-tags", "nothing",
         ];
         let kind = KINDS[self.r.below(KINDS.len())];
         let names: Vec<String> = self.posts.keys().cloned().collect();
@@ -271,6 +295,19 @@ impl Site {
             "sitefile-swap" => self.swapped = !self.swapped,
             "bad-post" => self.bad_post = !self.bad_post,
             "target" => self.target = if self.target.is_none() { Some("assets".into()) } else { None },
+            "post-draft" => {
+                let n = pick(&mut self.r, &names);
+                let p = self.posts.get_mut(&n).unwrap();
+                p.draft = !p.draft;
+            }
+            "drafts-arg" => self.drafts = !self.drafts,
+            "schema" => self.bad_schema = !self.bad_schema,
+            "post-tags" => {
+                let n = pick(&mut self.r, &names);
+                let count = self.r.below(3);
+                let tags = (0..count).map(|_| self.word()).collect();
+                self.posts.get_mut(&n).unwrap().tags = tags;
+            }
             _ => {}
         }
         self.write();
@@ -280,6 +317,7 @@ impl Site {
     fn options(&self) -> BuildOptions {
         let mut args = BuildArgs::new();
         args.set("SITE", self.arg.clone());
+        args.set("DRAFTS", self.drafts.to_string());
         BuildOptions { context_dir: self.dir.to_string_lossy().into_owned(), lockfile: LockfileSetting::Disabled, build_args: args, target: self.target.clone(), ..Default::default() }
     }
 }
@@ -529,16 +567,18 @@ fn an_edit_reruns_only_what_read_it() {
     assert_eq!(
         states,
         [
-            "8 COPY hit",
-            "10 COPY hit",
+            "9 COPY hit",
             "11 COPY hit",
             "12 COPY hit",
-            "13 RENDER miss",
+            "13 COPY hit",
             "14 RENDER miss",
-            "15 RENDER files",
-            "18 TRANSFORM miss",
-            "19 FEED miss",
-            "20 SITEMAP miss"
+            "15 RENDER miss",
+            "16 RENDER files",
+            "19 TRANSFORM miss",
+            "20 FEED miss",
+            "21 SITEMAP miss",
+            "22 RENDER miss",
+            "25 RENDER miss"
         ]
     );
     assert_eq!(edited.transform_stats.plugin_calls, 1);

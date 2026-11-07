@@ -465,6 +465,10 @@ pub enum HelperOutput {
 pub trait TemplateTree {
     fn get(&self, path: &str) -> Option<&[u8]>;
     fn is_directory(&self, path: &str) -> bool;
+    /// Where a FINGERPRINT earlier in the stage moved `path` (its content-hashed name), if it did.
+    fn renamed(&self, _path: &str) -> Option<String> {
+        None
+    }
 }
 
 /// RENDER options the helpers read.
@@ -529,14 +533,25 @@ pub fn resolve_file<'t>(raw: &str, tree: &'t dyn TemplateTree, span: &SourceSpan
     if p.path == "/" || tree.is_directory(&p.path) {
         return Err(SitefileError::at(E_TYPE, format!("'{}' is a directory; ${{file}} needs a file", p.path), span));
     }
-    let Some(bytes) = tree.get(&p.path) else {
+    let mut path = p.path;
+    let mut found = tree.get(&path);
+    // Renamed by FINGERPRINT: the hashed file, so the URL and integrity are those of what is served.
+    if found.is_none() {
+        if let Some(moved) = tree.renamed(&path) {
+            if let Some(b) = tree.get(&moved) {
+                path = moved;
+                found = Some(b);
+            }
+        }
+    }
+    let Some(bytes) = found else {
         return Err(SitefileError::at(
             E_NOT_FOUND,
-            format!("'{}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)", p.path),
+            format!("'{}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)", path),
             span,
         ));
     };
-    Ok(TreeFile { path: p.path, bytes })
+    Ok(TreeFile { path: path, bytes })
 }
 
 /// What `${file "<raw>" | helper attrs…}` writes (`helper` None: the file's URL).
@@ -770,20 +785,60 @@ fn find_metadata(path: &str, helper: Option<&str>, tree: &dyn TemplateTree, span
         if !helper.is_some_and(|h| ["width", "height", "srcset", "img"].contains(&h)) {
             return Ok(None);
         }
-        let Some(bytes) = tree.get(path) else { return Ok(None) };
+        let Some(bytes) = located(path, tree) else { return Ok(None) };
         let v = parse_json(bytes).filter(looks_like_metadata).ok_or_else(|| {
             SitefileError::at(E_DATA, format!("'{path}' is not image metadata (the <name>.json the image plugin writes next to the files it makes)"), span)
         })?;
-        return read_metadata(&v, path, span).map(Some);
+        return read_metadata(&v, path, span).map(|m| Some(moved(m, tree)));
     }
     if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         return Ok(None);
     }
     let m = metadata_path_of(path);
-    let Some(bytes) = tree.get(&m) else { return Ok(None) };
+    let found = if m.is_empty() { None } else { located(&m, tree) };
+    let Some(bytes) = found else { return Ok(None) };
     match parse_json(bytes) {
-        Some(v) if looks_like_metadata(&v) => read_metadata(&v, &m, span).map(Some),
+        Some(v) if looks_like_metadata(&v) => read_metadata(&v, &m, span).map(|m| Some(moved(m, tree))),
         _ => Ok(None),
+    }
+}
+
+/// A tree path's bytes, or those of where a FINGERPRINT moved it.
+fn located<'t>(path: &str, tree: &'t dyn TemplateTree) -> Option<&'t [u8]> {
+    tree.get(path).or_else(|| tree.renamed(path).and_then(|to| tree.get(&to)))
+}
+
+/// Metadata read after a FINGERPRINT: a variant it renamed gets the hashed file's URL (see src/media.ts moved).
+fn moved(m: ImageMetadata, tree: &dyn TemplateTree) -> ImageMetadata {
+    const WS: &[char] = &[' ', '\t', '\n', '\r', '\x0c'];
+    let srcset = |set: &str| -> String {
+        set.split(',')
+            .map(|c| {
+                let t = c.trim_start_matches(WS);
+                let u = t.find(WS).map_or(t, |end| &t[..end]);
+                let to = moved_url(u, tree);
+                if to == u { c.to_string() } else { c.replacen(u, &to, 1) }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    ImageMetadata {
+        src: moved_url(&m.src, tree),
+        srcset: srcset(&m.srcset),
+        sources: m.sources.iter().map(|(t, s)| (t.clone(), srcset(s))).collect(),
+        ..m
+    }
+}
+
+/// An absolute URL path FINGERPRINT renamed: the hashed file's URL; any other URL as it is.
+fn moved_url(url: &str, tree: &dyn TemplateTree) -> String {
+    if !url.starts_with('/') {
+        return url.to_string();
+    }
+    let path = url.split('/').map(crate::links::percent_decode).collect::<Vec<_>>().join("/");
+    match tree.renamed(&path) {
+        Some(to) if tree.get(&to).is_some() => file_url(&to),
+        _ => url.to_string(),
     }
 }
 

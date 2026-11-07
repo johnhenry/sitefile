@@ -1,0 +1,15 @@
+# html fragments inside FOR ... BY and PAGE, in a Sitefile imported by ../Sitefile:
+# its fragments, ARGs and AS html partial resolve here, not in the importer.
+ARG TITLE = "Inner & co"
+STAGE pages
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC
+IMPORT footer FROM ./partials/footer.html AS html
+LET head: html = <h1>${TITLE}</h1>
+LET list: html = <ul>${#each group.items as p}<li>${p.title}</li>${/each}</ul>
+RENDER --escape=html <<HTML TO /tags/${group.key}.html FOR group IN posts BY tags
+${head}<h2>${group.key} (${group.count})</h2>${list}${footer}
+HTML
+RENDER --escape=html <<HTML TO /page/${group.number}.html FOR group IN posts PAGE 2 FIRST /index.html
+${head}${list}<a href="${group.next}">next</a>${footer}
+HTML
+EXPORT /

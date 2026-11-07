@@ -43,7 +43,14 @@ pub fn operation_label(op: &Operation) -> String {
             format!("COPY {} {dest}{}", source_label(source), if *dest_is_dir && dest != "/" { "/" } else { "" })
         }
         Operation::Render { template, dest, each, .. } => match each {
-            Some(e) => format!("RENDER {} FOR {} IN {}", source_label(template), e.as_name, e.list),
+            Some(e) => format!(
+                "RENDER {} FOR {} IN {}{}{}",
+                source_label(template),
+                e.as_name,
+                e.list,
+                e.by.as_ref().map(|b| format!(" BY {b}")).unwrap_or_default(),
+                e.page.as_ref().map(|p| format!(" PAGE {}", p.size)).unwrap_or_default()
+            ),
             None => format!("RENDER {} TO {dest}", source_label(template)),
         },
         Operation::Transform { source, plugin, each, .. } => format!(
@@ -179,6 +186,13 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let tools: HashSet<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
     let mut stage_ids: HashMap<String, String> = HashMap::new();
     let list = |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
+    // An IMPORT … SCHEMA reads its schema file.
+    for i in &p.imports {
+        if let Some(s) = &i.schema {
+            let from = local(&s.path, &mut locals);
+            edges.add(&from, &format!("import:{}", i.name), "input");
+        }
+    }
 
     // Stages of imported Sitefiles (IMPORT … AS sitefile) are read like stages: one node each, fed by the import.
     let mut imported_stages: Vec<GraphNode> = Vec::new();

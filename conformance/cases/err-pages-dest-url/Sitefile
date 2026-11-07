@@ -1,0 +1,5 @@
+IMPORT posts FROM ./posts.json AS json
+RENDER <<HTML TO /p/${p.next}.html FOR p IN posts PAGE 1
+x
+HTML
+EXPORT /

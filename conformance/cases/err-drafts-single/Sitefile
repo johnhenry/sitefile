@@ -1,0 +1,2 @@
+IMPORT post FROM ./post.md AS markdown DRAFTS false
+EXPORT /

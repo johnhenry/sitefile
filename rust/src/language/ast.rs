@@ -231,6 +231,31 @@ pub struct ForEach {
     pub as_name: String,
     pub list: String,
     pub span: SourceSpan,
+    /// `BY key` (RENDER only): one element per distinct value of the field.
+    pub by: Option<GroupBy>,
+    /// `PAGE n [FIRST <dest>]` (RENDER only): pages of n items.
+    pub page: Option<PageClause>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupBy {
+    pub key: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageClause {
+    pub size: Operand,
+    /// `FIRST <dest>`: the first page's destination.
+    pub first: Option<Operand>,
+    pub span: SourceSpan,
+}
+
+/// `DRAFTS <true|false>` of an IMPORT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftsClause {
+    pub value: Operand,
+    pub span: SourceSpan,
 }
 
 /// A build secret sent as an HTTP request header of a remote IMPORT.
@@ -257,6 +282,13 @@ pub struct ImportArg {
 pub struct SortBy {
     pub key: String,
     pub descending: bool,
+    pub span: SourceSpan,
+}
+
+/// `SCHEMA <path>` of an IMPORT: a local YAML/JSON schema for its documents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaClause {
+    pub path: Operand,
     pub span: SourceSpan,
 }
 
@@ -291,6 +323,10 @@ pub enum Instruction {
         as_kind: Option<ImportKind>,
         integrity: Option<String>,
         sort: Option<SortBy>,
+        /// `SCHEMA <path>`: every document (or list element) must match this schema.
+        schema: Option<SchemaClause>,
+        /// `DRAFTS <true|false>`: whether elements with `draft: true` are kept.
+        drafts: Option<DraftsClause>,
         /// `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets).
         secrets: Vec<ImportSecret>,
         /// `ARG NAME=value` (repeatable): build args of a Sitefile imported `AS sitefile`.

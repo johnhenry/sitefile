@@ -1,0 +1,21 @@
+# Drafts, tag pages and pagination (issue #101), with FEED and SITEMAP.
+ARG DRAFTS: boolean = false
+ARG PER_PAGE: number = 2
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
+RENDER --escape=html <<HTML TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html
+<p>${page.number}/${page.total} (${page.count}) [${page.url}] prev=${page.prev} next=${page.next}</p>
+${#each page.items as p}<a href="/posts/${p.slug}/">${p.title}</a>
+${/each}
+HTML
+RENDER --escape=html <<HTML TO /posts/${post.slug}/index.html FOR post IN posts
+<h1>${post.title}</h1>${#each post.tags as t}<a href="/tags/${t}/">${t}</a>${/each}
+HTML
+RENDER --escape=html <<HTML TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+<h1>${tag.key} (${tag.count})</h1>${#each tag.items as p}<li>${p.title}</li>${/each}
+HTML
+RENDER --escape=html <<HTML TO /cat/${c.key}/${c.number}.html FOR c IN posts BY category PAGE 1 FIRST /cat/${c.key}/index.html
+${c.key} ${c.number}/${c.total} ${c.prev}|${c.next}: ${#each c.items as p}${p.title}${/each}
+HTML
+FEED posts BASE https://example.com LINK /posts/${item.slug}/index.html
+SITEMAP BASE https://example.com
+EXPORT /

@@ -1,0 +1,5 @@
+IMPORT posts FROM ./posts.yaml AS yaml
+RENDER <<HTML TO /t/${t.key}.html FOR t IN posts BY tags
+${t.key}
+HTML
+EXPORT /

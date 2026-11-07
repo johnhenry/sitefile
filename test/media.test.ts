@@ -245,3 +245,29 @@ test('metadata errors: version, fields, not metadata', async () => {
   assert.equal((await failure('${file /img/sky.jpg | img}', metaFile({ ...META, sources: [{ type: 1 }] }))).message, "Sitefile:7:1: '/img/sky.json' is not valid image metadata: 'sources.0.type' must be a string");
   assert.equal((await failure('${file /d.json | img}', metaFile({ a: 1 }, '/d.json'))).code, 'E_DATA');
 });
+
+test('after FINGERPRINT, the old path gives the hashed URL and the integrity of the served bytes', async () => {
+  const dir = await project({
+    'public/style.css': 'body { background: url(/img/dot.svg); }\n',
+    'public/img/dot.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>\n',
+    Sitefile:
+      'STAGE a\nCOPY ./public/ /\nFINGERPRINT /img/ /style.css\n' +
+      'RENDER <<HTML TO /index.html\n${file "/style.css" | stylesheet}\nHTML\n' +
+      'STAGE b FROM a\nRENDER <<HTML TO /b.html\n${file "/style.css"}\nHTML\nEXPORT /',
+  });
+  const r = await build({ contextDir: dir, lockfile: false, label: 'Sitefile' });
+  const css = r.output.entries().find(([p]) => /^\/style\.[0-9a-f]+\.css$/.test(p));
+  assert.ok(css, 'style.css was fingerprinted');
+  assert.match(text(css[1].bytes), /dot\.[0-9a-f]+\.svg/);
+  assert.equal(text(r.output.get('/index.html')?.bytes), `<link rel="stylesheet" href="${css[0]}" integrity="${integrityOf(css[1].bytes)}">\n`);
+  assert.equal(text(r.output.get('/b.html')?.bytes), `${css[0]}\n`);
+});
+
+test('metadata after FINGERPRINT: the variants it renamed get their hashed URLs', async () => {
+  const variants = ['sky-400.jpg', 'sky-800.jpg', 'sky-400.webp', 'sky-800.webp'].map((n) => `COPY <<V /img/${n}\n${n}\nV\n`).join('');
+  const html = await page('${file "/img/sky.jpg" | img alt=""}|${file /img/sky.jpg | url}', metaFile(META) + variants + 'FINGERPRINT /img/\n');
+  assert.doesNotMatch(html, /sky-(400|800)\.(jpg|webp)\b/, html);
+  assert.match(html, /^<picture><source type="image\/webp" srcset="\/img\/sky-400\.[0-9a-f]+\.webp 400w, \/img\/sky-800\.[0-9a-f]+\.webp 800w">/);
+  assert.match(html, /<img src="\/img\/sky-800\.[0-9a-f]+\.jpg" srcset="\/img\/sky-400\.[0-9a-f]+\.jpg 400w, \/img\/sky-800\.[0-9a-f]+\.jpg 800w" width="800" height="500"/);
+  assert.match(html, /\|\/img\/sky-800\.[0-9a-f]+\.jpg\n$/);
+});

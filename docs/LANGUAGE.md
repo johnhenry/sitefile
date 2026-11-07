@@ -206,8 +206,10 @@ These pin down what the draft above leaves open. Tests cover each rule.
   not a type for ARG (`E_SYNTAX`).
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|html|tree|sitefile] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]… [ARG NAME=value]…`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|html|tree|sitefile] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]… [ARG NAME=value]…`
   - `AS sitefile` and `ARG`: see Sitefile imports below.
+  - `SCHEMA`: see Schemas below (not with `AS sitefile`; an imported Sitefile's own SCHEMA paths are read from its own context).
+  - `DRAFTS`: see Tag pages, pagination and drafts below (also not with `AS sitefile`).
   - `SECRET`: see Build secrets below.
   - `AS markdown` and `SORT BY`: see Markdown and template blocks below;
     `AS yaml`, `AS csv`, `AS wbn` and directories of data files: see Data files.
@@ -267,7 +269,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     (`--from=s /www/a` → `www/a`) otherwise; a whole context, import or stage
     keeps nothing. There is no `/./` pivot. Not allowed with an inline body
     (`E_SYNTAX`).
-- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] [--inline-svg] <template> TO <dest> [FOR item IN list]`
+- `RENDER [--escape=none|html] [--overwrite] [--from=<stage>] [--inline-svg] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]` (`BY`, `PAGE`: see Tag pages, pagination and drafts below)
   - `<template>` is a source like COPY's (including `--from`, so a template can be produced by an earlier stage) and must be a UTF-8 file. `<dest>` is
     a file path (no trailing slash).
   - Templates use `${NAME}` for ARG/LET, `${name}` for a text import, and
@@ -404,7 +406,11 @@ HTML
 - **Evaluated where it is used.** `${name}` in a template renders the
   fragment in place, against that RENDER: its `FOR` loop variable (`${item…}`),
   the `${#each}` variables around the use, its escape mode. A fragment may use
-  other fragments.
+  other fragments. With `FOR … BY` or `PAGE` the loop variable is the group or
+  page (`${page.items}`, `${tag.key}`), as in the RENDER's own template. In a
+  Sitefile imported `AS sitefile`, its fragments and `AS html` imports resolve
+  in that Sitefile (its ARGs, its paths); the importer's fragments of the same
+  name are not visible there.
 - **Checked where it is declared** (`validate` reports these at the LET):
   its template syntax (`E_TEMPLATE`, at the exact line and column), and every
   name it reads that is declared before it (a dotted `${T.x}` on an ARG/LET is
@@ -531,19 +537,25 @@ HTML
     positive whole `width`/`height` and a `sources` list of `{type, srcset}`
     (`E_DATA` naming the field otherwise). Other helpers (`size`, `integrity`,
     `datauri`, …) read the file itself.
+  - After a FINGERPRINT that renamed the variants (and the `.json`), the old
+    paths still work and each absolute URL in `src` and `srcset` that names a
+    renamed file becomes its hashed URL; other URLs (another host, a file it
+    did not rename) stay as written.
 - **Fragments and loops.** Helpers work in html fragments (evaluated at the
   use, against that RENDER's tree and flags) and in `RENDER … FOR`, with
   `${item.key}` in their strings: `${file "/img/${item.file}" | img alt="${item.alt}"}`.
   A reference that is an html fragment is `E_TYPE`.
 - **Incremental rebuilds**: a RENDER whose template (or a fragment it uses) has
   a `${file …}` is keyed by its input tree too, so a changed file is seen.
-- **With FINGERPRINT**: helpers write the path the file has at the RENDER; a
-  FINGERPRINT after it rewrites those references (`src`, `href`, `srcset`) like
-  any other. `integrity` is of the bytes at the RENDER, so it stays right for
-  scripts and for stylesheets FINGERPRINT does not change; a stylesheet whose
-  own `url(…)` references FINGERPRINT rewrites gets new bytes, and its earlier
-  `integrity` no longer matches: leave such a stylesheet out of the FINGERPRINT
-  patterns, or write its `<link>` by hand.
+- **With FINGERPRINT**: a `${file …}` *after* a FINGERPRINT in the stage (or
+  in a stage `FROM` it) may name the file's old path: `${file "/style.css" |
+  stylesheet}` writes the hashed URL (`/style.3f2a…9c.css`) and an `integrity`
+  of the hashed file's bytes, which are what is served. This is the order to
+  use for SRI. A helper *before* a FINGERPRINT writes the path the file has at
+  the RENDER, and the FINGERPRINT rewrites that reference (`src`, `href`,
+  `srcset`) like any other, but `integrity` stays that of the bytes at the
+  RENDER: right for scripts and for stylesheets FINGERPRINT does not change,
+  wrong for a stylesheet whose own `url(…)` references it rewrites.
 
 ### Data files: YAML, CSV and Web Bundles (see `examples/data/`)
 All of these are **values**: templates read them, `FOR` iterates over them,
@@ -574,6 +586,144 @@ line and column.
 - `SORT BY` applies to any list import (markdown, json, yaml, csv); the value
   must be a list of objects. Numbers **and numeric strings** (such as CSV
   cells) compare numerically.
+
+### Tag pages, pagination and drafts (see `examples/blog/`)
+Three blog staples, built on `IMPORT` and `RENDER … FOR`:
+
+```
+ARG DRAFTS: boolean = false
+ARG PER_PAGE: number = 10
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
+RENDER --escape=html ./index.html TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html
+RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+```
+
+- **Drafts: `IMPORT … DRAFTS <true|false>`.** With `false`, the elements whose
+  `draft` field is `true` (or the text `true`, as in a CSV cell) are left out of
+  the import, so of everything that reads it: `RENDER … FOR` pages, `#each`
+  lists, groups and pages, FEED entries, and therefore the SITEMAP (which lists
+  the pages written). With `true` they are kept. The value is an operand that
+  must be `true` or `false` once interpolated (`E_VALIDATION` otherwise), so
+  the usual pattern is a boolean ARG: drafts stay out unless the build says
+  `--build-arg DRAFTS=true` (a preview). Without the clause nothing is left out
+  (importing never filters implicitly). `DRAFTS` applies to `AS markdown`,
+  `json`, `yaml` and `csv` (`E_VALIDATION`), at most once, and needs a list
+  (`E_TYPE` for a single document). Drafts are left out first, then the
+  `SCHEMA` checks the rest, then `SORT BY` orders it.
+- **Tag pages: `RENDER … FOR tag IN list BY key`.** Instead of once per
+  element, the template renders once per distinct value of the element field
+  `key`: `tag` is `{ key, count, items }`, where `key` is the value as text
+  (`${tag.key}`), `items` the elements that have it, in list order, and `count`
+  their number. A field that is a list (`tags: [a, b]`) puts the element in a
+  group per value (a value repeated in one element counts once); elements
+  without the field, or with `null` or `''`, are in no group. Values must be
+  text, numbers or booleans (`E_TYPE`: `FOR tag IN posts BY tags: 'tags' of
+  document '/a.md' is not text or a list of text`), and an element that is not
+  an object is `E_TYPE`. Groups come in `SORT BY` order of their keys (numeric
+  ones numerically, then text by UTF-16 code units); two keys that only differ
+  in case (`Rust`, `rust`) are two groups whose paths collide
+  (`E_PATH_COLLISION`). If no element has the field, nothing is rendered and
+  the build warns.
+- **Pagination: `RENDER … FOR page IN list PAGE <n> [FIRST <dest>]`.** The
+  list is cut into pages of `n` items (`n` is an operand, a whole number from 1
+  to 999999999, `E_VALIDATION` otherwise; `${PER_PAGE}` works) and the template
+  renders once per page. `page` is `{ count, items, number, total, url, prev,
+  next }`: the page's `items`, its `number` (from 1) of `total` pages, `count`
+  items in the whole list, and the URLs of this, the previous and the next page
+  (`''` when there is none, so `${#if page.next}` works). A URL is the page's
+  destination with `…/index.html` written as `…/` and each segment
+  percent-encoded, as SITEMAP writes paths. The destination is evaluated per
+  page (it usually uses `${page.number}`); `FIRST <dest>` gives page 1 its own
+  destination (`/index.html` rather than `/page/1/index.html`). Destinations
+  are computed before the URLs, so they cannot use `url`, `prev` or `next`
+  (`E_UNDEFINED`). An empty list gives one page with no items (so an index
+  page always exists) and no warning.
+- **Both: `FOR tag IN list BY key PAGE <n> [FIRST <dest>]`** paginates each
+  group: `tag` is a page with the group's `key` too (`{ key, count, items,
+  number, total, url, prev, next }`, `count` being the group's size), and
+  `prev`/`next` stay within the group.
+  `FOR t IN posts BY tags PAGE 10 FIRST /tags/${t.key}/index.html` with
+  destination `/tags/${t.key}/page/${t.number}/index.html` gives every tag an
+  index and numbered older pages.
+- The clauses come in this order after `FOR item IN list`: `BY`, then `PAGE`,
+  then `FIRST` (only after `PAGE`). `FIRST` may use the loop variable like the
+  destination; `PAGE`'s size may use ARG/LET values only. They apply to
+  `RENDER`, not `TRANSFORM … FOR`.
+- **Elsewhere**: FEED reads the import itself (drafts left out, every element,
+  not pages). Incremental rebuilds memoize each group or page as one element:
+  its key is the element value (items, numbers and URLs included), so a page
+  re-renders exactly when what it shows changes, and editing one post re-renders
+  its own page, its tag pages and the index pages that list it. `graph` labels
+  the operation `RENDER ./tag.html FOR tag IN posts BY tags PAGE 10`; lint's
+  `render-escape` checks the destination as written.
+
+### Schemas: `IMPORT … SCHEMA <file>` (see `examples/blog/`)
+Like Astro's content collections, an import of documents can declare what their
+fields must look like, so a typo in a post's frontmatter fails the build instead
+of rendering an empty title:
+
+```
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
+```
+
+```yaml
+# post.schema.yaml
+required: [title, date]
+properties:
+  title: string
+  date: date
+  draft: boolean
+  tags: {type: list, items: string}
+  status: {enum: [draft, published]}
+```
+
+- **Where**: `SCHEMA <file>` is a clause of `IMPORT … AS markdown|json|yaml|csv`
+  (`E_VALIDATION` for other kinds), given at most once, in any order with the
+  other clauses. `<file>` is an operand (`${NAME}` works), a context-relative
+  `.yaml`, `.yml` or `.json` file (`E_VALIDATION` otherwise; a URL is
+  `E_PROTOCOL`; the usual local sandbox applies). YAML schemas use the YAML
+  subset of `AS yaml`; JSON ones are parsed as JSON.
+- **The schema** is a small, deterministic subset of JSON Schema, the same in
+  both implementations: a mapping with
+  - `required`: a list of keys every document must have. A key whose value is
+    `null` counts as missing, and so does an empty CSV cell.
+  - `properties`: a mapping from a key to a rule, either a type name
+    (`title: string`) or a mapping with any of
+    - `type`: `string`, `number`, `boolean`, `date` (a string that is
+      `YYYY-MM-DD` or an RFC 3339 date-time, exactly what FEED accepts, so an
+      impossible date such as `2026-02-30` fails) or `list`;
+    - `items` (with `type: list`): the type of every element (`string`,
+      `number`, `boolean` or `date`);
+    - `enum`: a non-empty list of allowed strings, numbers or booleans; for a
+      `list` value, the allowed elements.
+  Keys not listed are not checked, and a listed key that is missing (or `null`)
+  is only an error when it is `required`. There are no other keywords (no
+  `pattern`: the two implementations would need the same regular expression
+  engine; no nested objects); an unknown key, type or malformed rule is
+  `E_SCHEMA` at the `SCHEMA` clause, naming the schema file and the property.
+- **What is checked**: each element of a list import (every Markdown document,
+  each element of a JSON/YAML array or directory collection, each CSV row), or
+  the single document of a one-file import. An element that is not an object is
+  `E_TYPE`. Markdown documents are checked as templates see them, so a `date`
+  taken from the file name satisfies `required: [date]`. CSV cells are always
+  strings, so in a CSV import `number` also accepts a numeric string (as
+  `SORT BY` reads them), `boolean` the strings `true` and `false`, and `enum`
+  entries match their text.
+- **Errors**: the first mismatch fails the build with `E_SCHEMA` at the IMPORT
+  line, naming the document (its `path` inside the import, or `#n` for the n-th
+  element of an array or CSV file), the key, what was expected and what was
+  found:
+  `IMPORT posts: document '/2026-01-05-hello.md' has no 'title' (required by schema './post.schema.yaml')`,
+  `IMPORT posts: document '/a.md' has 'date' string 'soon'; it should be a date (YYYY-MM-DD or an RFC 3339 date-time)`,
+  `IMPORT posts: document '/a.md' has 'tags' item 2 number 3; it should be a string`,
+  `IMPORT items: document '#2' has 'size' string 'xl'; it should be one of s, m, l`.
+  Imports are checked in Sitefile order and documents in path order (before
+  `SORT BY`), after every import has been read.
+- Checking happens whenever the imports are read (`build`, `serve`, `inspect`,
+  `why`), not in `validate`, which never reads files. The schema file is
+  read on every build (also in watch mode, where a change to it triggers a
+  rebuild like any other file); `graph` shows it as a `local:` input of the
+  import.
 
 ### Plugins: PLUGIN and TRANSFORM (see `docs/PLUGINS.md`, `examples/motion/`)
 - `PLUGIN name FROM ./plugins/x.mjs|x.wasm [INTEGRITY sha256:…]` declares a renderer:
