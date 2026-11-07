@@ -1,0 +1,27 @@
+# Helpers read the image plugin's <name>.json (issue #128), here written by hand:
+# src, srcset, width and height, and <picture> for several formats.
+COPY <<J /img/sky.json
+{"version": 1, "width": 800, "height": 500, "src": "/img/sky-800.jpg", "type": "image/jpeg",
+ "srcset": "/img/sky-400.jpg 400w, /img/sky-800.jpg 800w",
+ "sources": [{"type": "image/webp", "srcset": "/img/sky-400.webp 400w, /img/sky-800.webp 800w"},
+             {"type": "image/jpeg", "srcset": "/img/sky-400.jpg 400w, /img/sky-800.jpg 800w"}],
+ "variants": []}
+J
+COPY <<J /img/logo.json
+{"version": 1.0, "width": 64, "height": 64, "src": "/img/logo-64.png", "type": "image/png",
+ "srcset": "/img/logo-64.png 64w", "sources": [{"type": "image/png", "srcset": "/img/logo-64.png 64w"}], "variants": []}
+J
+COPY <<J /img/data.json
+{"not": "metadata"}
+J
+COPY <<X /img/data.png
+not used: the json next to it is not metadata, and this one is not an image
+X
+RENDER --escape=html <<HTML TO /index.html
+${file "/img/sky.jpg" | img alt="A <sky>" sizes="(min-width: 40em) 50vw, 100vw"}
+${file /img/logo.json | img alt=""}
+${file /img/sky.jpg} ${file /img/sky.jpg | type} ${file /img/sky.jpg | width}x${file /img/sky.jpg | height}
+${file /img/sky.jpg | srcset}
+${file /img/sky.json} ${file /img/data.png | size}
+HTML
+EXPORT /

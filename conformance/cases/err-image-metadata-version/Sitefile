@@ -1,0 +1,8 @@
+# Image metadata is versioned: a version this sitefile does not read is E_DATA.
+COPY <<J /img/sky.json
+{"version": 2, "variants": [], "src": "/img/sky-800.jpg"}
+J
+RENDER --escape=html <<HTML TO /index.html
+${file "/img/sky.jpg" | img alt="sky"}
+HTML
+EXPORT /

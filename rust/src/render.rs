@@ -1563,7 +1563,8 @@ mod tests {
             }
         }
         let png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 3, 0, 0, 0, 2];
-        let files = Files(vec![("/a.png", png), ("/s.css", b"h1 { color: <red> }\n".to_vec()), ("/d/x.txt", b"x".to_vec())]);
+        let meta = br#"{"version":1,"src":"/m-2.png","type":"image/png","width":2,"height":1,"srcset":"/m-1.png 1w, /m-2.png 2w","sources":[{"type":"image/webp","srcset":"/m-1.webp 1w"},{"type":"image/png","srcset":"/m-1.png 1w, /m-2.png 2w"}],"variants":[]}"#.to_vec();
+        let files = Files(vec![("/m.json", meta), ("/a.png", png), ("/s.css", b"h1 { color: <red> }\n".to_vec()), ("/d/x.txt", b"x".to_vec())]);
         let ctx = TemplateContext { is_fragment: &is_fragment, fragment: &fragment, tree: Some(&files), inline_svg: false };
         fixtures::check("template.json", |t| {
             let nodes = parse_render_template(t, "t.html", 3)?;

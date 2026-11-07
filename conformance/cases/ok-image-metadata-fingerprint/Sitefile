@@ -1,0 +1,27 @@
+# Image metadata read after FINGERPRINT (issue #128): the <name>.json and the variants it names
+# were renamed, so the helpers write the hashed URLs; a URL it did not rename stays as written.
+COPY <<J /img/sky.json
+{"version": 1, "width": 800, "height": 500, "src": "/img/sky-800.jpg", "type": "image/jpeg",
+ "srcset": "/img/sky-400.jpg 400w,\t/img/sky-800.jpg  800w, https://cdn.example/sky.jpg 1600w",
+ "sources": [{"type": "image/webp", "srcset": "/img/sky-400.webp 400w, /img/sky%20800.webp 800w"},
+             {"type": "image/jpeg", "srcset": "/img/sky-400.jpg 400w, /img/sky-800.jpg 800w"}],
+ "variants": []}
+J
+COPY <<V /img/sky-400.jpg
+400
+V
+COPY <<V /img/sky-800.jpg
+800
+V
+COPY <<V /img/sky-400.webp
+400 webp
+V
+COPY <<V "/img/sky 800.webp"
+800 webp
+V
+FINGERPRINT /img/
+RENDER --escape=html <<HTML TO /index.html
+${file "/img/sky.jpg" | img alt=""}
+${file /img/sky.jpg} ${file /img/sky.jpg | srcset}
+HTML
+EXPORT /

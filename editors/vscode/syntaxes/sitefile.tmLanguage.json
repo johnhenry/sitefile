@@ -4345,7 +4345,7 @@
           },
           "patterns": [
             {
-              "match": "(\\|)[ \\t]*(?:(url|width|height|type|size|integrity|datauri|img|video|audio|source|script|stylesheet|preload|modulepreload|pre|svg)(?![A-Za-z0-9-])|([a-z][a-z0-9-]*))",
+              "match": "(\\|)[ \\t]*(?:(url|width|height|type|size|integrity|datauri|srcset|img|video|audio|source|script|stylesheet|preload|modulepreload|pre|svg)(?![A-Za-z0-9-])|([a-z][a-z0-9-]*))",
               "captures": {
                 "1": {
                   "name": "keyword.operator.pipe.sitefile"

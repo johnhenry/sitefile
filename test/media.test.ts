@@ -149,7 +149,7 @@ test('errors: missing files, directories, relative paths, non-images, size caps,
   for (const [t, d] of [
     ['${file }', 'expected a path after ${file, as in ${file "/img/a.png"}'],
     ['${file "/a | img}', 'unterminated string in ${file …}'],
-    ['${file /a | imgg}', "unknown file helper 'imgg' (expected url, width, height, type, size, integrity, datauri, img, video, audio, source, script, stylesheet, preload, modulepreload, pre, svg)"],
+    ['${file /a | imgg}', "unknown file helper 'imgg' (expected url, width, height, type, size, integrity, datauri, srcset, img, video, audio, source, script, stylesheet, preload, modulepreload, pre, svg)"],
     ['${file /a | width x}', 'the width helper takes no attributes'],
     ['${file /a | img alt=1 ALT=2}', "attribute 'ALT' given twice"],
     ['${file /a x}', "expected | or } after the path in ${file …}, got 'x'"],
@@ -196,6 +196,56 @@ test('incremental rebuilds see a changed file that a helper reads', async () => 
   assert.equal(second, integrityOf(new TextEncoder().encode('two')) + '\n');
 });
 
+// ---- image plugin metadata (#128)
+
+const META = {
+  version: 1,
+  source: { name: 'sky.jpg', format: 'jpeg', width: 1600, height: 1000 },
+  width: 800,
+  height: 500,
+  src: '/img/sky-800.jpg',
+  type: 'image/jpeg',
+  srcset: '/img/sky-400.jpg 400w, /img/sky-800.jpg 800w',
+  sources: [
+    { type: 'image/webp', srcset: '/img/sky-400.webp 400w, /img/sky-800.webp 800w' },
+    { type: 'image/jpeg', srcset: '/img/sky-400.jpg 400w, /img/sky-800.jpg 800w' },
+  ],
+  variants: [],
+};
+const metaFile = (m: unknown, at = '/img/sky.json'): string => `COPY <<J ${at}\n${JSON.stringify(m)}\nJ\n`;
+
+test('img reads the image plugin metadata: src, srcset, size, and <picture> for several formats', async () => {
+  assert.equal(
+    await page('${file "/img/sky.jpg" | img alt="${ALT}" sizes="(min-width: 40em) 50vw, 100vw"}', metaFile(META)),
+    '<picture><source type="image/webp" srcset="/img/sky-400.webp 400w, /img/sky-800.webp 800w" sizes="(min-width: 40em) 50vw, 100vw">' +
+      '<img src="/img/sky-800.jpg" srcset="/img/sky-400.jpg 400w, /img/sky-800.jpg 800w" width="800" height="500" alt="Our &lt;team&gt; &amp; co" sizes="(min-width: 40em) 50vw, 100vw" loading="lazy" decoding="async"></picture>\n',
+  );
+  // One format: a plain img. The .json itself works too; the value helpers read it.
+  const one = { ...META, sources: [META.sources[1]] };
+  assert.equal(
+    await page('${file /img/sky.json | img alt=""}|${file /img/sky.jpg}|${file /img/sky.jpg | type}|${file /img/sky.json | width}x${file /img/sky.jpg | height}|${file /img/sky.jpg | srcset}', metaFile(one)),
+    '<img src="/img/sky-800.jpg" srcset="/img/sky-400.jpg 400w, /img/sky-800.jpg 800w" width="800" height="500" alt="" loading="lazy" decoding="async">|/img/sky-800.jpg|image/jpeg|800x500|/img/sky-400.jpg 400w, /img/sky-800.jpg 800w\n',
+  );
+  // The json file's own URL and type are its own.
+  assert.equal(await page('${file /img/sky.json | url} ${file /img/sky.json | type}', metaFile(META)), '/img/sky.json application/json\n');
+});
+
+test('metadata wins over the file itself; other JSON next to an image is ignored', async () => {
+  assert.match(await page('${file /img/sky.jpg | img}', metaFile(META)), /^<picture>/);
+  assert.equal(await page('${file /img/sky.jpg | width}', metaFile({ hello: 1 })), '1600\n');
+  assert.equal((await failure('${file /img/sky.jpg | srcset}')).code, 'E_TYPE');
+});
+
+test('metadata errors: version, fields, not metadata', async () => {
+  assert.deepEqual(await failure('${file /img/sky.jpg | img}', metaFile({ ...META, version: 2 })), {
+    code: 'E_DATA',
+    message: "Sitefile:7:1: '/img/sky.json' is image metadata version 2; this sitefile reads version 1 (upgrade sitefile)",
+  });
+  assert.equal((await failure('${file /img/sky.jpg | img}', metaFile({ ...META, width: 1.5 }))).message, "Sitefile:7:1: '/img/sky.json' is not valid image metadata: 'width' must be a positive whole number");
+  assert.equal((await failure('${file /img/sky.jpg | img}', metaFile({ ...META, sources: [{ type: 1 }] }))).message, "Sitefile:7:1: '/img/sky.json' is not valid image metadata: 'sources.0.type' must be a string");
+  assert.equal((await failure('${file /d.json | img}', metaFile({ a: 1 }, '/d.json'))).code, 'E_DATA');
+});
+
 test('after FINGERPRINT, the old path gives the hashed URL and the integrity of the served bytes', async () => {
   const dir = await project({
     'public/style.css': 'body { background: url(/img/dot.svg); }\n',
@@ -211,4 +261,13 @@ test('after FINGERPRINT, the old path gives the hashed URL and the integrity of 
   assert.match(text(css[1].bytes), /dot\.[0-9a-f]+\.svg/);
   assert.equal(text(r.output.get('/index.html')?.bytes), `<link rel="stylesheet" href="${css[0]}" integrity="${integrityOf(css[1].bytes)}">\n`);
   assert.equal(text(r.output.get('/b.html')?.bytes), `${css[0]}\n`);
+});
+
+test('metadata after FINGERPRINT: the variants it renamed get their hashed URLs', async () => {
+  const variants = ['sky-400.jpg', 'sky-800.jpg', 'sky-400.webp', 'sky-800.webp'].map((n) => `COPY <<V /img/${n}\n${n}\nV\n`).join('');
+  const html = await page('${file "/img/sky.jpg" | img alt=""}|${file /img/sky.jpg | url}', metaFile(META) + variants + 'FINGERPRINT /img/\n');
+  assert.doesNotMatch(html, /sky-(400|800)\.(jpg|webp)\b/, html);
+  assert.match(html, /^<picture><source type="image\/webp" srcset="\/img\/sky-400\.[0-9a-f]+\.webp 400w, \/img\/sky-800\.[0-9a-f]+\.webp 800w">/);
+  assert.match(html, /<img src="\/img\/sky-800\.[0-9a-f]+\.jpg" srcset="\/img\/sky-400\.[0-9a-f]+\.jpg 400w, \/img\/sky-800\.[0-9a-f]+\.jpg 800w" width="800" height="500"/);
+  assert.match(html, /\|\/img\/sky-800\.[0-9a-f]+\.jpg\n$/);
 });

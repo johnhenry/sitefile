@@ -1,0 +1,4 @@
+[
+  { "file": "sky.jpg", "caption": "A colorful sky over the hills" },
+  { "file": "badge.png", "caption": "The project's badge, as lossless WebP with a PNG fallback" }
+]

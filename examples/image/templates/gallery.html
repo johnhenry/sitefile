@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gallery</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 64rem; margin: 2rem auto; padding: 0 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1rem; }
+  figure { margin: 0; }
+  img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<h1>Gallery</h1>
+<div class="grid">
+${#each gallery as photo}
+${photo_card}
+${/each}
+</div>
+<p><a href="/">Back</a></p>
+</body>
+</html>

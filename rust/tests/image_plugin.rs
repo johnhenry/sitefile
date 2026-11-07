@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, Once};
 
 /// Tree digest of examples/image (also pinned in test/image-plugin.test.ts).
-const EXAMPLE_DIGEST: &str = "sha256:baf0163569eb7e57b5f260b39966ff413ae702e37b761d7a5a77da12c0dc4f47";
+const EXAMPLE_DIGEST: &str = "sha256:acd091f195830ad6a9059bd937dcfdfd7ed20ab76fb929e8b0538c7f029252f3";
 /// tiny.jpg at widths 16,24 as jpeg, png and webp (directory mode).
 const TINY_DIGEST: &str = "sha256:ab43d0d4f76f6f28cf1ce0876b71822985342702ae1568817401ca7239f8dfc0";
 
@@ -91,7 +91,7 @@ fn the_example_builds_and_its_copy_of_the_plugin_is_the_pinned_one() {
     let r = build(&options(&repo_root().join("examples/image"))).unwrap();
     assert_eq!(
         paths(&r.output),
-        ["/img/badge-128.png", "/img/badge-128.webp", "/img/badge-64.png", "/img/badge-64.webp", "/img/badge.json", "/img/sky-1200.jpg", "/img/sky-400.jpg", "/img/sky-800.jpg", "/img/sky.json", "/img/thumbs/badge.png", "/img/thumbs/sky.png", "/index.html"]
+        ["/gallery.html", "/img/badge-128.png", "/img/badge-128.webp", "/img/badge-64.png", "/img/badge-64.webp", "/img/badge.json", "/img/sky-1200.jpg", "/img/sky-400.jpg", "/img/sky-800.jpg", "/img/sky.json", "/img/thumbs/badge.png", "/img/thumbs/sky.png", "/index.html"]
     );
     let meta: serde_json::Value = serde_json::from_slice(&r.output.get("/img/sky.json").unwrap().bytes).unwrap();
     assert_eq!(meta["version"], 1);

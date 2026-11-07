@@ -27,7 +27,7 @@ export const KEYWORDS = {
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
   /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
-  fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],
+  fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],
   redirectStatuses: ['301', '302', '303', '307', '308'],
   flags: {
     COPY: ['overwrite', 'from', 'exclude', 'chmod', 'parents'],

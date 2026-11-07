@@ -277,8 +277,8 @@ image, natively and through both runtimes).
 
 ### The metadata file
 
-A directory destination also gets `<name>.json`, for templates and for the
-`img` template helper planned in #105. Version 1:
+A directory destination also gets `<name>.json`, which the template helpers
+read (docs/LANGUAGE.md, "File helpers"). Version 1:
 
 ```json
 {
@@ -310,9 +310,12 @@ A directory destination also gets `<name>.json`, for templates and for the
   them (fingerprinting, #98) must map them. New fields may be added within
   version 1; a change to existing ones bumps `version`.
 
-Templates can't read files from the tree yet, so for now a page writes its
-`srcset` and `width`/`height` by hand (as `examples/image/templates/index.html`
-does), using the numbers in the metadata file; #105 will read it instead.
+Templates read it with the file helpers: `${file "/img/sky.jpg" | img alt="…"
+sizes="…"}` (the source's name, or `/img/sky.json` itself) writes
+`<img src srcset width height …>` from it, inside a `<picture>` with a
+`<source type srcset>` per other format when there are several; `url`, `type`,
+`width`, `height` and `srcset` give the single values. See
+`examples/image/` (a page and a gallery).
 
 **Rebuilding the module.** `plugins/image/build.sh` builds it with
 `cargo build --release --target wasm32-unknown-unknown --locked --offline`

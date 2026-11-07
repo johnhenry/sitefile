@@ -477,7 +477,7 @@ HTML
   image, see below), `type` (the media type, by extension), `size` (bytes),
   `integrity` (`sha384-…` of the bytes), `datauri` (`data:<type>;base64,…`, at
   most 32768 bytes, `E_TOO_LARGE` otherwise, so a photo is not inlined by
-  accident).
+  accident), `srcset` (from image plugin metadata, see below).
 - **Tag helpers** write markup, inserted as-is also under `--escape=html`;
   every attribute value in it (the path, `alt`, your attributes) is
   HTML-escaped. The helper's own attributes come first, then yours in order,
@@ -486,7 +486,7 @@ HTML
 
   | Helper | Writes |
   | --- | --- |
-  | `img` | `<img src width height … loading="lazy" decoding="async">` (no width/height for an SVG) |
+  | `img` | `<img src width height … loading="lazy" decoding="async">` (no width/height for an SVG); from image plugin metadata, `<img src srcset width height …>`, in a `<picture>` for several formats |
   | `video`, `audio` | `<video src …></video>`, `<audio src …></audio>` |
   | `source` | `<source srcset type …>` for an image (in a `<picture>`), `<source src type …>` otherwise |
   | `script` | `<script src integrity …></script>` |
@@ -515,6 +515,32 @@ HTML
   helper pastes the markup into the page, so it needs `RENDER --inline-svg`;
   without it the build fails with `E_UNSUPPORTED`. Nothing is sanitized: inline
   only SVG you trust.
+- **Image plugin metadata** (`examples/image/`). The image plugin writes
+  `<name>.json` next to the files it makes (docs/PLUGINS.md, "The metadata
+  file"). The image helpers (none or `url`, `type`, `width`, `height`,
+  `srcset`, `img`) read it **whenever it is there**: for `${file
+  "/img/sky.jpg" | …}`, the file `/img/sky.json` in the tree, when it is an
+  object with a number `version` and a `variants` list (any other JSON there is
+  ignored); or the `.json` itself, given to `width`, `height`, `srcset` or `img`
+  (`E_DATA` if it is not metadata). So `/img/sky.jpg` itself need not exist.
+  From it:
+  - `url`, `type`, `width`, `height`: `src`, `type`, `width`, `height` (the
+    largest variant of the fallback format); `srcset`: its `srcset` (`E_TYPE`
+    for a file without metadata).
+  - `img`: `<img src srcset width height … loading="lazy" decoding="async">`;
+    with several formats, inside `<picture>` after one `<source type srcset>`
+    per other format, modern first (your `sizes` is copied to each source):
+    `${file "/img/sky.jpg" | img alt="Sky" sizes="(min-width: 40em) 50vw, 100vw"}`.
+  - Values are used as the plugin wrote them. The metadata must be version 1
+    (`'/img/sky.json' is image metadata version 2; this sitefile reads version
+    1 (upgrade sitefile)`, `E_DATA`), with string `src`, `type`, `srcset`,
+    positive whole `width`/`height` and a `sources` list of `{type, srcset}`
+    (`E_DATA` naming the field otherwise). Other helpers (`size`, `integrity`,
+    `datauri`, …) read the file itself.
+  - After a FINGERPRINT that renamed the variants (and the `.json`), the old
+    paths still work and each absolute URL in `src` and `srcset` that names a
+    renamed file becomes its hashed URL; other URLs (another host, a file it
+    did not rename) stay as written.
 - **Fragments and loops.** Helpers work in html fragments (evaluated at the
   use, against that RENDER's tree and flags) and in `RENDER … FOR`, with
   `${item.key}` in their strings: `${file "/img/${item.file}" | img alt="${item.alt}"}`.

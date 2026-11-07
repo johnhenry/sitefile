@@ -10,7 +10,7 @@ use base64::Engine;
 use sha2::{Digest, Sha384};
 
 /// Helpers that produce a value (escaped like any substituted value).
-pub const VALUE_HELPERS: [&str; 7] = ["url", "width", "height", "type", "size", "integrity", "datauri"];
+pub const VALUE_HELPERS: [&str; 8] = ["url", "width", "height", "type", "size", "integrity", "datauri", "srcset"];
 /// Helpers that write a tag (trusted markup: inserted as-is; every attribute value is escaped).
 pub const TAG_HELPERS: [&str; 10] = ["img", "video", "audio", "source", "script", "stylesheet", "preload", "modulepreload", "pre", "svg"];
 
@@ -556,6 +556,13 @@ pub fn resolve_file<'t>(raw: &str, tree: &'t dyn TemplateTree, span: &SourceSpan
 
 /// What `${file "<raw>" | helper attrs…}` writes (`helper` None: the file's URL).
 pub fn render_file(raw: &str, helper: Option<&str>, attrs: &[HelperAttr], tree: &dyn TemplateTree, opts: HelperOptions, span: &SourceSpan) -> Result<HelperOutput> {
+    // The image plugin's metadata, when there is some, is what the image helpers read (#128).
+    if helper.is_none_or(|h| METADATA_HELPERS.contains(&h)) {
+        let path = normalize_virtual(raw, Some(span), "${file} path")?.path;
+        if let Some(meta) = find_metadata(&path, helper, tree, span)? {
+            return Ok(render_metadata(helper, &meta, attrs));
+        }
+    }
     let f = resolve_file(raw, tree, span)?;
     render_file_helper(helper, &f, attrs, opts, span)
 }
@@ -586,6 +593,13 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                 return Err(SitefileError::at(E_TYPE, format!("'{}' is an SVG image; its {h} is in its markup, not in a header", f.path), span));
             };
             Value(if h == "width" { size.width } else { size.height }.to_string())
+        }
+        Some("srcset") => {
+            return Err(SitefileError::at(
+                E_TYPE,
+                format!("'{}' has no image metadata: srcset reads the <name>.json the image plugin writes (TRANSFORM … WITH image TO /dir/)", f.path),
+                span,
+            ));
         }
         Some("datauri") => {
             if f.bytes.len() > DATAURI_MAX {
@@ -681,6 +695,180 @@ fn strip_svg_prolog(s: &str) -> String {
         }
     }
     t.trim_end_matches(is_svg_ws).to_string()
+}
+
+// ------------------------------------------------------------ image plugin metadata (#128)
+
+/// The image plugin's `<name>.json` (docs/PLUGINS.md, "The metadata file"), version 1: what the helpers read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageMetadata {
+    /// The metadata file's tree path (for messages).
+    pub path: String,
+    pub src: String,
+    pub kind: String,
+    pub width: u64,
+    pub height: u64,
+    pub srcset: String,
+    /// (type, srcset) per format, fallback last.
+    pub sources: Vec<(String, String)>,
+}
+
+/// The metadata version this sitefile reads.
+pub const IMAGE_METADATA_VERSION: u64 = 1;
+
+/// Helpers that read image metadata when there is some.
+const METADATA_HELPERS: [&str; 6] = ["url", "type", "width", "height", "srcset", "img"];
+
+/// Looks like the plugin's metadata (an object with a number `version` and a `variants` list).
+fn looks_like_metadata(v: &serde_json::Value) -> bool {
+    v.get("version").is_some_and(|x| x.is_number()) && v.get("variants").is_some_and(|x| x.is_array()) && v.is_object()
+}
+
+fn parse_json(bytes: &[u8]) -> Option<serde_json::Value> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    serde_json::from_str(s.strip_prefix('\u{feff}').unwrap_or(s)).ok()
+}
+
+fn js_number(x: &serde_json::Value) -> String {
+    match x.as_f64() {
+        Some(f) => crate::values::Scalar::Num(f).to_js_string(),
+        None => x.to_string(),
+    }
+}
+
+fn read_metadata(v: &serde_json::Value, path: &str, span: &SourceSpan) -> Result<ImageMetadata> {
+    let version = &v["version"];
+    if version.as_f64() != Some(IMAGE_METADATA_VERSION as f64) {
+        return Err(SitefileError::at(
+            E_DATA,
+            format!("'{path}' is image metadata version {}; this sitefile reads version {IMAGE_METADATA_VERSION} (upgrade sitefile)", js_number(version)),
+            span,
+        ));
+    }
+    let bad = |field: &str, what: &str| SitefileError::at(E_DATA, format!("'{path}' is not valid image metadata: '{field}' must be {what}"), span);
+    let string = |o: &serde_json::Value, k: &str, field: &str| -> Result<String> { o.get(k).and_then(|x| x.as_str()).map(str::to_string).ok_or_else(|| bad(field, "a string")) };
+    let dim = |k: &str| -> Result<u64> {
+        match v.get(k).and_then(|x| x.as_f64()) {
+            Some(f) if f > 0.0 && f.fract() == 0.0 && f <= 9007199254740991.0 => Ok(f as u64),
+            _ => Err(bad(k, "a positive whole number")),
+        }
+    };
+    let src = string(v, "src", "src")?;
+    let kind = string(v, "type", "type")?;
+    let width = dim("width")?;
+    let height = dim("height")?;
+    let srcset = string(v, "srcset", "srcset")?;
+    let Some(list) = v.get("sources").and_then(|x| x.as_array()) else { return Err(bad("sources", "a list")) };
+    let mut sources = Vec::new();
+    for (i, s) in list.iter().enumerate() {
+        if !s.is_object() {
+            return Err(bad(&format!("sources.{i}"), "an object"));
+        }
+        sources.push((string(s, "type", &format!("sources.{i}.type"))?, string(s, "srcset", &format!("sources.{i}.srcset"))?));
+    }
+    Ok(ImageMetadata { path: path.to_string(), src, kind, width, height, srcset, sources })
+}
+
+/// `/dir/name.ext` -> `/dir/name.json` (`""` for a name without an extension).
+pub fn metadata_path_of(path: &str) -> String {
+    let slash = path.rfind('/').map(|k| k as i64).unwrap_or(-1);
+    match path.rfind('.') {
+        Some(dot) if dot as i64 > slash + 1 => format!("{}.json", &path[..dot]),
+        _ => String::new(),
+    }
+}
+
+/// The image metadata a helper reads for `path`, if any (see src/media.ts findMetadata).
+fn find_metadata(path: &str, helper: Option<&str>, tree: &dyn TemplateTree, span: &SourceSpan) -> Result<Option<ImageMetadata>> {
+    let ext = extension_of(path);
+    if ext == "json" {
+        if !helper.is_some_and(|h| ["width", "height", "srcset", "img"].contains(&h)) {
+            return Ok(None);
+        }
+        let Some(bytes) = located(path, tree) else { return Ok(None) };
+        let v = parse_json(bytes).filter(looks_like_metadata).ok_or_else(|| {
+            SitefileError::at(E_DATA, format!("'{path}' is not image metadata (the <name>.json the image plugin writes next to the files it makes)"), span)
+        })?;
+        return read_metadata(&v, path, span).map(|m| Some(moved(m, tree)));
+    }
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Ok(None);
+    }
+    let m = metadata_path_of(path);
+    let found = if m.is_empty() { None } else { located(&m, tree) };
+    let Some(bytes) = found else { return Ok(None) };
+    match parse_json(bytes) {
+        Some(v) if looks_like_metadata(&v) => read_metadata(&v, &m, span).map(|m| Some(moved(m, tree))),
+        _ => Ok(None),
+    }
+}
+
+/// A tree path's bytes, or those of where a FINGERPRINT moved it.
+fn located<'t>(path: &str, tree: &'t dyn TemplateTree) -> Option<&'t [u8]> {
+    tree.get(path).or_else(|| tree.renamed(path).and_then(|to| tree.get(&to)))
+}
+
+/// Metadata read after a FINGERPRINT: a variant it renamed gets the hashed file's URL (see src/media.ts moved).
+fn moved(m: ImageMetadata, tree: &dyn TemplateTree) -> ImageMetadata {
+    const WS: &[char] = &[' ', '\t', '\n', '\r', '\x0c'];
+    let srcset = |set: &str| -> String {
+        set.split(',')
+            .map(|c| {
+                let t = c.trim_start_matches(WS);
+                let u = t.find(WS).map_or(t, |end| &t[..end]);
+                let to = moved_url(u, tree);
+                if to == u { c.to_string() } else { c.replacen(u, &to, 1) }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    ImageMetadata {
+        src: moved_url(&m.src, tree),
+        srcset: srcset(&m.srcset),
+        sources: m.sources.iter().map(|(t, s)| (t.clone(), srcset(s))).collect(),
+        ..m
+    }
+}
+
+/// An absolute URL path FINGERPRINT renamed: the hashed file's URL; any other URL as it is.
+fn moved_url(url: &str, tree: &dyn TemplateTree) -> String {
+    if !url.starts_with('/') {
+        return url.to_string();
+    }
+    let path = url.split('/').map(crate::links::percent_decode).collect::<Vec<_>>().join("/");
+    match tree.renamed(&path) {
+        Some(to) if tree.get(&to).is_some() => file_url(&to),
+        _ => url.to_string(),
+    }
+}
+
+fn render_metadata(helper: Option<&str>, m: &ImageMetadata, attrs: &[HelperAttr]) -> HelperOutput {
+    use HelperOutput::{Markup, Value};
+    match helper {
+        None | Some("url") => Value(m.src.clone()),
+        Some("type") => Value(m.kind.clone()),
+        Some("width") => Value(m.width.to_string()),
+        Some("height") => Value(m.height.to_string()),
+        Some("srcset") => Value(m.srcset.clone()),
+        _ => {
+            let auto = [("src", Some(m.src.clone())), ("srcset", Some(m.srcset.clone())), ("width", Some(m.width.to_string())), ("height", Some(m.height.to_string()))];
+            let img = tag("img", &auto, attrs, &[("loading", "lazy"), ("decoding", "async")]) + ">";
+            if m.sources.len() <= 1 {
+                return Markup(img);
+            }
+            // `sizes` applies to every <source> of the picture too.
+            let sizes = attrs.iter().find(|a| a.name.to_ascii_lowercase() == "sizes");
+            let mut out = String::from("<picture>");
+            for (t, s) in &m.sources[..m.sources.len() - 1] {
+                let mut auto = vec![("type", Some(t.clone())), ("srcset", Some(s.clone()))];
+                if let Some(z) = sizes {
+                    auto.push(("sizes", z.value.clone()));
+                }
+                out.push_str(&(tag("source", &auto, &[], &[]) + ">"));
+            }
+            Markup(format!("{out}{img}</picture>"))
+        }
+    }
 }
 
 #[cfg(test)]

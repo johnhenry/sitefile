@@ -56,7 +56,7 @@ const FRAGMENTS = [
   '${a}${b}', '${frag}', '${TITLE.x}', '${#each}', '${x y}', '<p>', '', '$${literal}', '${posts|raw}', 'a <<EOF b', '${x', '<i>${n}</i>',
   // `${file …}` helpers (issue #105).
   '${file "/img/${item.slug}.png" | img alt="${TITLE}"}', '${file /a.css | stylesheet}', '${file x | bogus}', '${file "/a" | img alt="${frag}"}',
-  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
+  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/img/${item.slug}.json" | srcset}', '${file /a | srcset x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
 ];
 /** Stages of imported Sitefiles (`<import>+<stage>`, issue #97), and near misses. */
 const QUALIFIED = ['site+a', 'a+b', 'data+build', 'a+', '+b', 'a+b+c', 'a++b', 'a+1'];

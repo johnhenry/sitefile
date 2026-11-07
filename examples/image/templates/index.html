@@ -11,17 +11,14 @@
 </style>
 </head>
 <body>
-<h1><picture>
-  <source type="image/webp" srcset="/img/badge-64.webp 1x, /img/badge-128.webp 2x">
-  <img src="/img/badge-64.png" srcset="/img/badge-64.png 1x, /img/badge-128.png 2x" width="64" height="64" alt="">
-</picture> Responsive images</h1>
-<img src="/img/sky-1200.jpg" srcset="/img/sky-400.jpg 400w, /img/sky-800.jpg 800w, /img/sky-1200.jpg 1200w" sizes="(min-width: 52rem) 50rem, 100vw" width="1200" height="750" alt="A colorful sky">
-<p>Every size above was made by the image plugin at build time. The widths,
-heights and <code>srcset</code> strings are also in
-<a href="/img/sky.json"><code>/img/sky.json</code></a> and
-<a href="/img/badge.json"><code>/img/badge.json</code></a>; templates can't read
-those files yet, so this page writes them out (the <code>img</code> template
-helper of issue #105 will read them).</p>
-<p>${file "/img/thumbs/sky.png" | img alt="A thumbnail of the same sky"}</p>
+<h1>${file "/img/badge.png" | img alt="" sizes="64px" loading=eager} Responsive images</h1>
+${file "/img/sky.jpg" | img alt="A colorful sky" sizes="(min-width: 52rem) 50rem, 100vw"}
+<p>Every size above was made by the image plugin at build time. The
+<code>img</code> template helper reads the metadata the plugin writes next to
+the files (<a href="${file "/img/sky.json" | url}"><code>/img/sky.json</code></a>,
+<a href="/img/badge.json"><code>/img/badge.json</code></a>): the largest
+variant as <code>src</code>, its <code>srcset</code>, its size, and a
+<code>&lt;picture&gt;</code> when there are several formats.</p>
+<p>${file "/img/thumbs/sky.png" | img alt="A thumbnail of the same sky"} <a href="/gallery.html">The gallery</a></p>
 </body>
 </html>
