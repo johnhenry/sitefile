@@ -9,7 +9,8 @@ use crate::executor::relative_path;
 use crate::export::archive_writers::{source_date_epoch, write_tar, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, random_hex, ExportOptions};
 use crate::export::formats::{
-    encode_tree, format_from_extension, is_archive_format, EncodeOptions,
+    compression_from_extension, encode_tree, format_from_extension, is_archive_format,
+    EncodeOptions,
 };
 use crate::export::oci::{media, site_layer_index, Descriptor};
 use crate::language::ast::ExportFormat;
@@ -335,7 +336,7 @@ pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
     usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--force]",
-    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .oci.tar), else a directory.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
+    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
         "    --format <fmt>   directory | zip | tar | tgz | wbn | oci (alias tar.gz)",
@@ -438,6 +439,7 @@ fn run_save(v: &Parsed) -> Result<i32> {
                     dirs: Vec::new(),
                 },
                 base_url: v.str("base-url").map(str::to_string),
+                compression: compression_from_extension(out_path, format),
             },
         )?;
         let w = export_file(&data, out_p, &opts)?;

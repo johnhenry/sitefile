@@ -1,0 +1,1 @@
+{ "out": "site.zip", "args": ["--compression", "gzip"] }

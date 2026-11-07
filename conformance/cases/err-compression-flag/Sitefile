@@ -1,0 +1,3 @@
+# --compression on a zip export is a usage error.
+FROM scratch
+EXPORT / AS zip

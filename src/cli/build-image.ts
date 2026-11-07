@@ -1,7 +1,7 @@
 import { sourceDateEpoch } from '../archive-writers.js';
 import type { AttestRequest } from '../attest.js';
 import { SitefileError } from '../errors.js';
-import { imageAttestations, type BuildOptions, type BuildResult } from '../executor.js';
+import { imageAttestations, sitefileCompression, type BuildOptions, type BuildResult } from '../executor.js';
 import type { OciCompression } from '../language/ast.js';
 import { imageMeta } from '../oci.js';
 import { parseLocalRef } from '../ref.js';
@@ -38,7 +38,7 @@ export async function storeBuildAsImage(
   const store = await Store.open();
   const { id } = await store.addImage(result.output, {
     root: info.ociRoot ?? result.plan.exportRoot,
-    compression: info.ociCompression ?? result.plan.exportCompression,
+    compression: info.ociCompression ?? sitefileCompression(result.plan, 'oci'),
     platform: info.platform,
     epoch: sourceDateEpoch(),
     base: result.base,

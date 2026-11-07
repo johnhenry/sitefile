@@ -1,5 +1,6 @@
 import { writeTar, writeTgz, writeZip, type WriterOptions } from './archive-writers.js';
-import type { ExportFormat } from './language/ast.js';
+import { gzip } from './deflate.js';
+import type { ExportFormat, OciCompression } from './language/ast.js';
 import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
 
@@ -10,8 +11,11 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
   return f !== 'directory' && f !== 'oci';
 }
 
-/** Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`. */
-export function defaultOutName(format: ExportFormat): string {
+/**
+ * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`.
+ */
+export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
     case 'directory':
       return 'dist';
@@ -22,7 +26,7 @@ export function defaultOutName(format: ExportFormat): string {
     case 'tgz':
       return 'dist.tar.gz';
     case 'wbn':
-      return 'dist.wbn';
+      return compression === 'gzip' ? 'dist.wbn.gz' : 'dist.wbn';
     case 'oci':
       return 'dist.oci.tar';
   }
@@ -31,6 +35,8 @@ export function defaultOutName(format: ExportFormat): string {
 export interface EncodeOptions extends WriterOptions {
   /** Required for `wbn`: absolute https URL ending in `/`. */
   readonly baseUrl?: string | undefined;
+  /** `wbn`: `gzip` wraps the finished bundle in gzip (the shared deterministic encoder); default none. */
+  readonly compression?: OciCompression | undefined;
 }
 
 /** Serialize a tree in an archive format. Deterministic: see archive-writers.ts and wbn.ts. */
@@ -42,8 +48,11 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
       return writeTar(tree, options);
     case 'tgz':
       return writeTgz(tree, options);
-    case 'wbn':
-      return writeWebBundle(tree, options.baseUrl);
+    case 'wbn': {
+      // The bundle is written first, unchanged; gzip only wraps its bytes (header mtime 0, see deflate.ts).
+      const bundle = writeWebBundle(tree, options.baseUrl);
+      return options.compression === 'gzip' ? gzip(bundle) : bundle;
+    }
   }
 }
 
@@ -54,6 +63,11 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) return 'tgz';
   if (name.endsWith('.tar')) return 'tar';
   if (name.endsWith('.zip')) return 'zip';
-  if (name.endsWith('.wbn')) return 'wbn';
+  if (name.endsWith('.wbn') || name.endsWith('.wbn.gz')) return 'wbn';
   return undefined;
+}
+
+/** The compression implied by an output file name for `format`: `gzip` for a wbn written to `*.wbn.gz`. */
+export function compressionFromExtension(out: string, format: ExportFormat): OciCompression | undefined {
+  return format === 'wbn' && out.toLowerCase().endsWith('.wbn.gz') ? 'gzip' : undefined;
 }

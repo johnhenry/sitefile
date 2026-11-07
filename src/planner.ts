@@ -228,7 +228,7 @@ export interface Plan {
   readonly exportBase: string | undefined;
   /** Evaluated `AT` clause of EXPORT ... AS oci: the root directory inside the image layer. */
   readonly exportRoot: string | undefined;
-  /** `COMPRESSION` clause of EXPORT ... AS oci (undefined: gzip). */
+  /** `COMPRESSION` clause of EXPORT ... AS oci or wbn (undefined: gzip for oci, none for wbn). */
   readonly exportCompression: OciCompression | undefined;
   /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
   readonly redirects: readonly RedirectSpec[];
@@ -475,7 +475,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportBase = ins.base ? evaluateOperand(ins.base, vars) : undefined;
         if (ins.at && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... AT applies only to AS oci', ins.at.span);
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
-        if (ins.compression && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci', ins.compression.span);
+        if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci and AS wbn', ins.compression.span);
         exportCompression = ins.compression?.value;
         break;
     }

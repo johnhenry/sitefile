@@ -7,7 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { crc32, writeTar, writeTgz, writeZip } from '../src/archive-writers.js';
-import { encodeTree } from '../src/export-formats.js';
+import { compressionFromExtension, defaultOutName, encodeTree, formatFromExtension } from '../src/export-formats.js';
+import { gzip } from '../src/deflate.js';
 import { exportFile } from '../src/exporter.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { parseProgram } from '../src/language/validate.js';
@@ -673,6 +674,87 @@ test('encodeTree dispatches every archive format', () => {
   for (const f of ['zip', 'tar', 'tgz'] as const) assert.ok(encodeTree(t, f).length > 0);
   assert.ok(encodeTree(t, 'wbn', { baseUrl: 'https://example.com/' }).length > 0);
   assert.throws(() => encodeTree(t, 'wbn'), isCode('E_VALIDATION'));
+});
+
+test('wbn COMPRESSION gzip: gzip (shared encoder, mtime 0) around the unchanged bundle; none and default are plain', () => {
+  const t = sample();
+  const baseUrl = 'https://example.com/';
+  const plain = encodeTree(t, 'wbn', { baseUrl });
+  const packed = encodeTree(t, 'wbn', { baseUrl, compression: 'gzip' });
+  assert.deepEqual(packed, gzip(plain));
+  assert.deepEqual([...packed.subarray(0, 10)], [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]);
+  assert.ok(Buffer.from(gunzipSync(packed)).equals(Buffer.from(plain)));
+  assert.deepEqual(encodeTree(t, 'wbn', { baseUrl, compression: 'none' }), plain);
+  // Only wbn reads it: the other archive formats ignore the option.
+  assert.deepEqual(encodeTree(t, 'zip', { compression: 'gzip' }), encodeTree(t, 'zip'));
+});
+
+test('extensions and default names: .wbn.gz is a gzipped wbn, dist.wbn.gz its default', () => {
+  assert.equal(formatFromExtension('site.wbn.gz'), 'wbn');
+  assert.equal(formatFromExtension('site.WBN.GZ'), 'wbn');
+  assert.equal(formatFromExtension('site.gz'), undefined);
+  assert.equal(compressionFromExtension('site.wbn.gz', 'wbn'), 'gzip');
+  assert.equal(compressionFromExtension('site.wbn', 'wbn'), undefined);
+  assert.equal(compressionFromExtension('site.wbn.gz', 'zip'), undefined);
+  assert.equal(defaultOutName('wbn'), 'dist.wbn');
+  assert.equal(defaultOutName('wbn', 'none'), 'dist.wbn');
+  assert.equal(defaultOutName('wbn', 'gzip'), 'dist.wbn.gz');
+  assert.equal(defaultOutName('oci', 'none'), 'dist.oci.tar');
+});
+
+test('parser: EXPORT ... AS wbn COMPRESSION', () => {
+  const w = exportOf('FROM scratch\nEXPORT / AS wbn BASE https://example.com/ COMPRESSION GZIP\n');
+  assert.equal(w.compression?.value, 'gzip');
+});
+
+test('CLI: EXPORT ... AS wbn COMPRESSION gzip writes dist.wbn.gz; --compression and -o *.wbn.gz', async () => {
+  const ctx = await project('EXPORT / AS wbn BASE https://example.com/ COMPRESSION gzip');
+  const v = await sitefile(['validate', ctx]);
+  assert.equal(v.code, 0, v.stderr);
+  const r = await sitefile(['build', ctx]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /dist\.wbn\.gz \(wbn, \d+ bytes, sha256:/);
+  const packed = await fs.readFile(path.join(ctx, 'dist.wbn.gz'));
+  assert.equal(packed[0], 0x1f);
+  assert.equal(decodeBundle(gunzipSync(packed)).primary, 'https://example.com/');
+  // --compression none overrides the Sitefile (default name: the plain dist.wbn).
+  assert.equal((await sitefile(['build', ctx, '--compression', 'none'])).code, 0);
+  assert.equal((await fs.readFile(path.join(ctx, 'dist.wbn')))[0], 0x85);
+  assert.ok(gunzipSync(packed).equals(await fs.readFile(path.join(ctx, 'dist.wbn'))));
+
+  // A plain Sitefile: -o *.wbn.gz gzips, -o *.wbn does not, --compression gzip does too.
+  const plain = await project('EXPORT / AS wbn BASE https://example.com/');
+  const out = await tmp();
+  assert.equal((await sitefile(['build', plain, '-o', path.join(out, 'a.wbn.gz')])).code, 0);
+  assert.ok((await fs.readFile(path.join(out, 'a.wbn.gz'))).equals(packed));
+  assert.equal((await sitefile(['build', plain, '-o', path.join(out, 'b.wbn')])).code, 0);
+  assert.equal((await fs.readFile(path.join(out, 'b.wbn')))[0], 0x85);
+  assert.equal((await sitefile(['build', plain, '--format', 'wbn', '-o', path.join(out, 'c.wbn.gz')])).code, 0);
+  assert.ok((await fs.readFile(path.join(out, 'c.wbn.gz'))).equals(packed));
+  assert.equal((await sitefile(['build', plain, '--compression', 'gzip', '-o', path.join(out, 'd.wbn')])).code, 0);
+  assert.ok((await fs.readFile(path.join(out, 'd.wbn'))).equals(packed));
+  assert.equal((await sitefile(['build', plain, '--compression', 'none', '-o', path.join(out, 'e.wbn.gz')])).code, 0);
+  assert.equal((await fs.readFile(path.join(out, 'e.wbn.gz')))[0], 0x85);
+});
+
+test('CLI: --compression is usage-checked and belongs to the export format', async () => {
+  const zip = await project('EXPORT / AS zip');
+  const z = await sitefile(['build', zip, '--compression', 'gzip']);
+  assert.equal(z.code, 2);
+  assert.match(z.stderr, /--compression applies only to oci and wbn exports, not zip/);
+  const bad = await sitefile(['build', zip, '--format', 'wbn', '--compression', 'zstd']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /--compression expects gzip or none, got 'zstd'/);
+  const both = await sitefile(['build', zip, '--format', 'oci', '--compression', 'none', '--oci-compression', 'none']);
+  assert.equal(both.code, 2);
+  assert.match(both.stderr, /--compression and --oci-compression set the same thing/);
+  // The Sitefile's COMPRESSION belongs to its own format: --format wbn does not inherit an oci one.
+  const oci = await project('EXPORT / AS oci COMPRESSION gzip');
+  const out = await tmp();
+  const w = await sitefile(['build', oci, '--format', 'wbn', '--base-url', 'https://example.com/', '-o', path.join(out, 'x.wbn')]);
+  assert.equal(w.code, 0, w.stderr);
+  assert.equal((await fs.readFile(path.join(out, 'x.wbn')))[0], 0x85);
+  assert.deepEqual((await fs.readdir(zip)).sort(), ['Sitefile', 'public']);
 });
 
 test('wbn: the reference dump-bundle tool reads the bundle (skipped if not installed)', async (t) => {

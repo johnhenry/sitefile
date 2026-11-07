@@ -109,7 +109,7 @@ function cases() {
     ex('blog'),
     ex('data'),
     ex('motion', { args: ['--allow-plugin', 'motion'] }),
-    // fileable vendored into the plugin folder (below, before the cases run); both CLIs run the plugin with node.
+    // fileable vendored into the plugin folder (above, before the cases run); both CLIs run the plugin with node.
     ex('fileable', { args: ['--allow-plugin', 'fileable'] }),
     ex('fileable', { suffix: ':cmd', args: ['--allow-plugin', 'fileable', '--build-arg', 'TEMPLATE=cmd.mjs'] }),
     ex('wasm'),
@@ -124,6 +124,7 @@ function cases() {
     ex('blog', { suffix: ':oci-bytes', out: 'site.oci.tar', compare: 'bytes' }),
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
+    ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
     // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
     ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),

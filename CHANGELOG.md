@@ -2,6 +2,25 @@
 
 ## 0.1.0 (unreleased)
 
+- **`EXPORT … AS wbn COMPRESSION gzip`** (johnhenry/sitefile#143): a Web Bundle
+  export can now be gzip(`application/webbundle`), the `.wbn` archive format of
+  `@johnhenry/packfile` (`toArchive`/`fromArchive`) and `@johnhenry/fileable`
+  (`encode="wbn"`). `COMPRESSION` used to be `E_VALIDATION` on anything but
+  `oci`; it now applies to `oci` and `wbn`, and on `wbn` defaults to `none`, so
+  existing exports are byte-for-byte unchanged. The gzip layer only wraps the
+  finished bundle and uses the shared deterministic encoder (`src/deflate.ts`,
+  `rust/src/deflate.rs`), so both CLIs write identical bytes. On the CLI,
+  `-o site.wbn.gz` selects a gzipped wbn (also for `sitefile save`), the
+  default destination of such a Sitefile is `dist.wbn.gz`, and the new
+  `--compression gzip|none` overrides `EXPORT … COMPRESSION` for the export's
+  format (oci or wbn; any other format is a usage error); `--oci-compression`
+  stays as the oci-only spelling. A Sitefile's `COMPRESSION` belongs to its own
+  `AS` format: `--format wbn` on an `AS oci COMPRESSION …` Sitefile does not
+  inherit it. `test/packfile-interop.test.ts` now reads a gzip export built with
+  `BASE https://packfile.invalid/` through plain `fromArchive(buffer)`; new
+  conformance cases compare the bytes of both implementations. Added in
+  3c537de (#149).
+
 - **Example: a fileable plugin for TRANSFORM** (`examples/fileable/`,
   johnhenry/sitefile#145). A JavaScript plugin renders a `@johnhenry/fileable`
   tree into the build with fileable's in-memory `toFiles()` and returns
@@ -13,7 +32,7 @@
   attribute and other features that need files, processes or the environment
   fail with a clear `E_PLUGIN`. Checked by `npm run examples` and by
   conformance (both CLIs). docs/PLUGINS.md, "Example: rendering a fileable
-  tree".
+  tree". Added in 0b5c4b3 (#147).
 
 ## 0.0.0 — first npm release (2026-11-06)
 
