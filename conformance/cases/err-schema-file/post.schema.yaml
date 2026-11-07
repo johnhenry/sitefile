@@ -1,0 +1,3 @@
+required: [title]
+properties:
+  title: text

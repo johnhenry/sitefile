@@ -138,12 +138,19 @@ test('examples/blog builds an index, one page per post and an Atom feed', async 
   assert.equal(r.code, 0, r.stderr);
   const out = path.join(ctx, 'dist');
   const index = await readFile(path.join(out, 'index.html'), 'utf8');
-  // newest first
-  assert.ok(index.indexOf('Markdown that stays safe') < index.indexOf('Hello, world'));
+  // newest first, two posts a page; the draft is left out
+  assert.ok(index.indexOf('Markdown that stays safe') < index.indexOf('One template, many pages'));
+  assert.doesNotMatch(index, /Coming soon|Hello, world/);
+  assert.match(index, /<a href="\/page\/2\/">Older posts<\/a>/);
+  const page2 = await readFile(path.join(out, 'page', '2', 'index.html'), 'utf8');
+  assert.match(page2, /Hello, world/);
+  assert.match(page2, /<a href="\/">Newer posts<\/a> · page 2 of 2/);
   const post = await readFile(path.join(out, 'posts', 'markdown-that-stays-safe', 'index.html'), 'utf8');
   assert.match(post, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(post, /href="javascript:/i);
-  assert.match(post, /<li>security<\/li>/);
+  assert.match(post, /<li><a href="\/tags\/security\/">security<\/a><\/li>/);
+  assert.match(await readFile(path.join(out, 'tags', 'sitefile', 'index.html'), 'utf8'), /Tagged “sitefile” \(2\)/);
+  await assert.rejects(stat(path.join(out, 'posts', 'coming-soon', 'index.html')));
   const feed = await readFile(path.join(out, 'feed.xml'), 'utf8');
   assert.match(feed, /<updated>2026-03-01T00:00:00Z<\/updated>/);
   assert.equal((feed.match(/<entry>/g) ?? []).length, 3);
@@ -152,6 +159,11 @@ test('examples/blog builds an index, one page per post and an Atom feed', async 
   assert.match(manifest['/style.css']!, /^\/style\.[0-9a-f]{10}\.css$/);
   assert.ok(index.includes(`href="${manifest['/style.css']}"`) && post.includes(`href="${manifest['/style.css']}"`));
   await assert.rejects(readFile(path.join(out, 'style.css')));
+  // --build-arg DRAFTS=true previews the draft everywhere.
+  const preview = await sitefile(['build', ctx, '--build-arg', 'DRAFTS=true']);
+  assert.equal(preview.code, 0, preview.stderr);
+  assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /Coming soon/);
+  assert.equal(((await readFile(path.join(out, 'feed.xml'), 'utf8')).match(/<entry>/g) ?? []).length, 4);
 });
 
 test('examples/data reads YAML, CSV and a Web Bundle', async () => {

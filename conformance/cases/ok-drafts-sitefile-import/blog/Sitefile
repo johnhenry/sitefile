@@ -1,0 +1,10 @@
+ARG DRAFTS: boolean = false
+STAGE pages
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
+RENDER --escape=html <<HTML TO /tags/${t.key}/index.html FOR t IN posts BY tags
+${t.key}: ${#each t.items as p}${p.title} ${/each}
+HTML
+RENDER --escape=html <<HTML TO /p/${p.number}.html FOR p IN posts PAGE 1 FIRST /index.html
+${p.number}/${p.total} ${p.next}
+HTML
+EXPORT /

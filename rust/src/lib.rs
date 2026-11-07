@@ -29,6 +29,8 @@ pub mod documents;
 pub mod frontmatter;
 pub mod markdown;
 pub mod render;
+pub mod schema;
+pub mod pages;
 pub mod yaml;
 pub mod bake;
 

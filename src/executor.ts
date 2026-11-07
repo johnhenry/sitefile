@@ -41,6 +41,9 @@ import { Store } from './store.js';
 import { begin, reserve, type Profiler, type ProfileSpan } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { checkSchema, compileSchema } from './schema.js';
+import { groupBy, paginate } from './pages.js';
+import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
@@ -373,7 +376,12 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     importSpans[i]?.end({ kind: r.res.kind });
     return r;
   });
-  const resolved = new Map(plainImports.map(([s], j) => [s.name, plainResolved[j]!] as const));
+  // DRAFTS false drops drafts; then SCHEMA checks run in Sitefile order, on the documents in path order; then SORT BY.
+  const resolved = new Map(plainImports.map(([s], j) => [s.name, { ...plainResolved[j]!, res: withoutDrafts(s, plainResolved[j]!.res) }] as const));
+  for (const spec of p.imports) {
+    const r = resolved.get(spec.name);
+    if (r && spec.schema) await checkImportSchema(spec, r.res, local);
+  }
 
   const images: FromImageUse[] = [];
   let imageStore: Store | undefined;
@@ -1188,7 +1196,12 @@ async function loadSitefileImport(spec: ImportSpec, importer: Importer, refs: re
   const ienv: ImportEnv = { ...env.remote, label, local, archiveLimits: env.archiveLimits, ...(env.memo ? { memo: env.memo } : {}) };
   const plain = p.imports.filter((s) => s.as !== 'sitefile');
   const resolved = await mapLimit(plain, env.concurrency, (s) => resolveImport(s, ienv));
-  const byName = new Map(plain.map((s, i) => [s.name, resolved[i]!] as const));
+  const byName = new Map(plain.map((s, i) => [s.name, { ...resolved[i]!, res: withoutDrafts(s, resolved[i]!.res) }] as const));
+  // SCHEMA files are read from the imported Sitefile's own context.
+  for (const s of plain) {
+    const r = byName.get(s.name);
+    if (r && s.schema) await checkImportSchema(s, r.res, local);
+  }
   const resources = new Map<string, Resource>();
   const resourceKeys = new Map<string, string>();
   const imported = new Map<string, Unit>();
@@ -2374,23 +2387,46 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     if (!Array.isArray(items)) {
       throw new SitefileError('E_TYPE', `FOR ${as} IN ${list}: '${list}' is not a list (import a directory AS markdown, or a JSON array)`, op.span);
     }
-    if (items.length === 0) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+    // BY / PAGE: the loop runs over groups or pages instead of the elements.
+    const what = `FOR ${as} IN ${list}${op.each.by !== undefined ? ` BY ${op.each.by}` : ''}`;
+    const groups = op.each.by !== undefined ? groupBy(items, op.each.by, what, op.span) : undefined;
+    if (items.length === 0 && !(op.each.page && !groups)) env.warn(`${origin}: FOR ${as} IN ${list} renders nothing: '${list}' is empty`);
+    else if (groups?.length === 0) env.warn(`${origin}: ${what} renders nothing: no element has '${op.each.by}'`);
+    const destOf = (item: unknown, op_: Operand): string => {
+      let raw = '';
+      for (const part of op_.parts) {
+        if (part.kind === 'text') raw += part.value;
+        else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
+      }
+      const target = normalizeVirtual(raw, op_.span, `RENDER destination for ${as}`);
+      if (target.trailingSlash) {
+        throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, op_.span);
+      }
+      return target.path;
+    };
+    // Each element with its destination. Pages get `url`, `prev` and `next` once every page's destination is known.
+    const elements: Array<{ item: unknown; path: string }> = [];
+    if (op.each.page) {
+      const { size, first } = op.each.page;
+      const runs = groups ? groups.map((g) => ({ key: g['key'] as string, items: g['items'] as unknown[] })) : [{ items }];
+      for (const pages of paginate(runs, size)) {
+        const paths = pages.map((pg) => destOf(pg, pg['number'] === 1 && first ? first : dest));
+        const urls = paths.map((p) => pageUrl('', p));
+        pages.forEach((pg, i) => {
+          elements.push({ item: { ...pg, url: urls[i]!, prev: urls[i - 1] ?? '', next: urls[i + 1] ?? '' }, path: paths[i]! });
+        });
+      }
+    } else {
+      for (const item of groups ?? items) elements.push({ item, path: destOf(item, dest) });
+    }
     // Incremental rebuilds: an element's page depends on the template, the element and the imports the
     // template names (other than the loop variable), so editing one document re-renders one page.
     const memo = env.memo;
     const refsKey = memo ? namesKey(env, renderNames(parts, env), as) : '';
     const files: Files = [];
-    for (const item of items) {
+    for (const { item, path: targetPath } of elements) {
       const itemEnv: ExecEnv = { ...env, loop: { name: as, value: item } };
-      let raw = '';
-      for (const part of dest.parts) {
-        if (part.kind === 'text') raw += part.value;
-        else raw += String(part.name === as ? resolveJsonPath(item, part.path, as, part.span) : lookup(part.name, part.path, part.span, env));
-      }
-      const target = normalizeVirtual(raw, dest.span, `RENDER destination for ${as}`);
-      if (target.trailingSlash) {
-        throw new SitefileError('E_PATH', `RENDER destination '${raw}' must be a file path, not a directory`, dest.span);
-      }
+      const target = { path: targetPath };
       const page = (): FileNode => {
         const out = renderTemplate(parts, (name, p, span) => lookup(name, p, span, itemEnv), op.escape, (name, p, span, loose) => valueOf(name, p, span, loose, itemEnv), templateContext(itemEnv));
         return makeFile(new TextEncoder().encode(out), origin);
@@ -2399,6 +2435,37 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     }
     return files;
   });
+}
+
+/** `IMPORT … DRAFTS false`: leave out the elements whose `draft` is `true` (or the text `true`, as in a CSV cell). */
+function withoutDrafts(spec: ImportSpec, res: Resource): Resource {
+  if (spec.drafts === undefined || res.kind !== 'value') return res;
+  if (!Array.isArray(res.value)) {
+    throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: DRAFTS needs a list (a directory of documents, a CSV file or a JSON/YAML array), not a single value`, spec.span);
+  }
+  if (spec.drafts) return res;
+  const isDraft = (d: unknown): boolean => d !== null && typeof d === 'object' && !Array.isArray(d) && ((d as Record<string, unknown>)['draft'] === true || (d as Record<string, unknown>)['draft'] === 'true');
+  return { ...res, value: res.value.filter((d) => !isDraft(d)) };
+}
+
+/** `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents. */
+async function checkImportSchema(spec: ImportSpec, res: Resource, local: LocalContext): Promise<void> {
+  const schema = spec.schema!;
+  const what = `IMPORT ${spec.name}`;
+  if (res.kind !== 'value') {
+    throw new SitefileError('E_TYPE', `${what}: SCHEMA checks documents, but the import is a ${res.kind}`, spec.span);
+  }
+  const file = await local.readFile(schema.path, schema.span);
+  const text = decodeUtf8(file.bytes, `schema '${schema.uri}'`, schema.span);
+  let value: unknown;
+  if (/\.json$/i.test(schema.path)) {
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      throw new SitefileError('E_SCHEMA', `${what}: schema '${schema.uri}' is not valid JSON: ${(e as Error).message}`, schema.span, { cause: e });
+    }
+  } else value = parseYaml(text, schema.uri);
+  checkSchema(res.value, compileSchema(value, schema.uri, what, schema.span), what, res.format === 'csv', spec.span);
 }
 
 /** Apply an import's SORT BY to a markdown collection. */

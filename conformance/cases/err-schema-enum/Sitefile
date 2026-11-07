@@ -1,0 +1,2 @@
+IMPORT items FROM ./items.yaml AS yaml SCHEMA ./items.schema.json
+EXPORT /

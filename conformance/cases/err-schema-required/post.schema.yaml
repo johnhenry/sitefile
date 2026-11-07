@@ -1,0 +1,11 @@
+# Every post needs a title and a date (the file name's date counts).
+required: [title, date]
+properties:
+  title: string
+  date: date
+  draft: boolean
+  tags:
+    type: list
+    items: string
+    enum: [notes, rust, web]
+  status: {enum: [draft, published]}

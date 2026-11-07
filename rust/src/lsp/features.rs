@@ -235,7 +235,8 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
-                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" | "ARG" => Vec::new(),
+                "FROM" | "INTEGRITY" | "BY" | "SCHEMA" | "SECRET" | "HEADER" | "ARG" => Vec::new(),
+                "DRAFTS" => kw_items(["true", "false"], CIK_ENUM_MEMBER),
                 _ if n >= 4 => {
                     let mut v: Vec<Item> = Vec::new();
                     if n >= 2 && prior[n - 2].upper() == "BY" {
@@ -355,6 +356,20 @@ fn operation_items<'a>(
             0 => import_refs(),
             1 => kw_items(["TO"], CIK_KEYWORD),
             3 => kw_items(["FOR"], CIK_KEYWORD),
+            // FOR item IN list [BY key] [PAGE n [FIRST <dest>]], in this order.
+            _ if p >= 7 && ops[3] == "FOR" && !matches!(prev, "BY" | "PAGE" | "FIRST") => {
+                let after = &ops[7..];
+                let has = |w: &str| after.iter().any(|o| o == w);
+                if has("FIRST") {
+                    Vec::new()
+                } else if has("PAGE") {
+                    kw_items(["FIRST"], CIK_KEYWORD)
+                } else if has("BY") {
+                    kw_items(["PAGE"], CIK_KEYWORD)
+                } else {
+                    kw_items(["BY", "PAGE"], CIK_KEYWORD)
+                }
+            }
             _ => Vec::new(),
         },
         _ => {
@@ -740,14 +755,19 @@ mod tests {
     fn clause_values() {
         assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
         assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET", "ARG"]);
+        assert_eq!(labels("RENDER ./t TO /a FOR x IN p "), ["BY", "PAGE"]);
+        assert_eq!(labels("RENDER ./t TO /a FOR x IN p BY tags "), ["PAGE"]);
+        assert_eq!(labels("RENDER ./t TO /a FOR x IN p PAGE 3 "), ["FIRST"]);
+        assert_eq!(labels("RENDER ./t TO /a FOR x IN p PAGE 3 FIRST /i "), Vec::<String>::new());
+        assert_eq!(labels("IMPORT p FROM ./x AS json DRAFTS "), ["true", "false"]);
+        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
         // ARG NAME=value repeats; nothing is offered for the name itself.
-        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
         assert!(labels("IMPORT t FROM ./t AS sitefile ARG ").is_empty());
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
-        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
         assert_eq!(labels("IMPORT p "), ["FROM"]);
         assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
