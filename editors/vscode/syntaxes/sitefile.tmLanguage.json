@@ -2141,12 +2141,26 @@
           }
         },
         {
-          "match": "(?<![^\\s])((?i:TO|FOR|IN))(?=\\s|$)",
+          "match": "(?<![^\\s])((?i:BY))\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s|$)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.clause.sitefile"
+            },
+            "2": {
+              "name": "variable.other.property.group-key.sitefile"
+            }
+          }
+        },
+        {
+          "match": "(?<![^\\s])((?i:TO|FOR|IN|PAGE|FIRST))(?=\\s|$)",
           "captures": {
             "1": {
               "name": "keyword.other.clause.sitefile"
             }
           }
+        },
+        {
+          "include": "#scalar"
         },
         {
           "include": "#operands"
@@ -2601,7 +2615,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:SORT|BY|ASC|DESC|SCHEMA))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:SORT|BY|ASC|DESC|SCHEMA|DRAFTS))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"

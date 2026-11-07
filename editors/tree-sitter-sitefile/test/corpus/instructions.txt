@@ -492,3 +492,64 @@ COPY --from=git+layout / /l/
       (flag_value))
     (path)
     (path)))
+
+================================================================================
+RENDER with BY and PAGE, IMPORT with DRAFTS
+================================================================================
+
+IMPORT posts FROM ./posts AS markdown DRAFTS ${DRAFTS}
+RENDER ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+RENDER ./i.html TO /page/${p.number}/index.html FOR p IN posts PAGE 10 FIRST /index.html
+render ./t.html to /t/${t.key}/${t.number}.html for t in posts by tags page ${N}
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (word
+      (substitution
+        (identifier))))
+  (render_instruction
+    (path)
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (for_clause
+      (identifier)
+      (identifier))
+    (group_clause
+      (identifier)))
+  (render_instruction
+    (path)
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (for_clause
+      (identifier)
+      (identifier))
+    (page_clause
+      (word)
+      (path)))
+  (render_instruction
+    (path)
+    (path
+      (substitution
+        (identifier)
+        (key))
+      (substitution
+        (identifier)
+        (key)))
+    (for_clause
+      (identifier)
+      (identifier))
+    (group_clause
+      (identifier))
+    (page_clause
+      (word
+        (substitution
+          (identifier))))))

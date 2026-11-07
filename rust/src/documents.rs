@@ -319,7 +319,7 @@ pub fn sort_documents(docs: Vec<Value>, key: &str, descending: bool) -> Vec<Valu
     merge_sort(docs, &cmp)
 }
 
-fn merge_sort<T>(v: Vec<T>, cmp: &dyn Fn(&T, &T) -> Ordering) -> Vec<T> {
+pub(crate) fn merge_sort<T>(v: Vec<T>, cmp: &dyn Fn(&T, &T) -> Ordering) -> Vec<T> {
     if v.len() <= 1 {
         return v;
     }

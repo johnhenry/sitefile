@@ -7,13 +7,19 @@
 FROM scratch
 ARG SITE_TITLE = "Field Notes"
 ARG SITE_URL = "https://blog.example.com"
+# Posts with `draft: true` are left out; preview them with --build-arg DRAFTS=true.
+ARG DRAFTS: boolean = false
+ARG PER_PAGE: number = 2
 
 # Newest first, for the index, every post page and the feed; post.schema.yaml checks each post's frontmatter.
-IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml DRAFTS ${DRAFTS}
 
 COPY ./public/ /
-RENDER --escape=html ./templates/index.html TO /index.html
+# The index, PER_PAGE posts a page: /index.html, then /page/2/index.html, ...
+RENDER --escape=html ./templates/index.html TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html
 RENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts
+# One page per tag: /tags/sitefile/index.html lists the posts tagged sitefile.
+RENDER --escape=html ./templates/tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
 
 # An Atom feed of the posts (newest first, as imported), and a sitemap of
 # every page rendered so far. Both write absolute URLs under SITE_URL.

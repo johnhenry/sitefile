@@ -114,17 +114,7 @@ function dataDocument(bytes: Uint8Array, kind: 'json' | 'yaml', ext: RegExp, p: 
  * either direction; ties keep path order.
  */
 export function sortDocuments(docs: readonly MarkdownDocument[], key: string, descending: boolean): MarkdownDocument[] {
-  const num = (v: unknown): number | undefined =>
-    typeof v === 'number' ? v : typeof v === 'string' && NUMERIC.test(v.trim()) ? Number(v) : undefined;
-  const cmp = (a: unknown, b: unknown): number => {
-    // Numbers, and numeric strings such as CSV cells, compare numerically.
-    const na = num(a);
-    const nb = num(b);
-    if (na !== undefined && nb !== undefined) return na - nb;
-    const x = String(a);
-    const y = String(b);
-    return x < y ? -1 : x > y ? 1 : 0;
-  };
+  const cmp = compareValues;
   return [...docs].sort((a, b) => {
     const va = a[key];
     const vb = b[key];
@@ -134,6 +124,18 @@ export function sortDocuments(docs: readonly MarkdownDocument[], key: string, de
     const c = cmp(va, vb);
     return c === 0 ? byPath(a, b) : descending ? -c : c;
   });
+}
+
+/** SORT BY's order of two field values: numbers and numeric strings (such as CSV cells) numerically, else as strings. */
+export function compareValues(a: unknown, b: unknown): number {
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' ? v : typeof v === 'string' && NUMERIC.test(v.trim()) ? Number(v) : undefined;
+  const na = num(a);
+  const nb = num(b);
+  if (na !== undefined && nb !== undefined) return na - nb;
+  const x = String(a);
+  const y = String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
 }
 
 function byPath(a: MarkdownDocument, b: MarkdownDocument): number {

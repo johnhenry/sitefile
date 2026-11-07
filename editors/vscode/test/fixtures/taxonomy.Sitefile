@@ -1,0 +1,7 @@
+# Drafts, tag pages and pagination.
+ARG DRAFTS: boolean = false
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS ${DRAFTS}
+RENDER --escape=html ./index.html TO /page/${page.number}/index.html FOR page IN posts PAGE 10 FIRST /index.html
+RENDER --escape=html ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags
+RENDER --escape=html ./tag.html TO /tags/${t.key}/${t.number}.html for t in posts by tags page ${N} first /tags/${t.key}/index.html
+EXPORT /

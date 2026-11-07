@@ -17,7 +17,7 @@
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
   "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CHECKLINKS"
-  "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
+  "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "DRAFTS" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
   "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST"
 ] @keyword
 
@@ -25,6 +25,9 @@
 (secret_clause header: (header_name) @property)
 
 (for_clause [ "FOR" "IN" ] @keyword)
+(group_clause "BY" @keyword)
+(group_clause key: (identifier) @property)
+(page_clause [ "PAGE" "FIRST" ] @keyword)
 
 ; RUN, REMOVE, GENERATE, ASSERT, META, EXEC are rejected by the parser.
 (unsupported_instruction keyword: _ @keyword)

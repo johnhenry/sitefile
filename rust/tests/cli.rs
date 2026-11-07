@@ -277,14 +277,24 @@ fn blog_builds_an_index_one_page_per_post_and_a_feed() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     let out = ctx.join("dist");
     let index = read(out.join("index.html"));
-    assert!(index.find("Markdown that stays safe").unwrap() < index.find("Hello, world").unwrap(), "newest first");
+    assert!(index.find("Markdown that stays safe").unwrap() < index.find("One template, many pages").unwrap(), "newest first");
+    assert!(!index.contains("Coming soon") && !index.contains("Hello, world"), "two a page, no drafts");
+    assert!(index.contains("<a href=\"/page/2/\">Older posts</a>"));
+    let page2 = read(out.join("page/2/index.html"));
+    assert!(page2.contains("Hello, world") && page2.contains("<a href=\"/\">Newer posts</a> · page 2 of 2"));
     let post = read(out.join("posts/markdown-that-stays-safe/index.html"));
     assert!(post.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!post.to_lowercase().contains("href=\"javascript:"));
-    assert!(post.contains("<li>security</li>"));
+    assert!(post.contains("<li><a href=\"/tags/security/\">security</a></li>"));
+    assert!(read(out.join("tags/sitefile/index.html")).contains("Tagged “sitefile” (2)"));
+    assert!(!out.join("posts/coming-soon/index.html").exists());
     let feed = read(out.join("feed.xml"));
     assert!(feed.contains("<updated>2026-03-01T00:00:00Z</updated>"));
     assert_eq!(feed.matches("<entry>").count(), 3);
+    let preview = sitefile(&work, &["build", s(&ctx), "--build-arg", "DRAFTS=true"]);
+    assert_eq!(preview.code, 0, "{}", preview.stderr);
+    assert!(read(out.join("index.html")).contains("Coming soon"));
+    assert_eq!(read(out.join("feed.xml")).matches("<entry>").count(), 4);
 }
 
 #[test]

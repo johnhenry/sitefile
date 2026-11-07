@@ -19,6 +19,7 @@ import {
   type ImportSecret,
   type Instruction,
   type Operand,
+  type RenderEach,
   type StageRef,
   type ValueType,
 } from './ast.js';
@@ -137,6 +138,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   let integrity: string | undefined;
   let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
   let schema: { path: Operand; span: SourceSpan } | undefined;
+  let drafts: { value: Operand; span: SourceSpan } | undefined;
   const secrets: ImportSecret[] = [];
   const args: ImportArg[] = [];
   while (!c.atEnd()) {
@@ -164,6 +166,9 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     } else if (c.keyword('SCHEMA')) {
       if (schema !== undefined) throw c.error('E_SYNTAX', 'SCHEMA given twice', at);
       schema = { path: c.operand('schema path'), span: at };
+    } else if (c.keyword('DRAFTS')) {
+      if (drafts !== undefined) throw c.error('E_SYNTAX', 'DRAFTS given twice', at);
+      drafts = { value: c.operand('true or false'), span: at };
     } else if (c.keyword('SECRET')) {
       const s = parseSecretClause(c, at);
       const prior = secrets.find((p) => p.header.toLowerCase() === s.header.toLowerCase());
@@ -176,7 +181,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       if (args.some((a) => a.name === argName)) throw c.error('E_SYNTAX', `ARG ${argName} given twice`, at);
       args.push({ name: argName, value: c.operand('ARG value'), span: at });
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY, SCHEMA, SECRET or ARG)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS, SECRET or ARG)`, at);
     }
   }
   return {
@@ -188,6 +193,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     ...(integrity !== undefined && { integrity }),
     ...(sort !== undefined && { sort }),
     ...(schema !== undefined && { schema }),
+    ...(drafts !== undefined && { drafts }),
     ...(secrets.length > 0 && { secrets }),
     ...(args.length > 0 && { args }),
   };
@@ -311,12 +317,21 @@ function parseRender(c: Cursor, span: SourceSpan): Instruction {
   const template = c.inline() ?? c.operand('template');
   c.expectKeyword('TO');
   const dest = c.operand('destination');
-  let each: { as: string; list: string; span: SourceSpan } | undefined;
+  let each: RenderEach | undefined;
   const forAt = c.span;
   if (c.keyword('FOR')) {
     const as = c.ident('loop variable');
     c.expectKeyword('IN');
-    each = { as, list: c.ident('list name'), span: forAt };
+    const list = c.ident('list name');
+    const byAt = c.span;
+    const by = c.keyword('BY') ? { key: c.ident('group key'), span: byAt } : undefined;
+    const pageAt = c.span;
+    let page: RenderEach['page'];
+    if (c.keyword('PAGE')) {
+      const size = c.operand('page size');
+      page = c.keyword('FIRST') ? { size, first: c.operand('first page destination'), span: pageAt } : { size, span: pageAt };
+    }
+    each = { as, list, span: forAt, ...(by && { by }), ...(page && { page }) };
   }
   c.expectEnd();
   c.expectInlineUsed('the RENDER template');

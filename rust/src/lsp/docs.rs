@@ -20,7 +20,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ("LET", "LET NAME[: type] = value", "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails."),
     (
         "IMPORT",
-        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
+        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
         "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file), and sitefile (another Sitefile, whose stages are `name+<stage>`). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
@@ -30,7 +30,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "RENDER",
-        "RENDER [--escape=none|html] [--overwrite] [--from=stage] <template> TO <dest> [FOR item IN list]",
+        "RENDER [--escape=none|html] [--overwrite] [--from=stage] <template> TO <dest> [FOR item IN list [BY key] [PAGE n [FIRST <dest>]]]",
         "Renders a template (a file or an inline `<<NAME` body) to a file. Templates use `${NAME}`, `${name.key}`, `${#each list as item}…${/each}`, `${#if x}…${else}…${/if}` and `${value|raw}`.",
     ),
     (
@@ -112,6 +112,11 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ),
     (
         "IMPORT",
+        "DRAFTS",
+        "`DRAFTS true|false`: with `false`, elements whose `draft` is `true` are left out of the import (and so of FOR pages, groups, FEED and SITEMAP). Usually `DRAFTS ${DRAFTS}` with `ARG DRAFTS: boolean = false`, so `--build-arg DRAFTS=true` previews them.",
+    ),
+    (
+        "IMPORT",
         "SECRET",
         "`SECRET <id> AS HEADER <Name>` or `SECRET <id> AS BEARER`: send the build secret given with `--secret id=<id>,env=<VAR>` (or `src=<file>`) as a request header, only to this URL's origin. The value is never recorded or shown. Repeatable, one clause per header.",
     ),
@@ -124,6 +129,9 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("RENDER", "TO", "`TO <dest>`: the output file (absolute, no trailing `/`)."),
     ("RENDER", "FOR", "`FOR item IN list` renders once per element of a list import; `<dest>` may use `${item.key}`."),
     ("RENDER", "IN", "`IN list`: an IMPORT that is a list (markdown documents, a JSON/YAML array, CSV rows)."),
+    ("RENDER", "BY", "`BY key` (after FOR): render once per distinct value of the field (a list field counts each value): the loop variable is `{key, count, items}`, groups in SORT BY order. Tag pages: `TO /tags/${tag.key}/index.html FOR tag IN posts BY tags`."),
+    ("RENDER", "PAGE", "`PAGE n` (after FOR [BY]): render once per page of n items: `{count, items, number, total, url, prev, next}` (`prev`/`next` are '' at the ends; with BY, also `key`, per group). An empty list is one empty page."),
+    ("RENDER", "FIRST", "`FIRST <dest>` (after PAGE n): the first page's destination, e.g. `/index.html` while later pages go to `/page/${page.number}/index.html`."),
     ("TRANSFORM", "WITH", "`WITH name`: a PLUGIN or TOOL declared on an earlier line."),
     ("TRANSFORM", "TO", "`TO <dest>`: where the result is written (a file, or a directory for several files). For a directory source, `*` (each file's name) or `*.ext` (its name with a new extension) as the last segment writes one file per input."),
     ("TRANSFORM", "OPTIONS", "`OPTIONS key=value …`: passed to the plugin; TOOL ARGS can use `{option.key}`. Values may use `${item.key}`."),
@@ -304,6 +312,9 @@ mod tests {
         }
         for c in TRANSFORM_CLAUSES {
             assert!(clause("TRANSFORM", c).is_some(), "{c}");
+        }
+        for c in crate::language::parser::RENDER_LOOP_CLAUSES {
+            assert!(clause("RENDER", c).is_some(), "{c}");
         }
         for (kw, clauses) in [
             ("SITEMAP", &SITEMAP_CLAUSES[..]),

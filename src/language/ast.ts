@@ -77,6 +77,8 @@ export interface ImportInstruction {
   readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
   /** `SCHEMA <path>`: a local YAML/JSON schema every document (or list element) must match. */
   readonly schema?: { readonly path: Operand; readonly span: SourceSpan };
+  /** `DRAFTS <true|false>`: whether elements with `draft: true` are kept (evaluated by the planner). */
+  readonly drafts?: { readonly value: Operand; readonly span: SourceSpan };
   /** `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets, sent with remote requests). */
   readonly secrets?: readonly ImportSecret[];
   /** `ARG NAME=value` (repeatable): build args passed to a Sitefile imported `AS sitefile`. */
@@ -152,9 +154,20 @@ export interface RenderInstruction {
   readonly from?: StageRef;
   /** `--escape=html|none`, default none. */
   readonly escape: EscapeMode;
-  /** `FOR item IN list`: render once per element of an imported list. */
-  readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
+  /** `FOR item IN list [BY key] [PAGE n [FIRST <dest>]]`: render once per element, group or page of an imported list. */
+  readonly each?: RenderEach;
   readonly overwrite: boolean;
+}
+
+/** `FOR item IN list [BY key] [PAGE n [FIRST <dest>]]` of a RENDER. */
+export interface RenderEach {
+  readonly as: string;
+  readonly list: string;
+  readonly span: SourceSpan;
+  /** `BY key`: one element per distinct value of the field (tag pages). */
+  readonly by?: { readonly key: string; readonly span: SourceSpan };
+  /** `PAGE n [FIRST <dest>]`: pages of n items; FIRST is the first page's destination. */
+  readonly page?: { readonly size: Operand; readonly first?: Operand; readonly span: SourceSpan };
 }
 
 export interface ExportInstruction {

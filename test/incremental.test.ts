@@ -72,7 +72,7 @@ async function outcome(options: BuildOptions, outDir?: string): Promise<Outcome 
 
 /** A site using every memoized step: imports of each kind, stages, COPY, RENDER (FOR), FEED, SITEMAP, TRANSFORM. */
 class Site {
-  posts = new Map<string, { title: string; date: string; body: string; tags: string[] }>();
+  posts = new Map<string, { title: string; date: string; body: string; tags: string[]; draft?: boolean }>();
   publicFiles = new Map<string, string>();
   postTemplate = 0;
   indexTemplate = 0;
@@ -82,9 +82,17 @@ class Site {
   swapped = false;
   badPost = false;
   arg = 'one';
+  /** --build-arg DRAFTS (IMPORT … DRAFTS ${DRAFTS}). */
+  drafts = false;
+  /** schema.yaml requires a key no post has. */
+  badSchema = false;
   /** --target: build only the `assets` stage. */
   target: string | undefined = undefined;
   next = 0;
+
+  args(): Record<string, string> {
+    return { SITE: this.arg, DRAFTS: String(this.drafts) };
+  }
 
   constructor(
     readonly dir: string,
@@ -130,7 +138,7 @@ class Site {
     await rm(path.join(this.dir, 'posts'), { recursive: true, force: true });
     await rm(path.join(this.dir, 'public'), { recursive: true, force: true });
     for (const [name, p] of this.posts) {
-      await put(path.join(this.dir, 'posts', name), `---\ntitle: "${p.title}"\ndate: ${p.date}\ntags: [${p.tags.join(', ')}]\n---\n# ${p.title}\n\n${p.body}\n`);
+      await put(path.join(this.dir, 'posts', name), `---\ntitle: "${p.title}"\ndate: ${p.date}\ntags: [${p.tags.join(', ')}]\n${p.draft ? 'draft: true\n' : ''}---\n# ${p.title}\n\n${p.body}\n`);
     }
     if (this.badPost) await put(path.join(this.dir, 'posts', 'zz-bad.md'), '---\ntitle: [unclosed\n---\nbody\n');
     for (const [name, text] of this.publicFiles) await put(path.join(this.dir, 'public', name), text);
@@ -144,13 +152,15 @@ class Site {
     await put(path.join(this.dir, 'templates', 'post.html'), postTemplates[this.postTemplate]!);
     await put(path.join(this.dir, 'templates', 'index.html'), indexTemplates[this.indexTemplate]!);
     await put(path.join(this.dir, 'data', 'site.json'), JSON.stringify({ title: this.siteTitle }));
+    await put(path.join(this.dir, 'schema.yaml'), this.badSchema ? 'required: [missing]\n' : 'required: [title]\nproperties:\n  tags: {type: list, items: string}\n  draft: boolean\n');
     await put(path.join(this.dir, 'data', 'rows.csv'), 'name,n\n' + this.rows.map(([a, n]) => `${a},${n}`).join('\n') + '\n');
     const a = 'COPY ./public/ /static/';
     const b = 'COPY --from=assets /x/ /assets/';
     const lines = [
       'ARG SITE = "S"',
+      'ARG DRAFTS = "false"',
       'PLUGIN badge FROM ./plugins/badge.wasm',
-      'IMPORT posts FROM ./posts AS markdown SORT BY date DESC',
+      'IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./schema.yaml DRAFTS ${DRAFTS}',
       'IMPORT site FROM ./data/site.json AS json',
       'IMPORT rows FROM ./data/rows.csv AS csv',
       'IMPORT pub FROM ./public',
@@ -169,6 +179,13 @@ class Site {
       'TRANSFORM WITH badge TO /badges/${post.slug}.svg FOR post IN posts',
       'FEED posts BASE https://example.com LINK /posts/${item.slug}.html TITLE "Feed"',
       'SITEMAP BASE https://example.com',
+      // Tag pages (two posts a page) and an index paginated by three.
+      'RENDER --escape=html <<T TO /tags/${t.key}/${t.number}.html FOR t IN posts BY tags PAGE 2 FIRST /tags/${t.key}/index.html',
+      '${t.key} ${t.number}/${t.total}:${#each t.items as p}${p.title}${/each} ${t.prev} ${t.next}',
+      'T',
+      'RENDER --escape=html <<T TO /page/${page.number}.html FOR page IN posts PAGE 3',
+      '${#each page.items as p}<a>${p.title}</a>${/each}${page.next}',
+      'T',
       'REDIRECT /old /index.html',
       'EXPORT /',
     ];
@@ -196,6 +213,10 @@ class Site {
       'sitefile-swap',
       'bad-post',
       'target',
+      'post-draft',
+      'drafts-arg',
+      'schema',
+      'post-tags',
       'nothing',
     ] as const);
     switch (kind) {
@@ -254,6 +275,20 @@ class Site {
         break;
       case 'target':
         this.target = this.target === undefined ? 'assets' : undefined;
+        break;
+      case 'post-draft': {
+        const post = this.posts.get(this.pick(names))!;
+        post.draft = !post.draft;
+        break;
+      }
+      case 'drafts-arg':
+        this.drafts = !this.drafts;
+        break;
+      case 'schema':
+        this.badSchema = !this.badSchema;
+        break;
+      case 'post-tags':
+        this.posts.get(this.pick(names))!.tags = Array.from({ length: Math.floor(this.r() * 3) }, () => this.word());
         break;
       case 'nothing':
         break;
@@ -346,7 +381,7 @@ for (const seed of [1, 7, 42, 1234, 99991]) {
     const memo = new BuildMemo();
     // One seed also uses the TRANSFORM disk cache (shared by both builds, as in watch mode).
     const cache = seed === 42 ? { cacheDir: path.join(dir, 'cache') } : {};
-    const base = (): BuildOptions => ({ contextDir: site.dir, lockfile: false, buildArgs: { SITE: site.arg }, ...(site.target !== undefined ? { target: site.target } : {}), ...cache });
+    const base = (): BuildOptions => ({ contextDir: site.dir, lockfile: false, buildArgs: site.args(), ...(site.target !== undefined ? { target: site.target } : {}), ...cache });
     let reused = 0;
     const history: string[] = [];
     for (let step = 0; step < 60; step++) {
@@ -395,7 +430,7 @@ test('an unchanged rebuild reuses every step; an edit re-runs only what read it'
   const site = new Site(ctx, rng(3));
   await site.init();
   const memo = new BuildMemo();
-  const opts = (): BuildOptions => ({ contextDir: ctx, lockfile: false, memo, buildArgs: { SITE: site.arg } });
+  const opts = (): BuildOptions => ({ contextDir: ctx, lockfile: false, memo, buildArgs: site.args() });
   const first = await build(opts());
   assert.equal(first.memoStats!.hits, 0);
   const again = await build(opts());
@@ -414,22 +449,24 @@ test('an unchanged rebuild reuses every step; an edit re-runs only what read it'
   await site.write();
   const profiler = new Profiler('build');
   const edited = await build({ ...opts(), profiler });
-  const clean = await build({ contextDir: ctx, lockfile: false, buildArgs: { SITE: site.arg } });
+  const clean = await build({ contextDir: ctx, lockfile: false, buildArgs: site.args() });
   assert.equal(edited.output.digest(), clean.output.digest());
   const states = (JSON.parse(profiler.toJSON()) as { traceEvents: Array<{ cat?: string; name: string; args: Record<string, unknown> }> }).traceEvents
     .filter((e) => e.cat === 'operation')
     .map((e) => `${e.name.replace(/^.*Sitefile:/, '')} ${String(e.args['memo'])}`);
   assert.deepEqual(states, [
-    '8 COPY hit', // the stage reads ./public only
-    '10 COPY hit',
+    '9 COPY hit', // the stage reads ./public only
     '11 COPY hit',
     '12 COPY hit',
-    '13 RENDER miss', // the index lists the posts
-    '14 RENDER miss', // ... and so does the FOR list, but only the edited post's page is rendered again
-    '15 RENDER files', // the rows pages read nothing that changed: their files are reused, then added to the new tree
-    '18 TRANSFORM miss',
-    '19 FEED miss',
-    '20 SITEMAP miss',
+    '13 COPY hit',
+    '14 RENDER miss', // the index lists the posts
+    '15 RENDER miss', // ... and so does the FOR list, but only the edited post's page is rendered again
+    '16 RENDER files', // the rows pages read nothing that changed: their files are reused, then added to the new tree
+    '19 TRANSFORM miss',
+    '20 FEED miss',
+    '21 SITEMAP miss',
+    '22 RENDER miss', // tag pages and index pages read the posts (only the pages showing the edit change)
+    '25 RENDER miss',
   ]);
   assert.equal(edited.transformStats.pluginCalls, 1); // one badge drawn again, the others reused
 });
