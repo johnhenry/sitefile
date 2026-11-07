@@ -2,14 +2,14 @@ import path from 'node:path';
 import { makeClient } from './base-image.js';
 import { sha256 } from './digest.js';
 import { isSitefileError } from './errors.js';
-import { loadProgram, type BuildOptions } from './executor.js';
-import { plan } from './planner.js';
+import { loadProgram, readImportedSitefile, rootSitefileSource, type BuildOptions, type SitefileSource } from './executor.js';
+import { importedStageRefs, plan, type Plan } from './planner.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
 import { fetchRemote } from './resources/https.js';
-import { resolveRef } from './resources/git.js';
+import { fetchGitCommit, resolveRef, selectGitPath } from './resources/git.js';
 import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { Lockfile } from './resources/lockfile.js';
-import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
+import { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 
 /**
  * `sitefile outdated` (issue #104): report, for every remote input, whether what it points at today
@@ -110,51 +110,83 @@ function statusOf(pin: string | null, latest: string): OutdatedStatus {
 }
 
 export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
-  const { program, sitefilePath } = await loadProgram(options);
+  const { program, sitefilePath, label } = await loadProgram(options);
   const p = plan(program, options.buildArgs ?? {});
   p.warnings.forEach((m) => options.onWarning?.(m));
   const policy: FetchPolicy = { ...DEFAULT_FETCH_POLICY, ...options.fetchPolicy };
   const lockPath = options.lockfile === false ? undefined : (options.lockfile ?? path.join(path.dirname(sitefilePath), 'Sitefile.lock'));
   const lock = lockPath ? await Lockfile.load(lockPath) : undefined;
   const inputs: OutdatedEntry[] = [];
+  const limits = { ...DEFAULT_ARCHIVE_LIMITS, ...options.archiveLimits };
+  /** Sitefiles imported AS sitefile, with the prefix their inputs are named by (`theme+`). */
+  const nested: Array<{ readonly prefix: string; readonly plan: Plan }> = [];
 
-  for (const spec of p.imports) {
-    if (spec.location.kind === 'git') {
-      // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it was
-      // locked. A commit in the URL has no ref to follow.
-      const loc = spec.location;
-      const locked = lock?.getGit(loc.url)?.commit;
-      const pin = loc.commit ?? locked ?? null;
-      const pinnedBy: OutdatedEntry['pinnedBy'] = loc.commit !== undefined ? 'commit' : locked !== undefined ? 'lockfile' : null;
-      const row = { kind: 'import' as const, name: spec.name, source: loc.url, pin, pinnedBy, newerTag: null };
-      if (loc.commit !== undefined) {
-        inputs.push(entry({ ...row, latest: null, status: 'digest-only', error: null }));
+  /** The rows of `sp`'s imports (`sp` read from `source`), then of the Sitefiles it imports, named `<prefix><name>`. */
+  const importRows = async (sp: Plan, source: SitefileSource, prefix: string): Promise<void> => {
+    for (const spec of sp.imports) {
+      const name = prefix + spec.name;
+      let rowIndex = -1;
+      if (spec.location.kind === 'git') {
+        // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it was
+        // locked. A commit in the URL has no ref to follow.
+        const loc = spec.location;
+        const locked = lock?.getGit(loc.url)?.commit;
+        const pin = loc.commit ?? locked ?? null;
+        const pinnedBy: OutdatedEntry['pinnedBy'] = loc.commit !== undefined ? 'commit' : locked !== undefined ? 'lockfile' : null;
+        const row = { kind: 'import' as const, name, source: loc.url, pin, pinnedBy, newerTag: null };
+        rowIndex = inputs.length;
+        if (loc.commit !== undefined) {
+          inputs.push(entry({ ...row, latest: null, status: 'digest-only', error: null }));
+        } else {
+          try {
+            const originHeaders = secretHeaders(spec, options.secrets);
+            const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) });
+            inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
+          } catch (e) {
+            inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
+          }
+        }
+      } else if (spec.location.kind === 'remote') {
+        const url = spec.location.url;
+        const locked = lock?.get(url);
+        const pin = spec.integrity ?? locked?.integrity ?? null;
+        const pinnedBy: OutdatedEntry['pinnedBy'] = spec.integrity ? 'integrity' : locked ? 'lockfile' : null;
+        const row = { kind: 'import' as const, name, source: url, pin, pinnedBy, newerTag: null };
+        try {
+          const originHeaders = secretHeaders(spec, options.secrets);
+          const { bytes } = await fetchRemote(url, policy, undefined, originHeaders ? { originHeaders } : {});
+          const latest = sha256(bytes);
+          inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
+        } catch (e) {
+          inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
+        }
+      }
+      if (spec.as !== 'sitefile' || inputs[rowIndex]?.status === 'error') continue;
+      // The inputs of an imported Sitefile, as pinned (a Git one is read at its pinned commit, else the ref's).
+      let sub: { plan: Plan; source: SitefileSource };
+      try {
+        sub = await readImportedSitefile(spec, source, importedStageRefs(sp.stages), async (s, loc) => {
+          const originHeaders = secretHeaders(s, options.secrets);
+          const want = loc.commit ?? lock?.getGit(loc.url)?.commit;
+          const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy, span: s.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
+          return { commit: objs.commit, selection: selectGitPath(objs, loc, limits, s.span) };
+        });
+      } catch (e) {
+        const error = errorOf(e, options.secrets);
+        const prior = inputs[rowIndex];
+        const row: OutdatedEntry = prior
+          ? { ...prior, latest: null, status: 'error', error }
+          : { kind: 'import', name, source: spec.uri, pin: null, pinnedBy: null, latest: null, status: 'error', newerTag: null, error };
+        if (prior) inputs[rowIndex] = entry(row);
+        else inputs.push(entry(row));
         continue;
       }
-      try {
-        const originHeaders = secretHeaders(spec, options.secrets);
-        const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) });
-        inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
-      } catch (e) {
-        inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
-      }
-      continue;
+      sub.plan.warnings.forEach((m) => options.onWarning?.(m));
+      nested.push({ prefix: `${name}+`, plan: sub.plan });
+      await importRows(sub.plan, sub.source, `${name}+`);
     }
-    if (spec.location.kind !== 'remote') continue;
-    const url = spec.location.url;
-    const locked = lock?.get(url);
-    const pin = spec.integrity ?? locked?.integrity ?? null;
-    const pinnedBy: OutdatedEntry['pinnedBy'] = spec.integrity ? 'integrity' : locked ? 'lockfile' : null;
-    const row = { kind: 'import' as const, name: spec.name, source: url, pin, pinnedBy, newerTag: null };
-    try {
-      const originHeaders = secretHeaders(spec, options.secrets);
-      const { bytes } = await fetchRemote(url, policy, undefined, originHeaders ? { originHeaders } : {});
-      const latest = sha256(bytes);
-      inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
-    } catch (e) {
-      inputs.push(entry({ ...row, latest: null, status: 'error', error: errorOf(e, options.secrets) }));
-    }
-  }
+  };
+  await importRows(p, await rootSitefileSource(options, label, sitefilePath), '');
 
   /** A registry image (BASE or a FROM image base): resolve its tag again and compare with the pin. */
   const imageRow = async (kind: 'image' | 'base', name: string, input: string): Promise<OutdatedEntry> => {
@@ -188,8 +220,10 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
     }
   };
   // FROM image stage bases with a registry (local-store images have no upstream), named by their stage.
-  for (const [i, st] of p.stages.entries()) {
-    if (st.base.kind === 'image' && !st.base.local) inputs.push(await imageRow('image', st.name ?? `#${i + 1}`, st.base.ref));
+  for (const { prefix, plan: sp } of [{ prefix: '', plan: p }, ...nested]) {
+    for (const [i, st] of sp.stages.entries()) {
+      if (st.base.kind === 'image' && !st.base.local) inputs.push(await imageRow('image', prefix + (st.name ?? `#${i + 1}`), st.base.ref));
+    }
   }
   const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
   if (baseInput !== undefined) inputs.push(await imageRow('base', 'BASE', baseInput));

@@ -1,0 +1,4 @@
+# A stage the imported Sitefile does not have.
+IMPORT theme FROM ./theme AS sitefile
+FROM theme+nope
+EXPORT /

@@ -1,0 +1,16 @@
+ARG ACCENT = "teal"
+ARG LEVEL: number = 1
+IMPORT base FROM ./base AS sitefile ARG WHO=theme
+IMPORT data FROM ./data.json AS json
+STAGE assets FROM base+css
+RENDER <<CSS TO /theme.css
+h1 { color: ${ACCENT}; } /* ${data.name}, level ${LEVEL} */
+CSS
+STAGE layout
+COPY ./layout/page.html /page.html
+STAGE pages
+COPY ./pages/ /pages/
+# Never read by the importer, so never built.
+STAGE broken
+COPY ./missing.txt /missing.txt
+EXPORT /

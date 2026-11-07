@@ -12,7 +12,7 @@ import { isFragment, isInline } from './language/ast.js';
 import { logicalLines, type CommentLine, type LogicalLine } from './language/scanner.js';
 import { operandsOf, parseFragmentBody } from './language/validate.js';
 import { templateNames } from './executor.js';
-import type { Operation, Plan } from './planner.js';
+import { importedStageRefs, type Operation, type Plan } from './planner.js';
 import { parseRenderTemplate } from './render.js';
 import { parseRef } from './ref.js';
 
@@ -143,6 +143,8 @@ export function lint(program: Program, plan: Plan, source: string, disabled: rea
       if (src?.kind === 'import') used.add(src.name);
     }
   }
+  // An IMPORT … AS sitefile is used by naming one of its stages (`FROM theme+assets`, `--from=theme+assets`).
+  for (const ref of importedStageRefs(plan.stages)) used.add(ref.import);
   for (const ins of program.instructions) {
     let what: string | undefined;
     let name = '';

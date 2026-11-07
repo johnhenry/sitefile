@@ -1,0 +1,7 @@
+# graph: imported stages are nodes fed by their IMPORT (the imported Sitefile is not read).
+IMPORT theme FROM ./theme AS sitefile
+IMPORT git FROM git+https://example.com/t.git#v1:theme AS sitefile
+STAGE site FROM theme+assets
+COPY --from=git+icons / /icons/
+COPY --from=theme+assets /a.css /again.css
+EXPORT /

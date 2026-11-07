@@ -1,0 +1,5 @@
+# A Sitefile that imports itself.
+IMPORT me FROM ./ AS sitefile
+STAGE x
+FROM me+x
+EXPORT /

@@ -1,0 +1,5 @@
+# validate: an IMPORT … AS sitefile none of whose stages is named is unused.
+IMPORT theme FROM ./theme AS sitefile
+IMPORT unused FROM ./theme AS sitefile ARG X=1
+FROM theme+assets
+EXPORT /

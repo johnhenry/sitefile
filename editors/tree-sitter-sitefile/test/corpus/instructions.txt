@@ -440,3 +440,45 @@ checklinks --warn --external
       (flag_name))
     (flag
       (flag_name))))
+
+==================
+IMPORT AS sitefile with ARG clauses and imported stages
+==================
+
+IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT} ARG N = 2
+IMPORT git FROM git+https://e.x/t.git#v1:theme AS sitefile ARG TITLE="A b"
+STAGE site FROM theme+assets
+COPY --from=git+layout / /l/
+
+---
+
+(source_file
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (import_arg
+      (identifier)
+      (word
+        (substitution
+          (identifier))))
+    (import_arg
+      (identifier)
+      (number)))
+  (import_instruction
+    (identifier)
+    (url)
+    (import_kind)
+    (import_arg
+      (identifier)
+      (string
+        (string_content))))
+  (stage_instruction
+    (identifier)
+    (word))
+  (copy_instruction
+    (flag
+      (flag_name)
+      (flag_value))
+    (path)
+    (path)))

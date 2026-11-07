@@ -1,0 +1,619 @@
+{
+ "1": {
+  "text": "# IMPORT … AS sitefile (issue #97): stages of another Sitefile, named <import>+<stage>.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " IMPORT … AS sitefile (issue #97): stages of another Sitefile, named <import>+<stage>.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "2": {
+  "text": "ARG ACCENT = \"rebeccapurple\"",
+  "tokens": [
+   [
+    "ARG",
+    "meta.instruction.arg.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "ACCENT",
+    "meta.instruction.arg.sitefile variable.other.definition.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.arg.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.arg.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "rebeccapurple",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.arg.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ]
+  ]
+ },
+ "3": {
+  "text": "# Like ARG, an IMPORT … AS sitefile may come before the first stage.",
+  "tokens": [
+   [
+    "#",
+    "comment.line.number-sign.sitefile punctuation.definition.comment.sitefile"
+   ],
+   [
+    " Like ARG, an IMPORT … AS sitefile may come before the first stage.",
+    "comment.line.number-sign.sitefile"
+   ]
+  ]
+ },
+ "4": {
+  "text": "IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT}",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./theme",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sitefile",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ARG",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ACCENT",
+    "meta.instruction.import.sitefile variable.other.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.import.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "ACCENT",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.import.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ]
+  ]
+ },
+ "5": {
+  "text": "IMPORT remote FROM git+https://example.com/theme.git#v1:theme AS sitefile ARG ACCENT=\"teal\" ARG N=2 SECRET tok AS BEARER",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "remote",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "git+https://example.com/theme.git#v1:theme",
+    "meta.instruction.import.sitefile markup.underline.link.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "sitefile",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ARG",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ACCENT",
+    "meta.instruction.import.sitefile variable.other.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.import.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile punctuation.definition.string.begin.sitefile"
+   ],
+   [
+    "teal",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile"
+   ],
+   [
+    "\"",
+    "meta.instruction.import.sitefile string.quoted.double.sitefile punctuation.definition.string.end.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "ARG",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "N",
+    "meta.instruction.import.sitefile variable.other.arg.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.import.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "2",
+    "meta.instruction.import.sitefile constant.numeric.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "SECRET",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "tok",
+    "meta.instruction.import.sitefile variable.other.secret.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "BEARER",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ]
+  ]
+ },
+ "6": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "7": {
+  "text": "STAGE site FROM theme+assets",
+  "tokens": [
+   [
+    "STAGE",
+    "meta.instruction.stage.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "site",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.stage.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.stage.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.stage.sitefile variable.other.readwrite.import.sitefile"
+   ],
+   [
+    "+",
+    "meta.instruction.stage.sitefile punctuation.separator.imported-stage.sitefile"
+   ],
+   [
+    "assets",
+    "meta.instruction.stage.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "8": {
+  "text": "IMPORT pages FROM ./pages AS markdown",
+  "tokens": [
+   [
+    "IMPORT",
+    "meta.instruction.import.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "pages",
+    "meta.instruction.import.sitefile variable.other.definition.import.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "FROM",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "./pages",
+    "meta.instruction.import.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "AS",
+    "meta.instruction.import.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.import.sitefile"
+   ],
+   [
+    "markdown",
+    "meta.instruction.import.sitefile support.type.import-kind.sitefile"
+   ]
+  ]
+ },
+ "9": {
+  "text": "RENDER --escape=html --from=theme+layout /page.html TO /${page.slug}.html FOR page IN pages",
+  "tokens": [
+   [
+    "RENDER",
+    "meta.instruction.render.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "escape",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "html",
+    "meta.instruction.render.sitefile constant.language.escape-mode.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.render.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.render.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.render.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "theme",
+    "meta.instruction.render.sitefile variable.other.readwrite.import.sitefile"
+   ],
+   [
+    "+",
+    "meta.instruction.render.sitefile punctuation.separator.imported-stage.sitefile"
+   ],
+   [
+    "layout",
+    "meta.instruction.render.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/page.html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "TO",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    "${",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.begin.sitefile"
+   ],
+   [
+    "page",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.readwrite.sitefile"
+   ],
+   [
+    ".",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.accessor.sitefile"
+   ],
+   [
+    "slug",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile variable.other.property.sitefile"
+   ],
+   [
+    "}",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile meta.interpolation.sitefile punctuation.definition.interpolation.end.sitefile"
+   ],
+   [
+    ".html",
+    "meta.instruction.render.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "FOR",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "page",
+    "meta.instruction.render.sitefile variable.other.definition.loop.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "IN",
+    "meta.instruction.render.sitefile keyword.other.clause.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.render.sitefile"
+   ],
+   [
+    "pages",
+    "meta.instruction.render.sitefile variable.other.readwrite.sitefile"
+   ]
+  ]
+ },
+ "10": {
+  "text": "COPY --from=remote+assets / /remote/",
+  "tokens": [
+   [
+    "COPY",
+    "meta.instruction.copy.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.copy.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "from",
+    "meta.instruction.copy.sitefile variable.parameter.flag.sitefile"
+   ],
+   [
+    "=",
+    "meta.instruction.copy.sitefile keyword.operator.assignment.sitefile"
+   ],
+   [
+    "remote",
+    "meta.instruction.copy.sitefile variable.other.readwrite.import.sitefile"
+   ],
+   [
+    "+",
+    "meta.instruction.copy.sitefile punctuation.separator.imported-stage.sitefile"
+   ],
+   [
+    "assets",
+    "meta.instruction.copy.sitefile entity.name.section.stage.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.copy.sitefile"
+   ],
+   [
+    "/remote/",
+    "meta.instruction.copy.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ },
+ "11": {
+  "text": "",
+  "tokens": [
+   [
+    "",
+    ""
+   ]
+  ]
+ },
+ "12": {
+  "text": "FROM site",
+  "tokens": [
+   [
+    "FROM",
+    "meta.instruction.from.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.from.sitefile"
+   ],
+   [
+    "site",
+    "meta.instruction.from.sitefile entity.name.section.stage.sitefile"
+   ]
+  ]
+ },
+ "13": {
+  "text": "EXPORT /",
+  "tokens": [
+   [
+    "EXPORT",
+    "meta.instruction.export.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.export.sitefile"
+   ],
+   [
+    "/",
+    "meta.instruction.export.sitefile string.unquoted.path.sitefile"
+   ]
+  ]
+ }
+}

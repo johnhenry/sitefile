@@ -1,0 +1,5 @@
+# sitefile outdated: the Sitefile import (locked at v1, main has moved) and the imported Sitefile's inputs.
+IMPORT theme FROM git+${HTTPS}/stages.git#main:theme AS sitefile ARG ACCENT=red
+STAGE site FROM theme+assets
+COPY --from=theme+layout / /
+EXPORT /

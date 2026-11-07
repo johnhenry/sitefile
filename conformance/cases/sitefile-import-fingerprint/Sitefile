@@ -1,0 +1,6 @@
+# FINGERPRINT in an imported Sitefile: the importer starts FROM its stage, inherits its renames (HEADER on the
+# renamed URL), and why follows the rename into theme/Sitefile.
+IMPORT theme FROM ./theme AS sitefile
+STAGE site FROM theme+site
+HEADER /assets/site.css Cache-Control: immutable
+EXPORT /
