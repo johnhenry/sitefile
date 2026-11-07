@@ -20,7 +20,9 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
         Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
         Instruction::Let { value, .. } => vec![(value, false)],
-        Instruction::Import { uri, args, .. } => std::iter::once(uri).chain(args.iter().map(|a| &a.value)).map(|o| (o, false)).collect(),
+        Instruction::Import { uri, schema, args, .. } => {
+            std::iter::once(uri).chain(schema.as_ref().map(|s| &s.path)).chain(args.iter().map(|a| &a.value)).map(|o| (o, false)).collect()
+        }
         Instruction::Plugin { uri, .. } => vec![(uri, false)],
         Instruction::Copy { source, dest, .. } => src(source).map(|o| (o, false)).into_iter().chain([(dest, false)]).collect(),
         Instruction::Render { template, dest, .. } => {
@@ -264,7 +266,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.vars.insert(name);
             }
-            Instruction::Import { name, span, as_kind, sort, args, integrity, .. } => {
+            Instruction::Import { name, span, as_kind, sort, schema, args, integrity, .. } => {
                 if scope.taken(name) {
                     return Err(duplicate(name, span));
                 }
@@ -274,6 +276,15 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                             E_VALIDATION,
                             format!("IMPORT {name}: SORT BY applies to lists: AS markdown, json, yaml or csv"),
                             &sort.span,
+                        ));
+                    }
+                }
+                if let Some(schema) = schema {
+                    if !sortable(*as_kind) {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!("IMPORT {name}: SCHEMA applies to documents and lists: AS markdown, json, yaml or csv"),
+                            &schema.span,
                         ));
                     }
                 }

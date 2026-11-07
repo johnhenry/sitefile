@@ -195,6 +195,13 @@
         "value": "[Dd][Ee][Ss][Cc]"
       }
     },
+    "_kw_schema": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ss][Cc][Hh][Ee][Mm][Aa]"
+      }
+    },
     "_kw_for": {
       "type": "TOKEN",
       "content": {
@@ -890,6 +897,28 @@
                   "type": "SYMBOL",
                   "name": "sort_clause"
                 }
+              },
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "ALIAS",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_kw_schema"
+                    },
+                    "named": false,
+                    "value": "SCHEMA"
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "schema",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "_operand"
+                    }
+                  }
+                ]
               },
               {
                 "type": "FIELD",

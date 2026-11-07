@@ -1,0 +1,4 @@
+- name: a
+  size: s
+- name: b
+  size: xl

@@ -20,7 +20,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ("LET", "LET NAME[: type] = value", "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails."),
     (
         "IMPORT",
-        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
+        "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
         "Names a resource: a context-relative path, an `https://` URL, or a Git repository (`git+https://host/repo.git#ref:path`; pin a commit for reproducibility). Kinds: file, text, json, yaml, csv, markdown, wbn, tree (default: tree for a directory, else file), and sitefile (another Sitefile, whose stages are `name+<stage>`). COPY places files (`COPY name: /dest/`); text and data kinds are values for RENDER templates and FOR.",
     ),
     (
@@ -105,6 +105,11 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("IMPORT", "INTEGRITY", "`INTEGRITY sha256:<64 lowercase hex>`: the content must match; remote pins are recorded in Sitefile.lock."),
     ("IMPORT", "SORT", "`SORT BY key [ASC|DESC]` orders a list import (markdown, json, yaml, csv) by a field; numbers and numeric strings compare numerically."),
     ("IMPORT", "BY", "`SORT BY key`: the field to sort by."),
+    (
+        "IMPORT",
+        "SCHEMA",
+        "`SCHEMA <file>`: a local `.yaml`/`.json` schema every document (markdown frontmatter, or each element of a json/yaml/csv list) must match: `required: [title, date]` and `properties:` with a type (string, number, boolean, date, list; `items` for list elements) or an `enum`. A mismatch fails the build with `E_SCHEMA`, naming the document, the key, what was expected and what was found.",
+    ),
     (
         "IMPORT",
         "SECRET",

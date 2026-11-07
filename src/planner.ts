@@ -28,6 +28,8 @@ export interface ImportSpec {
   readonly as?: ImportKind;
   readonly integrity?: string;
   readonly sort?: { readonly key: string; readonly descending: boolean };
+  /** `SCHEMA <path>`: `uri` as written (for messages), `path` context-relative. */
+  readonly schema?: { readonly uri: string; readonly path: string; readonly span: SourceSpan };
   /** Build secrets sent as request headers (ids and header names only; values come from --secret). */
   readonly secrets?: readonly { readonly id: string; readonly header: string; readonly bearer: boolean }[];
   /** `AS sitefile`: the `ARG NAME=value` clauses, evaluated (build args of the imported Sitefile). */
@@ -279,6 +281,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.as ? { as: ins.as } : {}),
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
           ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
+          ...(ins.schema ? { schema: schemaSpec(ins.name, ins.schema.path, vars, ins.schema.span) } : {}),
           ...(ins.secrets ? { secrets: ins.secrets.map((s) => ({ id: s.id, header: s.header, bearer: s.bearer })) } : {}),
           ...(ins.args ? { args: ins.args.map((a) => ({ name: a.name, value: evaluateOperand(a.value, vars), span: a.span })) } : {}),
           span: ins.span,
@@ -476,6 +479,19 @@ export function targetPlan(p: Plan, name: string): Plan {
     );
   }
   return { ...p, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
+}
+
+/** `IMPORT … SCHEMA <path>`: a local `.json`, `.yaml` or `.yml` file in the build context. */
+function schemaSpec(name: string, op: Operand, vars: ReadonlyMap<string, Scalar>, span: SourceSpan): { uri: string; path: string; span: SourceSpan } {
+  const uri = evaluateOperand(op, vars);
+  if (URL_RE.test(uri)) {
+    throw new SitefileError('E_PROTOCOL', `IMPORT ${name}: SCHEMA must be a local file in the build context, not a URL`, op.span);
+  }
+  const rel = normalizeLocal(uri, op.span).path;
+  if (!/\.(json|ya?ml)$/i.test(rel)) {
+    throw new SitefileError('E_VALIDATION', `IMPORT ${name}: SCHEMA '${uri}' must be a .json, .yaml or .yml file`, op.span);
+  }
+  return { uri, path: rel, span };
 }
 
 /** `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default. */

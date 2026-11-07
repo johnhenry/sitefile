@@ -240,6 +240,13 @@ pub struct SortBy {
     pub span: SourceSpan,
 }
 
+/// `SCHEMA <path>` of an IMPORT: a local YAML/JSON schema for its documents.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaClause {
+    pub path: Operand,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransformOption {
     pub key: String,
@@ -268,6 +275,8 @@ pub enum Instruction {
         as_kind: Option<ImportKind>,
         integrity: Option<String>,
         sort: Option<SortBy>,
+        /// `SCHEMA <path>`: every document (or list element) must match this schema.
+        schema: Option<SchemaClause>,
         /// `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets).
         secrets: Vec<ImportSecret>,
         /// `ARG NAME=value` (repeatable): build args of a Sitefile imported `AS sitefile`.

@@ -132,6 +132,9 @@ export function planGraph(p: Plan): Graph {
   };
   const list = (name: string): string | undefined => (imports.has(name) ? `import:${name}` : undefined);
 
+  // An IMPORT … SCHEMA reads its schema file.
+  for (const i of p.imports) if (i.schema) edge(local(i.schema.path), `import:${i.name}`, 'input');
+
   // Stages of imported Sitefiles (IMPORT … AS sitefile) are read like stages: one node each, fed by the import.
   const importedStages: GraphNode[] = [];
   for (const ref of importedStageRefs(p.stages)) {

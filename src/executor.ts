@@ -41,6 +41,8 @@ import { Store } from './store.js';
 import { begin, reserve, type Profiler, type ProfileSpan } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { checkSchema, compileSchema } from './schema.js';
+import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
@@ -374,6 +376,11 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     return r;
   });
   const resolved = new Map(plainImports.map(([s], j) => [s.name, plainResolved[j]!] as const));
+  // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
+  for (const spec of p.imports) {
+    const r = resolved.get(spec.name);
+    if (r && spec.schema) await checkImportSchema(spec, r.res, local);
+  }
 
   const images: FromImageUse[] = [];
   let imageStore: Store | undefined;
@@ -1187,6 +1194,11 @@ async function loadSitefileImport(spec: ImportSpec, importer: Importer, refs: re
   const plain = p.imports.filter((s) => s.as !== 'sitefile');
   const resolved = await mapLimit(plain, env.concurrency, (s) => resolveImport(s, ienv));
   const byName = new Map(plain.map((s, i) => [s.name, resolved[i]!] as const));
+  // SCHEMA files are read from the imported Sitefile's own context.
+  for (const s of plain) {
+    const r = byName.get(s.name);
+    if (r && s.schema) await checkImportSchema(s, r.res, local);
+  }
   const resources = new Map<string, Resource>();
   const resourceKeys = new Map<string, string>();
   const imported = new Map<string, Unit>();
@@ -2343,6 +2355,26 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     }
     return files;
   });
+}
+
+/** `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents. */
+async function checkImportSchema(spec: ImportSpec, res: Resource, local: LocalContext): Promise<void> {
+  const schema = spec.schema!;
+  const what = `IMPORT ${spec.name}`;
+  if (res.kind !== 'value') {
+    throw new SitefileError('E_TYPE', `${what}: SCHEMA checks documents, but the import is a ${res.kind}`, spec.span);
+  }
+  const file = await local.readFile(schema.path, schema.span);
+  const text = decodeUtf8(file.bytes, `schema '${schema.uri}'`, schema.span);
+  let value: unknown;
+  if (/\.json$/i.test(schema.path)) {
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      throw new SitefileError('E_SCHEMA', `${what}: schema '${schema.uri}' is not valid JSON: ${(e as Error).message}`, schema.span, { cause: e });
+    }
+  } else value = parseYaml(text, schema.uri);
+  checkSchema(res.value, compileSchema(value, schema.uri, what, schema.span), what, res.format === 'csv', spec.span);
 }
 
 /** Apply an import's SORT BY to a markdown collection. */

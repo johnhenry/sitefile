@@ -16,7 +16,7 @@
 export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'sitefile'],
@@ -306,7 +306,7 @@ export function buildGrammar() {
                 4: { name: S('keyword.other.clause') },
               },
             },
-            kw(['SORT', 'BY', 'ASC', 'DESC']),
+            kw(['SORT', 'BY', 'ASC', 'DESC', 'SCHEMA']),
             {
               // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets)
               match: `${W}(${ci(['SECRET'])})\\s+(${IDENT})\\s+(${ci(['AS'])})\\s+(?:(${ci(['BEARER'])})${WE}|(${ci(['HEADER'])})\\s+(\\S+))`,

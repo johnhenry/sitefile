@@ -2601,7 +2601,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:SORT|BY|ASC|DESC))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:SORT|BY|ASC|DESC|SCHEMA))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"

@@ -683,6 +683,12 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         Ok(r)
     })?;
     let mut by_name: HashMap<String, (Resource, String)> = indexed.iter().map(|(_, s)| s.name.clone()).zip(resolved).collect();
+    // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
+    for spec in &p.imports {
+        if let (Some(_), Some((res, _))) = (&spec.schema, by_name.get(&spec.name)) {
+            check_import_schema(spec, res, &local)?;
+        }
+    }
 
     // FROM image stage bases: resolved when their stage starts (registry pull or local store).
     let image_store: std::cell::OnceCell<Store> = std::cell::OnceCell::new();
@@ -1494,6 +1500,25 @@ fn with_commit(res: Resource, commit: &str) -> Resource {
     }
 }
 
+/// `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents.
+fn check_import_schema(spec: &ImportSpec, res: &Resource, local: &LocalContext) -> Result<()> {
+    let Some(schema) = &spec.schema else { return Ok(()) };
+    let what = format!("IMPORT {}", spec.name);
+    let Resource::Value { format, value, .. } = res else {
+        return Err(SitefileError::at(E_TYPE, format!("{what}: SCHEMA checks documents, but the import is a {}", res.kind()), &spec.span));
+    };
+    let Resource::File { bytes, .. } = local.read_file(&schema.path, Some(&schema.span))? else { unreachable!("read_file returns a file") };
+    let text = decode_utf8(&bytes, &format!("schema '{}'", schema.uri), Some(&schema.span))?;
+    let parsed = if schema.path.to_ascii_lowercase().ends_with(".json") {
+        serde_json::from_str::<Value>(&text)
+            .map_err(|e| SitefileError::at(E_SCHEMA, format!("{what}: schema '{}' is not valid JSON: {e}", schema.uri), &schema.span))?
+    } else {
+        crate::yaml::parse_yaml(&text, &schema.uri)?
+    };
+    let compiled = crate::schema::compile_schema(&parsed, &schema.uri, &what, &schema.span)?;
+    crate::schema::check_schema(value, &compiled, &what, *format == ValueFormat::Csv, &spec.span)
+}
+
 /// Apply an import's SORT BY to a list value.
 fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
     let Some(sort) = &spec.sort else { return Ok(res) };
@@ -1870,6 +1895,12 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
     let plain: Vec<&ImportSpec> = p.imports.iter().filter(|s| s.as_kind != Some(ImportKind::Sitefile)).collect();
     let resolved = map_limit(&plain, env.concurrency.max(1), |s| resolve_import(s, &ienv))?;
     let mut by_name: HashMap<String, (Resource, String)> = plain.iter().map(|s| s.name.clone()).zip(resolved).collect();
+    // SCHEMA files are read from the imported Sitefile's own context.
+    for s in &plain {
+        if let (Some(_), Some((res, _))) = (&s.schema, by_name.get(&s.name)) {
+            check_import_schema(s, res, &local)?;
+        }
+    }
     let mut resources: Vec<(String, Resource)> = Vec::new();
     let mut resource_keys: HashMap<String, String> = HashMap::new();
     let mut imported: Vec<(String, ImportedSitefile)> = Vec::new();

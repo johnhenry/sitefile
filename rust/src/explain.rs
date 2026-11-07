@@ -179,6 +179,13 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let tools: HashSet<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
     let mut stage_ids: HashMap<String, String> = HashMap::new();
     let list = |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
+    // An IMPORT … SCHEMA reads its schema file.
+    for i in &p.imports {
+        if let Some(s) = &i.schema {
+            let from = local(&s.path, &mut locals);
+            edges.add(&from, &format!("import:{}", i.name), "input");
+        }
+    }
 
     // Stages of imported Sitefiles (IMPORT … AS sitefile) are read like stages: one node each, fed by the import.
     let mut imported_stages: Vec<GraphNode> = Vec::new();

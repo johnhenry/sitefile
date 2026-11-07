@@ -1,0 +1,2 @@
+IMPORT site FROM ./site AS tree SCHEMA ./site.schema.yaml
+EXPORT /

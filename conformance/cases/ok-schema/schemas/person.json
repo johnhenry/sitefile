@@ -1,0 +1,1 @@
+{"required": ["name"], "properties": {"age": "number", "admin": "boolean", "role": {"enum": ["dev", "ops", 1]}}}

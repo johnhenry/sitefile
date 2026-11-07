@@ -177,11 +177,12 @@ directory holds or which variables a template uses.
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
 - **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory, an
   image or an earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
-  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation, and
-  an `AS sitefile` import to each of its stages this Sitefile names) and
+  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation,
+  an `AS sitefile` import to each of its stages this Sitefile names, and an `IMPORT … SCHEMA` file to its import) and
   `export` (the last stage and the site files to `export`).
 - **Order**: imports, plugins, tools, images (first use), imported stages (first use), local paths (first use), then per stage its operations and the stage, then
-  the site files and `export`. Edges in the order the stages are walked, without duplicates.
+  the site files and `export`. Edges: the schema files in import order, then in the order the stages are walked, without
+  duplicates.
 - **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
   `N nodes, M edges`.
 - `--json`: `{"file", "target"?, "nodes": [{"id", "kind", "label", "line"?}], "edges": [{"from", "to", "kind"}]}`.

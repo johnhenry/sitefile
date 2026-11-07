@@ -120,6 +120,7 @@ IMPORT with every clause
 IMPORT posts FROM ./posts AS markdown SORT BY date DESC
 IMPORT data FROM https://example.com/data.json AS json INTEGRITY sha256:ce488399c576d775b6c36a355b949a2da5992646f53e0e4e574618dc19648aaa
 import notes from ./notes as yaml sort by title asc
+IMPORT people FROM ./people.csv AS csv SCHEMA ./schemas/${KIND}.yaml SORT BY name
 
 ---
 
@@ -139,6 +140,15 @@ import notes from ./notes as yaml sort by title asc
     (identifier)
     (path)
     (import_kind)
+    (sort_clause
+      (identifier)))
+  (import_instruction
+    (identifier)
+    (path)
+    (import_kind)
+    (path
+      (substitution
+        (identifier)))
     (sort_clause
       (identifier))))
 

@@ -1,0 +1,5 @@
+# SCHEMA in an imported Sitefile (IMPORT … AS sitefile): resolved in its own context.
+IMPORT blog FROM ./blog AS sitefile
+FROM scratch
+COPY --from=blog+pages / /
+EXPORT /

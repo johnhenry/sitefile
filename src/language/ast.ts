@@ -75,6 +75,8 @@ export interface ImportInstruction {
   readonly integrity?: string;
   /** `SORT BY key [ASC|DESC]`, for `AS markdown` collections. */
   readonly sort?: { readonly key: string; readonly descending: boolean; readonly span: SourceSpan };
+  /** `SCHEMA <path>`: a local YAML/JSON schema every document (or list element) must match. */
+  readonly schema?: { readonly path: Operand; readonly span: SourceSpan };
   /** `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets, sent with remote requests). */
   readonly secrets?: readonly ImportSecret[];
   /** `ARG NAME=value` (repeatable): build args passed to a Sitefile imported `AS sitefile`. */

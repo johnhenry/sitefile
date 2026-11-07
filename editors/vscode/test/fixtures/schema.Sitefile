@@ -1,0 +1,5 @@
+# Frontmatter checked against a schema file.
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
+IMPORT people FROM ./people.csv AS csv schema "./schemas/${KIND}.json"
+RENDER --escape=html ./post.html TO /posts/${post.slug}/index.html FOR post IN posts
+EXPORT /

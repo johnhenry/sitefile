@@ -227,7 +227,7 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
-                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" | "ARG" => Vec::new(),
+                "FROM" | "INTEGRITY" | "BY" | "SCHEMA" | "SECRET" | "HEADER" | "ARG" => Vec::new(),
                 _ if n >= 4 => {
                     let mut v: Vec<Item> = Vec::new();
                     if n >= 2 && prior[n - 2].upper() == "BY" {
@@ -726,14 +726,14 @@ mod tests {
     fn clause_values() {
         assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
         assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SCHEMA", "SECRET", "ARG"]);
         // ARG NAME=value repeats; nothing is offered for the name itself.
-        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SCHEMA", "SECRET", "ARG"]);
         assert!(labels("IMPORT t FROM ./t AS sitefile ARG ").is_empty());
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
-        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "SECRET", "ARG"]);
         assert_eq!(labels("IMPORT p "), ["FROM"]);
         assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
