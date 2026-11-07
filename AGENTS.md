@@ -14,9 +14,13 @@ language server). Most changes land in both.
 CI (`.github/workflows/ci.yml`) runs these in this order; match it locally.
 
 1. `npm run typecheck`
-2. `npm test`. Only the three `engine:` tests may skip, and only
+2. `npm test`. Only two kinds of test may skip: the three `engine:` tests
    when no container engine is reachable (`docker version`/`podman version`
-   fails). Anything else skipped is a red flag.
+   fails), and the external OCI validators test when none of skopeo, crane,
+   oras, umoci or podman is installed. Anything else skipped is a red flag.
+   Case-sensitivity and inode tests only really run on Linux, so a green
+   macOS run is not enough for `src/tree.ts`, `src/exporter.ts` or
+   `src/resources/local.ts`: wait for CI.
 3. `(cd rust && cargo fmt --all -- --check && cargo build --release && cargo test --release)`
 4. `npm run conformance` — runs both CLIs on every example and every
    `conformance/cases/*` and requires the same exit code, error line and

@@ -184,6 +184,12 @@ pub(super) fn id_of(m: &fs::Metadata) -> FileId {
     }
 }
 
+/// Size and nanosecond ctime of a file: what [`FileId`] can't tell apart when an inode
+/// number is reused for a replacement.
+pub(super) fn replacement_stamp_of(m: &fs::Metadata) -> (u64, i64, i64) {
+    (m.size(), m.ctime(), m.ctime_nsec())
+}
+
 pub(super) fn lstat_opt(p: &Path) -> io::Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(p) {
         Ok(m) => Ok(Some(m)),
@@ -839,6 +845,10 @@ pub fn export_file(
     mkdir_parent(&parent)?;
     let parent_id = verified_parent_id(&parent)?;
     let out_id = st.as_ref().map(id_of);
+    // dev/ino alone can't tell a replaced file from the original: Linux often gives a file
+    // created right after an unlink the same inode number. Size and the nanosecond ctime
+    // can't survive a replacement (or any write) unchanged.
+    let out_stamp = st.as_ref().map(replacement_stamp_of);
 
     let mut tmp_id: Option<FileId> = None;
     let mut renamed = false;
@@ -877,7 +887,10 @@ pub fn export_file(
         }
         let cur = lstat_opt(&out_real).map_err(io_fail)?;
         match (out_id, &cur) {
-            (Some(oid), Some(c)) if is_real_file(c) && id_of(c) == oid => {}
+            (Some(oid), Some(c))
+                if is_real_file(c)
+                    && id_of(c) == oid
+                    && Some(replacement_stamp_of(c)) == out_stamp => {}
             (Some(_), _) => {
                 return Err(unsafe_err(format!(
                     "export destination '{}' changed during export; aborting",

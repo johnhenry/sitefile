@@ -228,7 +228,9 @@ export class LocalContext {
     }
     const files: Array<[string, FileNode]> = [];
     await this.walk(real, rel, '', origin, new Set([real]), files, span, exclude);
-    const tree = Tree.fromFiles(files);
+    // With the instruction's span: two names that differ only in case (possible on a
+    // case-sensitive file system) fail at the line that read the directory.
+    const tree = Tree.empty.withFiles(files, 'error', span);
     return { kind: 'tree', tree, provenance: { uri: rel === '' ? './' : './' + rel, digest: tree.digest() } };
   }
 

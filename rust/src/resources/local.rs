@@ -7,7 +7,7 @@ use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::paths::nfc;
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::types::{Provenance, Resource};
-use crate::tree::{make_file, Node, Tree};
+use crate::tree::{make_file, ConflictPolicy, Node, Tree};
 use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::io;
@@ -462,7 +462,9 @@ impl LocalContext {
             span,
             exclude,
         )?;
-        let tree = Tree::from_files(files)?;
+        // With the instruction's span: two names that differ only in case (possible on a
+        // case-sensitive file system) fail at the line that read the directory.
+        let tree = Tree::empty().with_files(files, ConflictPolicy::Error, span)?;
         let digest = tree.digest();
         Ok(Resource::Tree {
             tree,
