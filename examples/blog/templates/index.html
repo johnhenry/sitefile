@@ -10,7 +10,7 @@
 <body>
   ${site_header}
   <main>
-    ${#each posts as post}
+    ${#each page.items as post}
     <article class="summary">
       <h2><a href="/posts/${post.slug}/">${post.title}</a></h2>
       <p class="meta"><time datetime="${post.date}">${post.date}</time></p>
@@ -23,6 +23,12 @@
     ${else}
     <p>No posts yet.</p>
     ${/each}
+    ${#if page.next}
+    <p class="pager"><a href="${page.next}">Older posts</a></p>
+    ${/if}
+    ${#if page.prev}
+    <p class="pager"><a href="${page.prev}">Newer posts</a> · page ${page.number} of ${page.total}</p>
+    ${/if}
   </main>
   <footer><a href="/feed.xml">Feed</a></footer>
 </body>

@@ -195,3 +195,20 @@ test('incremental rebuilds see a changed file that a helper reads', async () => 
   assert.notEqual(first, second);
   assert.equal(second, integrityOf(new TextEncoder().encode('two')) + '\n');
 });
+
+test('after FINGERPRINT, the old path gives the hashed URL and the integrity of the served bytes', async () => {
+  const dir = await project({
+    'public/style.css': 'body { background: url(/img/dot.svg); }\n',
+    'public/img/dot.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>\n',
+    Sitefile:
+      'STAGE a\nCOPY ./public/ /\nFINGERPRINT /img/ /style.css\n' +
+      'RENDER <<HTML TO /index.html\n${file "/style.css" | stylesheet}\nHTML\n' +
+      'STAGE b FROM a\nRENDER <<HTML TO /b.html\n${file "/style.css"}\nHTML\nEXPORT /',
+  });
+  const r = await build({ contextDir: dir, lockfile: false, label: 'Sitefile' });
+  const css = r.output.entries().find(([p]) => /^\/style\.[0-9a-f]+\.css$/.test(p));
+  assert.ok(css, 'style.css was fingerprinted');
+  assert.match(text(css[1].bytes), /dot\.[0-9a-f]+\.svg/);
+  assert.equal(text(r.output.get('/index.html')?.bytes), `<link rel="stylesheet" href="${css[0]}" integrity="${integrityOf(css[1].bytes)}">\n`);
+  assert.equal(text(r.output.get('/b.html')?.bytes), `${css[0]}\n`);
+});

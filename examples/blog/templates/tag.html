@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tagged ${tag.key} · ${SITE_TITLE}</title>
+  <link rel="stylesheet" href="/style.css">
+  ${feed_link}
+</head>
+<body>
+  ${site_header}
+  <main>
+    <h1>Tagged “${tag.key}” (${tag.count})</h1>
+    ${#each tag.items as post}
+    <article class="summary">
+      <h2><a href="/posts/${post.slug}/">${post.title}</a></h2>
+      <p class="meta"><time datetime="${post.date}">${post.date}</time></p>
+    </article>
+    ${/each}
+  </main>
+</body>
+</html>

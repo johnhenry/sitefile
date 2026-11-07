@@ -39,6 +39,10 @@ export interface ImportSpec {
   readonly as?: ImportKind;
   readonly integrity?: string;
   readonly sort?: { readonly key: string; readonly descending: boolean };
+  /** `SCHEMA <path>`: `uri` as written (for messages), `path` context-relative. */
+  readonly schema?: { readonly uri: string; readonly path: string; readonly span: SourceSpan };
+  /** `DRAFTS true|false`: false leaves out the elements whose `draft` is true. */
+  readonly drafts?: boolean;
   /** Build secrets sent as request headers (ids and header names only; values come from --secret). */
   readonly secrets?: readonly { readonly id: string; readonly header: string; readonly bearer: boolean }[];
   /** `AS sitefile`: the `ARG NAME=value` clauses, evaluated (build args of the imported Sitefile). */
@@ -158,8 +162,17 @@ export type Operation =
       readonly template: SourceRef;
       /** Normalized destination; '' when `each` is set (computed per element). */
       readonly dest: string;
-      /** `FOR as IN list`: render once per element; `dest` is interpolated per element. */
-      readonly each?: { readonly as: string; readonly list: string; readonly dest: Operand };
+      /**
+       * `FOR as IN list [BY key] [PAGE size [FIRST <dest>]]`: render once per element (or group, or page); `dest`
+       * (and `first`, for the first page) is interpolated per element.
+       */
+      readonly each?: {
+        readonly as: string;
+        readonly list: string;
+        readonly dest: Operand;
+        readonly by?: string;
+        readonly page?: { readonly size: number; readonly first?: Operand };
+      };
       readonly escape: EscapeMode;
       readonly overwrite: boolean;
       /** `--inline-svg`: `${file … | svg}` may paste SVG markup. */
@@ -299,6 +312,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.as ? { as: ins.as } : {}),
           ...(ins.integrity ? { integrity: ins.integrity } : {}),
           ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
+          ...(ins.schema ? { schema: schemaSpec(ins.name, ins.schema.path, vars, ins.schema.span) } : {}),
+          ...(ins.drafts ? { drafts: draftsValue(ins.name, ins.drafts.value, vars) } : {}),
           ...(ins.secrets ? { secrets: ins.secrets.map((s) => ({ id: s.id, header: s.header, bearer: s.bearer })) } : {}),
           ...(ins.args ? { args: ins.args.map((a) => ({ name: a.name, value: evaluateOperand(a.value, vars), span: a.span })) } : {}),
           span: ins.span,
@@ -342,7 +357,15 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
             kind: 'RENDER',
             template: sourceRef(ins.template, vars, imports, ins.from),
             dest: '',
-            each: { as: ins.each.as, list: ins.each.list, dest: ins.dest },
+            each: {
+              as: ins.each.as,
+              list: ins.each.list,
+              dest: ins.dest,
+              ...(ins.each.by ? { by: ins.each.by.key } : {}),
+              ...(ins.each.page
+                ? { page: { size: pageSize(ins.each.page.size, vars), ...(ins.each.page.first ? { first: ins.each.page.first } : {}) } }
+                : {}),
+            },
             escape: ins.escape,
             overwrite: ins.overwrite,
             ...(ins.inlineSvg ? { inlineSvg: true as const } : {}),
@@ -498,6 +521,35 @@ export function targetPlan(p: Plan, name: string): Plan {
     );
   }
   return { ...p, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
+}
+
+/** `IMPORT … SCHEMA <path>`: a local `.json`, `.yaml` or `.yml` file in the build context. */
+function schemaSpec(name: string, op: Operand, vars: ReadonlyMap<string, Scalar>, span: SourceSpan): { uri: string; path: string; span: SourceSpan } {
+  const uri = evaluateOperand(op, vars);
+  if (URL_RE.test(uri)) {
+    throw new SitefileError('E_PROTOCOL', `IMPORT ${name}: SCHEMA must be a local file in the build context, not a URL`, op.span);
+  }
+  const rel = normalizeLocal(uri, op.span).path;
+  if (!/\.(json|ya?ml)$/i.test(rel)) {
+    throw new SitefileError('E_VALIDATION', `IMPORT ${name}: SCHEMA '${uri}' must be a .json, .yaml or .yml file`, op.span);
+  }
+  return { uri, path: rel, span };
+}
+
+/** `IMPORT … DRAFTS <value>`: `true` keeps drafts, `false` leaves them out. */
+function draftsValue(name: string, op: Operand, vars: ReadonlyMap<string, Scalar>): boolean {
+  const raw = evaluateOperand(op, vars);
+  if (raw === 'true' || raw === 'false') return raw === 'true';
+  throw new SitefileError('E_VALIDATION', `IMPORT ${name}: DRAFTS must be true or false, got '${raw}'`, op.span);
+}
+
+/** `RENDER … PAGE <n>`: a whole number of items per page, at least 1. */
+function pageSize(op: Operand, vars: ReadonlyMap<string, Scalar>): number {
+  const raw = evaluateOperand(op, vars);
+  if (!/^[1-9][0-9]{0,8}$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `RENDER … PAGE: '${raw}' is not a page size (a whole number from 1 to 999999999)`, op.span);
+  }
+  return Number(raw);
 }
 
 /** `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default. */

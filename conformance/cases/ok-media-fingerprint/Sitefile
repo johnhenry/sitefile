@@ -1,0 +1,17 @@
+# ${file …} after FINGERPRINT: the old path finds the hashed file, so the URL is the hashed
+# one and integrity is of the served bytes (style.css's url() was rewritten, changing it).
+STAGE assets
+COPY ./public/ /
+FINGERPRINT /img/ /style.css /app.js
+RENDER --escape=html <<HTML TO /index.html
+${file "/style.css" | stylesheet}
+${file "/app.js" | script defer}
+${file "/app.js" | modulepreload}
+<img src="${file "/img/dot.svg"}" alt="">
+${file "/style.css" | integrity}
+HTML
+STAGE site FROM assets
+RENDER --escape=html <<HTML TO /later.html
+${file "/style.css" | stylesheet}
+HTML
+EXPORT /

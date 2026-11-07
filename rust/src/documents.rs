@@ -265,7 +265,7 @@ fn js_string(v: Option<&Value>) -> String {
     }
 }
 
-fn num(v: &Value) -> Option<f64> {
+pub(crate) fn num(v: &Value) -> Option<f64> {
     match v {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => {
@@ -283,7 +283,7 @@ fn num(v: &Value) -> Option<f64> {
 /// Numbers, and numeric strings such as CSV cells, compare numerically;
 /// everything else as strings (UTF-16 order). `None` stands for a NaN result,
 /// which JavaScript's sort treats as "equal" without the path tiebreak.
-fn cmp_values(a: &Value, b: &Value) -> Option<Ordering> {
+pub(crate) fn cmp_values(a: &Value, b: &Value) -> Option<Ordering> {
     if let (Some(x), Some(y)) = (num(a), num(b)) {
         return x.partial_cmp(&y);
     }
@@ -319,7 +319,7 @@ pub fn sort_documents(docs: Vec<Value>, key: &str, descending: bool) -> Vec<Valu
     merge_sort(docs, &cmp)
 }
 
-fn merge_sort<T>(v: Vec<T>, cmp: &dyn Fn(&T, &T) -> Ordering) -> Vec<T> {
+pub(crate) fn merge_sort<T>(v: Vec<T>, cmp: &dyn Fn(&T, &T) -> Ordering) -> Vec<T> {
     if v.len() <= 1 {
         return v;
     }

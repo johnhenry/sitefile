@@ -102,10 +102,16 @@ const INSTRUCTIONS = {
     if (chance(0.6)) clauses.push(`AS ${pick(KINDS)}`);
     if (chance(0.25)) clauses.push(`INTEGRITY ${pick(DIGESTS)}`);
     if (chance(0.25)) clauses.push(`SORT BY ${pick(['date', 'title', 'x-y', '1'])}${maybe(() => ` ${pick(['DESC', 'ASC', 'desc', 'UP'])}`)}`);
+    // Frontmatter schemas (issue #100), sometimes twice (E_SYNTAX).
+    for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
+      clauses.push(`${pick(['SCHEMA', 'schema'])}${pick([' ./s.yaml', ' ./s.json', ' s.YML', ' ./s.txt', ' https://e.x/s.json', ' ../s.yaml', ' ./${x}.yaml', ' "./a b.yaml"', ' /abs.yaml', ''])}`);
+    }
     // Build secrets (issue #85), sometimes twice (the same header twice is E_SYNTAX).
     for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
       clauses.push(`SECRET ${pick(['k', 'tok', '1x', 'a-b'])}${pick([' AS BEARER', ' as bearer', ' AS HEADER X-Api-Key', ' AS HEADER Authorization', ' AS HEADER Host', ' AS HEADER a:b', ' AS', ' AS HEADER', ' BEARER', ''])}`);
     }
+    // Drafts (issue #101).
+    if (chance(0.15)) clauses.push(`${pick(['DRAFTS', 'drafts'])}${pick([' true', ' false', ' ${x}', ' yes', ' TRUE', ''])}`);
     // ARG clauses of an IMPORT … AS sitefile (issue #97), sometimes twice or malformed.
     for (let n = chance(0.15) ? 1 + int(2) : 0; n > 0; n--) {
       clauses.push(`${pick(['ARG', 'arg'])} ${pick(['X=1', 'TITLE = "a b"', 'x=${x}', 'X', '=1', '1x=2', 'X=', 'X:number=1', "A='lit'"])}`);
@@ -116,7 +122,7 @@ const INSTRUCTIONS = {
   COPY: () =>
     `COPY ${flags(['--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--from=', '--from', '--bogus', '--exclude=' + pick(EXCLUDES), '--exclude', '--chmod=' + pick(MODES), '--chmod', '--parents', '--parents=1'])}${source()} ${pick(PATHS)}`,
   RENDER: () =>
-    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
+    `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--from=' + pick(QUALIFIED), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}${renderLoop()}`, 0.3)}`,
   TRANSFORM: () => {
     const fl = flags(['--overwrite', '--from=' + pick(NAMES), '--include=' + pick(EXCLUDES), '--exclude=' + pick(EXCLUDES), '--include', '--exclude=']);
     let s = `TRANSFORM ${fl}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick([...PATHS, '/img/*.png', '/out/*', '/a/*.'])}`;
@@ -158,10 +164,19 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS', 'sitefile', 'ARG', '+',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
+
+/** `[BY key] [PAGE n [FIRST <dest>]]` after a RENDER's FOR (issue #101), sometimes out of order. */
+function renderLoop() {
+  let s = '';
+  if (chance(0.3)) s += ` ${pick(['BY', 'by'])} ${pick(['tags', 'category', '1x', ''])}`;
+  if (chance(0.3)) s += ` ${pick(['PAGE', 'page'])} ${pick(['10', '1', '0', '-1', '${x}', '${n}', 'ten', '1e3', '01', ''])}${maybe(() => ` FIRST ${pick(PATHS)}`, 0.4)}`;
+  if (chance(0.05)) s += pick([' BY tags', ' FIRST /a', ' PAGE 2']);
+  return s;
+}
 
 function flags(list) {
   let s = '';
@@ -240,7 +255,7 @@ function validProgram() {
   const theme = chance(0.3);
   if (theme) lines.push(`IMPORT theme FROM ${pick(['./theme', 'git+https://e.x/t.git#v1:theme', 'git+https://e.x/t.git'])} AS sitefile${maybe(() => ` ARG ACCENT=${v()}`)}${maybe(' ARG N=2')}`);
   if (chance(0.5)) {
-    lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}`);
+    lines.push(`IMPORT posts FROM ./posts AS markdown${maybe(' SORT BY date DESC')}${maybe(() => ` DRAFTS ${pick(['false', 'true', v()])}`, 0.3)}${maybe(() => ` SCHEMA ${pick(['./post.schema.yaml', `./schemas/${v()}.json`])}`, 0.3)}`);
     lists.push('posts');
   }
   if (chance(0.3)) {
@@ -281,6 +296,18 @@ function validProgram() {
     () => `RENDER ${maybe('--escape=html ')}${maybe('--inline-svg ')}${pick(['./t.html', body()])} TO /${pick(['index', v(), 'a/b'])}.html`,
     () => (frags.length ? `RENDER --escape=html <<HTML TO /f-${int(9)}.html\n\${${pick(frags)}}${pick(['', '<main>${TITLE}</main>', '${' + pick(frags) + '}'])}\nHTML` : 'COPY ./g /g'),
     () => (frags.length ? `COPY ./x /\${${pick(frags)}}` : 'COPY ./h /h'),
+    ...(lists.length
+      ? [
+          () => {
+            const l = pick(lists);
+            return pick([
+              `RENDER --escape=html ./tag.html TO /tags/\${t.key}/index.html FOR t IN ${l} BY tags`,
+              `RENDER ./i.html TO /page/\${p.number}/index.html FOR p IN ${l} PAGE ${pick(['2', '10', v(), '0'])}${maybe(' FIRST /index.html')}`,
+              `RENDER ./t.html TO /t/\${g.key}/\${g.number}.html FOR g IN ${l} BY tags PAGE 5 FIRST /t/\${g.key}/index.html`,
+            ]);
+          },
+        ]
+      : []),
     () => (lists.length ? `RENDER ./post.html TO /p/\${item.slug}.html FOR item IN ${pick(lists)}` : 'COPY ./x /x'),
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
     () => (theme ? pick(['COPY --from=theme+assets / /t/', 'RENDER --escape=html --from=theme+layout /page.html TO /t.html']) : 'COPY ./v /v'),
@@ -389,7 +416,13 @@ const EDGE = [
   'STAGE a\nSTAGE b FROM a\nCOPY --from=a /x /y\nEXPORT /', 'STAGE a\nCOPY --from=a /x /y\nEXPORT /', 'FROM scratch\nFROM scratch\nEXPORT /',
   'IMPORT p FROM ./posts AS markdown SORT BY date DESC\nRENDER t.html TO /p/${p.slug}.html FOR p IN p\nEXPORT /',
   'IMPORT p FROM ./posts AS markdown\nRENDER t.html TO /p/${post.slug}.html FOR post IN p\nEXPORT /',
-  'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
+  'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x AS text SCHEMA ./s.yaml\nEXPORT /', 'IMPORT p FROM ./p AS csv SCHEMA ./s.yaml SCHEMA ./t.yaml\nEXPORT /',
+  'ARG S = post\nIMPORT p FROM ./p AS markdown SCHEMA ./${S}.schema.yaml SORT BY date\nRENDER <<H TO /i.html\n${#each p as x}${x.title}${/each}\nH\nEXPORT /', 'IMPORT p FROM ./p AS json SCHEMA\nEXPORT /',
+  'IMPORT p FROM ./p AS yaml SCHEMA ./s.md\nEXPORT /', 'IMPORT p FROM ./p DRAFTS false\nEXPORT /', 'IMPORT p FROM ./p AS csv DRAFTS maybe\nEXPORT /',
+  'ARG D: boolean = false\nIMPORT p FROM ./p AS markdown DRAFTS ${D}\nRENDER ./t TO /t/${t.key}.html FOR t IN p BY tags\nRENDER ./t TO /p/${x.number}.html FOR x IN p PAGE 3 FIRST /index.html\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p PAGE 2 BY tags\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /${x.n}.html FOR x IN p PAGE ${x.n}\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p FIRST /b\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /${x.number}.html FOR x IN p PAGE 1 FIRST /${x.key}.html\nEXPORT /',
+  'IMPORT p FROM ./p AS json\nRENDER ./t TO /${y.number}.html FOR x IN p PAGE 1 FIRST /${y.n}.html\nEXPORT /', 'IMPORT p FROM ./p AS json\nRENDER ./t TO /a.html FOR x IN p BY\nEXPORT /', 'IMPORT p FROM https://e.x/p.json AS json SCHEMA https://e.x/s.json\nEXPORT /', 'IMPORT p FROM ./p AS json SCHEMA ../s.json\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
   'PLUGIN p FROM ./p.mjs\nTRANSFORM a WITH p TO /b OPTIONS w=1 w=2\nEXPORT /', 'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input}\nEXPORT /',
   'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input} {output} {option.q}\nEXPORT /', 'TRANSFORM --from=a WITH p TO /b\nEXPORT /',
   // TRANSFORM over a directory (issue #127): --include/--exclude and where they are refused.

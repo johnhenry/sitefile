@@ -19,7 +19,7 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
   `SITEMAP`, `FEED`, `REDIRECT`, `HEADER`, `FINGERPRINT`, `CHECKLINKS`, `EXPORT`. `RUN`, `REMOVE`, `GENERATE`, `ASSERT`, `META` and `EXEC`, which the
   parser rejects, are marked invalid.
 - **Clause keywords**: `AS`, `FROM`, `TO`, `FOR … IN`, `WITH`, `OPTIONS`,
-  `ARGS`, `INTEGRITY`, `SORT BY … ASC|DESC`, `BASE`, `AT`, `COMPRESSION`,
+  `ARGS`, `INTEGRITY`, `SORT BY … ASC|DESC`, `SCHEMA`, `DRAFTS`, `BY`, `PAGE … FIRST`, `BASE`, `AT`, `COMPRESSION`,
   `LINK`, `TITLE`, `STATUS` (with the redirect status), `MANIFEST`, and a `HEADER`'s `Name:`.
 - **Values**: `scratch`; ARG/LET types (`string`, `number`, `boolean`); import
   kinds (`file`, `text`, `json`, `tree`, `markdown`, `yaml`, `csv`, `wbn`);

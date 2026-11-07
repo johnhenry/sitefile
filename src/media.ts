@@ -388,6 +388,8 @@ function tag(
 export interface TemplateTree {
   get(path: string): Uint8Array | undefined;
   isDirectory(path: string): boolean;
+  /** Where a FINGERPRINT earlier in the stage moved `path` (its content-hashed name), if it did. */
+  renamed?(path: string): string | undefined;
 }
 
 /** `as` of a preload, from the extension. */
@@ -405,11 +407,18 @@ export interface HelperOptions {
 export function resolveFile(raw: string, tree: TemplateTree, span: SourceSpan): TreeFile {
   const p = normalizeVirtual(raw, span, '${file} path');
   if (p.path === '/' || tree.isDirectory(p.path)) throw new SitefileError('E_TYPE', `'${p.path}' is a directory; \${file} needs a file`, span);
-  const bytes = tree.get(p.path);
+  let path = p.path;
+  let bytes = tree.get(path);
+  // Renamed by FINGERPRINT: the hashed file, so the URL and integrity are those of what is served.
+  const moved = bytes ? undefined : tree.renamed?.(path);
+  if (moved !== undefined && tree.get(moved)) {
+    path = moved;
+    bytes = tree.get(moved);
+  }
   if (!bytes) {
     throw new SitefileError('E_NOT_FOUND', `'${p.path}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)`, span);
   }
-  return { path: p.path, bytes };
+  return { path, bytes };
 }
 
 /**

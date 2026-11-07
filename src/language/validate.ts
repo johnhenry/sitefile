@@ -27,11 +27,14 @@ export function operandsOf(ins: Instruction): Operand[] {
     case 'LET':
       return isFragment(ins) ? [] : [ins.value];
     case 'IMPORT':
-      return [ins.uri, ...(ins.args ?? []).map((a) => a.value)];
+      return [ins.uri, ...(ins.schema ? [ins.schema.path] : []), ...(ins.drafts ? [ins.drafts.value] : []), ...(ins.args ?? []).map((a) => a.value)];
     case 'COPY':
       return isInline(ins.source) ? [ins.dest] : [ins.source, ins.dest];
-    case 'RENDER':
-      return isInline(ins.template) ? [ins.dest] : [ins.template, ins.dest];
+    case 'RENDER': {
+      const page = ins.each?.page;
+      const extra = page ? [page.size, ...(page.first ? [page.first] : [])] : [];
+      return [...(isInline(ins.template) ? [] : [ins.template]), ins.dest, ...extra];
+    }
     case 'PLUGIN':
       return [ins.uri];
     case 'TRANSFORM': {
@@ -130,7 +133,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
     for (const op of operandsOf(ins)) {
       const isDest =
         (ins.kind === 'FEED' && op === ins.link) ||
-        (ins.kind === 'RENDER' && op === ins.dest) ||
+        (ins.kind === 'RENDER' && (op === ins.dest || op === ins.each?.page?.first)) ||
         (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op) || (ins.args?.includes(op) ?? false)));
       for (const part of op.parts) {
         if (part.kind !== 'var') continue;
@@ -195,6 +198,12 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         }
         if (ins.sort && !SORTABLE.has(ins.as ?? '')) {
           throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SORT BY applies to lists: AS markdown, json, yaml or csv`, ins.sort.span);
+        }
+        if (ins.drafts && !SORTABLE.has(ins.as ?? '')) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: DRAFTS applies to lists: AS markdown, json, yaml or csv`, ins.drafts.span);
+        }
+        if (ins.schema && !SORTABLE.has(ins.as ?? '')) {
+          throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SCHEMA applies to documents and lists: AS markdown, json, yaml or csv`, ins.schema.span);
         }
         // `AS html`: a file-based fragment, usable only in templates (still an import for `name:` sources).
         if (ins.as === 'html') fragments.add(ins.name);

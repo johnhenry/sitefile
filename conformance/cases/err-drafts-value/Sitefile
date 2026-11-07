@@ -1,0 +1,3 @@
+ARG D = "no"
+IMPORT posts FROM ./posts AS markdown DRAFTS ${D}
+EXPORT /

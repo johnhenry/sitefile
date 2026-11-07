@@ -1,0 +1,10 @@
+# Frontmatter and CSV rows checked against schema files (issue #100).
+ARG KIND = "person"
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./schemas/post.schema.yaml
+IMPORT people FROM ./people.csv AS csv SCHEMA ./schemas/${KIND}.json
+RENDER --escape=html <<HTML TO /index.html
+${#each posts as p}<li>${p.title} (${p.date}) ${#each p.tags as t}[${t}]${/each}</li>
+${/each}${#each people as x}<p>${x.name}: ${x.age} ${x.role}</p>
+${/each}
+HTML
+EXPORT /

@@ -465,6 +465,10 @@ pub enum HelperOutput {
 pub trait TemplateTree {
     fn get(&self, path: &str) -> Option<&[u8]>;
     fn is_directory(&self, path: &str) -> bool;
+    /// Where a FINGERPRINT earlier in the stage moved `path` (its content-hashed name), if it did.
+    fn renamed(&self, _path: &str) -> Option<String> {
+        None
+    }
 }
 
 /// RENDER options the helpers read.
@@ -529,14 +533,25 @@ pub fn resolve_file<'t>(raw: &str, tree: &'t dyn TemplateTree, span: &SourceSpan
     if p.path == "/" || tree.is_directory(&p.path) {
         return Err(SitefileError::at(E_TYPE, format!("'{}' is a directory; ${{file}} needs a file", p.path), span));
     }
-    let Some(bytes) = tree.get(&p.path) else {
+    let mut path = p.path;
+    let mut found = tree.get(&path);
+    // Renamed by FINGERPRINT: the hashed file, so the URL and integrity are those of what is served.
+    if found.is_none() {
+        if let Some(moved) = tree.renamed(&path) {
+            if let Some(b) = tree.get(&moved) {
+                path = moved;
+                found = Some(b);
+            }
+        }
+    }
+    let Some(bytes) = found else {
         return Err(SitefileError::at(
             E_NOT_FOUND,
-            format!("'{}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)", p.path),
+            format!("'{}' is not in the tree at this RENDER (write it with COPY, RENDER or TRANSFORM on an earlier line)", path),
             span,
         ));
     };
-    Ok(TreeFile { path: p.path, bytes })
+    Ok(TreeFile { path: path, bytes })
 }
 
 /// What `${file "<raw>" | helper attrs…}` writes (`helper` None: the file's URL).
