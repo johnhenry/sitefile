@@ -1,0 +1,33 @@
+# Hand-written /_headers and /_redirects (forced rules, rewrites, a splat that
+# shadows an exact rule, a content-type override) in a .wbn (johnhenry/sitefile#144).
+COPY <<X /index.html
+home
+X
+COPY <<X /old.html
+old page
+X
+COPY <<X /kept.txt
+kept
+X
+COPY <<X /_headers
+/*
+  X-Frame-Options: DENY
+/*.txt
+  Content-Type: text/x-custom
+  __proto__: inert
+/
+  X-Root: 1
+X
+COPY <<X /_redirects
+/gone /index.html 301
+/old.html /index.html 302!
+/kept.txt /nope 301
+/gone /second 302
+/shadow/* /y 302!
+/shadow/exact /z 301
+/rewrite /index.html 200
+/also-old /index.html 302
+/ünï /u 301
+/ /moved 301!
+X
+EXPORT / AS wbn BASE https://example.com/

@@ -84,7 +84,7 @@ no runtime dependencies.
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
-| `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`) |
+| `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
@@ -465,11 +465,15 @@ Web Bundle.
   family's Web Bundle reader and in-memory server. `EXPORT / AS wbn BASE <url>`
   writes a plain b2 Web Bundle that packfile's `fromWebBundle(buffer, { baseURL })`
   reads back into exactly the exported files, and `createRouter()` serves as a
-  `(Request) => Response` handler. packfile's own archive format
+  `(Request) => Response` handler. The bundle's responses carry the site's
+  HEADER values and exact-path REDIRECTs (as 3xx with `location`), so
+  `createWebBundleRouter(new wbn.Bundle(bytes), { baseURL })`, which serves each
+  exchange's own status and headers, answers like `sitefile serve` for them.
+  packfile's own archive format
   (`fromArchive()`) is gzip around the same bundle under
   `https://packfile.invalid/`: gzip a Sitefile bundle exported with that BASE and
   `fromArchive()` reads it as is. `test/packfile-interop.test.ts` checks all
-  three; `@johnhenry/packfile` is a devDependency for that test only.
+  four; `@johnhenry/packfile` is a devDependency for that test only.
 
 ## License
 

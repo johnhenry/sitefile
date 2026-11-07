@@ -106,7 +106,8 @@ export function globMatch(pattern: string, s: string): boolean {
 
 /** Every matching block's headers; a name set by several blocks gets its values joined with `, `. */
 export function headersFor(rules: readonly ServeHeaders[], path: string): Record<string, string> {
-  const out: Record<string, string> = {};
+  // No prototype: a header named `__proto__` is an ordinary name (as in the Rust port).
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const r of rules) {
     if (!globMatch(r.pattern, path)) continue;
     for (const [k, v] of r.headers) out[k] = out[k] === undefined ? v : `${out[k]}, ${v}`;

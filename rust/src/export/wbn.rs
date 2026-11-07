@@ -12,9 +12,15 @@
 //! responses section; responses = [[headers bstr, payload bstr] ...];
 //! primary = the base URL, present only when /index.html exists. The output
 //! is byte-identical to the TypeScript writer for the same tree.
+//!
+//! The tree's own `/_headers` and `/_redirects` are applied the way
+//! `sitefile serve` applies them: see [`bundle_responses`].
+
+use std::collections::{BTreeSet, HashMap};
 
 use crate::cbor::head_size;
 use crate::error::{ErrorCode::*, Result, SitefileError};
+use crate::server::{headers_for, match_redirect, ServeRedirect, SiteRules};
 use crate::tree::Tree;
 
 const MAGIC: [u8; 8] = [0xf0, 0x9f, 0x8c, 0x90, 0xf0, 0x9f, 0x93, 0xa6];
@@ -280,42 +286,168 @@ fn uint(n: u64) -> Vec<u8> {
     v
 }
 
+/// One encoded response: `[headers bstr, payload bstr]`, header names in CBOR map (bytewise) order.
+fn encode_response(status: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(headers.len() + 1);
+    let mut kv = |k: &str, v: &str| {
+        let (mut ke, mut ve) = (Vec::new(), Vec::new());
+        bytes(&mut ke, k.as_bytes());
+        bytes(&mut ve, v.as_bytes());
+        pairs.push((ke, ve));
+    };
+    kv(":status", &status.to_string());
+    for (k, v) in headers {
+        kv(k, v);
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut map = Vec::new();
+    head(&mut map, 5, pairs.len() as u64);
+    for (k, v) in pairs {
+        map.extend(k);
+        map.extend(v);
+    }
+    let mut out = Vec::with_capacity(map.len() + body.len() + 18);
+    head(&mut out, 4, 2);
+    bytes(&mut out, &map);
+    bytes(&mut out, body);
+    out
+}
+
+fn is_redirect_status(s: u16) -> bool {
+    (301..=308).contains(&s)
+}
+
+/// The rule `serve` would apply first in one pass (forced or not), when it is an exact-path 3xx redirect.
+fn exact_redirect(rules: &[ServeRedirect], forced: bool, path: &str) -> Option<usize> {
+    let i = rules
+        .iter()
+        .position(|r| r.force == forced && match_redirect(r, path).is_some())?;
+    (!rules[i].splat && is_redirect_status(rules[i].status)).then_some(i)
+}
+
+/// The responses section's entries and their URLs (tree paths, percent-encoded by the caller), as
+/// `sitefile serve` would answer them (port of `bundleResponses` in `src/wbn.ts`, which documents
+/// the rules): files get their `/_headers` headers, exact-path 3xx `/_redirects` rules become
+/// redirect responses with a `location`.
+pub fn bundle_responses(tree: &Tree) -> (Vec<Vec<u8>>, Vec<(String, usize)>) {
+    let rules = SiteRules::from_tree(tree);
+    let redirects = &rules.redirects;
+    let mut responses: Vec<Vec<u8>> = Vec::new();
+    let mut urls: Vec<(String, usize)> = Vec::new();
+    let mut taken: BTreeSet<String> = BTreeSet::new();
+    let mut redirect_response: HashMap<(u16, String), usize> = HashMap::new();
+    let mut redirect_to = |rule: usize, responses: &mut Vec<Vec<u8>>| -> usize {
+        let r = &redirects[rule];
+        *redirect_response
+            .entry((r.status, r.to.clone()))
+            .or_insert_with(|| {
+                responses.push(encode_response(
+                    r.status,
+                    &[("location".to_string(), r.to.clone())],
+                    &[],
+                ));
+                responses.len() - 1
+            })
+    };
+
+    for (p, node) in tree.entries() {
+        // (URL path, the path `serve` matches redirects against: no trailing slash)
+        let mut targets: Vec<(String, String)> = vec![(p.clone(), p.clone())];
+        if p == "/index.html" || p.ends_with("/index.html") {
+            let dir = &p[..p.len() - "index.html".len()];
+            let m = if dir == "/" {
+                "/"
+            } else {
+                &dir[..dir.len() - 1]
+            };
+            targets.push((dir.to_string(), m.to_string()));
+        }
+        let mut last: Option<usize> = None;
+        for (url_path, match_path) in targets {
+            taken.insert(url_path.clone());
+            if let Some(forced) = exact_redirect(redirects, true, &match_path) {
+                let i = redirect_to(forced, &mut responses);
+                urls.push((url_path, i));
+                continue;
+            }
+            let mut headers: Vec<(String, String)> =
+                vec![("content-type".to_string(), mime_type_for(p).to_string())];
+            for (k, v) in headers_for(&rules.headers, &url_path) {
+                match headers.iter_mut().find(|(n, _)| *n == k) {
+                    Some(h) => h.1 = v,
+                    None => headers.push((k, v)),
+                }
+            }
+            let r = encode_response(200, &headers, &node.bytes);
+            let i = match last {
+                Some(i) if responses[i] == r => i,
+                _ => {
+                    responses.push(r);
+                    responses.len() - 1
+                }
+            };
+            last = Some(i);
+            urls.push((url_path, i));
+        }
+    }
+
+    // Redirects at paths without a file: `serve` applies a forced rule first, then (when nothing
+    // is served there: no file, no `<path>.html`, no directory) the first other matching rule.
+    let servable = |p: &str| tree.is_file(p) && p != "/_redirects" && p != "/_headers";
+    for r in redirects.iter() {
+        if r.splat || !is_redirect_status(r.status) || taken.contains(&r.from) {
+            continue;
+        }
+        let path = r.from.as_str();
+        taken.insert(path.to_string());
+        let rule = match exact_redirect(redirects, true, path) {
+            Some(i) => Some(i),
+            None => {
+                let first_forced = redirects
+                    .iter()
+                    .any(|x| x.force && match_redirect(x, path).is_some());
+                let served = if path == "/" {
+                    servable("/index.html")
+                } else {
+                    servable(path) || servable(&format!("{path}.html")) || tree.is_directory(path)
+                };
+                if first_forced || served {
+                    continue;
+                }
+                exact_redirect(redirects, false, path)
+            }
+        };
+        if let Some(rule) = rule {
+            let i = redirect_to(rule, &mut responses);
+            urls.push((path.to_string(), i));
+        }
+    }
+    (responses, urls)
+}
+
 pub fn write_web_bundle(tree: &Tree, base_url: Option<&str>) -> Result<Vec<u8>> {
     let base = validate_base_url(base_url)?;
-    let count = tree.len();
+    let (entries, urls) = bundle_responses(tree);
+    let count = entries.len();
 
     let mut responses: Vec<u8> = Vec::new();
     head(&mut responses, 4, count as u64);
+    let mut offsets = Vec::with_capacity(count);
+    for r in &entries {
+        offsets.push(responses.len() as u64);
+        responses.extend_from_slice(r);
+    }
     let mut index: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for (p, node) in tree.entries() {
-        let mut headers = Vec::new();
-        head(&mut headers, 5, 2);
-        bytes(&mut headers, b":status");
-        bytes(&mut headers, b"200");
-        bytes(&mut headers, b"content-type");
-        bytes(&mut headers, mime_type_for(p).as_bytes());
-        let offset = responses.len() as u64;
-        head(&mut responses, 4, 2);
-        bytes(&mut responses, &headers);
-        bytes(&mut responses, &node.bytes);
-        let length = responses.len() as u64 - offset;
+    for (path, i) in urls {
         // b2 index entries are [offset, length].
         let mut loc = Vec::new();
         head(&mut loc, 4, 2);
-        loc.extend(uint(offset));
-        loc.extend(uint(length));
-        let mut urls = vec![format!("{base}{}", encode_path(p))];
-        if p == "/index.html" || p.ends_with("/index.html") {
-            urls.push(format!(
-                "{base}{}",
-                encode_path(&p[..p.len() - "index.html".len()])
-            ));
-        }
-        for url in urls {
-            let mut k = Vec::with_capacity(url.len() + 3);
-            text(&mut k, &url);
-            index.push((k, loc.clone()));
-        }
+        loc.extend(uint(offsets[i]));
+        loc.extend(uint(entries[i].len() as u64));
+        let url = format!("{base}{}", encode_path(&path));
+        let mut k = Vec::with_capacity(url.len() + 3);
+        text(&mut k, &url);
+        index.push((k, loc));
     }
     // Deterministic CBOR (as cborMap in TypeScript): keys sorted by their encoded bytes.
     index.sort_by(|a, b| a.0.cmp(&b.0));
@@ -716,6 +848,197 @@ mod tests {
         .unwrap();
         assert_eq!(crate::digest::sha256(&big), WBN_FIXTURE_300_DIGEST);
     }
+    /// A site with `/_headers` and `/_redirects` (the same tree as `rulesSite()` in test/export-formats.test.ts).
+    fn rules_tree() -> Tree {
+        let headers = [
+            "/*",
+            "  X-Frame-Options: DENY",
+            "/*.css",
+            "  Cache-Control: public, max-age=3600",
+            "  Content-Type: text/x-custom",
+            "/about/",
+            "  X-Dir: yes",
+            "/*",
+            "  X-Frame-Options: SAMEORIGIN",
+            "/kept.txt",
+            "  __proto__: inert",
+            "",
+        ]
+        .join("\n");
+        let redirects = [
+            "/gone /new.html 301",
+            "/old.html /new.html 302!",
+            "/kept.txt /nope 301",
+            "/temp https://other.example/x 307",
+            "/gone /second 302",
+            "/splat/* /x/:splat 301",
+            "/shadow/* /y 302!",
+            "/shadow/exact /z 301",
+            "/rewrite /index.html 200",
+            "/about /about-us 308",
+            "/also-old /new.html 302",
+            "/ünï /u 301",
+            "",
+        ]
+        .join("\n");
+        mk(&[
+            ("/index.html", "home"),
+            ("/about/index.html", "about"),
+            ("/css/site.css", "p{}"),
+            ("/old.html", "old page"),
+            ("/kept.txt", "kept"),
+            ("/_headers", &headers),
+            ("/_redirects", &redirects),
+        ])
+    }
+
+    /// url (relative to the base) => (status, headers without :status in encoded order, body, offset)
+    type Exchanges = Vec<(String, (u16, Vec<(String, String)>, String, u64))>;
+    fn exchanges(b: &[u8], base: &str) -> (Bundle, Exchanges) {
+        let w = decode(b);
+        let mut out = Vec::new();
+        for (url, loc) in &w.index {
+            let (V::T(url), V::A(loc)) = (url, loc) else {
+                panic!()
+            };
+            let V::U(offset) = loc[0] else { panic!() };
+            let V::A(r) = item(&w.resp, offset as usize).0 else {
+                panic!()
+            };
+            let (V::B(hb), V::B(body)) = (&r[0], &r[1]) else {
+                panic!()
+            };
+            let V::M(h) = item(hb, 0).0 else { panic!() };
+            let mut status = 0;
+            let mut headers = Vec::new();
+            for (k, v) in h {
+                let (V::B(k), V::B(v)) = (k, v) else { panic!() };
+                let (k, v) = (String::from_utf8(k).unwrap(), String::from_utf8(v).unwrap());
+                if k == ":status" {
+                    status = v.parse().unwrap();
+                } else {
+                    headers.push((k, v));
+                }
+            }
+            out.push((
+                url[base.len()..].to_string(),
+                (
+                    status,
+                    headers,
+                    String::from_utf8(body.clone()).unwrap(),
+                    offset,
+                ),
+            ));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        (w, out)
+    }
+
+    fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn headers_and_redirects_from_rule_files() {
+        let base = "https://example.com/";
+        let (w, ex) = exchanges(&write_web_bundle(&rules_tree(), Some(base)).unwrap(), base);
+        let get = |u: &str| ex.iter().find(|(k, _)| k == u).map(|(_, e)| e.clone());
+        let mut keys: Vec<&str> = ex.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "",
+                "%C3%BCn%C3%AF",
+                "_headers",
+                "_redirects",
+                "about/",
+                "about/index.html",
+                "also-old",
+                "css/site.css",
+                "gone",
+                "index.html",
+                "kept.txt",
+                "old.html",
+                "temp"
+            ]
+        );
+        let html = "text/html; charset=utf-8";
+        let xfo = ("x-frame-options", "DENY, SAMEORIGIN");
+        let idx = get("index.html").unwrap();
+        assert_eq!(
+            (idx.0, idx.1.clone(), idx.2.as_str()),
+            (200, h(&[("content-type", html), xfo]), "home")
+        );
+        assert_eq!(get("").unwrap().3, idx.3);
+        assert_eq!(
+            get("css/site.css").unwrap().1,
+            h(&[
+                ("content-type", "text/x-custom"),
+                ("cache-control", "public, max-age=3600"),
+                xfo
+            ])
+        );
+        let kept = get("kept.txt").unwrap();
+        assert_eq!(kept.0, 200);
+        assert_eq!(
+            kept.1,
+            h(&[
+                ("__proto__", "inert"),
+                ("content-type", "text/plain; charset=utf-8"),
+                xfo
+            ])
+        );
+        assert_eq!(
+            get("about/").unwrap().1,
+            h(&[("x-dir", "yes"), ("content-type", html), xfo])
+        );
+        assert_eq!(
+            get("about/index.html").unwrap().1,
+            h(&[("content-type", html), xfo])
+        );
+        assert_ne!(get("about/").unwrap().3, get("about/index.html").unwrap().3);
+        assert_eq!(get("_redirects").unwrap().0, 200);
+        let gone = get("gone").unwrap();
+        assert_eq!(
+            (gone.0, gone.1, gone.2.as_str()),
+            (301, h(&[("location", "/new.html")]), "")
+        );
+        let old = get("old.html").unwrap();
+        assert_eq!((old.0, old.1), (302, h(&[("location", "/new.html")])));
+        assert_eq!(get("also-old").unwrap().3, old.3);
+        let temp = get("temp").unwrap();
+        assert_eq!(
+            (temp.0, temp.1),
+            (307, h(&[("location", "https://other.example/x")]))
+        );
+        assert_eq!(get("%C3%BCn%C3%AF").unwrap().0, 301);
+        for p in ["splat/a", "shadow/exact", "rewrite", "about"] {
+            assert!(get(p).is_none(), "{p}");
+        }
+        let V::A(all) = item(&w.resp, 0).0 else {
+            panic!()
+        };
+        let mut offsets: Vec<u64> = ex.iter().map(|(_, e)| e.3).collect();
+        offsets.sort();
+        offsets.dedup();
+        assert_eq!(all.len(), offsets.len(), "every response is referenced");
+        assert!(ex.iter().all(|(_, e)| e.2 != "old page"));
+    }
+
+    /// Byte-for-byte against the TypeScript writer for a tree with rule files.
+    #[test]
+    fn rules_identical_to_typescript_writer() {
+        let got = write_web_bundle(&rules_tree(), Some("https://example.com/")).unwrap();
+        assert_eq!(crate::digest::sha256(&got), WBN_RULES_FIXTURE_DIGEST);
+        assert_eq!(got.len(), WBN_RULES_FIXTURE_LEN);
+    }
+    const WBN_RULES_FIXTURE_DIGEST: &str =
+        "sha256:0a6d81422e0ff99b83c37beba3ab4e33ab6d390766545e1ebc84b76f65c48ef0";
+    const WBN_RULES_FIXTURE_LEN: usize = 1848;
     const WBN_FIXTURE_DIGEST: &str =
         "sha256:b235707145eabe9d02dca1f8a7ad249fb93f286d42f55c45b65a772b881491e6";
     const WBN_FIXTURE_LEN: usize = 799;

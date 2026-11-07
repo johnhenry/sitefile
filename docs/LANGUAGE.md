@@ -863,7 +863,9 @@ use `${NAME}`.
     `to` an absolute path or an `http(s)://host…` URL; neither may contain
     spaces or control characters (`E_VALIDATION`). Host syntax such as
     `/blog/*` and `:splat` is passed through as written; `sitefile serve`
-    understands exact paths and a trailing `/*` (docs/CLI.md).
+    understands exact paths and a trailing `/*` (docs/CLI.md). `EXPORT … AS
+    wbn` also bakes exact-path REDIRECTs into 3xx responses and HEADER values
+    into each response (see **wbn** under Export formats).
   - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
     word ending in `:` (`E_SYNTAX` if there is none), the value is the rest of
     the line, its words joined with one space and trimmed. The name must be an
@@ -1594,16 +1596,50 @@ and tar timestamps instead.
     percent-encoded).
   - Every `index.html` is additionally addressed by its directory URL:
     `/index.html` as `<base>` and `/docs/index.html` as `<base>docs/`. Both
-    index entries point at the same response.
+    index entries point at the same response unless their headers differ
+    (see `_headers` below).
   - Primary URL: `<base>`, in a `primary` section, if `/index.html` exists;
     otherwise there is no `primary` section.
-  - Each response has `:status` `200` and `content-type` (no other headers).
+  - Each file's response has `:status` `200` and `content-type`.
     `content-type` comes from the extension: html/htm, css, js/mjs, json, svg,
     txt, xml, webmanifest (all with `; charset=utf-8`), png, jpg/jpeg, gif,
     webp, avif, ico (`image/x-icon`), wasm, woff, woff2, pdf, mp4, webm, mp3;
     anything else is `application/octet-stream`.
-  - Index entries are `[variants-value "", offset, length]` where offset is
-    counted from the first byte of the responses section.
+  - **`_headers` (HEADER) is baked in** (johnhenry/sitefile#144). When the
+    exported tree has `/_headers`, each response also gets the headers of
+    every block whose pattern matches its URL path, exactly as
+    `sitefile serve` matches them: `*` matches any run of characters, values
+    of a name set by several blocks are joined with `, `, and a directory URL
+    matches with its trailing slash (so `HEADER / …` applies to `<base>` but
+    not to `<base>index.html`, which then get separate responses). A
+    `Content-Type` there replaces the inferred one; the names `serve` owns
+    (`content-length`, `etag`, `location`, …) are ignored, as in `serve`.
+    Header names are lowercase and, like every CBOR map here, in bytewise
+    order of their encoding. `serve`'s own defaults (`cache-control:
+    no-cache`, `x-content-type-options`) are not added.
+  - **Exact-path `_redirects` (REDIRECT) rules become redirect responses.**
+    A rule without a splat and with a 301, 302, 303, 307 or 308 status is a
+    response with that `:status`, a `location` of the target as written (a
+    path stays relative to the host, as in `/_redirects`) and an empty body,
+    at `<base><from>` — and nothing else: no `_headers` headers, as in
+    `serve`. It follows `serve`'s order: a forced rule (`301!`, only possible
+    in a hand-written `_redirects`) replaces the file at its path; any other
+    rule applies only when `serve` would find nothing there (no file, no
+    `<from>.html`, no directory), so `REDIRECT /about …` next to
+    `/about/index.html` is not baked in. The first rule matching a path
+    decides; when that is a splat or a `200`/`404` rewrite, the path is left
+    to `/_redirects`. Identical redirects share one response.
+    Not baked in, so only a reader of `/_redirects` applies them: splat rules
+    (`/blog/* /posts/:splat`, whose targets depend on the request), `200`
+    rewrites and `404` rules, and the trailing-slash spelling `<from>/` that
+    `serve` also redirects. A `.wbn` imported with `AS tree` keeps only the
+    `200` responses, so redirects do not become files.
+  - `/_headers` and `/_redirects` stay in the bundle as files, so a bundle
+    unpacked with `IMPORT … AS tree` (or by packfile's `fromWebBundle`) still
+    deploys to Netlify or Cloudflare Pages, and serves with `sitefile serve`,
+    with every rule, including the splats.
+  - Index entries are `[offset, length]`, where offset is counted from the
+    first byte of the responses section.
   - Not signed, no integrity block, no variants. Layout follows the b2 draft as
     understood when written; validate with a Web Bundle tool before relying on
     it in a browser.
