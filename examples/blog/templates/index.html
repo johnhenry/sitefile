@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${SITE_TITLE}</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="alternate" type="application/atom+xml" title="${SITE_TITLE}" href="/feed.xml">
+  ${feed_link}
 </head>
 <body>
-  <header><a class="site" href="/">${SITE_TITLE}</a></header>
+  ${site_header}
   <main>
     ${#each page.items as post}
     <article class="summary">

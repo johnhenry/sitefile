@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tagged ${tag.key} · ${SITE_TITLE}</title>
   <link rel="stylesheet" href="/style.css">
+  ${feed_link}
 </head>
 <body>
-  <header><a class="site" href="/">${SITE_TITLE}</a></header>
+  ${site_header}
   <main>
     <h1>Tagged “${tag.key}” (${tag.count})</h1>
     ${#each tag.items as post}

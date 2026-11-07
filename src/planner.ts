@@ -1,11 +1,22 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { importedStage, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
 import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
+import { parseFragmentBody } from './language/validate.js';
+import type { TemplateNode } from './render.js';
+
+/** An html LET: its template, parsed, evaluated where a RENDER uses it. */
+export interface FragmentSpec {
+  readonly name: string;
+  /** The template as written (memo keys). */
+  readonly text: string;
+  readonly nodes: readonly TemplateNode[];
+  readonly span: SourceSpan;
+}
 
 /** Where a COPY/RENDER reads from. */
 export type SourceRef =
@@ -204,6 +215,8 @@ export interface Plan {
   /** In source order; EXPORT reads the last one. */
   readonly stages: readonly Stage[];
   readonly vars: ReadonlyMap<string, Scalar>;
+  /** html LETs by name, in source order (not in `vars`: they are not evaluated here). */
+  readonly fragments: ReadonlyMap<string, FragmentSpec>;
   readonly imports: readonly ImportSpec[];
   readonly plugins: readonly PluginSpec[];
   readonly tools: readonly ToolSpec[];
@@ -236,6 +249,7 @@ const IMPORT_REF_RE = /^([A-Za-z_][A-Za-z0-9_]*):(.*)$/s;
  */
 export function plan(program: Program, buildArgs: Readonly<Record<string, string>> = {}, argSource: (name: string) => string = (n) => `--build-arg ${n}`): Plan {
   const vars = new Map<string, Scalar>();
+  const fragments = new Map<string, FragmentSpec>();
   const imports = new Map<string, ImportSpec>();
   const stages: Stage[] = [];
   const plugins: PluginSpec[] = [];
@@ -281,6 +295,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         break;
       }
       case 'LET':
+        if (isFragment(ins)) {
+          fragments.set(ins.name, { name: ins.name, text: ins.body.text, nodes: parseFragmentBody(ins.body, program.file), span: ins.span });
+          break;
+        }
         bind(ins.name, evaluateOperand(ins.value, vars), ins.type, ins.value.span, `LET ${ins.name}`);
         break;
       case 'IMPORT': {
@@ -478,7 +496,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     // validate() guarantees both; this keeps the types honest.
     throw new SitefileError('E_VALIDATION', 'a Sitefile needs FROM and EXPORT');
   }
-  return { file: program.file, stages, vars, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, redirects, headers, warnings };
+  return { file: program.file, stages, vars, fragments, imports: [...imports.values()], plugins, tools, exportPath, exportFormat, exportBase, exportRoot, exportCompression, redirects, headers, warnings };
 }
 
 /**

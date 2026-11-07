@@ -8,9 +8,9 @@
 // `# sitefile-lint: disable-next-line=<id>[,…]` for the next instruction only, and the CLI's
 // `--lint-disable <id>[,<id>…]` for one run; `all` names every rule.
 import type { InlineBody, Instruction, Operand, Program } from './language/ast.js';
-import { isInline } from './language/ast.js';
+import { isFragment, isInline } from './language/ast.js';
 import { logicalLines, type CommentLine, type LogicalLine } from './language/scanner.js';
-import { operandsOf } from './language/validate.js';
+import { operandsOf, parseFragmentBody } from './language/validate.js';
 import { templateNames } from './executor.js';
 import { importedStageRefs, type Operation, type Plan } from './planner.js';
 import { parseRenderTemplate } from './render.js';
@@ -21,7 +21,7 @@ export const LINT_RULES = ['unused-name', 'unpinned-import', 'unpinned-image', '
 export type LintRule = (typeof LINT_RULES)[number];
 
 /** Import kinds a RENDER template can read (so a template file may use them). */
-const VALUE_KINDS = new Set(['text', 'json', 'yaml', 'csv', 'markdown', 'wbn']);
+const VALUE_KINDS = new Set(['text', 'json', 'yaml', 'csv', 'markdown', 'wbn', 'html']);
 
 /** `# sitefile-lint: …` (name ASCII case-insensitive): group 1 is the rest of the comment. */
 const LINT_COMMENT = /^#[ \t]*[Ss][Ii][Tt][Ee][Ff][Ii][Ll][Ee]-[Ll][Ii][Nn][Tt][ \t]*:([\s\S]*)$/;
@@ -131,6 +131,8 @@ export function lint(program: Program, plan: Plan, source: string, disabled: rea
         opaqueTemplates = true;
       }
     }
+    // An html LET's template names what it uses (validate already parsed it).
+    if (isFragment(ins)) templateNames(parseFragmentBody(ins.body, file)).forEach((n) => used.add(n));
     if ((ins.kind === 'RENDER' || ins.kind === 'TRANSFORM') && ins.each) used.add(ins.each.list);
     if (ins.kind === 'FEED') used.add(ins.list);
     if (ins.kind === 'TRANSFORM') used.add(ins.plugin);

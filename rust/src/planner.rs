@@ -265,6 +265,16 @@ pub struct Stage {
 }
 
 /// A fully evaluated build: no variables left, no IO done yet.
+/// An html LET: its template, parsed, evaluated where a RENDER uses it.
+#[derive(Debug, Clone)]
+pub struct FragmentSpec {
+    pub name: String,
+    /// The template as written (memo keys).
+    pub text: String,
+    pub nodes: std::sync::Arc<Vec<crate::render::TemplateNode>>,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub file: String,
@@ -273,6 +283,8 @@ pub struct Plan {
     pub vars: Env,
     /// Names of `vars` in declaration order (JavaScript Map order).
     pub var_order: Vec<String>,
+    /// html LETs, in source order (not in `vars`: they are not evaluated here).
+    pub fragments: Vec<FragmentSpec>,
     pub imports: Vec<ImportSpec>,
     pub plugins: Vec<PluginSpec>,
     pub tools: Vec<ToolSpec>,
@@ -341,6 +353,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
 /// come from the `ARG` clauses of its IMPORT).
 pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(&str) -> String) -> Result<Plan> {
     let mut vars = Env::new();
+    let mut fragments: Vec<FragmentSpec> = Vec::new();
     let mut var_order: Vec<String> = Vec::new();
     let mut imports: Vec<ImportSpec> = Vec::new();
     let mut stages: Vec<Stage> = Vec::new();
@@ -397,6 +410,10 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                         span,
                     ));
                 }
+            }
+            Instruction::Fragment { name, body, span } => {
+                let nodes = crate::language::validate::parse_fragment_body(body, &program.file)?;
+                fragments.push(FragmentSpec { name: name.clone(), text: body.text().to_string(), nodes: std::sync::Arc::new(nodes), span: span.clone() });
             }
             Instruction::Let { name, ty, value, .. } => {
                 let raw = evaluate_operand(value, &vars)?;
@@ -684,6 +701,7 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
         stages,
         vars,
         var_order,
+        fragments,
         imports,
         plugins,
         tools,

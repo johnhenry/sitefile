@@ -85,14 +85,14 @@ fn build_profile_lists_steps_in_sitefile_order() {
     }).collect();
     assert_eq!(
         short,
-        ["command build", "build parse", "import import posts", "stage stage #1", "operation 17 COPY",
-            "operation 19 RENDER",
-            "operation 20 RENDER",
-            "operation 22 RENDER",
-            "operation 26 FEED",
-            "operation 27 SITEMAP",
-            "operation 31 FINGERPRINT",
-            "operation 34 CHECKLINKS",
+        ["command build", "build parse", "import import posts", "stage stage #1", "operation 33 COPY",
+            "operation 35 RENDER",
+            "operation 36 RENDER",
+            "operation 38 RENDER",
+            "operation 42 FEED",
+            "operation 43 SITEMAP",
+            "operation 47 FINGERPRINT",
+            "operation 50 CHECKLINKS",
             "export export"]
     );
     let label_of = |n: &str| n.rsplit_once(':').map(|(l, _)| l.to_string()).unwrap_or_default();

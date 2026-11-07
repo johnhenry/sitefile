@@ -4,12 +4,12 @@
 //! Diagnostics come from the real pipeline (`diagnostics.rs`); this index only
 //! has to cope with a document that does not parse yet (the user is typing).
 //! It follows the scanner's line rules (comments, `\` continuations, heredoc
-//! bodies after COPY/RENDER/TRANSFORM) and splits each instruction into
+//! bodies after COPY/RENDER/TRANSFORM and `LET name: html`) and splits each instruction into
 //! whitespace-separated words, keeping quoted strings whole. Positions are
 //! 0-based lines and UTF-16 columns.
 
 use crate::language::ast::{imported_stage, is_ident};
-use crate::language::scanner::is_js_space;
+use crate::language::scanner::{is_html_let, is_js_space};
 use crate::lsp::text::{utf16_len, Lines};
 use std::collections::HashMap;
 
@@ -42,6 +42,8 @@ pub struct Body {
     pub closed: bool,
     /// The `<<NAME` word's index in `Instr::words`.
     pub marker: usize,
+    /// The body lines, each ending in `\n` (for hover).
+    pub text: String,
 }
 
 impl Body {
@@ -79,6 +81,10 @@ impl Instr {
             i += 1;
         }
         i
+    }
+    /// `LET name: html …`: an html fragment, whose value may be a heredoc template.
+    pub fn is_html_let(&self) -> bool {
+        is_html_let(&self.text().chars().collect::<Vec<_>>())
     }
     /// Index of the first word (after `from`) that equals `kw` (case-insensitive).
     pub fn find_kw(&self, kw: &str, from: usize) -> Option<usize> {
@@ -241,7 +247,7 @@ pub fn instructions(lines: &Lines) -> Vec<Instr> {
         }
         let mut instr = cur.take().unwrap_or_else(|| unreachable!());
         instr.keyword = instr.words.first().map(Word::upper).unwrap_or_default();
-        if matches!(instr.keyword.as_str(), "COPY" | "RENDER" | "TRANSFORM") {
+        if matches!(instr.keyword.as_str(), "COPY" | "RENDER" | "TRANSFORM") || instr.is_html_let() {
             let marker = instr.words.iter().position(|w| heredoc_marker(&w.text).is_some());
             if let Some(m) = marker {
                 let (strip, delimiter) = heredoc_marker(&instr.words[m].text).unwrap_or_default();
@@ -257,7 +263,9 @@ pub fn instructions(lines: &Lines) -> Vec<Instr> {
                     ln += 1;
                 }
                 let end_line = if closed { ln } else { n.saturating_sub(1).max(start_line) };
-                instr.body = Some(Body { delimiter, start_line, end_line, closed, marker: m });
+                let last = if closed { end_line } else { n };
+                let text: String = (start_line..last).map(|l| format!("{}\n", lines.get(l))).collect();
+                instr.body = Some(Body { delimiter, start_line, end_line, closed, marker: m, text });
                 ln = end_line + 1;
             }
         }
@@ -486,8 +494,8 @@ pub fn build(lines: &Lines) -> Index {
                 uses.push((it.name, word.line, word.start + it.start, word.start + it.end, Pending::Scoped(ix)));
             }
         }
-        // RENDER heredoc bodies are templates.
-        if let (Some(b), "RENDER") = (&ins.body, ins.keyword.as_str()) {
+        // RENDER and html LET heredoc bodies are templates.
+        if let (Some(b), "RENDER" | "LET") = (&ins.body, ins.keyword.as_str()) {
             for l in b.start_line..=b.end_line {
                 if !b.contains_line(l) {
                     continue;

@@ -17,7 +17,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "ARG NAME[: string|number|boolean] [= value]",
         "A build parameter. Without a default it is required: pass `--build-arg NAME=value` (or `--build-arg-file`). Usable as `${NAME}` on later lines.",
     ),
-    ("LET", "LET NAME[: type] = value", "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails."),
+    (
+        "LET",
+        "LET NAME[: type] = value | LET name: html = <markup> | LET name: html <<HTML",
+        "A computed variable, usable as `${NAME}` on later lines. ARG and LET share one namespace; rebinding fails. `LET name: html` is an html fragment: a template evaluated where a RENDER template uses it (`${name}`) and inserted as markup (values inside it are still escaped); templates only.",
+    ),
     (
         "IMPORT",
         "IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…",
@@ -96,7 +100,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("STAGE", "AT", "`AT <dir>`: the directory inside the image to start from (default: its `dev.sitefile.root` label)."),
     ("STAGE", "SCRATCH", "`scratch` (the bare word) is an empty tree."),
     ("IMPORT", "FROM", "`FROM <uri>`: a context-relative path, an `https://` URL (`http://` only with `--allow-http`), or `git+https://host/repo.git#ref[:path]` (ref: a branch, tag or 40-hex commit)."),
-    ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn, tree or sitefile. `AS tree` on a file extracts an archive."),
+    ("IMPORT", "AS", "`AS kind`: file, text, json, yaml, csv, markdown, wbn, html, tree or sitefile. `AS tree` on a file extracts an archive; `AS html` makes a file an html fragment."),
     (
         "IMPORT",
         "ARG",
@@ -172,6 +176,7 @@ const IMPORT_KINDS: &[(&str, &str)] = &[
     ("csv", "CSV rows as a list of objects of strings (the header row gives the keys)."),
     ("markdown", "Markdown documents: frontmatter fields plus slug, date, path, content (HTML) and excerpt."),
     ("wbn", "A Web Bundle as data: version, primaryUrl and entries."),
+    ("html", "An html fragment (a template partial): evaluated where a RENDER template uses it (`${name}`) and inserted as markup; values inside it are escaped by that RENDER."),
     ("tree", "A directory tree; on a file (zip, tar, tar.gz, wbn), extract the archive."),
     (
         "sitefile",
@@ -203,6 +208,7 @@ const TYPES: &[(&str, &str)] = &[
     ("string", "Any text (the default)."),
     ("number", "A number; the value must parse as one."),
     ("boolean", "`true` or `false`."),
+    ("html", "LET only: an html fragment, a template evaluated where a RENDER template uses it and inserted as markup (`LET name: html = …` or a `<<HTML` heredoc)."),
 ];
 
 fn lookup<'a>(table: &'a [(&str, &str)], key: &str) -> Option<&'a str> {

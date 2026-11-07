@@ -9,7 +9,9 @@ export const KEYWORDS = {
   clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
-  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'sitefile'],
+  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
+  /** The LET-only type of an html fragment (`LET name: html`), a keyword token here. */
+  fragmentType: 'html',
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
@@ -26,6 +28,8 @@ export const KEYWORDS = {
     CHECKLINKS: ['warn', 'external'],
   },
   heredocInstructions: ['COPY', 'RENDER', 'TRANSFORM'],
+  /** `LET name: html <<HTML` also takes a heredoc (scanner.ts isHtmlLet). */
+  heredocLet: true,
 };
 
 /**

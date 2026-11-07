@@ -12,7 +12,7 @@ export interface LogicalLine {
   readonly positions: readonly Pos[];
   /** Position just after the last character (for "expected X" errors at end of line). */
   readonly end: Pos;
-  /** A heredoc body that followed this line (COPY and RENDER only). */
+  /** A heredoc body that followed this line (COPY, RENDER, TRANSFORM and html LET only). */
   readonly heredoc?: Heredoc;
 }
 
@@ -34,8 +34,31 @@ export interface CommentLine {
   readonly text: string;
 }
 
-/** Instructions whose source may be a heredoc. */
+/** Instructions whose source may be a heredoc (and `LET name: html`, see {@link isHtmlLet}). */
 const HEREDOC_INSTRUCTIONS = new Set(['COPY', 'RENDER', 'TRANSFORM']);
+
+/**
+ * Whether a logical line declares an html fragment, `LET name: html …` (the type ASCII
+ * case-insensitive), whose value may be a heredoc. Other LET lines are not scanned for `<<`.
+ */
+export function isHtmlLet(text: string): boolean {
+  const m = /^(\S+)/.exec(text);
+  if (!m || m[1]!.toUpperCase() !== 'LET') return false;
+  let i = m[1]!.length;
+  const skip = (): void => {
+    while (i < text.length && WS.test(text[i]!)) i++;
+  };
+  skip();
+  if (!IDENT_START.test(text[i] ?? '')) return false;
+  while (IDENT_CHAR.test(text[i] ?? '')) i++;
+  skip();
+  if (text[i] !== ':') return false;
+  i++;
+  skip();
+  if (text.slice(i, i + 4).toLowerCase() !== 'html') return false;
+  const next = text[i + 4];
+  return next === undefined || next === '=' || WS.test(next);
+}
 
 /** `<<NAME` / `<<-NAME` markers that start a word outside quotes. */
 function heredocMarkers(text: string): Array<{ at: number; length: number; strip: boolean; delimiter: string }> {
@@ -164,7 +187,7 @@ export function logicalLines(source: string, file = 'Sitefile', comments?: Comme
       const logical: LogicalLine = { text, positions, end };
       out.push(logical);
       const keyword = /^\S+/.exec(text)?.[0]?.toUpperCase() ?? '';
-      if (HEREDOC_INSTRUCTIONS.has(keyword)) {
+      if (HEREDOC_INSTRUCTIONS.has(keyword) || isHtmlLet(text)) {
         const markers = heredocMarkers(text);
         if (markers.length > 1) {
           const p = positions[markers[1]!.at]!;
@@ -306,6 +329,21 @@ export class Cursor {
     if (this.atEnd()) return;
     const at = this.i;
     throw this.error('E_SYNTAX', `unexpected '${this.word()}'`, at);
+  }
+
+  /**
+   * Consume the rest of the line (from the next non-whitespace character, trailing whitespace
+   * dropped): its text, its span, and whether it continues onto another physical line.
+   */
+  rest(): { text: string; span: SourceSpan; multiline: boolean } {
+    this.skipWs();
+    const start = this.i;
+    let stop = this.text.length;
+    while (stop > start && WS.test(this.text[stop - 1]!)) stop--;
+    this.i = this.text.length;
+    const first = this.line.positions[start];
+    const last = this.line.positions[stop - 1];
+    return { text: this.text.slice(start, stop), span: this.spanAt(start), multiline: first !== undefined && last !== undefined && last.line !== first.line };
   }
 
   /** Consume this line's heredoc marker if it is the next word. */

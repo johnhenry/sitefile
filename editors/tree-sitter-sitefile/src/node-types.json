@@ -640,6 +640,41 @@
     }
   },
   {
+    "type": "fragment",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "template_each",
+          "named": true
+        },
+        {
+          "type": "template_else",
+          "named": true
+        },
+        {
+          "type": "template_end",
+          "named": true
+        },
+        {
+          "type": "template_escape",
+          "named": true
+        },
+        {
+          "type": "template_if",
+          "named": true
+        },
+        {
+          "type": "template_substitution",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "from_instruction",
     "named": true,
     "fields": {
@@ -1145,12 +1180,42 @@
     "type": "let_instruction",
     "named": true,
     "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "heredoc_body",
+            "named": true
+          }
+        ]
+      },
+      "end": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "heredoc_end",
+            "named": true
+          }
+        ]
+      },
       "name": {
         "multiple": false,
         "required": true,
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "heredoc_start",
             "named": true
           }
         ]
@@ -1167,10 +1232,14 @@
       },
       "value": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "fragment",
             "named": true
           },
           {

@@ -8,10 +8,10 @@
   <meta name="description" content="${post.description}">
   ${/if}
   <link rel="stylesheet" href="/style.css">
-  <link rel="alternate" type="application/atom+xml" title="${SITE_TITLE}" href="/feed.xml">
+  ${feed_link}
 </head>
 <body>
-  <header><a class="site" href="/">${SITE_TITLE}</a></header>
+  ${site_header}
   <main>
     <article>
       <h1>${post.title}</h1>
@@ -25,14 +25,7 @@
       </ul>
       ${/if}
     </article>
-    <nav>
-      <h2>All posts</h2>
-      <ul>
-        ${#each posts as other}
-        <li><a href="/posts/${other.slug}/">${other.title}</a></li>
-        ${/each}
-      </ul>
-    </nav>
+    ${post_list}
   </main>
 </body>
 </html>

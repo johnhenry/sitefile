@@ -3,7 +3,7 @@
 
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{ImportArg, ImportSecret, imported_stage,
+use crate::language::ast::{FragmentBody, ImportArg, ImportSecret, imported_stage,
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SchemaClause, DraftsClause, GroupBy, PageClause, SortBy, Source, StageRef, TransformOption, ValueType,
 };
@@ -166,14 +166,25 @@ fn parse_binding(c: &mut Cursor, span: SourceSpan, is_arg: bool) -> Result<Instr
     if c.eat(':') {
         let at = c.span();
         let t = c.ident("type", "=")?.to_lowercase();
+        if t == "html" {
+            if is_arg {
+                return Err(SitefileError::at(
+                    E_SYNTAX,
+                    format!("ARG {name} cannot be html: an html value is markup written in the Sitefile (LET {name}: html = …)"),
+                    &at,
+                ));
+            }
+            return parse_fragment(c, span, name);
+        }
         ty = match ValueType::parse(&t) {
             Some(ty) => ty,
             None => {
+                let or_html = if is_arg { "" } else { ", or html" };
                 return Err(SitefileError::at(
                     E_SYNTAX,
-                    format!("unknown type '{t}' (expected string, number or boolean)"),
+                    format!("unknown type '{t}' (expected string, number or boolean{or_html})"),
                     &at,
-                ))
+                ));
             }
         };
     }
@@ -186,6 +197,34 @@ fn parse_binding(c: &mut Cursor, span: SourceSpan, is_arg: bool) -> Result<Instr
         Some(value) => Ok(Instruction::Let { span, name, ty, value }),
         None => Err(SitefileError::at(E_SYNTAX, format!("LET {name} requires a value (LET {name} = ...)"), &span)),
     }
+}
+
+/// `LET name: html = <markup>` (the rest of the line is the template) or `LET name: html <<HTML`
+/// (also `= <<HTML`). A one-line fragment cannot use `\` continuations, so its error positions are exact.
+fn parse_fragment(c: &mut Cursor, span: SourceSpan, name: String) -> Result<Instruction> {
+    let eq = c.eat('=');
+    if let Some(inline) = c.inline() {
+        c.expect_end()?;
+        return Ok(Instruction::Fragment { span, name, body: FragmentBody::Inline(inline) });
+    }
+    c.expect_inline_used(&format!("the value of LET {name}: html"))?;
+    let at = c.span();
+    let (text, rest_span, multiline) = c.rest();
+    if !eq || text.is_empty() {
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            format!("LET {name}: html requires a value (LET {name}: html = <markup>, or a heredoc: LET {name}: html <<HTML)"),
+            if eq { &at } else { &rest_span },
+        ));
+    }
+    if multiline {
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            format!("LET {name}: html on one line cannot continue onto the next line; write it as a heredoc (LET {name}: html <<HTML)"),
+            &rest_span,
+        ));
+    }
+    Ok(Instruction::Fragment { span, name, body: FragmentBody::Line { text, span: rest_span } })
 }
 
 /// `INTEGRITY sha256:…` after the keyword: a literal digest.
@@ -219,7 +258,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             as_kind = Some(ImportKind::parse(&k).ok_or_else(|| {
                 SitefileError::at(
                     E_SYNTAX,
-                    format!("unknown import kind '{k}' (expected file, text, json, yaml, csv, markdown, wbn, tree or sitefile)"),
+                    format!("unknown import kind '{k}' (expected file, text, json, yaml, csv, markdown, wbn, html, tree or sitefile)"),
                     &kind_at,
                 )
             })?);

@@ -137,7 +137,14 @@ const values = (name, p, span, loose) => {
   }
   return walk(data[name], p, name, span, loose);
 };
+// html fragments (issue #106): parsed from these templates, rendered in place.
+const FRAGMENTS = { F1: '<b title="${T}">${T}</b>', F2: '[${F1}|${i.t}]', LOOP: '${#each list as x}${x.t}${/each}', REC: '(${REC2})', REC2: '${REC}', BAD: 'x ${#if}' };
+const ctx = {
+  isFragment: (name) => Object.hasOwn(FRAGMENTS, name),
+  fragment: (name) => parseRenderTemplate(FRAGMENTS[name], `${name}.html`, 1),
+};
 const tAtoms = [
+  '${F1}', '${F2}', '${LOOP}', '${REC}', '${BAD}', '${F1|raw}', '${F1.x}', '${#each F1 as i}', '${#if F2}', '${#each list as F1}${F1}${/each}',
   '${T}', '${N}', '${F}', '${Z}', '${B}', '${E}', '${T|raw}', '${nil}', '${obj}', '${obj.k}', '${obj.n.1}', '${obj.n.5}', '${list.0.t}', '${nope}',
   '${#each list as i}', '${#each obj.n as i}', '${#each list.0.tags as T}', '${#each nope as i}', '${#each T as i}', '${#each missing.k as i}',
   '${i}', '${i.t}', '${i.tags.0}', '${#if i.tags}', '${#if !i}', '${#if B}', '${#if Z}', '${#if empty}', '${#if obj}', '${#if nope.x}', '${else}',
@@ -166,7 +173,7 @@ const tpl = collect(
       : Array.from({ length: 1 + Math.floor(rand() * 12) }, () => pick(tAtoms)).join(''),
   (t) => {
     const nodes = parseRenderTemplate(t, 't.html', 3);
-    return [renderTemplate(nodes, lookup, 'html', values), renderTemplate(nodes, lookup, 'none', values)];
+    return [renderTemplate(nodes, lookup, 'html', values, ctx), renderTemplate(nodes, lookup, 'none', values, ctx)];
   },
 );
 

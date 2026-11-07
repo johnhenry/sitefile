@@ -6,7 +6,7 @@ Instructions:
 - `FROM scratch|<local dir>|<stage>|<import>+<stage>|image <ref> [AT <dir>] [AS name]` (optional for a single-stage build: the first instruction other than `ARG` and `IMPORT … AS sitefile` starts an implicit `FROM scratch`)
 - `STAGE <name> [FROM scratch|<local dir>|<stage>|image <ref> [AT <dir>]]` starts a named stage; same as `FROM <base> AS <name>` (base defaults to `scratch`)
 - `ARG NAME[: type] [= value]` external build parameter
-- `LET NAME = value` local immutable binding
+- `LET NAME = value` local immutable binding; `LET name: html = <markup>` (or a `<<HTML` heredoc) is an html fragment, see HTML fragments below
 - `IMPORT name FROM <uri> [AS json|text|tree|file|…|sitefile] [INTEGRITY sha256:<hex>] [ARG NAME=value]…` (`AS sitefile`: another Sitefile, whose stages are `name+<stage>`; see Sitefile imports below)
 - `COPY [--from=<stage>] [--exclude=<glob>…] [--chmod=644|755] [--parents] <source> <destination>`; source can be local path or `name:/path`
 - `RENDER <template> TO <destination>`; interpolation `${NAME}` only in MVP
@@ -202,9 +202,11 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - Precedence: Sitefile default < files (later files win) < `--build-arg`.
     Each ARG's declared type still applies.
 - `LET NAME[: type] = value`. ARG and LET share one namespace; rebinding fails.
+  `LET name: html …` is an html fragment (see HTML fragments below); `html` is
+  not a type for ARG (`E_SYNTAX`).
 - Operands of every instruction can use `${NAME}` for ARG/LET names defined on
   an earlier line. Dotted access is only allowed inside RENDER templates.
-- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|tree|sitefile] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]… [ARG NAME=value]…`
+- `IMPORT name FROM <uri> [AS file|text|json|yaml|csv|markdown|wbn|html|tree|sitefile] [INTEGRITY sha256:<hex>] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER]… [ARG NAME=value]…`
   - `AS sitefile` and `ARG`: see Sitefile imports below.
   - `SCHEMA`: see Schemas below (not with `AS sitefile`; an imported Sitefile's own SCHEMA paths are read from its own context).
   - `DRAFTS`: see Tag pages, pagination and drafts below (also not with `AS sitefile`).
@@ -298,9 +300,10 @@ These pin down what the draft above leaves open. Tests cover each rule.
     errors report the Sitefile line and column. `COPY` bodies are written byte
     for byte (no `${}` substitution) with mode `0644`, to a file destination
     (`E_PATH` for a directory). Conflict rules and `--overwrite` apply as usual.
-  - Only `COPY`, `RENDER` and `TRANSFORM` lines are scanned for `<<`
-    (`TRANSFORM <<NAME WITH …` passes the body to the plugin as its source,
-    byte for byte); elsewhere it is plain text.
+  - Only `COPY`, `RENDER`, `TRANSFORM` and html `LET` lines (`LET name: html`)
+    are scanned for `<<` (`TRANSFORM <<NAME WITH …` passes the body to the
+    plugin as its source, byte for byte; an html LET's body is its template);
+    elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
 - `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
@@ -361,6 +364,73 @@ These pin down what the draft above leaves open. Tests cover each rule.
   - A block tag alone on its line removes that whole line from the output.
   - Unbalanced blocks, a second `${else}` or an unknown `|filter` fail with
     `E_TEMPLATE` at the tag.
+
+### HTML fragments: `LET name: html` and `IMPORT … AS html` (see `examples/blog/`)
+Name a piece of HTML once and use it in any RENDER template: a header, a nav, a
+card. Every other LET is evaluated where it is declared, before any file
+exists; a fragment is a **template that is evaluated where it is used**.
+
+```
+ARG SITE = "My blog"
+IMPORT posts FROM ./posts AS markdown
+LET nav: html = <nav>${#each posts as p}<a href="/${p.slug}/">${p.title}</a>${/each}</nav>
+LET header: html <<HTML
+<header><h1>${SITE}</h1>${nav}</header>
+HTML
+IMPORT footer FROM ./partials/footer.html AS html
+
+RENDER --escape=html <<HTML TO /${item.slug}/index.html FOR item IN posts
+${header}<main><h2>${item.title}</h2>${item.content|raw}</main>${footer}
+HTML
+```
+
+- **Forms.** `LET name: html = <markup>` takes the rest of the line (trailing
+  whitespace dropped) as the template; it cannot continue with `\` onto the next
+  line (`E_SYNTAX`; write a heredoc), so error positions are exact.
+  `LET name: html <<HTML` (or `= <<HTML`) takes a heredoc body with the usual
+  rules (`<<-` strips tabs, the body is raw, a missing closing line is
+  `E_SYNTAX`), except that the template is the body **without its final
+  newline**, since a fragment is inserted inline (`${header}<main>`). The type
+  is ASCII case-insensitive (`: HTML`). `IMPORT name FROM ./partials/x.html AS html` makes a UTF-8 file a
+  fragment with the same rules (its final newline, `\n` or `\r\n`, is dropped
+  too; a directory is `E_TYPE`, invalid UTF-8 `E_ENCODING`); it may also be remote or from Git, pinned like any import.
+- **A type, not a convention.** A fragment's markup is inserted as written,
+  also under `--escape=html`; the values substituted *inside* it (`${SITE}`,
+  `${p.title}`) are escaped by the escape mode of the RENDER that uses it. A
+  plain string LET stays escaped as before, so `--escape=html` keeps its
+  guarantee (like Go's `template.HTML`). `${name|raw}` on a fragment is the
+  same as `${name}`.
+- **Evaluated where it is used.** `${name}` in a template renders the
+  fragment in place, against that RENDER: its `FOR` loop variable (`${item…}`),
+  the `${#each}` variables around the use, its escape mode. A fragment may use
+  other fragments. With `FOR … BY` or `PAGE` the loop variable is the group or
+  page (`${page.items}`, `${tag.key}`), as in the RENDER's own template. In a
+  Sitefile imported `AS sitefile`, its fragments and `AS html` imports resolve
+  in that Sitefile (its ARGs, its paths); the importer's fragments of the same
+  name are not visible there.
+- **Checked where it is declared** (`validate` reports these at the LET):
+  its template syntax (`E_TEMPLATE`, at the exact line and column), and every
+  name it reads that is declared before it (a dotted `${T.x}` on an ARG/LET is
+  `E_TYPE`; a stage, PLUGIN or TOOL is `E_UNDEFINED`). A name declared only
+  *after* the LET is `E_UNDEFINED` (define before use: `'B' is declared on line
+  9, after LET a: html; a fragment can only use names declared before it`), and
+  a fragment that uses itself is `E_TEMPLATE`. A name declared nowhere is left
+  to the use site (usually a FOR loop variable). An imported partial is checked
+  where it is used (its text is read with the imports).
+- **Errors at the use site** keep the fragment's own position and name the use:
+  `Sitefile:3:21: 'item' is not an ARG, LET or IMPORT (in html fragment 'card'
+  used at Sitefile:9:5)`. A partial that reaches itself through other fragments
+  is `E_TEMPLATE` naming the chain (`html fragment 'b' uses itself (b → a → b)`).
+- **Templates only.** A fragment in any other operand (a COPY path, an EXPORT,
+  OPTIONS, ARGS, …) is `E_TYPE` (`'header' is an html fragment; html values can
+  only be used in RENDER templates`), as is `FOR x IN header` or `FEED header`.
+  Inside a template, a fragment is not a value: a dotted `${header.x}`,
+  `${#each header …}` or `${#if header}` is `E_TYPE`.
+- **Namespace.** Fragments share the ARG/LET/IMPORT namespace and the
+  define-before-use rule, and are not overridable by `--build-arg`. They are
+  not in `validate --json`'s `vars`.
+- **Incremental rebuilds** treat a fragment's text like an ARG/LET value, and
+  a partial like any import a template reads.
 
 ### Data files: YAML, CSV and Web Bundles (see `examples/data/`)
 All of these are **values**: templates read them, `FOR` iterates over them,
@@ -836,7 +906,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 
 | Rule | Warns about |
 | --- | --- |
-| `unused-name` | an `ARG`, `LET`, `IMPORT`, `PLUGIN` or `TOOL` nothing refers to (`${NAME}` in any operand, `name:` sources, `FOR … IN`, `FEED`, `WITH`, names in inline `RENDER` bodies, `name+<stage>` for an `IMPORT … AS sitefile`). A template *file* (or one from an import or stage) can read any ARG, LET and value import, so with one in the Sitefile only `file`/`tree` imports, plugins and tools are reported. |
+| `unused-name` | an `ARG`, `LET`, `IMPORT`, `PLUGIN` or `TOOL` nothing refers to (`${NAME}` in any operand, `name:` sources, `FOR … IN`, `FEED`, `WITH`, names in inline `RENDER` bodies and in html fragments (an html fragment nothing uses is reported like any LET), `name+<stage>` for an `IMPORT … AS sitefile`). A template *file* (or one from an import or stage) can read any ARG, LET and value import, so with one in the Sitefile only `file`/`tree` imports, plugins and tools are reported. |
 | `unpinned-import` | a remote `IMPORT` without `INTEGRITY` (`Sitefile.lock` pins it only after the first fetch). |
 | `unpinned-image` | a registry `FROM image <ref>` (not a local-store image) or the `BASE` of `EXPORT … AS oci` without an `@sha256:` digest. |
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |

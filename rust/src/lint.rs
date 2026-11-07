@@ -11,7 +11,7 @@
 use crate::executor::template_names;
 use crate::language::ast::{EscapeMode, Instruction, Operand, Program, Source, TemplatePart};
 use crate::language::scanner::{is_js_space, js_trim, logical_lines_with_comments, CommentLine, LogicalLine};
-use crate::language::validate::operands_of;
+use crate::language::validate::{operands_of, parse_fragment_body};
 use crate::language::ast::ExportFormat;
 use crate::planner::{imported_stage_refs, ImportLocation, Operation, Plan, SourceRef, StageBase};
 use crate::refs::parse_ref;
@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 pub const LINT_RULES: [&str; 6] = ["unused-name", "unpinned-import", "unpinned-image", "render-escape", "sitemap-order", "shadowed-write"];
 
 /// Import kinds a RENDER template can read (so a template file may use them).
-const VALUE_KINDS: [&str; 6] = ["text", "json", "yaml", "csv", "markdown", "wbn"];
+const VALUE_KINDS: [&str; 7] = ["text", "json", "yaml", "csv", "markdown", "wbn", "html"];
 
 struct Found {
     line: u32,
@@ -198,6 +198,12 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
             Instruction::Feed { list, .. } => {
                 used.insert(list.clone());
             }
+            // An html LET's template names what it uses (validate already parsed it).
+            Instruction::Fragment { body, .. } => {
+                if let Ok(nodes) = parse_fragment_body(body, file) {
+                    used.extend(template_names(&nodes));
+                }
+            }
             _ => {}
         }
     }
@@ -221,7 +227,7 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
     for ins in &program.instructions {
         let decl = match ins {
             Instruction::Arg { name, .. } if !opaque_templates => Some(("ARG", name)),
-            Instruction::Let { name, .. } if !opaque_templates => Some(("LET", name)),
+            Instruction::Let { name, .. } | Instruction::Fragment { name, .. } if !opaque_templates => Some(("LET", name)),
             Instruction::Import { name, as_kind, .. } => {
                 let value = as_kind.is_some_and(|k| VALUE_KINDS.contains(&k.as_str()));
                 (!opaque_templates || !value).then_some(("IMPORT", name))

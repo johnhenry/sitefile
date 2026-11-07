@@ -1,0 +1,12 @@
+# Fragments in an imported Sitefile use that Sitefile's own fragments, ARGs and
+# AS html partials; the importer's same-named ones apply only to its own RENDERs.
+ARG TITLE = "Outer"
+IMPORT site FROM ./site AS sitefile ARG TITLE="Passed <in>"
+FROM scratch
+IMPORT footer FROM ./partials/footer.html AS html
+LET head: html = <h1 class="outer">${TITLE}</h1>
+COPY --from=site+pages / /site/
+RENDER --escape=html <<HTML TO /index.html
+${head}${footer}
+HTML
+EXPORT /

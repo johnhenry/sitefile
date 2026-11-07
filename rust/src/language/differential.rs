@@ -11,7 +11,7 @@
 
 use crate::build_args::BuildArgs;
 use crate::error::{SitefileError, SourceSpan};
-use crate::language::ast::{FromBase, Instruction, Operand, Program, Source, TemplatePart};
+use crate::language::ast::{FragmentBody, FromBase, InlineBody, Instruction, Operand, Program, Source, TemplatePart};
 use crate::language::parser::{parse_sitefile, parse_sitefile_all};
 use crate::language::validate::validate;
 use crate::lsp::diagnostics::{analyze, ERROR, WARNING};
@@ -41,12 +41,14 @@ fn operand(o: &Operand) -> Value {
     json!({ "parts": parts, "span": span(&o.span) })
 }
 
+fn inline(b: &InlineBody) -> Value {
+    json!({ "kind": "inline", "delimiter": b.delimiter, "text": b.text, "span": span(&b.span), "bodyLine": b.body_line })
+}
+
 fn source(s: &Source) -> Value {
     match s {
         Source::Operand(o) => operand(o),
-        Source::Inline(b) => json!({
-            "kind": "inline", "delimiter": b.delimiter, "text": b.text, "span": span(&b.span), "bodyLine": b.body_line,
-        }),
+        Source::Inline(b) => inline(b),
     }
 }
 
@@ -104,6 +106,16 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("name", Some(json!(name))),
             ("type", s(ty.as_str())),
             ("value", Some(operand(value))),
+        ]),
+        Instruction::Fragment { span: sp, name, body } => obj(vec![
+            ("kind", s("LET")),
+            ("span", Some(span(sp))),
+            ("name", Some(json!(name))),
+            ("type", s("html")),
+            ("body", Some(match body {
+                FragmentBody::Line { text, span: at } => json!({ "kind": "line", "text": text, "span": span(at) }),
+                FragmentBody::Inline(b) => inline(b),
+            })),
         ]),
         Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, schema, drafts, secrets, args } => obj(vec![
             ("kind", s("IMPORT")),

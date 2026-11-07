@@ -59,6 +59,8 @@ pub fn bytes_to_resource(
     let text = decode_utf8(&bytes, &info.uri, span)?;
     Ok(match kind {
         ImportKind::Text => value(ValueFormat::Text, serde_json::Value::String(text.to_string()), provenance),
+        // A file-based html fragment: its template is parsed where a RENDER uses it.
+        ImportKind::Html => value(ValueFormat::Html, serde_json::Value::String(text.to_string()), provenance),
         ImportKind::Yaml => value(ValueFormat::Yaml, parse_yaml(text, &info.uri)?, provenance),
         ImportKind::Csv => value(ValueFormat::Csv, parse_csv_records(text, &info.uri)?, provenance),
         _ => {

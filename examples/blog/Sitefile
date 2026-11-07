@@ -14,6 +14,22 @@ ARG PER_PAGE: number = 2
 # Newest first, for the index, every post page and the feed; post.schema.yaml checks each post's frontmatter.
 IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml DRAFTS ${DRAFTS}
 
+# Markup every page shares. An html fragment is a template evaluated where a
+# RENDER uses it (${site_header}), so the values inside it are escaped by that
+# RENDER's --escape=html while the markup itself is kept.
+LET feed_link: html = <link rel="alternate" type="application/atom+xml" title="${SITE_TITLE}" href="/feed.xml">
+LET site_header: html = <header><a class="site" href="/">${SITE_TITLE}</a></header>
+LET post_list: html <<HTML
+<nav>
+      <h2>All posts</h2>
+      <ul>
+        ${#each posts as other}
+        <li><a href="/posts/${other.slug}/">${other.title}</a></li>
+        ${/each}
+      </ul>
+    </nav>
+HTML
+
 COPY ./public/ /
 # The index, PER_PAGE posts a page: /index.html, then /page/2/index.html, ...
 RENDER --escape=html ./templates/index.html TO /page/${page.number}/index.html FOR page IN posts PAGE ${PER_PAGE} FIRST /index.html

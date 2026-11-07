@@ -1,0 +1,4 @@
+# An html value is for templates only.
+LET header: html = <header>x</header>
+COPY ./a.txt /pages/${header}.txt
+EXPORT /

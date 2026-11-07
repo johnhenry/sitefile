@@ -65,10 +65,12 @@
 ; (the parser rejects it). Matched in lower and upper case.
 ((type) @type.builtin
   (#any-of? @type.builtin "string" "number" "boolean" "STRING" "NUMBER" "BOOLEAN"))
+; `LET name: html`: an html fragment (a keyword token, any case).
+(let_instruction type: (type) @type.builtin (#match? @type.builtin "^[Hh][Tt][Mm][Ll]$"))
 ((import_kind) @type.builtin
   (#any-of? @type.builtin
-    "file" "text" "json" "tree" "markdown" "yaml" "csv" "wbn" "sitefile"
-    "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "SITEFILE"))
+    "file" "text" "json" "tree" "markdown" "yaml" "csv" "wbn" "html" "sitefile"
+    "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "HTML" "SITEFILE"))
 ((export_format) @type.builtin
   (#any-of? @type.builtin
     "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci"
@@ -116,7 +118,7 @@
     "HTML" "html" "HTM" "htm" "CSS" "css" "JAVASCRIPT" "javascript" "JS" "js" "MJS" "mjs"
     "MARKDOWN" "markdown" "MD" "md" "JSON" "json" "YAML" "yaml" "YML" "yml" "SVG" "svg" "XML" "xml"))
 
-; RENDER templates
+; RENDER templates and html fragments
 (template_substitution name: (identifier) @variable)
 (template_substitution key: (key) @property)
 (template_substitution filter: (identifier) @function)

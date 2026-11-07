@@ -28,6 +28,22 @@ pub struct InlineBody {
     pub body_line: u32,
 }
 
+/// The template of an html LET: the rest of its line (`span` is its first character), or a heredoc.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FragmentBody {
+    Line { text: String, span: SourceSpan },
+    Inline(InlineBody),
+}
+
+impl FragmentBody {
+    pub fn text(&self) -> &str {
+        match self {
+            FragmentBody::Line { text, .. } => text,
+            FragmentBody::Inline(b) => &b.text,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Operand(Operand),
@@ -83,13 +99,15 @@ pub enum ImportKind {
     Yaml,
     Csv,
     Wbn,
+    /// A file-based html fragment (`IMPORT header FROM ./header.html AS html`).
+    Html,
     /// `AS sitefile`: another Sitefile, whose stages this one reads as `<import>+<stage>`.
     Sitefile,
 }
 
 impl ImportKind {
     /// Every kind, in the order docs/LANGUAGE.md lists them.
-    pub const ALL: [ImportKind; 9] = [
+    pub const ALL: [ImportKind; 10] = [
         ImportKind::File,
         ImportKind::Text,
         ImportKind::Json,
@@ -97,6 +115,7 @@ impl ImportKind {
         ImportKind::Csv,
         ImportKind::Markdown,
         ImportKind::Wbn,
+        ImportKind::Html,
         ImportKind::Tree,
         ImportKind::Sitefile,
     ];
@@ -115,6 +134,7 @@ impl ImportKind {
             ImportKind::Yaml => "yaml",
             ImportKind::Csv => "csv",
             ImportKind::Wbn => "wbn",
+            ImportKind::Html => "html",
             ImportKind::Sitefile => "sitefile",
         }
     }
@@ -293,6 +313,9 @@ pub enum Instruction {
     From { span: SourceSpan, base: FromBase, alias: Option<String>, stage_kw: bool },
     Arg { span: SourceSpan, name: String, ty: ValueType, default_value: Option<Operand> },
     Let { span: SourceSpan, name: String, ty: ValueType, value: Operand },
+    /// `LET name: html = <markup>` / `LET name: html <<HTML`: an html fragment, evaluated where a
+    /// RENDER template uses it (the IR of TypeScript's `FragmentInstruction`, kind `LET`, type `html`).
+    Fragment { span: SourceSpan, name: String, body: FragmentBody },
     Import {
         span: SourceSpan,
         name: String,
@@ -387,6 +410,7 @@ impl Instruction {
             Instruction::From { span, .. }
             | Instruction::Arg { span, .. }
             | Instruction::Let { span, .. }
+            | Instruction::Fragment { span, .. }
             | Instruction::Import { span, .. }
             | Instruction::Copy { span, .. }
             | Instruction::Render { span, .. }
@@ -407,7 +431,7 @@ impl Instruction {
         match self {
             Instruction::From { .. } => "FROM",
             Instruction::Arg { .. } => "ARG",
-            Instruction::Let { .. } => "LET",
+            Instruction::Let { .. } | Instruction::Fragment { .. } => "LET",
             Instruction::Import { .. } => "IMPORT",
             Instruction::Copy { .. } => "COPY",
             Instruction::Render { .. } => "RENDER",
