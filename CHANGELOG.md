@@ -2,6 +2,25 @@
 
 ## 0.1.0 (unreleased)
 
+- **`EXPORT … AS wbn COMPRESSION gzip`** (johnhenry/sitefile#143): a Web Bundle
+  export can now be gzip(`application/webbundle`), the `.wbn` archive format of
+  `@johnhenry/packfile` (`toArchive`/`fromArchive`) and `@johnhenry/fileable`
+  (`encode="wbn"`). `COMPRESSION` used to be `E_VALIDATION` on anything but
+  `oci`; it now applies to `oci` and `wbn`, and on `wbn` defaults to `none`, so
+  existing exports are byte-for-byte unchanged. The gzip layer only wraps the
+  finished bundle and uses the shared deterministic encoder (`src/deflate.ts`,
+  `rust/src/deflate.rs`), so both CLIs write identical bytes. On the CLI,
+  `-o site.wbn.gz` selects a gzipped wbn (also for `sitefile save`), the
+  default destination of such a Sitefile is `dist.wbn.gz`, and the new
+  `--compression gzip|none` overrides `EXPORT … COMPRESSION` for the export's
+  format (oci or wbn; any other format is a usage error); `--oci-compression`
+  stays as the oci-only spelling. A Sitefile's `COMPRESSION` belongs to its own
+  `AS` format: `--format wbn` on an `AS oci COMPRESSION …` Sitefile does not
+  inherit it. `test/packfile-interop.test.ts` now reads a gzip export built with
+  `BASE https://packfile.invalid/` through plain `fromArchive(buffer)`; new
+  conformance cases compare the bytes of both implementations. Added in
+  3c537de (#149).
+
 - **`EXPORT … AS wbn` bakes HEADER and exact REDIRECT rules into the bundle's
   responses** (johnhenry/sitefile#144, #150). Each response gets the headers of the
   `/_headers` blocks matching its URL, with `sitefile serve`'s matching
@@ -16,7 +35,9 @@
   answers with the HEADER values and redirects (`test/packfile-interop.test.ts`);
   conformance cases `ok-wbn-rules` and `ok-wbn-rules-files` compare both
   implementations' bytes. The TypeScript `headersFor` no longer drops a
-  header named `__proto__` (the Rust port never did).
+  header named `__proto__` (the Rust port never did); this also
+  changes the TypeScript `sitefile serve`, which now sends such a header as
+  the Rust binary does. Added in 429ab24 (#150).
 
 ## 0.0.0 — first npm release (2026-11-06)
 

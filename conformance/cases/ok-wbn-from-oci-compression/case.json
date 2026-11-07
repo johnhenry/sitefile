@@ -1,0 +1,1 @@
+{ "out": "site.wbn", "compare": "bytes", "args": ["--format", "wbn", "--base-url", "https://packfile.invalid/"] }

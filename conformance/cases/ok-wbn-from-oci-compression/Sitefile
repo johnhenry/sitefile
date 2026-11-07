@@ -1,0 +1,9 @@
+# The Sitefile's COMPRESSION belongs to its EXPORT format: --format wbn does not inherit oci's gzip.
+FROM scratch
+COPY <<HTML /index.html
+<!doctype html><title>bundle</title><p>a gzipped web bundle, the format @johnhenry/packfile reads</p>
+HTML
+COPY <<CSS /css/site.css
+body { color: #333; } p { margin: 0 auto; max-width: 40em; }
+CSS
+EXPORT / AS oci COMPRESSION gzip
