@@ -3,7 +3,7 @@
 ## 0.1.0 (unreleased)
 
 - **`EXPORT … AS wbn` bakes HEADER and exact REDIRECT rules into the bundle's
-  responses** (johnhenry/sitefile#144). Each response gets the headers of the
+  responses** (johnhenry/sitefile#144, #150). Each response gets the headers of the
   `/_headers` blocks matching its URL, with `sitefile serve`'s matching
   (`serve-rules.ts`; a directory URL like `<base>docs/` matches with its
   slash and gets its own response when its headers differ). Exact-path
