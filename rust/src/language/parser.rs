@@ -16,9 +16,9 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 15] = [
+pub const INSTRUCTIONS: [&str; 16] = [
     "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
-    "EXPORT",
+    "FINGERPRINT", "EXPORT",
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
 /// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
@@ -35,9 +35,11 @@ pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 /// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required).
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
+/// Clauses after `FINGERPRINT <pattern>…`.
+pub const FINGERPRINT_CLAUSES: [&str; 1] = ["MANIFEST"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
-/// Leading flags of SITEMAP, FEED, REDIRECT and HEADER.
+/// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
 pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
 pub const COPY_FLAGS: &[(&str, Shape)] = &[
@@ -57,7 +59,7 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "FINGERPRINT" => SITE_FLAGS,
         _ => &[],
     }
 }
@@ -108,6 +110,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "FEED" => parse_feed(c, span),
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
+        "FINGERPRINT" => parse_fingerprint(c, span),
         "RUN" => Err(SitefileError::at(E_UNSUPPORTED, "RUN is not supported: Sitefile never runs shell commands", &span)),
         k if NOT_YET.contains(&k) => Err(SitefileError::at(E_UNSUPPORTED, format!("{k} is not supported yet"), &span)),
         _ => Err(SitefileError::at(E_UNKNOWN_INSTRUCTION, format!("unknown instruction '{word}'"), &span)),
@@ -695,6 +698,21 @@ fn parse_header(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     Ok(Instruction::Header { span, pattern, name: Operand { parts, span: raw.span }, value, overwrite: flags.has("overwrite") })
 }
 
+/// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`
+fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut patterns = Vec::new();
+    while !c.at_end() && !c.peek_keyword("MANIFEST") {
+        patterns.push(c.operand("path pattern")?);
+    }
+    if patterns.is_empty() {
+        return Err(c.error(E_SYNTAX, "expected a path pattern (FINGERPRINT /assets/ or FINGERPRINT /**/*.css)"));
+    }
+    let manifest = if c.keyword("MANIFEST") { Some(c.operand("manifest destination")?) } else { None };
+    c.expect_end()?;
+    Ok(Instruction::Fingerprint { span, patterns, manifest, overwrite: flags.has("overwrite") })
+}
+
 fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let path = c.operand("path")?;
     let mut format = ExportFormat::Directory;
@@ -1258,6 +1276,7 @@ mod tests {
             ("FEED", SITE_FLAGS),
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
+            ("FINGERPRINT", SITE_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);
             for (name, shape) in flags {

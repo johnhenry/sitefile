@@ -2,6 +2,7 @@ import { SitefileError, type SourceSpan } from './errors.js';
 import { isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
+import { checkPattern } from './fingerprint.js';
 import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
@@ -77,6 +78,18 @@ export interface HeaderSpec {
 }
 
 export type Operation =
+  | {
+      /** Rename the files matching `patterns` to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
+      readonly kind: 'FINGERPRINT';
+      /** Checked absolute patterns, NFC; a trailing `/` became `/**`. */
+      readonly patterns: readonly string[];
+      /** `MANIFEST <dest>`: the JSON map of old to new paths. */
+      readonly manifest?: string;
+      /** The EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it. */
+      readonly root: string;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
   | {
       /** sitemaps.org XML of the `.html` files in the tree at this point. */
       readonly kind: 'SITEMAP';
@@ -363,6 +376,13 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         operations().push({ kind: 'SITEMAP', base, dest: fileDest(ins.dest, vars, '/sitemap.xml', 'SITEMAP'), overwrite: ins.overwrite, span: ins.span });
         break;
       }
+      case 'FINGERPRINT': {
+        const patterns = ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span));
+        const manifest = ins.manifest ? fileDest(ins.manifest, vars, '', 'FINGERPRINT MANIFEST') : undefined;
+        // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
+        operations().push({ kind: 'FINGERPRINT', patterns, ...(manifest !== undefined ? { manifest } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
       case 'FEED': {
         const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'FEED BASE', ins.base.span);
         operations().push({
@@ -409,6 +429,11 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     }
   }
 
+  for (const st of stages) {
+    st.operations.forEach((op, i) => {
+      if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+    });
+  }
   // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
   for (const st of stages.slice(0, -1)) {
     if (st.name === undefined) {
@@ -445,7 +470,7 @@ export function targetPlan(p: Plan, name: string): Plan {
   return { ...p, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
 }
 
-/** `TO <dest>` of SITEMAP/FEED (a file path), or the default. */
+/** `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default. */
 function fileDest(op: Operand | undefined, vars: ReadonlyMap<string, Scalar>, fallback: string, what: string): string {
   if (!op) return fallback;
   const raw = evaluateOperand(op, vars);

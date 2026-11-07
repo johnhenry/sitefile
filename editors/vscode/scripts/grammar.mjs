@@ -15,9 +15,9 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html'],
@@ -35,6 +35,7 @@ export const KEYWORDS = {
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
+    FINGERPRINT: ['overwrite'],
   },
 };
 
@@ -349,6 +350,7 @@ export function buildGrammar() {
           instruction('PLUGIN', [head('entity.name.function.plugin'), kw(['FROM']), integrity, { include: '#operands' }]),
           instruction('TOOL', [head('entity.name.function.tool')]),
           instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
+          instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST']), { include: '#operands' }]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]
             {

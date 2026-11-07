@@ -48,6 +48,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.from, ins.to];
     case 'HEADER':
       return [ins.pattern, ins.name, ...ins.value];
+    case 'FINGERPRINT':
+      return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
     case 'EXPORT':
       return [ins.path];
   }
@@ -244,6 +246,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'SITEMAP':
       case 'REDIRECT':
       case 'HEADER':
+      case 'FINGERPRINT':
         break;
       case 'EXPORT':
         sawExport = true;

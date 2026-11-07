@@ -5,7 +5,8 @@
 use crate::language::ast::{is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
 use crate::language::ast::REDIRECT_STATUSES;
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
+    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES,
+    SORT_ORDERS,
     TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
@@ -270,6 +271,15 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             _ => Vec::new(),
         },
         "COPY" | "RENDER" | "TRANSFORM" => operation_items(ins, &prior, &prev, ix, &imports, typed),
+        "FINGERPRINT" => {
+            // Patterns, then MANIFEST <dest>: offer MANIFEST after at least one pattern, once.
+            let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
+            if ops.is_empty() || prev == "MANIFEST" || ops.iter().any(|w| w == "MANIFEST") {
+                Vec::new()
+            } else {
+                kw_items(FINGERPRINT_CLAUSES.iter().copied(), CIK_KEYWORD)
+            }
+        }
         "SITEMAP" | "FEED" | "REDIRECT" => {
             let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
             let clauses: &[&str] = match kw {
@@ -777,6 +787,13 @@ mod tests {
         assert_eq!(labels("REDIRECT /a /b "), ["STATUS"]);
         assert_eq!(labels("REDIRECT /a /b STATUS "), ["301", "302", "303", "307", "308"]);
         assert_eq!(labels("HEADER --"), ["--overwrite"]);
+        // FINGERPRINT: patterns, then MANIFEST once
+        assert!(labels("FINGERPRINT ").is_empty());
+        assert_eq!(labels("FINGERPRINT --"), ["--overwrite"]);
+        assert_eq!(labels("FINGERPRINT /assets/ "), ["MANIFEST"]);
+        assert_eq!(labels("FINGERPRINT --overwrite /a/ /b/*.css "), ["MANIFEST"]);
+        assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
+        assert!(labels("FINGERPRINT /a/ MANIFEST /m.json ").is_empty());
     }
 
     #[test]

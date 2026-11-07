@@ -338,6 +338,9 @@ pub enum Instruction {
     Redirect { span: SourceSpan, from: Operand, to: Operand, status: u16, overwrite: bool },
     /// `HEADER [--overwrite] <pattern> <Name>: <value …>`; `name` has no trailing colon, `value` words are joined with a space.
     Header { span: SourceSpan, pattern: Operand, name: Operand, value: Vec<Operand>, overwrite: bool },
+    /// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext`
+    /// and rewrite the HTML and CSS that reference them.
+    Fingerprint { span: SourceSpan, patterns: Vec<Operand>, manifest: Option<Operand>, overwrite: bool },
     Export {
         span: SourceSpan,
         path: Operand,
@@ -366,6 +369,7 @@ impl Instruction {
             | Instruction::Feed { span, .. }
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
+            | Instruction::Fingerprint { span, .. }
             | Instruction::Export { span, .. } => span,
         }
     }
@@ -385,6 +389,7 @@ impl Instruction {
             Instruction::Feed { .. } => "FEED",
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
+            Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Export { .. } => "EXPORT",
         }
     }

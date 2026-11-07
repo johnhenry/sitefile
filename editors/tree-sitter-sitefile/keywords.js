@@ -3,10 +3,10 @@
 // src/language/ast.ts, src/language/scanner.ts and rust/src/language/parser.rs.
 
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'EXPORT'],
   /** Rejected by the parser (E_UNSUPPORTED); parsed as `unsupported_instruction`. */
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html'],
@@ -24,6 +24,7 @@ export const KEYWORDS = {
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
+    FINGERPRINT: ['overwrite'],
   },
   heredocInstructions: ['COPY', 'RENDER', 'TRANSFORM'],
   /** `LET name: html <<HTML` also takes a heredoc (scanner.ts isHtmlLet). */

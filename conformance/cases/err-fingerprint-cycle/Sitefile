@@ -1,0 +1,11 @@
+COPY <<CSS /a.css
+@import "b.css";
+CSS
+COPY <<CSS /b.css
+.x { background: url(c.css) }
+CSS
+COPY <<CSS /c.css
+@import url(/a.css);
+CSS
+FINGERPRINT /*.css
+EXPORT /

@@ -304,6 +304,17 @@ export interface HeaderInstruction {
   readonly overwrite: boolean;
 }
 
+/** `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
+export interface FingerprintInstruction {
+  readonly kind: 'FINGERPRINT';
+  readonly span: SourceSpan;
+  /** Absolute path patterns (`*`, `?`, `**`; a trailing `/` means everything below). */
+  readonly patterns: readonly Operand[];
+  /** `MANIFEST <dest>`: where to write the JSON map of old to new paths. */
+  readonly manifest?: Operand;
+  readonly overwrite: boolean;
+}
+
 export type Instruction =
   | FromInstruction
   | ArgInstruction
@@ -319,6 +330,7 @@ export type Instruction =
   | FeedInstruction
   | RedirectInstruction
   | HeaderInstruction
+  | FingerprintInstruction
   | ExportInstruction;
 
 /** A parsed and semantically validated Sitefile. */

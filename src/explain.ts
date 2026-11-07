@@ -43,6 +43,8 @@ export function operationLabel(op: Operation): string {
       return `SITEMAP ${op.dest}`;
     case 'FEED':
       return `FEED ${op.list} ${op.dest}`;
+    case 'FINGERPRINT':
+      return `FINGERPRINT ${op.patterns.join(' ')}`;
   }
 }
 
@@ -327,10 +329,31 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
   };
   const tools = new Set(p.tools.map((t) => t.name));
 
-  const history = (si: number, file: string): WhyEvent[] => {
+  /** The path `file` had before operation `upTo` of stage `si` when a FINGERPRINT there renamed it, and where. */
+  const renamedAt = (si: number, file: string, upTo: number): { index: number; from: string } | undefined => {
+    const ops = p.stages[si]!.operations;
+    for (let i = upTo - 1; i >= 0; i--) {
+      const op = ops[i]!;
+      if (op.kind !== 'FINGERPRINT') continue;
+      const hit = result.renames?.get(op.span.line)?.find(([, to]) => to === file);
+      if (hit) return { index: i, from: hit[0] };
+    }
+    return undefined;
+  };
+
+  const history = (si: number, file: string, upTo = p.stages[si]!.operations.length): WhyEvent[] => {
     const stage = p.stages[si]!;
     const trees = steps[si]!;
     const display = stageDisplay(stage, si);
+    // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
+    const rename = renamedAt(si, file, upTo);
+    if (rename) {
+      const op = stage.operations[rename.index]!;
+      const node = trees[rename.index + 1]!.get(file)!;
+      const events = history(si, rename.from, rename.index);
+      events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: 'write', digest: node.digest, inputs: [`${rename.from} (renamed)`] });
+      return [...events, ...later(si, file, rename.index + 1, upTo, node)];
+    }
     const events: WhyEvent[] = [];
     let prev = trees[0]!.get(file);
     if (prev) {
@@ -343,7 +366,17 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         events.push({ location: at(stage.span.line), instruction: stageLabel(stage), stage: display, path: file, action: 'write', digest: prev.digest, inputs: [prev.origin] });
       }
     }
-    stage.operations.forEach((op, i) => {
+    return [...events, ...later(si, file, 0, upTo, prev)];
+  };
+
+  /** The events of operations `from` to `upTo` (exclusive) of stage `si` that changed `file` (`prev`: before them). */
+  const later = (si: number, file: string, from: number, upTo: number, prev: FileNode | undefined): WhyEvent[] => {
+    const stage = p.stages[si]!;
+    const trees = steps[si]!;
+    const display = stageDisplay(stage, si);
+    const events: WhyEvent[] = [];
+    stage.operations.slice(from, upTo).forEach((op, k) => {
+      const i = from + k;
       const next = trees[i + 1]!.get(file);
       if (!next || same(prev, next)) {
         prev = next;
@@ -364,6 +397,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         inputs.push(`${tools.has(op.plugin) ? 'tool' : 'plugin'} ${op.plugin}`);
         if (op.each) inputs.push(`list ${op.each.list}`);
       } else if (op.kind === 'SITEMAP') inputs.push('the .html files in the tree');
+      else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
       else inputs.push(`list ${op.list}`);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: prev ? 'overwrite' : 'write', digest: next.digest, inputs });
       prev = next;

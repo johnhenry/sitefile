@@ -1,0 +1,11 @@
+# FINGERPRINT: hashed names, rewritten HTML and CSS references, the manifest and the site files.
+STAGE assets
+COPY ./public/ /www/
+FINGERPRINT /www/img/ /www/fonts/*.woff2
+STAGE site FROM assets
+FINGERPRINT /www/css/ /www/app.js /www/LICENSE /www/docs/** MANIFEST /www/asset-manifest.json
+HEADER /css/site.css Cache-Control: public, max-age=31536000, immutable
+HEADER /img/* Cache-Control: public, max-age=31536000, immutable
+REDIRECT /logo.png /img/logo.png
+REDIRECT /old /docs/ STATUS 302
+EXPORT /www

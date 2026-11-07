@@ -39,6 +39,7 @@ import { Store } from './store.js';
 import { begin, reserve, type Profiler, type ProfileSpan } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -155,6 +156,8 @@ export interface BuildResult {
   readonly steps?: readonly (readonly Tree[])[];
   /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
   readonly pins?: Pins;
+  /** What each FINGERPRINT renamed (old path, new path), by its line. */
+  readonly renames?: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
 
 /** A `FROM image` base a build used. */
@@ -395,6 +398,10 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
+  // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
+  const renames = new Map<number, ReadonlyArray<readonly [string, string]>>();
+  const stageRenames = new Map<string, ReadonlyMap<string, string>>();
+  let currentRenames: ReadonlyMap<string, string> = new Map();
   try {
     for (const spec of p.plugins) {
       const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
@@ -406,6 +413,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
       const start = await startStage(stage, execEnv);
       tree = start.tree;
       let key = start.key;
+      currentRenames = stage.base.kind === 'stage' ? (stageRenames.get(stage.base.name) ?? new Map()) : new Map();
       const record = steps ? [tree] : undefined;
       steps?.push(record!);
       for (const op of stage.operations) {
@@ -413,10 +421,15 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
         const r = await executeOp(op, tree, key, execEnv);
         tree = r.tree;
         key = r.key;
+        if (r.renames) {
+          renames.set(op.span.line, r.renames);
+          currentRenames = composeRenames(currentRenames, r.renames);
+        }
         record?.push(tree);
         o.end({ files: tree.size, ...(r.memo ? { memo: r.memo } : {}) });
       }
       if (stage.name !== undefined) {
+        stageRenames.set(stage.name, currentRenames);
         stageTrees.set(stage.name, tree);
         execEnv.stageKeys.set(stage.name, key);
       }
@@ -432,7 +445,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label);
+  tree = withSiteRules(tree, p, label, currentRenames);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
@@ -470,6 +483,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     ...(images.length ? { images } : {}),
     ...(steps ? { steps } : {}),
     ...(pins ? { pins } : {}),
+    ...(renames.size ? { renames } : {}),
   };
 }
 
@@ -1093,14 +1107,34 @@ export function templateNames(nodes: readonly TemplateNode[], out = new Set<stri
  * input tree is also unchanged reuses the resulting tree. The key of the result chains the
  * input tree's key with the step's, like image layers.
  */
-async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEnv): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss' }> {
+async function executeOp(
+  op: Operation,
+  tree: Tree,
+  prevKey: string,
+  env: ExecEnv,
+): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss'; renames?: ReadonlyArray<readonly [string, string]> }> {
   const policy = op.overwrite ? 'overwrite' : 'error';
   const memo = env.memo;
-  if (!memo) return { tree: op.kind === 'SITEMAP' ? sitemap(op, tree, env) : tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+  if (!memo) {
+    if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
+    if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    return { tree: tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+  }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
+    if (op.kind === 'FINGERPRINT') {
+      const hit = memo.get<{ tree: Tree; renames: ReadonlyArray<readonly [string, string]>; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, renames: hit.renames, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = fingerprintOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { ...out, warnings });
+      return { ...out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1116,6 +1150,10 @@ async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEn
   const out = tree.withFiles(p.files, policy, op.span);
   memo.set(key, out);
   return { tree: out, key, memo: p.hit ? 'files' : 'miss' };
+}
+
+function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Fingerprinted {
+  return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -1623,10 +1661,23 @@ async function transformFiles(
 }
 
 /** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
-function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
+/**
+ * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
+ * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
+ * names its new URL.
+ */
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>): Tree {
+  const url = new Map<string, string>();
+  for (const [from, to] of renames) {
+    const a = urlBelow(p.exportPath, from);
+    const b = urlBelow(p.exportPath, to);
+    if (a !== undefined && b !== undefined) url.set(a, b);
+  }
+  const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
+  const headers = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
-    { name: '_redirects', text: redirectsFile(p.redirects), rules: p.redirects, kind: 'REDIRECT' },
-    { name: '_headers', text: headersFile(p.headers), rules: p.headers, kind: 'HEADER' },
+    { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
+    { name: '_headers', text: headersFile(headers), rules: headers, kind: 'HEADER' },
   ];
   for (const f of files) {
     const first = f.rules[0];
@@ -1636,6 +1687,12 @@ function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
     tree = tree.withFiles([[joinVirtual(p.exportPath, f.name), node]], policy, first.span);
   }
   return tree;
+}
+
+/** The URL path of a tree path below the exported directory, or undefined outside it. */
+function urlBelow(dir: string, path: string): string | undefined {
+  if (dir === '/') return path;
+  return path.startsWith(dir + '/') ? path.slice(dir.length) : undefined;
 }
 
 function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): Files {
@@ -1688,7 +1745,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
 }
 
 /** The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo). */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
