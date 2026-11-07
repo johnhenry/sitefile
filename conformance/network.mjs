@@ -26,8 +26,9 @@
 //   ${IMPL}      ts or rust
 //   ${GIT_V1}, ${GIT_V2}  commits of the mock Git repository ${HTTPS}/repo.git
 //                (v1 is tagged v1; main moved to v2)
-// Only ${HTTPS}, ${REGISTRY} and ${GIT_V1}/${GIT_V2} are replaced inside context
-// files (templates use ${…} for their own variables).
+//   ${STAGES_V1}, ${STAGES_V2}  the same for ${HTTPS}/stages.git (a Sitefile of shared stages)
+// Only ${HTTPS}, ${REGISTRY}, ${GIT_V1}/${GIT_V2} and ${STAGES_V1}/${STAGES_V2} are replaced
+// inside context files (templates use ${…} for their own variables).
 //
 // Each implementation gets its own context copy, SITEFILE_HOME, HOME and
 // DOCKER_CONFIG under its scratch directory, so lockfiles, image stores and
@@ -36,7 +37,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-const FILE_VARS = ['HTTPS', 'REGISTRY', 'GIT_V1', 'GIT_V2'];
+const FILE_VARS = ['HTTPS', 'REGISTRY', 'GIT_V1', 'GIT_V2', 'STAGES_V1', 'STAGES_V2'];
 
 function substitute(s, vars, names = Object.keys(vars)) {
   let out = s;

@@ -291,6 +291,11 @@ impl LocalContext {
         Self::kind_of(&st, rel, span)
     }
 
+    /// The real path of a context-relative path, with the sandbox checks of every read (an imported Sitefile's context).
+    pub fn real_path(&self, rel: &str, span: Option<&SourceSpan>) -> Result<PathBuf> {
+        Ok(self.resolve(rel, span, None)?.0)
+    }
+
     fn read_bytes(real: &Path, rel: &str, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
         fs::read(real).map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot read '{}': {e}", display(rel)), span.cloned()))
     }

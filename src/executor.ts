@@ -1,11 +1,13 @@
-import { readdir, readFile, realpath } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { plan, targetPlan, type ImageStageBase, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { importedStageRefs, plan, targetPlan, type ImageStageBase, type ImportedStageRef, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
@@ -159,6 +161,8 @@ export interface BuildResult {
   readonly steps?: readonly (readonly Tree[])[];
   /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
   readonly pins?: Pins;
+  /** The Sitefiles imported AS sitefile, by import name (each with its own imports, plan and, with `recordSteps`, steps). */
+  readonly imported?: ReadonlyMap<string, ImportedSitefile>;
   /** What each FINGERPRINT renamed (old path, new path), by its line. */
   readonly renames?: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
@@ -171,6 +175,8 @@ export interface FromImageUse {
   /** The FROM line. */
   readonly line: number;
   readonly local: boolean;
+  /** Set for a stage of an imported Sitefile: the import's qualified name (`theme`). */
+  readonly import?: string;
 }
 
 export interface TransformStats extends CacheStats {
@@ -266,6 +272,16 @@ async function buildUnredacted(options: BuildOptions): Promise<BuildResult> {
 }
 
 async function buildOnce(options: BuildOptions): Promise<BuildResult> {
+  // Git imports AS sitefile are checked out into temporary directories, removed when the build ends.
+  const tempDirs: string[] = [];
+  try {
+    return await buildWith(options, tempDirs);
+  } finally {
+    await Promise.all(tempDirs.map((d) => rm(d, { recursive: true, force: true })));
+  }
+}
+
+async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<BuildResult> {
   const prof = options.profiler;
   const parseSpan = begin(prof, 'parse', 'build');
   const { program, sitefilePath, label } = await loadProgram(options);
@@ -286,26 +302,37 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     throw new SitefileError('E_NOT_FOUND', `build context '${options.contextDir}' does not exist`, undefined, { cause: e });
   });
   const ignore = ['.git'];
+  /** The same paths, absolute: an imported Sitefile's context inside this one skips them too. */
+  const skip: string[] = [];
   if (options.outDir !== undefined) {
     const outReal = await realpathLoose(path.resolve(options.outDir));
     const rel = path.relative(contextReal, outReal);
     if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
       ignore.push(rel.split(path.sep).join('/'));
+      skip.push(outReal);
       // Also skip temp/old siblings an interrupted export may have left behind.
       const parent = path.dirname(outReal);
       const siblings = await readdir(parent).catch(() => [] as string[]);
       for (const name of siblings) {
         if (isExporterTempName(name, path.basename(outReal))) {
           ignore.push(path.relative(contextReal, path.join(parent, name)).split(path.sep).join('/'));
+          skip.push(path.join(parent, name));
         }
       }
     }
   }
   const vendorDir = await findVendorDir(contextReal, options.vendorDir);
-  if (vendorDir !== undefined) ignore.push(vendorDir);
+  if (vendorDir !== undefined) {
+    ignore.push(vendorDir);
+    skip.push(path.join(contextReal, ...vendorDir.split('/')));
+  }
   for (const w of options.alsoWrites ?? []) {
-    const rel = path.relative(contextReal, await realpathLoose(path.resolve(w)));
-    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) ignore.push(rel.split(path.sep).join('/'));
+    const real = await realpathLoose(path.resolve(w));
+    const rel = path.relative(contextReal, real);
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      ignore.push(rel.split(path.sep).join('/'));
+      skip.push(real);
+    }
   }
   const local = await LocalContext.open(contextReal, { ignore, allowHardlinks: options.allowHardlinks ?? false });
   const vendor = vendorDir !== undefined ? await Vendor.open(local, vendorDir) : undefined;
@@ -339,23 +366,25 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     prof?.nameThread(i + 2, `import ${spec.name}`);
     return prof ? prof.reserve(`import ${spec.name}`, 'import', { uri: spec.uri, as: spec.as ?? 'file' }, i + 2) : undefined;
   });
-  const resolved = await mapLimit(p.imports, options.concurrency ?? 4, async (spec, i) => {
+  // Sitefile imports (AS sitefile) load after the others, one after the other, in Sitefile order.
+  const indexed = p.imports.map((spec, i) => [spec, i] as const);
+  const plainImports = indexed.filter(([s]) => s.as !== 'sitefile');
+  const plainResolved = await mapLimit(plainImports, options.concurrency ?? 4, async ([spec, i]) => {
     importSpans[i]?.start();
     const r = await resolveImport(spec, env);
     importSpans[i]?.end({ kind: r.res.kind });
     return r;
   });
+  const resolved = new Map(plainImports.map(([s], j) => [s.name, plainResolved[j]!] as const));
   // SCHEMA checks run in Sitefile order, on the documents in path order (before SORT BY).
-  for (const [i, spec] of p.imports.entries()) if (spec.schema) await checkImportSchema(spec, resolved[i]!.res, local);
-  const resources = new Map<string, Resource>(p.imports.map((s, i) => [s.name, sorted(s, resolved[i]!.res)]));
-  // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
-  const resourceKeys = new Map<string, string>(memo ? p.imports.map((s, i) => [s.name, resolved[i]!.key]) : []);
-  const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
+  for (const spec of p.imports) {
+    const r = resolved.get(spec.name);
+    if (r && spec.schema) await checkImportSchema(spec, r.res, local);
+  }
 
-  const stageTrees = new Map<string, Tree>();
   const images: FromImageUse[] = [];
   let imageStore: Store | undefined;
-  const fromImage = async (b: ImageStageBase): Promise<FromImage> => {
+  const fromImage = async (b: ImageStageBase, unit?: string): Promise<FromImage> => {
     imageStore ??= options.store ?? (await Store.open());
     const r = await resolveFromImage(b.ref, b.at, b.local, {
       store: imageStore,
@@ -372,12 +401,58 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
       span: b.span,
       lead: `${b.lead} image`,
     });
-    images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local });
+    images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local, ...(unit !== undefined ? { import: unit } : {}) });
     return r;
   };
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
+  const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy };
+
+  const unitsEnv: UnitsEnv = {
+    remote: env,
+    archiveLimits,
+    ...(memo ? { memo } : {}),
+    concurrency: options.concurrency ?? 4,
+    allowHardlinks: options.allowHardlinks ?? false,
+    strictPins: !!options.strictPins,
+    skip,
+    tempDirs,
+    recordSteps: !!options.recordSteps,
+    pins: {},
+    exec: { plugins, toolPolicy, stats, fetchPolicy: policy },
+    fromImage,
+  };
+  const root: Importer = {
+    name: undefined,
+    label,
+    local,
+    scope: rootScope(options, label),
+    chain: [{ id: options.sitefile === undefined ? contextReal : await realpathLoose(sitefilePath), label }],
+  };
+  const fullRefs = importedStageRefs(full.stages);
+  const resources = new Map<string, Resource>();
+  // Incremental rebuilds: what each import is (its spec and the digest of what it read), and the build's ARG/LET values.
+  const resourceKeys = new Map<string, string>();
+  const units = new Map<string, Unit>();
+  for (const [spec, i] of indexed) {
+    const r = resolved.get(spec.name);
+    if (r) {
+      resources.set(spec.name, sorted(spec, r.res));
+      if (memo) resourceKeys.set(spec.name, r.key);
+      continue;
+    }
+    importSpans[i]?.start();
+    const unit = await loadSitefileImport(spec, root, fullRefs, unitsEnv);
+    importSpans[i]?.end({ kind: 'tree' });
+    units.set(spec.name, unit);
+    resources.set(spec.name, unitResource(unit));
+    if (memo) resourceKeys.set(spec.name, memoKey('sitefile', label, valueKey(spec), unit.digest));
+  }
+  if (pins) Object.assign(pins.imports, unitsEnv.pins);
+  const envKey = memo ? memoKey('env', label, valueKey([...p.vars])) : '';
+
+  const stageTrees = new Map<string, Tree>();
   const execEnv: ExecEnv = {
     local,
     resources,
@@ -387,7 +462,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     warn,
     plugins,
     tools: new Map(tools.map((t) => [t.name, t])),
-    toolPolicy: { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy },
+    toolPolicy,
     pluginDigests: new Map(),
     stats,
     ...(cache ? { cache } : {}),
@@ -411,6 +486,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
       await registerPlugin(spec, local, plugins, pluginAllowed);
       s.end();
     }
+    // The stages of imported Sitefiles this build reads (`FROM theme+assets`, `--from=theme+assets`).
+    await provideImportedStages(units, importedStageRefs(p.stages), stageTrees, execEnv.stageKeys, stageRenames, unitsEnv);
     for (const [i, stage] of p.stages.entries()) {
       const s = begin(prof, `stage ${stage.name ?? '#' + (i + 1)}`, 'stage', { from: stageFrom(stage) });
       const start = await startStage(stage, execEnv);
@@ -477,7 +554,8 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     plan: p,
     tree,
     output,
-    resources,
+    // Imported Sitefiles' own imports follow, by qualified name (`theme+data`), for the provenance.
+    resources: units.size ? new Map([...resources, ...nestedResources(units)]) : resources,
     warnings,
     lockfileWritten,
     tools,
@@ -486,6 +564,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     ...(images.length ? { images } : {}),
     ...(steps ? { steps } : {}),
     ...(pins ? { pins } : {}),
+    ...(units.size ? { imported: units } : {}),
     ...(renames.size ? { renames } : {}),
   };
 }
@@ -679,6 +758,8 @@ interface ImportEnv extends RemoteEnv {
  * conversions (parsing Markdown, data and archives) whose key is unchanged are reused.
  */
 async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: Resource; key: string }> {
+  // `AS sitefile` imports are loaded by loadSitefileImport, one after the other.
+  if (spec.as === 'sitefile') throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: a Sitefile import is not a resource`, spec.span);
   const origin = `${env.label}:${spec.span.line} IMPORT ${spec.name}`;
   const id = env.memo ? valueKey(spec) : '';
   const keyOf = (raw: string): string => (env.memo ? memoKey('import', env.label, id, raw) : '');
@@ -743,8 +824,9 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
     if (selection.kind === 'file') {
       const digest = sha256(selection.bytes);
       const key = keyOf(`${commit}\0${digest}\0${selection.mode}`);
+      const as = spec.as ?? 'file';
       const res = await convertBytes(key, () =>
-        bytesToResource(selection.bytes, spec.as ?? 'file', { uri: spec.uri, resolvedUrl, basename: selection.basename, mode: selection.mode }, spec.span, env.archiveLimits),
+        bytesToResource(selection.bytes, as, { uri: spec.uri, resolvedUrl, basename: selection.basename, mode: selection.mode }, spec.span, env.archiveLimits),
       );
       return { key, res: { ...res, provenance: { ...res.provenance, gitCommit: commit } } as Resource };
     }
@@ -875,6 +957,475 @@ export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: Re
   }
   env.lock?.recordGit(url, { commit: want });
   return { commit: want, selection };
+}
+
+// ---------------------------------------------------------------- Sitefile imports (IMPORT … AS sitefile)
+
+/** How deep Sitefile imports may nest (an imported Sitefile importing another counts one more level). */
+export const MAX_SITEFILE_IMPORT_DEPTH = 8;
+
+/**
+ * Where a Sitefile lives, for the labels of the Sitefiles it imports: `<prefix><dir>/Sitefile`.
+ * Local Sitefiles have no prefix and `dir` relative to the working directory; a Git checkout has
+ * `git+https://host/repo.git#<commit>:` and the directory inside the repository.
+ */
+export interface LabelScope {
+  readonly prefix: string;
+  readonly dir: string;
+}
+
+/** The label an imported Sitefile's messages and file origins use. */
+export function sitefileLabel(scope: LabelScope): string {
+  return scope.prefix + path.posix.join(scope.dir, 'Sitefile');
+}
+
+/** The label scope of the build's own Sitefile. */
+function rootScope(options: Pick<BuildOptions, 'contextDir' | 'sitefile'>, label: string): LabelScope {
+  if (options.sitefile === undefined) return { prefix: '', dir: path.posix.dirname(label) };
+  return { prefix: '', dir: path.relative(process.cwd(), path.resolve(options.contextDir)).split(path.sep).join('/') || '.' };
+}
+
+/** The ARG values an `IMPORT … AS sitefile` passes, checked against the imported Sitefile's ARGs. */
+export function importedArgs(spec: ImportSpec, program: Program): Record<string, string> {
+  const declared = new Map(program.instructions.flatMap((i) => (i.kind === 'ARG' ? [[i.name, i] as const] : [])));
+  const args: Record<string, string> = {};
+  for (const a of spec.args ?? []) {
+    if (!declared.has(a.name)) throw new SitefileError('E_UNDEFINED', `IMPORT ${spec.name}: ${program.file} has no ARG ${a.name}`, a.span);
+    args[a.name] = a.value;
+  }
+  for (const [name, ins] of declared) {
+    if (ins.defaultValue === undefined && !(name in args)) {
+      throw new SitefileError('E_MISSING_ARG', `IMPORT ${spec.name}: ARG ${name} of ${program.file} has no default; set it with ARG ${name}=<value>`, spec.span);
+    }
+  }
+  return args;
+}
+
+/**
+ * Parse, check and plan an imported Sitefile: no PLUGIN or TOOL, the IMPORT's ARG clauses, and the
+ * stages `refs` (references from the importing Sitefile) must exist.
+ */
+export function planImportedSitefile(spec: ImportSpec, source: string, label: string, refs: readonly ImportedStageRef[]): { program: Program; plan: Plan } {
+  const program = parseProgram(source, label);
+  for (const ins of program.instructions) {
+    if (ins.kind === 'PLUGIN' || ins.kind === 'TOOL') {
+      throw new SitefileError('E_UNSUPPORTED', `${ins.kind} ${ins.name}: a Sitefile imported AS sitefile cannot run plugins or tools`, ins.span);
+    }
+  }
+  const p = plan(program, importedArgs(spec, program), (n) => `IMPORT ${spec.name} ARG ${n}`);
+  const names = p.stages.flatMap((s) => (s.name === undefined ? [] : [s.name]));
+  for (const ref of refs) {
+    if (ref.import !== spec.name || names.includes(ref.stage)) continue;
+    throw new SitefileError(
+      'E_UNDEFINED',
+      `${ref.name}: ${label} has no stage '${ref.stage}' (${names.length ? `stages: ${names.join(', ')}` : 'it has no named stages'})`,
+      ref.span,
+    );
+  }
+  return { program, plan: p };
+}
+
+/** A Sitefile imported AS sitefile: loaded, its imports resolved; its stages are built when first needed. */
+export interface ImportedSitefile {
+  /** The import's name as the build's own Sitefile sees it: `theme`, or `theme+inner` for one imported by `theme`. */
+  readonly name: string;
+  readonly label: string;
+  /** Its whole plan (every stage). */
+  readonly plan: Plan;
+  /**
+   * What the import stands for in the provenance and memo keys: the sha256 of its Sitefile (a local
+   * directory) or the digest of the checked-out tree (Git).
+   */
+  readonly digest: string;
+  /** Whether a path of its context is a directory (`why` lists the file a directory COPY placed). */
+  isDirectory(rel: string): boolean;
+  /** Its imports by name (an `AS sitefile` one as its Sitefile, see {@link unitResource}). */
+  readonly resources: ReadonlyMap<string, Resource>;
+  /** The Sitefiles it imports, by import name. */
+  readonly imported: ReadonlyMap<string, ImportedSitefile>;
+  /** With `recordSteps`: like {@link BuildResult.steps}, for the stages built (a prefix of `plan.stages`). */
+  readonly steps?: Tree[][];
+  /** What each of its FINGERPRINTs renamed (old path, new path), by its line. */
+  readonly renames: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
+}
+
+interface Unit extends ImportedSitefile {
+  readonly local: LocalContext;
+  readonly scope: LabelScope;
+  readonly imported: Map<string, Unit>;
+  readonly resourceKeys: Map<string, string>;
+  readonly envKey: string;
+  readonly stageTrees: Map<string, Tree>;
+  readonly stageKeys: Map<string, string>;
+  readonly steps?: Tree[][];
+  readonly renames: Map<number, ReadonlyArray<readonly [string, string]>>;
+  /** Each built named stage's FINGERPRINT renames, composed (inherited by `FROM <stage>`, also from the importer). */
+  readonly stageRenames: Map<string, ReadonlyMap<string, string>>;
+  /** What the import stands for in the provenance (with {@link ImportedSitefile.digest}). */
+  readonly provenance: { readonly uri: string; readonly resolvedUrl?: string; readonly gitCommit?: string };
+  readonly sitefileBytes: Uint8Array;
+  /** How many of its stages are built. */
+  built: number;
+}
+
+/** What every Sitefile import of one build shares. */
+interface UnitsEnv {
+  readonly remote: RemoteEnv;
+  readonly archiveLimits: ArchiveLimits;
+  readonly memo?: BuildMemo;
+  readonly concurrency: number;
+  readonly allowHardlinks: boolean;
+  readonly strictPins: boolean;
+  /** Real paths the build writes or skips (export, vendor, --profile): left out of an imported context inside the build context. */
+  readonly skip: readonly string[];
+  /** Temporary checkouts of Git imports, removed when the build ends. */
+  readonly tempDirs: string[];
+  readonly recordSteps: boolean;
+  /** Every remote input's pin under --strict-pins, by qualified import name. */
+  readonly pins: Record<string, 'integrity' | 'lockfile' | 'commit'>;
+  readonly exec: Pick<ExecEnv, 'plugins' | 'toolPolicy' | 'stats' | 'fetchPolicy'>;
+  readonly fromImage: (base: ImageStageBase, unit: string) => Promise<FromImage>;
+}
+
+/** Who imports a Sitefile: the build's own Sitefile or another imported one. */
+interface Importer {
+  readonly name: string | undefined;
+  readonly label: string;
+  readonly local: LocalContext;
+  readonly scope: LabelScope;
+  /** Identities (real context and Sitefile) of the Sitefiles importing this one, outermost first, with labels. */
+  readonly chain: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+}
+
+/** Write a tree to a new temporary directory (a Git import's checkout). */
+async function materializeTree(tree: Tree, env: UnitsEnv): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sitefile-import-'));
+  env.tempDirs.push(dir);
+  try {
+    for (const [p, n] of tree.entries()) {
+      const dest = path.join(dir, ...p.slice(1).split('/'));
+      await mkdir(path.dirname(dest), { recursive: true });
+      await writeFile(dest, n.bytes, { mode: n.mode });
+      await chmod(dest, n.mode);
+    }
+  } catch (e) {
+    throw new SitefileError('E_EXPORT', `cannot write a Git checkout to a temporary directory: ${(e as Error).message}`, undefined, { cause: e });
+  }
+  return dir;
+}
+
+/**
+ * Load an `IMPORT name FROM <dir|git+https://…> AS sitefile`: find its context (a directory of the
+ * importer's context, or a Git tree written to a temporary directory), read and plan its Sitefile with the
+ * IMPORT's ARGs, check the stages `refs` name, and resolve its imports exactly as a build would.
+ */
+async function loadSitefileImport(spec: ImportSpec, importer: Importer, refs: readonly ImportedStageRef[], env: UnitsEnv): Promise<Unit> {
+  const qualified = importer.name === undefined ? spec.name : `${importer.name}+${spec.name}`;
+  const origin = `${importer.label}:${spec.span.line} IMPORT ${spec.name}`;
+  let hostDir: string;
+  let scope: LabelScope;
+  let id: string;
+  let display: string;
+  let provenance: { uri: string; resolvedUrl?: string; gitCommit?: string };
+  let gitTree: Tree | undefined;
+  if (spec.location.kind === 'git') {
+    const loc = spec.location;
+    const { commit, selection } = await fetchGitImport(spec, loc, { ...env.remote, label: importer.label });
+    display = `'${loc.url}'`;
+    if (selection.kind === 'file') {
+      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: ${display} is a file; AS sitefile needs the directory that holds the Sitefile`, spec.span);
+    }
+    gitTree = Tree.fromFiles(selection.files.map(([p, f]) => [p, makeFile(f.bytes, origin, f.mode)] as const));
+    scope = { prefix: `git+${loc.repo}#${commit}:`, dir: loc.path };
+    id = `${scope.prefix}${loc.path}`;
+    provenance = { uri: spec.uri, resolvedUrl: pinnedGitUrl(loc, commit), gitCommit: commit };
+    hostDir = await materializeTree(gitTree, env);
+  } else if (spec.location.kind === 'local') {
+    const rel = spec.location.path;
+    display = rel === '' ? `'./'` : `'./${rel}'`;
+    if ((await importer.local.stat(rel, spec.span)) !== 'directory') {
+      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: ${display} is a file; AS sitefile needs the directory that holds the Sitefile`, spec.span);
+    }
+    hostDir = await importer.local.realPath(rel, spec.span);
+    scope = { prefix: importer.scope.prefix, dir: path.posix.join(importer.scope.dir, rel) };
+    id = hostDir;
+    provenance = { uri: spec.uri };
+  } else {
+    throw new SitefileError('E_PROTOCOL', `IMPORT ${spec.name}: AS sitefile reads a context directory or a git+https:// repository, not a URL`, spec.span);
+  }
+  const label = sitefileLabel(scope);
+  const seen = importer.chain.findIndex((c) => c.id === id);
+  if (seen !== -1) {
+    const cycle = [...importer.chain.slice(seen).map((c) => c.label), label];
+    throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: Sitefile import cycle: ${cycle.join(' -> ')}`, spec.span);
+  }
+  if (importer.chain.length > MAX_SITEFILE_IMPORT_DEPTH) {
+    throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: Sitefile imports nest more than ${MAX_SITEFILE_IMPORT_DEPTH} levels deep`, spec.span);
+  }
+
+  // Its context: the directory, sandboxed (its own .sitefileignore applies; what the build writes is skipped).
+  const ignore = ['.git'];
+  for (const s of env.skip) {
+    const rel = path.relative(hostDir, s);
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) ignore.push(rel.split(path.sep).join('/'));
+  }
+  const local = await LocalContext.open(hostDir, { ignore, allowHardlinks: env.allowHardlinks });
+  let sitefileBytes: Uint8Array;
+  try {
+    sitefileBytes = (await local.readFile('Sitefile', spec.span)).bytes;
+  } catch (e) {
+    if (e instanceof SitefileError && e.code === 'E_NOT_FOUND') {
+      throw new SitefileError('E_NOT_FOUND', `IMPORT ${spec.name}: ${display} has no Sitefile`, spec.span, { cause: e });
+    }
+    throw e;
+  }
+  const { plan: p } = planImportedSitefile(spec, new TextDecoder().decode(sitefileBytes), label, refs);
+  p.warnings.forEach(env.remote.warn);
+  const lock = env.remote.lock;
+  if (env.strictPins) {
+    const pins = checkPins(p, lock, undefined);
+    for (const [n, how] of Object.entries(pins.imports)) env.pins[`${qualified}+${n}`] = how;
+  }
+  // Its FROM image lockfile entries are kept even when its stages are not built.
+  for (const st of p.stages) if (st.base.kind === 'image' && !st.base.local) lock?.markImageUsed(imageLockKey(st.base));
+
+  // Its imports, as a build of it would resolve them (every one, as for a --target build).
+  const ienv: ImportEnv = { ...env.remote, label, local, archiveLimits: env.archiveLimits, ...(env.memo ? { memo: env.memo } : {}) };
+  const plain = p.imports.filter((s) => s.as !== 'sitefile');
+  const resolved = await mapLimit(plain, env.concurrency, (s) => resolveImport(s, ienv));
+  const byName = new Map(plain.map((s, i) => [s.name, resolved[i]!] as const));
+  // SCHEMA files are read from the imported Sitefile's own context.
+  for (const s of plain) {
+    const r = byName.get(s.name);
+    if (r && s.schema) await checkImportSchema(s, r.res, local);
+  }
+  const resources = new Map<string, Resource>();
+  const resourceKeys = new Map<string, string>();
+  const imported = new Map<string, Unit>();
+  const nestedRefs = importedStageRefs(p.stages);
+  const self: Importer = { name: qualified, label, local, scope, chain: [...importer.chain, { id, label }] };
+  for (const s of p.imports) {
+    const r = byName.get(s.name);
+    if (r) {
+      resources.set(s.name, sorted(s, r.res));
+      resourceKeys.set(s.name, r.key);
+      continue;
+    }
+    const unit = await loadSitefileImport(s, self, nestedRefs, env);
+    imported.set(s.name, unit);
+    resources.set(s.name, unitResource(unit));
+    resourceKeys.set(s.name, env.memo ? memoKey('sitefile', label, valueKey(s), unit.digest) : '');
+  }
+  const unit: Unit = {
+    name: qualified,
+    label,
+    plan: p,
+    digest: gitTree ? gitTree.digest() : sha256(sitefileBytes),
+    isDirectory: gitTree ? (rel) => rel === '' || gitTree.isDirectory('/' + rel) : (rel) => isHostDirectory(path.join(hostDir, ...rel.split('/'))),
+    sitefileBytes,
+    resources,
+    imported,
+    local,
+    scope,
+    resourceKeys,
+    envKey: env.memo ? memoKey('env', label, valueKey([...p.vars])) : '',
+    stageTrees: new Map(),
+    stageKeys: new Map(),
+    renames: new Map(),
+    stageRenames: new Map(),
+    ...(env.recordSteps ? { steps: [] } : {}),
+    built: 0,
+    provenance,
+  };
+  return unit;
+}
+
+/** The resource an `AS sitefile` import stands for (provenance): its Sitefile, with the unit's digest. */
+function unitResource(unit: Unit): Resource {
+  return { kind: 'file', bytes: unit.sitefileBytes, mode: 0o644, basename: 'Sitefile', provenance: { ...unit.provenance, digest: unit.digest } };
+}
+
+function isHostDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where an imported Sitefile is read from by `vendor` and `outdated`, which never build it: a directory of
+ * a local context, or a directory of a Git tree held in memory.
+ */
+export type SitefileSource =
+  | { readonly kind: 'local'; readonly local: LocalContext; readonly scope: LabelScope; readonly label: string; readonly chain: ReadonlyArray<{ readonly id: string; readonly label: string }> }
+  | { readonly kind: 'tree'; readonly tree: Tree; readonly dir: string; readonly scope: LabelScope; readonly label: string; readonly chain: ReadonlyArray<{ readonly id: string; readonly label: string }> };
+
+/** The source of the build's own Sitefile, for {@link readImportedSitefile}. */
+export async function rootSitefileSource(options: BuildOptions, label: string, sitefilePath: string): Promise<SitefileSource> {
+  const contextReal = await realpath(options.contextDir).catch((e: unknown) => {
+    throw new SitefileError('E_NOT_FOUND', `build context '${options.contextDir}' does not exist`, undefined, { cause: e });
+  });
+  const local = await LocalContext.open(contextReal, { ignore: ['.git'], allowHardlinks: options.allowHardlinks ?? false });
+  const id = options.sitefile === undefined ? contextReal : await realpathLoose(sitefilePath);
+  return { kind: 'local', local, scope: rootScope(options, label), label, chain: [{ id, label }] };
+}
+
+/**
+ * Read and plan the Sitefile an `IMPORT … AS sitefile` of `from` names, without building it (for `vendor`
+ * and `outdated`): the same location, cycle, depth and ARG rules as a build. A Git one is fetched with
+ * `fetchGit` (the commit a build would use). Returns its plan and the source its own imports read from.
+ */
+export async function readImportedSitefile(
+  spec: ImportSpec,
+  from: SitefileSource,
+  refs: readonly ImportedStageRef[],
+  fetchGit: (spec: ImportSpec, loc: GitLocation) => Promise<{ commit: string; selection: GitSelection }>,
+): Promise<{ plan: Plan; source: SitefileSource }> {
+  let scope: LabelScope;
+  let id: string;
+  let display: string;
+  let bytes: Uint8Array | undefined;
+  let make: (label: string, chain: SitefileSource['chain']) => SitefileSource;
+  if (spec.location.kind === 'git') {
+    const loc = spec.location;
+    const { commit, selection } = await fetchGit(spec, loc);
+    display = `'${loc.url}'`;
+    if (selection.kind === 'file') {
+      throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: ${display} is a file; AS sitefile needs the directory that holds the Sitefile`, spec.span);
+    }
+    const tree = Tree.fromFiles(selection.files.map(([p, f]) => [p, makeFile(f.bytes, 'git', f.mode)] as const));
+    scope = { prefix: `git+${loc.repo}#${commit}:`, dir: loc.path };
+    id = `${scope.prefix}${loc.path}`;
+    bytes = tree.get('/Sitefile')?.bytes;
+    make = (label, chain) => ({ kind: 'tree', tree, dir: '', scope, label, chain });
+  } else if (spec.location.kind === 'local') {
+    const rel = spec.location.path;
+    display = rel === '' ? `'./'` : `'./${rel}'`;
+    scope = { prefix: from.scope.prefix, dir: path.posix.join(from.scope.dir, rel) };
+    if (from.kind === 'local') {
+      if ((await from.local.stat(rel, spec.span)) !== 'directory') {
+        throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: ${display} is a file; AS sitefile needs the directory that holds the Sitefile`, spec.span);
+      }
+      const real = await from.local.realPath(rel, spec.span);
+      id = real;
+      const local = await LocalContext.open(real, { ignore: ['.git'] });
+      bytes = await local.readFile('Sitefile', spec.span).then(
+        (f) => f.bytes,
+        (e: unknown) => {
+          if (e instanceof SitefileError && e.code === 'E_NOT_FOUND') return undefined;
+          throw e;
+        },
+      );
+      make = (label, chain) => ({ kind: 'local', local, scope, label, chain });
+    } else {
+      const dir = path.posix.join(from.dir, rel).replace(/^\.$/, '');
+      const at = dir === '' ? '/' : '/' + dir;
+      if (from.tree.isFile(at)) {
+        throw new SitefileError('E_TYPE', `IMPORT ${spec.name}: ${display} is a file; AS sitefile needs the directory that holds the Sitefile`, spec.span);
+      }
+      if (!from.tree.isDirectory(at)) throw new SitefileError('E_NOT_FOUND', `'${display.slice(1, -1)}' does not exist in the build context`, spec.span);
+      id = `${from.scope.prefix}${scope.dir}`;
+      bytes = from.tree.get(at === '/' ? '/Sitefile' : `${at}/Sitefile`)?.bytes;
+      const tree = from.tree;
+      make = (label, chain) => ({ kind: 'tree', tree, dir, scope, label, chain });
+    }
+  } else {
+    throw new SitefileError('E_PROTOCOL', `IMPORT ${spec.name}: AS sitefile reads a context directory or a git+https:// repository, not a URL`, spec.span);
+  }
+  const label = sitefileLabel(scope);
+  const seen = from.chain.findIndex((c) => c.id === id);
+  if (seen !== -1) {
+    throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: Sitefile import cycle: ${[...from.chain.slice(seen).map((c) => c.label), label].join(' -> ')}`, spec.span);
+  }
+  if (from.chain.length > MAX_SITEFILE_IMPORT_DEPTH) {
+    throw new SitefileError('E_VALIDATION', `IMPORT ${spec.name}: Sitefile imports nest more than ${MAX_SITEFILE_IMPORT_DEPTH} levels deep`, spec.span);
+  }
+  if (bytes === undefined) throw new SitefileError('E_NOT_FOUND', `IMPORT ${spec.name}: ${display} has no Sitefile`, spec.span);
+  const { plan: p } = planImportedSitefile(spec, new TextDecoder().decode(bytes), label, refs);
+  return { plan: p, source: make(label, [...from.chain, { id, label }]) };
+}
+
+/** The resources of the Sitefiles a build imports, by qualified name (`theme+data`), depth first in IMPORT order. */
+function nestedResources(units: ReadonlyMap<string, Unit>, out: Array<[string, Resource]> = []): Array<[string, Resource]> {
+  for (const unit of units.values()) {
+    for (const [name, res] of unit.resources) out.push([`${unit.name}+${name}`, res]);
+    nestedResources(unit.imported, out);
+  }
+  return out;
+}
+
+/**
+ * Make the imported stages `refs` names available in `stages`/`keys` as `<import>+<stage>`: each imported
+ * Sitefile builds its stages up to the last one referenced (like a --target build).
+ */
+async function provideImportedStages(
+  units: ReadonlyMap<string, Unit>,
+  refs: readonly ImportedStageRef[],
+  stages: Map<string, Tree>,
+  keys: Map<string, string>,
+  renames: Map<string, ReadonlyMap<string, string>>,
+  env: UnitsEnv,
+): Promise<void> {
+  for (const [name, unit] of units) {
+    const wanted = refs.filter((r) => r.import === name);
+    if (!wanted.length) continue;
+    const upto = Math.max(...wanted.map((r) => unit.plan.stages.findIndex((s) => s.name === r.stage)));
+    await buildUnitStages(unit, upto, env);
+    for (const st of unit.plan.stages.slice(0, unit.built)) {
+      if (st.name === undefined) continue;
+      stages.set(`${name}+${st.name}`, unit.stageTrees.get(st.name)!);
+      keys.set(`${name}+${st.name}`, unit.stageKeys.get(st.name) ?? '');
+      renames.set(`${name}+${st.name}`, unit.stageRenames.get(st.name) ?? new Map());
+    }
+  }
+}
+
+/** Build an imported Sitefile's stages up to index `upto` (those already built are kept). */
+async function buildUnitStages(unit: Unit, upto: number, env: UnitsEnv): Promise<void> {
+  if (upto < unit.built) return;
+  await provideImportedStages(unit.imported, importedStageRefs(unit.plan.stages.slice(0, upto + 1)), unit.stageTrees, unit.stageKeys, unit.stageRenames, env);
+  const execEnv: ExecEnv = {
+    local: unit.local,
+    resources: unit.resources,
+    stages: unit.stageTrees,
+    vars: unit.plan.vars,
+    label: unit.label,
+    warn: env.remote.warn,
+    ...env.exec,
+    tools: new Map(),
+    pluginDigests: new Map(),
+    ...(env.memo ? { memo: env.memo } : {}),
+    resourceKeys: unit.resourceKeys,
+    envKey: unit.envKey,
+    stageKeys: unit.stageKeys,
+    fromImage: (b) => env.fromImage(b, unit.name),
+  };
+  for (let i = unit.built; i <= upto; i++) {
+    const stage = unit.plan.stages[i]!;
+    const start = await startStage(stage, execEnv);
+    let tree = start.tree;
+    let key = start.key;
+    let current: ReadonlyMap<string, string> = stage.base.kind === 'stage' ? (unit.stageRenames.get(stage.base.name) ?? new Map()) : new Map();
+    const record = unit.steps ? [tree] : undefined;
+    for (const op of stage.operations) {
+      const r = await executeOp(op, tree, key, execEnv);
+      tree = r.tree;
+      key = r.key;
+      if (r.renames) {
+        unit.renames.set(op.span.line, r.renames);
+        current = composeRenames(current, r.renames);
+      }
+      record?.push(tree);
+    }
+    if (record) unit.steps!.push(record);
+    if (stage.name !== undefined) {
+      unit.stageRenames.set(stage.name, current);
+      unit.stageTrees.set(stage.name, tree);
+      unit.stageKeys.set(stage.name, key);
+    }
+    unit.built = i + 1;
+  }
 }
 
 // ---------------------------------------------------------------- operations

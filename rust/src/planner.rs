@@ -4,7 +4,7 @@
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, OciCompression, Operand, Program, Source, StageRef,
+    imported_stage, stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, OciCompression, Operand, Program, Source, StageRef,
     TemplatePart, ValueType,
 };
 use crate::fingerprint::check_pattern;
@@ -65,6 +65,16 @@ pub struct ImportSpec {
     pub schema: Option<ImportSchema>,
     /// Build secrets sent as request headers (ids and header names only; values come from --secret).
     pub secrets: Vec<SecretRef>,
+    /// `AS sitefile`: the `ARG NAME=value` clauses, evaluated (build args of the imported Sitefile).
+    pub args: Vec<PlannedArg>,
+    pub span: SourceSpan,
+}
+
+/// An `ARG NAME=value` clause of an `IMPORT … AS sitefile`, evaluated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedArg {
+    pub name: String,
+    pub value: String,
     pub span: SourceSpan,
 }
 
@@ -312,6 +322,12 @@ fn import_ref(s: &str) -> Option<(&str, &str)> {
 /// Plan a validated program. `build_args` are `--build-arg` values (strings,
 /// coerced to each ARG's type).
 pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
+    plan_with(program, build_args, &|n| format!("--build-arg {n}"))
+}
+
+/// [`plan`], where `arg_source` names where a build arg came from in messages (an imported Sitefile's
+/// come from the `ARG` clauses of its IMPORT).
+pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(&str) -> String) -> Result<Plan> {
     let mut vars = Env::new();
     let mut var_order: Vec<String> = Vec::new();
     let mut imports: Vec<ImportSpec> = Vec::new();
@@ -350,7 +366,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
             Instruction::From { span, base, alias, stage_kw } => {
                 let base = match base {
                     FromBase::Scratch => StageBase::Scratch,
-                    FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
+                    FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names, &imports, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
                     FromBase::Image { reference, at } => image_base(reference, at.as_ref(), &vars, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
                 };
                 stages.push(Stage { name: alias.clone(), base, operations: Vec::new(), span: span.clone() });
@@ -358,7 +374,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
             Instruction::Arg { span, name, ty, default_value } => {
                 declared_args.insert(name);
                 if let Some(given) = build_args.get(name) {
-                    bind(&mut vars, &mut var_order, name, given, *ty, span, &format!("--build-arg {name}"))?;
+                    bind(&mut vars, &mut var_order, name, given, *ty, span, &arg_source(name))?;
                 } else if let Some(d) = default_value {
                     let raw = evaluate_operand(d, &vars)?;
                     bind(&mut vars, &mut var_order, name, &raw, *ty, &d.span, &format!("ARG {name}"))?;
@@ -374,13 +390,24 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let raw = evaluate_operand(value, &vars)?;
                 bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets } => {
+            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, secrets, args } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
                 let schema_planned = match schema {
                     Some(s) => Some(schema_spec(name, &s.path, &vars, &s.span)?),
                     None => None,
                 };
+                let args = args
+                    .iter()
+                    .map(|a| Ok(PlannedArg { name: a.name.clone(), value: evaluate_operand(&a.value, &vars)?, span: a.span.clone() }))
+                    .collect::<Result<Vec<_>>>()?;
+                if *as_kind == Some(ImportKind::Sitefile) && matches!(location, ImportLocation::Remote { .. }) {
+                    return Err(SitefileError::at(
+                        E_PROTOCOL,
+                        format!("IMPORT {name}: AS sitefile reads a context directory or a git+https:// repository, not a URL"),
+                        &uri.span,
+                    ));
+                }
                 if matches!(location, ImportLocation::Local { .. }) && !secrets.is_empty() {
                     return Err(SitefileError::at(
                         E_VALIDATION,
@@ -410,6 +437,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
                     schema: schema_planned,
                     secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
+                    args,
                     span: span.clone(),
                 };
                 // A JavaScript Map keeps the first position of a re-set key (validate() forbids duplicates anyway).
@@ -708,10 +736,16 @@ fn image_base(reference: &Operand, at: Option<&Operand>, vars: &Env, lead: &str)
 }
 
 /// A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory.
-fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>, lead: &str) -> Result<StageBase> {
+fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>, imports: &[ImportSpec], lead: &str) -> Result<StageBase> {
     let raw = evaluate_operand(op, vars)?;
     if earlier.iter().any(|s| s.name.as_deref() == Some(raw.as_str())) {
         return Ok(StageBase::Stage { name: raw });
+    }
+    // `<import>+<stage>`: a stage of a Sitefile imported AS sitefile on an earlier line.
+    if let Some((import, _)) = imported_stage(&raw) {
+        if imports.iter().any(|i| i.name == import && i.as_kind == Some(ImportKind::Sitefile)) {
+            return Ok(StageBase::Stage { name: raw });
+        }
     }
     if all.contains(&raw) {
         return Err(SitefileError::at(
@@ -764,6 +798,44 @@ fn source_ref(source: &Source, vars: &Env, imports: &[ImportSpec], from: Option<
         return Ok(SourceRef::Import { name: name.to_string(), path, span });
     }
     Ok(SourceRef::Local { path: normalize_local(&raw, Some(&span))?.path, span })
+}
+
+/// A reference to a stage of an imported Sitefile (`FROM theme+assets`, `COPY --from=theme+assets …`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedStageRef {
+    /// `theme+assets`
+    pub name: String,
+    pub import: String,
+    pub stage: String,
+    /// The instruction that names it.
+    pub span: SourceSpan,
+}
+
+/// Every reference to a stage of an imported Sitefile, in source order (stage bases, then `--from` sources, per stage).
+pub fn imported_stage_refs(stages: &[Stage]) -> Vec<ImportedStageRef> {
+    let mut out = Vec::new();
+    let mut add = |name: &str, span: &SourceSpan| {
+        if let Some((import, stage)) = imported_stage(name) {
+            out.push(ImportedStageRef { name: name.to_string(), import: import.to_string(), stage: stage.to_string(), span: span.clone() });
+        }
+    };
+    for st in stages {
+        if let StageBase::Stage { name } = &st.base {
+            add(name, &st.span);
+        }
+        for op in &st.operations {
+            let src = match op {
+                Operation::Copy { source, .. } => Some(source),
+                Operation::Render { template, .. } => Some(template),
+                Operation::Transform { source, .. } => source.as_ref(),
+                _ => None,
+            };
+            if let Some(SourceRef::Stage { name, .. }) = src {
+                add(name, op.span());
+            }
+        }
+    }
+    out
 }
 
 // ---- JSON (the shapes `JSON.stringify` gives the TypeScript objects) ---------
@@ -852,6 +924,12 @@ impl ImportSpec {
             m.insert(
                 "secrets".into(),
                 Value::Array(self.secrets.iter().map(|s| json!({ "id": s.id, "header": s.header, "bearer": s.bearer })).collect()),
+            );
+        }
+        if !self.args.is_empty() {
+            m.insert(
+                "args".into(),
+                Value::Array(self.args.iter().map(|a| json!({ "name": a.name, "value": a.value, "span": span_json(&a.span) })).collect()),
             );
         }
         m.insert("span".into(), span_json(&self.span));

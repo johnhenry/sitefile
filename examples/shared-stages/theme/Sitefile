@@ -1,0 +1,19 @@
+# A theme as a Sitefile whose stages other Sitefiles import (IMPORT … AS sitefile, issue #97).
+# It builds on its own too (sitefile build examples/shared-stages/theme), and its paths are relative to
+# this directory, wherever it is imported from.
+ARG ACCENT = "teal"
+ARG FONT = "Georgia, serif"
+
+# Stylesheets, rendered with the importer's ARG values.
+STAGE assets
+COPY ./assets/ /assets/
+RENDER ./assets/theme.css.in TO /assets/theme.css
+
+# The page layout, a template the importer renders with its own data.
+STAGE layout
+COPY ./layout/page.html /page.html
+
+FROM scratch
+COPY --from=assets / /
+COPY --from=layout / /layout/
+EXPORT /

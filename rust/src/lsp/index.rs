@@ -8,7 +8,7 @@
 //! whitespace-separated words, keeping quoted strings whole. Positions are
 //! 0-based lines and UTF-16 columns.
 
-use crate::language::ast::is_ident;
+use crate::language::ast::{imported_stage, is_ident};
 use crate::language::scanner::is_js_space;
 use crate::lsp::text::{utf16_len, Lines};
 use std::collections::HashMap;
@@ -135,11 +135,22 @@ pub struct Occ {
     pub is_def: bool,
 }
 
+/// The `<stage>` part of `<import>+<stage>` (a stage of a Sitefile imported AS sitefile), in FROM, STAGE … FROM or `--from=`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedRef {
+    pub import: String,
+    pub stage: String,
+    pub line: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Index {
     pub instrs: Vec<Instr>,
     pub defs: Vec<Def>,
     pub occs: Vec<Occ>,
+    pub imported: Vec<ImportedRef>,
 }
 
 fn trailing_backslashes(s: &str) -> usize {
@@ -370,6 +381,15 @@ pub fn build(lines: &Lines) -> Index {
     let instrs = instructions(lines);
     let mut defs: Vec<Def> = Vec::new();
     let mut uses: Vec<(String, u32, u32, u32, Pending)> = Vec::new();
+    let mut imported: Vec<ImportedRef> = Vec::new();
+    // `<import>+<stage>` at `start` of `line`: a use of the import, then the stage of the imported Sitefile.
+    let mut imported_ref = |text: &str, line: u32, start: u32, uses: &mut Vec<(String, u32, u32, u32, Pending)>| -> bool {
+        let Some((import, stage)) = imported_stage(text) else { return false };
+        let mid = start + utf16_len(import);
+        uses.push((import.to_string(), line, start, mid, Pending::Global));
+        imported.push(ImportedRef { import: import.to_string(), stage: stage.to_string(), line, start: mid + 1, end: mid + 1 + utf16_len(stage) });
+        true
+    };
 
     for (ix, ins) in instrs.iter().enumerate() {
         let w = &ins.words;
@@ -385,7 +405,8 @@ pub fn build(lines: &Lines) -> Index {
         match ins.keyword.as_str() {
             "FROM" => {
                 if let Some(b) = word(1) {
-                    if is_ident(&b.text) && !b.text.eq_ignore_ascii_case("scratch") {
+                    if imported_ref(&b.text, b.line, b.start, &mut uses) {
+                    } else if is_ident(&b.text) && !b.text.eq_ignore_ascii_case("scratch") {
                         uses.push((b.text.clone(), b.line, b.start, b.end, Pending::StageOnly));
                     }
                 }
@@ -397,7 +418,8 @@ pub fn build(lines: &Lines) -> Index {
                 name_def(&mut defs, 1, SymKind::Stage);
                 if let Some(f) = ins.find_kw("FROM", 2) {
                     if let Some(b) = word(f + 1) {
-                        if is_ident(&b.text) && !b.text.eq_ignore_ascii_case("scratch") {
+                        if imported_ref(&b.text, b.line, b.start, &mut uses) {
+                        } else if is_ident(&b.text) && !b.text.eq_ignore_ascii_case("scratch") {
                             uses.push((b.text.clone(), b.line, b.start, b.end, Pending::StageOnly));
                         }
                     }
@@ -418,7 +440,8 @@ pub fn build(lines: &Lines) -> Index {
             "COPY" | "RENDER" | "TRANSFORM" => {
                 for fw in &w[1..ins.first_operand()] {
                     if let Some(v) = fw.text.strip_prefix("--from=") {
-                        if is_ident(v) {
+                        if imported_ref(v, fw.line, fw.start + 7, &mut uses) {
+                        } else if is_ident(v) {
                             let start = fw.start + 7;
                             uses.push((v.to_string(), fw.line, start, start + utf16_len(v), Pending::Global));
                         }
@@ -505,7 +528,7 @@ pub fn build(lines: &Lines) -> Index {
         }
         occs.push(Occ { name, line, start, end, def, is_def: false });
     }
-    Index { instrs, defs, occs }
+    Index { instrs, defs, occs, imported }
 }
 
 impl Index {
@@ -518,6 +541,10 @@ impl Index {
         let mut v: Vec<&Occ> = self.occs.iter().filter(|o| o.def == Some(def)).collect();
         v.sort_by_key(|o| (!o.is_def, o.line, o.start));
         v
+    }
+    /// The `<stage>` of an `<import>+<stage>` under the cursor.
+    pub fn imported_at(&self, line: u32, col: u32) -> Option<&ImportedRef> {
+        self.imported.iter().find(|r| r.line == line && r.start <= col && col <= r.end)
     }
     /// The instruction whose lines (body included) contain `line`.
     pub fn instr_at(&self, line: u32) -> Option<usize> {

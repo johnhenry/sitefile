@@ -126,3 +126,17 @@ test('compileSchema and checkSchema directly', () => {
   assert.throws(() => checkSchema({ tags: ['b'] }, s, 'IMPORT x', false, span), (e: unknown) => e instanceof SitefileError && e.detail === "IMPORT x: document '#1' has 'tags' item 1 string 'b'; it should be one of a");
   assert.throws(() => checkSchema([null], s, 'IMPORT x', false, span), (e: unknown) => e instanceof SitefileError && e.detail === 'IMPORT x: SCHEMA checks documents (objects), but element 1 is null');
 });
+
+test('SCHEMA in an imported Sitefile (AS sitefile) is read from its own context', async () => {
+  const files = {
+    'post.schema.yaml': 'required: [missing]\n',
+    'blog/post.schema.yaml': 'required: [title]\n',
+    'blog/posts/a.md': post('title: A\n'),
+    'blog/Sitefile': 'STAGE pages\nIMPORT posts FROM ./posts AS markdown SCHEMA ./post.schema.yaml\nRENDER <<T TO /i.html\n${#each posts as p}${p.title}${/each}\nT\nEXPORT /',
+    Sitefile: 'IMPORT blog FROM ./blog AS sitefile\nFROM scratch\nCOPY --from=blog+pages / /\nEXPORT /',
+  };
+  const r = await run(files);
+  assert.equal(new TextDecoder().decode(r.output.get('/i.html')?.bytes), 'A\n');
+  await rejects({ ...files, 'blog/posts/a.md': post('date: 2026-01-01\n') }, 'E_SCHEMA', "IMPORT posts: document '/a.md' has no 'title' (required by schema './post.schema.yaml')");
+  assert.throws(() => parseProgram('IMPORT t FROM ./t AS sitefile SCHEMA ./s.yaml\nEXPORT /'), (e: unknown) => isSitefileError(e, 'E_VALIDATION'));
+});

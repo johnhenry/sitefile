@@ -80,7 +80,8 @@ export interface BuildFacts {
   readonly imports: ReadonlyArray<{ readonly name: string; readonly uri: string; readonly resolved?: string | undefined; readonly digest: string; readonly gitCommit?: string | undefined }>;
   readonly base?: { readonly name: string; readonly digest: string } | undefined;
   /** `FROM image` stage bases, in stage order (FROM line, image name, image digest). */
-  readonly images?: ReadonlyArray<{ readonly line: number; readonly name: string; readonly digest: string }> | undefined;
+  /** `import`: the qualified name of the imported Sitefile (IMPORT … AS sitefile) whose stage it is. */
+  readonly images?: ReadonlyArray<{ readonly line: number; readonly name: string; readonly digest: string; readonly import?: string | undefined }> | undefined;
   /** `--strict-pins`: how each remote input was pinned (shown in the provenance). */
   readonly pins?: Pins | undefined;
   /** File origins start with the Sitefile label (relative to the cwd); they are rewritten to `sitefile`. */
@@ -144,7 +145,7 @@ export async function buildFacts(
     platform: options.platform ?? 'linux/amd64',
     imports,
     base: result.base ? { name: result.base.name, digest: result.base.manifestDigest } : undefined,
-    images: result.images?.map((i) => ({ line: i.line, name: i.name, digest: i.digest })),
+    images: result.images?.map((i) => ({ line: i.line, name: i.name, digest: i.digest, ...(i.import !== undefined ? { import: i.import } : {}) })),
     pins: result.pins,
     label: options.label ?? (path.relative(process.cwd(), file) || path.basename(file)),
   };
@@ -171,8 +172,9 @@ export function provenancePredicate(facts: BuildFacts, epoch: number | undefined
     deps.push(d);
   }
   for (const i of facts.images ?? []) {
-    const pin = facts.pins?.images?.[i.line];
-    deps.push({ name: `from:${i.line}`, uri: i.name, digest: { sha256: hex(i.digest) }, ...(pin ? { annotations: { 'dev.sitefile.pin': pin } } : {}) });
+    // A stage of an imported Sitefile is `from:<import>:<line>` (its line is in that Sitefile); --strict-pins checked it there.
+    const pin = i.import === undefined ? facts.pins?.images?.[i.line] : undefined;
+    deps.push({ name: i.import === undefined ? `from:${i.line}` : `from:${i.import}:${i.line}`, uri: i.name, digest: { sha256: hex(i.digest) }, ...(pin ? { annotations: { 'dev.sitefile.pin': pin } } : {}) });
   }
   if (facts.base) {
     deps.push({ name: 'base', uri: facts.base.name, digest: { sha256: hex(facts.base.digest) }, ...(facts.pins?.base ? { annotations: { 'dev.sitefile.pin': facts.pins.base } } : {}) });

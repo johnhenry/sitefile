@@ -31,6 +31,7 @@ no runtime dependencies.
 | Instruction | Supported |
 | --- | --- |
 | `FROM scratch\|<dir>\|<stage>\|image <ref> [AT <dir>] [AS name]` | yes; several FROMs make a multi-stage build, the last stage is exported; `image` starts from a site image's files (a theme: `examples/theme`, `examples/themed-site`), locked in `Sitefile.lock` when it comes from a registry |
+| `IMPORT name FROM <dir>\|git+https://…#ref:dir AS sitefile [ARG NAME=value]…` | yes; the stages of another Sitefile, local or from Git, as `name+<stage>` in `FROM` and `--from` (like Earthly targets; `examples/shared-stages`), with its own ARGs and paths, pinned in `Sitefile.lock` |
 | `ARG NAME[: type] [= value]` | yes, `string`/`number`/`boolean`, `--build-arg` |
 | `LET NAME[: type] = value` | yes |
 | `IMPORT name FROM <path or https URL> [AS file\|text\|json\|yaml\|csv\|markdown\|wbn\|tree] [INTEGRITY sha256:…] [SORT BY key [DESC]] [SCHEMA <file>]` | yes; `AS tree` unpacks tar, tar.gz, zip and Web Bundles; `AS markdown` reads posts with frontmatter (`SCHEMA` checks it against a YAML/JSON schema); `AS yaml`/`csv`/`wbn` give data for templates |

@@ -1,0 +1,7 @@
+# Its SCHEMA path is read from this directory, not the importer's.
+STAGE pages
+IMPORT posts FROM ./posts AS markdown SORT BY date DESC SCHEMA ./post.schema.yaml
+RENDER --escape=html <<HTML TO /index.html
+${#each posts as p}<li>${p.title}</li>${/each}
+HTML
+EXPORT /

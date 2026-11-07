@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { importedStage, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
@@ -32,6 +32,8 @@ export interface ImportSpec {
   readonly schema?: { readonly uri: string; readonly path: string; readonly span: SourceSpan };
   /** Build secrets sent as request headers (ids and header names only; values come from --secret). */
   readonly secrets?: readonly { readonly id: string; readonly header: string; readonly bearer: boolean }[];
+  /** `AS sitefile`: the `ARG NAME=value` clauses, evaluated (build args of the imported Sitefile). */
+  readonly args?: readonly { readonly name: string; readonly value: string; readonly span: SourceSpan }[];
   readonly span: SourceSpan;
 }
 
@@ -217,7 +219,11 @@ export interface Plan {
 const URL_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
 const IMPORT_REF_RE = /^([A-Za-z_][A-Za-z0-9_]*):(.*)$/s;
 
-export function plan(program: Program, buildArgs: Readonly<Record<string, string>> = {}): Plan {
+/**
+ * Evaluate a program. `argSource` names where a build arg came from in messages (`--build-arg NAME` for the
+ * CLI's; an imported Sitefile's come from the `ARG` clauses of its IMPORT).
+ */
+export function plan(program: Program, buildArgs: Readonly<Record<string, string>> = {}, argSource: (name: string) => string = (n) => `--build-arg ${n}`): Plan {
   const vars = new Map<string, Scalar>();
   const imports = new Map<string, ImportSpec>();
   const stages: Stage[] = [];
@@ -250,7 +256,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
               ? { kind: 'scratch' }
               : isImageBase(ins.base)
                 ? imageBase(ins.base, vars, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM')
-                : stageBase(ins.base, vars, stages, allStageNames, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'),
+                : stageBase(ins.base, vars, stages, allStageNames, imports, ins.keyword === 'STAGE' ? `STAGE ${ins.alias} FROM` : 'FROM'),
           operations: [],
           span: ins.span,
         });
@@ -258,7 +264,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       case 'ARG': {
         declaredArgs.add(ins.name);
         const given = buildArgs[ins.name];
-        if (given !== undefined) bind(ins.name, given, ins.type, ins.span, `--build-arg ${ins.name}`);
+        if (given !== undefined) bind(ins.name, given, ins.type, ins.span, argSource(ins.name));
         else if (ins.defaultValue) bind(ins.name, evaluateOperand(ins.defaultValue, vars), ins.type, ins.defaultValue.span, `ARG ${ins.name}`);
         else throw new SitefileError('E_MISSING_ARG', `ARG ${ins.name} has no default; pass --build-arg ${ins.name}=<value>`, ins.span);
         break;
@@ -277,8 +283,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           ...(ins.sort ? { sort: { key: ins.sort.key, descending: ins.sort.descending } } : {}),
           ...(ins.schema ? { schema: schemaSpec(ins.name, ins.schema.path, vars, ins.schema.span) } : {}),
           ...(ins.secrets ? { secrets: ins.secrets.map((s) => ({ id: s.id, header: s.header, bearer: s.bearer })) } : {}),
+          ...(ins.args ? { args: ins.args.map((a) => ({ name: a.name, value: evaluateOperand(a.value, vars), span: a.span })) } : {}),
           span: ins.span,
         };
+        if (spec.as === 'sitefile' && spec.location.kind === 'remote') {
+          throw new SitefileError('E_PROTOCOL', `IMPORT ${ins.name}: AS sitefile reads a context directory or a git+https:// repository, not a URL`, ins.uri.span);
+        }
         if (spec.location.kind === 'local' && ins.secrets) {
           throw new SitefileError('E_VALIDATION', `IMPORT ${ins.name}: SECRET applies to remote imports (https:// or git+https://), not local paths`, ins.secrets[0]!.span);
         }
@@ -522,9 +532,19 @@ function imageBase(b: ImageBase, vars: ReadonlyMap<string, Scalar>, lead: string
 }
 
 /** A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory. */
-function stageBase(op: Operand, vars: ReadonlyMap<string, Scalar>, earlier: readonly Stage[], all: ReadonlySet<string>, lead = 'FROM'): StageBase {
+function stageBase(
+  op: Operand,
+  vars: ReadonlyMap<string, Scalar>,
+  earlier: readonly Stage[],
+  all: ReadonlySet<string>,
+  imports: ReadonlyMap<string, ImportSpec>,
+  lead = 'FROM',
+): StageBase {
   const raw = evaluateOperand(op, vars);
   if (earlier.some((s) => s.name === raw)) return { kind: 'stage', name: raw };
+  // `<import>+<stage>`: a stage of a Sitefile imported AS sitefile on an earlier line.
+  const imported = importedStage(raw);
+  if (imported && imports.get(imported.import)?.as === 'sitefile') return { kind: 'stage', name: raw };
   if (all.has(raw)) {
     throw new SitefileError('E_UNDEFINED', `${lead} ${raw}: stage '${raw}' is not defined before this line (write ./${raw} for a local directory)`, op.span);
   }
@@ -554,4 +574,31 @@ function sourceRef(
     return { kind: 'import', name, path, span: op.span };
   }
   return { kind: 'local', path: normalizeLocal(raw, op.span).path, span: op.span };
+}
+
+/** A reference to a stage of an imported Sitefile (`FROM theme+assets`, `COPY --from=theme+assets …`). */
+export interface ImportedStageRef {
+  /** `theme+assets` */
+  readonly name: string;
+  readonly import: string;
+  readonly stage: string;
+  /** The instruction that names it. */
+  readonly span: SourceSpan;
+}
+
+/** Every reference to a stage of an imported Sitefile, in source order (stage bases, then `--from` sources, per stage). */
+export function importedStageRefs(stages: readonly Stage[]): ImportedStageRef[] {
+  const out: ImportedStageRef[] = [];
+  const add = (name: string, span: SourceSpan): void => {
+    const s = importedStage(name);
+    if (s) out.push({ name, import: s.import, stage: s.stage, span });
+  };
+  for (const st of stages) {
+    if (st.base.kind === 'stage') add(st.base.name, st.span);
+    for (const op of st.operations) {
+      const src = op.kind === 'COPY' ? op.source : op.kind === 'RENDER' ? op.template : op.kind === 'TRANSFORM' ? op.source : undefined;
+      if (src?.kind === 'stage') add(src.name, op.span);
+    }
+  }
+  return out;
 }

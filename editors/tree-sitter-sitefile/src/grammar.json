@@ -927,8 +927,50 @@
                   "type": "SYMBOL",
                   "name": "secret_clause"
                 }
+              },
+              {
+                "type": "FIELD",
+                "name": "arg",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "import_arg"
+                }
               }
             ]
+          }
+        }
+      ]
+    },
+    "import_arg": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_arg"
+          },
+          "named": false,
+          "value": "ARG"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "="
+        },
+        {
+          "type": "FIELD",
+          "name": "value",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_value"
           }
         }
       ]
