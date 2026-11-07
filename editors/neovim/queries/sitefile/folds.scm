@@ -17,6 +17,8 @@
   (feed_instruction)
   (redirect_instruction)
   (header_instruction)
+  (fingerprint_instruction)
+  (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)
 ] @fold

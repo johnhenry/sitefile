@@ -53,6 +53,10 @@ pub fn operation_label(op: &Operation) -> String {
         ),
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
         Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
+        Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
+        Operation::CheckLinks { warn, external, .. } => {
+            format!("CHECKLINKS{}{}", if *warn { " --warn" } else { "" }, if *external { " --external" } else { "" })
+        }
     }
 }
 
@@ -237,7 +241,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
                     inputs.push(each.as_ref().and_then(|e| list(&e.list)));
                 }
                 Operation::Feed { list: l, .. } => inputs.push(list(l)),
-                Operation::Sitemap { .. } => {}
+                Operation::Sitemap { .. } | Operation::Fingerprint { .. } | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
                 edges.add(&from, op_id, "input");
@@ -425,6 +429,8 @@ struct WhyScope<'a> {
     /// The build's own context directory, or the imported Sitefile.
     context: WhyContext<'a>,
     imported: &'a [(String, ImportedSitefile)],
+    /// What each FINGERPRINT of this Sitefile renamed (old path, new path), by its line.
+    renames: &'a [(u32, Vec<(String, String)>)],
 }
 
 #[derive(Clone, Copy)]
@@ -458,6 +464,7 @@ impl<'a> WhyScope<'a> {
                     resources: &unit.resources,
                     context: WhyContext::Unit(unit),
                     imported: &unit.imported,
+                    renames: &unit.renames,
                 };
                 let i = unit.plan.stages.iter().position(|s| s.name.as_deref() == Some(stage)).expect("an imported stage that was built");
                 return (scope, i);
@@ -510,14 +517,44 @@ impl<'a> WhyScope<'a> {
         }
     }
 
+    /// The path `file` had before operation `up_to` of stage `si` when a FINGERPRINT there renamed it, and where.
+    fn renamed_at(&self, si: usize, file: &str, up_to: usize) -> Option<(usize, String)> {
+        let ops = &self.plan.stages[si].operations;
+        (0..up_to).rev().find_map(|i| {
+            let Operation::Fingerprint { span, .. } = &ops[i] else { return None };
+            let (_, list) = self.renames.iter().find(|(line, _)| *line == span.line)?;
+            list.iter().find(|(_, to)| to == file).map(|(from, _)| (i, from.clone()))
+        })
+    }
+
     fn history(&self, si: usize, file: &str) -> Vec<WhyEvent> {
+        self.history_to(si, file, self.plan.stages[si].operations.len())
+    }
+
+    fn history_to(&self, si: usize, file: &str, up_to: usize) -> Vec<WhyEvent> {
         let p = self.plan;
-        let tools: HashSet<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
         let stage = &p.stages[si];
         let trees = &self.steps[si];
         let display = format!("{}{}", self.prefix, stage_display(stage, si));
+        // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
+        if let Some((index, from)) = self.renamed_at(si, file, up_to) {
+            let op = &stage.operations[index];
+            let node = trees[index + 1].get(file).expect("a renamed file is in the tree after its FINGERPRINT");
+            let mut events = self.history_to(si, &from, index);
+            events.push(WhyEvent {
+                location: self.at(op.span().line),
+                instruction: operation_label(op),
+                stage: display.clone(),
+                path: file.to_string(),
+                action: "write",
+                digest: node.digest.clone(),
+                inputs: vec![format!("{from} (renamed)")],
+            });
+            events.extend(self.later(si, file, index + 1, up_to, Some(&**node)));
+            return events;
+        }
         let mut events = Vec::new();
-        let mut prev = trees[0].get(file).map(|n| &**n);
+        let prev = trees[0].get(file).map(|n| &**n);
         if let Some(start) = prev {
             match &stage.base {
                 StageBase::Stage { name } => {
@@ -549,7 +586,18 @@ impl<'a> WhyScope<'a> {
                 StageBase::Scratch => {}
             }
         }
-        for (i, op) in stage.operations.iter().enumerate() {
+        events.extend(self.later(si, file, 0, up_to, prev));
+        events
+    }
+
+    /// The events of operations `from` to `up_to` (exclusive) of stage `si` that changed `file` (`prev`: before them).
+    fn later(&self, si: usize, file: &str, from: usize, up_to: usize, mut prev: Option<&'a FileNode>) -> Vec<WhyEvent> {
+        let tools: HashSet<&str> = self.plan.tools.iter().map(|t| t.name.as_str()).collect();
+        let stage = &self.plan.stages[si];
+        let trees = &self.steps[si];
+        let display = format!("{}{}", self.prefix, stage_display(stage, si));
+        let mut events = Vec::new();
+        for (i, op) in stage.operations.iter().enumerate().take(up_to).skip(from) {
             let next = trees[i + 1].get(file).map(|n| &**n);
             let Some(written) = next.filter(|_| !same(prev, next)) else {
                 prev = next;
@@ -585,6 +633,11 @@ impl<'a> WhyScope<'a> {
                     }
                 }
                 Operation::Sitemap { .. } => inputs.push("the .html files in the tree".into()),
+                // Writes nothing, so never reached.
+                Operation::CheckLinks { .. } => {}
+                Operation::Fingerprint { manifest, .. } => inputs.push(
+                    if manifest.as_deref() == Some(file) { "the files it renamed" } else { "references to renamed files" }.into(),
+                ),
                 Operation::Feed { list, .. } => inputs.push(format!("list {list}")),
             }
             events.push(WhyEvent {
@@ -621,6 +674,7 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
         resources: &result.resources,
         context: WhyContext::Host(context_dir),
         imported: &result.imported,
+        renames: &result.renames,
     };
     let last = p.stages.len() - 1;
     let full = under(&p.export_path, &want);

@@ -95,6 +95,8 @@ test('build --profile: imports, stages, operations and the export, in Sitefile o
     `operation ${label}:16 RENDER`,
     `operation ${label}:20 FEED`,
     `operation ${label}:21 SITEMAP`,
+    `operation ${label}:25 FINGERPRINT`,
+    `operation ${label}:28 CHECKLINKS`,
     'export export',
   ]);
   const imp = ev.find((e) => e.name === 'import posts')!;

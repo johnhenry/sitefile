@@ -1,0 +1,8 @@
+# CHECKLINKS after FINGERPRINT: every link resolves (clean URLs, directory indexes, redirects, renamed assets).
+COPY ./public/ /site/
+FINGERPRINT /site/css/ /site/img/
+CHECKLINKS
+CHECKLINKS --warn --external
+REDIRECT /blog/* /posts/:splat
+REDIRECT /feed /feed.xml
+EXPORT /site

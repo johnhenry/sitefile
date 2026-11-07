@@ -165,6 +165,19 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("exclude", (!exclude.is_empty()).then(|| json!(exclude))),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::CheckLinks { span: sp, warn, external } => obj(vec![
+            ("kind", s("CHECKLINKS")),
+            ("span", Some(span(sp))),
+            ("warn", Some(json!(warn))),
+            ("external", Some(json!(external))),
+        ]),
+        Instruction::Fingerprint { span: sp, patterns, manifest, overwrite } => obj(vec![
+            ("kind", s("FINGERPRINT")),
+            ("span", Some(span(sp))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("manifest", manifest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

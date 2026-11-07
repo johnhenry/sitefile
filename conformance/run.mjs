@@ -93,6 +93,14 @@ function cases() {
       operands: command === 'why' ? ['/who.txt'] : [],
       args: ['--json'],
     })),
+    // FINGERPRINT inside an imported Sitefile: why follows the rename into it.
+    {
+      name: 'case/sitefile-import-fingerprint:why',
+      context: path.join(root, 'conformance', 'cases', 'sitefile-import-fingerprint'),
+      command: 'why',
+      operands: ['/assets/site.0a8af8e447.css'],
+      args: ['--json'],
+    },
     ex('blog'),
     ex('data'),
     ex('motion', { args: ['--allow-plugin', 'motion'] }),

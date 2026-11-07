@@ -41,6 +41,8 @@ import { Store } from './store.js';
 import { begin, reserve, type Profiler, type ProfileSpan } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { brokenLinks, reportBrokenLinks } from './checklinks.js';
+import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -159,6 +161,8 @@ export interface BuildResult {
   readonly pins?: Pins;
   /** The Sitefiles imported AS sitefile, by import name (each with its own imports, plan and, with `recordSteps`, steps). */
   readonly imported?: ReadonlyMap<string, ImportedSitefile>;
+  /** What each FINGERPRINT renamed (old path, new path), by its line. */
+  readonly renames?: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
 
 /** A `FROM image` base a build used. */
@@ -409,7 +413,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     tempDirs,
     recordSteps: !!options.recordSteps,
     pins: {},
-    exec: { plugins, toolPolicy, stats },
+    exec: { plugins, toolPolicy, stats, fetchPolicy: policy },
     fromImage,
   };
   const root: Importer = {
@@ -461,9 +465,14 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     envKey,
     stageKeys: new Map(),
     fromImage,
+    fetchPolicy: policy,
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
+  // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
+  const renames = new Map<number, ReadonlyArray<readonly [string, string]>>();
+  const stageRenames = new Map<string, ReadonlyMap<string, string>>();
+  let currentRenames: ReadonlyMap<string, string> = new Map();
   try {
     for (const spec of p.plugins) {
       const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
@@ -471,12 +480,13 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
       s.end();
     }
     // The stages of imported Sitefiles this build reads (`FROM theme+assets`, `--from=theme+assets`).
-    await provideImportedStages(units, importedStageRefs(p.stages), stageTrees, execEnv.stageKeys, unitsEnv);
+    await provideImportedStages(units, importedStageRefs(p.stages), stageTrees, execEnv.stageKeys, stageRenames, unitsEnv);
     for (const [i, stage] of p.stages.entries()) {
       const s = begin(prof, `stage ${stage.name ?? '#' + (i + 1)}`, 'stage', { from: stageFrom(stage) });
       const start = await startStage(stage, execEnv);
       tree = start.tree;
       let key = start.key;
+      currentRenames = stage.base.kind === 'stage' ? (stageRenames.get(stage.base.name) ?? new Map()) : new Map();
       const record = steps ? [tree] : undefined;
       steps?.push(record!);
       for (const op of stage.operations) {
@@ -484,10 +494,15 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
         const r = await executeOp(op, tree, key, execEnv);
         tree = r.tree;
         key = r.key;
+        if (r.renames) {
+          renames.set(op.span.line, r.renames);
+          currentRenames = composeRenames(currentRenames, r.renames);
+        }
         record?.push(tree);
         o.end({ files: tree.size, ...(r.memo ? { memo: r.memo } : {}) });
       }
       if (stage.name !== undefined) {
+        stageRenames.set(stage.name, currentRenames);
         stageTrees.set(stage.name, tree);
         execEnv.stageKeys.set(stage.name, key);
       }
@@ -503,7 +518,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label);
+  tree = withSiteRules(tree, p, label, currentRenames);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
@@ -543,6 +558,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     ...(steps ? { steps } : {}),
     ...(pins ? { pins } : {}),
     ...(units.size ? { imported: units } : {}),
+    ...(renames.size ? { renames } : {}),
   };
 }
 
@@ -1022,6 +1038,8 @@ export interface ImportedSitefile {
   readonly imported: ReadonlyMap<string, ImportedSitefile>;
   /** With `recordSteps`: like {@link BuildResult.steps}, for the stages built (a prefix of `plan.stages`). */
   readonly steps?: Tree[][];
+  /** What each of its FINGERPRINTs renamed (old path, new path), by its line. */
+  readonly renames: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
 
 interface Unit extends ImportedSitefile {
@@ -1033,6 +1051,9 @@ interface Unit extends ImportedSitefile {
   readonly stageTrees: Map<string, Tree>;
   readonly stageKeys: Map<string, string>;
   readonly steps?: Tree[][];
+  readonly renames: Map<number, ReadonlyArray<readonly [string, string]>>;
+  /** Each built named stage's FINGERPRINT renames, composed (inherited by `FROM <stage>`, also from the importer). */
+  readonly stageRenames: Map<string, ReadonlyMap<string, string>>;
   /** What the import stands for in the provenance (with {@link ImportedSitefile.digest}). */
   readonly provenance: { readonly uri: string; readonly resolvedUrl?: string; readonly gitCommit?: string };
   readonly sitefileBytes: Uint8Array;
@@ -1055,7 +1076,7 @@ interface UnitsEnv {
   readonly recordSteps: boolean;
   /** Every remote input's pin under --strict-pins, by qualified import name. */
   readonly pins: Record<string, 'integrity' | 'lockfile' | 'commit'>;
-  readonly exec: Pick<ExecEnv, 'plugins' | 'toolPolicy' | 'stats'>;
+  readonly exec: Pick<ExecEnv, 'plugins' | 'toolPolicy' | 'stats' | 'fetchPolicy'>;
   readonly fromImage: (base: ImageStageBase, unit: string) => Promise<FromImage>;
 }
 
@@ -1198,6 +1219,8 @@ async function loadSitefileImport(spec: ImportSpec, importer: Importer, refs: re
     envKey: env.memo ? memoKey('env', label, valueKey([...p.vars])) : '',
     stageTrees: new Map(),
     stageKeys: new Map(),
+    renames: new Map(),
+    stageRenames: new Map(),
     ...(env.recordSteps ? { steps: [] } : {}),
     built: 0,
     provenance,
@@ -1329,6 +1352,7 @@ async function provideImportedStages(
   refs: readonly ImportedStageRef[],
   stages: Map<string, Tree>,
   keys: Map<string, string>,
+  renames: Map<string, ReadonlyMap<string, string>>,
   env: UnitsEnv,
 ): Promise<void> {
   for (const [name, unit] of units) {
@@ -1340,6 +1364,7 @@ async function provideImportedStages(
       if (st.name === undefined) continue;
       stages.set(`${name}+${st.name}`, unit.stageTrees.get(st.name)!);
       keys.set(`${name}+${st.name}`, unit.stageKeys.get(st.name) ?? '');
+      renames.set(`${name}+${st.name}`, unit.stageRenames.get(st.name) ?? new Map());
     }
   }
 }
@@ -1347,7 +1372,7 @@ async function provideImportedStages(
 /** Build an imported Sitefile's stages up to index `upto` (those already built are kept). */
 async function buildUnitStages(unit: Unit, upto: number, env: UnitsEnv): Promise<void> {
   if (upto < unit.built) return;
-  await provideImportedStages(unit.imported, importedStageRefs(unit.plan.stages.slice(0, upto + 1)), unit.stageTrees, unit.stageKeys, env);
+  await provideImportedStages(unit.imported, importedStageRefs(unit.plan.stages.slice(0, upto + 1)), unit.stageTrees, unit.stageKeys, unit.stageRenames, env);
   const execEnv: ExecEnv = {
     local: unit.local,
     resources: unit.resources,
@@ -1369,15 +1394,21 @@ async function buildUnitStages(unit: Unit, upto: number, env: UnitsEnv): Promise
     const start = await startStage(stage, execEnv);
     let tree = start.tree;
     let key = start.key;
+    let current: ReadonlyMap<string, string> = stage.base.kind === 'stage' ? (unit.stageRenames.get(stage.base.name) ?? new Map()) : new Map();
     const record = unit.steps ? [tree] : undefined;
     for (const op of stage.operations) {
       const r = await executeOp(op, tree, key, execEnv);
       tree = r.tree;
       key = r.key;
+      if (r.renames) {
+        unit.renames.set(op.span.line, r.renames);
+        current = composeRenames(current, r.renames);
+      }
       record?.push(tree);
     }
     if (record) unit.steps!.push(record);
     if (stage.name !== undefined) {
+      unit.stageRenames.set(stage.name, current);
       unit.stageTrees.set(stage.name, tree);
       unit.stageKeys.set(stage.name, key);
     }
@@ -1413,6 +1444,8 @@ interface ExecEnv {
   readonly stageKeys: Map<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
+  /** The network policy (CHECKLINKS --external). */
+  readonly fetchPolicy: FetchPolicy;
   /** Resolve a `FROM image` stage base (registry pull or local store). */
   readonly fromImage: (base: ImageStageBase) => Promise<FromImage>;
 }
@@ -1566,14 +1599,50 @@ export function templateNames(nodes: readonly TemplateNode[], out = new Set<stri
  * input tree is also unchanged reuses the resulting tree. The key of the result chains the
  * input tree's key with the step's, like image layers.
  */
-async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEnv): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss' }> {
-  const policy = op.overwrite ? 'overwrite' : 'error';
+async function executeOp(
+  op: Operation,
+  tree: Tree,
+  prevKey: string,
+  env: ExecEnv,
+): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss'; renames?: ReadonlyArray<readonly [string, string]> }> {
+  const policy = 'overwrite' in op && op.overwrite ? 'overwrite' : 'error';
   const memo = env.memo;
-  if (!memo) return { tree: op.kind === 'SITEMAP' ? sitemap(op, tree, env) : tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+  if (!memo) {
+    if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
+    if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    if (op.kind === 'CHECKLINKS') {
+      await checkLinks(op, tree, env, env.warn);
+      return { tree, key: '' };
+    }
+    return { tree: tree.withFiles((await produce(op, tree, recording(env), '')).files, policy, op.span), key: '' };
+  }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
+    if (op.kind === 'CHECKLINKS') {
+      // The tree is unchanged; a hit skips the check (and its requests) and prints its warnings again.
+      const hit = memo.get<{ warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      await checkLinks(op, tree, env, (m) => (warnings.push(m), env.warn(m)));
+      memo.set(key, { warnings });
+      return { tree, key, memo: 'miss' };
+    }
+    if (op.kind === 'FINGERPRINT') {
+      const hit = memo.get<{ tree: Tree; renames: ReadonlyArray<readonly [string, string]>; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, renames: hit.renames, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = fingerprintOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { ...out, warnings });
+      return { ...out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1589,6 +1658,15 @@ async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEn
   const out = tree.withFiles(p.files, policy, op.span);
   memo.set(key, out);
   return { tree: out, key, memo: p.hit ? 'files' : 'miss' };
+}
+
+async function checkLinks(op: Extract<Operation, { kind: 'CHECKLINKS' }>, tree: Tree, env: ExecEnv, warn: (m: string) => void): Promise<void> {
+  const broken = await brokenLinks(tree, op, env.fetchPolicy);
+  reportBrokenLinks(broken, op, `${env.label}:${op.span.line} CHECKLINKS`, warn);
+}
+
+function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Fingerprinted {
+  return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -2096,10 +2174,23 @@ async function transformFiles(
 }
 
 /** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
-function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
+/**
+ * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
+ * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
+ * names its new URL.
+ */
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>): Tree {
+  const url = new Map<string, string>();
+  for (const [from, to] of renames) {
+    const a = urlBelow(p.exportPath, from);
+    const b = urlBelow(p.exportPath, to);
+    if (a !== undefined && b !== undefined) url.set(a, b);
+  }
+  const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
+  const headers = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
-    { name: '_redirects', text: redirectsFile(p.redirects), rules: p.redirects, kind: 'REDIRECT' },
-    { name: '_headers', text: headersFile(p.headers), rules: p.headers, kind: 'HEADER' },
+    { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
+    { name: '_headers', text: headersFile(headers), rules: headers, kind: 'HEADER' },
   ];
   for (const f of files) {
     const first = f.rules[0];
@@ -2109,6 +2200,12 @@ function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
     tree = tree.withFiles([[joinVirtual(p.exportPath, f.name), node]], policy, first.span);
   }
   return tree;
+}
+
+/** The URL path of a tree path below the exported directory, or undefined outside it. */
+function urlBelow(dir: string, path: string): string | undefined {
+  if (dir === '/') return path;
+  return path.startsWith(dir + '/') ? path.slice(dir.length) : undefined;
 }
 
 function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): Files {
@@ -2161,7 +2258,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
 }
 
 /** The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo). */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
