@@ -2,6 +2,7 @@ import { SitefileError, type SourceSpan } from './errors.js';
 import { isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
+import { checkPattern } from './fingerprint.js';
 import { checkBaseUrl, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
@@ -71,6 +72,29 @@ export interface HeaderSpec {
 
 export type Operation =
   | {
+      /** Report the references in the tree's HTML and CSS files that point at nothing. */
+      readonly kind: 'CHECKLINKS';
+      readonly warn: boolean;
+      readonly external: boolean;
+      /** The EXPORT path: absolute references resolve below it. */
+      readonly root: string;
+      /** Every REDIRECT source in the Sitefile: links to them are not broken. */
+      readonly redirects: readonly string[];
+      readonly span: SourceSpan;
+    }
+  | {
+      /** Rename the files matching `patterns` to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
+      readonly kind: 'FINGERPRINT';
+      /** Checked absolute patterns, NFC; a trailing `/` became `/**`. */
+      readonly patterns: readonly string[];
+      /** `MANIFEST <dest>`: the JSON map of old to new paths. */
+      readonly manifest?: string;
+      /** The EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it. */
+      readonly root: string;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
+  | {
       /** sitemaps.org XML of the `.html` files in the tree at this point. */
       readonly kind: 'SITEMAP';
       /** Checked base URL without trailing slashes. */
@@ -100,6 +124,9 @@ export type Operation =
       readonly each?: { readonly as: string; readonly list: string };
       /** argv template when `plugin` names a TOOL. */
       readonly args?: readonly Operand[];
+      /** A directory source's files to keep / leave out (`.sitefileignore` patterns, relative to it). */
+      readonly include?: readonly string[];
+      readonly exclude?: readonly string[];
       readonly overwrite: boolean;
       readonly span: SourceSpan;
     }
@@ -354,6 +381,8 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
           options: ins.options.map((o) => ({ key: o.key, value: o.value })),
           ...(ins.each ? { each: { as: ins.each.as, list: ins.each.list } } : {}),
           ...(ins.args ? { args: ins.args } : {}),
+          ...(ins.include ? { include: ins.include } : {}),
+          ...(ins.exclude ? { exclude: ins.exclude } : {}),
           overwrite: ins.overwrite,
           span: ins.span,
         });
@@ -363,6 +392,17 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         operations().push({ kind: 'SITEMAP', base, dest: fileDest(ins.dest, vars, '/sitemap.xml', 'SITEMAP'), overwrite: ins.overwrite, span: ins.span });
         break;
       }
+      case 'FINGERPRINT': {
+        const patterns = ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span));
+        const manifest = ins.manifest ? fileDest(ins.manifest, vars, '', 'FINGERPRINT MANIFEST') : undefined;
+        // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
+        operations().push({ kind: 'FINGERPRINT', patterns, ...(manifest !== undefined ? { manifest } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
+      case 'CHECKLINKS':
+        // `root` and `redirects` are filled in below, once every line is planned.
+        operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
+        break;
       case 'FEED': {
         const base = checkBaseUrl(evaluateOperand(ins.base, vars), 'FEED BASE', ins.base.span);
         operations().push({
@@ -409,6 +449,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     }
   }
 
+  for (const st of stages) {
+    st.operations.forEach((op, i) => {
+      if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
+    });
+  }
   // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
   for (const st of stages.slice(0, -1)) {
     if (st.name === undefined) {
@@ -474,7 +520,7 @@ function pageSize(op: Operand, vars: ReadonlyMap<string, Scalar>): number {
   return Number(raw);
 }
 
-/** `TO <dest>` of SITEMAP/FEED (a file path), or the default. */
+/** `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default. */
 function fileDest(op: Operand | undefined, vars: ReadonlyMap<string, Scalar>, fallback: string, what: string): string {
   if (!op) return fallback;
   const raw = evaluateOperand(op, vars);

@@ -8,6 +8,10 @@
         "named": true
       },
       {
+        "type": "checklinks_instruction",
+        "named": true
+      },
+      {
         "type": "copy_instruction",
         "named": true
       },
@@ -17,6 +21,10 @@
       },
       {
         "type": "feed_instruction",
+        "named": true
+      },
+      {
+        "type": "fingerprint_instruction",
         "named": true
       },
       {
@@ -159,6 +167,22 @@
           },
           {
             "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "checklinks_instruction",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
             "named": true
           }
         ]
@@ -470,6 +494,74 @@
       "title": {
         "multiple": false,
         "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "fingerprint_instruction",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "manifest": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
         "types": [
           {
             "type": "path",
@@ -2205,6 +2297,10 @@
     "named": false
   },
   {
+    "type": "CHECKLINKS",
+    "named": false
+  },
+  {
     "type": "COMPRESSION",
     "named": false
   },
@@ -2230,6 +2326,10 @@
   },
   {
     "type": "FEED",
+    "named": false
+  },
+  {
+    "type": "FINGERPRINT",
     "named": false
   },
   {
@@ -2274,6 +2374,10 @@
   },
   {
     "type": "LINK",
+    "named": false
+  },
+  {
+    "type": "MANIFEST",
     "named": false
   },
   {

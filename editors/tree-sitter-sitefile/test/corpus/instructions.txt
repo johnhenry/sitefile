@@ -411,9 +411,49 @@ IMPORT docs FROM https://example.com/r SECRET tok as bearer
     (secret_clause
       (identifier))))
 
-==================
+================================================================================
+FINGERPRINT with flags, several patterns and a manifest
+================================================================================
+
+FINGERPRINT /assets/ /**/*.css
+fingerprint --overwrite /${D}/*.js "/x y/" manifest /asset-manifest.json
+
+---
+
+(source_file
+  (fingerprint_instruction
+    (path)
+    (path))
+  (fingerprint_instruction
+    (flag
+      (flag_name))
+    (path
+      (substitution
+        (identifier)))
+    (string
+      (string_content))
+    (path)))
+
+================================================================================
+CHECKLINKS with and without flags
+================================================================================
+
+CHECKLINKS
+checklinks --warn --external
+
+---
+
+(source_file
+  (checklinks_instruction)
+  (checklinks_instruction
+    (flag
+      (flag_name))
+    (flag
+      (flag_name))))
+
+================================================================================
 RENDER with BY and PAGE, IMPORT with DRAFTS
-==================
+================================================================================
 
 IMPORT posts FROM ./posts AS markdown DRAFTS ${DRAFTS}
 RENDER ./tag.html TO /tags/${tag.key}/index.html FOR tag IN posts BY tags

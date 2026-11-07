@@ -16,9 +16,9 @@
 ; Instructions and clauses (case-insensitive in the source).
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
-  "SITEMAP" "FEED" "REDIRECT" "HEADER"
+  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CHECKLINKS"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "DRAFTS" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER"
+  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST"
 ] @keyword
 
 (secret_clause id: (identifier) @variable)
@@ -84,7 +84,7 @@
   (#eq? @_name "chmod")
   (#any-of? @constant.numeric "644" "0644" "755" "0755"))
 ((flag name: (flag_name) @_name value: (flag_value) @string.special)
-  (#eq? @_name "exclude"))
+  (#any-of? @_name "exclude" "include"))
 ((flag name: (flag_name) @_name value: (flag_value) @constant.builtin)
   (#eq? @_name "escape")
   (#any-of? @constant.builtin "none" "html" "NONE" "HTML"))

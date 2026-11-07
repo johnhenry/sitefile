@@ -218,9 +218,10 @@ export interface TransformOption {
 }
 
 /**
- * `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH <plugin> TO <dest>
- *   [OPTIONS key=value …] [FOR item IN list] [ARGS <argument> …]`
- * ARGS (last on the line) is the argv template when `<plugin>` is a TOOL.
+ * `TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…] [<source>]
+ *   WITH <plugin> TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS <argument> …]`
+ * ARGS (last on the line) is the argv template when `<plugin>` is a TOOL. A directory source runs
+ * the plugin once per file (`--include`/`--exclude` pick the files).
  */
 export interface TransformInstruction {
   readonly kind: 'TRANSFORM';
@@ -235,6 +236,10 @@ export interface TransformInstruction {
   readonly each?: { readonly as: string; readonly list: string; readonly span: SourceSpan };
   /** argv template of a TOOL: `{input}`, `{output}` and `{option.key}` are replaced by the host. */
   readonly args?: readonly Operand[];
+  /** `--include` patterns (`.sitefileignore` syntax): a directory source's files to keep. */
+  readonly include?: readonly string[];
+  /** `--exclude` patterns (`.sitefileignore` syntax): a directory source's files to leave out. */
+  readonly exclude?: readonly string[];
   readonly overwrite: boolean;
 }
 
@@ -293,6 +298,27 @@ export interface HeaderInstruction {
   readonly overwrite: boolean;
 }
 
+/** `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. */
+export interface FingerprintInstruction {
+  readonly kind: 'FINGERPRINT';
+  readonly span: SourceSpan;
+  /** Absolute path patterns (`*`, `?`, `**`; a trailing `/` means everything below). */
+  readonly patterns: readonly Operand[];
+  /** `MANIFEST <dest>`: where to write the JSON map of old to new paths. */
+  readonly manifest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
+export interface CheckLinksInstruction {
+  readonly kind: 'CHECKLINKS';
+  readonly span: SourceSpan;
+  /** `--warn`: print each broken link as a warning instead of failing. */
+  readonly warn: boolean;
+  /** `--external`: also request http(s) links (under the network policy). */
+  readonly external: boolean;
+}
+
 export type Instruction =
   | FromInstruction
   | ArgInstruction
@@ -307,6 +333,8 @@ export type Instruction =
   | FeedInstruction
   | RedirectInstruction
   | HeaderInstruction
+  | FingerprintInstruction
+  | CheckLinksInstruction
   | ExportInstruction;
 
 /** A parsed and semantically validated Sitefile. */

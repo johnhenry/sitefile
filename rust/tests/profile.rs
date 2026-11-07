@@ -90,7 +90,10 @@ fn build_profile_lists_steps_in_sitefile_order() {
             "operation 20 RENDER",
             "operation 22 RENDER",
             "operation 26 FEED",
-            "operation 27 SITEMAP", "export export"]
+            "operation 27 SITEMAP",
+            "operation 31 FINGERPRINT",
+            "operation 34 CHECKLINKS",
+            "export export"]
     );
     let label_of = |n: &str| n.rsplit_once(':').map(|(l, _)| l.to_string()).unwrap_or_default();
     let ops: Vec<_> = ev.iter().filter(|e| e["cat"] == "operation").map(|e| label_of(e["name"].as_str().unwrap())).collect();

@@ -91,9 +91,55 @@ interface Pending {
   reject: (e: Error) => void;
 }
 
+/**
+ * A wasm plugin: up to `lanes` workers, so a directory TRANSFORM can run several calls at once.
+ * A call waits for a free worker, and its time limit starts when that worker takes it.
+ */
 export class WasmPlugin {
   /** No imports means no clock or randomness: results depend only on the request. */
   readonly cacheable = true;
+  private readonly idle: WasmLane[] = [];
+  private readonly all: WasmLane[] = [];
+  private readonly waiting: Array<(lane: WasmLane) => void> = [];
+
+  constructor(
+    readonly name: string,
+    private readonly bytes: Uint8Array,
+    private readonly policy: PluginPolicy,
+    private readonly lanes = 1,
+  ) {}
+
+  private async lane(): Promise<WasmLane> {
+    const free = this.idle.pop();
+    if (free) return free;
+    if (this.all.length < Math.max(1, this.lanes)) {
+      const lane = new WasmLane(this.name, this.bytes, this.policy);
+      this.all.push(lane);
+      return lane;
+    }
+    return new Promise((resolve) => this.waiting.push(resolve));
+  }
+
+  async call(request: PluginRequest, span?: SourceSpan): Promise<PluginResult> {
+    const lane = await this.lane();
+    try {
+      return await lane.call(request, span);
+    } finally {
+      const next = this.waiting.shift();
+      if (next) next(lane);
+      else this.idle.push(lane);
+    }
+  }
+
+  close(): void {
+    for (const lane of this.all) lane.close();
+    this.all.length = 0;
+    this.idle.length = 0;
+  }
+}
+
+/** One worker thread running a wasm plugin's calls one at a time. */
+class WasmLane {
   private worker: Worker | undefined;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();

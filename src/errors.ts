@@ -59,6 +59,8 @@ export type ErrorCode =
   /** A document of an `IMPORT … SCHEMA` does not match the schema, or the schema itself is invalid. */
   | 'E_SCHEMA'
   | 'E_PLUGIN'
+  /** CHECKLINKS found references to files that do not exist (or, with --external, URLs that do not answer). */
+  | 'E_BROKEN_LINK'
   // export
   | 'E_EXPORT'
   | 'E_EXPORT_UNSAFE'

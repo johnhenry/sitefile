@@ -22,7 +22,7 @@ use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
 use crate::planner::{plan, target_plan, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
-use crate::plugins::host::{PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
+use crate::plugins::host::{run_bounded, transform_jobs, PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
 use crate::plugins::wasm::check_wasm_plugin;
 use crate::profile::{begin, Profiler};
 use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
@@ -38,12 +38,14 @@ use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
+use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
 use crate::site::{atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry};
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -205,6 +207,8 @@ pub struct BuildResult {
     pub pins: Option<Pins>,
     /// The `FROM image` stage bases this build read, in stage order.
     pub images: Vec<FromImageUse>,
+    /// What each FINGERPRINT renamed (old path, new path), by its line.
+    pub renames: Vec<(u32, Vec<(String, String)>)>,
 }
 
 /// A `FROM image` base a build used.
@@ -746,8 +750,14 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         recorded: None,
         unrecorded: warn.clone(),
         from_image: &from_image,
+        last_renames: None,
+        fetch_policy: options.fetch_policy.clone(),
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
+    // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
+    let mut renames: Vec<(u32, Vec<(String, String)>)> = Vec::new();
+    let mut stage_renames: HashMap<String, BTreeMap<String, String>> = HashMap::new();
+    let mut current_renames: BTreeMap<String, String> = BTreeMap::new();
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
             let s = begin(prof, || format!("PLUGIN {}", spec.name), "plugin", || vec![("path", json!(format!("./{}", spec.path)))]);
@@ -760,6 +770,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             let s = begin(prof, || format!("stage {name}"), "stage", || vec![("from", json!(stage_from(stage)))]);
             let (start, mut key) = exec.start_stage(stage)?;
             tree = start;
+            current_renames = match &stage.base {
+                StageBase::Stage { name } => stage_renames.get(name).cloned().unwrap_or_default(),
+                _ => BTreeMap::new(),
+            };
             let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 let line = op.span().line;
@@ -767,6 +781,10 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                 let (out, k, state) = exec.execute_op(op, tree, &key)?;
                 tree = out;
                 key = k;
+                if let Some(r) = exec.last_renames.take() {
+                    current_renames = compose_renames(&current_renames, &r);
+                    renames.push((line, r));
+                }
                 if let Some(r) = record.as_mut() {
                     r.push(tree.clone());
                 }
@@ -780,6 +798,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                 all.push(r);
             }
             if let Some(name) = &stage.name {
+                stage_renames.insert(name.clone(), current_renames.clone());
                 exec.stages.insert(name.clone(), tree.clone());
                 exec.stage_keys.insert(name.clone(), key);
             }
@@ -801,7 +820,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     if tree.is_file(&p.export_path) {
         return Err(SitefileError::plain(E_EXPORT, format!("EXPORT path '{}' is a file; export a directory", p.export_path)));
     }
-    let tree = with_site_rules(tree, &p, &label)?;
+    let tree = with_site_rules(tree, &p, &label, &current_renames)?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
         warn(&match &p.target {
@@ -859,13 +878,27 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         pins,
         memo_stats: None,
         images,
+        renames,
     })
 }
 
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
-fn with_site_rules(mut tree: Tree, p: &Plan, label: &str) -> Result<Tree> {
-    let redirects = redirects_file(p.redirects.iter().map(|r| (r.from.as_str(), r.to.as_str(), r.status)));
-    let headers = headers_file(p.headers.iter().map(|h| (h.pattern.as_str(), h.name.as_str(), h.value.as_str())));
+/// A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
+/// names its new URL.
+fn with_site_rules(mut tree: Tree, p: &Plan, label: &str, renames: &BTreeMap<String, String>) -> Result<Tree> {
+    let url_below = |path: &str| -> Option<String> {
+        if p.export_path == "/" {
+            Some(path.to_string())
+        } else {
+            path.strip_prefix(&format!("{}/", p.export_path)).map(|rest| format!("/{rest}"))
+        }
+    };
+    let urls: HashMap<String, String> = renames.iter().filter_map(|(a, b)| Some((url_below(a)?, url_below(b)?))).collect();
+    let renamed = |s: &str| urls.get(s).cloned().unwrap_or_else(|| s.to_string());
+    let to: Vec<String> = p.redirects.iter().map(|r| renamed(&r.to)).collect();
+    let patterns: Vec<String> = p.headers.iter().map(|h| renamed(&h.pattern)).collect();
+    let redirects = redirects_file(p.redirects.iter().zip(&to).map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)));
+    let headers = headers_file(p.headers.iter().zip(&patterns).map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())));
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
     let files: [SiteFile; 2] = [
@@ -1743,6 +1776,10 @@ struct Exec<'a> {
     unrecorded: Warn,
     /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span).
     from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan) -> Result<FromImage>,
+    /// What the FINGERPRINT that just ran renamed (old path, new path).
+    last_renames: Option<Vec<(String, String)>>,
+    /// The network policy (CHECKLINKS --external).
+    fetch_policy: FetchPolicy,
 }
 
 /// What a stage starts from, for the trace.
@@ -1950,10 +1987,68 @@ impl<'a> Exec<'a> {
             if let Operation::Sitemap { .. } = op {
                 return Ok((self.sitemap(op, tree)?, String::new(), None));
             }
+            if let Operation::CheckLinks { .. } = op {
+                self.check_links(op, &tree, &*self.warn.clone())?;
+                return Ok((tree, String::new(), None));
+            }
+            if let Operation::Fingerprint { .. } = op {
+                let (out, renames) = self.fingerprint(op, &tree, &*self.warn.clone())?;
+                self.last_renames = Some(renames);
+                return Ok((out, String::new(), None));
+            }
             let p = self.produce(op, &tree, "")?;
             return Ok((tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?, String::new(), None));
         };
         let op_id = memo_key(&["op", &self.env_key, &format!("{op:?}")]);
+        if let Operation::CheckLinks { .. } = op {
+            // Reads the whole tree; the tree is unchanged. A hit skips the check (and its requests) and prints its warnings again.
+            let key = memo_key(&["chain", prev, &op_id]);
+            if let Some(warnings) = lock_memo(memo).get::<Vec<String>>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((tree, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            self.check_links(op, &tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), warnings, Vec::new());
+            return Ok((tree, key, Some("miss")));
+        }
+        if let Operation::Fingerprint { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<(String, String)>, Vec<String>);
+            if let Some((hit, renames, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                self.last_renames = Some(renames);
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let (out, renames) = self.fingerprint(op, &tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), renames.clone(), warnings), Vec::new());
+            self.last_renames = Some(renames);
+            return Ok((out, key, Some("miss")));
+        }
         if let Operation::Sitemap { .. } = op {
             // Reads the whole tree: only the chain key can say it is unchanged.
             let key = memo_key(&["chain", prev, &op_id]);
@@ -1985,6 +2080,20 @@ impl<'a> Exec<'a> {
         Ok((out, key, Some(if p.hit { "files" } else { "miss" })))
     }
 
+    fn check_links(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<()> {
+        let Operation::CheckLinks { warn: as_warnings, external, root, redirects, span } = op else { unreachable!() };
+        let op = CheckLinksOp { warn: *as_warnings, external: *external, root, redirects, span };
+        let broken = broken_links(tree, &op, &self.fetch_policy);
+        report_broken_links(&broken, &op, &format!("{}:{} CHECKLINKS", self.label, span.line), warn)
+    }
+
+    fn fingerprint(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<(Tree, Vec<(String, String)>)> {
+        let Operation::Fingerprint { patterns, manifest, root, overwrite, span } = op else { unreachable!() };
+        let origin = format!("{}:{} FINGERPRINT", self.label, span.line);
+        let op = FingerprintOp { patterns, manifest: manifest.as_deref(), root, overwrite: *overwrite, span };
+        fingerprint(tree, &op, &origin, warn)
+    }
+
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
         let Operation::Sitemap { base, dest, overwrite, span } = op else { unreachable!() };
         let origin = format!("{}:{} SITEMAP", self.label, span.line);
@@ -2012,6 +2121,8 @@ impl<'a> Exec<'a> {
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
+            Operation::Fingerprint { .. } => unreachable!("FINGERPRINT reads the tree: execute_op runs it"),
+            Operation::CheckLinks { .. } => unreachable!("CHECKLINKS reads the tree: execute_op runs it"),
             Operation::Copy { source, dest, dest_is_dir, exclude, chmod, parents, span, .. } => {
                 let rules = (!exclude.is_empty()).then(|| IgnoreRules::from_patterns(exclude));
                 let src = self.read_source(source, &origin, rules.as_ref())?;
@@ -2266,7 +2377,7 @@ impl<'a> Exec<'a> {
     }
 
     fn produce_transform(&mut self, op: &Operation, op_id: &str) -> Result<Produced> {
-        let Operation::Transform { source, plugin, dest, options, each, args, span, .. } = op else { unreachable!() };
+        let Operation::Transform { source, plugin, dest, options, each, args, include, exclude, span, .. } = op else { unreachable!() };
         let origin = format!("{}:{} TRANSFORM", self.label, span.line);
         let scope = self.scope();
         let list_value;
@@ -2288,6 +2399,9 @@ impl<'a> Exec<'a> {
         let mut input: Option<PluginInput> = None;
         let mut data: Option<Value> = None;
         let mut src_key = String::new();
+        // A directory source: the plugin runs once per file (--include/--exclude pick them).
+        let mut dir: Option<(Tree, String)> = None;
+        let filtered = !include.is_empty() || !exclude.is_empty();
         if let Some(src_ref) = source {
             let value_import = match src_ref {
                 SourceRef::Import { name, path, span } => match self.resources.get(name) {
@@ -2302,26 +2416,40 @@ impl<'a> Exec<'a> {
                 _ => None,
             };
             if let Some(v) = value_import {
+                if let (true, SourceRef::Import { name, span, .. }) = (filtered, src_ref) {
+                    return Err(SitefileError::at(E_TYPE, format!("--include and --exclude filter a directory, but '{name}:' is a value import"), span));
+                }
                 data = Some(v);
             } else {
-                let src = self.read_source(src_ref, &origin, None)?;
+                let rules = (!exclude.is_empty()).then(|| IgnoreRules::from_patterns(exclude));
+                let src = self.read_source(src_ref, &origin, rules.as_ref())?;
                 if self.memo.is_some() {
                     src_key = self.source_key(src_ref, &src);
                 }
-                let Source::File { bytes, basename, label, .. } = src else {
-                    return Err(SitefileError::at(
-                        E_TYPE,
-                        format!("TRANSFORM source '{}' is a directory; plugins take one file", src.label()),
-                        src_ref.span(),
-                    ));
-                };
-                let name = if basename.is_empty() { label.clone() } else { basename };
-                input = Some(PluginInput::new(label, name, bytes.to_vec()));
+                match src {
+                    Source::Tree { tree, label, .. } => {
+                        if each.is_some() {
+                            return Err(SitefileError::at(
+                                E_TYPE,
+                                format!("TRANSFORM source '{label}' is a directory, which runs the plugin once per file and cannot be combined with FOR"),
+                                src_ref.span(),
+                            ));
+                        }
+                        dir = Some((including(tree, include)?, label));
+                    }
+                    Source::File { bytes, basename, label, .. } => {
+                        if filtered {
+                            return Err(SitefileError::at(E_TYPE, format!("--include and --exclude filter a directory, but '{label}' is a file"), src_ref.span()));
+                        }
+                        let name = if basename.is_empty() { label.clone() } else { basename };
+                        input = Some(PluginInput::new(label, name, bytes.to_vec()));
+                    }
+                }
             }
         }
 
         let tool = self.tools.get(plugin).cloned();
-        if let (Some(_), None, Some(s)) = (&tool, &input, source) {
+        if let (Some(_), None, None, Some(s)) = (&tool, &input, &dir, source) {
             return Err(SitefileError::at(E_TYPE, format!("TRANSFORM … WITH {plugin}: a TOOL needs a file source, not a value import"), s.span()));
         }
         let input_digest = input.as_ref().map(|i| sha256(&i.bytes));
@@ -2368,6 +2496,17 @@ impl<'a> Exec<'a> {
             }
             memo_key(&["transform", op_id, &src_key, &code, &self.names_key(names, None)])
         });
+        if let Some((tree, label)) = dir {
+            if let Some(hit) = self.memo_lookup(&key) {
+                return Ok(hit);
+            }
+            let file_base = memo.map(|_| memo_key(&["transform-file", op_id, &code, &self.names_key(operand_refs.clone(), None)]));
+            let mut children: Vec<String> = Vec::new();
+            let ctx = DirTransform { tree: &tree, label: &label, file_base, tool: tool.as_ref(), plugin_digest: plugin_digest.as_deref(), memo };
+            let files = self.transform_files(op, &ctx, &mut children)?;
+            let store = tool.is_some() || self.plugins.cacheable(plugin);
+            return Ok(self.memo_store(key, files, children, store));
+        }
         // One FOR element's files: the same request gives the same result (the list itself is not read).
         let item_base = match (memo, each) {
             (Some(_), Some(e)) => Some(memo_key(&["transform-item", op_id, &src_key, &code, &self.names_key(operand_refs, Some(&e.as_name))])),
@@ -2397,6 +2536,13 @@ impl<'a> Exec<'a> {
                 _ => scope,
             };
             let raw_dest = item_scope.interpolate(dest)?;
+            if star_name(&raw_dest).is_some() {
+                return Err(SitefileError::at(
+                    E_TYPE,
+                    format!("TRANSFORM destination '{raw_dest}': a '*' name stands for each file of a directory source, and this TRANSFORM's source is not a directory"),
+                    &dest.span,
+                ));
+            }
             let d = normalize_virtual(&raw_dest, Some(&dest.span), "TRANSFORM destination")?;
             // Object.create(null) + assignment: a repeated key keeps its first position, the last value.
             let mut opts: Vec<(String, String)> = Vec::new();
@@ -2525,6 +2671,313 @@ impl<'a> Exec<'a> {
         let store = tool.is_some() || self.plugins.cacheable(plugin);
         Ok(self.memo_store(key, files, children, store))
     }
+
+    /// TRANSFORM over a directory: one plugin (or tool) call per file, in path order. Each call
+    /// gets its own `input` and destination (see `file_dest`), is cached and memoized per file,
+    /// and calls run up to `transform_jobs()` at a time (a JavaScript plugin, one process, takes
+    /// one at a time). Files, tool output, profile events and errors come in path order whatever
+    /// order the calls finish in.
+    fn transform_files(&mut self, op: &Operation, ctx: &DirTransform, children: &mut Vec<String>) -> Result<Files> {
+        let Operation::Transform { plugin, dest, options, args, include, exclude, span, .. } = op else { unreachable!() };
+        let line = format!("{}:{} TRANSFORM", self.label, span.line);
+        if ctx.tree.is_empty() {
+            (self.warn)(&if !include.is_empty() || !exclude.is_empty() {
+                format!("{line}: --include/--exclude leave no files of '{}' to transform", ctx.label)
+            } else {
+                format!("{line}: '{}' contains no files", ctx.label)
+            });
+        }
+        let scope = self.scope();
+        let raw_dest = scope.interpolate(dest)?;
+        normalize_virtual(&raw_dest, Some(&dest.span), "TRANSFORM destination")?;
+        let dir_dest = if raw_dest.ends_with('/') { raw_dest.clone() } else { format!("{raw_dest}/") };
+        if ctx.tool.is_some() && star_name(&raw_dest).is_none() {
+            return Err(SitefileError::at(
+                E_PLUGIN,
+                format!(
+                    "TOOL {plugin} writes one file per input, but '{raw_dest}' is a directory destination: use '{dir_dest}*' to keep each file's name, or '{dir_dest}*.ext' to change its extension"
+                ),
+                &dest.span,
+            ));
+        }
+        // Object.create(null) + assignment: a repeated key keeps its first position, the last value.
+        let mut opts: Vec<(String, String)> = Vec::new();
+        for o in options {
+            let v = scope.interpolate(&o.value)?;
+            match opts.iter_mut().find(|(k, _)| *k == o.key) {
+                Some(slot) => slot.1 = v,
+                None => opts.push((o.key.clone(), v)),
+            }
+        }
+        let argv: Vec<String> = match ctx.tool {
+            Some(_) => args.as_deref().unwrap_or(&[]).iter().map(|a| scope.interpolate(a)).collect::<Result<_>>()?,
+            None => Vec::new(),
+        };
+        let store = |host: &PluginHost| ctx.tool.is_some() || host.cacheable(plugin);
+
+        struct Job<'p> {
+            index: usize,
+            label: String,
+            origin: String,
+            raw_dest: String,
+            path: String,
+            trailing_slash: bool,
+            request: PluginRequest,
+            cached: Option<String>,
+            memo_key: Option<String>,
+            span: crate::profile::Span<'p>,
+            logs: Mutex<Vec<String>>,
+            result: Option<PluginResult>,
+            cache: &'static str,
+        }
+        let entries: Vec<(String, Node)> = ctx.tree.entries().map(|(p, n)| (p.clone(), n.clone())).collect();
+        let mut done: Vec<Option<Files>> = vec![None; entries.len()];
+        let mut jobs: Vec<Job> = Vec::new();
+        for (index, (p, node)) in entries.iter().enumerate() {
+            let rel = &p[1..];
+            let label = format!("{}{rel}", if ctx.label.ends_with('/') { ctx.label.to_string() } else { format!("{}/", ctx.label) });
+            let file_key = ctx.file_base.as_ref().map(|b| memo_key(&[b, rel, &node.digest]));
+            if let (Some(m), Some(k)) = (ctx.memo, &file_key) {
+                children.push(k.clone());
+                if let Some(reused) = lock_memo(m).get::<Files>(k) {
+                    done[index] = Some(reused);
+                    continue;
+                }
+            }
+            let per_file = file_dest(&raw_dest, rel);
+            let d = normalize_virtual(&per_file, Some(&dest.span), "TRANSFORM destination")?;
+            let input = PluginInput::new(label.clone(), basename_virtual(p).to_string(), node.bytes.to_vec());
+            let cached = if self.cache.is_some() && (ctx.tool.is_some() || ctx.plugin_digest.is_some()) {
+                let code = match ctx.tool {
+                    Some(t) => json!({
+                        "tool": { "path": t.path.to_string_lossy(), "size": t.size, "mtimeMs": t.mtime_ms },
+                        "args": argv,
+                    }),
+                    None => json!({ "plugin": ctx.plugin_digest }),
+                };
+                let mut req = Map::new();
+                req.insert("dest".into(), Value::String(d.path.clone()));
+                let mut om = Map::new();
+                for (k, v) in &opts {
+                    om.insert(k.clone(), Value::String(v.clone()));
+                }
+                req.insert("options".into(), Value::Object(om));
+                req.insert("input".into(), json!({ "path": input.path, "name": input.name, "digest": sha256(&input.bytes) }));
+                Some(cache_key(&json!({ "code": code, "request": Value::Object(req) })))
+            } else {
+                None
+            };
+            let ev_args = vec![("plugin", json!(plugin)), ("tool", json!(ctx.tool.is_some())), ("dest", json!(d.path)), ("input", json!(label))];
+            let ev = match self.profiler {
+                Some(pr) => pr.reserve(format!("TRANSFORM {plugin} {}", d.path), "transform", ev_args, 1),
+                None => crate::profile::Span::none(),
+            };
+            let mut job = Job {
+                index,
+                origin: format!("{line} {label}"),
+                label,
+                raw_dest: per_file,
+                path: d.path.clone(),
+                trailing_slash: d.trailing_slash,
+                request: PluginRequest { dest: d.path.clone(), options: opts.clone(), input: Some(input), data: None, item: None },
+                cache: if cached.is_some() { "miss" } else { "off" },
+                cached,
+                memo_key: file_key,
+                span: ev,
+                logs: Mutex::new(Vec::new()),
+                result: None,
+            };
+            if let (Some(k), Some(c)) = (&job.cached, self.cache.as_mut()) {
+                if let Some(hit) = c.get(k) {
+                    job.span.start();
+                    job.span.end(vec![("cache", json!("hit"))]);
+                    job.result = Some(hit);
+                    job.cache = "hit";
+                }
+            }
+            jobs.push(job);
+        }
+
+        // The misses, a few at a time (a JavaScript plugin's one process takes one call at a time).
+        let misses: Vec<usize> = (0..jobs.len()).filter(|&i| jobs[i].result.is_none()).collect();
+        let settled: Vec<Option<Result<PluginResult>>> = if let Some(t) = ctx.tool {
+            let policy = &self.tool_policy;
+            let jobs_ref = &jobs;
+            let out = run_bounded(misses.len(), transform_jobs(), |k| {
+                let job = &jobs_ref[misses[k]];
+                job.span.start();
+                let input = job.request.input.as_ref().map(|i| ToolInput { name: i.name.clone(), bytes: i.bytes.clone() });
+                let call = ToolCall { args: argv.clone(), dest: job.path.clone(), options: opts.clone(), input };
+                let log = |l: &str| job.logs.lock().unwrap_or_else(|e| e.into_inner()).push(l.to_string());
+                let r = run_tool(t, &call, policy, &log, Some(span));
+                if r.is_ok() {
+                    job.span.end(vec![("cache", json!(job.cache))]);
+                }
+                r
+            });
+            self.stats.tool_runs += out.iter().filter(|r| r.is_some()).count() as u64;
+            out
+        } else if let Some(w) = self.plugins.shared_wasm(plugin, Some(span))? {
+            let jobs_ref = &jobs;
+            let out = run_bounded(misses.len(), transform_jobs(), |k| {
+                let job = &jobs_ref[misses[k]];
+                job.span.start();
+                let r = w.call_prepared(&job.request, Some(span));
+                if r.is_ok() {
+                    job.span.end(vec![("cache", json!(job.cache))]);
+                }
+                r
+            });
+            self.plugins.stats.calls += out.iter().filter(|r| r.is_some()).count() as u64;
+            out
+        } else {
+            let mut out: Vec<Option<Result<PluginResult>>> = Vec::new();
+            for &i in &misses {
+                let job = &jobs[i];
+                job.span.start();
+                let r = self.plugins.call(plugin, &job.request, Some(span));
+                let failed = r.is_err();
+                if !failed {
+                    job.span.end(vec![("cache", json!(job.cache))]);
+                }
+                out.push(Some(r));
+                if failed {
+                    break;
+                }
+            }
+            out.resize_with(misses.len(), || None);
+            out
+        };
+        let mut errors: HashMap<usize, SitefileError> = HashMap::new();
+        for (k, r) in settled.into_iter().enumerate() {
+            match r {
+                Some(Ok(v)) => jobs[misses[k]].result = Some(v),
+                Some(Err(e)) => {
+                    errors.insert(misses[k], e);
+                }
+                None => {}
+            }
+        }
+
+        // In path order: tool output, the first failure, cache writes and the files.
+        for (ji, job) in jobs.iter_mut().enumerate() {
+            // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
+            for l in job.logs.get_mut().unwrap_or_else(|e| e.into_inner()).drain(..) {
+                (self.unrecorded)(&l);
+            }
+            if let Some(e) = errors.remove(&ji) {
+                return Err(SitefileError { detail: format!("{}: {}", job.label, e.detail), ..e });
+            }
+            let Some(result) = job.result.take() else { unreachable!("every job before the first failure ran") };
+            if job.cache == "miss" && store(&self.plugins) {
+                if let (Some(k), Some(c)) = (&job.cached, self.cache.as_mut()) {
+                    c.put(k, &result);
+                }
+            }
+            let mut files: Files = Vec::new();
+            match result {
+                PluginResult::File(bytes) => {
+                    if job.trailing_slash {
+                        return Err(SitefileError::at(
+                            E_PLUGIN,
+                            format!(
+                                "{}: PLUGIN {plugin} returned one file, but '{}' is a directory destination (use '{dir_dest}*' or '{dir_dest}*.ext' for one file per input)",
+                                job.label, job.raw_dest
+                            ),
+                            &dest.span,
+                        ));
+                    }
+                    files.push((job.path.clone(), make_file(bytes, job.origin.clone(), 0o644)));
+                }
+                PluginResult::Files(list) => {
+                    for (rel, bytes) in list {
+                        let base = if job.path == "/" { "" } else { job.path.as_str() };
+                        let p = normalize_virtual(&format!("{base}/{rel}"), Some(&dest.span), &format!("file '{rel}' returned by PLUGIN {plugin}"))?.path;
+                        if rel.contains("..") || rel.starts_with('/') {
+                            return Err(SitefileError::at(E_PLUGIN, format!("{}: PLUGIN {plugin} returned an unsafe path '{rel}'", job.label), span));
+                        }
+                        files.push((p, make_file(bytes, job.origin.clone(), 0o644)));
+                    }
+                }
+            }
+            if let (Some(m), Some(k)) = (ctx.memo, &job.memo_key) {
+                if store(&self.plugins) {
+                    lock_memo(m).set(k.clone(), files.clone(), Vec::new());
+                }
+            }
+            done[job.index] = Some(files);
+        }
+
+        // Two inputs may write the same path only with the same content.
+        let mut out: Files = Vec::new();
+        let mut owner: HashMap<String, Node> = HashMap::new();
+        for (p, node) in done.into_iter().flatten().flatten() {
+            if let Some(prior) = owner.get(&p) {
+                if prior.digest == node.digest {
+                    continue;
+                }
+                return Err(SitefileError::at(
+                    E_CONFLICT,
+                    format!(
+                        "'{p}' is written for two inputs with different content ({} and {}); rename one, or leave one out with --include/--exclude",
+                        prior.origin, node.origin
+                    ),
+                    span,
+                ));
+            }
+            owner.insert(p.clone(), node.clone());
+            out.push((p, node));
+        }
+        Ok(out)
+    }
+}
+
+/// What `transform_files` needs besides the operation: the source directory and its label, the
+/// per-file memo key base, the tool or the plugin's code digest, and the memo.
+struct DirTransform<'t> {
+    tree: &'t Tree,
+    label: &'t str,
+    file_base: Option<String>,
+    tool: Option<&'t ResolvedTool>,
+    plugin_digest: Option<&'t str>,
+    memo: Option<&'t Mutex<BuildMemo>>,
+}
+
+/// A directory source with only the files an `--include` pattern matches (relative to its root).
+fn including(tree: Tree, include: &[String]) -> Result<Tree> {
+    if include.is_empty() {
+        return Ok(tree);
+    }
+    let rules = IgnoreRules::from_patterns(include);
+    Tree::from_files(tree.entries().filter(|(p, _)| rules.excludes(&p[1..])).map(|(p, n)| (p.clone(), n.clone())))
+}
+
+/// The last segment of a TRANSFORM destination when it names each file of a directory source:
+/// `*` (the file's own name) or `*.ext` (its name with the extension replaced).
+pub(crate) fn star_name(dest: &str) -> Option<&str> {
+    let last = &dest[dest.rfind('/').map_or(0, |i| i + 1)..];
+    let ext_ok = last.len() > 2 && last.starts_with("*.") && !last[2..].contains('*');
+    (last == "*" || ext_ok).then_some(last)
+}
+
+/// Where one file of a directory TRANSFORM goes: `rel` is its path inside the source directory.
+/// `TO /out/*` keeps its relative path, `TO /out/*.ext` replaces its extension, and any other
+/// destination is the directory `<dest>/<relative dir>/` (the plugin names the files).
+pub(crate) fn file_dest(dest: &str, rel: &str) -> String {
+    let base = &dest[..dest.rfind('/').map_or(0, |i| i + 1)];
+    let cut = rel.rfind('/').map_or(0, |i| i + 1);
+    let (rel_dir, name) = (&rel[..cut], &rel[cut..]);
+    match star_name(dest) {
+        Some("*") => format!("{base}{rel}"),
+        Some(star) => {
+            let stem = match name.rfind('.') {
+                Some(dot) if dot > 0 => &name[..dot],
+                _ => name,
+            };
+            format!("{base}{rel_dir}{stem}{}", &star[1..])
+        }
+        None => format!("{}{rel_dir}", if dest.ends_with('/') { dest.to_string() } else { format!("{dest}/") }),
+    }
 }
 
 type Files = Vec<(String, Node)>;
@@ -2542,7 +2995,9 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Render { overwrite, .. }
         | Operation::Transform { overwrite, .. }
         | Operation::Feed { overwrite, .. }
-        | Operation::Sitemap { overwrite, .. } => *overwrite,
+        | Operation::Sitemap { overwrite, .. }
+        | Operation::Fingerprint { overwrite, .. } => *overwrite,
+        Operation::CheckLinks { .. } => false,
     }
 }
 

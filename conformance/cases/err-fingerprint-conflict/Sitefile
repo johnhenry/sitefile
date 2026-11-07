@@ -1,0 +1,8 @@
+COPY <<X /a.css
+x
+X
+COPY <<X /manifest.json
+{}
+X
+FINGERPRINT /a.css MANIFEST /manifest.json
+EXPORT /

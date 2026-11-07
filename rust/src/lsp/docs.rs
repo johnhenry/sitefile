@@ -35,8 +35,8 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "TRANSFORM",
-        "TRANSFORM [--overwrite] [--from=stage] [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS …]",
-        "Runs a PLUGIN (or an allowed TOOL) on the source and writes what it returns at `<dest>`. A TOOL needs `ARGS` with `{output}` (and `{input}` when there is a source).",
+        "TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…] [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list] [ARGS …]",
+        "Runs a PLUGIN (or an allowed TOOL) on the source and writes what it returns at `<dest>`. A directory source runs it once per file, in path order (`TO /out/` gives each file the directory `/out/<dir>/`; `TO /out/*` or `/out/*.ext` one file named after it). A TOOL needs `ARGS` with `{output}` (and `{input}` when there is a source).",
     ),
     (
         "PLUGIN",
@@ -67,6 +67,16 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "HEADER",
         "HEADER [--overwrite] <path-pattern> <Name>: <value>",
         "Adds a response header for paths matching the pattern (`*` matches anything) to `/_headers`, written at EXPORT; one block per pattern, in source order.",
+    ),
+    (
+        "FINGERPRINT",
+        "FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]",
+        "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten.",
+    ),
+    (
+        "CHECKLINKS",
+        "CHECKLINKS [--warn] [--external]",
+        "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
     ),
     (
         "EXPORT",
@@ -118,7 +128,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("RENDER", "PAGE", "`PAGE n` (after FOR [BY]): render once per page of n items: `{count, items, number, total, url, prev, next}` (`prev`/`next` are '' at the ends; with BY, also `key`, per group). An empty list is one empty page."),
     ("RENDER", "FIRST", "`FIRST <dest>` (after PAGE n): the first page's destination, e.g. `/index.html` while later pages go to `/page/${page.number}/index.html`."),
     ("TRANSFORM", "WITH", "`WITH name`: a PLUGIN or TOOL declared on an earlier line."),
-    ("TRANSFORM", "TO", "`TO <dest>`: where the result is written (a file, or a directory for several files)."),
+    ("TRANSFORM", "TO", "`TO <dest>`: where the result is written (a file, or a directory for several files). For a directory source, `*` (each file's name) or `*.ext` (its name with a new extension) as the last segment writes one file per input."),
     ("TRANSFORM", "OPTIONS", "`OPTIONS key=value …`: passed to the plugin; TOOL ARGS can use `{option.key}`. Values may use `${item.key}`."),
     ("TRANSFORM", "FOR", "`FOR item IN list` runs once per element of a list import."),
     ("TRANSFORM", "IN", "`IN list`: an IMPORT that is a list."),
@@ -129,6 +139,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "LINK", "`LINK <path>`: each entry's page, evaluated per element (`/posts/${item.slug}/index.html`); `…/index.html` becomes `…/`."),
     ("FEED", "TO", "`TO <dest>`: the feed file (default `/feed.xml`)."),
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
+    ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -139,8 +150,11 @@ const CLAUSES: &[(&str, &str, &str)] = &[
 const FLAGS: &[(&str, &str)] = &[
     ("overwrite", "`--overwrite`: replace files that already exist at the destination (otherwise a different file there is `E_CONFLICT`)."),
     ("from", "`--from=stage`: read the source from the final tree of an earlier, completed stage (an absolute path inside it)."),
+    ("warn", "`--warn` (CHECKLINKS): print each broken link as a warning and keep building."),
+    ("external", "`--external` (CHECKLINKS): also request every http(s) link once, under the network policy (`--allow-http`, `--allow-private-network`); a failure or a status of 400 or more is a broken link."),
     ("escape", "`--escape=none|html`: with `html`, `& < > \" '` are escaped in every substituted value (`${x|raw}` opts out)."),
     ("exclude", "`--exclude=<pattern>` (repeatable): skip files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.md`, `drafts/`, `!keep.md`)."),
+    ("include", "`--include=<pattern>` (repeatable, TRANSFORM): keep only the files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.jpg`, `gallery/`); `--exclude` then leaves files out."),
     ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
     ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
 ];
@@ -249,8 +263,8 @@ mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
-        TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS,
+        SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -288,7 +302,12 @@ mod tests {
         for c in crate::language::parser::RENDER_LOOP_CLAUSES {
             assert!(clause("RENDER", c).is_some(), "{c}");
         }
-        for (kw, clauses) in [("SITEMAP", &SITEMAP_CLAUSES[..]), ("FEED", &FEED_CLAUSES[..]), ("REDIRECT", &REDIRECT_CLAUSES[..])] {
+        for (kw, clauses) in [
+            ("SITEMAP", &SITEMAP_CLAUSES[..]),
+            ("FEED", &FEED_CLAUSES[..]),
+            ("REDIRECT", &REDIRECT_CLAUSES[..]),
+            ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
+        ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");
             }
