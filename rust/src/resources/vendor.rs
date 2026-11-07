@@ -71,14 +71,27 @@ pub struct VendorManifest {
 /// Validate a vendor directory: a relative path inside the build context. Returns it normalized (POSIX, no trailing slash).
 pub fn vendor_dir_rel(input: &str) -> Result<String> {
     let n = normalize_posix(input).trim_end_matches('/').to_string();
-    if input.is_empty() || input.starts_with('/') || input.contains('\\') || n == "." || n == ".." || n.starts_with("../") || n.is_empty() {
-        return Err(SitefileError::plain(E_USAGE, format!("--vendor-dir expects a relative path inside the build context, got '{input}'")));
+    if input.is_empty()
+        || input.starts_with('/')
+        || input.contains('\\')
+        || n == "."
+        || n == ".."
+        || n.starts_with("../")
+        || n.is_empty()
+    {
+        return Err(SitefileError::plain(
+            E_USAGE,
+            format!("--vendor-dir expects a relative path inside the build context, got '{input}'"),
+        ));
     }
     Ok(n)
 }
 
 fn blob_rel(dir: &str, digest: &str) -> String {
-    format!("{dir}/blobs/sha256/{}", digest.strip_prefix("sha256:").unwrap_or(digest))
+    format!(
+        "{dir}/blobs/sha256/{}",
+        digest.strip_prefix("sha256:").unwrap_or(digest)
+    )
 }
 
 fn host_path(root: &Path, rel: &str) -> PathBuf {
@@ -93,7 +106,8 @@ fn host_path(root: &Path, rel: &str) -> PathBuf {
 /// if its manifest exists, else none.
 pub fn find_vendor_dir(context_real: &Path, explicit: Option<&str>) -> Result<Option<String>> {
     let dir = vendor_dir_rel(explicit.unwrap_or(DEFAULT_VENDOR_DIR))?;
-    if fs::metadata(host_path(context_real, &dir).join(VENDOR_MANIFEST)).is_ok_and(|m| m.is_file()) {
+    if fs::metadata(host_path(context_real, &dir).join(VENDOR_MANIFEST)).is_ok_and(|m| m.is_file())
+    {
         return Ok(Some(dir));
     }
     if explicit.is_some() {
@@ -117,12 +131,22 @@ fn safe_size(v: &Value) -> Option<u64> {
 
 /// Parse and check a vendor manifest. Errors are E_VALIDATION naming the file.
 pub fn parse_vendor_manifest(bytes: &[u8], shown: &str) -> Result<VendorManifest> {
-    let bad = |why: String| SitefileError::plain(E_VALIDATION, format!("malformed vendor manifest {shown}: {why}"));
-    let data: Value = serde_json::from_str(&String::from_utf8_lossy(bytes)).map_err(|_| bad("invalid JSON".into()))?;
-    let obj = data.as_object().ok_or_else(|| bad("expected a JSON object".into()))?;
+    let bad = |why: String| {
+        SitefileError::plain(
+            E_VALIDATION,
+            format!("malformed vendor manifest {shown}: {why}"),
+        )
+    };
+    let data: Value = serde_json::from_str(&String::from_utf8_lossy(bytes))
+        .map_err(|_| bad("invalid JSON".into()))?;
+    let obj = data
+        .as_object()
+        .ok_or_else(|| bad("expected a JSON object".into()))?;
     let version = obj.get("version");
     if version.and_then(Value::as_f64) != Some(1.0) {
-        let shown_v = version.map(|v| v.to_string()).unwrap_or_else(|| "undefined".into());
+        let shown_v = version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "undefined".into());
         return Err(bad(format!("unsupported version {shown_v} (expected 1)")));
     }
     let empty = Map::new();
@@ -135,31 +159,71 @@ pub fn parse_vendor_manifest(bytes: &[u8], shown: &str) -> Result<VendorManifest
     };
     let mut m = VendorManifest::default();
     for (url, e) in section("resources")? {
-        let integrity = e.get("integrity").and_then(Value::as_str).filter(|s| is_integrity(s));
+        let integrity = e
+            .get("integrity")
+            .and_then(Value::as_str)
+            .filter(|s| is_integrity(s));
         let size = e.get("size").and_then(safe_size);
         let resolved = e.get("resolved").and_then(Value::as_str);
         match (e.is_object(), integrity, size, resolved) {
             (true, Some(i), Some(s), Some(r)) => {
-                m.resources.insert(url.clone(), VendoredResource { integrity: i.into(), size: s, resolved: r.into() });
+                m.resources.insert(
+                    url.clone(),
+                    VendoredResource {
+                        integrity: i.into(),
+                        size: s,
+                        resolved: r.into(),
+                    },
+                );
             }
-            _ => return Err(bad(format!("entry for {url} needs \"integrity\" (sha256:<64 hex>), \"size\" and \"resolved\""))),
+            _ => {
+                return Err(bad(format!(
+                "entry for {url} needs \"integrity\" (sha256:<64 hex>), \"size\" and \"resolved\""
+            )))
+            }
         }
     }
     for (r, e) in section("images")? {
-        let digest = e.get("digest").and_then(Value::as_str).filter(|s| is_integrity(s));
+        let digest = e
+            .get("digest")
+            .and_then(Value::as_str)
+            .filter(|s| is_integrity(s));
         let platform = e.get("platform").and_then(Value::as_str);
-        let manifest = e.get("manifest").and_then(Value::as_str).filter(|s| is_integrity(s));
+        let manifest = e
+            .get("manifest")
+            .and_then(Value::as_str)
+            .filter(|s| is_integrity(s));
         match (e.is_object(), digest, platform, manifest) {
             (true, Some(d), Some(p), Some(mf)) => {
-                m.images.insert(r.clone(), VendoredImage { digest: d.into(), platform: p.into(), manifest: mf.into() });
+                m.images.insert(
+                    r.clone(),
+                    VendoredImage {
+                        digest: d.into(),
+                        platform: p.into(),
+                        manifest: mf.into(),
+                    },
+                );
             }
-            _ => return Err(bad(format!("image entry for {r} needs \"digest\", \"platform\" and \"manifest\""))),
+            _ => {
+                return Err(bad(format!(
+                    "image entry for {r} needs \"digest\", \"platform\" and \"manifest\""
+                )))
+            }
         }
     }
     for (url, e) in section("git")? {
-        let commit = e.get("commit").and_then(Value::as_str).filter(|c| crate::resources::git::is_commit(c));
-        let kind = e.get("kind").and_then(Value::as_str).filter(|k| *k == "tree" || *k == "file");
-        let integrity = e.get("integrity").and_then(Value::as_str).filter(|s| is_integrity(s));
+        let commit = e
+            .get("commit")
+            .and_then(Value::as_str)
+            .filter(|c| crate::resources::git::is_commit(c));
+        let kind = e
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|k| *k == "tree" || *k == "file");
+        let integrity = e
+            .get("integrity")
+            .and_then(Value::as_str)
+            .filter(|s| is_integrity(s));
         let size = e.get("size").and_then(safe_size);
         let mode = e.get("mode");
         let mode_ok = match kind {
@@ -238,8 +302,13 @@ pub struct Vendor {
 impl Vendor {
     pub fn open(local: &LocalContext, dir: &str) -> Result<Vendor> {
         let rel = format!("{dir}/{VENDOR_MANIFEST}");
-        let Resource::File { bytes, .. } = local.read_file(&rel, None)? else { unreachable!() };
-        Ok(Vendor { dir: dir.to_string(), manifest: parse_vendor_manifest(&bytes, &rel)? })
+        let Resource::File { bytes, .. } = local.read_file(&rel, None)? else {
+            unreachable!()
+        };
+        Ok(Vendor {
+            dir: dir.to_string(),
+            manifest: parse_vendor_manifest(&bytes, &rel)?,
+        })
     }
 
     pub fn resource(&self, url: &str) -> Option<&VendoredResource> {
@@ -267,21 +336,55 @@ impl Vendor {
         let what = format!("vendored copy of '{url}'");
         let bytes = self.read_blob(local, &e.integrity, &what, span)?;
         if e.kind == "file" {
-            let mode = if e.mode.as_deref() == Some("755") { 0o755 } else { 0o644 };
-            return Ok(crate::resources::git::GitSelection::File { bytes: bytes.into(), mode, basename: basename.to_string() });
+            let mode = if e.mode.as_deref() == Some("755") {
+                0o755
+            } else {
+                0o644
+            };
+            return Ok(crate::resources::git::GitSelection::File {
+                bytes: bytes.into(),
+                mode,
+                basename: basename.to_string(),
+            });
         }
         let tree = crate::resources::archive::extract_archive(&bytes, &what, limits, span)?;
-        Ok(crate::resources::git::GitSelection::Tree(tree.entries().map(|(p, n)| (p.clone(), n.bytes.clone(), n.mode)).collect()))
+        Ok(crate::resources::git::GitSelection::Tree(
+            tree.entries()
+                .map(|(p, n)| (p.clone(), n.bytes.clone(), n.mode))
+                .collect(),
+        ))
     }
 
     /// The vendored body of `url`, verified against its digest: (bytes, final URL).
-    pub fn read_resource(&self, local: &LocalContext, url: &str, e: &VendoredResource, span: Option<&SourceSpan>) -> Result<(Vec<u8>, String)> {
-        Ok((self.read_blob(local, &e.integrity, &format!("vendored copy of '{url}'"), span)?, e.resolved.clone()))
+    pub fn read_resource(
+        &self,
+        local: &LocalContext,
+        url: &str,
+        e: &VendoredResource,
+        span: Option<&SourceSpan>,
+    ) -> Result<(Vec<u8>, String)> {
+        Ok((
+            self.read_blob(
+                local,
+                &e.integrity,
+                &format!("vendored copy of '{url}'"),
+                span,
+            )?,
+            e.resolved.clone(),
+        ))
     }
 
-    fn read_blob(&self, local: &LocalContext, digest: &str, what: &str, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
+    fn read_blob(
+        &self,
+        local: &LocalContext,
+        digest: &str,
+        what: &str,
+        span: Option<&SourceSpan>,
+    ) -> Result<Vec<u8>> {
         let rel = blob_rel(&self.dir, digest);
-        let Resource::File { bytes, .. } = local.read_file(&rel, span)? else { unreachable!() };
+        let Resource::File { bytes, .. } = local.read_file(&rel, span)? else {
+            unreachable!()
+        };
         let got = sha256(&bytes);
         if got != digest {
             return Err(SitefileError::new(
@@ -304,7 +407,13 @@ impl Vendor {
     /// Copy the vendored blobs of the image `root_digest` (for `platform`) into the store, each
     /// verified, so pulling it finds everything locally. Stops quietly at the first blob that is not
     /// vendored: the pull then fetches the rest from the registry.
-    pub fn seed_store(&self, local: &LocalContext, store: &Store, root_digest: &str, platform: &str) -> Result<()> {
+    pub fn seed_store(
+        &self,
+        local: &LocalContext,
+        store: &Store,
+        root_digest: &str,
+        platform: &str,
+    ) -> Result<()> {
         if !self.has_blob(local, root_digest)? {
             return Ok(());
         }
@@ -313,14 +422,18 @@ impl Vendor {
         store.put_small_blob(&root)?;
         let mut manifest = root;
         if is_index(&manifest) {
-            let Ok(d) = select_platform(&manifest, platform) else { return Ok(()) };
+            let Ok(d) = select_platform(&manifest, platform) else {
+                return Ok(());
+            };
             if !self.has_blob(local, &d.digest)? {
                 return Ok(());
             }
             manifest = self.read_blob(local, &d.digest, what, None)?;
             store.put_small_blob(&manifest)?;
         }
-        let Ok(parsed) = parse_manifest(&manifest) else { return Ok(()) };
+        let Ok(parsed) = parse_manifest(&manifest) else {
+            return Ok(());
+        };
         for d in std::iter::once(&parsed.config).chain(parsed.layers.iter()) {
             if store.has_blob(&d.digest, Some(d.size)) {
                 continue;
@@ -342,9 +455,24 @@ fn inside(root: &Path, real: &Path) -> bool {
 /// Replace `<context_real>/<dir>` with a vendor directory holding `manifest_text` and `blobs`: written
 /// to a temporary sibling, then swapped in. Refuses a directory that resolves outside the context, a
 /// symlink, and an existing directory that is not a vendor directory (no manifest.json).
-pub fn write_vendor_dir(context_real: &Path, dir: &str, manifest_text: &str, blobs: &BTreeMap<String, Vec<u8>>) -> Result<PathBuf> {
-    let escape = || SitefileError::plain(E_PATH_ESCAPE, format!("vendor directory '{dir}' resolves outside the build context"));
-    let io = |e: std::io::Error| SitefileError::plain(E_EXPORT, format!("cannot write vendor directory '{dir}': {e}"));
+pub fn write_vendor_dir(
+    context_real: &Path,
+    dir: &str,
+    manifest_text: &str,
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<PathBuf> {
+    let escape = || {
+        SitefileError::plain(
+            E_PATH_ESCAPE,
+            format!("vendor directory '{dir}' resolves outside the build context"),
+        )
+    };
+    let io = |e: std::io::Error| {
+        SitefileError::plain(
+            E_EXPORT,
+            format!("cannot write vendor directory '{dir}': {e}"),
+        )
+    };
     let target = host_path(context_real, dir);
     let parent = target.parent().unwrap_or(context_real).to_path_buf();
     if !inside(context_real, &realpath_loose(&target)) {
@@ -353,12 +481,22 @@ pub fn write_vendor_dir(context_real: &Path, dir: &str, manifest_text: &str, blo
     let st = fs::symlink_metadata(&target).ok();
     if let Some(st) = &st {
         if st.file_type().is_symlink() {
-            return Err(SitefileError::plain(E_EXPORT_UNSAFE, format!("vendor directory '{dir}' is a symlink; refusing to replace it")));
+            return Err(SitefileError::plain(
+                E_EXPORT_UNSAFE,
+                format!("vendor directory '{dir}' is a symlink; refusing to replace it"),
+            ));
         }
         if !st.is_dir() {
-            return Err(SitefileError::plain(E_EXPORT_UNSAFE, format!("vendor directory '{dir}' exists and is not a directory")));
+            return Err(SitefileError::plain(
+                E_EXPORT_UNSAFE,
+                format!("vendor directory '{dir}' exists and is not a directory"),
+            ));
         }
-        let names: Vec<String> = fs::read_dir(&target).map_err(io)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = fs::read_dir(&target)
+            .map_err(io)?
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
         if !names.is_empty() && !names.iter().any(|n| n == VENDOR_MANIFEST) {
             return Err(SitefileError::plain(
                 E_EXPORT_UNSAFE,
@@ -371,7 +509,10 @@ pub fn write_vendor_dir(context_real: &Path, dir: &str, manifest_text: &str, blo
     if parent_real != context_real && !inside(context_real, &parent_real) {
         return Err(escape());
     }
-    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tag = format!("{}-{}", std::process::id(), random_hex(4));
     let tmp = parent.join(format!(".{name}.sitefile-vendor-tmp-{tag}"));
     let old = parent.join(format!(".{name}.sitefile-vendor-old-{tag}"));
@@ -379,7 +520,10 @@ pub fn write_vendor_dir(context_real: &Path, dir: &str, manifest_text: &str, blo
         let blob_dir = tmp.join("blobs").join("sha256");
         fs::create_dir_all(&blob_dir)?;
         for (digest, bytes) in blobs {
-            fs::write(blob_dir.join(digest.strip_prefix("sha256:").unwrap_or(digest)), bytes)?;
+            fs::write(
+                blob_dir.join(digest.strip_prefix("sha256:").unwrap_or(digest)),
+                bytes,
+            )?;
         }
         fs::write(tmp.join(VENDOR_MANIFEST), manifest_text)?;
         if st.is_some() {
@@ -405,11 +549,19 @@ mod tests {
     #[test]
     fn vendor_dirs_must_stay_inside_the_context() {
         assert_eq!(vendor_dir_rel("a//b/").unwrap(), "a/b");
-        assert_eq!(vendor_dir_rel("vendor/sitefile").unwrap(), "vendor/sitefile");
+        assert_eq!(
+            vendor_dir_rel("vendor/sitefile").unwrap(),
+            "vendor/sitefile"
+        );
         for bad in ["", ".", "..", "../x", "/abs", "a/../..", "a\\b"] {
             let e = vendor_dir_rel(bad).unwrap_err();
             assert_eq!(e.code, E_USAGE, "{bad}");
-            assert_eq!(e.detail, format!("--vendor-dir expects a relative path inside the build context, got '{bad}'"));
+            assert_eq!(
+                e.detail,
+                format!(
+                    "--vendor-dir expects a relative path inside the build context, got '{bad}'"
+                )
+            );
         }
     }
 
@@ -417,9 +569,30 @@ mod tests {
     fn manifest_round_trips_and_rejects_bad_input() {
         let mut m = VendorManifest::default();
         let d = format!("sha256:{}", "a".repeat(64));
-        m.resources.insert("https://b.example/x".into(), VendoredResource { integrity: d.clone(), size: 3, resolved: "https://b.example/y".into() });
-        m.resources.insert("https://a.example/x".into(), VendoredResource { integrity: d.clone(), size: 3, resolved: "https://a.example/x".into() });
-        m.images.insert("r.example/lib/base:1".into(), VendoredImage { digest: d.clone(), platform: "linux/amd64".into(), manifest: d.clone() });
+        m.resources.insert(
+            "https://b.example/x".into(),
+            VendoredResource {
+                integrity: d.clone(),
+                size: 3,
+                resolved: "https://b.example/y".into(),
+            },
+        );
+        m.resources.insert(
+            "https://a.example/x".into(),
+            VendoredResource {
+                integrity: d.clone(),
+                size: 3,
+                resolved: "https://a.example/x".into(),
+            },
+        );
+        m.images.insert(
+            "r.example/lib/base:1".into(),
+            VendoredImage {
+                digest: d.clone(),
+                platform: "linux/amd64".into(),
+                manifest: d.clone(),
+            },
+        );
         let text = serialize_vendor_manifest(&m);
         assert!(text.starts_with("{\n  \"version\": 1,\n  \"resources\": {\n    \"https://a.example/x\": {\n      \"integrity\""), "{text}");
         assert!(text.ends_with("}\n"));
@@ -428,12 +601,31 @@ mod tests {
             serialize_vendor_manifest(&VendorManifest::default()),
             "{\n  \"version\": 1,\n  \"resources\": {},\n  \"images\": {}\n}\n"
         );
-        let err = |s: &str| parse_vendor_manifest(s.as_bytes(), "v/manifest.json").unwrap_err().detail;
-        assert_eq!(err("nope"), "malformed vendor manifest v/manifest.json: invalid JSON");
-        assert_eq!(err("{\"version\":2}"), "malformed vendor manifest v/manifest.json: unsupported version 2 (expected 1)");
-        assert_eq!(err("{}"), "malformed vendor manifest v/manifest.json: unsupported version undefined (expected 1)");
-        assert_eq!(err("{\"version\":1,\"resources\":[]}"), "malformed vendor manifest v/manifest.json: \"resources\" must be an object");
-        assert!(err("{\"version\":1,\"resources\":{\"u\":{\"integrity\":\"x\"}}}").contains("entry for u needs"));
+        let err = |s: &str| {
+            parse_vendor_manifest(s.as_bytes(), "v/manifest.json")
+                .unwrap_err()
+                .detail
+        };
+        assert_eq!(
+            err("nope"),
+            "malformed vendor manifest v/manifest.json: invalid JSON"
+        );
+        assert_eq!(
+            err("{\"version\":2}"),
+            "malformed vendor manifest v/manifest.json: unsupported version 2 (expected 1)"
+        );
+        assert_eq!(
+            err("{}"),
+            "malformed vendor manifest v/manifest.json: unsupported version undefined (expected 1)"
+        );
+        assert_eq!(
+            err("{\"version\":1,\"resources\":[]}"),
+            "malformed vendor manifest v/manifest.json: \"resources\" must be an object"
+        );
+        assert!(
+            err("{\"version\":1,\"resources\":{\"u\":{\"integrity\":\"x\"}}}")
+                .contains("entry for u needs")
+        );
         assert!(err("{\"version\":1,\"images\":{\"r\":{}}}").contains("image entry for r needs"));
     }
 }

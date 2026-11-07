@@ -72,10 +72,18 @@ fn is_safe_url(url: &[u16]) -> bool {
         .copied()
         .filter(|&c| !matches!(c, 0x0000..=0x0020 | 0x007f..=0x009f | 0x00ad | 0x200b..=0x200f | 0x2028 | 0x2029 | 0xfeff))
         .collect();
-    match stripped.iter().position(|&c| c == u(b':') || c == u(b'/') || c == u(b'?') || c == u(b'#')) {
+    match stripped
+        .iter()
+        .position(|&c| c == u(b':') || c == u(b'/') || c == u(b'?') || c == u(b'#'))
+    {
         Some(p) if stripped[p] == u(b':') => {
             let s = &stripped[..p];
-            let eq = |w: &str| s.len() == w.len() && s.iter().zip(w.bytes()).all(|(&c, b)| c < 0x80 && (c as u8).eq_ignore_ascii_case(&b));
+            let eq = |w: &str| {
+                s.len() == w.len()
+                    && s.iter()
+                        .zip(w.bytes())
+                        .all(|(&c, b)| c < 0x80 && (c as u8).eq_ignore_ascii_case(&b))
+            };
             eq("http") || eq("https") || eq("mailto")
         }
         _ => true,
@@ -141,8 +149,16 @@ enum Node {
     Code(W),
     Br,
     Wrap(Tag, Vec<Node>),
-    Link { href: W, title: Option<W>, c: Vec<Node> },
-    Img { src: W, alt: W, title: Option<W> },
+    Link {
+        href: W,
+        title: Option<W>,
+        c: Vec<Node>,
+    },
+    Img {
+        src: W,
+        alt: W,
+        title: Option<W>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +196,10 @@ fn is_space(c: Option<u16>) -> bool {
 }
 
 fn run_len(s: &[u16], from: usize, c: u16) -> usize {
-    s[from.min(s.len())..].iter().take_while(|&&x| x == c).count()
+    s[from.min(s.len())..]
+        .iter()
+        .take_while(|&&x| x == c)
+        .count()
 }
 
 /// Index of the `]` matching an already-opened `[` (scan starts at `from`).
@@ -267,7 +286,11 @@ fn parse_destination(s: &[u16], k: usize) -> Option<Dest> {
     let after_dest = i;
     i = ws(i);
     if s.get(i) == Some(&u(b')')) {
-        return Some(Dest { href, title: None, end: i + 1 });
+        return Some(Dest {
+            href,
+            title: None,
+            end: i + 1,
+        });
     }
     let close = match s.get(i) {
         Some(&c) if c == u(b'"') => u(b'"'),
@@ -288,7 +311,11 @@ fn parse_destination(s: &[u16], k: usize) -> Option<Dest> {
     let title = unescape_md(&s[i + 1..j]);
     let j = ws(j + 1);
     if s.get(j) == Some(&u(b')')) {
-        Some(Dest { href, title: Some(title), end: j + 1 })
+        Some(Dest {
+            href,
+            title: Some(title),
+            end: j + 1,
+        })
     } else {
         None
     }
@@ -414,8 +441,15 @@ fn parse_inline(s: &[u16], depth: usize) -> Vec<Node> {
                     i += run;
                 }
                 Some(end) => {
-                    let mut code: W = s[i + run..end].iter().map(|&x| if x == NL { SP } else { x }).collect();
-                    if code.len() > 2 && code[0] == SP && code[code.len() - 1] == SP && !js::trim(&code).is_empty() {
+                    let mut code: W = s[i + run..end]
+                        .iter()
+                        .map(|&x| if x == NL { SP } else { x })
+                        .collect();
+                    if code.len() > 2
+                        && code[0] == SP
+                        && code[code.len() - 1] == SP
+                        && !js::trim(&code).is_empty()
+                    {
                         code = code[1..code.len() - 1].to_vec();
                     }
                     flush(&mut buf, &mut items);
@@ -432,18 +466,44 @@ fn parse_inline(s: &[u16], depth: usize) -> Vec<Node> {
             }
             let before = if i > 0 { Some(s[i - 1]) } else { None };
             let after = s.get(i + n).copied();
-            let left = !is_space(after) && (!is_punct(after) || is_space(before) || is_punct(before));
-            let right = !is_space(before) && (!is_punct(before) || is_space(after) || is_punct(after));
-            let open = if c == u(b'_') { left && (!right || is_punct(before)) } else { left };
-            let close = if c == u(b'_') { right && (!left || is_punct(after)) } else { right };
+            let left =
+                !is_space(after) && (!is_punct(after) || is_space(before) || is_punct(before));
+            let right =
+                !is_space(before) && (!is_punct(before) || is_space(after) || is_punct(after));
+            let open = if c == u(b'_') {
+                left && (!right || is_punct(before))
+            } else {
+                left
+            };
+            let close = if c == u(b'_') {
+                right && (!left || is_punct(after))
+            } else {
+                right
+            };
             flush(&mut buf, &mut items);
-            items.push(Item::Delim(Delim { ch: c, n, orig: n, open, close }));
+            items.push(Item::Delim(Delim {
+                ch: c,
+                n,
+                orig: n,
+                open,
+                close,
+            }));
             i += n;
         } else if c == u(b'[') || (c == u(b'!') && next == Some(u(b'['))) {
             let is_img = c == u(b'!');
             let label_start = i + if is_img { 2 } else { 1 };
-            let close_idx = if depth < MAX_DEPTH { find_close_bracket(s, label_start) } else { None };
-            let dest = close_idx.and_then(|ci| if s.get(ci + 1) == Some(&u(b'(')) { parse_destination(s, ci + 1) } else { None });
+            let close_idx = if depth < MAX_DEPTH {
+                find_close_bracket(s, label_start)
+            } else {
+                None
+            };
+            let dest = close_idx.and_then(|ci| {
+                if s.get(ci + 1) == Some(&u(b'(')) {
+                    parse_destination(s, ci + 1)
+                } else {
+                    None
+                }
+            });
             let (Some(close_idx), Some(dest)) = (close_idx, dest) else {
                 if is_img {
                     buf.extend_from_slice(&[u(b'!'), u(b'[')]);
@@ -458,12 +518,20 @@ fn parse_inline(s: &[u16], depth: usize) -> Vec<Node> {
             if is_img {
                 let alt = nodes_to_text(&children);
                 if is_safe_url(&dest.href) {
-                    items.push(Item::Node(Node::Img { src: dest.href, alt, title: dest.title }));
+                    items.push(Item::Node(Node::Img {
+                        src: dest.href,
+                        alt,
+                        title: dest.title,
+                    }));
                 } else {
                     items.push(Item::Node(Node::Text(alt)));
                 }
             } else if is_safe_url(&dest.href) {
-                items.push(Item::Node(Node::Link { href: dest.href, title: dest.title, c: children }));
+                items.push(Item::Node(Node::Link {
+                    href: dest.href,
+                    title: dest.title,
+                    c: children,
+                }));
             } else {
                 items.extend(children.into_iter().map(Item::Node));
             }
@@ -472,13 +540,21 @@ fn parse_inline(s: &[u16], depth: usize) -> Vec<Node> {
             let rest = &s[i..];
             if let Some((len, url)) = match_autolink(rest).filter(|(_, url)| is_safe_url(url)) {
                 flush(&mut buf, &mut items);
-                items.push(Item::Node(Node::Link { href: url.to_vec(), title: None, c: vec![Node::Text(url.to_vec())] }));
+                items.push(Item::Node(Node::Link {
+                    href: url.to_vec(),
+                    title: None,
+                    c: vec![Node::Text(url.to_vec())],
+                }));
                 i += len;
             } else if let Some((len, addr)) = match_mail(rest) {
                 flush(&mut buf, &mut items);
                 let mut href = js::u16s("mailto:");
                 href.extend_from_slice(addr);
-                items.push(Item::Node(Node::Link { href, title: None, c: vec![Node::Text(addr.to_vec())] }));
+                items.push(Item::Node(Node::Link {
+                    href,
+                    title: None,
+                    c: vec![Node::Text(addr.to_vec())],
+                }));
                 i += len;
             } else {
                 buf.push(c);
@@ -533,7 +609,9 @@ fn resolve_emphasis(mut items: Vec<Item>) -> Vec<Node> {
                 if o.ch != cch || !o.open || o.n == 0 {
                     continue;
                 }
-                let rule3 = (o.close || copen) && (o.orig + corig) % 3 == 0 && !(o.orig % 3 == 0 && corig % 3 == 0);
+                let rule3 = (o.close || copen)
+                    && (o.orig + corig) % 3 == 0
+                    && !(o.orig % 3 == 0 && corig % 3 == 0);
                 if rule3 {
                     continue;
                 }
@@ -542,7 +620,11 @@ fn resolve_emphasis(mut items: Vec<Item>) -> Vec<Node> {
             }
             let Some(oi) = oi else { break };
             let on = delim(&items, oi).map_or(0, |d| d.n);
-            let used = if cch == u(b'~') || (on >= 2 && cn >= 2) { 2 } else { 1 };
+            let used = if cch == u(b'~') || (on >= 2 && cn >= 2) {
+                2
+            } else {
+                1
+            };
             let tag = if cch == u(b'~') {
                 Tag::Del
             } else if used == 2 {
@@ -661,7 +743,11 @@ struct Block {
 
 impl Block {
     fn new(html: String) -> Block {
-        Block { html, para: None, blank_before: false }
+        Block {
+            html,
+            para: None,
+            blank_before: false,
+        }
     }
 }
 
@@ -679,7 +765,8 @@ fn is_blank(l: &[u16]) -> bool {
 
 /// Would `.*` match all of `s` (no line terminators)?
 fn dot_all(s: &[u16]) -> bool {
-    !s.iter().any(|&c| matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029))
+    !s.iter()
+        .any(|&c| matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029))
 }
 
 /// `^ {0,3}`: the number of leading spaces when at most three.
@@ -712,7 +799,12 @@ fn open_fence(l: &[u16]) -> Option<Fence> {
     }
     let t = js::trim(rest);
     let end = t.iter().position(|&c| is_ws(c)).unwrap_or(t.len());
-    Some(Fence { indent: n, ch, len, info: t[..end].to_vec() })
+    Some(Fence {
+        indent: n,
+        ch,
+        len,
+        info: t[..end].to_vec(),
+    })
 }
 
 /// `^ {0,3}<ch>{len,}[ \t]*$`
@@ -772,7 +864,8 @@ fn is_hr(l: &[u16]) -> bool {
         return false;
     }
     let rest = &l[n + 1..];
-    rest.iter().all(|&x| x == c || x == SP || x == TAB) && rest.iter().filter(|&&x| x == c).count() >= 2
+    rest.iter().all(|&x| x == c || x == SP || x == TAB)
+        && rest.iter().filter(|&&x| x == c).count() >= 2
 }
 
 struct ListM<'a> {
@@ -794,7 +887,10 @@ impl ListM<'_> {
         is_digit(self.marker[0])
     }
     fn number(&self) -> u64 {
-        self.marker.iter().take_while(|&&c| is_digit(c)).fold(0u64, |a, &c| a * 10 + (c - u(b'0')) as u64)
+        self.marker
+            .iter()
+            .take_while(|&&c| is_digit(c))
+            .fold(0u64, |a, &c| a * 10 + (c - u(b'0')) as u64)
     }
 }
 
@@ -824,7 +920,12 @@ fn list_m(l: &[u16]) -> Option<ListM<'_>> {
     if !dot_all(rest) {
         return None;
     }
-    Some(ListM { base: n, marker: &l[n..after], spaces, rest })
+    Some(ListM {
+        base: n,
+        marker: &l[n..after],
+        spaces,
+        rest,
+    })
 }
 
 fn is_quote(l: &[u16]) -> bool {
@@ -885,13 +986,28 @@ fn make_paragraph(lines: &[&[u16]], st: &mut State) -> Block {
         }
     }
     let inner = nodes_to_html(&nodes);
-    Block { html: format!("<p>{inner}</p>"), para: Some(inner), blank_before: false }
+    Block {
+        html: format!("<p>{inner}</p>"),
+        para: Some(inner),
+        blank_before: false,
+    }
 }
 
 fn code_block(body: &[&[u16]], info: &[u16]) -> Block {
-    let safe = !info.is_empty() && info.iter().all(|&c| is_alnum(c) || c == u(b'_') || c == u(b'+') || c == u(b'-'));
-    let cls = if safe { format!(" class=\"language-{}\"", js::string(info)) } else { String::new() };
-    let text = if body.is_empty() { String::new() } else { esc(&join_lines(body.iter().copied())) + "\n" };
+    let safe = !info.is_empty()
+        && info
+            .iter()
+            .all(|&c| is_alnum(c) || c == u(b'_') || c == u(b'+') || c == u(b'-'));
+    let cls = if safe {
+        format!(" class=\"language-{}\"", js::string(info))
+    } else {
+        String::new()
+    };
+    let text = if body.is_empty() {
+        String::new()
+    } else {
+        esc(&join_lines(body.iter().copied())) + "\n"
+    };
     Block::new(format!("<pre><code{cls}>{text}</code></pre>"))
 }
 
@@ -904,7 +1020,11 @@ fn push(out: &mut Vec<Block>, blank: &mut bool, mut b: Block) {
 fn parse_blocks(lines: &[&[u16]], st: &mut State, depth: usize) -> Vec<Block> {
     if depth > MAX_DEPTH {
         let text: Vec<&[u16]> = lines.iter().copied().filter(|l| !is_blank(l)).collect();
-        return if text.is_empty() { Vec::new() } else { vec![make_paragraph(&text, st)] };
+        return if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![make_paragraph(&text, st)]
+        };
     }
     let mut out: Vec<Block> = Vec::new();
     let mut blank = false;
@@ -935,7 +1055,11 @@ fn parse_blocks(lines: &[&[u16]], st: &mut State, depth: usize) -> Vec<Block> {
         // ATX heading
         if let Some((level, content)) = atx(line) {
             let inner = nodes_to_html(&parse_inline(atx_content(content), 0));
-            push(&mut out, &mut blank, Block::new(format!("<h{level}>{inner}</h{level}>")));
+            push(
+                &mut out,
+                &mut blank,
+                Block::new(format!("<h{level}>{inner}</h{level}>")),
+            );
             i += 1;
             continue;
         }
@@ -957,7 +1081,10 @@ fn parse_blocks(lines: &[&[u16]], st: &mut State, depth: usize) -> Vec<Block> {
                         s += 1;
                     }
                     inner.push(&l[s..]);
-                } else if !is_blank(l) && inner.last().is_some_and(|p| !is_blank(p)) && !interrupts_paragraph(l) {
+                } else if !is_blank(l)
+                    && inner.last().is_some_and(|p| !is_blank(p))
+                    && !interrupts_paragraph(l)
+                {
                     inner.push(l); // lazy continuation
                 } else {
                     break;
@@ -1025,7 +1152,11 @@ fn parse_blocks(lines: &[&[u16]], st: &mut State, depth: usize) -> Vec<Block> {
         let p = make_paragraph(&para, st); // a setext heading records the excerpt like a paragraph
         if setext != 0 {
             let inner = p.para.unwrap_or_default();
-            push(&mut out, &mut blank, Block::new(format!("<h{setext}>{inner}</h{setext}>")));
+            push(
+                &mut out,
+                &mut blank,
+                Block::new(format!("<h{setext}>{inner}</h{setext}>")),
+            );
         } else {
             push(&mut out, &mut blank, p);
         }
@@ -1123,14 +1254,19 @@ fn parse_list(lines: &[&[u16]], start: usize, st: &mut State, depth: usize) -> (
             parse_blocks(&refs, st, depth + 1)
         })
         .collect();
-    if rendered.iter().any(|blocks| blocks.iter().skip(1).any(|b| b.blank_before)) {
+    if rendered
+        .iter()
+        .any(|blocks| blocks.iter().skip(1).any(|b| b.blank_before))
+    {
         loose = true;
     }
 
     let lis: Vec<String> = rendered
         .iter()
         .map(|blocks| {
-            let Some(last) = blocks.last() else { return "<li></li>".to_string() };
+            let Some(last) = blocks.last() else {
+                return "<li></li>".to_string();
+            };
             let mut inner = String::new();
             for (k, b) in blocks.iter().enumerate() {
                 match &b.para {
@@ -1153,8 +1289,15 @@ fn parse_list(lines: &[&[u16]], start: usize, st: &mut State, depth: usize) -> (
         })
         .collect();
     let tag = if ordered { "ol" } else { "ul" };
-    let attr = if ordered && start_num != 1 { format!(" start=\"{start_num}\"") } else { String::new() };
-    (Block::new(format!("<{tag}{attr}>\n{}\n</{tag}>", lis.join("\n"))), i)
+    let attr = if ordered && start_num != 1 {
+        format!(" start=\"{start_num}\"")
+    } else {
+        String::new()
+    };
+    (
+        Block::new(format!("<{tag}{attr}>\n{}\n</{tag}>", lis.join("\n"))),
+        i,
+    )
 }
 
 // ------------------------------------------------------------------ excerpt
@@ -1221,7 +1364,10 @@ pub fn render_markdown(src: &str) -> MarkdownResult {
         html.push_str(&b.html);
         html.push('\n');
     }
-    MarkdownResult { html, excerpt: truncate(st.excerpt.as_deref().unwrap_or(&[])) }
+    MarkdownResult {
+        html,
+        excerpt: truncate(st.excerpt.as_deref().unwrap_or(&[])),
+    }
 }
 
 /// BMP code units in Unicode categories P or S (`/[\p{P}\p{S}]/u`), generated
@@ -1279,8 +1425,20 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        assert_eq!(render_markdown(""), MarkdownResult { html: String::new(), excerpt: String::new() });
-        assert_eq!(render_markdown("\n\n  \n"), MarkdownResult { html: String::new(), excerpt: String::new() });
+        assert_eq!(
+            render_markdown(""),
+            MarkdownResult {
+                html: String::new(),
+                excerpt: String::new()
+            }
+        );
+        assert_eq!(
+            render_markdown("\n\n  \n"),
+            MarkdownResult {
+                html: String::new(),
+                excerpt: String::new()
+            }
+        );
     }
 
     #[test]
@@ -1288,10 +1446,19 @@ mod tests {
         eq("one\ntwo\n\nthree", "<p>one\ntwo</p>\n<p>three</p>\n");
         eq("a\r\nb\r\n\r\nc", "<p>a\nb</p>\n<p>c</p>\n");
         eq("# T\r\n\r\ntext", "<h1>T</h1>\n<p>text</p>\n");
-        eq("# a\n## b ##\n###### f\n####### no", "<h1>a</h1>\n<h2>b</h2>\n<h6>f</h6>\n<p>####### no</p>\n");
-        eq("#\n#nospace\n# *x* #", "<h1></h1>\n<p>#nospace</p>\n<h1><em>x</em></h1>\n");
+        eq(
+            "# a\n## b ##\n###### f\n####### no",
+            "<h1>a</h1>\n<h2>b</h2>\n<h6>f</h6>\n<p>####### no</p>\n",
+        );
+        eq(
+            "#\n#nospace\n# *x* #",
+            "<h1></h1>\n<p>#nospace</p>\n<h1><em>x</em></h1>\n",
+        );
         eq("# a # b", "<h1>a # b</h1>\n");
-        eq("Title\n=====\n\nSub\n---\n", "<h1>Title</h1>\n<h2>Sub</h2>\n");
+        eq(
+            "Title\n=====\n\nSub\n---\n",
+            "<h1>Title</h1>\n<h2>Sub</h2>\n",
+        );
         eq("multi\nline\n===", "<h1>multi\nline</h1>\n");
     }
 
@@ -1312,12 +1479,21 @@ mod tests {
         eq("~~~\n*not em*\n~~~", "<pre><code>*not em*\n</code></pre>\n");
         eq("````\n```\n````", "<pre><code>```\n</code></pre>\n");
         eq("```\n```", "<pre><code></code></pre>\n");
-        eq("```c++ extra\nx\n```", "<pre><code class=\"language-c++\">x\n</code></pre>\n");
+        eq(
+            "```c++ extra\nx\n```",
+            "<pre><code class=\"language-c++\">x\n</code></pre>\n",
+        );
         eq("```a\"b\nx\n```", "<pre><code>x\n</code></pre>\n");
         eq("```<script>\nx\n```", "<pre><code>x\n</code></pre>\n");
         eq("```\nabc\n\ndef", "<pre><code>abc\n\ndef\n</code></pre>\n");
-        eq("> ```\n> x", "<blockquote>\n<pre><code>x\n</code></pre>\n</blockquote>\n");
-        eq("    a\n\n    b\n\npara", "<pre><code>a\n\nb\n</code></pre>\n<p>para</p>\n");
+        eq(
+            "> ```\n> x",
+            "<blockquote>\n<pre><code>x\n</code></pre>\n</blockquote>\n",
+        );
+        eq(
+            "    a\n\n    b\n\npara",
+            "<pre><code>a\n\nb\n</code></pre>\n<p>para</p>\n",
+        );
         eq("para\n    cont", "<p>para\ncont</p>\n");
         eq("\ttabbed", "<pre><code>tabbed\n</code></pre>\n");
     }
@@ -1330,7 +1506,10 @@ mod tests {
             "> # h\n>\n> - x\n>> deep",
             "<blockquote>\n<h1>h</h1>\n<ul>\n<li>x</li>\n</ul>\n<blockquote>\n<p>deep</p>\n</blockquote>\n</blockquote>\n",
         );
-        eq("> a\n\n> b", "<blockquote>\n<p>a</p>\n</blockquote>\n<blockquote>\n<p>b</p>\n</blockquote>\n");
+        eq(
+            "> a\n\n> b",
+            "<blockquote>\n<p>a</p>\n</blockquote>\n<blockquote>\n<p>b</p>\n</blockquote>\n",
+        );
     }
 
     #[test]
@@ -1338,21 +1517,42 @@ mod tests {
         eq("- a\n- b", "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n");
         eq("* a\n* b", "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n");
         eq("+ a", "<ul>\n<li>a</li>\n</ul>\n");
-        eq("- a\n* b", "<ul>\n<li>a</li>\n</ul>\n<ul>\n<li>b</li>\n</ul>\n");
+        eq(
+            "- a\n* b",
+            "<ul>\n<li>a</li>\n</ul>\n<ul>\n<li>b</li>\n</ul>\n",
+        );
         eq("1. a\n2. b", "<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n");
         eq("1) a\n2) b", "<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n");
-        eq("3. a\n4. b", "<ol start=\"3\">\n<li>a</li>\n<li>b</li>\n</ol>\n");
+        eq(
+            "3. a\n4. b",
+            "<ol start=\"3\">\n<li>a</li>\n<li>b</li>\n</ol>\n",
+        );
         eq("0. a", "<ol start=\"0\">\n<li>a</li>\n</ol>\n");
-        eq("- a\n\n- b", "<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ul>\n");
-        eq("- a\n\n  b\n- c", "<ul>\n<li>\n<p>a</p>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ul>\n");
+        eq(
+            "- a\n\n- b",
+            "<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ul>\n",
+        );
+        eq(
+            "- a\n\n  b\n- c",
+            "<ul>\n<li>\n<p>a</p>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ul>\n",
+        );
         eq("- a\n  - b\n    - c\n- d", "<ul>\n<li>a\n<ul>\n<li>b\n<ul>\n<li>c</li>\n</ul>\n</li>\n</ul>\n</li>\n<li>d</li>\n</ul>\n");
-        eq("1. a\n   - x\n2. b", "<ol>\n<li>a\n<ul>\n<li>x</li>\n</ul>\n</li>\n<li>b</li>\n</ol>\n");
+        eq(
+            "1. a\n   - x\n2. b",
+            "<ol>\n<li>a\n<ul>\n<li>x</li>\n</ul>\n</li>\n<li>b</li>\n</ol>\n",
+        );
         let out = html("- a\n  - b\n\n  - c\n- d");
         assert!(out.contains("<li>a\n<ul>\n<li>\n<p>b</p>"), "{out}");
         assert!(out.contains("<li>d</li>"), "{out}");
-        eq("- one\n  two\n- three", "<ul>\n<li>one\ntwo</li>\n<li>three</li>\n</ul>\n");
+        eq(
+            "- one\n  two\n- three",
+            "<ul>\n<li>one\ntwo</li>\n<li>three</li>\n</ul>\n",
+        );
         eq("- one\ntwo", "<ul>\n<li>one\ntwo</li>\n</ul>\n");
-        eq("- ```\n  x\n  ```", "<ul>\n<li>\n<pre><code>x\n</code></pre>\n</li>\n</ul>\n");
+        eq(
+            "- ```\n  x\n  ```",
+            "<ul>\n<li>\n<pre><code>x\n</code></pre>\n</li>\n</ul>\n",
+        );
         eq("- a\n\npara", "<ul>\n<li>a</li>\n</ul>\n<p>para</p>\n");
         eq("text\n- a", "<p>text</p>\n<ul>\n<li>a</li>\n</ul>\n");
         eq("text\n2. a", "<p>text\n2. a</p>\n");
@@ -1362,11 +1562,17 @@ mod tests {
 
     #[test]
     fn inlines() {
-        eq("*a* _b_ **c** __d__ ~~e~~", "<p><em>a</em> <em>b</em> <strong>c</strong> <strong>d</strong> <del>e</del></p>\n");
+        eq(
+            "*a* _b_ **c** __d__ ~~e~~",
+            "<p><em>a</em> <em>b</em> <strong>c</strong> <strong>d</strong> <del>e</del></p>\n",
+        );
         eq("***both***", "<p><em><strong>both</strong></em></p>\n");
         eq("**a *b* c**", "<p><strong>a <em>b</em> c</strong></p>\n");
         eq("a*b*c", "<p>a<em>b</em>c</p>\n");
-        eq("snake_case_word and 2*3*4", "<p>snake_case_word and 2<em>3</em>4</p>\n");
+        eq(
+            "snake_case_word and 2*3*4",
+            "<p>snake_case_word and 2<em>3</em>4</p>\n",
+        );
         eq("foo_bar_", "<p>foo_bar_</p>\n");
         eq("*a", "<p>*a</p>\n");
         eq("**a *b", "<p>**a *b</p>\n");
@@ -1375,7 +1581,10 @@ mod tests {
         eq("~~open", "<p>~~open</p>\n");
         eq("\\*not em\\* \\# \\\\ \\a", "<p>*not em* # \\ \\a</p>\n");
         eq("\\<b\\>", "<p>&lt;b&gt;</p>\n");
-        eq("`a *b* <i>` ``x ` y``", "<p><code>a *b* &lt;i&gt;</code> <code>x ` y</code></p>\n");
+        eq(
+            "`a *b* <i>` ``x ` y``",
+            "<p><code>a *b* &lt;i&gt;</code> <code>x ` y</code></p>\n",
+        );
         eq("` a `", "<p><code>a</code></p>\n");
         eq("`unclosed", "<p>`unclosed</p>\n");
         eq("`a\nb`", "<p><code>a b</code></p>\n");
@@ -1383,9 +1592,18 @@ mod tests {
 
     #[test]
     fn links_images_autolinks() {
-        eq("[t](http://x.com)", "<p><a href=\"http://x.com\">t</a></p>\n");
-        eq("[t](/a/b \"T \\\"q\\\"\")", "<p><a href=\"/a/b\" title=\"T &quot;q&quot;\">t</a></p>\n");
-        eq("[*t*](rel.html 'x')", "<p><a href=\"rel.html\" title=\"x\"><em>t</em></a></p>\n");
+        eq(
+            "[t](http://x.com)",
+            "<p><a href=\"http://x.com\">t</a></p>\n",
+        );
+        eq(
+            "[t](/a/b \"T \\\"q\\\"\")",
+            "<p><a href=\"/a/b\" title=\"T &quot;q&quot;\">t</a></p>\n",
+        );
+        eq(
+            "[*t*](rel.html 'x')",
+            "<p><a href=\"rel.html\" title=\"x\"><em>t</em></a></p>\n",
+        );
         eq(
             "[t](#frag) [m](mailto:a@b.c) [p](http://x/(a))",
             "<p><a href=\"#frag\">t</a> <a href=\"mailto:a@b.c\">m</a> <a href=\"http://x/(a)\">p</a></p>\n",
@@ -1394,26 +1612,50 @@ mod tests {
         eq("[t]()", "<p><a href=\"\">t</a></p>\n");
         eq("[t] (x) [u](x", "<p>[t] (x) [u](x</p>\n");
         eq("[unclosed(x)", "<p>[unclosed(x)</p>\n");
-        eq("![a *b*](/i.png \"T\")", "<p><img src=\"/i.png\" alt=\"a b\" title=\"T\"></p>\n");
+        eq(
+            "![a *b*](/i.png \"T\")",
+            "<p><img src=\"/i.png\" alt=\"a b\" title=\"T\"></p>\n",
+        );
         eq("![](x.png)", "<p><img src=\"x.png\" alt=\"\"></p>\n");
-        eq("![a\"b](x.png)", "<p><img src=\"x.png\" alt=\"a&quot;b\"></p>\n");
+        eq(
+            "![a\"b](x.png)",
+            "<p><img src=\"x.png\" alt=\"a&quot;b\"></p>\n",
+        );
         eq(
             "<https://example.com/a?b=1&c=2>",
             "<p><a href=\"https://example.com/a?b=1&amp;c=2\">https://example.com/a?b=1&amp;c=2</a></p>\n",
         );
-        eq("<me@example.com>", "<p><a href=\"mailto:me@example.com\">me@example.com</a></p>\n");
+        eq(
+            "<me@example.com>",
+            "<p><a href=\"mailto:me@example.com\">me@example.com</a></p>\n",
+        );
         eq("a < b > c", "<p>a &lt; b &gt; c</p>\n");
-        eq("a & b < c > \"d\" 'e'", "<p>a &amp; b &lt; c &gt; &quot;d&quot; &#39;e&#39;</p>\n");
+        eq(
+            "a & b < c > \"d\" 'e'",
+            "<p>a &amp; b &lt; c &gt; &quot;d&quot; &#39;e&#39;</p>\n",
+        );
         eq("&amp; &lt;", "<p>&amp;amp; &amp;lt;</p>\n");
     }
 
     #[test]
     fn safety() {
-        eq("<script>alert(1)</script>", "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>\n");
-        eq("<div onclick=\"x\">hi</div>", "<p>&lt;div onclick=&quot;x&quot;&gt;hi&lt;/div&gt;</p>\n");
-        eq("*a* <img src=x onerror=alert(1)>", "<p><em>a</em> &lt;img src=x onerror=alert(1)&gt;</p>\n");
+        eq(
+            "<script>alert(1)</script>",
+            "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>\n",
+        );
+        eq(
+            "<div onclick=\"x\">hi</div>",
+            "<p>&lt;div onclick=&quot;x&quot;&gt;hi&lt;/div&gt;</p>\n",
+        );
+        eq(
+            "*a* <img src=x onerror=alert(1)>",
+            "<p><em>a</em> &lt;img src=x onerror=alert(1)&gt;</p>\n",
+        );
         eq("# <b>x</b>", "<h1>&lt;b&gt;x&lt;/b&gt;</h1>\n");
-        eq("> <iframe>", "<blockquote>\n<p>&lt;iframe&gt;</p>\n</blockquote>\n");
+        eq(
+            "> <iframe>",
+            "<blockquote>\n<p>&lt;iframe&gt;</p>\n</blockquote>\n",
+        );
         eq("<!-- c -->", "<p>&lt;!-- c --&gt;</p>\n");
         for src in [
             "[x](javascript:alert(1))",
@@ -1429,15 +1671,33 @@ mod tests {
             assert!(!out.contains("<a"), "{src} -> {out}");
             assert!(!out.to_ascii_lowercase().contains("href"), "{src} -> {out}");
         }
-        eq("[click *me*](javascript:alert(1))", "<p>click <em>me</em></p>\n");
-        eq("[x](<jav&#x09;ascript:alert(1)>)", "<p><a href=\"jav&amp;#x09;ascript:alert(1)\">x</a></p>\n");
+        eq(
+            "[click *me*](javascript:alert(1))",
+            "<p>click <em>me</em></p>\n",
+        );
+        eq(
+            "[x](<jav&#x09;ascript:alert(1)>)",
+            "<p><a href=\"jav&amp;#x09;ascript:alert(1)\">x</a></p>\n",
+        );
         eq("![alt text](javascript:alert(1))", "<p>alt text</p>\n");
         eq("![a](data:image/svg+xml;base64,AAAA)", "<p>a</p>\n");
-        eq("<javascript:alert(1)>", "<p>&lt;javascript:alert(1)&gt;</p>\n");
+        eq(
+            "<javascript:alert(1)>",
+            "<p>&lt;javascript:alert(1)&gt;</p>\n",
+        );
         eq("<data:text/html,x>", "<p>&lt;data:text/html,x&gt;</p>\n");
-        eq("[t](/a\"onmouseover=\"x)", "<p><a href=\"/a&quot;onmouseover=&quot;x\">t</a></p>\n");
-        eq("[t](<a b\"c> \"ti'tle\")", "<p><a href=\"a%20b&quot;c\" title=\"ti&#39;tle\">t</a></p>\n");
-        eq("![a'b](x.png 'q\"r')", "<p><img src=\"x.png\" alt=\"a&#39;b\" title=\"q&quot;r\"></p>\n");
+        eq(
+            "[t](/a\"onmouseover=\"x)",
+            "<p><a href=\"/a&quot;onmouseover=&quot;x\">t</a></p>\n",
+        );
+        eq(
+            "[t](<a b\"c> \"ti'tle\")",
+            "<p><a href=\"a%20b&quot;c\" title=\"ti&#39;tle\">t</a></p>\n",
+        );
+        eq(
+            "![a'b](x.png 'q\"r')",
+            "<p><img src=\"x.png\" alt=\"a&#39;b\" title=\"q&quot;r\"></p>\n",
+        );
         eq(
             "[a](../x/y.html) [b](/abs) [c](?q=a:b) [d](x/y:z)",
             "<p><a href=\"../x/y.html\">a</a> <a href=\"/abs\">b</a> <a href=\"?q=a:b\">c</a> <a href=\"x/y:z\">d</a></p>\n",
@@ -1455,20 +1715,28 @@ mod tests {
 
     #[test]
     fn excerpts() {
-        let r = render_markdown("# Title\n\nHello **bold** and `code` with [a link](/x)  \nand <b>raw</b>.\n\nSecond.");
+        let r = render_markdown(
+            "# Title\n\nHello **bold** and `code` with [a link](/x)  \nand <b>raw</b>.\n\nSecond.",
+        );
         assert_eq!(r.excerpt, "Hello bold and code with a link and <b>raw</b>.");
         assert_eq!(render_markdown("a   ![pic](x.png)\n\tb").excerpt, "a pic b");
         assert_eq!(render_markdown("# Only heading").excerpt, "");
         assert_eq!(render_markdown("```\ncode\n```").excerpt, "");
         assert_eq!(render_markdown(&"x".repeat(200)).excerpt, "x".repeat(200));
-        let words = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let words = (0..60)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let ex = render_markdown(&words).excerpt;
         assert!(ex.ends_with('…'));
         assert!(ex.encode_utf16().count() <= 200);
         let body = ex.trim_end_matches('…');
         assert!(words.starts_with(body));
         assert_eq!(&words[body.len()..body.len() + 1], " ");
-        assert_eq!(render_markdown(&"y".repeat(500)).excerpt, "y".repeat(199) + "…");
+        assert_eq!(
+            render_markdown(&"y".repeat(500)).excerpt,
+            "y".repeat(199) + "…"
+        );
         // never splits a surrogate pair
         let ex = render_markdown(&"😀".repeat(150)).excerpt;
         assert_eq!(ex, "😀".repeat(99) + "…");
@@ -1478,15 +1746,23 @@ mod tests {
     #[test]
     #[ignore]
     fn differential_external() {
-        let Ok(path) = std::env::var("SITEFILE_MD_FUZZ") else { return };
-        let fuzz: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let Ok(path) = std::env::var("SITEFILE_MD_FUZZ") else {
+            return;
+        };
+        let fuzz: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let mut bad = 0;
         for case in &fuzz {
             let src = case["input"].as_str().unwrap();
             let got = render_markdown(src);
-            if got.html != case["html"].as_str().unwrap() || got.excerpt != case["excerpt"].as_str().unwrap() {
+            if got.html != case["html"].as_str().unwrap()
+                || got.excerpt != case["excerpt"].as_str().unwrap()
+            {
                 if bad < 10 {
-                    eprintln!("{src:?}\n  want {:?} / {:?}\n  got  {:?} / {:?}", case["html"], case["excerpt"], got.html, got.excerpt);
+                    eprintln!(
+                        "{src:?}\n  want {:?} / {:?}\n  got  {:?} / {:?}",
+                        case["html"], case["excerpt"], got.html, got.excerpt
+                    );
                 }
                 bad += 1;
             }
@@ -1513,16 +1789,27 @@ mod tests {
             let want_excerpt = std::fs::read_to_string(p.with_extension("excerpt")).unwrap();
             let got = render_markdown(&src);
             if got.html != want_html || got.excerpt != want_excerpt {
-                failures.push(format!("{}:\n  want {want_html:?} / {want_excerpt:?}\n  got  {:?} / {:?}", p.display(), got.html, got.excerpt));
+                failures.push(format!(
+                    "{}:\n  want {want_html:?} / {want_excerpt:?}\n  got  {:?} / {:?}",
+                    p.display(),
+                    got.html,
+                    got.excerpt
+                ));
             }
             checked += 1;
         }
-        let fuzz: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("fuzz.json")).unwrap()).unwrap();
+        let fuzz: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("fuzz.json")).unwrap()).unwrap();
         for case in &fuzz {
             let src = case["input"].as_str().unwrap();
             let got = render_markdown(src);
-            if got.html != case["html"].as_str().unwrap() || got.excerpt != case["excerpt"].as_str().unwrap() {
-                failures.push(format!("fuzz {src:?}:\n  want {:?} / {:?}\n  got  {:?} / {:?}", case["html"], case["excerpt"], got.html, got.excerpt));
+            if got.html != case["html"].as_str().unwrap()
+                || got.excerpt != case["excerpt"].as_str().unwrap()
+            {
+                failures.push(format!(
+                    "fuzz {src:?}:\n  want {:?} / {:?}\n  got  {:?} / {:?}",
+                    case["html"], case["excerpt"], got.html, got.excerpt
+                ));
             }
             checked += 1;
         }
@@ -1531,7 +1818,12 @@ mod tests {
             failures.is_empty(),
             "{} of {checked} differ:\n{}",
             failures.len(),
-            failures.iter().take(10).cloned().collect::<Vec<_>>().join("\n")
+            failures
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 }

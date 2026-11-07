@@ -60,7 +60,9 @@ impl IgnoreRules {
 
     /// Rules from `COPY --exclude` patterns, one `.sitefileignore` line each (see [`is_ignore_pattern`]).
     pub fn from_patterns(patterns: &[String]) -> IgnoreRules {
-        IgnoreRules { rules: patterns.iter().filter_map(|p| parse_line(p)).collect() }
+        IgnoreRules {
+            rules: patterns.iter().filter_map(|p| parse_line(p)).collect(),
+        }
     }
 
     /// Whether `rel` (relative to the rules' root) is excluded, counting excluded parent directories:
@@ -107,7 +109,11 @@ fn strip_trailing_space(raw: &str) -> String {
     }
     let cut = if s > 0 && chars[s - 1] == '\\' {
         // The first whitespace is escaped; the rest (if any) is stripped.
-        if s + 1 < chars.len() { s + 1 } else { chars.len() }
+        if s + 1 < chars.len() {
+            s + 1
+        } else {
+            chars.len()
+        }
     } else {
         s
     };
@@ -155,7 +161,11 @@ fn parse_line(raw: &str) -> Option<Rule> {
             }
         }
     }
-    Some(Rule { negate, dir_only, toks })
+    Some(Rule {
+        negate,
+        dir_only,
+        toks,
+    })
 }
 
 fn glob_segment(seg: &str, out: &mut Vec<Tok>) {
@@ -184,7 +194,14 @@ fn glob_segment(seg: &str, out: &mut Vec<Tok>) {
 fn matches(toks: &[Tok], text: &[char]) -> bool {
     let w = text.len() + 1;
     let mut memo: Vec<Option<bool>> = vec![None; (toks.len() + 1) * w];
-    fn go(p: usize, t: usize, toks: &[Tok], text: &[char], w: usize, memo: &mut Vec<Option<bool>>) -> bool {
+    fn go(
+        p: usize,
+        t: usize,
+        toks: &[Tok],
+        text: &[char],
+        w: usize,
+        memo: &mut Vec<Option<bool>>,
+    ) -> bool {
         if let Some(v) = memo[p * w + t] {
             return v;
         }
@@ -245,8 +262,18 @@ mod tests {
     #[test]
     fn exclude_patterns_count_parent_directories() {
         let r = IgnoreRules::from_patterns(&["drafts/".into(), "*.md".into(), "!keep.md".into()]);
-        assert!(r.excludes("drafts/a/b.html") && r.excludes("x/a.md") && !r.excludes("x/keep.md") && !r.excludes("a.html"));
-        assert!(is_ignore_pattern("*.md") && !is_ignore_pattern("#x") && !is_ignore_pattern("/") && !is_ignore_pattern("!"));
+        assert!(
+            r.excludes("drafts/a/b.html")
+                && r.excludes("x/a.md")
+                && !r.excludes("x/keep.md")
+                && !r.excludes("a.html")
+        );
+        assert!(
+            is_ignore_pattern("*.md")
+                && !is_ignore_pattern("#x")
+                && !is_ignore_pattern("/")
+                && !is_ignore_pattern("!")
+        );
     }
 
     #[test]

@@ -14,7 +14,9 @@
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::export::oci::{BaseImage, Descriptor};
 use crate::refs::{parse_ref, with_default_registry, ImageRef};
-use crate::registry::{make_client, process_env, pull_image, resolve_digest, Env, PullImageOptions, RegistryOptions};
+use crate::registry::{
+    make_client, process_env, pull_image, resolve_digest, Env, PullImageOptions, RegistryOptions,
+};
 use crate::resources::local::LocalContext;
 use crate::resources::lockfile::{ImageLockEntry, Lockfile};
 use crate::resources::vendor::Vendor;
@@ -81,7 +83,9 @@ pub fn base_ref(input: &str, span: Option<&SourceSpan>) -> Result<BaseRef> {
 
 /// [`base_ref`] with the word messages use for the reference (`BASE`, `FROM image`).
 pub fn base_ref_as(input: &str, span: Option<&SourceSpan>, lead: &str) -> Result<BaseRef> {
-    let r = parse_ref(input).map(|r| with_default_registry(&r)).map_err(|e| SitefileError::new(e.code, format!("{lead}: {}", e.detail), span.cloned()))?;
+    let r = parse_ref(input)
+        .map(|r| with_default_registry(&r))
+        .map_err(|e| SitefileError::new(e.code, format!("{lead}: {}", e.detail), span.cloned()))?;
     let registry = r.registry.clone().unwrap_or_default();
     let tag = r.tag.clone().unwrap_or_else(|| "latest".into());
     let display = if r.tag.is_some() || r.digest.is_none() {
@@ -90,12 +94,26 @@ pub fn base_ref_as(input: &str, span: Option<&SourceSpan>, lead: &str) -> Result
         format!("{registry}/{}", r.name)
     };
     let lock_key = format!("{registry}/{}:{tag}", r.name);
-    Ok(BaseRef { r, registry, display, lock_key })
+    Ok(BaseRef {
+        r,
+        registry,
+        display,
+        lock_key,
+    })
 }
 
-pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<BaseImage> {
+pub fn resolve_base(
+    input: &str,
+    lock: Option<&mut Lockfile>,
+    o: &ResolveBaseOptions<'_>,
+) -> Result<BaseImage> {
     let lead = o.lead.as_deref().unwrap_or("BASE");
-    let BaseRef { r, registry, display, lock_key } = base_ref_as(input, o.span.as_ref(), lead)?;
+    let BaseRef {
+        r,
+        registry,
+        display,
+        lock_key,
+    } = base_ref_as(input, o.span.as_ref(), lead)?;
     let env = o.env.clone().unwrap_or_else(process_env);
     let options = RegistryOptions {
         insecure_registries: insecure_registries_from_env(&o.registry.insecure_registries, &env),
@@ -107,8 +125,20 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
     let mut fresh = false;
     if root_digest.is_none() {
         let mut lock = lock;
-        let locked = if o.update { None } else { lock.as_deref().and_then(|l| l.get_image(&lock_key)).map(|e| e.digest.clone()) };
-        let vendored = if locked.is_some() || o.update || o.frozen { None } else { o.vendor.and_then(|(v, _)| v.image(&lock_key)).map(|e| e.digest.clone()) };
+        let locked = if o.update {
+            None
+        } else {
+            lock.as_deref()
+                .and_then(|l| l.get_image(&lock_key))
+                .map(|e| e.digest.clone())
+        };
+        let vendored = if locked.is_some() || o.update || o.frozen {
+            None
+        } else {
+            o.vendor
+                .and_then(|(v, _)| v.image(&lock_key))
+                .map(|e| e.digest.clone())
+        };
         if let Some(d) = locked {
             root_digest = Some(d);
             if let Some(l) = lock.as_deref_mut() {
@@ -145,15 +175,31 @@ pub fn resolve_base(input: &str, lock: Option<&mut Lockfile>, o: &ResolveBaseOpt
     }
     // Vendored blobs go into the store first, so the pull below finds them and needs no network.
     if let (Some((v, local)), Some(root)) = (o.vendor, root_digest.as_deref()) {
-        v.seed_store(local, o.store, root, o.platform.as_deref().unwrap_or("linux/amd64"))?;
+        v.seed_store(
+            local,
+            o.store,
+            root,
+            o.platform.as_deref().unwrap_or("linux/amd64"),
+        )?;
     }
     let pulled = pull_image(
         o.store,
         &client,
         &r,
-        &PullImageOptions { platform: o.platform.clone(), enforce_platform: o.enforce_platform.unwrap_or(true), root_digest, tag: fresh, on_event: None },
+        &PullImageOptions {
+            platform: o.platform.clone(),
+            enforce_platform: o.enforce_platform.unwrap_or(true),
+            root_digest,
+            tag: fresh,
+            on_event: None,
+        },
     )?;
-    Ok(BaseImage { name: display, manifest_digest: pulled.id, layers: pulled.manifest.layers, config: pulled.config })
+    Ok(BaseImage {
+        name: display,
+        manifest_digest: pulled.id,
+        layers: pulled.manifest.layers,
+        config: pulled.config,
+    })
 }
 
 /// A `FROM image` stage base, resolved: its files and the image (manifest) digest they came from.
@@ -176,7 +222,13 @@ pub struct FromImage {
 ///
 /// The files are the image's site layer under its `dev.sitefile.root` label (`/` without one), or under
 /// `at`. Their origins read `image <name>@<digest>:<path in the layer>`.
-pub fn resolve_from_image(input: &str, at: Option<&str>, local: bool, lock: Option<&mut Lockfile>, o: &ResolveBaseOptions<'_>) -> Result<FromImage> {
+pub fn resolve_from_image(
+    input: &str,
+    at: Option<&str>,
+    local: bool,
+    lock: Option<&mut Lockfile>,
+    o: &ResolveBaseOptions<'_>,
+) -> Result<FromImage> {
     let lead = o.lead.clone().unwrap_or_else(|| "FROM image".to_string());
     let (id, name) = if local {
         let name = input.split('@').next().unwrap_or(input).to_string();
@@ -194,18 +246,29 @@ pub fn resolve_from_image(input: &str, at: Option<&str>, local: bool, lock: Opti
         (id, name)
     } else {
         let name = base_ref_as(input, o.span.as_ref(), &lead)?.display;
-        let opts = ResolveBaseOptions { lead: Some(lead.clone()), enforce_platform: Some(false), ..o.clone_shallow() };
+        let opts = ResolveBaseOptions {
+            lead: Some(lead.clone()),
+            enforce_platform: Some(false),
+            ..o.clone_shallow()
+        };
         (resolve_base(input, lock, &opts)?.manifest_digest, name)
     };
-    let tree = o.store.load_tree_with(&id, Some(&format!("image {name}@{id}")), at).map_err(|e| {
-        // Name the FROM line in errors about the image's content (not a Sitefile image, corrupt blobs).
-        if e.span.is_none() && o.span.is_some() {
-            SitefileError::new(e.code, e.detail, o.span.clone())
-        } else {
-            e
-        }
-    })?;
-    Ok(FromImage { tree, digest: id, name })
+    let tree = o
+        .store
+        .load_tree_with(&id, Some(&format!("image {name}@{id}")), at)
+        .map_err(|e| {
+            // Name the FROM line in errors about the image's content (not a Sitefile image, corrupt blobs).
+            if e.span.is_none() && o.span.is_some() {
+                SitefileError::new(e.code, e.detail, o.span.clone())
+            } else {
+                e
+            }
+        })?;
+    Ok(FromImage {
+        tree,
+        digest: id,
+        name,
+    })
 }
 
 impl<'a> ResolveBaseOptions<'a> {
@@ -243,7 +306,9 @@ pub fn read_layer_blobs(store: &Store, layers: &[Descriptor]) -> Result<Vec<(Str
 mod tests {
     use super::*;
     use crate::digest::sha256;
-    use crate::export::oci::{ann, build_oci_image, media, parse_config, parse_manifest, OciOptions};
+    use crate::export::oci::{
+        ann, build_oci_image, media, parse_config, parse_manifest, OciOptions,
+    };
     use crate::refs::parse_local_ref;
     use crate::registry::mock::*;
     use crate::registry::{push, PushOptions};
@@ -276,15 +341,30 @@ mod tests {
 
     fn site() -> Tree {
         let files = [("/index.html", "<h1>Home</h1>"), ("/style.css", "body{}")];
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "test", 0o644)))).unwrap()
+        Tree::from_files(files.iter().map(|(p, c)| {
+            (
+                p.to_string(),
+                make_file(c.as_bytes().to_vec(), "test", 0o644),
+            )
+        }))
+        .unwrap()
     }
 
     fn opts(store: &Store) -> ResolveBaseOptions<'_> {
-        ResolveBaseOptions { env: Some(clean_env()), ..ResolveBaseOptions::new(store) }
+        ResolveBaseOptions {
+            env: Some(clean_env()),
+            ..ResolveBaseOptions::new(store)
+        }
     }
 
     fn image_on(base: BaseImage, epoch: Option<u64>) -> crate::export::oci::OciImage {
-        let o = OciOptions { root: Some("/usr/share/nginx/html".into()), base: Some(base), epoch, labels: [("maintainer".to_string(), "me".to_string())].into(), ..Default::default() };
+        let o = OciOptions {
+            root: Some("/usr/share/nginx/html".into()),
+            base: Some(base),
+            epoch,
+            labels: [("maintainer".to_string(), "me".to_string())].into(),
+            ..Default::default()
+        };
         build_oci_image(&site(), &o).unwrap()
     }
 
@@ -300,13 +380,25 @@ mod tests {
         let img = image_on(base.clone(), None);
         let m = parse_manifest(&img.manifest_bytes).unwrap();
         assert_eq!(m.layers.len(), 3);
-        assert_eq!(m.layers[..2].iter().map(|l| l.digest.clone()).collect::<Vec<_>>(), b.layer_digests);
-        assert!(m.layers.iter().all(|l| l.media_type == media::LAYER), "Docker layer types are normalized to OCI");
+        assert_eq!(
+            m.layers[..2]
+                .iter()
+                .map(|l| l.digest.clone())
+                .collect::<Vec<_>>(),
+            b.layer_digests
+        );
+        assert!(
+            m.layers.iter().all(|l| l.media_type == media::LAYER),
+            "Docker layer types are normalized to OCI"
+        );
         assert_eq!(m.annotations[ann::BASE_DIGEST], b.manifest_digest);
         assert_eq!(m.annotations[ann::BASE_NAME], input);
         let cfg = parse_config(&img.config_bytes).unwrap();
         assert_eq!(cfg.diff_ids[..2], b.diff_ids[..]);
-        assert_eq!(cfg.created, "2024-01-02T03:04:05Z", "created is the base's unless SOURCE_DATE_EPOCH is set");
+        assert_eq!(
+            cfg.created, "2024-01-02T03:04:05Z",
+            "created is the base's unless SOURCE_DATE_EPOCH is set"
+        );
         assert_eq!(cfg.labels["maintainer"], "me");
         assert_eq!(cfg.labels[ann::ROOT], "/usr/share/nginx/html");
         let c: serde_json::Value = serde_json::from_slice(&img.config_bytes).unwrap();
@@ -329,7 +421,15 @@ mod tests {
         let mut digests = Vec::new();
         for _ in 0..2 {
             let store = Store::open(tmp("home-")).unwrap();
-            let base = resolve_base(&input, None, &ResolveBaseOptions { frozen: true, ..opts(&store) }).unwrap();
+            let base = resolve_base(
+                &input,
+                None,
+                &ResolveBaseOptions {
+                    frozen: true,
+                    ..opts(&store)
+                },
+            )
+            .unwrap();
             digests.push(image_on(base, Some(1_700_000_000)).manifest_digest);
         }
         assert_eq!(digests[0], digests[1]);
@@ -347,7 +447,15 @@ mod tests {
         let mut lock = Lockfile::load(&lock_path).unwrap();
         let s0 = Store::open(tmp("home-")).unwrap();
         let n0 = reg.requests().len();
-        let e = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { frozen: true, ..opts(&s0) }).unwrap_err();
+        let e = resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                frozen: true,
+                ..opts(&s0)
+            },
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_LOCK_MISSING);
         assert!(e.message().contains("not in the lockfile"));
         assert_eq!(reg.requests().len(), n0);
@@ -356,36 +464,84 @@ mod tests {
         let b1 = resolve_base(&input, Some(&mut lock), &opts(&s1)).unwrap();
         assert_eq!(lock.get_image(&key).unwrap().digest, v1.manifest_digest);
         assert!(lock.save().unwrap());
-        assert_eq!(s1.resolve(&input).unwrap(), v1.manifest_digest, "a fresh resolution tags the base locally");
+        assert_eq!(
+            s1.resolve(&input).unwrap(),
+            v1.manifest_digest,
+            "a fresh resolution tags the base locally"
+        );
 
         // the tag moves on the registry...
-        let v2 = reg.seed_image("lib/base", "1", SeedImage { layers: vec![vec![("/x", "new")]], config: json!({"Cmd": ["new"]}), docker: true, ..Default::default() });
+        let v2 = reg.seed_image(
+            "lib/base",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/x", "new")]],
+                config: json!({"Cmd": ["new"]}),
+                docker: true,
+                ..Default::default()
+            },
+        );
         assert_ne!(v2.manifest_digest, v1.manifest_digest);
         // ...a locked (even frozen) build still uses the locked digest, from a cold cache
-        let tag_calls = || reg.requests().iter().filter(|r| r.url == "/v2/lib/base/manifests/1").count();
+        let tag_calls = || {
+            reg.requests()
+                .iter()
+                .filter(|r| r.url == "/v2/lib/base/manifests/1")
+                .count()
+        };
         let before = tag_calls();
         let mut lock = Lockfile::load(&lock_path).unwrap();
         let s2 = Store::open(tmp("home-")).unwrap();
-        let b2 = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { frozen: true, ..opts(&s2) }).unwrap();
+        let b2 = resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                frozen: true,
+                ..opts(&s2)
+            },
+        )
+        .unwrap();
         assert_eq!(tag_calls(), before, "the tag was not resolved again");
         assert_eq!(b2.manifest_digest, b1.manifest_digest);
 
         // --update-lock re-resolves
         let s3 = Store::open(tmp("home-")).unwrap();
-        let b3 = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { update: true, ..opts(&s3) }).unwrap();
+        let b3 = resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                update: true,
+                ..opts(&s3)
+            },
+        )
+        .unwrap();
         assert_eq!(b3.manifest_digest, v2.manifest_digest);
         assert_eq!(lock.get_image(&key).unwrap().digest, v2.manifest_digest);
 
         // a populated cache needs no network at all
         let n = reg.requests().len();
-        resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { frozen: true, ..opts(&s3) }).unwrap();
-        assert_eq!(reg.requests().len(), n, "second resolution made no registry requests");
+        resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                frozen: true,
+                ..opts(&s3)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reg.requests().len(),
+            n,
+            "second resolution made no registry requests"
+        );
     }
 
     #[test]
     fn vendored_bases_seed_the_store_and_need_no_registry() {
         use crate::resources::local::LocalContextOptions;
-        use crate::resources::vendor::{serialize_vendor_manifest, write_vendor_dir, Vendor, VendorManifest, VendoredImage};
+        use crate::resources::vendor::{
+            serialize_vendor_manifest, write_vendor_dir, Vendor, VendorManifest, VendoredImage,
+        };
         let reg = MockRegistry::start(MockOptions::default());
         let b = seed_base(&reg, "1");
         let input = format!("{}/lib/base:1", reg.host);
@@ -393,15 +549,34 @@ mod tests {
         let s0 = Store::open(tmp("home-")).unwrap();
         let online = resolve_base(&input, None, &opts(&s0)).unwrap();
         let mut blobs = std::collections::BTreeMap::new();
-        let m = crate::export::oci::parse_manifest(&s0.read_blob(&online.manifest_digest, None).unwrap()).unwrap();
-        for d in [online.manifest_digest.clone(), m.config.digest.clone()].into_iter().chain(m.layers.iter().map(|l| l.digest.clone())) {
+        let m = crate::export::oci::parse_manifest(
+            &s0.read_blob(&online.manifest_digest, None).unwrap(),
+        )
+        .unwrap();
+        for d in [online.manifest_digest.clone(), m.config.digest.clone()]
+            .into_iter()
+            .chain(m.layers.iter().map(|l| l.digest.clone()))
+        {
             blobs.insert(d.clone(), s0.read_blob(&d, None).unwrap());
         }
         let mut vm = VendorManifest::default();
-        vm.images.insert(input.clone(), VendoredImage { digest: b.manifest_digest.clone(), platform: "linux/amd64".into(), manifest: online.manifest_digest.clone() });
+        vm.images.insert(
+            input.clone(),
+            VendoredImage {
+                digest: b.manifest_digest.clone(),
+                platform: "linux/amd64".into(),
+                manifest: online.manifest_digest.clone(),
+            },
+        );
         let ctx = tmp("ctx-");
         let ctx = std::fs::canonicalize(&ctx).unwrap();
-        write_vendor_dir(&ctx, "vendor/sitefile", &serialize_vendor_manifest(&vm), &blobs).unwrap();
+        write_vendor_dir(
+            &ctx,
+            "vendor/sitefile",
+            &serialize_vendor_manifest(&vm),
+            &blobs,
+        )
+        .unwrap();
         let local = LocalContext::open(&ctx, &LocalContextOptions::default()).unwrap();
         let vendor = Vendor::open(&local, "vendor/sitefile").unwrap();
 
@@ -410,22 +585,61 @@ mod tests {
         let lock_path = ctx.join("Sitefile.lock");
         let mut lock = Lockfile::load(&lock_path).unwrap();
         let s1 = Store::open(tmp("home-")).unwrap();
-        let off = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { vendor: Some((&vendor, &local)), ..opts(&s1) }).unwrap();
+        let off = resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                vendor: Some((&vendor, &local)),
+                ..opts(&s1)
+            },
+        )
+        .unwrap();
         assert_eq!(reg.requests().len(), n, "the registry was not contacted");
         assert_eq!(off.manifest_digest, online.manifest_digest);
-        assert_eq!(lock.get_image(&input).unwrap().digest, b.manifest_digest, "the vendored digest is recorded in the lockfile");
+        assert_eq!(
+            lock.get_image(&input).unwrap().digest,
+            b.manifest_digest,
+            "the vendored digest is recorded in the lockfile"
+        );
         // --frozen-lockfile still needs the lockfile entry
         let mut empty = Lockfile::load(tmp("ctx-").join("Sitefile.lock")).unwrap();
         let s2 = Store::open(tmp("home-")).unwrap();
-        let e = resolve_base(&input, Some(&mut empty), &ResolveBaseOptions { frozen: true, vendor: Some((&vendor, &local)), ..opts(&s2) }).unwrap_err();
+        let e = resolve_base(
+            &input,
+            Some(&mut empty),
+            &ResolveBaseOptions {
+                frozen: true,
+                vendor: Some((&vendor, &local)),
+                ..opts(&s2)
+            },
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_LOCK_MISSING);
         // a corrupt vendored layer is an error, not a silent fetch
         let layer = &m.layers[0].digest;
-        std::fs::write(ctx.join("vendor/sitefile/blobs/sha256").join(&layer[7..]), b"tampered").unwrap();
+        std::fs::write(
+            ctx.join("vendor/sitefile/blobs/sha256").join(&layer[7..]),
+            b"tampered",
+        )
+        .unwrap();
         let s3 = Store::open(tmp("home-")).unwrap();
-        let e = resolve_base(&input, Some(&mut lock), &ResolveBaseOptions { vendor: Some((&vendor, &local)), ..opts(&s3) }).unwrap_err();
+        let e = resolve_base(
+            &input,
+            Some(&mut lock),
+            &ResolveBaseOptions {
+                vendor: Some((&vendor, &local)),
+                ..opts(&s3)
+            },
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_INTEGRITY);
-        assert!(e.detail.contains("vendored image blob (vendor/sitefile/blobs/sha256/") && e.detail.contains("is corrupt"), "{}", e.detail);
+        assert!(
+            e.detail
+                .contains("vendored image blob (vendor/sitefile/blobs/sha256/")
+                && e.detail.contains("is corrupt"),
+            "{}",
+            e.detail
+        );
     }
 
     #[test]
@@ -435,29 +649,78 @@ mod tests {
         let store = Store::open(tmp("home-")).unwrap();
         let warnings = RefCell::new(Vec::<String>::new());
         let warn = |m: &str| warnings.borrow_mut().push(m.to_string());
-        resolve_base(&format!("{}/lib/base:1", reg.host), None, &ResolveBaseOptions { warn: Some(&warn), ..opts(&store) }).unwrap();
-        assert!(warnings.borrow().iter().any(|w| w.contains("not pinned and there is no lockfile")), "{:?}", warnings.borrow());
+        resolve_base(
+            &format!("{}/lib/base:1", reg.host),
+            None,
+            &ResolveBaseOptions {
+                warn: Some(&warn),
+                ..opts(&store)
+            },
+        )
+        .unwrap();
+        assert!(
+            warnings
+                .borrow()
+                .iter()
+                .any(|w| w.contains("not pinned and there is no lockfile")),
+            "{:?}",
+            warnings.borrow()
+        );
     }
 
     #[test]
     fn platform_mismatches_are_errors() {
         let reg = MockRegistry::start(MockOptions::default());
-        reg.seed_image("lib/arm", "1", SeedImage { layers: vec![vec![("/a", "a")]], arch: "arm64", ..Default::default() });
+        reg.seed_image(
+            "lib/arm",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/a", "a")]],
+                arch: "arm64",
+                ..Default::default()
+            },
+        );
         let input = format!("{}/lib/arm:1", reg.host);
         let store = Store::open(tmp("home-")).unwrap();
         let e = resolve_base(&input, None, &opts(&store)).unwrap_err();
-        assert!(e.message().contains("is linux/arm64, not linux/amd64; pass --platform"), "{}", e.message());
+        assert!(
+            e.message()
+                .contains("is linux/arm64, not linux/amd64; pass --platform"),
+            "{}",
+            e.message()
+        );
         let store = Store::open(tmp("home-")).unwrap();
-        resolve_base(&input, None, &ResolveBaseOptions { platform: Some("linux/arm64".into()), ..opts(&store) }).unwrap();
+        resolve_base(
+            &input,
+            None,
+            &ResolveBaseOptions {
+                platform: Some("linux/arm64".into()),
+                ..opts(&store)
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn bad_references_name_base() {
         let store = Store::open(tmp("home-")).unwrap();
         let span = SourceSpan::new("Sitefile", 3, 1);
-        let e = resolve_base("Bad Ref", None, &ResolveBaseOptions { span: Some(span), ..opts(&store) }).unwrap_err();
+        let e = resolve_base(
+            "Bad Ref",
+            None,
+            &ResolveBaseOptions {
+                span: Some(span),
+                ..opts(&store)
+            },
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_USAGE);
-        assert!(e.message().starts_with("Sitefile:3:1: BASE: invalid image reference"), "{}", e.message());
+        assert!(
+            e.message()
+                .starts_with("Sitefile:3:1: BASE: invalid image reference"),
+            "{}",
+            e.message()
+        );
     }
 
     #[test]
@@ -466,20 +729,54 @@ mod tests {
         let b = seed_base(&reg, "1");
         let store = Store::open(tmp("home-")).unwrap();
         let base = resolve_base(&format!("{}/lib/base:1", reg.host), None, &opts(&store)).unwrap();
-        let o = OciOptions { root: Some("/usr/share/nginx/html".into()), base: Some(base), ..Default::default() };
+        let o = OciOptions {
+            root: Some("/usr/share/nginx/html".into()),
+            base: Some(base),
+            ..Default::default()
+        };
         let id = store.add_image(&site(), &o).unwrap().id;
         let remote = format!("{}/me/web:1", reg.host);
         store.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
-        let p = push(&store, &remote, &PushOptions { env: Some(clean_env()), ..Default::default() }).unwrap();
-        assert!(p.lines.iter().any(|l| l.contains("mounted from lib/base")), "{:?}", p.lines);
+        let p = push(
+            &store,
+            &remote,
+            &PushOptions {
+                env: Some(clean_env()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            p.lines.iter().any(|l| l.contains("mounted from lib/base")),
+            "{:?}",
+            p.lines
+        );
         assert_eq!((p.mounted, p.uploaded), (2, 2));
-        let mounts: Vec<_> = reg.requests().into_iter().filter(|r| r.method == "POST" && r.url.contains("mount=")).collect();
+        let mounts: Vec<_> = reg
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "POST" && r.url.contains("mount="))
+            .collect();
         assert_eq!(mounts.len(), 2, "both base layers were mounted");
         assert!(mounts.iter().all(|m| m.url.contains("from=lib%2Fbase")));
         // and the result pulls back identically
         let s2 = Store::open(tmp("home-")).unwrap();
-        crate::registry::pull(&s2, &remote, &crate::registry::PullOptions { env: Some(clean_env()), ..Default::default() }).unwrap();
+        crate::registry::pull(
+            &s2,
+            &remote,
+            &crate::registry::PullOptions {
+                env: Some(clean_env()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(s2.resolve(&remote).unwrap(), id);
-        assert_eq!(s2.details(&id).unwrap().manifest.layers[..2].iter().map(|l| l.digest.clone()).collect::<Vec<_>>(), b.layer_digests);
+        assert_eq!(
+            s2.details(&id).unwrap().manifest.layers[..2]
+                .iter()
+                .map(|l| l.digest.clone())
+                .collect::<Vec<_>>(),
+            b.layer_digests
+        );
     }
 }

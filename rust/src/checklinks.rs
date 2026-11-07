@@ -33,11 +33,17 @@ pub const MAX_LISTED: usize = 20;
 
 /// Whether a tree path is served the way `sitefile serve` and static hosts serve it.
 pub fn is_served(tree: &Tree, path: &str, dir: bool) -> bool {
-    let index = if path == "/" { "/index.html".to_string() } else { format!("{path}/index.html") };
+    let index = if path == "/" {
+        "/index.html".to_string()
+    } else {
+        format!("{path}/index.html")
+    };
     if dir {
         return tree.is_file(&index);
     }
-    tree.is_file(path) || (path != "/" && tree.is_file(&format!("{path}.html"))) || (tree.is_directory(path) && tree.is_file(&index))
+    tree.is_file(path)
+        || (path != "/" && tree.is_file(&format!("{path}.html")))
+        || (tree.is_directory(path) && tree.is_file(&index))
 }
 
 fn url_path(root: &str, path: &str) -> Option<String> {
@@ -47,31 +53,47 @@ fn url_path(root: &str, path: &str) -> Option<String> {
     if path == root {
         return Some("/".into());
     }
-    path.strip_prefix(&format!("{root}/")).map(|rest| format!("/{rest}"))
+    path.strip_prefix(&format!("{root}/"))
+        .map(|rest| format!("/{rest}"))
 }
 
 /// Whether a REDIRECT source covers a URL path: equal, or a `/*` prefix of it.
 pub fn redirected(sources: &[String], url: &str) -> bool {
-    sources.iter().any(|from| from == url || from.strip_suffix('*').is_some_and(|prefix| from.ends_with("/*") && url.starts_with(prefix)))
+    sources.iter().any(|from| {
+        from == url
+            || from
+                .strip_suffix('*')
+                .is_some_and(|prefix| from.ends_with("/*") && url.starts_with(prefix))
+    })
 }
 
 fn external_reason(e: &SitefileError, url: &str, policy: &FetchPolicy) -> Option<String> {
     match e.code {
         E_TOO_LARGE => None,
         E_FETCH_STATUS => {
-            let status: u32 = e.detail.rsplit_once("HTTP ").and_then(|(_, s)| s.parse().ok()).unwrap_or(0);
+            let status: u32 = e
+                .detail
+                .rsplit_once("HTTP ")
+                .and_then(|(_, s)| s.parse().ok())
+                .unwrap_or(0);
             (status >= 400 || status == 0).then(|| format!("HTTP {status}"))
         }
         E_FETCH_TIMEOUT => Some(format!("no answer within {} ms", policy.timeout_ms)),
         E_PROTOCOL => Some(
-            if url.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("http:")) && !policy.allow_http {
+            if url
+                .get(..5)
+                .is_some_and(|s| s.eq_ignore_ascii_case("http:"))
+                && !policy.allow_http
+            {
                 "plain http is checked only with --allow-http"
             } else {
                 "not allowed by the network policy"
             }
             .into(),
         ),
-        E_SSRF_BLOCKED => Some("a non-public address (checked only with --allow-private-network)".into()),
+        E_SSRF_BLOCKED => {
+            Some("a non-public address (checked only with --allow-private-network)".into())
+        }
         E_REDIRECT => Some("too many or invalid redirects".into()),
         _ => Some("could not connect".into()),
     }
@@ -82,7 +104,9 @@ pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec
     let mut out = Vec::new();
     let mut external: HashMap<String, Option<String>> = HashMap::new();
     for (file, node) in tree.entries() {
-        let Some((_, refs)) = scan_file(file, &node.bytes) else { continue };
+        let Some((_, refs)) = scan_file(file, &node.bytes) else {
+            continue;
+        };
         for r in &refs {
             let reason = match resolve_reference(&r.url, file, op.root) {
                 Target::None => continue,
@@ -90,9 +114,16 @@ pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec
                     if !op.external {
                         continue;
                     }
-                    let url = if u.starts_with("//") { format!("https:{u}") } else { u };
+                    let url = if u.starts_with("//") {
+                        format!("https:{u}")
+                    } else {
+                        u
+                    };
                     if !external.contains_key(&url) {
-                        let limited = FetchPolicy { max_bytes: 0, ..policy.clone() };
+                        let limited = FetchPolicy {
+                            max_bytes: 0,
+                            ..policy.clone()
+                        };
                         let reason = match fetch_remote(&url, &limited, Some(op.span)) {
                             Ok(_) => None,
                             Err(e) => external_reason(&e, &url, policy),
@@ -105,7 +136,11 @@ pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec
                     if is_served(tree, &path, dir) {
                         None
                     } else {
-                        let display = if dir && path != "/" { format!("{path}/") } else { path.clone() };
+                        let display = if dir && path != "/" {
+                            format!("{path}/")
+                        } else {
+                            path.clone()
+                        };
                         let covered = url_path(op.root, &path).is_some_and(|u| {
                             let u = if dir && u != "/" { format!("{u}/") } else { u };
                             redirected(op.redirects, &u)
@@ -115,7 +150,12 @@ pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec
                 }
             };
             if let Some(reason) = reason {
-                out.push(BrokenLink { file: file.clone(), line: r.line, url: r.url.clone(), reason });
+                out.push(BrokenLink {
+                    file: file.clone(),
+                    line: r.line,
+                    url: r.url.clone(),
+                    reason,
+                });
             }
         }
     }
@@ -128,7 +168,12 @@ pub fn broken_link_text(b: &BrokenLink) -> String {
 }
 
 /// Report the broken links: a warning each with `--warn`, otherwise one E_BROKEN_LINK error listing them.
-pub fn report_broken_links(broken: &[BrokenLink], op: &CheckLinksOp, origin: &str, warn: &dyn Fn(&str)) -> Result<()> {
+pub fn report_broken_links(
+    broken: &[BrokenLink],
+    op: &CheckLinksOp,
+    origin: &str,
+    warn: &dyn Fn(&str),
+) -> Result<()> {
     if broken.is_empty() {
         return Ok(());
     }
@@ -138,13 +183,20 @@ pub fn report_broken_links(broken: &[BrokenLink], op: &CheckLinksOp, origin: &st
         }
         return Ok(());
     }
-    let mut detail = format!("CHECKLINKS: {} broken link{}:", broken.len(), if broken.len() == 1 { "" } else { "s" });
+    let mut detail = format!(
+        "CHECKLINKS: {} broken link{}:",
+        broken.len(),
+        if broken.len() == 1 { "" } else { "s" }
+    );
     for b in broken.iter().take(MAX_LISTED) {
         detail.push_str("\n  ");
         detail.push_str(&broken_link_text(b));
     }
     if broken.len() > MAX_LISTED {
-        detail.push_str(&format!("\n  … and {} more (CHECKLINKS --warn lists them all)", broken.len() - MAX_LISTED));
+        detail.push_str(&format!(
+            "\n  … and {} more (CHECKLINKS --warn lists them all)",
+            broken.len() - MAX_LISTED
+        ));
     }
     Err(SitefileError::at(E_BROKEN_LINK, detail, op.span))
 }

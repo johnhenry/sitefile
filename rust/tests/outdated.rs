@@ -16,7 +16,11 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-outdated-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-outdated-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -50,15 +54,27 @@ fn serve(bodies: Bodies) -> String {
                 Some(b) => ("200 OK", b),
                 None => ("404 Not Found", String::new()),
             };
-            let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     base
 }
 
 fn sitefile(home: &Path, args: &[&str]) -> (i32, String, String) {
-    let o = Command::new(BIN).args(args).env("SITEFILE_HOME", home).output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into())
+    let o = Command::new(BIN)
+        .args(args)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into(),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }
 
 fn sha(s: &str) -> String {
@@ -67,7 +83,12 @@ fn sha(s: &str) -> String {
 
 #[test]
 fn imports_current_changed_unpinned_and_errors_without_writing() {
-    let bodies: Bodies = Arc::new(Mutex::new([("/a.js", "a1"), ("/b.js", "b1"), ("/c.js", "c1")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()));
+    let bodies: Bodies = Arc::new(Mutex::new(
+        [("/a.js", "a1"), ("/b.js", "b1"), ("/c.js", "c1")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    ));
     let base = serve(bodies.clone());
     let t = Tmp::new();
     let home = t.0.join("home");
@@ -85,7 +106,10 @@ fn imports_current_changed_unpinned_and_errors_without_writing() {
 
     let (code, out, err) = sitefile(&home, &["outdated", c, net[0], net[1]]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.ends_with("4 remote inputs: 1 unpinned, 1 error, 2 current\n"), "{out}");
+    assert!(
+        out.ends_with("4 remote inputs: 1 unpinned, 1 error, 2 current\n"),
+        "{out}"
+    );
 
     bodies.lock().unwrap().insert("/a.js".into(), "a2".into());
     bodies.lock().unwrap().insert("/b.js".into(), "b2".into());
@@ -94,10 +118,23 @@ fn imports_current_changed_unpinned_and_errors_without_writing() {
     let h = |s: &str| sha(s)[7..19].to_string();
     let pad = " ".repeat(base.len() + 8 - 6);
     let want = [
-        format!("KIND    NAME  SOURCE{pad}  PINNED        BY         LATEST        STATUS    NEWER TAG"),
-        format!("import  a     {base}/a.js     {}  integrity  {}  changed   -", h("a1"), h("a2")),
-        format!("import  b     {base}/b.js     {}  lockfile   {}  changed   -", h("b1"), h("b2")),
-        format!("import  c     {base}/c.js     -             -          {}  unpinned  -", h("c1")),
+        format!(
+            "KIND    NAME  SOURCE{pad}  PINNED        BY         LATEST        STATUS    NEWER TAG"
+        ),
+        format!(
+            "import  a     {base}/a.js     {}  integrity  {}  changed   -",
+            h("a1"),
+            h("a2")
+        ),
+        format!(
+            "import  b     {base}/b.js     {}  lockfile   {}  changed   -",
+            h("b1"),
+            h("b2")
+        ),
+        format!(
+            "import  c     {base}/c.js     -             -          {}  unpinned  -",
+            h("c1")
+        ),
         format!("import  gone  {base}/gone.js  -             -          -             error     -"),
         format!("gone: error[E_FETCH_STATUS]: GET {base}/gone.js returned HTTP 404"),
         "4 remote inputs: 2 changed, 1 unpinned, 1 error".to_string(),
@@ -113,7 +150,10 @@ fn imports_current_changed_unpinned_and_errors_without_writing() {
     assert_eq!(v["inputs"][3]["error"]["code"], "E_FETCH_STATUS");
     assert_eq!(v["summary"]["changed"], 2);
     let keys: Vec<&String> = v["inputs"][0].as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["kind", "name", "source", "pin", "pinnedBy", "latest", "status", "newerTag", "error"]);
+    assert_eq!(
+        keys,
+        ["kind", "name", "source", "pin", "pinnedBy", "latest", "status", "newerTag", "error"]
+    );
 
     // never writes: the lockfile is unchanged and no store was created
     assert_eq!(fs::read_to_string(ctx.join("Sitefile.lock")).unwrap(), lock);

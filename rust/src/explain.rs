@@ -39,30 +39,63 @@ fn source_label(r: &SourceRef) -> String {
 /// One line describing an operation: its keyword, source and destination (FOR destinations are not evaluated).
 pub fn operation_label(op: &Operation) -> String {
     match op {
-        Operation::Copy { source, dest, dest_is_dir, .. } => {
-            format!("COPY {} {dest}{}", source_label(source), if *dest_is_dir && dest != "/" { "/" } else { "" })
+        Operation::Copy {
+            source,
+            dest,
+            dest_is_dir,
+            ..
+        } => {
+            format!(
+                "COPY {} {dest}{}",
+                source_label(source),
+                if *dest_is_dir && dest != "/" { "/" } else { "" }
+            )
         }
-        Operation::Render { template, dest, each, .. } => match each {
+        Operation::Render {
+            template,
+            dest,
+            each,
+            ..
+        } => match each {
             Some(e) => format!(
                 "RENDER {} FOR {} IN {}{}{}",
                 source_label(template),
                 e.as_name,
                 e.list,
-                e.by.as_ref().map(|b| format!(" BY {b}")).unwrap_or_default(),
-                e.page.as_ref().map(|p| format!(" PAGE {}", p.size)).unwrap_or_default()
+                e.by.as_ref()
+                    .map(|b| format!(" BY {b}"))
+                    .unwrap_or_default(),
+                e.page
+                    .as_ref()
+                    .map(|p| format!(" PAGE {}", p.size))
+                    .unwrap_or_default()
             ),
             None => format!("RENDER {} TO {dest}", source_label(template)),
         },
-        Operation::Transform { source, plugin, each, .. } => format!(
+        Operation::Transform {
+            source,
+            plugin,
+            each,
+            ..
+        } => format!(
             "TRANSFORM {plugin}{}{}",
-            source.as_ref().map(|s| format!(" {}", source_label(s))).unwrap_or_default(),
-            each.as_ref().map(|e| format!(" FOR {} IN {}", e.as_name, e.list)).unwrap_or_default()
+            source
+                .as_ref()
+                .map(|s| format!(" {}", source_label(s)))
+                .unwrap_or_default(),
+            each.as_ref()
+                .map(|e| format!(" FOR {} IN {}", e.as_name, e.list))
+                .unwrap_or_default()
         ),
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
         Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
         Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
         Operation::CheckLinks { warn, external, .. } => {
-            format!("CHECKLINKS{}{}", if *warn { " --warn" } else { "" }, if *external { " --external" } else { "" })
+            format!(
+                "CHECKLINKS{}{}",
+                if *warn { " --warn" } else { "" },
+                if *external { " --external" } else { "" }
+            )
         }
     }
 }
@@ -72,7 +105,11 @@ fn stage_label(stage: &Stage) -> String {
         StageBase::Scratch => "scratch".to_string(),
         StageBase::Local { path } => local_label(path),
         StageBase::Stage { name } => name.clone(),
-        StageBase::Image { reference, at: Some(at), .. } => format!("image {reference} AT {at}"),
+        StageBase::Image {
+            reference,
+            at: Some(at),
+            ..
+        } => format!("image {reference} AT {at}"),
         StageBase::Image { reference, .. } => format!("image {reference}"),
     };
     match &stage.name {
@@ -83,7 +120,10 @@ fn stage_label(stage: &Stage) -> String {
 
 /// `build`, or `#2` for the second stage when it has no name.
 fn stage_display(stage: &Stage, index: usize) -> String {
-    stage.name.clone().unwrap_or_else(|| format!("#{}", index + 1))
+    stage
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("#{}", index + 1))
 }
 
 fn stage_id(stage: &Stage, index: usize) -> String {
@@ -166,7 +206,11 @@ struct Edges {
 impl Edges {
     fn add(&mut self, from: &str, to: &str, kind: &'static str) {
         if self.seen.insert((from.to_string(), to.to_string(), kind)) {
-            self.list.push(GraphEdge { from: from.to_string(), to: to.to_string(), kind });
+            self.list.push(GraphEdge {
+                from: from.to_string(),
+                to: to.to_string(),
+                kind,
+            });
         }
     }
 }
@@ -178,14 +222,20 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let local = |rel: &str, locals: &mut Vec<GraphNode>| -> String {
         let id = format!("local:{}", local_label(rel));
         if !locals.iter().any(|n| n.id == id) {
-            locals.push(GraphNode { id: id.clone(), kind: NodeKind::Local, label: local_label(rel), line: None });
+            locals.push(GraphNode {
+                id: id.clone(),
+                kind: NodeKind::Local,
+                label: local_label(rel),
+                line: None,
+            });
         }
         id
     };
     let imports: HashSet<&str> = p.imports.iter().map(|i| i.name.as_str()).collect();
     let tools: HashSet<&str> = p.tools.iter().map(|t| t.name.as_str()).collect();
     let mut stage_ids: HashMap<String, String> = HashMap::new();
-    let list = |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
+    let list =
+        |name: &str| -> Option<String> { imports.contains(name).then(|| format!("import:{name}")) };
     // An IMPORT … SCHEMA reads its schema file.
     for i in &p.imports {
         if let Some(s) = &i.schema {
@@ -201,8 +251,17 @@ pub fn plan_graph(p: &Plan) -> Graph {
             continue;
         }
         let id = format!("stage:{}", r.name);
-        let line = p.imports.iter().find(|i| i.name == r.import).map(|i| i.span.line);
-        imported_stages.push(GraphNode { id: id.clone(), kind: NodeKind::Stage, label: format!("stage {} of IMPORT {}", r.stage, r.import), line });
+        let line = p
+            .imports
+            .iter()
+            .find(|i| i.name == r.import)
+            .map(|i| i.span.line);
+        imported_stages.push(GraphNode {
+            id: id.clone(),
+            kind: NodeKind::Stage,
+            label: format!("stage {} of IMPORT {}", r.stage, r.import),
+            line,
+        });
         edges.add(&format!("import:{}", r.import), &id, "input");
         stage_ids.insert(r.name.clone(), id);
     }
@@ -210,7 +269,11 @@ pub fn plan_graph(p: &Plan) -> Graph {
     let mut images: Vec<GraphNode> = Vec::new();
     for (si, stage) in p.stages.iter().enumerate() {
         let id = stage_id(stage, si);
-        let ids: Vec<String> = stage.operations.iter().map(|op| format!("op:{}", op.span().line)).collect();
+        let ids: Vec<String> = stage
+            .operations
+            .iter()
+            .map(|op| format!("op:{}", op.span().line))
+            .collect();
         let first = ids.first().cloned().unwrap_or_else(|| id.clone());
         match &stage.base {
             StageBase::Local { path } => {
@@ -225,7 +288,12 @@ pub fn plan_graph(p: &Plan) -> Graph {
             StageBase::Image { reference, .. } => {
                 let image_id = format!("image:{reference}");
                 if !images.iter().any(|n| n.id == image_id) {
-                    images.push(GraphNode { id: image_id.clone(), kind: NodeKind::Image, label: format!("image {reference}"), line: Some(stage.span.line) });
+                    images.push(GraphNode {
+                        id: image_id.clone(),
+                        kind: NodeKind::Image,
+                        label: format!("image {reference}"),
+                        line: Some(stage.span.line),
+                    });
                 }
                 edges.add(&image_id, &first, "base");
             }
@@ -233,7 +301,12 @@ pub fn plan_graph(p: &Plan) -> Graph {
         }
         for (i, op) in stage.operations.iter().enumerate() {
             let op_id = &ids[i];
-            staged.push(GraphNode { id: op_id.clone(), kind: NodeKind::Operation, label: operation_label(op), line: Some(op.span().line) });
+            staged.push(GraphNode {
+                id: op_id.clone(),
+                kind: NodeKind::Operation,
+                label: operation_label(op),
+                line: Some(op.span().line),
+            });
             let source_node = |r: &SourceRef, locals: &mut Vec<GraphNode>| -> Option<String> {
                 match r {
                     SourceRef::Inline { .. } => None,
@@ -249,20 +322,39 @@ pub fn plan_graph(p: &Plan) -> Graph {
                     inputs.push(source_node(template, &mut locals));
                     inputs.push(each.as_ref().and_then(|e| list(&e.list)));
                 }
-                Operation::Transform { source, plugin, each, .. } => {
+                Operation::Transform {
+                    source,
+                    plugin,
+                    each,
+                    ..
+                } => {
                     inputs.push(source.as_ref().and_then(|s| source_node(s, &mut locals)));
-                    inputs.push(Some(format!("{}:{plugin}", if tools.contains(plugin.as_str()) { "tool" } else { "plugin" })));
+                    inputs.push(Some(format!(
+                        "{}:{plugin}",
+                        if tools.contains(plugin.as_str()) {
+                            "tool"
+                        } else {
+                            "plugin"
+                        }
+                    )));
                     inputs.push(each.as_ref().and_then(|e| list(&e.list)));
                 }
                 Operation::Feed { list: l, .. } => inputs.push(list(l)),
-                Operation::Sitemap { .. } | Operation::Fingerprint { .. } | Operation::CheckLinks { .. } => {}
+                Operation::Sitemap { .. }
+                | Operation::Fingerprint { .. }
+                | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
                 edges.add(&from, op_id, "input");
             }
             edges.add(op_id, ids.get(i + 1).unwrap_or(&id), "next");
         }
-        staged.push(GraphNode { id: id.clone(), kind: NodeKind::Stage, label: stage_label(stage), line: Some(stage.span.line) });
+        staged.push(GraphNode {
+            id: id.clone(),
+            kind: NodeKind::Stage,
+            label: stage_label(stage),
+            line: Some(stage.span.line),
+        });
         if let Some(n) = &stage.name {
             stage_ids.insert(n.clone(), id);
         }
@@ -272,8 +364,16 @@ pub fn plan_graph(p: &Plan) -> Graph {
     edges.add(&stage_id(&p.stages[last], last), "export", "export");
     let mut site: Vec<GraphNode> = Vec::new();
     let rules: [(&str, Vec<u32>, &str); 2] = [
-        ("_redirects", p.redirects.iter().map(|r| r.span.line).collect(), "REDIRECT"),
-        ("_headers", p.headers.iter().map(|h| h.span.line).collect(), "HEADER"),
+        (
+            "_redirects",
+            p.redirects.iter().map(|r| r.span.line).collect(),
+            "REDIRECT",
+        ),
+        (
+            "_headers",
+            p.headers.iter().map(|h| h.span.line).collect(),
+            "HEADER",
+        ),
     ];
     for (name, lines, kind) in rules {
         let Some(first) = lines.first() else { continue };
@@ -282,7 +382,11 @@ pub fn plan_graph(p: &Plan) -> Graph {
         site.push(GraphNode {
             id: id.clone(),
             kind: NodeKind::Site,
-            label: format!("{} ({n} {kind} line{})", join_virtual(&p.export_path, name), if n == 1 { "" } else { "s" }),
+            label: format!(
+                "{} ({n} {kind} line{})",
+                join_virtual(&p.export_path, name),
+                if n == 1 { "" } else { "s" }
+            ),
             line: Some(*first),
         });
         edges.add(&id, "export", "export");
@@ -290,23 +394,59 @@ pub fn plan_graph(p: &Plan) -> Graph {
 
     let mut nodes: Vec<GraphNode> = Vec::new();
     for i in &p.imports {
-        let as_kind = i.as_kind.map(|k| format!(" AS {}", k.as_str())).unwrap_or_default();
-        nodes.push(GraphNode { id: format!("import:{}", i.name), kind: NodeKind::Import, label: format!("IMPORT {} {}{as_kind}", i.name, i.uri), line: Some(i.span.line) });
+        let as_kind = i
+            .as_kind
+            .map(|k| format!(" AS {}", k.as_str()))
+            .unwrap_or_default();
+        nodes.push(GraphNode {
+            id: format!("import:{}", i.name),
+            kind: NodeKind::Import,
+            label: format!("IMPORT {} {}{as_kind}", i.name, i.uri),
+            line: Some(i.span.line),
+        });
     }
     for pl in &p.plugins {
-        nodes.push(GraphNode { id: format!("plugin:{}", pl.name), kind: NodeKind::Plugin, label: format!("PLUGIN {} {}", pl.name, local_label(&pl.path)), line: Some(pl.span.line) });
+        nodes.push(GraphNode {
+            id: format!("plugin:{}", pl.name),
+            kind: NodeKind::Plugin,
+            label: format!("PLUGIN {} {}", pl.name, local_label(&pl.path)),
+            line: Some(pl.span.line),
+        });
     }
     for t in &p.tools {
-        nodes.push(GraphNode { id: format!("tool:{}", t.name), kind: NodeKind::Tool, label: format!("TOOL {}", t.name), line: Some(t.span.line) });
+        nodes.push(GraphNode {
+            id: format!("tool:{}", t.name),
+            kind: NodeKind::Tool,
+            label: format!("TOOL {}", t.name),
+            line: Some(t.span.line),
+        });
     }
     nodes.extend(images);
     nodes.extend(imported_stages);
     nodes.extend(locals);
     nodes.extend(staged);
     nodes.extend(site);
-    let target = p.target.as_ref().map(|t| format!(" (--target {t})")).unwrap_or_default();
-    nodes.push(GraphNode { id: "export".into(), kind: NodeKind::Export, label: format!("EXPORT {} AS {}{target}", p.export_path, p.export_format.as_str()), line: None });
-    Graph { file: p.file.clone(), target: p.target.clone(), nodes, edges: edges.list }
+    let target = p
+        .target
+        .as_ref()
+        .map(|t| format!(" (--target {t})"))
+        .unwrap_or_default();
+    nodes.push(GraphNode {
+        id: "export".into(),
+        kind: NodeKind::Export,
+        label: format!(
+            "EXPORT {} AS {}{target}",
+            p.export_path,
+            p.export_format.as_str()
+        ),
+        line: None,
+    });
+    Graph {
+        file: p.file.clone(),
+        target: p.target.clone(),
+        nodes,
+        edges: edges.list,
+    }
 }
 
 /// The object `graph --json` prints: `{file, target?, nodes: [{id, kind, label, line?}], edges: [{from, to, kind}]}`.
@@ -331,7 +471,15 @@ pub fn graph_json(g: &Graph) -> Value {
         })
         .collect();
     m.insert("nodes".into(), Value::Array(nodes));
-    m.insert("edges".into(), Value::Array(g.edges.iter().map(|e| json!({ "from": e.from, "to": e.to, "kind": e.kind })).collect()));
+    m.insert(
+        "edges".into(),
+        Value::Array(
+            g.edges
+                .iter()
+                .map(|e| json!({ "from": e.from, "to": e.to, "kind": e.kind }))
+                .collect(),
+        ),
+    );
     Value::Object(m)
 }
 
@@ -344,7 +492,11 @@ pub fn graph_text(g: &Graph) -> String {
             out.push_str(&format!("  <- {} ({})\n", e.from, e.kind));
         }
     }
-    out.push_str(&format!("{} nodes, {} edges\n", g.nodes.len(), g.edges.len()));
+    out.push_str(&format!(
+        "{} nodes, {} edges\n",
+        g.nodes.len(),
+        g.edges.len()
+    ));
     out
 }
 
@@ -356,7 +508,12 @@ fn dot_string(s: &str) -> String {
 pub fn graph_dot(g: &Graph) -> String {
     let mut out = String::from("digraph sitefile {\n  rankdir=LR;\n  node [shape=box];\n");
     for n in &g.nodes {
-        out.push_str(&format!("  {} [label={}, shape={}];\n", dot_string(&n.id), dot_string(&n.label), n.kind.dot_shape()));
+        out.push_str(&format!(
+            "  {} [label={}, shape={}];\n",
+            dot_string(&n.id),
+            dot_string(&n.label),
+            n.kind.dot_shape()
+        ));
     }
     for e in &g.edges {
         let style = match e.kind {
@@ -364,7 +521,11 @@ pub fn graph_dot(g: &Graph) -> String {
             "next" => "",
             _ => " [style=bold]",
         };
-        out.push_str(&format!("  {} -> {}{style};\n", dot_string(&e.from), dot_string(&e.to)));
+        out.push_str(&format!(
+            "  {} -> {}{style};\n",
+            dot_string(&e.from),
+            dot_string(&e.to)
+        ));
     }
     out.push_str("}\n");
     out
@@ -409,12 +570,20 @@ fn same(a: Option<&FileNode>, b: Option<&FileNode>) -> bool {
 
 /// `rel` of `full` below directory `dir` (`/x` for `/d/x` under `/d`).
 fn below<'a>(dir: &str, full: &'a str) -> &'a str {
-    if dir == "/" { full } else { &full[dir.len()..] }
+    if dir == "/" {
+        full
+    } else {
+        &full[dir.len()..]
+    }
 }
 
 /// `base` + `rel` where `base` is a virtual path (`/` for the root) and `rel` starts with `/`.
 fn under(base: &str, rel: &str) -> String {
-    if base == "/" { rel.to_string() } else { format!("{base}{rel}") }
+    if base == "/" {
+        rel.to_string()
+    } else {
+        format!("{base}{rel}")
+    }
 }
 
 fn read_label(r: &SourceRef) -> String {
@@ -463,7 +632,9 @@ impl<'a> WhyScope<'a> {
     /// Whether a context-relative path is a directory (a COPY of a directory lists the file inside it).
     fn is_dir(&self, rel: &str) -> bool {
         match self.context {
-            WhyContext::Host(dir) => std::fs::metadata(Path::new(dir).join(rel)).map(|m| m.is_dir()).unwrap_or(false),
+            WhyContext::Host(dir) => std::fs::metadata(Path::new(dir).join(rel))
+                .map(|m| m.is_dir())
+                .unwrap_or(false),
             WhyContext::Unit(u) => u.is_directory(rel),
         }
     }
@@ -480,17 +651,36 @@ impl<'a> WhyScope<'a> {
                     imported: &unit.imported,
                     renames: &unit.renames,
                 };
-                let i = unit.plan.stages.iter().position(|s| s.name.as_deref() == Some(stage)).expect("an imported stage that was built");
+                let i = unit
+                    .plan
+                    .stages
+                    .iter()
+                    .position(|s| s.name.as_deref() == Some(stage))
+                    .expect("an imported stage that was built");
                 return (scope, i);
             }
         }
-        let i = self.plan.stages.iter().position(|s| s.name.as_deref() == Some(name)).expect("a stage that was built");
+        let i = self
+            .plan
+            .stages
+            .iter()
+            .position(|s| s.name.as_deref() == Some(name))
+            .expect("a stage that was built");
         (self.clone(), i)
     }
 
     /// Display and (for a stage) the file a COPY source contributes to `file` written at `dest`.
-    fn copied(&self, r: &SourceRef, dest: &str, file: &str) -> (String, Option<(WhyScope<'a>, usize, String)>) {
-        let rel = if file == dest { None } else { Some(below(dest, file)) };
+    fn copied(
+        &self,
+        r: &SourceRef,
+        dest: &str,
+        file: &str,
+    ) -> (String, Option<(WhyScope<'a>, usize, String)>) {
+        let rel = if file == dest {
+            None
+        } else {
+            Some(below(dest, file))
+        };
         match r {
             SourceRef::Inline { delimiter, .. } => (format!("<<{delimiter}"), None),
             SourceRef::Local { path, .. } => {
@@ -508,9 +698,20 @@ impl<'a> WhyScope<'a> {
                 (local_label(&rest), None)
             }
             SourceRef::Import { name, path, .. } => {
-                let res = self.resources.iter().find(|(n, _)| n == name).map(|(_, r)| r);
+                let res = self
+                    .resources
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, r)| r);
                 let Some(Resource::Tree { tree, .. }) = res else {
-                    return (if path == "/" { format!("import {name}") } else { format!("import {name}:{path}") }, None);
+                    return (
+                        if path == "/" {
+                            format!("import {name}")
+                        } else {
+                            format!("import {name}:{path}")
+                        },
+                        None,
+                    );
                 };
                 let inner = match rel {
                     Some(rel) if !tree.is_file(path) => under(path, rel),
@@ -535,9 +736,13 @@ impl<'a> WhyScope<'a> {
     fn renamed_at(&self, si: usize, file: &str, up_to: usize) -> Option<(usize, String)> {
         let ops = &self.plan.stages[si].operations;
         (0..up_to).rev().find_map(|i| {
-            let Operation::Fingerprint { span, .. } = &ops[i] else { return None };
+            let Operation::Fingerprint { span, .. } = &ops[i] else {
+                return None;
+            };
             let (_, list) = self.renames.iter().find(|(line, _)| *line == span.line)?;
-            list.iter().find(|(_, to)| to == file).map(|(from, _)| (i, from.clone()))
+            list.iter()
+                .find(|(_, to)| to == file)
+                .map(|(from, _)| (i, from.clone()))
         })
     }
 
@@ -553,7 +758,9 @@ impl<'a> WhyScope<'a> {
         // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
         if let Some((index, from)) = self.renamed_at(si, file, up_to) {
             let op = &stage.operations[index];
-            let node = trees[index + 1].get(file).expect("a renamed file is in the tree after its FINGERPRINT");
+            let node = trees[index + 1]
+                .get(file)
+                .expect("a renamed file is in the tree after its FINGERPRINT");
             let mut events = self.history_to(si, &from, index);
             events.push(WhyEvent {
                 location: self.at(op.span().line),
@@ -576,7 +783,11 @@ impl<'a> WhyScope<'a> {
                     events.extend(scope.history(i, file));
                 }
                 StageBase::Local { path } => {
-                    let rest = if path.is_empty() { file[1..].to_string() } else { format!("{path}{file}") };
+                    let rest = if path.is_empty() {
+                        file[1..].to_string()
+                    } else {
+                        format!("{path}{file}")
+                    };
                     events.push(WhyEvent {
                         location: self.at(stage.span.line),
                         instruction: stage_label(stage),
@@ -605,7 +816,14 @@ impl<'a> WhyScope<'a> {
     }
 
     /// The events of operations `from` to `up_to` (exclusive) of stage `si` that changed `file` (`prev`: before them).
-    fn later(&self, si: usize, file: &str, from: usize, up_to: usize, mut prev: Option<&'a FileNode>) -> Vec<WhyEvent> {
+    fn later(
+        &self,
+        si: usize,
+        file: &str,
+        from: usize,
+        up_to: usize,
+        mut prev: Option<&'a FileNode>,
+    ) -> Vec<WhyEvent> {
         let tools: HashSet<&str> = self.plan.tools.iter().map(|t| t.name.as_str()).collect();
         let stage = &self.plan.stages[si];
         let trees = &self.steps[si];
@@ -632,7 +850,13 @@ impl<'a> WhyScope<'a> {
                         inputs.push(format!("list {}", e.list));
                     }
                 }
-                Operation::Transform { source, plugin, each, span, .. } => {
+                Operation::Transform {
+                    source,
+                    plugin,
+                    each,
+                    span,
+                    ..
+                } => {
                     // A directory TRANSFORM names the input file in each output's origin.
                     let per_file = format!("{} TRANSFORM ", self.at(span.line));
                     if let Some(s) = source {
@@ -641,7 +865,14 @@ impl<'a> WhyScope<'a> {
                             None => read_label(s),
                         });
                     }
-                    inputs.push(format!("{} {plugin}", if tools.contains(plugin.as_str()) { "tool" } else { "plugin" }));
+                    inputs.push(format!(
+                        "{} {plugin}",
+                        if tools.contains(plugin.as_str()) {
+                            "tool"
+                        } else {
+                            "plugin"
+                        }
+                    ));
                     if let Some(e) = each {
                         inputs.push(format!("list {}", e.list));
                     }
@@ -650,7 +881,12 @@ impl<'a> WhyScope<'a> {
                 // Writes nothing, so never reached.
                 Operation::CheckLinks { .. } => {}
                 Operation::Fingerprint { manifest, .. } => inputs.push(
-                    if manifest.as_deref() == Some(file) { "the files it renamed" } else { "references to renamed files" }.into(),
+                    if manifest.as_deref() == Some(file) {
+                        "the files it renamed"
+                    } else {
+                        "references to renamed files"
+                    }
+                    .into(),
                 ),
                 Operation::Feed { list, .. } => inputs.push(format!("list {list}")),
             }
@@ -672,14 +908,27 @@ impl<'a> WhyScope<'a> {
 /// Explain one exported file (see `why` in src/explain.ts). `result` must come from a build with `record_steps`.
 pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyReport> {
     let p = &result.plan;
-    let steps = result.steps.as_deref().expect("why() needs a build with record_steps");
-    let wanted = if raw.starts_with('/') { raw.to_string() } else { format!("/{raw}") };
+    let steps = result
+        .steps
+        .as_deref()
+        .expect("why() needs a build with record_steps");
+    let wanted = if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{raw}")
+    };
     let want = normalize_virtual(&wanted, None, "path")?.path;
     let Some(node) = result.output.get(&want) else {
         if result.output.is_directory(&want) {
-            return Err(SitefileError::plain(E_NOT_FOUND, format!("'{want}' is a directory in the build output; name a file")));
+            return Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("'{want}' is a directory in the build output; name a file"),
+            ));
         }
-        return Err(SitefileError::plain(E_NOT_FOUND, format!("'{want}' is not in the build output")));
+        return Err(SitefileError::plain(
+            E_NOT_FOUND,
+            format!("'{want}' is not in the build output"),
+        ));
     };
     let w = WhyScope {
         plan: p,
@@ -697,8 +946,12 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
     let before = w.final_of(last).get(&full).map(|n| &**n);
     let after = result.tree.get(&full).map(|n| &**n);
     if let Some(a) = after.filter(|_| !same(before, after)) {
-        let (lines, kind): (Vec<u32>, &str) = if full == join_virtual(&p.export_path, "_redirects") {
-            (p.redirects.iter().map(|r| r.span.line).collect(), "REDIRECT")
+        let (lines, kind): (Vec<u32>, &str) = if full == join_virtual(&p.export_path, "_redirects")
+        {
+            (
+                p.redirects.iter().map(|r| r.span.line).collect(),
+                "REDIRECT",
+            )
         } else {
             (p.headers.iter().map(|h| h.span.line).collect(), "HEADER")
         };
@@ -707,12 +960,26 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
             instruction: kind.to_string(),
             stage: stage_display(&p.stages[last], last),
             path: full.clone(),
-            action: if before.is_some() { "overwrite" } else { "write" },
+            action: if before.is_some() {
+                "overwrite"
+            } else {
+                "write"
+            },
             digest: a.digest.clone(),
-            inputs: lines.iter().map(|l| format!("{} {kind}", w.at(*l))).collect(),
+            inputs: lines
+                .iter()
+                .map(|l| format!("{} {kind}", w.at(*l)))
+                .collect(),
         });
     }
-    Ok(WhyReport { path: want, mode: format!("{:o}", node.mode), size: node.bytes.len(), digest: node.digest.clone(), origin: node.origin.clone(), history })
+    Ok(WhyReport {
+        path: want,
+        mode: format!("{:o}", node.mode),
+        size: node.bytes.len(),
+        digest: node.digest.clone(),
+        origin: node.origin.clone(),
+        history,
+    })
 }
 
 /// The object `why --json` prints.
@@ -744,7 +1011,11 @@ pub fn why_text(r: &WhyReport) -> String {
             e.location,
             e.instruction,
             e.stage,
-            if e.action == "write" { "wrote" } else { "overwrote" },
+            if e.action == "write" {
+                "wrote"
+            } else {
+                "overwrote"
+            },
             e.path
         ));
         for input in &e.inputs {
@@ -763,7 +1034,11 @@ mod tests {
     const SITEFILE: &str = "STAGE build\nIMPORT theme FROM ./theme AS tree\nCOPY ./src/ /out/\nCOPY --overwrite ./override.html /out/index.html\nSTAGE more FROM build\nCOPY <<X /out/extra.txt\nextra\nX\nSTAGE site\nCOPY --from=more /out/ /\nCOPY --overwrite theme: /\nREDIRECT /old /new\nEXPORT /\n";
 
     fn graph_of(src: &str) -> (Plan, Graph) {
-        let p = plan(&parse_program(src, "Sitefile").unwrap(), &Default::default()).unwrap();
+        let p = plan(
+            &parse_program(src, "Sitefile").unwrap(),
+            &Default::default(),
+        )
+        .unwrap();
         let g = plan_graph(&p);
         (p, g)
     }
@@ -772,38 +1047,115 @@ mod tests {
     fn graph_nodes_and_edges() {
         let (p, g) = graph_of(SITEFILE);
         let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(ids, ["import:theme", "local:./src", "local:./override.html", "op:3", "op:4", "stage:build", "op:6", "stage:more", "op:10", "op:11", "stage:site", "site:_redirects", "export"]);
+        assert_eq!(
+            ids,
+            [
+                "import:theme",
+                "local:./src",
+                "local:./override.html",
+                "op:3",
+                "op:4",
+                "stage:build",
+                "op:6",
+                "stage:more",
+                "op:10",
+                "op:11",
+                "stage:site",
+                "site:_redirects",
+                "export"
+            ]
+        );
         let op4 = g.nodes.iter().find(|n| n.id == "op:4").unwrap();
-        assert_eq!((op4.kind, op4.label.as_str(), op4.line), (NodeKind::Operation, "COPY ./override.html /out/index.html", Some(4)));
-        let edges: Vec<String> = g.edges.iter().map(|e| format!("{} -{}-> {}", e.from, e.kind, e.to)).collect();
-        for e in ["stage:build -base-> op:6", "stage:more -input-> op:10", "import:theme -input-> op:11", "op:11 -next-> stage:site", "stage:site -export-> export", "site:_redirects -export-> export"] {
+        assert_eq!(
+            (op4.kind, op4.label.as_str(), op4.line),
+            (
+                NodeKind::Operation,
+                "COPY ./override.html /out/index.html",
+                Some(4)
+            )
+        );
+        let edges: Vec<String> = g
+            .edges
+            .iter()
+            .map(|e| format!("{} -{}-> {}", e.from, e.kind, e.to))
+            .collect();
+        for e in [
+            "stage:build -base-> op:6",
+            "stage:more -input-> op:10",
+            "import:theme -input-> op:11",
+            "op:11 -next-> stage:site",
+            "stage:site -export-> export",
+            "site:_redirects -export-> export",
+        ] {
             assert!(edges.contains(&e.to_string()), "{e}: {edges:?}");
         }
         let text = graph_text(&g);
-        assert!(text.starts_with("import:theme  IMPORT theme ./theme AS tree\n"), "{text}");
+        assert!(
+            text.starts_with("import:theme  IMPORT theme ./theme AS tree\n"),
+            "{text}"
+        );
         assert!(text.ends_with("\n13 nodes, 12 edges\n"), "{text}");
         let dot = graph_dot(&g);
         assert!(dot.starts_with("digraph sitefile {\n  rankdir=LR;\n"));
         assert!(dot.contains("\n  \"stage:more\" -> \"op:10\" [style=dashed];\n"));
         assert!(dot.contains("\n  \"op:3\" -> \"op:4\";\n"));
-        let odd = Graph { file: "x".into(), target: None, nodes: vec![GraphNode { id: "a\"b\\".into(), kind: NodeKind::Local, label: "q\"".into(), line: None }], edges: vec![] };
-        assert_eq!(graph_dot(&odd).split('\n').nth(3), Some("  \"a\\\"b\\\\\" [label=\"q\\\"\", shape=folder];"));
+        let odd = Graph {
+            file: "x".into(),
+            target: None,
+            nodes: vec![GraphNode {
+                id: "a\"b\\".into(),
+                kind: NodeKind::Local,
+                label: "q\"".into(),
+                line: None,
+            }],
+            edges: vec![],
+        };
+        assert_eq!(
+            graph_dot(&odd).split('\n').nth(3),
+            Some("  \"a\\\"b\\\\\" [label=\"q\\\"\", shape=folder];")
+        );
         let json = serde_json::to_string(&graph_json(&g)).unwrap();
         assert!(json.starts_with(r#"{"file":"Sitefile","nodes":[{"id":"import:theme","kind":"import","label":"IMPORT theme ./theme AS tree","line":2},"#), "{json}");
 
         let t = plan_graph(&target_plan(p, "build").unwrap());
         assert_eq!(t.target.as_deref(), Some("build"));
-        assert_eq!(t.nodes.last().unwrap().label, "EXPORT / AS directory (--target build)");
+        assert_eq!(
+            t.nodes.last().unwrap().label,
+            "EXPORT / AS directory (--target build)"
+        );
         assert!(!t.nodes.iter().any(|n| n.kind == NodeKind::Site));
     }
 
     #[test]
     fn operation_labels() {
         let (_, g) = graph_of("PLUGIN p FROM ./p/p.wasm\nTOOL t\nIMPORT posts FROM ./posts AS markdown\nTRANSFORM ./a.svg WITH p TO /a.svg\nTRANSFORM WITH t TO /b/${x.slug}.txt FOR x IN posts ARGS {output}\nRENDER ./t.html TO /p/${post.slug}.html FOR post IN posts\nFEED posts BASE https://x/ LINK /p/${item.slug}.html\nSITEMAP BASE https://x\nEXPORT /");
-        let labels: Vec<&str> = g.nodes.iter().filter(|n| n.kind == NodeKind::Operation).map(|n| n.label.as_str()).collect();
-        assert_eq!(labels, ["TRANSFORM p ./a.svg", "TRANSFORM t FOR x IN posts", "RENDER ./t.html FOR post IN posts", "FEED posts /feed.xml", "SITEMAP /sitemap.xml"]);
-        let edges: Vec<String> = g.edges.iter().map(|e| format!("{} -{}-> {}", e.from, e.kind, e.to)).collect();
-        for e in ["plugin:p -input-> op:4", "tool:t -input-> op:5", "import:posts -input-> op:5", "import:posts -input-> op:7"] {
+        let labels: Vec<&str> = g
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Operation)
+            .map(|n| n.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "TRANSFORM p ./a.svg",
+                "TRANSFORM t FOR x IN posts",
+                "RENDER ./t.html FOR post IN posts",
+                "FEED posts /feed.xml",
+                "SITEMAP /sitemap.xml"
+            ]
+        );
+        let edges: Vec<String> = g
+            .edges
+            .iter()
+            .map(|e| format!("{} -{}-> {}", e.from, e.kind, e.to))
+            .collect();
+        for e in [
+            "plugin:p -input-> op:4",
+            "tool:t -input-> op:5",
+            "import:posts -input-> op:5",
+            "import:posts -input-> op:7",
+        ] {
             assert!(edges.contains(&e.to_string()), "{e}: {edges:?}");
         }
     }

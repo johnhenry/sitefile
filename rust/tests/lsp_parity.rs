@@ -22,18 +22,24 @@ use std::process::Command;
 const BIN: &str = env!("CARGO_BIN_EXE_sitefile");
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn fixture(name: &str) -> Vec<Value> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sitefile").join(name);
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sitefile")
+        .join(name);
     serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap()
 }
 
 struct Tmp(PathBuf);
 impl Tmp {
     fn new(tag: &str) -> Tmp {
-        let p = std::env::temp_dir().join(format!("sitefile-lsp-parity-{tag}-{}", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("sitefile-lsp-parity-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -52,16 +58,34 @@ struct Out {
 }
 
 fn validate(cwd: &Path, home: &Path, args: &[String]) -> Out {
-    let o = Command::new(BIN).arg("validate").args(args).current_dir(cwd).env("SITEFILE_HOME", home).output().expect("run sitefile");
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }
+    let o = Command::new(BIN)
+        .arg("validate")
+        .args(args)
+        .current_dir(cwd)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .expect("run sitefile");
+    Out {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into(),
+        stderr: String::from_utf8_lossy(&o.stderr).into(),
+    }
 }
 
 /// `--build-arg NAME=<placeholder>` for every ARG without a default (as the LSP assumes).
 fn placeholder_args(text: &str, label: &str) -> Vec<String> {
-    let Ok(p) = parse_program(text, label) else { return Vec::new() };
+    let Ok(p) = parse_program(text, label) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for ins in &p.instructions {
-        if let Instruction::Arg { name, ty, default_value: None, .. } = ins {
+        if let Instruction::Arg {
+            name,
+            ty,
+            default_value: None,
+            ..
+        } = ins
+        {
             let v = match ty {
                 ValueType::String => "placeholder",
                 ValueType::Number => "0",
@@ -77,12 +101,15 @@ fn placeholder_args(text: &str, label: &str) -> Vec<String> {
 fn parse_error_line(line: &str, label: &str) -> Option<(String, Option<u32>, Option<u32>, String)> {
     let rest = line.strip_prefix("error[")?;
     let (code, rest) = rest.split_once("]: ")?;
-    let located = rest.strip_prefix(label).and_then(|r| r.strip_prefix(':')).and_then(|r| {
-        let mut it = r.splitn(3, ':');
-        let l = it.next()?.parse().ok()?;
-        let c = it.next()?.parse().ok()?;
-        Some((l, c, it.next()?.strip_prefix(' ')?.to_string()))
-    });
+    let located = rest
+        .strip_prefix(label)
+        .and_then(|r| r.strip_prefix(':'))
+        .and_then(|r| {
+            let mut it = r.splitn(3, ':');
+            let l = it.next()?.parse().ok()?;
+            let c = it.next()?.parse().ok()?;
+            Some((l, c, it.next()?.strip_prefix(' ')?.to_string()))
+        });
     Some(match located {
         Some((l, c, d)) => (code.to_string(), Some(l), Some(c), d),
         None => (code.to_string(), None, None, rest.to_string()),
@@ -93,27 +120,52 @@ fn parse_error_line(line: &str, label: &str) -> Option<(String, Option<u32>, Opt
 fn lsp_agrees(text: &str, label: &str, code: i32, stderr: &str) -> Result<(), String> {
     let analysis = analyze(text, label);
     let lines = Lines::new(text);
-    let errors: Vec<_> = analysis.diagnostics.iter().filter(|d| d.severity == ERROR).collect();
+    let errors: Vec<_> = analysis
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == ERROR)
+        .collect();
     let warnings: Vec<String> = analysis
         .diagnostics
         .iter()
         .filter(|d| d.severity == WARNING)
-        .map(|d| if d.message.starts_with("--build-arg") { d.message.clone() } else { format!("{label}:{}: {}", d.line + 1, d.message) })
+        .map(|d| {
+            if d.message.starts_with("--build-arg") {
+                d.message.clone()
+            } else {
+                format!("{label}:{}: {}", d.line + 1, d.message)
+            }
+        })
         .collect();
-    let want_warnings: Vec<String> = stderr.lines().filter_map(|l| l.strip_prefix("warning: ")).map(String::from).collect();
-    let note = format!(" (checked with placeholder values for {})", analysis.required_args.join(", "));
+    let want_warnings: Vec<String> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("warning: "))
+        .map(String::from)
+        .collect();
+    let note = format!(
+        " (checked with placeholder values for {})",
+        analysis.required_args.join(", ")
+    );
     if code == 0 {
         if let Some(d) = errors.iter().find(|d| d.code != Some("E_TEMPLATE")) {
             return Err(format!("validate passes, LSP reports {d:?}"));
         }
         if warnings != want_warnings {
-            return Err(format!("warnings: validate {want_warnings:?}, LSP {warnings:?}"));
+            return Err(format!(
+                "warnings: validate {want_warnings:?}, LSP {warnings:?}"
+            ));
         }
         return Ok(());
     }
-    let line = stderr.lines().find(|l| l.starts_with("error[")).ok_or_else(|| format!("no error line in {stderr:?}"))?;
-    let (ecode, eline, ecol, detail) = parse_error_line(line, label).ok_or_else(|| format!("unparsed {line:?}"))?;
-    let d = errors.first().ok_or_else(|| format!("validate: {line:?}, LSP: no error"))?;
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("error["))
+        .ok_or_else(|| format!("no error line in {stderr:?}"))?;
+    let (ecode, eline, ecol, detail) =
+        parse_error_line(line, label).ok_or_else(|| format!("unparsed {line:?}"))?;
+    let d = errors
+        .first()
+        .ok_or_else(|| format!("validate: {line:?}, LSP: no error"))?;
     let message = d.message.strip_suffix(note.as_str()).unwrap_or(&d.message);
     let want_line = eline.map_or(0, |l| l - 1);
     let c0 = ecol.map_or(0, |c| (c - 1).min(lines.width(want_line)));
@@ -134,12 +186,29 @@ fn conformance_sitefiles_cli_and_lsp_agree() {
     for case in &cases {
         let dir = root.join(case["dir"].as_str().unwrap());
         let text = fs::read_to_string(dir.join("Sitefile")).unwrap();
-        let args: Vec<String> = case["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect();
-        assert_eq!(args, placeholder_args(&text, "Sitefile"), "{}: regenerate conformance.json", dir.display());
+        let args: Vec<String> = case["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            placeholder_args(&text, "Sitefile"),
+            "{}: regenerate conformance.json",
+            dir.display()
+        );
         let rust = validate(&dir, &home.0, &args);
-        let ts = (case["code"].as_i64().unwrap() as i32, case["stdout"].as_str().unwrap(), case["stderr"].as_str().unwrap());
+        let ts = (
+            case["code"].as_i64().unwrap() as i32,
+            case["stdout"].as_str().unwrap(),
+            case["stderr"].as_str().unwrap(),
+        );
         if (rust.code, rust.stdout.as_str(), rust.stderr.as_str()) != ts {
-            bad.push(format!("{}: Rust CLI {:?} / {:?} / {:?}, TypeScript CLI {ts:?}", case["dir"], rust.code, rust.stdout, rust.stderr));
+            bad.push(format!(
+                "{}: Rust CLI {:?} / {:?} / {:?}, TypeScript CLI {ts:?}",
+                case["dir"], rust.code, rust.stdout, rust.stderr
+            ));
             continue;
         }
         if let Err(e) = lsp_agrees(&text, "Sitefile", rust.code, &rust.stderr) {
@@ -165,22 +234,39 @@ fn fuzz_inputs_cli_and_lsp_agree() {
         args.extend(placeholder_args(text, &label));
         let rust = validate(&work.0, &home, &args);
         // The TypeScript result for the same text (record.mjs): the parse error, else the plan's.
-        let want = case["plan"].get("error").or_else(|| case["parse"].get("error"));
-        let got = rust.stderr.lines().find(|l| l.starts_with("error[")).and_then(|l| parse_error_line(l, &label));
+        let want = case["plan"]
+            .get("error")
+            .or_else(|| case["parse"].get("error"));
+        let got = rust
+            .stderr
+            .lines()
+            .find(|l| l.starts_with("error["))
+            .and_then(|l| parse_error_line(l, &label));
         let same = match (want, &got) {
             (None, None) => rust.code == 0,
             (Some(w), Some((c, l, col, d))) => {
-                w[0].as_str() == Some(c.as_str()) && w[1].as_u64() == l.map(u64::from) && w[2].as_u64() == col.map(u64::from) && w[3].as_str() == Some(d.as_str())
+                w[0].as_str() == Some(c.as_str())
+                    && w[1].as_u64() == l.map(u64::from)
+                    && w[2].as_u64() == col.map(u64::from)
+                    && w[3].as_str() == Some(d.as_str())
             }
             _ => false,
         };
         if !same {
-            bad.push(format!("{text:?}: TypeScript {want:?}, Rust CLI {:?}", rust.stderr));
+            bad.push(format!(
+                "{text:?}: TypeScript {want:?}, Rust CLI {:?}",
+                rust.stderr
+            ));
         } else if let Err(e) = lsp_agrees(text, &label, rust.code, &rust.stderr) {
             bad.push(format!("{text:?}: {e}"));
         }
         checked += 1;
     }
     assert!(checked >= 100, "only {checked} inputs");
-    assert!(bad.is_empty(), "{} of {checked}:\n{}", bad.len(), bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "{} of {checked}:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
 }

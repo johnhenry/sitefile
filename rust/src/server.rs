@@ -71,26 +71,45 @@ impl LiveReload {
 
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
     fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
-        let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\ncache-control: no-cache\r\n");
+        let mut head = String::from(
+            "HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\ncache-control: no-cache\r\n",
+        );
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
         }
-        head.push_str("content-type: text/event-stream\r\nconnection: close\r\n\r\nretry: 1000\n\n");
-        if out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_err() {
+        head.push_str(
+            "content-type: text/event-stream\r\nconnection: close\r\n\r\nretry: 1000\n\n",
+        );
+        if out
+            .write_all(head.as_bytes())
+            .and_then(|_| out.flush())
+            .is_err()
+        {
             return;
         }
         self.clients.fetch_add(1, Ordering::SeqCst);
         let mut seen = self.generation.lock().map(|g| *g).unwrap_or(0);
         loop {
             let Ok(g) = self.generation.lock() else { break };
-            let Ok((g, _)) = self.changed.wait_timeout_while(g, Duration::from_secs(15), |g| *g == seen && !self.closed.load(Ordering::SeqCst)) else { break };
+            let Ok((g, _)) = self
+                .changed
+                .wait_timeout_while(g, Duration::from_secs(15), |g| {
+                    *g == seen && !self.closed.load(Ordering::SeqCst)
+                })
+            else {
+                break;
+            };
             let now = *g;
             drop(g);
             if self.closed.load(Ordering::SeqCst) {
                 break;
             }
             // a comment line every 15 s finds clients that went away
-            let msg: &[u8] = if now != seen { b"data: reload\n\n" } else { b": ping\n\n" };
+            let msg: &[u8] = if now != seen {
+                b"data: reload\n\n"
+            } else {
+                b": ping\n\n"
+            };
             seen = now;
             if out.write_all(msg).and_then(|_| out.flush()).is_err() {
                 break;
@@ -103,7 +122,9 @@ impl LiveReload {
 /// `html` with [`RELOAD_SCRIPT`] inserted before the last `</body` (ASCII case-insensitive), else appended.
 pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
     let needle = b"</body";
-    let at = (0..html.len().saturating_sub(needle.len() - 1)).rev().find(|&i| html[i..i + needle.len()].eq_ignore_ascii_case(needle));
+    let at = (0..html.len().saturating_sub(needle.len() - 1))
+        .rev()
+        .find(|&i| html[i..i + needle.len()].eq_ignore_ascii_case(needle));
     let mut out = Vec::with_capacity(html.len() + RELOAD_SCRIPT.len());
     match at {
         Some(i) => {
@@ -125,7 +146,8 @@ fn raw_path_of(url: &str) -> &str {
     &url[..end]
 }
 
-const NOT_FOUND_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
+const NOT_FOUND_PAGE: &str =
+    "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
@@ -137,7 +159,10 @@ fn decode_uri_component(s: &str) -> Option<String> {
     while i < b.len() {
         if b[i] == b'%' {
             let hex = |c: u8| (c as char).to_digit(16);
-            let (h, l) = (b.get(i + 1).copied().and_then(hex)?, b.get(i + 2).copied().and_then(hex)?);
+            let (h, l) = (
+                b.get(i + 1).copied().and_then(hex)?,
+                b.get(i + 2).copied().and_then(hex)?,
+            );
             out.push((h * 16 + l) as u8);
             i += 3;
         } else {
@@ -160,7 +185,12 @@ pub fn safe_segments(raw_path: &str) -> Option<Vec<String>> {
         }
         let seg = decode_uri_component(raw)?;
         // A decoded '/', '\', NUL, control character, '.' or '..' could change what is read.
-        if seg == "." || seg == ".." || seg.chars().any(|c| c == '\\' || c == '/' || (c as u32) < 0x20 || c == '\u{7f}') {
+        if seg == "."
+            || seg == ".."
+            || seg
+                .chars()
+                .any(|c| c == '\\' || c == '/' || (c as u32) < 0x20 || c == '\u{7f}')
+        {
             return None;
         }
         // Tree paths are NFC; a request for an NFD spelling finds the same file.
@@ -204,7 +234,10 @@ pub struct Response {
 
 impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -247,7 +280,14 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 6] = ["content-length", "transfer-encoding", "connection", "keep-alive", "etag", "location"];
+const PROTECTED_HEADERS: [&str; 6] = [
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "etag",
+    "location",
+];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
 /// `^https?://[^/]` (case-insensitive).
@@ -282,14 +322,26 @@ pub fn parse_redirect_rules(text: &str) -> Vec<ServeRedirect> {
         if fields.len() < 2 || fields.len() > 3 {
             continue;
         }
-        let (from, to, st) = (fields[0], fields[1], fields.get(2).copied().unwrap_or("301"));
+        let (from, to, st) = (
+            fields[0],
+            fields[1],
+            fields.get(2).copied().unwrap_or("301"),
+        );
         let force = st.ends_with('!');
         let code = if force { &st[..st.len() - 1] } else { st };
-        let Some(status) = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse::<u16>().ok()).flatten() else { continue };
+        let Some(status) = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| code.parse::<u16>().ok())
+            .flatten()
+        else {
+            continue;
+        };
         if !SERVE_STATUSES.contains(&status) {
             continue;
         }
-        if to.is_empty() || !to.bytes().all(|b| (0x21..=0x7e).contains(&b)) || !(to.starts_with('/') || is_http_url(to)) {
+        if to.is_empty()
+            || !to.bytes().all(|b| (0x21..=0x7e).contains(&b))
+            || !(to.starts_with('/') || is_http_url(to))
+        {
             continue;
         }
         if (status == 200 || status == 404) && !to.starts_with('/') {
@@ -303,10 +355,22 @@ pub fn parse_redirect_rules(text: &str) -> Vec<ServeRedirect> {
         if prefix.contains('*') || prefix.split('/').any(|seg| seg.starts_with(':')) {
             continue;
         }
-        let Some(segs) = safe_segments(if prefix.is_empty() { "/" } else { prefix }) else { continue };
+        let Some(segs) = safe_segments(if prefix.is_empty() { "/" } else { prefix }) else {
+            continue;
+        };
         let decoded = format!("/{}", segs.join("/"));
-        let from = if splat && decoded == "/" { String::new() } else { decoded };
-        out.push(ServeRedirect { from, splat, to: to.to_string(), status, force });
+        let from = if splat && decoded == "/" {
+            String::new()
+        } else {
+            decoded
+        };
+        out.push(ServeRedirect {
+            from,
+            splat,
+            to: to.to_string(),
+            status,
+            force,
+        });
     }
     out
 }
@@ -322,14 +386,18 @@ pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
             continue;
         }
         if line.starts_with([' ', '\t']) {
-            let Some(i) = t.find(':').filter(|i| *i > 0) else { continue };
+            let Some(i) = t.find(':').filter(|i| *i > 0) else {
+                continue;
+            };
             if !cur {
                 continue;
             }
             let name = js_trim(&t[..i]).to_ascii_lowercase();
             let value = js_trim(&t[i + 1..]);
             if !crate::site::is_token(&name)
-                || !value.bytes().all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
+                || !value
+                    .bytes()
+                    .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
                 || PROTECTED_HEADERS.contains(&name.as_str())
             {
                 continue;
@@ -341,7 +409,10 @@ pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
         }
         cur = t.starts_with('/');
         if cur {
-            out.push(ServeHeaders { pattern: t.to_string(), headers: Vec::new() });
+            out.push(ServeHeaders {
+                pattern: t.to_string(),
+                headers: Vec::new(),
+            });
         }
     }
     out
@@ -398,7 +469,8 @@ pub fn match_redirect<'p>(r: &ServeRedirect, path: &'p str) -> Option<&'p str> {
     if path == r.from {
         return Some("");
     }
-    path.strip_prefix(r.from.as_str()).and_then(|rest| rest.strip_prefix('/'))
+    path.strip_prefix(r.from.as_str())
+        .and_then(|rest| rest.strip_prefix('/'))
 }
 
 /// The rules a tree's `/_redirects` and `/_headers` define (parsed once per server).
@@ -410,8 +482,15 @@ pub struct SiteRules {
 
 impl SiteRules {
     pub fn from_tree(tree: &Tree) -> SiteRules {
-        let text = |p: &str| tree.get(p).map(|f| String::from_utf8_lossy(&f.bytes).into_owned()).unwrap_or_default();
-        SiteRules { redirects: parse_redirect_rules(&text("/_redirects")), headers: parse_header_rules(&text("/_headers")) }
+        let text = |p: &str| {
+            tree.get(p)
+                .map(|f| String::from_utf8_lossy(&f.bytes).into_owned())
+                .unwrap_or_default()
+        };
+        SiteRules {
+            redirects: parse_redirect_rules(&text("/_redirects")),
+            headers: parse_header_rules(&text("/_headers")),
+        }
     }
 }
 
@@ -434,13 +513,36 @@ fn rules_for(cache: &RulesCache, tree: &Arc<Tree>) -> Arc<SiteRules> {
 }
 
 /// Answer one request (no I/O). `headers` are lowercase names; repeated ones joined with `, `.
-pub fn handle_request(tree: &Tree, options: &SiteServerOptions, method: &str, url: &str, headers: &HashMap<String, String>) -> Response {
-    respond(tree, &SiteRules::from_tree(tree), options, method, url, headers)
+pub fn handle_request(
+    tree: &Tree,
+    options: &SiteServerOptions,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Response {
+    respond(
+        tree,
+        &SiteRules::from_tree(tree),
+        options,
+        method,
+        url,
+        headers,
+    )
 }
 
 /// [`handle_request`] with the tree's rules already parsed.
-pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, method: &str, url: &str, headers: &HashMap<String, String>) -> Response {
-    let mut base: Vec<(String, String)> = vec![("x-content-type-options".into(), "nosniff".into()), ("cache-control".into(), "no-cache".into())];
+pub fn respond(
+    tree: &Tree,
+    rules: &SiteRules,
+    options: &SiteServerOptions,
+    method: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Response {
+    let mut base: Vec<(String, String)> = vec![
+        ("x-content-type-options".into(), "nosniff".into()),
+        ("cache-control".into(), "no-cache".into()),
+    ];
     if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
         base.push(("x-sitefile-server".into(), id.to_string()));
     }
@@ -450,12 +552,25 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
             headers.retain(|(h, _)| *h != k);
             headers.push((k, v));
         }
-        let body = if method != "HEAD" && status != 304 { body.unwrap_or_default() } else { Vec::new() };
-        Response { status, headers, body }
+        let body = if method != "HEAD" && status != 304 {
+            body.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Response {
+            status,
+            headers,
+            body,
+        }
     };
-    let owned = |v: Vec<(&str, String)>| -> Vec<(String, String)> { v.into_iter().map(|(k, v)| (k.to_string(), v)).collect() };
+    let owned = |v: Vec<(&str, String)>| -> Vec<(String, String)> {
+        v.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    };
     let page = |status: u16, html: &str, extra: Vec<(String, String)>| -> Response {
-        let mut h = owned(vec![("content-type", "text/html; charset=utf-8".to_string()), ("content-length", html.len().to_string())]);
+        let mut h = owned(vec![
+            ("content-type", "text/html; charset=utf-8".to_string()),
+            ("content-length", html.len().to_string()),
+        ]);
         h.extend(extra);
         finish(status, h, Some(html.as_bytes().to_vec()))
     };
@@ -474,27 +589,54 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
     };
     if options.live_reload.is_some() && raw_path == RELOAD_PATH {
         // GET is streamed by the connection loop; HEAD only gets the headers.
-        return finish(200, owned(vec![("content-type", "text/event-stream".into())]), None);
+        return finish(
+            200,
+            owned(vec![("content-type", "text/event-stream".into())]),
+            None,
+        );
     }
-    let Some(segs) = safe_segments(raw_path) else { return page(400, BAD_REQUEST_PAGE, vec![]) };
+    let Some(segs) = safe_segments(raw_path) else {
+        return page(400, BAD_REQUEST_PAGE, vec![]);
+    };
     let trailing = raw_path.ends_with('/');
     let vpath = format!("/{}", segs.join("/"));
     // `_headers` patterns match the request path (with its trailing slash).
-    let custom = headers_for(&rules.headers, &format!("{vpath}{}", if trailing && !segs.is_empty() { "/" } else { "" }));
+    let custom = headers_for(
+        &rules.headers,
+        &format!(
+            "{vpath}{}",
+            if trailing && !segs.is_empty() {
+                "/"
+            } else {
+                ""
+            }
+        ),
+    );
     let is_file = |p: &str| tree.is_file(p) && p != "/_redirects" && p != "/_headers";
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
         let mime = mime_type_for(served);
         let live = options.live_reload.is_some() && mime.starts_with("text/html");
-        let body = if live { inject_reload_script(&file.bytes) } else { file.bytes.to_vec() };
-        let mut h = owned(vec![("content-type", mime.into()), ("content-length", body.len().to_string())]);
+        let body = if live {
+            inject_reload_script(&file.bytes)
+        } else {
+            file.bytes.to_vec()
+        };
+        let mut h = owned(vec![
+            ("content-type", mime.into()),
+            ("content-length", body.len().to_string()),
+        ]);
         h.extend(custom.iter().cloned());
         if status != 200 {
             return finish(status, h, Some(body));
         }
         // An injected page is a different representation of the file: give it its own ETag.
-        let etag = format!("\"{}{}\"", file.digest.strip_prefix("sha256:").unwrap_or(&file.digest), if live { "-live" } else { "" });
+        let etag = format!(
+            "\"{}{}\"",
+            file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
+            if live { "-live" } else { "" }
+        );
         if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
             let mut h: Vec<(String, String)> = custom.clone();
             h.push(("etag".into(), etag));
@@ -512,7 +654,11 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
             return Some(format!("{p}.html"));
         }
         if slash && tree.is_directory(p) {
-            let index = if p == "/" { "/index.html".to_string() } else { format!("{p}/index.html") };
+            let index = if p == "/" {
+                "/index.html".to_string()
+            } else {
+                format!("{p}/index.html")
+            };
             if is_file(&index) {
                 return Some(index);
             }
@@ -522,7 +668,9 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
     // Apply the first matching `_redirects` rule (forced ones, or the others).
     let redirect = |forced: bool| -> Option<Response> {
         for r in rules.redirects.iter().filter(|r| r.force == forced) {
-            let Some(rest) = match_redirect(r, &vpath) else { continue };
+            let Some(rest) = match_redirect(r, &vpath) else {
+                continue;
+            };
             let target = if r.splat {
                 let enc: Vec<String> = rest.split('/').map(encode_uri_component).collect();
                 r.to.replace(":splat", &enc.join("/"))
@@ -530,12 +678,21 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
                 r.to.clone()
             };
             if r.status != 200 && r.status != 404 {
-                let location = if target.contains('?') { target } else { format!("{target}{search}") };
-                return Some(finish(r.status, owned(vec![("location", location), ("content-length", "0".into())]), None));
+                let location = if target.contains('?') {
+                    target
+                } else {
+                    format!("{target}{search}")
+                };
+                return Some(finish(
+                    r.status,
+                    owned(vec![("location", location), ("content-length", "0".into())]),
+                    None,
+                ));
             }
             // 200 (rewrite) and 404: serve the target path's file with that status.
             let tpath = target.split('?').next().unwrap_or("");
-            let served = safe_segments(tpath).and_then(|t| resolve(&format!("/{}", t.join("/")), tpath.ends_with('/')));
+            let served = safe_segments(tpath)
+                .and_then(|t| resolve(&format!("/{}", t.join("/")), tpath.ends_with('/')));
             if let Some(served) = served {
                 return Some(send_file(r.status, &served));
             }
@@ -550,7 +707,11 @@ pub fn respond(tree: &Tree, rules: &SiteRules, options: &SiteServerOptions, meth
     if served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
         let location = format!("/{}/{search}", enc.join("/"));
-        return finish(301, owned(vec![("location", location), ("content-length", "0".into())]), None);
+        return finish(
+            301,
+            owned(vec![("location", location), ("content-length", "0".into())]),
+            None,
+        );
     }
     if served.is_none() {
         if let Some(res) = redirect(false) {
@@ -586,11 +747,16 @@ struct Request {
 }
 
 /// Read one request head. `Ok(None)` on a clean EOF before any byte.
-fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::Result<Request, ()>>> {
+fn read_request(
+    r: &mut BufReader<TcpStream>,
+) -> io::Result<Option<std::result::Result<Request, ()>>> {
     let mut head: Vec<u8> = Vec::new();
     loop {
         let mut line = Vec::new();
-        let n = r.by_ref().take((MAX_HEAD - head.len() + 1) as u64).read_until(b'\n', &mut line)?;
+        let n = r
+            .by_ref()
+            .take((MAX_HEAD - head.len() + 1) as u64)
+            .read_until(b'\n', &mut line)?;
         if n == 0 {
             return Ok(if head.is_empty() { None } else { Some(Err(())) });
         }
@@ -610,10 +776,16 @@ fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::
     let mut lines = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l));
     let first = lines.next().unwrap_or("");
     let mut parts = first.split(' ');
-    let (Some(method), Some(url), Some(version), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some(method), Some(url), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Ok(Some(Err(())));
     };
-    if method.is_empty() || !method.bytes().all(|c| c.is_ascii_uppercase() || c == b'-') || url.is_empty() || !version.starts_with("HTTP/1.") {
+    if method.is_empty()
+        || !method.bytes().all(|c| c.is_ascii_uppercase() || c == b'-')
+        || url.is_empty()
+        || !version.starts_with("HTTP/1.")
+    {
         return Ok(Some(Err(())));
     }
     let mut headers: HashMap<String, String> = HashMap::new();
@@ -621,17 +793,31 @@ fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::
         if l.is_empty() {
             continue;
         }
-        let Some((k, v)) = l.split_once(':') else { return Ok(Some(Err(()))) };
+        let Some((k, v)) = l.split_once(':') else {
+            return Ok(Some(Err(())));
+        };
         let k = k.trim().to_ascii_lowercase();
         if k.is_empty() || k.contains(' ') {
             return Ok(Some(Err(())));
         }
         let v = v.trim().to_string();
-        headers.entry(k).and_modify(|e| *e = format!("{e}, {v}")).or_insert(v);
+        headers
+            .entry(k)
+            .and_modify(|e| *e = format!("{e}, {v}"))
+            .or_insert(v);
     }
-    let conn = headers.get("connection").map(|s| s.to_ascii_lowercase()).unwrap_or_default();
-    let keep_alive = if version == "HTTP/1.0" { conn.contains("keep-alive") } else { !conn.contains("close") };
-    let chunked = headers.get("transfer-encoding").is_some_and(|t| t.to_ascii_lowercase().contains("chunked"));
+    let conn = headers
+        .get("connection")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let keep_alive = if version == "HTTP/1.0" {
+        conn.contains("keep-alive")
+    } else {
+        !conn.contains("close")
+    };
+    let chunked = headers
+        .get("transfer-encoding")
+        .is_some_and(|t| t.to_ascii_lowercase().contains("chunked"));
     let body_len = match headers.get("content-length") {
         Some(v) => match v.parse::<u64>() {
             Ok(n) => n,
@@ -639,29 +825,52 @@ fn read_request(r: &mut BufReader<TcpStream>) -> io::Result<Option<std::result::
         },
         None => 0,
     };
-    Ok(Some(Ok(Request { method: method.into(), url: url.into(), headers, keep_alive, body_len, chunked })))
+    Ok(Some(Ok(Request {
+        method: method.into(),
+        url: url.into(),
+        headers,
+        keep_alive,
+        body_len,
+        chunked,
+    })))
 }
 
-fn serve_connection(stream: TcpStream, tree: &SharedTree, rules: &RulesCache, options: &SiteServerOptions) {
+fn serve_connection(
+    stream: TcpStream,
+    tree: &SharedTree,
+    rules: &RulesCache,
+    options: &SiteServerOptions,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
-    let Ok(mut out) = stream.try_clone() else { return };
+    let Ok(mut out) = stream.try_clone() else {
+        return;
+    };
     let mut reader = BufReader::new(stream);
     loop {
         let req = match read_request(&mut reader) {
             Ok(Some(Ok(r))) => r,
             Ok(Some(Err(()))) => {
-                let _ = out.write_all(b"HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+                let _ = out.write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+                );
                 break;
             }
             _ => break,
         };
         let started = Instant::now();
         let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        if req.body_len > 0 && keep && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err() {
+        if req.body_len > 0
+            && keep
+            && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err()
+        {
             keep = false;
         }
-        if let Some(live) = options.live_reload.as_ref().filter(|_| req.method == "GET" && raw_path_of(&req.url) == RELOAD_PATH) {
+        if let Some(live) = options
+            .live_reload
+            .as_ref()
+            .filter(|_| req.method == "GET" && raw_path_of(&req.url) == RELOAD_PATH)
+        {
             live.stream(&mut out, options); // not access-logged: one long request per open page
             break;
         }
@@ -670,19 +879,41 @@ fn serve_connection(stream: TcpStream, tree: &SharedTree, rules: &RulesCache, op
             Err(_) => break,
         };
         let site_rules = rules_for(rules, &current);
-        let res = respond(&current, &site_rules, options, &req.method, &req.url, &req.headers);
+        let res = respond(
+            &current,
+            &site_rules,
+            options,
+            &req.method,
+            &req.url,
+            &req.headers,
+        );
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
-        head.push_str(if keep { "connection: keep-alive\r\n\r\n" } else { "connection: close\r\n\r\n" });
-        let ok = out.write_all(head.as_bytes()).and_then(|_| out.write_all(&res.body)).and_then(|_| out.flush()).is_ok();
+        head.push_str(if keep {
+            "connection: keep-alive\r\n\r\n"
+        } else {
+            "connection: close\r\n\r\n"
+        });
+        let ok = out
+            .write_all(head.as_bytes())
+            .and_then(|_| out.write_all(&res.body))
+            .and_then(|_| out.flush())
+            .is_ok();
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         // `servers` probes carry the server's own id; they would only clutter the access log.
-        let probe = options.server_id.is_some() && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
+        let probe = options.server_id.is_some()
+            && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
         if !probe {
             if let Some(log) = &options.log {
-                log(&format!("{} {} {} {} {ms:.1}ms", req.method, printable(&req.url), res.status, res.body.len()));
+                log(&format!(
+                    "{} {} {} {} {ms:.1}ms",
+                    req.method,
+                    printable(&req.url),
+                    res.status,
+                    res.body.len()
+                ));
             }
         }
         if !ok || !keep {
@@ -704,12 +935,22 @@ pub struct ListeningServer {
 
 /// Listen on host:port (port 0 = any free port) and serve `tree`.
 /// Address in use and permission errors become E_SERVER.
-pub fn listen(tree: Arc<Tree>, options: SiteServerOptions, host: &str, port: u16) -> Result<ListeningServer> {
+pub fn listen(
+    tree: Arc<Tree>,
+    options: SiteServerOptions,
+    host: &str,
+    port: u16,
+) -> Result<ListeningServer> {
     listen_shared(Arc::new(RwLock::new(tree)), options, host, port)
 }
 
 /// [`listen`] on a tree that can be replaced while the server runs (each request reads it once).
-pub fn listen_shared(tree: SharedTree, options: SiteServerOptions, host: &str, port: u16) -> Result<ListeningServer> {
+pub fn listen_shared(
+    tree: SharedTree,
+    options: SiteServerOptions,
+    host: &str,
+    port: u16,
+) -> Result<ListeningServer> {
     let fail = |e: &io::Error| {
         let why = match e.kind() {
             io::ErrorKind::AddrInUse => format!("port {port} on {host} is already in use"),
@@ -719,7 +960,10 @@ pub fn listen_shared(tree: SharedTree, options: SiteServerOptions, host: &str, p
         SitefileError::plain(E_SERVER, why)
     };
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs: Vec<SocketAddr> = (bare, port).to_socket_addrs().map_err(|e| fail(&e))?.collect();
+    let addrs: Vec<SocketAddr> = (bare, port)
+        .to_socket_addrs()
+        .map_err(|e| fail(&e))?
+        .collect();
     let mut last = io::Error::new(io::ErrorKind::AddrNotAvailable, "no address");
     let mut bound = None;
     for a in addrs {
@@ -750,7 +994,8 @@ pub fn listen_shared(tree: SharedTree, options: SiteServerOptions, host: &str, p
                     m.insert(id, c);
                 }
             }
-            let (tree, rules, options, conns) = (tree.clone(), rules.clone(), options.clone(), c2.clone());
+            let (tree, rules, options, conns) =
+                (tree.clone(), rules.clone(), options.clone(), c2.clone());
             std::thread::spawn(move || {
                 serve_connection(stream, &tree, &rules, &options);
                 if let Ok(mut m) = conns.lock() {
@@ -759,7 +1004,14 @@ pub fn listen_shared(tree: SharedTree, options: SiteServerOptions, host: &str, p
             });
         }
     });
-    Ok(ListeningServer { host: host.to_string(), port: addr.port(), addr, stop, conns, accept: Some(accept) })
+    Ok(ListeningServer {
+        host: host.to_string(),
+        port: addr.port(),
+        addr,
+        stop,
+        conns,
+        accept: Some(accept),
+    })
 }
 
 impl ListeningServer {
@@ -785,7 +1037,11 @@ impl ListeningServer {
         }
         let mut wake = self.addr;
         if wake.ip().is_unspecified() {
-            wake.set_ip(if wake.is_ipv6() { "::1".parse().unwrap_or(wake.ip()) } else { [127, 0, 0, 1].into() });
+            wake.set_ip(if wake.is_ipv6() {
+                "::1".parse().unwrap_or(wake.ip())
+            } else {
+                [127, 0, 0, 1].into()
+            });
         }
         let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
         if let Ok(mut m) = self.conns.lock() {
@@ -807,7 +1063,11 @@ impl ListeningServer {
             }
             let mut wake = addr;
             if wake.ip().is_unspecified() {
-                wake.set_ip(if wake.is_ipv6() { "::1".parse().unwrap_or(wake.ip()) } else { [127, 0, 0, 1].into() });
+                wake.set_ip(if wake.is_ipv6() {
+                    "::1".parse().unwrap_or(wake.ip())
+                } else {
+                    [127, 0, 0, 1].into()
+                });
             }
             let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
             if let Ok(mut m) = conns.lock() {
@@ -828,7 +1088,11 @@ impl Drop for ListeningServer {
 }
 
 pub fn format_url(host: &str, port: u16) -> String {
-    let shown = if host == "0.0.0.0" || host == "::" { "127.0.0.1" } else { host };
+    let shown = if host == "0.0.0.0" || host == "::" {
+        "127.0.0.1"
+    } else {
+        host
+    };
     if shown.contains(':') && !shown.starts_with('[') {
         format!("http://[{shown}]:{port}/")
     } else {
@@ -852,7 +1116,14 @@ mod tests {
             ("/blob.xyz", "bin"),
             ("/page.html", "page"),
         ];
-        Arc::new(Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap())
+        Arc::new(
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap(),
+        )
     }
 
     struct Res {
@@ -875,9 +1146,23 @@ mod tests {
         let text = String::from_utf8_lossy(&buf).into_owned();
         let (head, body) = text.split_once("\r\n\r\n").unwrap();
         let mut lines = head.split("\r\n");
-        let status: u16 = lines.next().unwrap().split(' ').nth(1).unwrap().parse().unwrap();
-        let headers = lines.filter_map(|l| l.split_once(": ")).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        Res { status, headers, body: body.to_string() }
+        let status: u16 = lines
+            .next()
+            .unwrap()
+            .split(' ')
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let headers = lines
+            .filter_map(|l| l.split_once(": "))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Res {
+            status,
+            headers,
+            body: body.to_string(),
+        }
     }
     fn get(port: u16, path: &str) -> Res {
         req(port, path, "GET", &[])
@@ -886,7 +1171,14 @@ mod tests {
     fn with_server(spa: bool, f: impl FnOnce(u16, &Arc<Mutex<Vec<String>>>)) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l2 = log.clone();
-        let opts = SiteServerOptions { spa, log: Some(Arc::new(move |line: &str| l2.lock().unwrap().push(line.to_string()))), server_id: None, live_reload: None };
+        let opts = SiteServerOptions {
+            spa,
+            log: Some(Arc::new(move |line: &str| {
+                l2.lock().unwrap().push(line.to_string())
+            })),
+            server_id: None,
+            live_reload: None,
+        };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
         s.close();
@@ -930,7 +1222,13 @@ mod tests {
             assert!(r.body.contains("404 Not Found"));
             assert_eq!(r.headers["content-type"], "text/html; charset=utf-8");
         });
-        let t = Arc::new(Tree::from_files([("/d/file.txt".to_string(), make_file(b"x".to_vec(), "t", 0o644))]).unwrap());
+        let t = Arc::new(
+            Tree::from_files([(
+                "/d/file.txt".to_string(),
+                make_file(b"x".to_vec(), "t", 0o644),
+            )])
+            .unwrap(),
+        );
         let s = listen(t, SiteServerOptions::default(), "127.0.0.1", 0).unwrap();
         assert_eq!(get(s.port, "/d/").status, 404);
         assert_eq!(get(s.port, "/").status, 404);
@@ -968,13 +1266,21 @@ mod tests {
     fn etag_304() {
         with_server(false, |port, _| {
             let etag = get(port, "/style.css").headers["etag"].clone();
-            for inm in [etag.clone(), format!("W/{etag}"), format!("\"nope\", {etag}"), "*".to_string()] {
+            for inm in [
+                etag.clone(),
+                format!("W/{etag}"),
+                format!("\"nope\", {etag}"),
+                "*".to_string(),
+            ] {
                 let r = req(port, "/style.css", "GET", &[("if-none-match", &inm)]);
                 assert_eq!(r.status, 304, "{inm}");
                 assert_eq!(r.body, "");
                 assert_eq!(r.headers["etag"], etag);
             }
-            assert_eq!(req(port, "/style.css", "GET", &[("if-none-match", "\"other\"")]).status, 200);
+            assert_eq!(
+                req(port, "/style.css", "GET", &[("if-none-match", "\"other\"")]).status,
+                200
+            );
         });
     }
 
@@ -985,7 +1291,10 @@ mod tests {
             assert!(get(port, "/style.css").headers["content-type"].starts_with("text/css"));
             assert!(get(port, "/data.json").headers["content-type"].starts_with("application/json"));
             assert_eq!(get(port, "/logo.png").headers["content-type"], "image/png");
-            assert_eq!(get(port, "/blob.xyz").headers["content-type"], "application/octet-stream");
+            assert_eq!(
+                get(port, "/blob.xyz").headers["content-type"],
+                "application/octet-stream"
+            );
         });
     }
 
@@ -993,19 +1302,42 @@ mod tests {
     fn traversal_and_encoded_separators_rejected() {
         with_server(false, |port, _| {
             for p in [
-                "/..%2f", "/..%2F..%2Fetc/passwd", "/%2e%2e/secret", "/../etc/passwd", "/a/../index.html", "/%00", "/index.html%00.png", "/..\\x",
-                "/%5cwindows", "/a%2fb", "/%", "/%zz", "/.%2e/x", "/%c0%af",
+                "/..%2f",
+                "/..%2F..%2Fetc/passwd",
+                "/%2e%2e/secret",
+                "/../etc/passwd",
+                "/a/../index.html",
+                "/%00",
+                "/index.html%00.png",
+                "/..\\x",
+                "/%5cwindows",
+                "/a%2fb",
+                "/%",
+                "/%zz",
+                "/.%2e/x",
+                "/%c0%af",
             ] {
                 let r = get(port, p);
                 assert!(r.status == 400 || r.status == 404, "{p} -> {}", r.status);
                 assert!(!r.body.contains("root:"), "{p}");
             }
-            for p in ["/..%2f", "/%2e%2e/secret", "/../etc/passwd", "/%00", "/..\\x", "/a%2fb", "/%zz"] {
+            for p in [
+                "/..%2f",
+                "/%2e%2e/secret",
+                "/../etc/passwd",
+                "/%00",
+                "/..\\x",
+                "/a%2fb",
+                "/%zz",
+            ] {
                 assert_eq!(get(port, p).status, 400, "{p}");
             }
         });
         assert_eq!(safe_segments("/a/b"), Some(vec!["a".into(), "b".into()]));
-        assert_eq!(safe_segments("/a%20b/c"), Some(vec!["a b".into(), "c".into()]));
+        assert_eq!(
+            safe_segments("/a%20b/c"),
+            Some(vec!["a b".into(), "c".into()])
+        );
         assert_eq!(safe_segments("relative"), None);
     }
 
@@ -1016,7 +1348,15 @@ mod tests {
             get(port, "/nope");
             req(port, "/", "POST", &[("content-length", "0")]);
             let l = log.lock().unwrap().clone();
-            let shape = |s: &str, prefix: &str| s.starts_with(prefix) && s.ends_with("ms") && s.rsplit(' ').next().unwrap().trim_end_matches("ms").contains('.');
+            let shape = |s: &str, prefix: &str| {
+                s.starts_with(prefix)
+                    && s.ends_with("ms")
+                    && s.rsplit(' ')
+                        .next()
+                        .unwrap()
+                        .trim_end_matches("ms")
+                        .contains('.')
+            };
             assert!(shape(&l[0], "GET /app.js 200 14 "), "{}", l[0]);
             assert!(shape(&l[1], "GET /nope 404 "), "{}", l[1]);
             assert!(l[2].starts_with("POST / 405 "), "{}", l[2]);
@@ -1028,7 +1368,14 @@ mod tests {
     fn keep_alive_serves_several_requests_and_probes_are_not_logged() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l2 = log.clone();
-        let opts = SiteServerOptions { spa: false, log: Some(Arc::new(move |l: &str| l2.lock().unwrap().push(l.to_string()))), server_id: Some("abcdef012345".into()), live_reload: None };
+        let opts = SiteServerOptions {
+            spa: false,
+            log: Some(Arc::new(move |l: &str| {
+                l2.lock().unwrap().push(l.to_string())
+            })),
+            server_id: Some("abcdef012345".into()),
+            live_reload: None,
+        };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
         c.write_all(b"GET /app.js HTTP/1.1\r\nhost: x\r\n\r\nHEAD / HTTP/1.1\r\nhost: x\r\nx-sitefile-probe: abcdef012345\r\nconnection: close\r\n\r\n").unwrap();
@@ -1049,7 +1396,9 @@ mod tests {
     fn port_in_use_is_e_server() {
         let blocker = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = blocker.local_addr().unwrap().port();
-        let e = listen(site(), SiteServerOptions::default(), "127.0.0.1", port).err().unwrap();
+        let e = listen(site(), SiteServerOptions::default(), "127.0.0.1", port)
+            .err()
+            .unwrap();
         assert_eq!(e.code, E_SERVER);
         assert!(e.detail.contains("already in use"), "{}", e.detail);
         assert_eq!(format_url("0.0.0.0", 8080), "http://127.0.0.1:8080/");
@@ -1097,11 +1446,22 @@ mod tests {
             ("/_redirects", redirects),
             ("/_headers", headers),
         ];
-        Tree::from_files(files.into_iter().map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644)))).unwrap()
+        Tree::from_files(
+            files
+                .into_iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap()
     }
 
     fn at(tree: &Tree, url: &str) -> Response {
-        handle_request(tree, &SiteServerOptions::default(), "GET", url, &HashMap::new())
+        handle_request(
+            tree,
+            &SiteServerOptions::default(),
+            "GET",
+            url,
+            &HashMap::new(),
+        )
     }
 
     fn body(r: &Response) -> &str {
@@ -1115,7 +1475,11 @@ mod tests {
         assert_eq!((r.status, body(&r)), (404, "custom 404"));
         assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
         assert_eq!(r.header("etag"), None);
-        let plain = Tree::from_files([("/index.html".to_string(), make_file(b"x".to_vec(), "t", 0o644))]).unwrap();
+        let plain = Tree::from_files([(
+            "/index.html".to_string(),
+            make_file(b"x".to_vec(), "t", 0o644),
+        )])
+        .unwrap();
         assert!(body(&at(&plain, "/nope")).contains("404 Not Found"));
     }
 
@@ -1126,9 +1490,21 @@ mod tests {
         assert_eq!((r.status, body(&r)), (200, "about page"));
         assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
         assert_eq!(body(&at(&t, "/about.html")), "about page");
-        assert_eq!(at(&t, "/about/").header("location"), Some("/elsewhere"), "no file at /about/, so the rule applies");
-        assert_eq!(at(&t, "/docs?q=1").status, 308, "a forced rule wins over the directory");
-        let d = Tree::from_files([("/docs/index.html".to_string(), make_file(b"docs".to_vec(), "t", 0o644))]).unwrap();
+        assert_eq!(
+            at(&t, "/about/").header("location"),
+            Some("/elsewhere"),
+            "no file at /about/, so the rule applies"
+        );
+        assert_eq!(
+            at(&t, "/docs?q=1").status,
+            308,
+            "a forced rule wins over the directory"
+        );
+        let d = Tree::from_files([(
+            "/docs/index.html".to_string(),
+            make_file(b"docs".to_vec(), "t", 0o644),
+        )])
+        .unwrap();
         let r = at(&d, "/docs");
         assert_eq!((r.status, r.header("location")), (301, Some("/docs/")));
     }
@@ -1138,16 +1514,30 @@ mod tests {
         let t = rules_site();
         let r = at(&t, "/old?a=1");
         assert_eq!((r.status, r.header("location")), (301, Some("/new?a=1")));
-        assert_eq!(at(&t, "/old/").header("location"), Some("/new"), "a trailing slash matches too");
+        assert_eq!(
+            at(&t, "/old/").header("location"),
+            Some("/new"),
+            "a trailing slash matches too"
+        );
         assert_eq!(at(&t, "/temp").status, 302);
         let r = at(&t, "/blog/2024/a%20b");
-        assert_eq!((r.status, r.header("location")), (301, Some("https://blog.example/2024/a%20b")));
-        assert_eq!(at(&t, "/blog").header("location"), Some("https://blog.example/"));
+        assert_eq!(
+            (r.status, r.header("location")),
+            (301, Some("https://blog.example/2024/a%20b"))
+        );
+        assert_eq!(
+            at(&t, "/blog").header("location"),
+            Some("https://blog.example/")
+        );
         let r = at(&t, "/app/settings/profile");
         assert_eq!((r.status, body(&r)), (200, "app shell"));
         let r = at(&t, "/gone");
         assert_eq!((r.status, body(&r)), (404, "custom 404"));
-        assert_eq!(body(&at(&t, "/about")), "about page", "a file shadows a rule without !");
+        assert_eq!(
+            body(&at(&t, "/about")),
+            "about page",
+            "a file shadows a rule without !"
+        );
         for path in ["/users/1", "/x", "/bad", "/_redirects", "/_headers"] {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
@@ -1159,36 +1549,82 @@ mod tests {
         let t = rules_site();
         let r = at(&t, "/assets/a.css");
         assert_eq!(r.status, 200);
-        assert_eq!(r.header("cache-control"), Some("public, max-age=60, immutable"));
+        assert_eq!(
+            r.header("cache-control"),
+            Some("public, max-age=60, immutable")
+        );
         assert_eq!(r.header("x-frame-options"), Some("DENY"));
         assert_eq!(r.header("content-length"), Some("3"));
         assert_eq!((r.header("x-bad"), r.header("x-other")), (None, None));
-        assert_eq!(r.headers.iter().filter(|(k, _)| k == "cache-control").count(), 1);
+        assert_eq!(
+            r.headers
+                .iter()
+                .filter(|(k, _)| k == "cache-control")
+                .count(),
+            1
+        );
         assert_eq!(at(&t, "/").header("cache-control"), Some("immutable"));
-        assert_eq!(at(&t, "/nope").header("x-frame-options"), Some("DENY"), "the 404 page gets headers too");
-        assert_eq!(at(&t, "/old").header("x-frame-options"), None, "redirects do not");
+        assert_eq!(
+            at(&t, "/nope").header("x-frame-options"),
+            Some("DENY"),
+            "the 404 page gets headers too"
+        );
+        assert_eq!(
+            at(&t, "/old").header("x-frame-options"),
+            None,
+            "redirects do not"
+        );
         let etag = r.header("etag").unwrap().to_string();
-        let h: HashMap<String, String> = [("if-none-match".to_string(), etag)].into_iter().collect();
-        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/assets/a.css", &h);
-        assert_eq!((r.status, r.header("cache-control")), (304, Some("public, max-age=60, immutable")));
+        let h: HashMap<String, String> =
+            [("if-none-match".to_string(), etag)].into_iter().collect();
+        let r = handle_request(
+            &t,
+            &SiteServerOptions::default(),
+            "GET",
+            "/assets/a.css",
+            &h,
+        );
+        assert_eq!(
+            (r.status, r.header("cache-control")),
+            (304, Some("public, max-age=60, immutable"))
+        );
     }
 
     #[test]
     fn rule_parsers_and_glob() {
-        assert!(glob_match("/*.css", "/a/b.css") && glob_match("/*", "/") && glob_match("/a*b*c", "/aXbYc"));
+        assert!(
+            glob_match("/*.css", "/a/b.css")
+                && glob_match("/*", "/")
+                && glob_match("/a*b*c", "/aXbYc")
+        );
         assert!(!glob_match("/*.css", "/a.js") && !glob_match("/a", "/ab"));
         let r = parse_redirect_rules("/a /b\n/c/* /d/:splat 302!\n/e\n/f /g 418\n/h ftp://x\n");
         assert_eq!(r.len(), 2);
-        assert_eq!((r[1].from.as_str(), r[1].splat, r[1].status, r[1].force), ("/c", true, 302, true));
+        assert_eq!(
+            (r[1].from.as_str(), r[1].splat, r[1].status, r[1].force),
+            ("/c", true, 302, true)
+        );
         let h = parse_header_rules("  X-Orphan: 1\n/a\r\n  X-A: 1\r\n  bad name: 2\n");
-        assert_eq!(h, vec![ServeHeaders { pattern: "/a".into(), headers: vec![("x-a".into(), "1".into())] }]);
+        assert_eq!(
+            h,
+            vec![ServeHeaders {
+                pattern: "/a".into(),
+                headers: vec![("x-a".into(), "1".into())]
+            }]
+        );
     }
 
     #[test]
     fn inject_reload_script_before_last_body() {
         let inj = |s: &str| String::from_utf8(inject_reload_script(s.as_bytes())).unwrap();
-        assert_eq!(inj("<p>a</p></BODY></html>"), format!("<p>a</p>{RELOAD_SCRIPT}</BODY></html>"));
-        assert_eq!(inj("<body></body><!-- </body> --></body>"), format!("<body></body><!-- </body> -->{RELOAD_SCRIPT}</body>"));
+        assert_eq!(
+            inj("<p>a</p></BODY></html>"),
+            format!("<p>a</p>{RELOAD_SCRIPT}</BODY></html>")
+        );
+        assert_eq!(
+            inj("<body></body><!-- </body> --></body>"),
+            format!("<body></body><!-- </body> -->{RELOAD_SCRIPT}</body>")
+        );
         assert_eq!(inj("<h1>x</h1>"), format!("<h1>x</h1>{RELOAD_SCRIPT}"));
         assert_eq!(inj(""), RELOAD_SCRIPT);
         assert!(RELOAD_SCRIPT.contains(RELOAD_PATH));
@@ -1197,30 +1633,52 @@ mod tests {
     #[test]
     fn live_reload_injects_html_only_and_swaps_trees() {
         let live = LiveReload::new();
-        let opts = SiteServerOptions { live_reload: Some(live.clone()), ..Default::default() };
+        let opts = SiteServerOptions {
+            live_reload: Some(live.clone()),
+            ..Default::default()
+        };
         let h = HashMap::new();
         let tree = site();
         let r = handle_request(&tree, &opts, "GET", "/", &h);
-        assert_eq!(String::from_utf8(r.body.clone()).unwrap(), format!("<h1>home</h1>{RELOAD_SCRIPT}"));
-        assert_eq!(r.header("content-length"), Some(r.body.len().to_string().as_str()));
+        assert_eq!(
+            String::from_utf8(r.body.clone()).unwrap(),
+            format!("<h1>home</h1>{RELOAD_SCRIPT}")
+        );
+        assert_eq!(
+            r.header("content-length"),
+            Some(r.body.len().to_string().as_str())
+        );
         let etag = r.header("etag").unwrap().to_string();
         assert!(etag.ends_with("-live\""));
         let mut inm = HashMap::new();
         inm.insert("if-none-match".to_string(), etag);
         assert_eq!(handle_request(&tree, &opts, "GET", "/", &inm).status, 304);
-        assert_eq!(handle_request(&tree, &opts, "GET", "/style.css", &h).body, b"a{}");
-        assert_eq!(handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h).header("content-type"), Some("text/event-stream"));
+        assert_eq!(
+            handle_request(&tree, &opts, "GET", "/style.css", &h).body,
+            b"a{}"
+        );
+        assert_eq!(
+            handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h).header("content-type"),
+            Some("text/event-stream")
+        );
         // without --watch: no script, and the path is an ordinary (missing) file
         let plain = SiteServerOptions::default();
-        assert_eq!(handle_request(&tree, &plain, "GET", "/", &h).body, b"<h1>home</h1>");
-        assert_eq!(handle_request(&tree, &plain, "GET", RELOAD_PATH, &h).status, 404);
+        assert_eq!(
+            handle_request(&tree, &plain, "GET", "/", &h).body,
+            b"<h1>home</h1>"
+        );
+        assert_eq!(
+            handle_request(&tree, &plain, "GET", RELOAD_PATH, &h).status,
+            404
+        );
 
         // over a socket: the stream gets `data: reload`, and a swapped tree is served
         let shared: SharedTree = Arc::new(RwLock::new(tree));
         let srv = listen_shared(shared.clone(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
         c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        c.write_all(format!("GET {RELOAD_PATH} HTTP/1.1\r\nhost: x\r\n\r\n").as_bytes()).unwrap();
+        c.write_all(format!("GET {RELOAD_PATH} HTTP/1.1\r\nhost: x\r\n\r\n").as_bytes())
+            .unwrap();
         let mut got = String::new();
         let read_until = |c: &mut TcpStream, got: &mut String, want: &str| {
             while !got.contains(want) {
@@ -1238,26 +1696,59 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        *shared.write().unwrap() = Arc::new(Tree::from_files([("/index.html".to_string(), make_file(b"<h1>v2</h1>".to_vec(), "t", 0o644))]).unwrap());
+        *shared.write().unwrap() = Arc::new(
+            Tree::from_files([(
+                "/index.html".to_string(),
+                make_file(b"<h1>v2</h1>".to_vec(), "t", 0o644),
+            )])
+            .unwrap(),
+        );
         live.reload();
         read_until(&mut c, &mut got, "data: reload\n\n");
-        assert_eq!(get(srv.port, "/").body, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
+        assert_eq!(
+            get(srv.port, "/").body,
+            format!("<h1>v2</h1>{RELOAD_SCRIPT}")
+        );
         live.close();
         srv.close();
     }
 
     #[test]
     fn live_reload_injects_404_html_and_rules_follow_swapped_trees() {
-        let mk = |files: &[(&str, &str)]| Arc::new(Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap());
-        let opts = SiteServerOptions { live_reload: Some(LiveReload::new()), ..Default::default() };
+        let mk =
+            |files: &[(&str, &str)]| {
+                Arc::new(
+                    Tree::from_files(files.iter().map(|(p, c)| {
+                        (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))
+                    }))
+                    .unwrap(),
+                )
+            };
+        let opts = SiteServerOptions {
+            live_reload: Some(LiveReload::new()),
+            ..Default::default()
+        };
         let h = HashMap::new();
         let cache: RulesCache = Arc::new(Mutex::new(None));
-        let one = mk(&[("/index.html", "home"), ("/404.html", "<p>gone</p></body>"), ("/_redirects", "/a /b 302\n")]);
+        let one = mk(&[
+            ("/index.html", "home"),
+            ("/404.html", "<p>gone</p></body>"),
+            ("/_redirects", "/a /b 302\n"),
+        ]);
         let r = respond(&one, &rules_for(&cache, &one), &opts, "GET", "/missing", &h);
         assert_eq!(r.status, 404);
-        assert_eq!(String::from_utf8(r.body.clone()).unwrap(), format!("<p>gone</p>{RELOAD_SCRIPT}</body>"));
-        assert_eq!(r.header("content-length"), Some(r.body.len().to_string().as_str()));
-        assert_eq!(respond(&one, &rules_for(&cache, &one), &opts, "GET", "/a", &h).header("location"), Some("/b"));
+        assert_eq!(
+            String::from_utf8(r.body.clone()).unwrap(),
+            format!("<p>gone</p>{RELOAD_SCRIPT}</body>")
+        );
+        assert_eq!(
+            r.header("content-length"),
+            Some(r.body.len().to_string().as_str())
+        );
+        assert_eq!(
+            respond(&one, &rules_for(&cache, &one), &opts, "GET", "/a", &h).header("location"),
+            Some("/b")
+        );
         let two = mk(&[("/index.html", "v2"), ("/_redirects", "/a /c 301\n")]);
         let r = respond(&two, &rules_for(&cache, &two), &opts, "GET", "/a", &h);
         assert_eq!((r.status, r.header("location")), (301, Some("/c")));

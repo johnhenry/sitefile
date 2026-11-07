@@ -77,16 +77,27 @@ impl Lockfile {
         let raw = match fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(empty(path)),
-            Err(e) => return Err(SitefileError::plain(E_VALIDATION, format!("cannot read lockfile {shown}: {e}"))),
+            Err(e) => {
+                return Err(SitefileError::plain(
+                    E_VALIDATION,
+                    format!("cannot read lockfile {shown}: {e}"),
+                ))
+            }
         };
-        let bad = |why: String| SitefileError::plain(E_VALIDATION, format!("malformed lockfile {shown}: {why}"));
+        let bad = |why: String| {
+            SitefileError::plain(E_VALIDATION, format!("malformed lockfile {shown}: {why}"))
+        };
         // fs.readFile(…, 'utf8') replaces invalid sequences; JSON.parse then sees them.
         let text = String::from_utf8_lossy(&raw).into_owned();
         let data: Value = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
-        let obj = data.as_object().ok_or_else(|| bad("expected a JSON object".into()))?;
+        let obj = data
+            .as_object()
+            .ok_or_else(|| bad("expected a JSON object".into()))?;
         let version = obj.get("version");
         if version.and_then(Value::as_f64) != Some(1.0) {
-            let shown_v = version.map(|v| v.to_string()).unwrap_or_else(|| "undefined".into());
+            let shown_v = version
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "undefined".into());
             return Err(bad(format!("unsupported version {shown_v} (expected 1)")));
         }
         let mut lock = empty(path.clone());
@@ -97,17 +108,33 @@ impl Lockfile {
             Some(_) => return Err(bad("\"resources\" must be an object".into())),
         };
         for (url, raw) in resources {
-            let e = raw.as_object().ok_or_else(|| bad(format!("entry for {url} must be an object")))?;
+            let e = raw
+                .as_object()
+                .ok_or_else(|| bad(format!("entry for {url} must be an object")))?;
             let integrity = match e.get("integrity") {
                 Some(Value::String(s)) if is_integrity(s) => s.clone(),
-                _ => return Err(bad(format!("entry for {url} has an invalid \"integrity\" (expected sha256:<64 hex>)"))),
+                _ => {
+                    return Err(bad(format!(
+                        "entry for {url} has an invalid \"integrity\" (expected sha256:<64 hex>)"
+                    )))
+                }
             };
-            let size = e.get("size").and_then(safe_size).ok_or_else(|| bad(format!("entry for {url} has an invalid \"size\"")))?;
+            let size = e
+                .get("size")
+                .and_then(safe_size)
+                .ok_or_else(|| bad(format!("entry for {url} has an invalid \"size\"")))?;
             let resolved = match e.get("resolved") {
                 Some(Value::String(s)) => s.clone(),
                 _ => return Err(bad(format!("entry for {url} has an invalid \"resolved\""))),
             };
-            lock.entries.insert(url.clone(), LockEntry { integrity, size, resolved });
+            lock.entries.insert(
+                url.clone(),
+                LockEntry {
+                    integrity,
+                    size,
+                    resolved,
+                },
+            );
         }
         let images = match obj.get("images") {
             None | Some(Value::Null) => &empty_obj,
@@ -117,9 +144,14 @@ impl Lockfile {
         for (r, raw) in images {
             match raw.get("digest") {
                 Some(Value::String(d)) if raw.is_object() && is_integrity(d) => {
-                    lock.images.insert(r.clone(), ImageLockEntry { digest: d.clone() });
+                    lock.images
+                        .insert(r.clone(), ImageLockEntry { digest: d.clone() });
                 }
-                _ => return Err(bad(format!("image entry for {r} needs a \"digest\" (sha256:<64 hex>)"))),
+                _ => {
+                    return Err(bad(format!(
+                        "image entry for {r} needs a \"digest\" (sha256:<64 hex>)"
+                    )))
+                }
             }
         }
         let gits = match obj.get("git") {
@@ -129,10 +161,17 @@ impl Lockfile {
         };
         for (url, raw) in gits {
             match raw.get("commit") {
-                Some(Value::String(c)) if raw.is_object() && crate::resources::git::is_commit(c) => {
-                    lock.gits.insert(url.clone(), GitLockEntry { commit: c.clone() });
+                Some(Value::String(c))
+                    if raw.is_object() && crate::resources::git::is_commit(c) =>
+                {
+                    lock.gits
+                        .insert(url.clone(), GitLockEntry { commit: c.clone() });
                 }
-                _ => return Err(bad(format!("git entry for {url} needs a \"commit\" (40 lowercase hex digits)"))),
+                _ => {
+                    return Err(bad(format!(
+                        "git entry for {url} needs a \"commit\" (40 lowercase hex digits)"
+                    )))
+                }
             }
         }
         lock.existed = true;
@@ -231,13 +270,20 @@ impl Lockfile {
     /// a lockfile that would have no entries. The write is atomic (temp file + rename).
     pub fn save(&mut self) -> Result<bool> {
         let text = self.serialize();
-        if !self.existed && self.used.is_empty() && self.used_images.is_empty() && self.used_gits.is_empty() {
+        if !self.existed
+            && self.used.is_empty()
+            && self.used_images.is_empty()
+            && self.used_gits.is_empty()
+        {
             return Ok(false);
         }
         if self.existed && self.original_text.as_deref() == Some(text.as_str()) {
             return Ok(false);
         }
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
         let mut tmp = self.path.clone().into_os_string();
         tmp.push(format!(".{}.{nanos}.tmp", std::process::id()));
         let tmp = PathBuf::from(tmp);
@@ -245,7 +291,10 @@ impl Lockfile {
         let res = fs::write(&tmp, &text).and_then(|_| fs::rename(&tmp, &self.path));
         if let Err(e) = res {
             let _ = fs::remove_file(&tmp);
-            return Err(SitefileError::plain(E_VALIDATION, format!("cannot write lockfile {shown}: {e}")));
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                format!("cannot write lockfile {shown}: {e}"),
+            ));
         }
         self.existed = true;
         self.original_text = Some(text);
@@ -280,8 +329,22 @@ mod tests {
         let d = TempDir::new("sitefile-lock-");
         let path = d.0.join("Sitefile.lock");
         let mut lock = Lockfile::load(&path).unwrap();
-        lock.record("https://z.example/b", LockEntry { integrity: h2(), size: 2, resolved: "https://z.example/b".into() });
-        lock.record("https://a.example/a", LockEntry { integrity: h1(), size: 1, resolved: "https://cdn.example/a".into() });
+        lock.record(
+            "https://z.example/b",
+            LockEntry {
+                integrity: h2(),
+                size: 2,
+                resolved: "https://z.example/b".into(),
+            },
+        );
+        lock.record(
+            "https://a.example/a",
+            LockEntry {
+                integrity: h1(),
+                size: 1,
+                resolved: "https://cdn.example/a".into(),
+            },
+        );
         assert!(lock.save().unwrap());
         let text = fs::read_to_string(&path).unwrap();
         let expected = format!(
@@ -297,9 +360,17 @@ mod tests {
     fn empty_resources_serialize_like_json_stringify() {
         let d = TempDir::new("sitefile-lock-");
         let mut lock = Lockfile::load(d.0.join("Sitefile.lock")).unwrap();
-        assert_eq!(lock.serialize(), "{\n  \"version\": 1,\n  \"resources\": {}\n}\n");
-        lock.record_image("docker.io/library/nginx:alpine", ImageLockEntry { digest: h1() });
-        assert!(lock.serialize().contains("\"images\": {\n    \"docker.io/library/nginx:alpine\": {\n      \"digest\""));
+        assert_eq!(
+            lock.serialize(),
+            "{\n  \"version\": 1,\n  \"resources\": {}\n}\n"
+        );
+        lock.record_image(
+            "docker.io/library/nginx:alpine",
+            ImageLockEntry { digest: h1() },
+        );
+        assert!(lock.serialize().contains(
+            "\"images\": {\n    \"docker.io/library/nginx:alpine\": {\n      \"digest\""
+        ));
     }
 
     #[test]
@@ -307,12 +378,33 @@ mod tests {
         let d = TempDir::new("sitefile-lock-");
         let path = d.0.join("Sitefile.lock");
         let mut first = Lockfile::load(&path).unwrap();
-        first.record("https://a/", LockEntry { integrity: h1(), size: 1, resolved: "https://a/".into() });
-        first.record("https://b/", LockEntry { integrity: h2(), size: 2, resolved: "https://b/".into() });
+        first.record(
+            "https://a/",
+            LockEntry {
+                integrity: h1(),
+                size: 1,
+                resolved: "https://a/".into(),
+            },
+        );
+        first.record(
+            "https://b/",
+            LockEntry {
+                integrity: h2(),
+                size: 2,
+                resolved: "https://b/".into(),
+            },
+        );
         first.save().unwrap();
 
         let mut second = Lockfile::load(&path).unwrap();
-        assert_eq!(second.get("https://b/"), Some(&LockEntry { integrity: h2(), size: 2, resolved: "https://b/".into() }));
+        assert_eq!(
+            second.get("https://b/"),
+            Some(&LockEntry {
+                integrity: h2(),
+                size: 2,
+                resolved: "https://b/".into()
+            })
+        );
         second.mark_used("https://a/");
         second.mark_used("https://b/");
         second.mark_used("https://not-there/");
@@ -335,12 +427,22 @@ mod tests {
         first.record_image("docker.io/library/b:1", ImageLockEntry { digest: h2() });
         assert!(first.save().unwrap());
         let mut second = Lockfile::load(&path).unwrap();
-        assert_eq!(second.get_image("docker.io/library/b:1"), Some(&ImageLockEntry { digest: h2() }));
+        assert_eq!(
+            second.get_image("docker.io/library/b:1"),
+            Some(&ImageLockEntry { digest: h2() })
+        );
         second.mark_image_used("docker.io/library/a:1");
         second.mark_image_used("docker.io/library/missing:1");
         assert!(second.save().unwrap());
         let data: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(data["images"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["docker.io/library/a:1"]);
+        assert_eq!(
+            data["images"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["docker.io/library/a:1"]
+        );
     }
 
     #[test]
@@ -364,7 +466,11 @@ mod tests {
             fs::write(&path, &c).unwrap();
             let e = Lockfile::load(&path).unwrap_err();
             assert_eq!(e.code, E_VALIDATION, "{c}");
-            assert!(e.message().starts_with("malformed lockfile "), "{}", e.message());
+            assert!(
+                e.message().starts_with("malformed lockfile "),
+                "{}",
+                e.message()
+            );
         }
     }
 }

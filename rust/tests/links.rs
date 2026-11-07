@@ -10,13 +10,24 @@ fn target_text(t: &Target) -> String {
     match t {
         Target::None => "none".into(),
         Target::External(u) => format!("external {u}"),
-        Target::Internal { path, dir } => format!("internal {path}{}", if *dir && path != "/" { "/" } else { "" }),
+        Target::Internal { path, dir } => format!(
+            "internal {path}{}",
+            if *dir && path != "/" { "/" } else { "" }
+        ),
     }
 }
 
 fn record(kind: &str, input: &str) -> Value {
-    let from = if kind == "html" { "/a/b.html" } else { "/a/b.css" };
-    let refs = if kind == "html" { scan_html(input) } else { scan_css(input) };
+    let from = if kind == "html" {
+        "/a/b.html"
+    } else {
+        "/a/b.css"
+    };
+    let refs = if kind == "html" {
+        scan_html(input)
+    } else {
+        scan_css(input)
+    };
     let rename = |p: &str| Some(hashed_name(p, "0123456789"));
     json!({
         "kind": kind,
@@ -32,8 +43,13 @@ fn record(kind: &str, input: &str) -> Value {
 
 #[test]
 fn links_differential() {
-    let file = std::env::var("SITEFILE_LINKS_FUZZ")
-        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/links/links.json").to_string());
+    let file = std::env::var("SITEFILE_LINKS_FUZZ").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/links/links.json"
+        )
+        .to_string()
+    });
     let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert!(cases.len() >= 300, "only {} cases", cases.len());
     let mut failed = 0;
@@ -46,5 +62,10 @@ fn links_differential() {
             }
         }
     }
-    assert_eq!(failed, 0, "{failed} of {} cases differ from the TypeScript scanner", cases.len());
+    assert_eq!(
+        failed,
+        0,
+        "{failed} of {} cases differ from the TypeScript scanner",
+        cases.len()
+    );
 }

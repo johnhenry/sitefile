@@ -72,13 +72,29 @@ mod tests {
     #[test]
     fn dispatches_every_archive_format() {
         let t = sample();
-        let o = EncodeOptions { base_url: Some("https://example.com/".into()), ..Default::default() };
-        assert_eq!(&encode_tree(&t, ExportFormat::Zip, &o).unwrap()[..4], b"PK\x03\x04");
-        assert_eq!(&encode_tree(&t, ExportFormat::Tar, &o).unwrap()[257..262], b"ustar");
-        assert_eq!(&encode_tree(&t, ExportFormat::Tgz, &o).unwrap()[..2], &[0x1f, 0x8b]);
+        let o = EncodeOptions {
+            base_url: Some("https://example.com/".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            &encode_tree(&t, ExportFormat::Zip, &o).unwrap()[..4],
+            b"PK\x03\x04"
+        );
+        assert_eq!(
+            &encode_tree(&t, ExportFormat::Tar, &o).unwrap()[257..262],
+            b"ustar"
+        );
+        assert_eq!(
+            &encode_tree(&t, ExportFormat::Tgz, &o).unwrap()[..2],
+            &[0x1f, 0x8b]
+        );
         assert_eq!(encode_tree(&t, ExportFormat::Wbn, &o).unwrap()[0], 0x85);
         assert!(encode_tree(&t, ExportFormat::Oci, &o).is_err());
-        assert!(is_archive_format(ExportFormat::Tgz) && !is_archive_format(ExportFormat::Oci) && !is_archive_format(ExportFormat::Directory));
+        assert!(
+            is_archive_format(ExportFormat::Tgz)
+                && !is_archive_format(ExportFormat::Oci)
+                && !is_archive_format(ExportFormat::Directory)
+        );
     }
 
     #[test]

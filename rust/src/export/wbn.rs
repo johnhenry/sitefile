@@ -57,7 +57,12 @@ pub fn mime_type_for(path: &str) -> &'static str {
 pub fn encode_uri_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
+        if b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -92,7 +97,12 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
     let colon = s.find(':').ok_or_else(not_abs)?;
     let scheme = &s[..colon];
     let sb = scheme.as_bytes();
-    if sb.is_empty() || !sb[0].is_ascii_alphabetic() || !sb.iter().all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.')) {
+    if sb.is_empty()
+        || !sb[0].is_ascii_alphabetic()
+        || !sb
+            .iter()
+            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+    {
         return Err(not_abs());
     }
     if !scheme.eq_ignore_ascii_case("https") {
@@ -111,7 +121,11 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
     let (host, port) = if hostport.starts_with('[') {
         let close = hostport.find(']').ok_or_else(not_abs)?;
         let h = &hostport[..=close];
-        if !h[1..close].bytes().all(|c| c.is_ascii_hexdigit() || c == b':' || c == b'.') || close < 3 {
+        if !h[1..close]
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() || c == b':' || c == b'.')
+            || close < 3
+        {
             return Err(not_abs());
         }
         let p = &hostport[close + 1..];
@@ -130,7 +144,26 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
         return Err(not_abs());
     }
     if !host.starts_with('[')
-        && !host.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b'~' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='))
+        && !host.bytes().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    b'.' | b'-'
+                        | b'_'
+                        | b'~'
+                        | b'!'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'('
+                        | b')'
+                        | b'*'
+                        | b'+'
+                        | b','
+                        | b';'
+                        | b'='
+                )
+        })
     {
         return Err(not_abs());
     }
@@ -144,7 +177,11 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
             if n > 65535 {
                 return Err(not_abs());
             }
-            if n == 443 { String::new() } else { format!(":{n}") }
+            if n == 443 {
+                String::new()
+            } else {
+                format!(":{n}")
+            }
         }
     };
     if creds {
@@ -161,7 +198,10 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
     for c in rest.chars() {
         match c {
             '\\' => path.push('/'),
-            c if (c as u32) <= 0x20 || c as u32 >= 0x7f || matches!(c, '"' | '<' | '>' | '`' | '{' | '}') => {
+            c if (c as u32) <= 0x20
+                || c as u32 >= 0x7f
+                || matches!(c, '"' | '<' | '>' | '`' | '{' | '}') =>
+            {
                 let mut buf = [0u8; 4];
                 for b in c.encode_utf8(&mut buf).bytes() {
                     path.push_str(&format!("%{b:02X}"));
@@ -190,12 +230,20 @@ pub fn validate_base_url(raw: Option<&str>) -> Result<String> {
             _ => segs.push(seg),
         }
     }
-    let path = if segs.is_empty() { "/".to_string() } else { format!("/{}", segs.join("/")) };
+    let path = if segs.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segs.join("/"))
+    };
     Ok(format!("https://{host}{port}{path}"))
 }
 
 fn encode_path(p: &str) -> String {
-    p[1..].split('/').map(encode_uri_component).collect::<Vec<_>>().join("/")
+    p[1..]
+        .split('/')
+        .map(encode_uri_component)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn head(out: &mut Vec<u8>, major: u8, n: u64) {
@@ -258,7 +306,10 @@ pub fn write_web_bundle(tree: &Tree, base_url: Option<&str>) -> Result<Vec<u8>> 
         loc.extend(uint(length));
         let mut urls = vec![format!("{base}{}", encode_path(p))];
         if p == "/index.html" || p.ends_with("/index.html") {
-            urls.push(format!("{base}{}", encode_path(&p[..p.len() - "index.html".len()])));
+            urls.push(format!(
+                "{base}{}",
+                encode_path(&p[..p.len() - "index.html".len()])
+            ));
         }
         for url in urls {
             let mut k = Vec::with_capacity(url.len() + 3);
@@ -268,7 +319,8 @@ pub fn write_web_bundle(tree: &Tree, base_url: Option<&str>) -> Result<Vec<u8>> 
     }
     // Deterministic CBOR (as cborMap in TypeScript): keys sorted by their encoded bytes.
     index.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut index_section = Vec::with_capacity(index.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() + 9);
+    let mut index_section =
+        Vec::with_capacity(index.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() + 9);
     head(&mut index_section, 5, index.len() as u64);
     for (k, v) in index {
         index_section.extend(k);
@@ -312,7 +364,12 @@ mod tests {
     use crate::tree::make_file;
 
     fn mk(files: &[(&str, &str)]) -> Tree {
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap()
+        Tree::from_files(
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap()
     }
 
     // Minimal CBOR reader for the checks below.
@@ -351,7 +408,10 @@ mod tests {
         match major {
             0 => (V::U(n), p),
             2 => (V::B(b[p..p + n as usize].to_vec()), p + n as usize),
-            3 => (V::T(String::from_utf8(b[p..p + n as usize].to_vec()).unwrap()), p + n as usize),
+            3 => (
+                V::T(String::from_utf8(b[p..p + n as usize].to_vec()).unwrap()),
+                p + n as usize,
+            ),
             4 => {
                 let mut v = vec![];
                 for _ in 0..n {
@@ -392,8 +452,14 @@ mod tests {
         assert_eq!(version, V::B(b"b2\0\0".to_vec()));
         let (sl, mut p) = item(b, p);
         let V::B(sl) = sl else { panic!() };
-        let V::A(section_lengths) = item(&sl, 0).0 else { panic!() };
-        let names: Vec<String> = section_lengths.iter().step_by(2).map(|v| if let V::T(s) = v { s.clone() } else { panic!() }).collect();
+        let V::A(section_lengths) = item(&sl, 0).0 else {
+            panic!()
+        };
+        let names: Vec<String> = section_lengths
+            .iter()
+            .step_by(2)
+            .map(|v| if let V::T(s) = v { s.clone() } else { panic!() })
+            .collect();
         assert_eq!(b[p], 0x80 + names.len() as u8);
         p += 1;
         let mut primary = String::new();
@@ -417,7 +483,15 @@ mod tests {
         let (len, e) = item(b, p);
         assert_eq!(e, b.len());
         let V::B(len) = len else { panic!() };
-        Bundle { primary, section_lengths, index, index_len, resp, total: u64::from_be_bytes(len.try_into().unwrap()), size: b.len() }
+        Bundle {
+            primary,
+            section_lengths,
+            index,
+            index_len,
+            resp,
+            total: u64::from_be_bytes(len.try_into().unwrap()),
+            size: b.len(),
+        }
     }
 
     #[test]
@@ -444,7 +518,11 @@ mod tests {
                 V::U(w.resp.len() as u64)
             ]
         );
-        let mut urls: Vec<String> = w.index.iter().map(|(k, _)| if let V::T(s) = k { s.clone() } else { panic!() }).collect();
+        let mut urls: Vec<String> = w
+            .index
+            .iter()
+            .map(|(k, _)| if let V::T(s) = k { s.clone() } else { panic!() })
+            .collect();
         urls.sort();
         assert_eq!(
             urls,
@@ -459,54 +537,128 @@ mod tests {
                 "https://example.com/site/index.html",
             ]
         );
-        let get = |u: &str| w.index.iter().find(|(k, _)| *k == V::T(u.into())).unwrap().1.clone();
+        let get = |u: &str| {
+            w.index
+                .iter()
+                .find(|(k, _)| *k == V::T(u.into()))
+                .unwrap()
+                .1
+                .clone()
+        };
         for (url, loc) in &w.index {
             let V::T(url) = url else { panic!() };
             let V::A(loc) = loc else { panic!() };
             assert_eq!(loc.len(), 2);
-            let (V::U(offset), V::U(length)) = (&loc[0], &loc[1]) else { panic!() };
+            let (V::U(offset), V::U(length)) = (&loc[0], &loc[1]) else {
+                panic!()
+            };
             let (r, end) = item(&w.resp, *offset as usize);
             assert_eq!((end - *offset as usize) as u64, *length);
             let V::A(r) = r else { panic!() };
-            let (V::B(hb), V::B(payload)) = (&r[0], &r[1]) else { panic!() };
+            let (V::B(hb), V::B(payload)) = (&r[0], &r[1]) else {
+                panic!()
+            };
             let V::M(h) = item(hb, 0).0 else { panic!() };
             assert_eq!(h[0], (V::B(b":status".to_vec()), V::B(b"200".to_vec())));
             let rel = &url["https://example.com/site/".len()..];
-            let file = if url.ends_with('/') { format!("/{rel}index.html") } else { format!("/{}", rel.replace("%20", " ")) };
+            let file = if url.ends_with('/') {
+                format!("/{rel}index.html")
+            } else {
+                format!("/{}", rel.replace("%20", " "))
+            };
             assert_eq!(payload.as_slice(), &*t.get(&file).unwrap().bytes, "{url}");
             let want = mime_type_for(&file);
             assert_eq!(h[1].1, V::B(want.as_bytes().to_vec()));
         }
-        assert_eq!(get("https://example.com/site/"), get("https://example.com/site/index.html"));
+        assert_eq!(
+            get("https://example.com/site/"),
+            get("https://example.com/site/index.html")
+        );
     }
 
     #[test]
     fn no_index_no_primary_deterministic_and_many() {
         let t = mk(&[("/a.txt", "a")]);
-        assert_eq!(decode(&write_web_bundle(&t, Some("https://example.com/")).unwrap()).primary, "");
-        let empty = decode(&write_web_bundle(&Tree::empty(), Some("https://example.com/")).unwrap());
+        assert_eq!(
+            decode(&write_web_bundle(&t, Some("https://example.com/")).unwrap()).primary,
+            ""
+        );
+        let empty =
+            decode(&write_web_bundle(&Tree::empty(), Some("https://example.com/")).unwrap());
         assert_eq!(empty.resp, vec![0x80]);
-        let files = (0..300).map(|i| (format!("/f{i:03}.txt"), make_file(format!("file {i}").into_bytes(), "t", 0o644)));
-        let w = decode(&write_web_bundle(&Tree::from_files(files).unwrap(), Some("https://example.com/")).unwrap());
+        let files = (0..300).map(|i| {
+            (
+                format!("/f{i:03}.txt"),
+                make_file(format!("file {i}").into_bytes(), "t", 0o644),
+            )
+        });
+        let w = decode(
+            &write_web_bundle(
+                &Tree::from_files(files).unwrap(),
+                Some("https://example.com/"),
+            )
+            .unwrap(),
+        );
         assert_eq!(w.index.len(), 300);
         assert_eq!(&w.resp[..3], &[0x99, 0x01, 0x2c]);
-        let V::A(loc) = &w.index.iter().find(|(k, _)| *k == V::T("https://example.com/f299.txt".into())).unwrap().1 else { panic!() };
+        let V::A(loc) = &w
+            .index
+            .iter()
+            .find(|(k, _)| *k == V::T("https://example.com/f299.txt".into()))
+            .unwrap()
+            .1
+        else {
+            panic!()
+        };
         let V::U(off) = loc[0] else { panic!() };
-        let V::A(r) = item(&w.resp, off as usize).0 else { panic!() };
+        let V::A(r) = item(&w.resp, off as usize).0 else {
+            panic!()
+        };
         assert_eq!(r[1], V::B(b"file 299".to_vec()));
     }
 
     #[test]
     fn base_url_validation() {
-        for bad in [None, Some(""), Some("example.com/"), Some("http://example.com/"), Some("https://example.com"), Some("https://u:p@example.com/"), Some("https://example.com/?q=1"), Some("https://example.com/#x")] {
-            assert_eq!(write_web_bundle(&Tree::empty(), bad).unwrap_err().code, E_VALIDATION, "{bad:?}");
+        for bad in [
+            None,
+            Some(""),
+            Some("example.com/"),
+            Some("http://example.com/"),
+            Some("https://example.com"),
+            Some("https://u:p@example.com/"),
+            Some("https://example.com/?q=1"),
+            Some("https://example.com/#x"),
+        ] {
+            assert_eq!(
+                write_web_bundle(&Tree::empty(), bad).unwrap_err().code,
+                E_VALIDATION,
+                "{bad:?}"
+            );
         }
-        assert_eq!(validate_base_url(Some("https://example.com/a/")).unwrap(), "https://example.com/a/");
-        assert_eq!(validate_base_url(Some("HTTPS://Example.COM:443/a/")).unwrap(), "https://example.com/a/");
-        assert_eq!(validate_base_url(Some("https://example.com:8443/a b/")).unwrap(), "https://example.com:8443/a%20b/");
-        assert_eq!(validate_base_url(Some("https://example.com/a/../b/")).unwrap(), "https://example.com/b/");
-        assert_eq!(validate_base_url(Some("http://x/")).unwrap_err().detail, "invalid base URL 'http://x/': must be https");
-        assert_eq!(validate_base_url(Some("https://")).unwrap_err().detail, "invalid base URL 'https://': not an absolute URL");
+        assert_eq!(
+            validate_base_url(Some("https://example.com/a/")).unwrap(),
+            "https://example.com/a/"
+        );
+        assert_eq!(
+            validate_base_url(Some("HTTPS://Example.COM:443/a/")).unwrap(),
+            "https://example.com/a/"
+        );
+        assert_eq!(
+            validate_base_url(Some("https://example.com:8443/a b/")).unwrap(),
+            "https://example.com:8443/a%20b/"
+        );
+        assert_eq!(
+            validate_base_url(Some("https://example.com/a/../b/")).unwrap(),
+            "https://example.com/b/"
+        );
+        assert_eq!(
+            validate_base_url(Some("http://x/")).unwrap_err().detail,
+            "invalid base URL 'http://x/': must be https"
+        );
+        assert_eq!(
+            validate_base_url(Some("https://")).unwrap_err().detail,
+            "invalid base URL 'https://': not an absolute URL"
+        );
     }
 
     #[test]
@@ -545,13 +697,28 @@ mod tests {
             ("/blob", "raw"),
         ]);
         let got = write_web_bundle(&t, Some("https://example.com/site/")).unwrap();
-        assert_eq!(crate::digest::sha256(&got), WBN_FIXTURE_DIGEST, "wbn bytes differ from the TypeScript writer");
+        assert_eq!(
+            crate::digest::sha256(&got),
+            WBN_FIXTURE_DIGEST,
+            "wbn bytes differ from the TypeScript writer"
+        );
         assert_eq!(got.len(), WBN_FIXTURE_LEN);
-        let files = (0..300).map(|i| (format!("/f{i:03}.txt"), make_file(format!("file {i}").into_bytes(), "t", 0o644)));
-        let big = write_web_bundle(&Tree::from_files(files).unwrap(), Some("https://example.com/")).unwrap();
+        let files = (0..300).map(|i| {
+            (
+                format!("/f{i:03}.txt"),
+                make_file(format!("file {i}").into_bytes(), "t", 0o644),
+            )
+        });
+        let big = write_web_bundle(
+            &Tree::from_files(files).unwrap(),
+            Some("https://example.com/"),
+        )
+        .unwrap();
         assert_eq!(crate::digest::sha256(&big), WBN_FIXTURE_300_DIGEST);
     }
-    const WBN_FIXTURE_DIGEST: &str = "sha256:b235707145eabe9d02dca1f8a7ad249fb93f286d42f55c45b65a772b881491e6";
+    const WBN_FIXTURE_DIGEST: &str =
+        "sha256:b235707145eabe9d02dca1f8a7ad249fb93f286d42f55c45b65a772b881491e6";
     const WBN_FIXTURE_LEN: usize = 799;
-    const WBN_FIXTURE_300_DIGEST: &str = "sha256:fb0c6fbd1d2d1878a071d0452c3944450fbc846da05bcb2e636aaf3f8f76d015";
+    const WBN_FIXTURE_300_DIGEST: &str =
+        "sha256:fb0c6fbd1d2d1878a071d0452c3944450fbc846da05bcb2e636aaf3f8f76d015";
 }

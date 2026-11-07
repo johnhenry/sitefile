@@ -7,23 +7,27 @@
 use crate::base_image::{resolve_base, ResolveBaseOptions};
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::resources::git::GitSelection;
-use crate::resources::vendor::VendoredGit;
 use crate::executor::{
-    fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, read_imported_sitefile, root_sitefile_source, warn_unused_secrets, BuildOptions,
-    Callback, LockfileSetting, Loaded, RemoteEnv, SitefileSource,
+    fetch_git_import, fetch_remote_import, git_selection_bytes, load_program,
+    read_imported_sitefile, root_sitefile_source, warn_unused_secrets, BuildOptions, Callback,
+    Loaded, LockfileSetting, RemoteEnv, SitefileSource,
 };
-use crate::language::ast::ImportKind;
-use crate::planner::{imported_stage_refs, ImportSpec, Plan, Stage};
-use crate::resources::git::GitLocation;
-use crate::secrets::{redact_error, redact_secrets};
 use crate::export::oci::parse_manifest;
 use crate::language::ast::ExportFormat;
+use crate::language::ast::ImportKind;
+use crate::planner::{imported_stage_refs, ImportSpec, Plan, Stage};
 use crate::planner::{plan, ImportLocation, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::RegistryOptions;
+use crate::resources::git::GitLocation;
+use crate::resources::git::GitSelection;
 use crate::resources::lockfile::Lockfile;
-use crate::resources::vendor::{serialize_vendor_manifest, vendor_dir_rel, write_vendor_dir, VendorManifest, VendoredImage, VendoredResource, DEFAULT_VENDOR_DIR};
+use crate::resources::vendor::VendoredGit;
+use crate::resources::vendor::{
+    serialize_vendor_manifest, vendor_dir_rel, write_vendor_dir, VendorManifest, VendoredImage,
+    VendoredResource, DEFAULT_VENDOR_DIR,
+};
+use crate::secrets::{redact_error, redact_secrets};
 use crate::store::Store;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,15 +46,32 @@ pub struct VendorResult {
 }
 
 /// A Git import's content, vendored (a Sitefile imported from Git is read from it too).
-fn vendor_git(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_>, m: &mut VendorManifest, blobs: &mut BTreeMap<String, Vec<u8>>) -> Result<(String, GitSelection)> {
+fn vendor_git(
+    spec: &ImportSpec,
+    loc: &GitLocation,
+    env: &RemoteEnv<'_>,
+    m: &mut VendorManifest,
+    blobs: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(String, GitSelection)> {
     let (commit, selection) = fetch_git_import(spec, loc, env)?;
     let bytes = git_selection_bytes(&selection)?;
     let digest = sha256(&bytes);
     let mode = match &selection {
-        GitSelection::File { mode, .. } => Some(if *mode == 0o755 { "755" } else { "644" }.to_string()),
+        GitSelection::File { mode, .. } => {
+            Some(if *mode == 0o755 { "755" } else { "644" }.to_string())
+        }
         GitSelection::Tree(_) => None,
     };
-    m.git.insert(loc.url.clone(), VendoredGit { commit: commit.clone(), kind: selection.kind().into(), integrity: digest.clone(), size: bytes.len() as u64, mode });
+    m.git.insert(
+        loc.url.clone(),
+        VendoredGit {
+            commit: commit.clone(),
+            kind: selection.kind().into(),
+            integrity: digest.clone(),
+            size: bytes.len() as u64,
+            mode,
+        },
+    );
     blobs.insert(digest, bytes);
     Ok((commit, selection))
 }
@@ -66,10 +87,18 @@ fn vendor_imports(
     warn: &Callback,
 ) -> Result<()> {
     let label = source.label().to_string();
-    let e = RemoteEnv { label: &label, ..*env };
+    let e = RemoteEnv {
+        label: &label,
+        ..*env
+    };
     for spec in &sp.imports {
         if spec.as_kind == Some(ImportKind::Sitefile) {
-            let (sub, sub_source) = read_imported_sitefile(spec, source, &imported_stage_refs(&sp.stages), &mut |s, loc| vendor_git(s, loc, &e, m, blobs))?;
+            let (sub, sub_source) = read_imported_sitefile(
+                spec,
+                source,
+                &imported_stage_refs(&sp.stages),
+                &mut |s, loc| vendor_git(s, loc, &e, m, blobs),
+            )?;
             for w in &sub.warnings {
                 warn(w);
             }
@@ -81,10 +110,19 @@ fn vendor_imports(
             vendor_git(spec, loc, &e, m, blobs)?;
             continue;
         }
-        let ImportLocation::Remote { url } = &spec.location else { continue };
+        let ImportLocation::Remote { url } = &spec.location else {
+            continue;
+        };
         let (bytes, final_url) = fetch_remote_import(spec, url, &e)?;
         let digest = sha256(&bytes);
-        m.resources.insert(url.clone(), VendoredResource { integrity: digest.clone(), size: bytes.len() as u64, resolved: final_url });
+        m.resources.insert(
+            url.clone(),
+            VendoredResource {
+                integrity: digest.clone(),
+                size: bytes.len() as u64,
+                resolved: final_url,
+            },
+        );
         blobs.insert(digest, bytes);
     }
     Ok(())
@@ -102,7 +140,11 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
     }
     match vendor_unredacted(&redacted) {
         Ok(r) => {
-            let warnings = r.warnings.iter().map(|w| redact_secrets(w, &secrets)).collect();
+            let warnings = r
+                .warnings
+                .iter()
+                .map(|w| redact_secrets(w, &secrets))
+                .collect();
             Ok(VendorResult { warnings, ..r })
         }
         Err(e) => Err(redact_error(e, &secrets)),
@@ -110,7 +152,16 @@ pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
 }
 
 fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
-    let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let Loaded {
+        program,
+        sitefile_path,
+        label,
+        ..
+    } = load_program(
+        &options.context_dir,
+        options.sitefile.as_deref(),
+        options.label.as_deref(),
+    )?;
     let p = plan(&program, &options.build_args)?;
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let warn: Callback = {
@@ -129,12 +180,21 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
         warn(w);
     }
     let dir = vendor_dir_rel(options.vendor_dir.as_deref().unwrap_or(DEFAULT_VENDOR_DIR))?;
-    let context_real = std::fs::canonicalize(&options.context_dir)
-        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
+    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+        SitefileError::plain(
+            E_NOT_FOUND,
+            format!("build context '{}' does not exist", options.context_dir),
+        )
+    })?;
     let lock_path = match &options.lockfile {
         LockfileSetting::Disabled => None,
         LockfileSetting::Path(p) => Some(p.clone()),
-        LockfileSetting::Default => Some(sitefile_path.parent().unwrap_or(Path::new("/")).join("Sitefile.lock")),
+        LockfileSetting::Default => Some(
+            sitefile_path
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .join("Sitefile.lock"),
+        ),
     };
     let lock = Mutex::new(match lock_path {
         Some(p) => Some(Lockfile::load(p)?),
@@ -161,18 +221,44 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
             secrets: &options.secrets,
         };
         let root = root_sitefile_source(options, &label, &sitefile_path)?;
-        vendor_imports(&p, &root, &env, &mut m, &mut blobs, &mut nested_images, &warn)?;
+        vendor_imports(
+            &p,
+            &root,
+            &env,
+            &mut m,
+            &mut blobs,
+            &mut nested_images,
+            &warn,
+        )?;
     }
 
     let mut lock = lock.into_inner().unwrap_or(None);
     // FROM image stage bases with a registry (local-store images are not vendored), then the BASE.
     let mut wanted: Vec<(String, String, bool, Option<SourceSpan>)> = Vec::new();
     for st in p.stages.iter().chain(&nested_images) {
-        if let StageBase::Image { reference, local: false, lead, span, .. } = &st.base {
-            wanted.push((reference.clone(), format!("{lead} image"), false, Some(span.clone())));
+        if let StageBase::Image {
+            reference,
+            local: false,
+            lead,
+            span,
+            ..
+        } = &st.base
+        {
+            wanted.push((
+                reference.clone(),
+                format!("{lead} image"),
+                false,
+                Some(span.clone()),
+            ));
         }
     }
-    if let Some(input) = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None }) {
+    if let Some(input) = options.base_image.clone().or_else(|| {
+        if p.export_format == ExportFormat::Oci {
+            p.export_base.clone()
+        } else {
+            None
+        }
+    }) {
         wanted.push((input, "BASE".into(), true, None));
     }
     let mut store: Option<Store> = None;
@@ -181,7 +267,10 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
             store = Some(Store::open_default()?);
         }
         let store = store.as_ref().expect("opened above");
-        let platform = options.platform.clone().unwrap_or_else(|| "linux/amd64".into());
+        let platform = options
+            .platform
+            .clone()
+            .unwrap_or_else(|| "linux/amd64".into());
         let w = warn.clone();
         let warn_fn = move |msg: &str| w(msg);
         let o = ResolveBaseOptions {
@@ -203,8 +292,20 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
         // resolve_base has validated the reference; this is its lockfile key.
         let r = with_default_registry(&parse_ref(&input)?);
         let registry = r.registry.clone().unwrap_or_default();
-        let lock_key = format!("{registry}/{}:{}", r.name, r.tag.clone().unwrap_or_else(|| "latest".into()));
-        let root = r.digest.clone().or_else(|| lock.as_ref().and_then(|l| l.get_image(&lock_key)).map(|e| e.digest.clone())).unwrap_or_else(|| base.manifest_digest.clone());
+        let lock_key = format!(
+            "{registry}/{}:{}",
+            r.name,
+            r.tag.clone().unwrap_or_else(|| "latest".into())
+        );
+        let root = r
+            .digest
+            .clone()
+            .or_else(|| {
+                lock.as_ref()
+                    .and_then(|l| l.get_image(&lock_key))
+                    .map(|e| e.digest.clone())
+            })
+            .unwrap_or_else(|| base.manifest_digest.clone());
         let mut add = |digest: &str, size: Option<u64>| -> Result<Vec<u8>> {
             let bytes = store.read_blob(digest, size)?;
             blobs.insert(digest.to_string(), bytes.clone());
@@ -212,15 +313,27 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
         };
         add(&root, None)?;
         let manifest_bytes = add(&base.manifest_digest, None)?;
-        let parsed = parse_manifest(&manifest_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("{}: {e}", base.manifest_digest)))?;
+        let parsed = parse_manifest(&manifest_bytes)
+            .map_err(|e| SitefileError::plain(E_STORE, format!("{}: {e}", base.manifest_digest)))?;
         for d in std::iter::once(&parsed.config).chain(parsed.layers.iter()) {
             add(&d.digest, Some(d.size))?;
         }
         let key = match &r.digest {
-            Some(d) => format!("{registry}/{}{}@{d}", r.name, r.tag.as_ref().map(|t| format!(":{t}")).unwrap_or_default()),
+            Some(d) => format!(
+                "{registry}/{}{}@{d}",
+                r.name,
+                r.tag.as_ref().map(|t| format!(":{t}")).unwrap_or_default()
+            ),
             None => lock_key,
         };
-        m.images.insert(key, VendoredImage { digest: root, platform, manifest: base.manifest_digest.clone() });
+        m.images.insert(
+            key,
+            VendoredImage {
+                digest: root,
+                platform,
+                manifest: base.manifest_digest.clone(),
+            },
+        );
     }
 
     let text = serialize_vendor_manifest(&m);

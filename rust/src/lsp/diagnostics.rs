@@ -97,10 +97,13 @@ fn from_error(e: &SitefileError, lines: &Lines, note: &str) -> Diagnostic {
 
 /// `file:line: message` (planner warnings) → a whole-line warning.
 fn from_warning(w: &str, file: &str, lines: &Lines) -> Diagnostic {
-    let parsed = w.strip_prefix(file).and_then(|r| r.strip_prefix(':')).and_then(|r| {
-        let (n, msg) = r.split_once(':')?;
-        Some((n.trim().parse::<u32>().ok()?, msg.trim_start()))
-    });
+    let parsed = w
+        .strip_prefix(file)
+        .and_then(|r| r.strip_prefix(':'))
+        .and_then(|r| {
+            let (n, msg) = r.split_once(':')?;
+            Some((n.trim().parse::<u32>().ok()?, msg.trim_start()))
+        });
     let (line, message) = match parsed {
         Some((n, msg)) => (n.saturating_sub(1), msg.to_string()),
         None => (0, w.to_string()),
@@ -109,8 +112,21 @@ fn from_warning(w: &str, file: &str, lines: &Lines) -> Diagnostic {
     let code = message
         .strip_prefix('[')
         .and_then(|r| r.split_once("] "))
-        .and_then(|(id, _)| crate::lint::LINT_RULES.iter().copied().chain(["lint-comment"]).find(|r| *r == id));
-    Diagnostic { line, start: 0, end: lines.width(line), severity: WARNING, code, message }
+        .and_then(|(id, _)| {
+            crate::lint::LINT_RULES
+                .iter()
+                .copied()
+                .chain(["lint-comment"])
+                .find(|r| *r == id)
+        });
+    Diagnostic {
+        line,
+        start: 0,
+        end: lines.width(line),
+        severity: WARNING,
+        code,
+        message,
+    }
 }
 
 /// A placeholder for an ARG without a default: valid for its type and as a path segment.
@@ -145,28 +161,43 @@ pub fn analyze(text: &str, file: &str) -> Analysis {
     // say so (Information) and plan the rest with a placeholder value.
     let mut args = BuildArgs::new();
     for ins in &program.instructions {
-        if let Instruction::Arg { name, ty, default_value: None, span } = ins {
+        if let Instruction::Arg {
+            name,
+            ty,
+            default_value: None,
+            span,
+        } = ins
+        {
             args.set(name.clone(), placeholder(*ty).to_string());
             out.required_args.push(name.clone());
             let (line, start, _) = word_range(&lines, span.line, span.column);
             // The name follows the keyword (unless it is on a continuation line).
             let lt = lines.get(line);
             let from = utf16_to_byte(lt, start) + 3;
-            let s = lt.get(from..).and_then(|r| r.find(name.as_str())).map(|b| byte_to_utf16(lt, from + b)).unwrap_or(start);
+            let s = lt
+                .get(from..)
+                .and_then(|r| r.find(name.as_str()))
+                .map(|b| byte_to_utf16(lt, from + b))
+                .unwrap_or(start);
             out.diagnostics.push(Diagnostic {
                 line,
                 start: s,
                 end: s + utf16_len(name),
                 severity: INFORMATION,
                 code: Some(ErrorCode::E_MISSING_ARG.as_str()),
-                message: format!("ARG {name} has no default: a build needs --build-arg {name}=<value>"),
+                message: format!(
+                    "ARG {name} has no default: a build needs --build-arg {name}=<value>"
+                ),
             });
         }
     }
     let note = if out.required_args.is_empty() {
         String::new()
     } else {
-        format!(" (checked with placeholder values for {})", out.required_args.join(", "))
+        format!(
+            " (checked with placeholder values for {})",
+            out.required_args.join(", ")
+        )
     };
     match plan(&program, &args) {
         Ok(p) => {
@@ -187,7 +218,11 @@ pub fn analyze(text: &str, file: &str) -> Analysis {
 
     // RENDER heredoc bodies are templates; the executor parses them the same way.
     for ins in &program.instructions {
-        if let Instruction::Render { template: Source::Inline(body), .. } = ins {
+        if let Instruction::Render {
+            template: Source::Inline(body),
+            ..
+        } = ins
+        {
             if let Err(e) = parse_render_template(&body.text, file, body.body_line) {
                 out.diagnostics.push(from_error(&e, &lines, ""));
             }
@@ -220,8 +255,21 @@ mod tests {
     fn syntax_errors_one_per_bad_line() {
         let d = diags("FROM scratch\nCOPY ./a /b extra\nBOGUS\nEXPORT /");
         assert_eq!(d.len(), 2);
-        assert_eq!(d[0], (1, 12, 17, ERROR, Some("E_SYNTAX"), "unexpected 'extra'".into()));
-        assert_eq!((d[1].0, d[1].1, d[1].2, d[1].4), (2, 0, 5, Some("E_UNKNOWN_INSTRUCTION")));
+        assert_eq!(
+            d[0],
+            (
+                1,
+                12,
+                17,
+                ERROR,
+                Some("E_SYNTAX"),
+                "unexpected 'extra'".into()
+            )
+        );
+        assert_eq!(
+            (d[1].0, d[1].1, d[1].2, d[1].4),
+            (2, 0, 5, Some("E_UNKNOWN_INSTRUCTION"))
+        );
     }
 
     #[test]
@@ -242,14 +290,27 @@ mod tests {
     fn validation_error() {
         let d = diags("FROM scratch\nCOPY ${NOPE} /x\nEXPORT /");
         assert_eq!(d.len(), 1);
-        assert_eq!((d[0].0, d[0].1, d[0].3, d[0].4), (1, 5, ERROR, Some("E_UNDEFINED")));
+        assert_eq!(
+            (d[0].0, d[0].1, d[0].3, d[0].4),
+            (1, 5, ERROR, Some("E_UNDEFINED"))
+        );
         assert!(d[0].5.starts_with("undefined variable ${NOPE}"));
     }
 
     #[test]
     fn lint_warning_has_its_rule_id() {
         let d = diags("ARG A = 1\nEXPORT /");
-        assert_eq!(d, [(0, 0, 9, WARNING, Some("unused-name"), "[unused-name] ARG A is never used".into())]);
+        assert_eq!(
+            d,
+            [(
+                0,
+                0,
+                9,
+                WARNING,
+                Some("unused-name"),
+                "[unused-name] ARG A is never used".into()
+            )]
+        );
     }
 
     #[test]
@@ -257,7 +318,10 @@ mod tests {
         let d = diags("FROM scratch\nCOPY ./a /a\nFROM scratch\nEXPORT /");
         assert_eq!(d.len(), 1);
         assert_eq!((d[0].0, d[0].1, d[0].2, d[0].3), (0, 0, 12, WARNING));
-        assert!(d[0].5.starts_with("unnamed stage is not the last one"), "{d:?}");
+        assert!(
+            d[0].5.starts_with("unnamed stage is not the last one"),
+            "{d:?}"
+        );
     }
 
     #[test]
@@ -269,9 +333,22 @@ mod tests {
 
     #[test]
     fn arg_without_default_is_information() {
-        let a = analyze("ARG SITE_URL\nARG N: number\nCOPY ./${SITE_URL}/${N} /\nEXPORT /", "Sitefile");
-        let d: Vec<_> = a.diagnostics.iter().map(|d| (d.line, d.start, d.end, d.severity, d.code)).collect();
-        assert_eq!(d, [(0, 4, 12, INFORMATION, Some("E_MISSING_ARG")), (1, 4, 5, INFORMATION, Some("E_MISSING_ARG"))]);
+        let a = analyze(
+            "ARG SITE_URL\nARG N: number\nCOPY ./${SITE_URL}/${N} /\nEXPORT /",
+            "Sitefile",
+        );
+        let d: Vec<_> = a
+            .diagnostics
+            .iter()
+            .map(|d| (d.line, d.start, d.end, d.severity, d.code))
+            .collect();
+        assert_eq!(
+            d,
+            [
+                (0, 4, 12, INFORMATION, Some("E_MISSING_ARG")),
+                (1, 4, 5, INFORMATION, Some("E_MISSING_ARG"))
+            ]
+        );
         assert_eq!(a.required_args, ["SITE_URL", "N"]);
         assert!(a.plan.is_some());
     }

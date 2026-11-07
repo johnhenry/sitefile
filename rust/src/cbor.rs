@@ -57,7 +57,8 @@ pub fn encode_into(out: &mut Vec<u8>, v: &Cbor) {
         }
         Cbor::Map(pairs) => {
             // Deterministic: keys sorted by their encoded bytes.
-            let mut enc: Vec<(Vec<u8>, &Cbor)> = pairs.iter().map(|(k, v)| (encode(k), v)).collect();
+            let mut enc: Vec<(Vec<u8>, &Cbor)> =
+                pairs.iter().map(|(k, v)| (encode(k), v)).collect();
             enc.sort_by(|a, b| a.0.cmp(&b.0));
             head(out, 5, enc.len() as u64);
             for (k, v) in enc {
@@ -73,7 +74,17 @@ pub fn encode_into(out: &mut Vec<u8>, v: &Cbor) {
 
 /// Encoded size of a head for `n` (1, 2, 3, 5 or 9 bytes).
 pub fn head_size(n: u64) -> usize {
-    if n < 24 { 1 } else if n < 0x100 { 2 } else if n < 0x10000 { 3 } else if n < 0x1_0000_0000 { 5 } else { 9 }
+    if n < 24 {
+        1
+    } else if n < 0x100 {
+        2
+    } else if n < 0x10000 {
+        3
+    } else if n < 0x1_0000_0000 {
+        5
+    } else {
+        9
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,7 +100,10 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_depth: 32, max_items: 1_000_000 }
+        Limits {
+            max_depth: 32,
+            max_items: 1_000_000,
+        }
     }
 }
 
@@ -129,11 +143,20 @@ impl std::fmt::Display for CborError {
 /// Read a head at `pos`: (major type, argument, next position). Definite
 /// lengths only: additional info 28-31 (reserved and indefinite) is an error.
 pub fn read_head(b: &[u8], pos: usize) -> Result<(u8, u64, usize), CborError> {
-    let e = |m: &str| CborError { message: m.into(), offset: pos };
+    let e = |m: &str| CborError {
+        message: m.into(),
+        offset: pos,
+    };
     let ib = *b.get(pos).ok_or_else(|| e("unexpected end of input"))?;
     let major = ib >> 5;
     let info = ib & 0x1f;
-    let need = |n: usize| if pos + 1 + n > b.len() { Err(e("unexpected end of input")) } else { Ok(()) };
+    let need = |n: usize| {
+        if pos + 1 + n > b.len() {
+            Err(e("unexpected end of input"))
+        } else {
+            Ok(())
+        }
+    };
     let (arg, next) = match info {
         0..=23 => (info as u64, pos + 1),
         24 => {
@@ -146,11 +169,17 @@ pub fn read_head(b: &[u8], pos: usize) -> Result<(u8, u64, usize), CborError> {
         }
         26 => {
             need(4)?;
-            (u32::from_be_bytes(b[pos + 1..pos + 5].try_into().unwrap()) as u64, pos + 5)
+            (
+                u32::from_be_bytes(b[pos + 1..pos + 5].try_into().unwrap()) as u64,
+                pos + 5,
+            )
         }
         27 => {
             need(8)?;
-            (u64::from_be_bytes(b[pos + 1..pos + 9].try_into().unwrap()), pos + 9)
+            (
+                u64::from_be_bytes(b[pos + 1..pos + 9].try_into().unwrap()),
+                pos + 9,
+            )
         }
         31 => return Err(e("indefinite-length items are not supported")),
         _ => return Err(e("reserved additional information")),
@@ -166,7 +195,13 @@ pub fn decode(b: &[u8], limits: &Limits) -> Result<(Cbor, usize), CborError> {
     decode_at(b, 0, 0, limits, &mut items)
 }
 
-fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> Result<(Cbor, usize), CborError> {
+fn decode_at(
+    b: &[u8],
+    pos: usize,
+    depth: u32,
+    l: &Limits,
+    items: &mut u64,
+) -> Result<(Cbor, usize), CborError> {
     let err = |message: String, offset: usize| CborError { message, offset };
     *items += 1;
     if *items > l.max_items {
@@ -182,7 +217,13 @@ fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> R
         }
         Ok(arg as usize)
     };
-    let nest = || if depth >= l.max_depth { Err(err(format!("nesting deeper than {}", l.max_depth), pos)) } else { Ok(()) };
+    let nest = || {
+        if depth >= l.max_depth {
+            Err(err(format!("nesting deeper than {}", l.max_depth), pos))
+        } else {
+            Ok(())
+        }
+    };
     Ok(match major {
         0 => (Cbor::Uint(arg), next),
         1 => (Cbor::Nint(arg), next),
@@ -192,9 +233,13 @@ fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> R
         }
         3 => {
             let n = length(1)?;
-            let t = std::str::from_utf8(&b[next..next + n]).map_err(|_| err("invalid UTF-8 in text string".into(), next))?;
+            let t = std::str::from_utf8(&b[next..next + n])
+                .map_err(|_| err("invalid UTF-8 in text string".into(), next))?;
             // TextDecoder (without ignoreBOM) drops one leading byte order mark.
-            (Cbor::Text(t.strip_prefix('\u{feff}').unwrap_or(t).to_string()), next + n)
+            (
+                Cbor::Text(t.strip_prefix('\u{feff}').unwrap_or(t).to_string()),
+                next + n,
+            )
         }
         4 => {
             let n = length(1)?;
@@ -213,8 +258,10 @@ fn decode_at(b: &[u8], pos: usize, depth: u32, l: &Limits, items: &mut u64) -> R
             nest()?;
             let mut v: Vec<(Cbor, Cbor)> = Vec::with_capacity(n);
             // Duplicates are found by their encoded bytes, which is exact for CBOR.
-            let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::with_capacity(n);
-            let mut slots: std::collections::HashMap<(u8, String), usize> = std::collections::HashMap::new();
+            let mut seen: std::collections::HashSet<&[u8]> =
+                std::collections::HashSet::with_capacity(n);
+            let mut slots: std::collections::HashMap<(u8, String), usize> =
+                std::collections::HashMap::new();
             let mut p = next;
             for _ in 0..n {
                 let (k, np) = decode_at(b, p, depth + 1, l, items)?;
@@ -253,7 +300,15 @@ mod tests {
     use super::*;
     #[test]
     fn round_trip() {
-        let v = Cbor::Array(vec![Cbor::Uint(500), Cbor::Text("hé".into()), Cbor::Bytes(vec![1, 2]), Cbor::Map(vec![(Cbor::Bytes(b"b".to_vec()), Cbor::Null), (Cbor::Bytes(b"a".to_vec()), Cbor::Bool(true))])]);
+        let v = Cbor::Array(vec![
+            Cbor::Uint(500),
+            Cbor::Text("hé".into()),
+            Cbor::Bytes(vec![1, 2]),
+            Cbor::Map(vec![
+                (Cbor::Bytes(b"b".to_vec()), Cbor::Null),
+                (Cbor::Bytes(b"a".to_vec()), Cbor::Bool(true)),
+            ]),
+        ]);
         let e = encode(&v);
         let (d, end) = decode(&e, &Limits::default()).unwrap();
         assert_eq!(end, e.len());

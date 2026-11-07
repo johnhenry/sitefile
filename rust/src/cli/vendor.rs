@@ -81,7 +81,9 @@ fn run_vendor(v: &Parsed) -> Result<i32> {
         vendor_dir: v.str("vendor-dir").map(str::to_string),
         base_image: v.str("base").map(str::to_string),
         platform: v.str("platform").map(str::to_string),
-        insecure_registries: super::registry::insecure_registries_from_env(&v.strs("insecure-registry")),
+        insecure_registries: super::registry::insecure_registries_from_env(
+            &v.strs("insecure-registry"),
+        ),
         frozen_lockfile: v.flag("frozen-lockfile"),
         update_lock: v.flag("update-lock"),
         ..Default::default()

@@ -7,7 +7,9 @@ use super::args::{flag, string, strings, OptSpec, Parsed};
 use super::common::{is_safe_integer, js_to_number, require_args, usage, Command};
 use crate::error::Result;
 use crate::refs::parse_ref;
-use crate::registry::{pull, push, Credentials, PullOptions, PushOptions, RegistryLimits, RegistryOptions};
+use crate::registry::{
+    pull, push, Credentials, PullOptions, PushOptions, RegistryLimits, RegistryOptions,
+};
 use crate::store::Store;
 
 const COMMON_FLAGS_PUSH: &[&str] = &[
@@ -32,7 +34,13 @@ const COMMON_FLAGS_PULL: &[&str] = &[
     "--timeout <ms>                      per-request idle timeout (default 30000)",
 ];
 
-const PUSH_OPTS: &[OptSpec] = &[strings("insecure-registry"), string("username"), flag("password-stdin"), flag("allow-private-network"), string("timeout")];
+const PUSH_OPTS: &[OptSpec] = &[
+    strings("insecure-registry"),
+    string("username"),
+    flag("password-stdin"),
+    flag("allow-private-network"),
+    string("timeout"),
+];
 const PULL_OPTS: &[OptSpec] = &[
     strings("insecure-registry"),
     string("username"),
@@ -65,7 +73,11 @@ fn read_stdin() -> Result<String> {
         return usage("--password-stdin: input is too long");
     }
     let s = String::from_utf8_lossy(&buf).into_owned();
-    let s = s.strip_suffix('\n').map(|t| t.strip_suffix('\r').unwrap_or(t)).unwrap_or(&s).to_string();
+    let s = s
+        .strip_suffix('\n')
+        .map(|t| t.strip_suffix('\r').unwrap_or(t))
+        .unwrap_or(&s)
+        .to_string();
     Ok(s)
 }
 
@@ -74,10 +86,14 @@ fn client_options(v: &Parsed) -> Result<(RegistryOptions, Option<Credentials>)> 
     let username = v.str("username").filter(|u| !u.is_empty());
     let mut explicit = None;
     if v.flag("password-stdin") {
-        let Some(user) = username else { return usage("--password-stdin needs --username") };
+        let Some(user) = username else {
+            return usage("--password-stdin needs --username");
+        };
         explicit = Some(Credentials::basic(user, read_stdin()?));
     } else if username.is_some() {
-        return usage("--username needs --password-stdin (passwords are not accepted on the command line)");
+        return usage(
+            "--username needs --password-stdin (passwords are not accepted on the command line)",
+        );
     }
     let timeout = positive(v.str("timeout"), "--timeout")?;
     let max_blob = positive(v.str("max-download-bytes"), "--max-download-bytes")?;
@@ -120,7 +136,16 @@ fn run_push(v: &Parsed) -> Result<i32> {
     }
     let (registry, explicit_credentials) = client_options(v)?;
     let store = Store::open_default()?;
-    push(&store, input, &PushOptions { registry, explicit_credentials, env: None, on_event: Some(&print_line) })?;
+    push(
+        &store,
+        input,
+        &PushOptions {
+            registry,
+            explicit_credentials,
+            env: None,
+            on_event: Some(&print_line),
+        },
+    )?;
     Ok(0)
 }
 
@@ -143,7 +168,13 @@ fn run_pull(v: &Parsed) -> Result<i32> {
     pull(
         &store,
         input,
-        &PullOptions { registry, platform: v.str("platform").map(str::to_string), explicit_credentials, env: None, on_event: Some(&print_line) },
+        &PullOptions {
+            registry,
+            platform: v.str("platform").map(str::to_string),
+            explicit_credentials,
+            env: None,
+            on_event: Some(&print_line),
+        },
     )?;
     Ok(0)
 }

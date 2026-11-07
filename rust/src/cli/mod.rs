@@ -14,19 +14,24 @@ pub mod servers;
 pub mod vendor;
 
 use crate::build_args::collect_build_args;
-use crate::secrets::{load_secrets, process_env};
 use crate::error::{ErrorCode, Result, SitefileError};
-use crate::executor::{build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use crate::executor::{
+    build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path,
+    BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting,
+};
 use crate::export::attest::AttestRequest;
 use crate::export::formats::{default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
 use crate::language::ast::{ExportFormat, OciCompression};
+use crate::profile::Profiler;
 use crate::refs::{parse_local_ref, ref_key};
 use crate::resources::types::FetchPolicy;
-use crate::profile::Profiler;
+use crate::secrets::{load_secrets, process_env};
 use crate::store::{short_id, Store};
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
-use common::{err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command};
+use common::{
+    err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -252,9 +257,24 @@ const GROUPS: &[Group] = &[
     Group {
         name: "server",
         usage: "server <ls|stop|rm|logs|restart>",
-        subs: &[("ls", &servers::PS), ("stop", &servers::STOP), ("rm", &servers::RM), ("logs", &servers::LOGS), ("restart", &servers::RESTART)],
+        subs: &[
+            ("ls", &servers::PS),
+            ("stop", &servers::STOP),
+            ("rm", &servers::RM),
+            ("logs", &servers::LOGS),
+            ("restart", &servers::RESTART),
+        ],
     },
-    Group { name: "cache", usage: "cache <info|prune|du>", subs: &[("info", &cache::INFO), ("prune", &cache::PRUNE), ("du", &cache::DU), ("ls", &cache::DU)] },
+    Group {
+        name: "cache",
+        usage: "cache <info|prune|du>",
+        subs: &[
+            ("info", &cache::INFO),
+            ("prune", &cache::PRUNE),
+            ("du", &cache::DU),
+            ("ls", &cache::DU),
+        ],
+    },
 ];
 
 fn is_extra_command(name: Option<&String>) -> bool {
@@ -267,7 +287,9 @@ fn run_extra_command(argv: &[String]) -> i32 {
     let rest = &argv[1..];
     if let Some(g) = GROUPS.iter().find(|g| g.name == name) {
         let sub = rest.first();
-        let cmd = sub.and_then(|s| g.subs.iter().find(|(n, _)| n == s)).map(|(_, c)| *c);
+        let cmd = sub
+            .and_then(|s| g.subs.iter().find(|(n, _)| n == s))
+            .map(|(_, c)| *c);
         let Some(cmd) = cmd else {
             if sub.is_none() || sub.is_some_and(|s| s == "--help" || s == "-h") {
                 let mut seen: Vec<*const Command> = Vec::new();
@@ -280,10 +302,17 @@ fn run_extra_command(argv: &[String]) -> i32 {
                     seen.push(p);
                     lines.push(format!("  {:<44} {}", c.usage, c.summary));
                 }
-                out(&format!("Usage: sitefile {} ...\n\n{}\n", g.usage, lines.join("\n")));
+                out(&format!(
+                    "Usage: sitefile {} ...\n\n{}\n",
+                    g.usage,
+                    lines.join("\n")
+                ));
                 return if sub.is_none() { 2 } else { 0 };
             }
-            return usage_error(&format!("unknown {name} command '{}'", sub.map(String::as_str).unwrap_or("")));
+            return usage_error(&format!(
+                "unknown {name} command '{}'",
+                sub.map(String::as_str).unwrap_or("")
+            ));
         };
         return run_command(cmd, &rest[1..]);
     }
@@ -298,7 +327,10 @@ fn run_extra_command(argv: &[String]) -> i32 {
 fn positive_int(raw: &str, flag: &str) -> Result<u64> {
     let n = js_to_number(raw);
     if !is_safe_integer(n) || n <= 0.0 {
-        return Err(SitefileError::plain(ErrorCode::E_USAGE, format!("{flag} expects a positive integer")));
+        return Err(SitefileError::plain(
+            ErrorCode::E_USAGE,
+            format!("{flag} expects a positive integer"),
+        ));
     }
     Ok(n as u64)
 }
@@ -307,7 +339,10 @@ fn positive_int(raw: &str, flag: &str) -> Result<u64> {
 fn validate_image_tags(tags: &[String]) -> Result<()> {
     for t in tags {
         if parse_local_ref(t)?.digest.is_some() {
-            return Err(SitefileError::plain(ErrorCode::E_USAGE, format!("-t '{t}': a tag cannot include a digest")));
+            return Err(SitefileError::plain(
+                ErrorCode::E_USAGE,
+                format!("-t '{t}': a tag cannot include a digest"),
+            ));
         }
     }
     Ok(())
@@ -325,21 +360,46 @@ struct ImageInfo<'a> {
 }
 
 /// Store a build's exported tree as an OCI image in the local store and point each tag at it.
-fn store_build_as_image(result: &BuildResult, tags: &[String], info: &ImageInfo<'_>, build_options: &BuildOptions) -> Result<String> {
+fn store_build_as_image(
+    result: &BuildResult,
+    tags: &[String],
+    info: &ImageInfo<'_>,
+    build_options: &BuildOptions,
+) -> Result<String> {
     let store = Store::open_default()?;
-    let opts = oci_options(result, info.context_dir, info.oci_root, info.oci_compression, info.platform, info.labels, info.git_labels)?;
+    let opts = oci_options(
+        result,
+        info.context_dir,
+        info.oci_root,
+        info.oci_compression,
+        info.platform,
+        info.labels,
+        info.git_labels,
+    )?;
     let added = store.add_image(&result.output, &opts)?;
     if info.attest.any() {
         let manifest_bytes = store.read_blob(&added.id, None)?;
         let d = store.details(&added.id)?;
         let config_bytes = store.read_blob(&d.manifest.config.digest, None)?;
-        let referrers = crate::executor::image_attestations(result, &added.id, &manifest_bytes, &config_bytes, &d.root, build_options, info.attest)?;
+        let referrers = crate::executor::image_attestations(
+            result,
+            &added.id,
+            &manifest_bytes,
+            &config_bytes,
+            &d.root,
+            build_options,
+            info.attest,
+        )?;
         store.put_referrers(&added.id, &referrers)?;
     }
     let n = result.output.len();
     for t in tags {
         let key = store.tag(&added.id, &parse_local_ref(t)?)?;
-        out(&format!("Tagged {key} {} ({n} file{})\n", short_id(&added.id), if n == 1 { "" } else { "s" }));
+        out(&format!(
+            "Tagged {key} {} ({n} file{})\n",
+            short_id(&added.id),
+            if n == 1 { "" } else { "s" }
+        ));
     }
     Ok(added.id)
 }
@@ -370,7 +430,9 @@ fn run_main(argv: &[String]) -> i32 {
     let mut rest: Vec<String> = pos[1..].to_vec();
     let why_path = if command == "why" {
         if rest.is_empty() {
-            return usage_error("why expects a path in the build output: sitefile why <path> [context]");
+            return usage_error(
+                "why expects a path in the build output: sitefile why <path> [context]",
+            );
         }
         Some(rest.remove(0))
     } else {
@@ -386,7 +448,9 @@ fn run_main(argv: &[String]) -> i32 {
     }
     if let (true, Some(f)) = (git_context, o.str("file")) {
         if f.starts_with('/') || f.split(['\\', '/']).any(|s| s == "..") {
-            return usage_error("with a Git URL context, -f/--file is a path inside the repository");
+            return usage_error(
+                "with a Git URL context, -f/--file is a path inside the repository",
+            );
         }
     }
     if o.flag("dot") && command != "graph" {
@@ -405,8 +469,14 @@ fn run_main(argv: &[String]) -> i32 {
     if o.has("lint-disable") && command != "validate" {
         return usage_error("--lint-disable is only for validate");
     }
-    if let Some(id) = lint_disabled.iter().find(|id| *id != "all" && !crate::lint::LINT_RULES.contains(&id.as_str())) {
-        return usage_error(&format!("--lint-disable: unknown lint rule '{id}' (rules: {}, or all)", crate::lint::LINT_RULES.join(", ")));
+    if let Some(id) = lint_disabled
+        .iter()
+        .find(|id| *id != "all" && !crate::lint::LINT_RULES.contains(&id.as_str()))
+    {
+        return usage_error(&format!(
+            "--lint-disable: unknown lint rule '{id}' (rules: {}, or all)",
+            crate::lint::LINT_RULES.join(", ")
+        ));
     }
     let (cache_from, cache_to) = (o.strs("cache-from"), o.strs("cache-to"));
     if !cache_from.is_empty() || !cache_to.is_empty() {
@@ -425,14 +495,20 @@ fn run_main(argv: &[String]) -> i32 {
     }
     if o.flag("watch") {
         if command != "build" {
-            return usage_error(&format!("--watch is only for build (and serve --watch), not {command}"));
+            return usage_error(&format!(
+                "--watch is only for build (and serve --watch), not {command}"
+            ));
         }
         if !o.strs("tag").is_empty() {
             return usage_error("--watch cannot be combined with -t");
         }
         servers::catch_signals();
         let arg_files = o.strs("build-arg-file");
-        let opts = crate::watch::WatchOptions { context: &context, sitefile: o.str("file").filter(|s| !s.is_empty()), arg_files: &arg_files };
+        let opts = crate::watch::WatchOptions {
+            context: &context,
+            sitefile: o.str("file").filter(|s| !s.is_empty()),
+            arg_files: &arg_files,
+        };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
         }
@@ -442,25 +518,45 @@ fn run_main(argv: &[String]) -> i32 {
             let code = run_profiled(&command, &context, None, &o, &mut wrote, memo.clone());
             crate::watch::BuildOutcome { code, wrote }
         };
-        return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| servers::received().is_some()).unwrap_or_else(|e| report(&e));
+        return crate::watch::watch_loop(&opts, &mut build, &mut || Ok(()), &|| {
+            servers::received().is_some()
+        })
+        .unwrap_or_else(|e| report(&e));
     }
     if o.str("profile") == Some("") {
         return usage_error("--profile expects a file path");
     }
-    run_profiled(&command, &context, why_path.as_deref(), &o, &mut Vec::new(), None)
+    run_profiled(
+        &command,
+        &context,
+        why_path.as_deref(),
+        &o,
+        &mut Vec::new(),
+        None,
+    )
 }
 
 /// One build/validate/inspect/graph/why run with its cache eviction and, with `--profile`, its trace.
 /// `memo`: results carried between the builds of a watch session (incremental rebuilds).
-fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::Parsed, wrote: &mut Vec<String>, memo: Option<crate::memo::SharedMemo>) -> i32 {
+fn run_profiled(
+    command: &str,
+    context: &str,
+    why_path: Option<&str>,
+    o: &args::Parsed,
+    wrote: &mut Vec<String>,
+    memo: Option<crate::memo::SharedMemo>,
+) -> i32 {
     let profile = o.str("profile").map(str::to_string);
     let profiler = profile.as_ref().map(|_| Profiler::new(command));
     if let Some(p) = &profile {
         wrote.push(p.clone());
     }
-    let span = profiler.as_ref().map(|p| p.begin(command, "command", Vec::new()));
+    let span = profiler
+        .as_ref()
+        .map(|p| p.begin(command, "command", Vec::new()));
     let mut failed = false;
-    let code = match run_build_command(command, context, why_path, o, wrote, profiler.clone(), memo) {
+    let code = match run_build_command(command, context, why_path, o, wrote, profiler.clone(), memo)
+    {
         Ok(code) => code,
         Err(e) => {
             failed = true;
@@ -477,7 +573,9 @@ fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::
     if let (Some(p), Some(path)) = (&profiler, &profile) {
         // A failed build already reported its error; otherwise this is the command's error.
         if std::fs::write(path, p.to_json()).is_err() && !failed {
-            err(&format!("error[E_EXPORT]: cannot write the --profile file '{path}'\n"));
+            err(&format!(
+                "error[E_EXPORT]: cannot write the --profile file '{path}'\n"
+            ));
             return 1;
         }
     }
@@ -486,10 +584,16 @@ fn run_profiled(command: &str, context: &str, why_path: Option<&str>, o: &args::
 
 /// `plan_build`, traced as `parse` with `--profile` (validate, graph).
 fn profiled_plan(options: &BuildOptions) -> Result<crate::planner::Plan> {
-    let span = options.profiler.as_ref().map(|p| p.begin("parse", "build", Vec::new()));
+    let span = options
+        .profiler
+        .as_ref()
+        .map(|p| p.begin("parse", "build", Vec::new()));
     let p = plan_build(options)?;
     if let Some(s) = span {
-        let mut args = vec![("imports", json!(p.imports.len())), ("stages", json!(p.stages.len()))];
+        let mut args = vec![
+            ("imports", json!(p.imports.len())),
+            ("stages", json!(p.stages.len())),
+        ];
         if let Some(t) = &p.target {
             args.push(("target", json!(t)));
         }
@@ -505,22 +609,37 @@ fn registry_cache(o: &args::Parsed) -> Result<Option<Arc<crate::registry_cache::
     if from.is_empty() && to.is_empty() {
         return Ok(None);
     }
-    let from = from.iter().map(|r| parse_cache_ref("--cache-from", r)).collect::<Result<Vec<_>>>()?;
+    let from = from
+        .iter()
+        .map(|r| parse_cache_ref("--cache-from", r))
+        .collect::<Result<Vec<_>>>()?;
     let to = match to.first() {
         Some(r) => Some(parse_cache_ref("--cache-to", r)?),
         None => None,
     };
     let env = crate::registry::process_env();
     let reg_options = crate::registry::RegistryOptions {
-        insecure_registries: crate::registry::insecure_registries_from_env(&o.strs("insecure-registry"), &env),
+        insecure_registries: crate::registry::insecure_registries_from_env(
+            &o.strs("insecure-registry"),
+            &env,
+        ),
         allow_private_network: o.flag("allow-private-network"),
         ..Default::default()
     };
-    let client: crate::registry_cache::ClientFactory = Arc::new(move |registry: &str| crate::registry::make_client(registry, &reg_options, None, &env));
+    let client: crate::registry_cache::ClientFactory = Arc::new(move |registry: &str| {
+        crate::registry::make_client(registry, &reg_options, None, &env)
+    });
     let warn: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
     let limit = crate::cache_limit::cache_limit_from_env(&mut |_| {});
-    Ok(Some(Arc::new(RegistryCache::new(RegistryCacheOptions { from, to, client, limit, warn, notice }))))
+    Ok(Some(Arc::new(RegistryCache::new(RegistryCacheOptions {
+        from,
+        to,
+        client,
+        limit,
+        warn,
+        notice,
+    }))))
 }
 
 /// One build/validate/inspect/graph/why run (`why_path`: the path `why` explains); `wrote` receives the export
@@ -546,13 +665,19 @@ fn run_build_command(
     }
     // A Git URL context: fetched into a temporary directory, built from there, then removed (on drop).
     let fetched = if git_context::is_git_context(context) {
-        let g = git_context::materialize_git_context(context, &fetch_policy, &crate::resources::types::DEFAULT_ARCHIVE_LIMITS)?;
+        let g = git_context::materialize_git_context(
+            context,
+            &fetch_policy,
+            &crate::resources::types::DEFAULT_ARCHIVE_LIMITS,
+        )?;
         err(&format!("context: {context} at commit {}\n", g.commit));
         Some(g)
     } else {
         None
     };
-    let context_owned = fetched.as_ref().map(|g| g.dir.to_string_lossy().into_owned());
+    let context_owned = fetched
+        .as_ref()
+        .map(|g| g.dir.to_string_lossy().into_owned());
     let context: &str = context_owned.as_deref().unwrap_or(context);
     let remote_cache = registry_cache(o)?;
     // Precedence: Sitefile defaults < --build-arg-file (later files win) < --build-arg.
@@ -562,14 +687,19 @@ fn run_build_command(
     if let Some(f) = o.str("format") {
         format_override = ExportFormat::parse(f);
         if format_override.is_none() {
-            return Ok(usage_error(&format!("--format expects one of {} (or tar.gz), got '{f}'", images::EXPORT_FORMATS)));
+            return Ok(usage_error(&format!(
+                "--format expects one of {} (or tar.gz), got '{f}'",
+                images::EXPORT_FORMATS
+            )));
         }
     }
     let mut oci_compression = None;
     if let Some(c) = o.str("oci-compression") {
         oci_compression = OciCompression::parse(c);
         if oci_compression.is_none() {
-            return Ok(usage_error(&format!("--oci-compression expects gzip or none, got '{c}'")));
+            return Ok(usage_error(&format!(
+                "--oci-compression expects gzip or none, got '{c}'"
+            )));
         }
     }
     // No --format: an archive extension on --out picks the format.
@@ -579,18 +709,47 @@ fn run_build_command(
             format_override = format_from_extension(out);
         }
     }
-    let file = o.str("file").filter(|s| !s.is_empty()).map(|f| if fetched.is_some() { join_path(context, f) } else { f.to_string() });
-    let mut options = BuildOptions { context_dir: context.to_string(), sitefile: file, build_args, secrets, target: o.str("target").map(str::to_string), ..Default::default() };
+    let file = o.str("file").filter(|s| !s.is_empty()).map(|f| {
+        if fetched.is_some() {
+            join_path(context, f)
+        } else {
+            f.to_string()
+        }
+    });
+    let mut options = BuildOptions {
+        context_dir: context.to_string(),
+        sitefile: file,
+        build_args,
+        secrets,
+        target: o.str("target").map(str::to_string),
+        ..Default::default()
+    };
     if fetched.is_some() {
         options.label = Some(o.str("file").unwrap_or("Sitefile").to_string());
     }
     // The default destination depends on the format, which the Sitefile may set.
-    let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() { Some(plan_build(&options)?.export_format) } else { None };
+    let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() {
+        Some(plan_build(&options)?.export_format)
+    } else {
+        None
+    };
     let out_dir = match out_flag {
         Some(o) => o.to_string(),
         // A Git context's default destination is in the current directory, not the temporary checkout.
-        None if fetched.is_some() => default_out_name(format_override.or(sitefile_format).unwrap_or(ExportFormat::Directory)).to_string(),
-        None => join_path(context, default_out_name(format_override.or(sitefile_format).unwrap_or(ExportFormat::Directory))),
+        None if fetched.is_some() => default_out_name(
+            format_override
+                .or(sitefile_format)
+                .unwrap_or(ExportFormat::Directory),
+        )
+        .to_string(),
+        None => join_path(
+            context,
+            default_out_name(
+                format_override
+                    .or(sitefile_format)
+                    .unwrap_or(ExportFormat::Directory),
+            ),
+        ),
     };
     options.out_dir = Some(out_dir.clone());
     wrote.push(out_dir.clone());
@@ -621,8 +780,13 @@ fn run_build_command(
     options.base_image = o.str("base").map(str::to_string);
     let tags = o.strs("tag");
     // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
-    options.skip_base = command == "inspect" || command == "why" || (command == "build" && format_override.is_some_and(|f| f != ExportFormat::Oci) && tags.is_empty());
-    options.insecure_registries = registry::insecure_registries_from_env(&o.strs("insecure-registry"));
+    options.skip_base = command == "inspect"
+        || command == "why"
+        || (command == "build"
+            && format_override.is_some_and(|f| f != ExportFormat::Oci)
+            && tags.is_empty());
+    options.insecure_registries =
+        registry::insecure_registries_from_env(&o.strs("insecure-registry"));
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
     options.strict_pins = o.flag("strict-pins");
@@ -638,7 +802,10 @@ fn run_build_command(
         "build" => {
             validate_image_tags(&tags)?;
             let labels = parse_labels(&o.strs("label"))?;
-            let attest = AttestRequest { provenance: o.flag("provenance"), sbom: o.flag("sbom") };
+            let attest = AttestRequest {
+                provenance: o.flag("provenance"),
+                sbom: o.flag("sbom"),
+            };
             if attest.any() && tags.is_empty() {
                 let format = match format_override.or(sitefile_format) {
                     Some(f) => f,
@@ -694,7 +861,9 @@ fn run_build_command(
             let size = r.result.output.len();
             let n = format!("{size} file{}", if size == 1 { "" } else { "s" });
             let line = match r.format {
-                ExportFormat::Directory => format!("Exported {n} to {where_} ({})\n", r.result.output.digest()),
+                ExportFormat::Directory => {
+                    format!("Exported {n} to {where_} ({})\n", r.result.output.digest())
+                }
                 ExportFormat::Oci => format!(
                     "Exported {n} to {where_} (oci image {}{})\n",
                     r.manifest_digest.as_deref().unwrap_or(""),
@@ -702,7 +871,11 @@ fn run_build_command(
                 ),
                 f => format!(
                     "Exported {n} to {where_} ({}, {} bytes, {})\n",
-                    if f == ExportFormat::Tgz { "tar.gz" } else { f.as_str() },
+                    if f == ExportFormat::Tgz {
+                        "tar.gz"
+                    } else {
+                        f.as_str()
+                    },
                     r.bytes.unwrap_or(0),
                     r.file_digest.as_deref().unwrap_or("")
                 ),
@@ -739,8 +912,15 @@ fn run_build_command(
                     p.file,
                     if n == 1 { "" } else { "s" },
                     if ops == 1 { "" } else { "s" },
-                    if p.stages.len() > 1 { format!(", {} stages", p.stages.len()) } else { String::new() },
-                    p.target.as_ref().map(|t| format!(", target {t}")).unwrap_or_default()
+                    if p.stages.len() > 1 {
+                        format!(", {} stages", p.stages.len())
+                    } else {
+                        String::new()
+                    },
+                    p.target
+                        .as_ref()
+                        .map(|t| format!(", target {t}"))
+                        .unwrap_or_default()
                 ));
             }
             Ok(0)
@@ -758,7 +938,12 @@ fn run_build_command(
             } else {
                 let mut s = String::new();
                 for (p, n) in &files {
-                    s.push_str(&format!("{:o}  {:>8}  {p}  ({})\n", n.mode, n.bytes.len(), n.origin));
+                    s.push_str(&format!(
+                        "{:o}  {:>8}  {p}  ({})\n",
+                        n.mode,
+                        n.bytes.len(),
+                        n.origin
+                    ));
                 }
                 s.push_str(&format!("{} files, {}\n", files.len(), r.output.digest()));
                 out(&s);
@@ -788,7 +973,11 @@ fn run_build_command(
             options.record_steps = true;
             let r = build(&options)?;
             let report = crate::explain::why(&r, why_path.unwrap_or_default(), context)?;
-            out(&if o.flag("json") { pretty_json(&crate::explain::why_json(&report)) + "\n" } else { crate::explain::why_text(&report) });
+            out(&if o.flag("json") {
+                pretty_json(&crate::explain::why_json(&report)) + "\n"
+            } else {
+                crate::explain::why_text(&report)
+            });
             Ok(0)
         }
         _ => Ok(usage_error(&format!("unknown command '{command}'"))),
@@ -831,5 +1020,12 @@ mod tests {
 
 /// `--lint-disable` values: comma-separated rule ids (repeatable).
 fn lint_rules_off(o: &args::Parsed) -> Vec<String> {
-    o.strs("lint-disable").iter().flat_map(|v| v.split(',').map(|s| crate::language::scanner::js_trim(s).to_string()).collect::<Vec<_>>()).collect()
+    o.strs("lint-disable")
+        .iter()
+        .flat_map(|v| {
+            v.split(',')
+                .map(|s| crate::language::scanner::js_trim(s).to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }

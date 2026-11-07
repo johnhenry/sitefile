@@ -2,12 +2,13 @@
 //! All of them work from the tolerant [`Index`], so they keep working while
 //! the document does not parse; hover adds values from the last plan.
 
-use crate::language::ast::{is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
 use crate::language::ast::REDIRECT_STATUSES;
+use crate::language::ast::{
+    is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType,
+};
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES,
-    SORT_ORDERS,
-    TRANSFORM_CLAUSES,
+    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
+    INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -44,7 +45,15 @@ pub struct Item {
 }
 
 fn kw_items<'a>(words: impl IntoIterator<Item = &'a str>, kind: u32) -> Vec<Item> {
-    words.into_iter().map(|w| Item { label: w.to_string(), kind, detail: None, insert: None }).collect()
+    words
+        .into_iter()
+        .map(|w| Item {
+            label: w.to_string(),
+            kind,
+            detail: None,
+            insert: None,
+        })
+        .collect()
 }
 
 fn def_kind(k: SymKind) -> u32 {
@@ -85,53 +94,109 @@ pub struct Completion {
 /// in templates), plus the instruction's loop variables.
 fn interp_items(ix: &Index, ins_ix: usize, template: bool) -> Vec<Item> {
     let ins = &ix.instrs[ins_ix];
-    let kinds: &[SymKind] = if template { &[SymKind::Arg, SymKind::Let, SymKind::Import] } else { &[SymKind::Arg, SymKind::Let] };
+    let kinds: &[SymKind] = if template {
+        &[SymKind::Arg, SymKind::Let, SymKind::Import]
+    } else {
+        &[SymKind::Arg, SymKind::Let]
+    };
     let mut defs = ix.defs_before(ins.start_line, kinds);
-    let locals: Vec<&Def> = ix.defs.iter().filter(|d| d.kind == SymKind::LoopVar && d.instr == ins_ix).collect();
+    let locals: Vec<&Def> = ix
+        .defs
+        .iter()
+        .filter(|d| d.kind == SymKind::LoopVar && d.instr == ins_ix)
+        .collect();
     defs.extend(locals);
     def_items(&defs, "")
 }
 
 /// Completion inside `${…}`: `partial` is what was typed after `${`.
-fn complete_interp(ix: &Index, ins_ix: usize, partial: &str, col: u32, template: bool) -> Completion {
+fn complete_interp(
+    ix: &Index,
+    ins_ix: usize,
+    partial: &str,
+    col: u32,
+    template: bool,
+) -> Completion {
     // `${file "…" | ` and `${file "…" | im`: the helpers.
     if template {
-        if let Some(rest) = partial.strip_prefix("file").filter(|r| r.starts_with([' ', '\t'])) {
+        if let Some(rest) = partial
+            .strip_prefix("file")
+            .filter(|r| r.starts_with([' ', '\t']))
+        {
             if let Some((_, after)) = rest.rsplit_once('|') {
                 let typed = after.trim_start();
-                if typed.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-                    return Completion { items: kw_items(crate::media::file_helpers(), CIK_FUNCTION), start: col - utf16_len(typed) };
+                if typed
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    return Completion {
+                        items: kw_items(crate::media::file_helpers(), CIK_FUNCTION),
+                        start: col - utf16_len(typed),
+                    };
                 }
             }
-            return Completion { items: Vec::new(), start: col };
+            return Completion {
+                items: Vec::new(),
+                start: col,
+            };
         }
     }
     if partial.contains('.') {
-        return Completion { items: Vec::new(), start: col }; // a key of a value: unknown without data
+        return Completion {
+            items: Vec::new(),
+            start: col,
+        }; // a key of a value: unknown without data
     }
-    if template && (partial.starts_with('#') || partial.starts_with('/') || partial.is_empty() || "file".starts_with(partial)) {
-        let mut items = kw_items(["#each", "#if", "else", "/each", "/if", "file"], CIK_KEYWORD);
+    if template
+        && (partial.starts_with('#')
+            || partial.starts_with('/')
+            || partial.is_empty()
+            || "file".starts_with(partial))
+    {
+        let mut items = kw_items(
+            ["#each", "#if", "else", "/each", "/if", "file"],
+            CIK_KEYWORD,
+        );
         if !partial.starts_with('#') && !partial.starts_with('/') {
             items.extend(interp_items(ix, ins_ix, true));
         } else if partial.contains(' ') {
             // `${#each li` / `${#if !x`: a name after the block keyword.
             let name = partial.rsplit([' ', '!']).next().unwrap_or("");
-            return Completion { items: interp_items(ix, ins_ix, true), start: col - utf16_len(name) };
+            return Completion {
+                items: interp_items(ix, ins_ix, true),
+                start: col - utf16_len(name),
+            };
         }
-        return Completion { items, start: col - utf16_len(partial) };
+        return Completion {
+            items,
+            start: col - utf16_len(partial),
+        };
     }
-    Completion { items: interp_items(ix, ins_ix, template), start: col - utf16_len(partial) }
+    Completion {
+        items: interp_items(ix, ins_ix, template),
+        start: col - utf16_len(partial),
+    }
 }
 
 /// Completion at a 0-based line and UTF-16 column.
 pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion {
     let text = lines.get(line);
     let prefix = &text[..utf16_to_byte(text, col)];
-    let empty = Completion { items: Vec::new(), start: col };
-    let instructions = || Completion { items: kw_items(INSTRUCTIONS, CIK_KEYWORD).into_iter().map(with_signature).collect(), start: col - utf16_len(prefix.trim_start()) };
+    let empty = Completion {
+        items: Vec::new(),
+        start: col,
+    };
+    let instructions = || Completion {
+        items: kw_items(INSTRUCTIONS, CIK_KEYWORD)
+            .into_iter()
+            .map(with_signature)
+            .collect(),
+        start: col - utf16_len(prefix.trim_start()),
+    };
 
     let Some(ins_ix) = ix.instr_at(line) else {
-        if prefix.trim_start().starts_with('#') || prefix.trim_start().contains(char::is_whitespace) {
+        if prefix.trim_start().starts_with('#') || prefix.trim_start().contains(char::is_whitespace)
+        {
             return empty;
         }
         return instructions();
@@ -151,9 +216,18 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         return empty; // the closing delimiter line
     }
     // The word under the cursor (cursor inside or at its end) and the words before it.
-    let cur: Option<&Word> = ins.words.iter().find(|w| w.line == line && w.start < col && col <= w.end);
-    let prior: Vec<&Word> = ins.words.iter().filter(|w| (w.line, w.end) < (line, col) && Some(*w) != cur).collect();
-    let typed = cur.map(|w| &w.text[..utf16_to_byte(&w.text, col - w.start)]).unwrap_or("");
+    let cur: Option<&Word> = ins
+        .words
+        .iter()
+        .find(|w| w.line == line && w.start < col && col <= w.end);
+    let prior: Vec<&Word> = ins
+        .words
+        .iter()
+        .filter(|w| (w.line, w.end) < (line, col) && Some(*w) != cur)
+        .collect();
+    let typed = cur
+        .map(|w| &w.text[..utf16_to_byte(&w.text, col - w.start)])
+        .unwrap_or("");
     let start = col - utf16_len(typed);
     if prior.is_empty() {
         return instructions();
@@ -168,16 +242,31 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
     let in_flags = prior[1..].iter().all(|w| w.text.starts_with("--")) && !flags_of(kw).is_empty();
     if in_flags && typed.starts_with("--") {
         if let Some(v) = typed.strip_prefix("--escape=").filter(|_| kw == "RENDER") {
-            return Completion { items: kw_items(EscapeMode::ALL.map(EscapeMode::as_str), CIK_ENUM_MEMBER), start: col - utf16_len(v) };
+            return Completion {
+                items: kw_items(EscapeMode::ALL.map(EscapeMode::as_str), CIK_ENUM_MEMBER),
+                start: col - utf16_len(v),
+            };
         }
         if let Some(v) = typed.strip_prefix("--from=") {
-            return Completion { items: def_items(&ix.defs_before(ins.start_line, &[SymKind::Stage]), ""), start: col - utf16_len(v) };
+            return Completion {
+                items: def_items(&ix.defs_before(ins.start_line, &[SymKind::Stage]), ""),
+                start: col - utf16_len(v),
+            };
         }
         let items = flags_of(kw)
             .iter()
-            .filter(|(name, shape)| *shape == Shape::Repeat || !prior.iter().any(|w| w.text.starts_with(&format!("--{name}"))))
+            .filter(|(name, shape)| {
+                *shape == Shape::Repeat
+                    || !prior
+                        .iter()
+                        .any(|w| w.text.starts_with(&format!("--{name}")))
+            })
             .map(|(name, shape)| Item {
-                label: if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=") },
+                label: if *shape == Shape::Bare {
+                    format!("--{name}")
+                } else {
+                    format!("--{name}=")
+                },
                 kind: CIK_KEYWORD,
                 detail: docs::flag(name).map(str::to_string),
                 insert: None,
@@ -228,7 +317,10 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 kw_items(t, CIK_ENUM_MEMBER)
             };
             if let Some((_, t)) = typed.split_once(':').filter(|(_, t)| !t.contains('=')) {
-                return Completion { items: types(), start: col - utf16_len(t) };
+                return Completion {
+                    items: types(),
+                    start: col - utf16_len(t),
+                };
             }
             if n == 2 && (prior[1].text.ends_with(':') || prev == ":") || n == 3 && prev == ":" {
                 types()
@@ -238,12 +330,18 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         }
         "IMPORT" => {
             // The AS of `SECRET <id> AS …` is not the import's AS clause.
-            let used: Vec<String> =
-                prior.iter().enumerate().filter(|(i, _)| *i < 2 || prior[i - 2].upper() != "SECRET").map(|(_, w)| w.upper()).collect();
+            let used: Vec<String> = prior
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i < 2 || prior[i - 2].upper() != "SECRET")
+                .map(|(_, w)| w.upper())
+                .collect();
             match prev.as_str() {
                 _ if n == 2 => kw_items(["FROM"], CIK_KEYWORD),
                 // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER
-                "AS" if n >= 3 && prior[n - 3].upper() == "SECRET" => kw_items(SECRET_FORMS, CIK_KEYWORD),
+                "AS" if n >= 3 && prior[n - 3].upper() == "SECRET" => {
+                    kw_items(SECRET_FORMS, CIK_KEYWORD)
+                }
                 _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
@@ -254,9 +352,16 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                     if n >= 2 && prior[n - 2].upper() == "BY" {
                         v.extend(kw_items(SORT_ORDERS, CIK_KEYWORD));
                     }
-                    for c in IMPORT_CLAUSES.iter().filter(|c| **c == "SECRET" || **c == "ARG" || !used.contains(&c.to_string())) {
+                    for c in IMPORT_CLAUSES.iter().filter(|c| {
+                        **c == "SECRET" || **c == "ARG" || !used.contains(&c.to_string())
+                    }) {
                         v.push(if *c == "SORT" {
-                            Item { label: "SORT BY".into(), kind: CIK_KEYWORD, detail: None, insert: Some("SORT BY ".into()) }
+                            Item {
+                                label: "SORT BY".into(),
+                                kind: CIK_KEYWORD,
+                                detail: None,
+                                insert: Some("SORT BY ".into()),
+                            }
                         } else {
                             kw_items([*c], CIK_KEYWORD).remove(0)
                         });
@@ -273,11 +378,17 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         },
         "EXPORT" => match prev.as_str() {
             "AS" => kw_items(ExportFormat::ALL.map(ExportFormat::as_str), CIK_ENUM_MEMBER),
-            "COMPRESSION" => kw_items(OciCompression::ALL.map(OciCompression::as_str), CIK_ENUM_MEMBER),
+            "COMPRESSION" => kw_items(
+                OciCompression::ALL.map(OciCompression::as_str),
+                CIK_ENUM_MEMBER,
+            ),
             "BASE" | "AT" => Vec::new(),
             _ if n >= 2 => {
                 // Clauses come in order: offer the ones after the last one used.
-                let last = prior.iter().filter_map(|w| EXPORT_CLAUSES.iter().position(|c| w.upper() == *c)).max();
+                let last = prior
+                    .iter()
+                    .filter_map(|w| EXPORT_CLAUSES.iter().position(|c| w.upper() == *c))
+                    .max();
                 let from = last.map(|l| l + 1).unwrap_or(0);
                 kw_items(EXPORT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
             }
@@ -286,7 +397,12 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         "COPY" | "RENDER" | "TRANSFORM" => operation_items(ins, &prior, &prev, ix, &imports, typed),
         "FINGERPRINT" => {
             // Patterns, then MANIFEST <dest>: offer MANIFEST after at least one pattern, once.
-            let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
             if ops.is_empty() || prev == "MANIFEST" || ops.iter().any(|w| w == "MANIFEST") {
                 Vec::new()
             } else {
@@ -294,7 +410,12 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
-            let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
             let clauses: &[&str] = match kw {
                 "SITEMAP" => &SITEMAP_CLAUSES,
                 "FEED" => &FEED_CLAUSES,
@@ -309,16 +430,28 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             if kw == "FEED" && ops.is_empty() {
                 def_items(&imports(), "")
             } else if kw == "REDIRECT" && prev == "STATUS" {
-                kw_items(REDIRECT_STATUSES.map(|s| s.to_string()).iter().map(String::as_str), CIK_ENUM_MEMBER)
+                kw_items(
+                    REDIRECT_STATUSES
+                        .map(|s| s.to_string())
+                        .iter()
+                        .map(String::as_str),
+                    CIK_ENUM_MEMBER,
+                )
             } else if ops.len() < lead || clauses.contains(&prev.as_str()) {
                 Vec::new()
             } else {
                 // Clauses come in order (BASE and LINK are required): offer the next ones.
-                let last = ops.iter().filter_map(|w| clauses.iter().position(|c| w == c)).max();
+                let last = ops
+                    .iter()
+                    .filter_map(|w| clauses.iter().position(|c| w == c))
+                    .max();
                 match last.map(|l| clauses[l]) {
                     None if kw != "REDIRECT" => kw_items(["BASE"], CIK_KEYWORD),
                     Some("BASE") if kw == "FEED" => kw_items(["LINK"], CIK_KEYWORD),
-                    _ => kw_items(clauses[last.map(|l| l + 1).unwrap_or(0)..].iter().copied(), CIK_KEYWORD),
+                    _ => kw_items(
+                        clauses[last.map(|l| l + 1).unwrap_or(0)..].iter().copied(),
+                        CIK_KEYWORD,
+                    ),
                 }
             }
         }
@@ -342,10 +475,21 @@ fn operation_items<'a>(
     typed: &str,
 ) -> Vec<Item> {
     let kw = ins.keyword.as_str();
-    let ops: Vec<String> = prior.iter().skip(1).filter(|w| !w.text.starts_with("--")).map(|w| w.upper()).collect();
+    let ops: Vec<String> = prior
+        .iter()
+        .skip(1)
+        .filter(|w| !w.text.starts_with("--"))
+        .map(|w| w.upper())
+        .collect();
     let p = ops.len();
     let has_from_flag = prior.iter().any(|w| w.text.starts_with("--from="));
-    let import_refs = || if has_from_flag || typed.starts_with('.') || typed.starts_with('/') { Vec::new() } else { def_items(&imports(), ":") };
+    let import_refs = || {
+        if has_from_flag || typed.starts_with('.') || typed.starts_with('/') {
+            Vec::new()
+        } else {
+            def_items(&imports(), ":")
+        }
+    };
     let list_imports = || def_items(&imports(), "");
     if prev == "IN" {
         return list_imports();
@@ -387,7 +531,10 @@ fn operation_items<'a>(
         _ => {
             // TRANSFORM [<source>] WITH name TO <dest> [OPTIONS …] [FOR …] [ARGS …]
             if prev == "WITH" {
-                return def_items(&ix.defs_before(ins.start_line, &[SymKind::Plugin, SymKind::Tool]), "");
+                return def_items(
+                    &ix.defs_before(ins.start_line, &[SymKind::Plugin, SymKind::Tool]),
+                    "",
+                );
             }
             if ops.iter().any(|o| o == "ARGS") {
                 return Vec::new();
@@ -404,7 +551,13 @@ fn operation_items<'a>(
                 (Some(w), None) if p == w + 2 => kw_items(["TO"], CIK_KEYWORD),
                 (Some(_), Some(t)) if p >= t + 2 => {
                     let used: Vec<&String> = ops.iter().collect();
-                    kw_items(TRANSFORM_CLAUSES.iter().copied().filter(|c| !used.iter().any(|u| u == c)), CIK_KEYWORD)
+                    kw_items(
+                        TRANSFORM_CLAUSES
+                            .iter()
+                            .copied()
+                            .filter(|c| !used.iter().any(|u| u == c)),
+                        CIK_KEYWORD,
+                    )
                 }
                 _ => Vec::new(),
             }
@@ -435,7 +588,13 @@ pub fn completion_json(c: &Completion, line: u32, col: u32) -> Value {
 
 fn def_markdown(ix: &Index, def: &Def, analysis: Option<&Analysis>) -> String {
     let ins = &ix.instrs[def.instr];
-    let mut s = format!("**{}** `{}` — line {}\n\n```sitefile\n{}\n```", def.kind.label(), def.name, ins.start_line + 1, ins.text());
+    let mut s = format!(
+        "**{}** `{}` — line {}\n\n```sitefile\n{}\n```",
+        def.kind.label(),
+        def.name,
+        ins.start_line + 1,
+        ins.text()
+    );
     let plan = analysis.and_then(|a| a.plan.as_ref());
     match def.kind {
         SymKind::Let if ins.is_html_let() => {
@@ -446,14 +605,20 @@ fn def_markdown(ix: &Index, def: &Def, analysis: Option<&Analysis>) -> String {
         }
         SymKind::Arg | SymKind::Let => {
             if analysis.is_some_and(|a| a.required_args.contains(&def.name)) {
-                s.push_str(&format!("\n\nNo default: a build needs `--build-arg {}=<value>`.", def.name));
+                s.push_str(&format!(
+                    "\n\nNo default: a build needs `--build-arg {}=<value>`.",
+                    def.name
+                ));
             } else if let Some(v) = plan.and_then(|p| p.vars.get(&def.name)) {
                 s.push_str(&format!("\n\nValue: `{}`", v.to_js_string()));
             }
         }
         SymKind::Import => {
             if let Some(spec) = plan.and_then(|p| p.imports.iter().find(|i| i.name == def.name)) {
-                let kind = spec.as_kind.map(|k| k.as_str().to_string()).unwrap_or_else(|| "default (tree for a directory, else file)".into());
+                let kind = spec
+                    .as_kind
+                    .map(|k| k.as_str().to_string())
+                    .unwrap_or_else(|| "default (tree for a directory, else file)".into());
                 s.push_str(&format!("\n\nKind: {kind}  \nFrom: `{}`", spec.uri));
             }
         }
@@ -468,7 +633,11 @@ fn md(value: String, line: u32, start: u32, end: u32) -> Value {
 
 /// Hover on a comment: the `# sitefile=N` directive or a `# sitefile-lint:` comment (not inside a heredoc body).
 pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<Value> {
-    if ix.instrs.iter().any(|i| i.body.as_ref().is_some_and(|b| b.contains_line(line))) {
+    if ix
+        .instrs
+        .iter()
+        .any(|i| i.body.as_ref().is_some_and(|b| b.contains_line(line)))
+    {
         return None;
     }
     let raw = lines.get(line);
@@ -492,17 +661,29 @@ pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<V
 
 pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Option<Value> {
     if let Some(r) = ix.imported_at(line, col) {
-        return Some(md(docs::imported_stage(&r.import, &r.stage), r.line, r.start, r.end));
+        return Some(md(
+            docs::imported_stage(&r.import, &r.stage),
+            r.line,
+            r.start,
+            r.end,
+        ));
     }
     if let Some(o) = ix.occ_at(line, col) {
         if let Some(d) = o.def {
-            return Some(md(def_markdown(ix, &ix.defs[d], analysis), o.line, o.start, o.end));
+            return Some(md(
+                def_markdown(ix, &ix.defs[d], analysis),
+                o.line,
+                o.start,
+                o.end,
+            ));
         }
     }
     let ins = &ix.instrs[ix.instr_at(line)?];
     if line > ins.end_line {
         // A template body: `file` and the helpers of `${file … | helper}`.
-        let b = ins.body.as_ref().filter(|b| b.contains_line(line) && matches!(ins.keyword.as_str(), "RENDER" | "LET"))?;
+        let b = ins.body.as_ref().filter(|b| {
+            b.contains_line(line) && matches!(ins.keyword.as_str(), "RENDER" | "LET")
+        })?;
         let text = b.text.lines().nth((line - b.start_line) as usize)?;
         return file_hover(text, col).map(|(t, s, e)| md(t.to_string(), line, s, e));
     }
@@ -513,7 +694,11 @@ pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Op
     if at == 0 {
         return docs::instruction(&w.text).and_then(|t| r(&t));
     }
-    if let Some(flag) = w.text.strip_prefix("--").filter(|_| at < ins.first_operand()) {
+    if let Some(flag) = w
+        .text
+        .strip_prefix("--")
+        .filter(|_| at < ins.first_operand())
+    {
         let (name, value) = flag.split_once('=').unwrap_or((flag, ""));
         let value_starts = w.start + 2 + utf16_len(name) + 1;
         if name == "escape" && !value.is_empty() && col >= value_starts {
@@ -527,7 +712,14 @@ pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Op
         ("EXPORT", "AS") => docs::export_format(&w.text),
         ("EXPORT", "COMPRESSION") => docs::compression(&w.text),
         ("ARG" | "LET", _) => {
-            let t = w.text.rsplit(':').next().unwrap_or("").split('=').next().unwrap_or("");
+            let t = w
+                .text
+                .rsplit(':')
+                .next()
+                .unwrap_or("")
+                .split('=')
+                .next()
+                .unwrap_or("");
             docs::value_type(t).or_else(|| docs::value_type(&w.text))
         }
         _ => docs::clause(kw, &w.text),
@@ -546,7 +738,11 @@ fn file_hover(text: &str, col: u32) -> Option<(&'static str, u32, u32)> {
         acc += c.len_utf16() as u32;
     }
     cols.push(acc);
-    let at = cols.iter().position(|&c| c > col).map(|k| k.saturating_sub(1)).unwrap_or(chars.len());
+    let at = cols
+        .iter()
+        .position(|&c| c > col)
+        .map(|k| k.saturating_sub(1))
+        .unwrap_or(chars.len());
     let word = |c: char| c.is_ascii_alphanumeric() || c == '-';
     let mut s = at.min(chars.len());
     while s > 0 && word(chars[s - 1]) {
@@ -587,11 +783,17 @@ pub fn definition(ix: &Index, uri: &str, line: u32, col: u32) -> Option<Value> {
 
 /// The local directory an `IMPORT name FROM <dir> AS sitefile` names, as written (None for Git, URLs and `${…}`).
 fn imported_dir<'a>(ix: &'a Index, import: &str) -> Option<&'a str> {
-    let def = ix.defs.iter().find(|d| d.kind == SymKind::Import && d.name == import)?;
+    let def = ix
+        .defs
+        .iter()
+        .find(|d| d.kind == SymKind::Import && d.name == import)?;
     let ins = &ix.instrs[def.instr];
     let from = ins.find_kw("FROM", 2)?;
     let dir = ins.words.get(from + 1)?.text.as_str();
-    let local = !dir.contains("://") && !dir.contains("${") && !dir.starts_with(['"', '\'']) && !dir.to_ascii_lowercase().starts_with("git+");
+    let local = !dir.contains("://")
+        && !dir.contains("${")
+        && !dir.starts_with(['"', '\''])
+        && !dir.to_ascii_lowercase().starts_with("git+");
     local.then_some(dir)
 }
 
@@ -623,12 +825,17 @@ fn imported_definition(ix: &Index, uri: &str, r: &crate::lsp::index::ImportedRef
     path.push("Sitefile");
     let text = std::fs::read_to_string(&path).ok()?;
     let other = crate::lsp::index::build(&Lines::new(&text));
-    let d = other.defs.iter().find(|d| d.kind == SymKind::Stage && d.name == r.stage)?;
+    let d = other
+        .defs
+        .iter()
+        .find(|d| d.kind == SymKind::Stage && d.name == r.stage)?;
     Some(location(&file_uri(&path), d.line, d.start, d.end))
 }
 
 pub fn references(ix: &Index, uri: &str, line: u32, col: u32, include_decl: bool) -> Value {
-    let Some(def) = ix.occ_at(line, col).and_then(|o| o.def) else { return json!([]) };
+    let Some(def) = ix.occ_at(line, col).and_then(|o| o.def) else {
+        return json!([]);
+    };
     let v: Vec<Value> = ix
         .occs_of(def)
         .into_iter()
@@ -645,11 +852,21 @@ pub fn prepare_rename(ix: &Index, line: u32, col: u32) -> Option<Value> {
 }
 
 /// `Err` carries a message for an invalid new name.
-pub fn rename(ix: &Index, uri: &str, line: u32, col: u32, new_name: &str) -> Result<Option<Value>, String> {
+pub fn rename(
+    ix: &Index,
+    uri: &str,
+    line: u32,
+    col: u32,
+    new_name: &str,
+) -> Result<Option<Value>, String> {
     if !is_ident(new_name) {
-        return Err(format!("'{new_name}' is not a valid name ([A-Za-z_][A-Za-z0-9_]*)"));
+        return Err(format!(
+            "'{new_name}' is not a valid name ([A-Za-z_][A-Za-z0-9_]*)"
+        ));
     }
-    let Some(def) = ix.occ_at(line, col).and_then(|o| o.def) else { return Ok(None) };
+    let Some(def) = ix.occ_at(line, col).and_then(|o| o.def) else {
+        return Ok(None);
+    };
     let edits: Vec<Value> = ix
         .occs_of(def)
         .into_iter()
@@ -686,7 +903,11 @@ fn child_symbol(lines: &Lines, ins: &Instr) -> Value {
     let name_word = if named { ins.words.get(1) } else { None };
     let (name, detail) = match name_word {
         Some(w) => {
-            let n: String = w.text.chars().take_while(|c| *c == '_' || c.is_ascii_alphanumeric()).collect();
+            let n: String = w
+                .text
+                .chars()
+                .take_while(|c| *c == '_' || c.is_ascii_alphanumeric())
+                .collect();
             let n = if n.is_empty() { w.text.clone() } else { n };
             (n, kw.to_string())
         }
@@ -718,7 +939,12 @@ fn child_symbol(lines: &Lines, ins: &Instr) -> Value {
 pub fn document_symbols(lines: &Lines, ix: &Index) -> Value {
     let mut top: Vec<Value> = Vec::new();
     let mut stage: Option<(Value, Vec<Value>)> = None;
-    fn close(top: &mut Vec<Value>, stage: &mut Option<(Value, Vec<Value>)>, lines: &Lines, last: Option<&Instr>) {
+    fn close(
+        top: &mut Vec<Value>,
+        stage: &mut Option<(Value, Vec<Value>)>,
+        lines: &Lines,
+        last: Option<&Instr>,
+    ) {
         if let Some((mut s, children)) = stage.take() {
             if let Some(l) = last {
                 let end = l.last_line();
@@ -740,14 +966,24 @@ pub fn document_symbols(lines: &Lines, ix: &Index) -> Value {
             close(&mut top, &mut stage, lines, prev);
             // (name, selection word, detail, named)
             let (name, sel, detail, named) = if implicit {
-                ("(implicit FROM scratch)".to_string(), &ins.words[0], "unnamed stage".to_string(), false)
+                (
+                    "(implicit FROM scratch)".to_string(),
+                    &ins.words[0],
+                    "unnamed stage".to_string(),
+                    false,
+                )
             } else if kw == "STAGE" {
                 let w = ins.words.get(1).unwrap_or(&ins.words[0]);
                 (w.text.clone(), w, short(ins.text()), true)
             } else {
                 match ins.find_kw("AS", 2).and_then(|a| ins.words.get(a + 1)) {
                     Some(w) => (w.text.clone(), w, short(ins.text()), true),
-                    None => (short(ins.text()), &ins.words[0], "unnamed stage".to_string(), false),
+                    None => (
+                        short(ins.text()),
+                        &ins.words[0],
+                        "unnamed stage".to_string(),
+                        false,
+                    ),
                 }
             };
             let sym = json!({
@@ -784,7 +1020,11 @@ mod tests {
     fn labels_at(src: &str, line: u32, col: u32) -> Vec<String> {
         let lines = Lines::new(src);
         let ix = build(&lines);
-        completion(&lines, &ix, line, col).items.into_iter().map(|i| i.label).collect()
+        completion(&lines, &ix, line, col)
+            .items
+            .into_iter()
+            .map(|i| i.label)
+            .collect()
     }
 
     /// Complete at the end of `src` (its last line).
@@ -804,23 +1044,77 @@ mod tests {
 
     #[test]
     fn clause_values() {
-        assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
+        assert_eq!(
+            labels("IMPORT p FROM ./x AS "),
+            ImportKind::ALL.map(|k| k.as_str().to_string())
+        );
+        assert_eq!(
+            labels("IMPORT p FROM ./x AS ma"),
+            ImportKind::ALL.map(|k| k.as_str().to_string())
+        );
         assert_eq!(labels("RENDER ./t TO /a FOR x IN p "), ["BY", "PAGE"]);
         assert_eq!(labels("RENDER ./t TO /a FOR x IN p BY tags "), ["PAGE"]);
         assert_eq!(labels("RENDER ./t TO /a FOR x IN p PAGE 3 "), ["FIRST"]);
-        assert_eq!(labels("RENDER ./t TO /a FOR x IN p PAGE 3 FIRST /i "), Vec::<String>::new());
-        assert_eq!(labels("IMPORT p FROM ./x AS json DRAFTS "), ["true", "false"]);
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
+        assert_eq!(
+            labels("RENDER ./t TO /a FOR x IN p PAGE 3 FIRST /i "),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            labels("IMPORT p FROM ./x AS json DRAFTS "),
+            ["true", "false"]
+        );
+        assert_eq!(
+            labels("IMPORT p FROM ./x "),
+            [
+                "AS",
+                "INTEGRITY",
+                "SORT BY",
+                "SCHEMA",
+                "DRAFTS",
+                "SECRET",
+                "ARG"
+            ]
+        );
+        assert_eq!(
+            labels("IMPORT p FROM ./x AS json SORT BY date "),
+            [
+                "ASC",
+                "DESC",
+                "INTEGRITY",
+                "SCHEMA",
+                "DRAFTS",
+                "SECRET",
+                "ARG"
+            ]
+        );
         // ARG NAME=value repeats; nothing is offered for the name itself.
-        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
+        assert_eq!(
+            labels("IMPORT t FROM ./t AS sitefile ARG A=1 "),
+            ["INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]
+        );
         assert!(labels("IMPORT t FROM ./t AS sitefile ARG ").is_empty());
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
-        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
-        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SCHEMA", "DRAFTS", "SECRET", "ARG"]);
+        assert_eq!(
+            labels("IMPORT p FROM https://e.x/d SECRET tok AS "),
+            ["HEADER", "BEARER"]
+        );
+        assert_eq!(
+            labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "),
+            [
+                "AS",
+                "INTEGRITY",
+                "SORT BY",
+                "SCHEMA",
+                "DRAFTS",
+                "SECRET",
+                "ARG"
+            ]
+        );
         assert_eq!(labels("IMPORT p "), ["FROM"]);
-        assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
+        assert_eq!(
+            labels("EXPORT / AS "),
+            ExportFormat::ALL.map(|f| f.as_str().to_string())
+        );
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
         assert_eq!(labels("EXPORT / AS oci BASE x "), ["AT", "COMPRESSION"]);
         assert_eq!(labels("EXPORT / AS oci COMPRESSION "), ["gzip", "none"]);
@@ -831,11 +1125,23 @@ mod tests {
 
     #[test]
     fn flags_in_context() {
-        assert_eq!(labels("RENDER --"), ["--escape=", "--overwrite", "--from=", "--inline-svg"]);
-        assert_eq!(labels("COPY --overwrite --"), ["--from=", "--exclude=", "--chmod=", "--parents"]);
+        assert_eq!(
+            labels("RENDER --"),
+            ["--escape=", "--overwrite", "--from=", "--inline-svg"]
+        );
+        assert_eq!(
+            labels("COPY --overwrite --"),
+            ["--from=", "--exclude=", "--chmod=", "--parents"]
+        );
         // --exclude is repeatable.
-        assert_eq!(labels("COPY --exclude=a --chmod=644 --"), ["--overwrite", "--from=", "--exclude=", "--parents"]);
-        assert_eq!(labels("TRANSFORM --include=*.jpg --"), ["--overwrite", "--from=", "--include=", "--exclude="]);
+        assert_eq!(
+            labels("COPY --exclude=a --chmod=644 --"),
+            ["--overwrite", "--from=", "--exclude=", "--parents"]
+        );
+        assert_eq!(
+            labels("TRANSFORM --include=*.jpg --"),
+            ["--overwrite", "--from=", "--include=", "--exclude="]
+        );
         assert!(labels("EXPORT --").is_empty());
     }
 
@@ -879,8 +1185,14 @@ mod tests {
         let l: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(l, ["TITLE", "URL", "posts"]);
         assert_eq!(c.start, 6);
-        assert_eq!(labels("ARG A\nRENDER <<H TO /x\n${"), ["#each", "#if", "else", "/each", "/if", "file", "A"]);
-        assert_eq!(labels("ARG A\nIMPORT l FROM ./l AS json\nRENDER <<H TO /x\n${#each "), ["A", "l"]);
+        assert_eq!(
+            labels("ARG A\nRENDER <<H TO /x\n${"),
+            ["#each", "#if", "else", "/each", "/if", "file", "A"]
+        );
+        assert_eq!(
+            labels("ARG A\nIMPORT l FROM ./l AS json\nRENDER <<H TO /x\n${#each "),
+            ["A", "l"]
+        );
     }
 
     #[test]
@@ -890,30 +1202,57 @@ mod tests {
         assert_eq!(labels("RENDER ./t "), ["TO"]);
         assert_eq!(labels("RENDER ./t TO /x "), ["FOR"]);
         assert_eq!(labels("RENDER ./t TO /x FOR p "), ["IN"]);
-        assert_eq!(labels("IMPORT l FROM ./l AS json\nRENDER ./t TO /x FOR p IN "), ["l"]);
-        assert_eq!(labels("PLUGIN og FROM ./o.mjs\nTOOL ff\nTRANSFORM ./a WITH "), ["og", "ff"]);
+        assert_eq!(
+            labels("IMPORT l FROM ./l AS json\nRENDER ./t TO /x FOR p IN "),
+            ["l"]
+        );
+        assert_eq!(
+            labels("PLUGIN og FROM ./o.mjs\nTOOL ff\nTRANSFORM ./a WITH "),
+            ["og", "ff"]
+        );
         assert_eq!(labels("TRANSFORM ./a WITH og "), ["TO"]);
-        assert_eq!(labels("TRANSFORM ./a WITH og TO /b "), ["OPTIONS", "FOR", "ARGS"]);
-        assert_eq!(labels("TRANSFORM ./a WITH og TO /b OPTIONS a=1 "), ["FOR", "ARGS"]);
+        assert_eq!(
+            labels("TRANSFORM ./a WITH og TO /b "),
+            ["OPTIONS", "FOR", "ARGS"]
+        );
+        assert_eq!(
+            labels("TRANSFORM ./a WITH og TO /b OPTIONS a=1 "),
+            ["FOR", "ARGS"]
+        );
         // SITEMAP, FEED and REDIRECT clauses, in order
         assert_eq!(labels("SITEMAP "), ["BASE"]);
         assert_eq!(labels("SITEMAP --overwrite "), ["BASE"]);
         assert!(labels("SITEMAP BASE ").is_empty());
         assert_eq!(labels("SITEMAP BASE https://x "), ["TO"]);
-        assert_eq!(labels("IMPORT posts FROM ./p AS markdown\nFEED "), ["posts"]);
+        assert_eq!(
+            labels("IMPORT posts FROM ./p AS markdown\nFEED "),
+            ["posts"]
+        );
         assert_eq!(labels("FEED posts "), ["BASE"]);
         assert_eq!(labels("FEED posts BASE https://x "), ["LINK"]);
-        assert_eq!(labels("FEED posts BASE https://x LINK /a "), ["TO", "TITLE"]);
-        assert_eq!(labels("FEED posts BASE https://x LINK /a TO /f.xml "), ["TITLE"]);
+        assert_eq!(
+            labels("FEED posts BASE https://x LINK /a "),
+            ["TO", "TITLE"]
+        );
+        assert_eq!(
+            labels("FEED posts BASE https://x LINK /a TO /f.xml "),
+            ["TITLE"]
+        );
         assert!(labels("REDIRECT /a ").is_empty());
         assert_eq!(labels("REDIRECT /a /b "), ["STATUS"]);
-        assert_eq!(labels("REDIRECT /a /b STATUS "), ["301", "302", "303", "307", "308"]);
+        assert_eq!(
+            labels("REDIRECT /a /b STATUS "),
+            ["301", "302", "303", "307", "308"]
+        );
         assert_eq!(labels("HEADER --"), ["--overwrite"]);
         // FINGERPRINT: patterns, then MANIFEST once
         assert!(labels("FINGERPRINT ").is_empty());
         assert_eq!(labels("FINGERPRINT --"), ["--overwrite"]);
         assert_eq!(labels("FINGERPRINT /assets/ "), ["MANIFEST"]);
-        assert_eq!(labels("FINGERPRINT --overwrite /a/ /b/*.css "), ["MANIFEST"]);
+        assert_eq!(
+            labels("FINGERPRINT --overwrite /a/ /b/*.css "),
+            ["MANIFEST"]
+        );
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert!(labels("FINGERPRINT /a/ MANIFEST /m.json ").is_empty());
         // CHECKLINKS: flags only
@@ -937,7 +1276,9 @@ mod tests {
         let lines = Lines::new(DOC);
         let ix = build(&lines);
         let a = analyze(DOC, "Sitefile");
-        let h = |l, c| hover(&ix, Some(&a), l, c).map(|v| v["contents"]["value"].as_str().unwrap().to_string());
+        let h = |l, c| {
+            hover(&ix, Some(&a), l, c).map(|v| v["contents"]["value"].as_str().unwrap().to_string())
+        };
         assert!(h(2, 1).unwrap().contains("IMPORT name FROM <uri>"));
         assert!(h(2, 31).unwrap().starts_with("Markdown documents"));
         assert!(h(12, 13).unwrap().starts_with("A zip archive"));
@@ -946,10 +1287,18 @@ mod tests {
         assert!(h(10, 45).unwrap().contains("`FOR item IN list`"));
         // Names: where they are defined, and the value the plan computed.
         let t = h(8, 7).unwrap();
-        assert!(t.contains("**ARG** `TITLE` — line 1") && t.contains("Value: `Hello`"), "{t}");
-        assert!(h(1, 5).unwrap().contains("No default: a build needs `--build-arg URL=<value>`"));
+        assert!(
+            t.contains("**ARG** `TITLE` — line 1") && t.contains("Value: `Hello`"),
+            "{t}"
+        );
+        assert!(h(1, 5)
+            .unwrap()
+            .contains("No default: a build needs `--build-arg URL=<value>`"));
         let s = h(11, 6).unwrap();
-        assert!(s.contains("**stage** `site` — line 7") && s.contains("STAGE site FROM assets"), "{s}");
+        assert!(
+            s.contains("**stage** `site` — line 7") && s.contains("STAGE site FROM assets"),
+            "{s}"
+        );
         assert!(h(10, 55).unwrap().contains("Kind: markdown"));
         assert!(h(8, 1).is_none()); // template text
     }
@@ -961,7 +1310,10 @@ mod tests {
         let ix = build(&lines);
         let h = |l, c| comment_hover(&lines, &ix, l, c);
         let v = h(0, 5).unwrap();
-        assert!(v["contents"]["value"].as_str().unwrap().contains("The syntax version this file is written for"));
+        assert!(v["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("The syntax version this file is written for"));
         assert_eq!(v["range"], range(0, 2, 0, 14));
         assert!(h(0, 0).is_none());
         assert!(h(1, 3).is_none());
@@ -970,7 +1322,10 @@ mod tests {
         let lines = Lines::new(src);
         let ix = build(&lines);
         let v = comment_hover(&lines, &ix, 0, 3).unwrap();
-        assert!(v["contents"]["value"].as_str().unwrap().contains("`unused-name`"));
+        assert!(v["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("`unused-name`"));
     }
 
     #[test]
@@ -980,13 +1335,30 @@ mod tests {
         let ix = build(&lines);
         let a = analyze(src, "Sitefile");
         // Hover at a use shows the fragment and its heredoc body.
-        let h = hover(&ix, Some(&a), 6, 3).unwrap()["contents"]["value"].as_str().unwrap().to_string();
-        assert!(h.contains("**LET** `header` — line 3") && h.contains("html fragment") && h.contains("```html\n<header>${nav}</header>\n```"), "{h}");
+        let h = hover(&ix, Some(&a), 6, 3).unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            h.contains("**LET** `header` — line 3")
+                && h.contains("html fragment")
+                && h.contains("```html\n<header>${nav}</header>\n```"),
+            "{h}"
+        );
         // Definition from the RENDER body and from inside another fragment's body.
-        assert_eq!(definition(&ix, "file:///S", 6, 11).unwrap()["range"], range(1, 4, 1, 7));
-        assert_eq!(definition(&ix, "file:///S", 3, 11).unwrap()["range"], range(1, 4, 1, 7));
+        assert_eq!(
+            definition(&ix, "file:///S", 6, 11).unwrap()["range"],
+            range(1, 4, 1, 7)
+        );
+        assert_eq!(
+            definition(&ix, "file:///S", 3, 11).unwrap()["range"],
+            range(1, 4, 1, 7)
+        );
         // SITE used in a one-line fragment.
-        assert_eq!(definition(&ix, "file:///S", 1, 23).unwrap()["range"], range(0, 4, 0, 8));
+        assert_eq!(
+            definition(&ix, "file:///S", 1, 23).unwrap()["range"],
+            range(0, 4, 0, 8)
+        );
         // Rename `nav`: its LET, the header body and the RENDER body.
         let e = rename(&ix, "file:///S", 6, 11, "menu").unwrap().unwrap();
         assert_eq!(e["changes"]["file:///S"].as_array().unwrap().len(), 3);
@@ -996,7 +1368,13 @@ mod tests {
         assert!(labels("LET h: ").contains(&"html".to_string()));
         assert!(!labels("ARG h: ").contains(&"html".to_string()));
         // No template error diagnostics beyond validate's.
-        assert!(a.diagnostics.iter().all(|d| d.severity != crate::lsp::diagnostics::ERROR), "{:?}", a.diagnostics);
+        assert!(
+            a.diagnostics
+                .iter()
+                .all(|d| d.severity != crate::lsp::diagnostics::ERROR),
+            "{:?}",
+            a.diagnostics
+        );
     }
 
     #[test]
@@ -1004,10 +1382,15 @@ mod tests {
         let src = "COPY ./a/ /img/\nRENDER --escape=html <<HTML TO /i.html\n${file \"/img/a.png\" | img alt=\"x\"}\n${fi\n${file /a.css | \nHTML\nEXPORT /";
         assert!(labels_at(src, 3, 4).contains(&"file".to_string()));
         let helpers = labels_at(src, 4, 16);
-        assert!(helpers.contains(&"img".to_string()) && helpers.contains(&"stylesheet".to_string()), "{helpers:?}");
+        assert!(
+            helpers.contains(&"img".to_string()) && helpers.contains(&"stylesheet".to_string()),
+            "{helpers:?}"
+        );
         let lines = Lines::new(src);
         let ix = build(&lines);
-        let h = |l, c| hover(&ix, None, l, c).map(|v| v["contents"]["value"].as_str().unwrap().to_string());
+        let h = |l, c| {
+            hover(&ix, None, l, c).map(|v| v["contents"]["value"].as_str().unwrap().to_string())
+        };
         assert!(h(2, 3).unwrap().contains("${file \"/path\""));
         assert!(h(2, 23).unwrap().starts_with("`<img src width height"));
         assert!(h(2, 12).is_none()); // inside the path
@@ -1018,13 +1401,31 @@ mod tests {
         let lines = Lines::new(DOC);
         let ix = build(&lines);
         // `assets` in `STAGE site FROM assets` → its STAGE line.
-        assert_eq!(definition(&ix, "file:///S", 6, 18).unwrap()["range"], range(4, 6, 4, 12));
+        assert_eq!(
+            definition(&ix, "file:///S", 6, 18).unwrap()["range"],
+            range(4, 6, 4, 12)
+        );
         // TITLE: definition, the RENDER destination and the template body.
         let r = references(&ix, "file:///S", 0, 5, true);
-        let at: Vec<(u64, u64)> =
-            r.as_array().unwrap().iter().map(|l| (l["range"]["start"]["line"].as_u64().unwrap(), l["range"]["start"]["character"].as_u64().unwrap())).collect();
+        let at: Vec<(u64, u64)> = r
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["range"]["start"]["line"].as_u64().unwrap(),
+                    l["range"]["start"]["character"].as_u64().unwrap(),
+                )
+            })
+            .collect();
         assert_eq!(at, [(0, 4), (7, 34), (8, 6)]);
-        assert_eq!(references(&ix, "file:///S", 0, 5, false).as_array().unwrap().len(), 2);
+        assert_eq!(
+            references(&ix, "file:///S", 0, 5, false)
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         let e = rename(&ix, "file:///S", 8, 7, "HEADING").unwrap().unwrap();
         assert_eq!(e["changes"]["file:///S"].as_array().unwrap().len(), 3);
         assert!(rename(&ix, "file:///S", 8, 7, "9x").is_err());
@@ -1035,28 +1436,49 @@ mod tests {
     #[test]
     fn imported_stages_definition_hover_references() {
         // IMPORT … AS sitefile (issue #97): `theme+assets` is a use of `theme` and a stage of ./theme/Sitefile.
-        let dir = std::env::temp_dir().join(format!("sitefile-lsp-import-{}", crate::export::exporter::random_hex(6)));
+        let dir = std::env::temp_dir().join(format!(
+            "sitefile-lsp-import-{}",
+            crate::export::exporter::random_hex(6)
+        ));
         std::fs::create_dir_all(dir.join("my theme")).unwrap();
-        std::fs::write(dir.join("my theme").join("Sitefile"), "ARG A = 1\n\nSTAGE assets\nEXPORT /\n").unwrap();
+        std::fs::write(
+            dir.join("my theme").join("Sitefile"),
+            "ARG A = 1\n\nSTAGE assets\nEXPORT /\n",
+        )
+        .unwrap();
         let src = "IMPORT theme FROM \"./my theme\" AS sitefile ARG A=2\nIMPORT git FROM git+https://e.x/t.git#v1 AS sitefile\nSTAGE s FROM theme+assets\nCOPY --from=theme+assets / /a/\nCOPY --from=git+x / /b/\nEXPORT /\n";
         let ix = build(&Lines::new(src));
         // Quoted directories are not followed (the word keeps its quotes); unquoted ones are.
         assert!(definition(&ix, &file_uri(&dir.join("Sitefile")), 2, 21).is_none());
-        let src = src.replace("\"./my theme\"", "./my%20theme").replace("./my%20theme", "./mytheme");
+        let src = src
+            .replace("\"./my theme\"", "./my%20theme")
+            .replace("./my%20theme", "./mytheme");
         std::fs::rename(dir.join("my theme"), dir.join("mytheme")).unwrap();
         let ix = build(&Lines::new(&src));
         let uri = file_uri(&dir.join("Sitefile"));
         let d = definition(&ix, &uri, 2, 21).unwrap();
         assert_eq!(d["uri"], file_uri(&dir.join("mytheme").join("Sitefile")));
         assert_eq!(d["range"], range(2, 6, 2, 12));
-        assert_eq!(definition(&ix, &uri, 3, 20).unwrap()["range"], range(2, 6, 2, 12));
+        assert_eq!(
+            definition(&ix, &uri, 3, 20).unwrap()["range"],
+            range(2, 6, 2, 12)
+        );
         // The import part goes to the IMPORT; it is a reference of it.
-        assert_eq!(definition(&ix, &uri, 2, 15).unwrap()["range"], range(0, 7, 0, 12));
-        assert_eq!(references(&ix, &uri, 0, 8, true).as_array().unwrap().len(), 3);
+        assert_eq!(
+            definition(&ix, &uri, 2, 15).unwrap()["range"],
+            range(0, 7, 0, 12)
+        );
+        assert_eq!(
+            references(&ix, &uri, 0, 8, true).as_array().unwrap().len(),
+            3
+        );
         // A Git import is not followed; hover explains the stage either way.
         assert!(definition(&ix, &uri, 4, 17).is_none());
         let h = hover(&ix, None, 2, 21).unwrap();
-        assert!(h["contents"]["value"].as_str().unwrap().contains("stage `assets` of the Sitefile imported as `theme`"));
+        assert!(h["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("stage `assets` of the Sitefile imported as `theme`"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1094,10 +1516,33 @@ mod tests {
         let lines = Lines::new(DOC);
         let ix = build(&lines);
         let s = document_symbols(&lines, &ix);
-        let names: Vec<&str> = s.as_array().unwrap().iter().map(|v| v["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["TITLE", "URL", "(implicit FROM scratch)", "assets", "site", "FROM site"]);
+        let names: Vec<&str> = s
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "TITLE",
+                "URL",
+                "(implicit FROM scratch)",
+                "assets",
+                "site",
+                "FROM site"
+            ]
+        );
         let implicit = &s[2]["children"];
-        assert_eq!(implicit.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect::<Vec<_>>(), ["posts", "og"]);
+        assert_eq!(
+            implicit
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["posts", "og"]
+        );
         let site = &s[4];
         assert_eq!(site["children"].as_array().unwrap().len(), 2);
         // The stage range ends where its last instruction (a RENDER) ends.

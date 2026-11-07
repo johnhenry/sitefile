@@ -233,11 +233,15 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("oci", "An OCI image (archive for `-o *.tar`, else a layout directory); `BASE`, `AT` and `COMPRESSION` apply."),
 ];
 
-const COMPRESSIONS: &[(&str, &str)] =
-    &[("gzip", "A tar+gzip site layer (the default)."), ("none", "A plain tar site layer (digest = diff_id).")];
+const COMPRESSIONS: &[(&str, &str)] = &[
+    ("gzip", "A tar+gzip site layer (the default)."),
+    ("none", "A plain tar site layer (digest = diff_id)."),
+];
 
-const ESCAPES: &[(&str, &str)] =
-    &[("none", "Substitute values as they are (the default)."), ("html", "Escape `& < > \" '` in substituted values.")];
+const ESCAPES: &[(&str, &str)] = &[
+    ("none", "Substitute values as they are (the default)."),
+    ("html", "Escape `& < > \" '` in substituted values."),
+];
 
 const TYPES: &[(&str, &str)] = &[
     ("string", "Any text (the default)."),
@@ -247,7 +251,10 @@ const TYPES: &[(&str, &str)] = &[
 ];
 
 fn lookup<'a>(table: &'a [(&str, &str)], key: &str) -> Option<&'a str> {
-    table.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| *v)
+    table
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| *v)
 }
 
 /// Markdown for an instruction keyword.
@@ -260,7 +267,10 @@ pub fn instruction(kw: &str) -> Option<String> {
 
 /// One-line signature of an instruction (completion detail).
 pub fn signature(kw: &str) -> Option<&'static str> {
-    INSTRUCTIONS.iter().find(|(k, _, _)| k.eq_ignore_ascii_case(kw)).map(|(_, sig, _)| *sig)
+    INSTRUCTIONS
+        .iter()
+        .find(|(k, _, _)| k.eq_ignore_ascii_case(kw))
+        .map(|(_, sig, _)| *sig)
 }
 
 pub fn clause(kw: &str, clause: &str) -> Option<&'static str> {
@@ -318,8 +328,9 @@ mod tests {
     use super::*;
     use crate::language::ast::{EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType};
     use crate::language::parser::{
-        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES, INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS,
-        SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+        flags_of, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
+        INSTRUCTIONS as KWS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
+        TRANSFORM_CLAUSES,
     };
 
     #[test]
@@ -345,7 +356,11 @@ mod tests {
         for t in ValueType::ALL {
             assert!(value_type(t.as_str()).is_some());
         }
-        for c in IMPORT_CLAUSES.iter().chain(&SORT_ORDERS).chain(&SECRET_FORMS) {
+        for c in IMPORT_CLAUSES
+            .iter()
+            .chain(&SORT_ORDERS)
+            .chain(&SECRET_FORMS)
+        {
             assert!(clause("IMPORT", c).is_some(), "{c}");
         }
         for c in EXPORT_CLAUSES {

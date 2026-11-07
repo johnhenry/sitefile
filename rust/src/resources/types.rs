@@ -67,7 +67,9 @@ pub enum Resource {
 impl Resource {
     pub fn provenance(&self) -> &Provenance {
         match self {
-            Resource::File { provenance, .. } | Resource::Tree { provenance, .. } | Resource::Value { provenance, .. } => provenance,
+            Resource::File { provenance, .. }
+            | Resource::Tree { provenance, .. }
+            | Resource::Value { provenance, .. } => provenance,
         }
     }
     /// `file`, `tree` or `value`, as the TypeScript `kind` field.

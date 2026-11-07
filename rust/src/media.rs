@@ -10,9 +10,29 @@ use base64::Engine;
 use sha2::{Digest, Sha384};
 
 /// Helpers that produce a value (escaped like any substituted value).
-pub const VALUE_HELPERS: [&str; 8] = ["url", "width", "height", "type", "size", "integrity", "datauri", "srcset"];
+pub const VALUE_HELPERS: [&str; 8] = [
+    "url",
+    "width",
+    "height",
+    "type",
+    "size",
+    "integrity",
+    "datauri",
+    "srcset",
+];
 /// Helpers that write a tag (trusted markup: inserted as-is; every attribute value is escaped).
-pub const TAG_HELPERS: [&str; 10] = ["img", "video", "audio", "source", "script", "stylesheet", "preload", "modulepreload", "pre", "svg"];
+pub const TAG_HELPERS: [&str; 10] = [
+    "img",
+    "video",
+    "audio",
+    "source",
+    "script",
+    "stylesheet",
+    "preload",
+    "modulepreload",
+    "pre",
+    "svg",
+];
 
 /// Every helper, value helpers first.
 pub fn file_helpers() -> impl Iterator<Item = &'static str> {
@@ -72,7 +92,10 @@ pub fn extension_of(path: &str) -> String {
 /// The media type of a path, by extension (`application/octet-stream` when unknown).
 pub fn media_type(path: &str) -> &'static str {
     let ext = extension_of(path);
-    MIME.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m).unwrap_or("application/octet-stream")
+    MIME.iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, m)| *m)
+        .unwrap_or("application/octet-stream")
 }
 
 /// Extensions the image helpers accept.
@@ -84,12 +107,18 @@ pub fn is_image_path(path: &str) -> bool {
 
 /// The URL of a tree path: each segment percent-encoded like `encodeURIComponent`.
 pub fn file_url(path: &str) -> String {
-    path.split('/').map(encode_uri_component).collect::<Vec<_>>().join("/")
+    path.split('/')
+        .map(encode_uri_component)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// `sha384-<base64>`, the subresource integrity of `bytes`.
 pub fn integrity_of(bytes: &[u8]) -> String {
-    format!("sha384-{}", base64::engine::general_purpose::STANDARD.encode(Sha384::digest(bytes)))
+    format!(
+        "sha384-{}",
+        base64::engine::general_purpose::STANDARD.encode(Sha384::digest(bytes))
+    )
 }
 
 // ------------------------------------------------------------ image headers
@@ -175,12 +204,18 @@ fn png_size(b: &[u8]) -> R<ImageSize> {
     if &b[12..16] != b"IHDR" {
         return Err(Malformed);
     }
-    Ok(ImageSize { width: u32be(b, 16), height: u32be(b, 20) })
+    Ok(ImageSize {
+        width: u32be(b, 16),
+        height: u32be(b, 20),
+    })
 }
 
 fn gif_size(b: &[u8]) -> R<ImageSize> {
     need(b, 10)?;
-    Ok(ImageSize { width: u16le(b, 6), height: u16le(b, 8) })
+    Ok(ImageSize {
+        width: u16le(b, 6),
+        height: u16le(b, 8),
+    })
 }
 
 /// JPEG: the first SOF segment; EXIF orientation 5 to 8 (a quarter turn) swaps width and height.
@@ -218,7 +253,14 @@ fn jpeg_size(b: &[u8]) -> R<ImageSize> {
                 return Err(Malformed);
             }
             let (height, width) = (u16be(b, i + 5), u16be(b, i + 7));
-            return Ok(if turned { ImageSize { width: height, height: width } } else { ImageSize { width, height } });
+            return Ok(if turned {
+                ImageSize {
+                    width: height,
+                    height: width,
+                }
+            } else {
+                ImageSize { width, height }
+            });
         }
         if m == 0xe1 && !turned {
             turned = exif_quarter_turn(&b[i + 4..end]);
@@ -269,7 +311,10 @@ fn webp_size(b: &[u8]) -> R<ImageSize> {
             if b[23] != 0x9d || b[24] != 0x01 || b[25] != 0x2a {
                 return Err(Malformed);
             }
-            Ok(ImageSize { width: u16le(b, 26) & 0x3fff, height: u16le(b, 28) & 0x3fff })
+            Ok(ImageSize {
+                width: u16le(b, 26) & 0x3fff,
+                height: u16le(b, 28) & 0x3fff,
+            })
         }
         b"VP8L" => {
             need(b, 25)?;
@@ -277,11 +322,17 @@ fn webp_size(b: &[u8]) -> R<ImageSize> {
                 return Err(Malformed);
             }
             let bits = u32le(b, 21);
-            Ok(ImageSize { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 })
+            Ok(ImageSize {
+                width: (bits & 0x3fff) + 1,
+                height: ((bits >> 14) & 0x3fff) + 1,
+            })
         }
         b"VP8X" => {
             need(b, 30)?;
-            Ok(ImageSize { width: u24le(b, 24) + 1, height: u24le(b, 27) + 1 })
+            Ok(ImageSize {
+                width: u24le(b, 24) + 1,
+                height: u24le(b, 27) + 1,
+            })
         }
         _ => Err(Malformed),
     }
@@ -319,7 +370,11 @@ fn boxes(b: &[u8], from: usize, to: usize) -> R<Vec<BoxRef>> {
         if size < start - i || i + size > to {
             return Err(Malformed);
         }
-        out.push(BoxRef { kind, start, end: i + size });
+        out.push(BoxRef {
+            kind,
+            start,
+            end: i + size,
+        });
         i += size;
     }
     Ok(out)
@@ -374,7 +429,11 @@ fn avif_size(b: &[u8]) -> R<ImageSize> {
         if i + id_len + 1 > ipma.end {
             return Err(Malformed);
         }
-        let id = if id_len == 2 { u16be(b, i) } else { u32be(b, i) };
+        let id = if id_len == 2 {
+            u16be(b, i)
+        } else {
+            u32be(b, i)
+        };
         i += id_len;
         let count = b[i];
         i += 1;
@@ -402,18 +461,30 @@ fn avif_size(b: &[u8]) -> R<ImageSize> {
     let mut size: Option<ImageSize> = None;
     let mut turned = false;
     for index in associated {
-        let Some(p) = index.checked_sub(1).and_then(|k| properties.get(k)) else { continue };
+        let Some(p) = index.checked_sub(1).and_then(|k| properties.get(k)) else {
+            continue;
+        };
         if &p.kind == b"ispe" && size.is_none() {
             if p.start + 12 > p.end {
                 return Err(Malformed);
             }
-            size = Some(ImageSize { width: u32be(b, p.start + 4), height: u32be(b, p.start + 8) });
+            size = Some(ImageSize {
+                width: u32be(b, p.start + 4),
+                height: u32be(b, p.start + 8),
+            });
         } else if &p.kind == b"irot" && p.start < p.end {
             turned = (b[p.start] & 3) % 2 == 1;
         }
     }
     let size = size.ok_or(Malformed)?;
-    Ok(if turned { ImageSize { width: size.height, height: size.width } } else { size })
+    Ok(if turned {
+        ImageSize {
+            width: size.height,
+            height: size.width,
+        }
+    } else {
+        size
+    })
 }
 
 /// The width and height of an image file, from its header (PNG, JPEG, GIF, WebP, AVIF): bounded
@@ -424,7 +495,10 @@ pub fn image_size(bytes: &[u8], path: &str) -> Result<Option<ImageSize>> {
         return Ok(None);
     }
     let Some(format) = sniff(bytes) else {
-        return Err(SitefileError::plain(E_DATA, format!("'{path}' is not a PNG, JPEG, GIF, WebP or AVIF image")));
+        return Err(SitefileError::plain(
+            E_DATA,
+            format!("'{path}' is not a PNG, JPEG, GIF, WebP or AVIF image"),
+        ));
     };
     let size = match format {
         Format::Png => png_size(bytes),
@@ -435,7 +509,13 @@ pub fn image_size(bytes: &[u8], path: &str) -> Result<Option<ImageSize>> {
     };
     match size {
         Ok(s) if s.width != 0 && s.height != 0 => Ok(Some(s)),
-        _ => Err(SitefileError::plain(E_DATA, format!("'{path}' is not a valid {} image: its header is truncated or malformed", format.name()))),
+        _ => Err(SitefileError::plain(
+            E_DATA,
+            format!(
+                "'{path}' is not a valid {} image: its header is truncated or malformed",
+                format.name()
+            ),
+        )),
     }
 }
 
@@ -482,15 +562,32 @@ fn decode_text(f: &TreeFile, helper: &str, span: &SourceSpan) -> Result<String> 
     match std::str::from_utf8(f.bytes) {
         // TextDecoder strips a leading BOM.
         Ok(s) => Ok(s.strip_prefix('\u{feff}').unwrap_or(s).to_string()),
-        Err(_) => Err(SitefileError::at(E_ENCODING, format!("'{}' is not valid UTF-8 (the {helper} helper writes its text into the page)", f.path), span)),
+        Err(_) => Err(SitefileError::at(
+            E_ENCODING,
+            format!(
+                "'{}' is not valid UTF-8 (the {helper} helper writes its text into the page)",
+                f.path
+            ),
+            span,
+        )),
     }
 }
 
 /// `<name` and its attributes: the helper's own (`auto`, in order), then the template's, then the
 /// helper's defaults. A template attribute named like an automatic or default one (ASCII
 /// case-insensitive) replaces its value in place. Every value is HTML-escaped.
-fn tag(name: &str, auto: &[(&str, Option<String>)], attrs: &[HelperAttr], defaults: &[(&str, &str)]) -> String {
-    let given = |n: &str| attrs.iter().rev().find(|a| a.name.to_ascii_lowercase() == n);
+fn tag(
+    name: &str,
+    auto: &[(&str, Option<String>)],
+    attrs: &[HelperAttr],
+    defaults: &[(&str, &str)],
+) -> String {
+    let given = |n: &str| {
+        attrs
+            .iter()
+            .rev()
+            .find(|a| a.name.to_ascii_lowercase() == n)
+    };
     let own = |n: &str| auto.iter().any(|(a, _)| *a == n) || defaults.iter().any(|(d, _)| *d == n);
     let one = |n: &str, v: Option<&str>| match v {
         None => format!(" {n}"),
@@ -528,10 +625,18 @@ fn preload_as(ext: &str) -> Option<&'static str> {
 }
 
 /// The file `${file "<raw>"}` names: an absolute path in the tree (E_PATH, E_TYPE, E_NOT_FOUND otherwise).
-pub fn resolve_file<'t>(raw: &str, tree: &'t dyn TemplateTree, span: &SourceSpan) -> Result<TreeFile<'t>> {
+pub fn resolve_file<'t>(
+    raw: &str,
+    tree: &'t dyn TemplateTree,
+    span: &SourceSpan,
+) -> Result<TreeFile<'t>> {
     let p = normalize_virtual(raw, Some(span), "${file} path")?;
     if p.path == "/" || tree.is_directory(&p.path) {
-        return Err(SitefileError::at(E_TYPE, format!("'{}' is a directory; ${{file}} needs a file", p.path), span));
+        return Err(SitefileError::at(
+            E_TYPE,
+            format!("'{}' is a directory; ${{file}} needs a file", p.path),
+            span,
+        ));
     }
     let mut path = p.path;
     let mut found = tree.get(&path);
@@ -555,7 +660,14 @@ pub fn resolve_file<'t>(raw: &str, tree: &'t dyn TemplateTree, span: &SourceSpan
 }
 
 /// What `${file "<raw>" | helper attrs…}` writes (`helper` None: the file's URL).
-pub fn render_file(raw: &str, helper: Option<&str>, attrs: &[HelperAttr], tree: &dyn TemplateTree, opts: HelperOptions, span: &SourceSpan) -> Result<HelperOutput> {
+pub fn render_file(
+    raw: &str,
+    helper: Option<&str>,
+    attrs: &[HelperAttr],
+    tree: &dyn TemplateTree,
+    opts: HelperOptions,
+    span: &SourceSpan,
+) -> Result<HelperOutput> {
     // The image plugin's metadata, when there is some, is what the image helpers read (#128).
     if helper.is_none_or(|h| METADATA_HELPERS.contains(&h)) {
         let path = normalize_virtual(raw, Some(span), "${file} path")?.path;
@@ -568,7 +680,13 @@ pub fn render_file(raw: &str, helper: Option<&str>, attrs: &[HelperAttr], tree: 
 }
 
 /// What `helper` writes for file `f` (`None`: no helper, the file's URL).
-pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAttr], opts: HelperOptions, span: &SourceSpan) -> Result<HelperOutput> {
+pub fn render_file_helper(
+    helper: Option<&str>,
+    f: &TreeFile,
+    attrs: &[HelperAttr],
+    opts: HelperOptions,
+    span: &SourceSpan,
+) -> Result<HelperOutput> {
     use HelperOutput::{Markup, Value};
     let url = file_url(&f.path);
     let ext = extension_of(&f.path);
@@ -580,7 +698,13 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                 span,
             ));
         }
-        image_size(f.bytes, &f.path).map_err(|e| if e.span.is_none() { SitefileError::at(e.code, e.detail, span) } else { e })
+        image_size(f.bytes, &f.path).map_err(|e| {
+            if e.span.is_none() {
+                SitefileError::at(e.code, e.detail, span)
+            } else {
+                e
+            }
+        })
     };
     let integrity = || integrity_of(f.bytes);
     Ok(match helper {
@@ -590,9 +714,23 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
         Some("integrity") => Value(integrity()),
         Some(h @ ("width" | "height")) => {
             let Some(size) = image(h)? else {
-                return Err(SitefileError::at(E_TYPE, format!("'{}' is an SVG image; its {h} is in its markup, not in a header", f.path), span));
+                return Err(SitefileError::at(
+                    E_TYPE,
+                    format!(
+                        "'{}' is an SVG image; its {h} is in its markup, not in a header",
+                        f.path
+                    ),
+                    span,
+                ));
             };
-            Value(if h == "width" { size.width } else { size.height }.to_string())
+            Value(
+                if h == "width" {
+                    size.width
+                } else {
+                    size.height
+                }
+                .to_string(),
+            )
         }
         Some("srcset") => {
             return Err(SitefileError::at(
@@ -609,7 +747,11 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                     span,
                 ));
             }
-            Value(format!("data:{};base64,{}", media_type(&f.path), base64::engine::general_purpose::STANDARD.encode(f.bytes)))
+            Value(format!(
+                "data:{};base64,{}",
+                media_type(&f.path),
+                base64::engine::general_purpose::STANDARD.encode(f.bytes)
+            ))
         }
         Some("img") => {
             let size = image("img")?;
@@ -618,20 +760,74 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                 auto.push(("width", Some(s.width.to_string())));
                 auto.push(("height", Some(s.height.to_string())));
             }
-            Markup(tag("img", &auto, attrs, &[("loading", "lazy"), ("decoding", "async")]) + ">")
+            Markup(
+                tag(
+                    "img",
+                    &auto,
+                    attrs,
+                    &[("loading", "lazy"), ("decoding", "async")],
+                ) + ">",
+            )
         }
-        Some(h @ ("video" | "audio")) => Markup(format!("{}></{h}>", tag(h, &[("src", Some(url))], attrs, &[]))),
+        Some(h @ ("video" | "audio")) => Markup(format!(
+            "{}></{h}>",
+            tag(h, &[("src", Some(url))], attrs, &[])
+        )),
         Some("source") => {
-            let key = if is_image_path(&f.path) { "srcset" } else { "src" };
-            Markup(tag("source", &[(key, Some(url)), ("type", Some(media_type(&f.path).to_string()))], attrs, &[]) + ">")
+            let key = if is_image_path(&f.path) {
+                "srcset"
+            } else {
+                "src"
+            };
+            Markup(
+                tag(
+                    "source",
+                    &[
+                        (key, Some(url)),
+                        ("type", Some(media_type(&f.path).to_string())),
+                    ],
+                    attrs,
+                    &[],
+                ) + ">",
+            )
         }
-        Some("script") => Markup(tag("script", &[("src", Some(url)), ("integrity", Some(integrity()))], attrs, &[]) + "></script>"),
-        Some("stylesheet") => Markup(tag("link", &[("rel", Some("stylesheet".into())), ("href", Some(url)), ("integrity", Some(integrity()))], attrs, &[]) + ">"),
-        Some("modulepreload") => {
-            Markup(tag("link", &[("rel", Some("modulepreload".into())), ("href", Some(url)), ("integrity", Some(integrity()))], attrs, &[]) + ">")
-        }
+        Some("script") => Markup(
+            tag(
+                "script",
+                &[("src", Some(url)), ("integrity", Some(integrity()))],
+                attrs,
+                &[],
+            ) + "></script>",
+        ),
+        Some("stylesheet") => Markup(
+            tag(
+                "link",
+                &[
+                    ("rel", Some("stylesheet".into())),
+                    ("href", Some(url)),
+                    ("integrity", Some(integrity())),
+                ],
+                attrs,
+                &[],
+            ) + ">",
+        ),
+        Some("modulepreload") => Markup(
+            tag(
+                "link",
+                &[
+                    ("rel", Some("modulepreload".into())),
+                    ("href", Some(url)),
+                    ("integrity", Some(integrity())),
+                ],
+                attrs,
+                &[],
+            ) + ">",
+        ),
         Some("preload") => {
-            let given = attrs.iter().find(|a| a.name.to_ascii_lowercase() == "as").and_then(|a| a.value.clone());
+            let given = attrs
+                .iter()
+                .find(|a| a.name.to_ascii_lowercase() == "as")
+                .and_then(|a| a.value.clone());
             let Some(as_) = given.or_else(|| preload_as(&ext).map(str::to_string)) else {
                 return Err(SitefileError::at(
                     E_TYPE,
@@ -639,7 +835,11 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                     span,
                 ));
             };
-            let mut auto = vec![("rel", Some("preload".to_string())), ("href", Some(url)), ("as", Some(as_.clone()))];
+            let mut auto = vec![
+                ("rel", Some("preload".to_string())),
+                ("href", Some(url)),
+                ("as", Some(as_.clone())),
+            ];
             // Browsers check integrity on preloaded scripts and stylesheets; fonts and fetches load in CORS mode.
             if as_ == "script" || as_ == "style" {
                 auto.push(("integrity", Some(integrity())));
@@ -649,7 +849,11 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
             }
             Markup(tag("link", &auto, attrs, &[]) + ">")
         }
-        Some("pre") => Markup(format!("{}>{}</pre>", tag("pre", &[], attrs, &[]), escape_html(&decode_text(f, "pre", span)?))),
+        Some("pre") => Markup(format!(
+            "{}>{}</pre>",
+            tag("pre", &[], attrs, &[]),
+            escape_html(&decode_text(f, "pre", span)?)
+        )),
         Some("svg") => {
             if !opts.inline_svg {
                 return Err(SitefileError::at(
@@ -662,13 +866,27 @@ pub fn render_file_helper(helper: Option<&str>, f: &TreeFile, attrs: &[HelperAtt
                 ));
             }
             let text = strip_svg_prolog(&decode_text(f, "svg", span)?);
-            let ok = text.starts_with("<svg") && text.as_bytes().get(4).is_some_and(|c| b"\t\n\x0c\r />".contains(c));
+            let ok = text.starts_with("<svg")
+                && text
+                    .as_bytes()
+                    .get(4)
+                    .is_some_and(|c| b"\t\n\x0c\r />".contains(c));
             if !ok {
-                return Err(SitefileError::at(E_DATA, format!("'{}' does not start with an <svg> element", f.path), span));
+                return Err(SitefileError::at(
+                    E_DATA,
+                    format!("'{}' does not start with an <svg> element", f.path),
+                    span,
+                ));
             }
             Markup(tag("svg", &[], attrs, &[]) + &text[4..])
         }
-        Some(other) => return Err(SitefileError::at(E_TEMPLATE, format!("unknown file helper '{other}'"), span)),
+        Some(other) => {
+            return Err(SitefileError::at(
+                E_TEMPLATE,
+                format!("unknown file helper '{other}'"),
+                span,
+            ))
+        }
     })
 }
 
@@ -678,13 +896,17 @@ fn is_svg_ws(c: char) -> bool {
 
 /// SVG text without a BOM, XML declaration, comments before the root, doctype and surrounding whitespace.
 fn strip_svg_prolog(s: &str) -> String {
-    let mut t = s.strip_prefix('\u{feff}').unwrap_or(s).trim_start_matches(is_svg_ws);
+    let mut t = s
+        .strip_prefix('\u{feff}')
+        .unwrap_or(s)
+        .trim_start_matches(is_svg_ws);
     loop {
         let end = if t.starts_with("<?xml") {
             t.find("?>").map(|k| k + 2)
         } else if t.starts_with("<!--") {
             t.find("-->").map(|k| k + 3)
-        } else if t.len() >= 9 && t.is_char_boundary(9) && t[..9].eq_ignore_ascii_case("<!DOCTYPE") {
+        } else if t.len() >= 9 && t.is_char_boundary(9) && t[..9].eq_ignore_ascii_case("<!DOCTYPE")
+        {
             t.find('>').map(|k| k + 1)
         } else {
             None
@@ -721,7 +943,9 @@ const METADATA_HELPERS: [&str; 6] = ["url", "type", "width", "height", "srcset",
 
 /// Looks like the plugin's metadata (an object with a number `version` and a `variants` list).
 fn looks_like_metadata(v: &serde_json::Value) -> bool {
-    v.get("version").is_some_and(|x| x.is_number()) && v.get("variants").is_some_and(|x| x.is_array()) && v.is_object()
+    v.get("version").is_some_and(|x| x.is_number())
+        && v.get("variants").is_some_and(|x| x.is_array())
+        && v.is_object()
 }
 
 fn parse_json(bytes: &[u8]) -> Option<serde_json::Value> {
@@ -745,8 +969,19 @@ fn read_metadata(v: &serde_json::Value, path: &str, span: &SourceSpan) -> Result
             span,
         ));
     }
-    let bad = |field: &str, what: &str| SitefileError::at(E_DATA, format!("'{path}' is not valid image metadata: '{field}' must be {what}"), span);
-    let string = |o: &serde_json::Value, k: &str, field: &str| -> Result<String> { o.get(k).and_then(|x| x.as_str()).map(str::to_string).ok_or_else(|| bad(field, "a string")) };
+    let bad = |field: &str, what: &str| {
+        SitefileError::at(
+            E_DATA,
+            format!("'{path}' is not valid image metadata: '{field}' must be {what}"),
+            span,
+        )
+    };
+    let string = |o: &serde_json::Value, k: &str, field: &str| -> Result<String> {
+        o.get(k)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| bad(field, "a string"))
+    };
     let dim = |k: &str| -> Result<u64> {
         match v.get(k).and_then(|x| x.as_f64()) {
             Some(f) if f > 0.0 && f.fract() == 0.0 && f <= 9007199254740991.0 => Ok(f as u64),
@@ -758,15 +993,28 @@ fn read_metadata(v: &serde_json::Value, path: &str, span: &SourceSpan) -> Result
     let width = dim("width")?;
     let height = dim("height")?;
     let srcset = string(v, "srcset", "srcset")?;
-    let Some(list) = v.get("sources").and_then(|x| x.as_array()) else { return Err(bad("sources", "a list")) };
+    let Some(list) = v.get("sources").and_then(|x| x.as_array()) else {
+        return Err(bad("sources", "a list"));
+    };
     let mut sources = Vec::new();
     for (i, s) in list.iter().enumerate() {
         if !s.is_object() {
             return Err(bad(&format!("sources.{i}"), "an object"));
         }
-        sources.push((string(s, "type", &format!("sources.{i}.type"))?, string(s, "srcset", &format!("sources.{i}.srcset"))?));
+        sources.push((
+            string(s, "type", &format!("sources.{i}.type"))?,
+            string(s, "srcset", &format!("sources.{i}.srcset"))?,
+        ));
     }
-    Ok(ImageMetadata { path: path.to_string(), src, kind, width, height, srcset, sources })
+    Ok(ImageMetadata {
+        path: path.to_string(),
+        src,
+        kind,
+        width,
+        height,
+        srcset,
+        sources,
+    })
 }
 
 /// `/dir/name.ext` -> `/dir/name.json` (`""` for a name without an extension).
@@ -779,13 +1027,20 @@ pub fn metadata_path_of(path: &str) -> String {
 }
 
 /// The image metadata a helper reads for `path`, if any (see src/media.ts findMetadata).
-fn find_metadata(path: &str, helper: Option<&str>, tree: &dyn TemplateTree, span: &SourceSpan) -> Result<Option<ImageMetadata>> {
+fn find_metadata(
+    path: &str,
+    helper: Option<&str>,
+    tree: &dyn TemplateTree,
+    span: &SourceSpan,
+) -> Result<Option<ImageMetadata>> {
     let ext = extension_of(path);
     if ext == "json" {
         if !helper.is_some_and(|h| ["width", "height", "srcset", "img"].contains(&h)) {
             return Ok(None);
         }
-        let Some(bytes) = located(path, tree) else { return Ok(None) };
+        let Some(bytes) = located(path, tree) else {
+            return Ok(None);
+        };
         let v = parse_json(bytes).filter(looks_like_metadata).ok_or_else(|| {
             SitefileError::at(E_DATA, format!("'{path}' is not image metadata (the <name>.json the image plugin writes next to the files it makes)"), span)
         })?;
@@ -795,17 +1050,24 @@ fn find_metadata(path: &str, helper: Option<&str>, tree: &dyn TemplateTree, span
         return Ok(None);
     }
     let m = metadata_path_of(path);
-    let found = if m.is_empty() { None } else { located(&m, tree) };
+    let found = if m.is_empty() {
+        None
+    } else {
+        located(&m, tree)
+    };
     let Some(bytes) = found else { return Ok(None) };
     match parse_json(bytes) {
-        Some(v) if looks_like_metadata(&v) => read_metadata(&v, &m, span).map(|m| Some(moved(m, tree))),
+        Some(v) if looks_like_metadata(&v) => {
+            read_metadata(&v, &m, span).map(|m| Some(moved(m, tree)))
+        }
         _ => Ok(None),
     }
 }
 
 /// A tree path's bytes, or those of where a FINGERPRINT moved it.
 fn located<'t>(path: &str, tree: &'t dyn TemplateTree) -> Option<&'t [u8]> {
-    tree.get(path).or_else(|| tree.renamed(path).and_then(|to| tree.get(&to)))
+    tree.get(path)
+        .or_else(|| tree.renamed(path).and_then(|to| tree.get(&to)))
 }
 
 /// Metadata read after a FINGERPRINT: a variant it renamed gets the hashed file's URL (see src/media.ts moved).
@@ -817,7 +1079,11 @@ fn moved(m: ImageMetadata, tree: &dyn TemplateTree) -> ImageMetadata {
                 let t = c.trim_start_matches(WS);
                 let u = t.find(WS).map_or(t, |end| &t[..end]);
                 let to = moved_url(u, tree);
-                if to == u { c.to_string() } else { c.replacen(u, &to, 1) }
+                if to == u {
+                    c.to_string()
+                } else {
+                    c.replacen(u, &to, 1)
+                }
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -825,7 +1091,11 @@ fn moved(m: ImageMetadata, tree: &dyn TemplateTree) -> ImageMetadata {
     ImageMetadata {
         src: moved_url(&m.src, tree),
         srcset: srcset(&m.srcset),
-        sources: m.sources.iter().map(|(t, s)| (t.clone(), srcset(s))).collect(),
+        sources: m
+            .sources
+            .iter()
+            .map(|(t, s)| (t.clone(), srcset(s)))
+            .collect(),
         ..m
     }
 }
@@ -835,7 +1105,11 @@ fn moved_url(url: &str, tree: &dyn TemplateTree) -> String {
     if !url.starts_with('/') {
         return url.to_string();
     }
-    let path = url.split('/').map(crate::links::percent_decode).collect::<Vec<_>>().join("/");
+    let path = url
+        .split('/')
+        .map(crate::links::percent_decode)
+        .collect::<Vec<_>>()
+        .join("/");
     match tree.renamed(&path) {
         Some(to) if tree.get(&to).is_some() => file_url(&to),
         _ => url.to_string(),
@@ -851,13 +1125,25 @@ fn render_metadata(helper: Option<&str>, m: &ImageMetadata, attrs: &[HelperAttr]
         Some("height") => Value(m.height.to_string()),
         Some("srcset") => Value(m.srcset.clone()),
         _ => {
-            let auto = [("src", Some(m.src.clone())), ("srcset", Some(m.srcset.clone())), ("width", Some(m.width.to_string())), ("height", Some(m.height.to_string()))];
-            let img = tag("img", &auto, attrs, &[("loading", "lazy"), ("decoding", "async")]) + ">";
+            let auto = [
+                ("src", Some(m.src.clone())),
+                ("srcset", Some(m.srcset.clone())),
+                ("width", Some(m.width.to_string())),
+                ("height", Some(m.height.to_string())),
+            ];
+            let img = tag(
+                "img",
+                &auto,
+                attrs,
+                &[("loading", "lazy"), ("decoding", "async")],
+            ) + ">";
             if m.sources.len() <= 1 {
                 return Markup(img);
             }
             // `sizes` applies to every <source> of the picture too.
-            let sizes = attrs.iter().find(|a| a.name.to_ascii_lowercase() == "sizes");
+            let sizes = attrs
+                .iter()
+                .find(|a| a.name.to_ascii_lowercase() == "sizes");
             let mut out = String::from("<picture>");
             for (t, s) in &m.sources[..m.sources.len() - 1] {
                 let mut auto = vec![("type", Some(t.clone())), ("srcset", Some(s.clone()))];
@@ -881,20 +1167,30 @@ mod tests {
         assert_eq!(extension_of("/a/.hidden"), "");
         assert_eq!(media_type("/x.woff2"), "font/woff2");
         assert_eq!(media_type("/x"), "application/octet-stream");
-        assert_eq!(file_url("/img/my photo é.png"), "/img/my%20photo%20%C3%A9.png");
-        assert_eq!(integrity_of(b"h1 { color: teal }\n"), "sha384-sqPOxExJseEdur+S1v+wqJueVTMC7/XLWGSg0TFlWxyyxuVLvELs2g757ehC4aUg");
+        assert_eq!(
+            file_url("/img/my photo é.png"),
+            "/img/my%20photo%20%C3%A9.png"
+        );
+        assert_eq!(
+            integrity_of(b"h1 { color: teal }\n"),
+            "sha384-sqPOxExJseEdur+S1v+wqJueVTMC7/XLWGSg0TFlWxyyxuVLvELs2g757ehC4aUg"
+        );
     }
 
     /// `tests/fixtures/media/fuzz.json` (generated from src/media.ts): the same size or the same error.
     #[test]
     fn differential_fixtures() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/fuzz.json");
-        let cases: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/fuzz.json");
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert!(cases.len() >= 1000, "only {} cases", cases.len());
         let mut bad = Vec::new();
         for c in &cases {
             let name = c["name"].as_str().unwrap();
-            let bytes = base64::engine::general_purpose::STANDARD.decode(c["bytes"].as_str().unwrap()).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(c["bytes"].as_str().unwrap())
+                .unwrap();
             let got = match image_size(&bytes, &format!("/{name}")) {
                 Ok(Some(s)) => serde_json::json!({ "ok": [s.width, s.height] }),
                 Ok(None) => serde_json::json!({ "ok": null }),
@@ -908,11 +1204,22 @@ mod tests {
                 bad.push(format!("{name} {}: want {want} got {got}", c["bytes"]));
             }
         }
-        assert!(bad.is_empty(), "{} of {} differ:\n{}", bad.len(), cases.len(), bad.iter().take(8).cloned().collect::<Vec<_>>().join("\n"));
+        assert!(
+            bad.is_empty(),
+            "{} of {} differ:\n{}",
+            bad.len(),
+            cases.len(),
+            bad.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+        );
     }
 
     #[test]
     fn strips_the_svg_prolog() {
-        assert_eq!(strip_svg_prolog("\u{feff} <?xml version=\"1.0\"?>\n<!-- c -->\n<!doctype svg>\n<svg/>\n"), "<svg/>");
+        assert_eq!(
+            strip_svg_prolog(
+                "\u{feff} <?xml version=\"1.0\"?>\n<!-- c -->\n<!doctype svg>\n<svg/>\n"
+            ),
+            "<svg/>"
+        );
     }
 }

@@ -49,7 +49,14 @@ impl Document {
     fn new(uri: &str, text: String, version: Option<i64>) -> Document {
         let lines = Lines::new(&text);
         let index = index::build(&lines);
-        Document { text, version, file: file_label(uri), lines, index, analysis: None }
+        Document {
+            text,
+            version,
+            file: file_label(uri),
+            lines,
+            index,
+            analysis: None,
+        }
     }
     fn set_text(&mut self, text: String) {
         self.lines = Lines::new(&text);
@@ -78,7 +85,9 @@ fn percent_decode(seg: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
             if let Some(b) = hex {
                 out.push(b);
                 i += 3;
@@ -98,7 +107,9 @@ fn file_label(uri: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
             if let Some(b) = hex {
                 out.push(b);
                 i += 3;
@@ -167,9 +178,16 @@ impl Server {
     /// Publish diagnostics for edited documents.
     pub fn flush(&mut self, out: &mut Vec<Value>) {
         for uri in std::mem::take(&mut self.dirty) {
-            let Some(doc) = self.docs.get_mut(&uri) else { continue };
+            let Some(doc) = self.docs.get_mut(&uri) else {
+                continue;
+            };
             let version = doc.version;
-            let diags: Vec<Value> = doc.analysis().diagnostics.iter().map(|d| d.to_json()).collect();
+            let diags: Vec<Value> = doc
+                .analysis()
+                .diagnostics
+                .iter()
+                .map(|d| d.to_json())
+                .collect();
             let mut params = json!({ "uri": uri, "diagnostics": diags });
             if let Some(v) = version {
                 params["version"] = json!(v);
@@ -182,7 +200,11 @@ impl Server {
     pub fn handle(&mut self, msg: &Value, out: &mut Vec<Value>) -> Option<i32> {
         let Some(method) = msg.get("method").and_then(Value::as_str) else {
             if msg.get("id").is_none() {
-                out.push(error(&Value::Null, INVALID_REQUEST, "not a JSON-RPC request or notification"));
+                out.push(error(
+                    &Value::Null,
+                    INVALID_REQUEST,
+                    "not a JSON-RPC request or notification",
+                ));
             }
             return None; // a response to a server request (we send none): ignore
         };
@@ -232,23 +254,54 @@ impl Server {
         if !known {
             return error(id, METHOD_NOT_FOUND, &format!("unhandled method {method}"));
         }
-        let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+        let uri = params["textDocument"]["uri"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let Some(doc) = self.docs.get_mut(&uri) else {
             // Not open: nothing to say about it.
-            return response(id, if method == "textDocument/completion" || method == "textDocument/references" || method == "textDocument/documentSymbol" { json!([]) } else { Value::Null });
+            return response(
+                id,
+                if method == "textDocument/completion"
+                    || method == "textDocument/references"
+                    || method == "textDocument/documentSymbol"
+                {
+                    json!([])
+                } else {
+                    Value::Null
+                },
+            );
         };
         if method == "textDocument/documentSymbol" {
             return response(id, features::document_symbols(&doc.lines, &doc.index));
         }
         if method == "textDocument/codeAction" {
-            let (Some(first), Some(last)) = (params["range"]["start"]["line"].as_u64(), params["range"]["end"]["line"].as_u64()) else {
+            let (Some(first), Some(last)) = (
+                params["range"]["start"]["line"].as_u64(),
+                params["range"]["end"]["line"].as_u64(),
+            ) else {
                 return error(id, INVALID_PARAMS, "expected textDocument and range");
             };
             // The only file the server reads: the Sitefile.lock next to the document, for pins.
-            let lock = uri_path(&uri).and_then(|p| p.parent().map(|d| d.join("Sitefile.lock"))).and_then(|p| Lockfile::load(p).ok());
+            let lock = uri_path(&uri)
+                .and_then(|p| p.parent().map(|d| d.join("Sitefile.lock")))
+                .and_then(|p| Lockfile::load(p).ok());
             doc.analysis();
-            let Some(analysis) = doc.analysis.as_ref() else { return response(id, json!([])) };
-            return response(id, actions::code_actions(&doc.lines, &doc.index, analysis, &uri, first as u32, last as u32, lock.as_ref()));
+            let Some(analysis) = doc.analysis.as_ref() else {
+                return response(id, json!([]));
+            };
+            return response(
+                id,
+                actions::code_actions(
+                    &doc.lines,
+                    &doc.index,
+                    analysis,
+                    &uri,
+                    first as u32,
+                    last as u32,
+                    lock.as_ref(),
+                ),
+            );
         }
         let Some((_, line, col)) = doc_position(params) else {
             return error(id, INVALID_PARAMS, "expected textDocument and position");
@@ -264,12 +317,18 @@ impl Server {
                     .or_else(|| features::hover(&doc.index, doc.analysis.as_ref(), line, col))
                     .unwrap_or(Value::Null)
             }
-            "textDocument/definition" => features::definition(&doc.index, &uri, line, col).unwrap_or(Value::Null),
+            "textDocument/definition" => {
+                features::definition(&doc.index, &uri, line, col).unwrap_or(Value::Null)
+            }
             "textDocument/references" => {
-                let decl = params["context"]["includeDeclaration"].as_bool().unwrap_or(true);
+                let decl = params["context"]["includeDeclaration"]
+                    .as_bool()
+                    .unwrap_or(true);
                 features::references(&doc.index, &uri, line, col, decl)
             }
-            "textDocument/prepareRename" => features::prepare_rename(&doc.index, line, col).unwrap_or(Value::Null),
+            "textDocument/prepareRename" => {
+                features::prepare_rename(&doc.index, line, col).unwrap_or(Value::Null)
+            }
             _ => {
                 let new_name = params["newName"].as_str().unwrap_or("");
                 match features::rename(&doc.index, &uri, line, col, new_name) {
@@ -288,12 +347,19 @@ impl Server {
         if !self.initialized || self.shutdown {
             return None;
         }
-        let uri = params["textDocument"]["uri"].as_str().unwrap_or("").to_string();
+        let uri = params["textDocument"]["uri"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         match method {
             "textDocument/didOpen" => {
-                let text = params["textDocument"]["text"].as_str().unwrap_or("").to_string();
+                let text = params["textDocument"]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
                 let version = params["textDocument"]["version"].as_i64();
-                self.docs.insert(uri.clone(), Document::new(&uri, text, version));
+                self.docs
+                    .insert(uri.clone(), Document::new(&uri, text, version));
                 self.dirty.insert(uri);
             }
             "textDocument/didChange" => {
@@ -302,7 +368,12 @@ impl Server {
                 for change in params["contentChanges"].as_array().into_iter().flatten() {
                     let new_text = change["text"].as_str().unwrap_or("");
                     let r = &change["range"];
-                    let pos = |p: &Value| (p["line"].as_u64().unwrap_or(0) as u32, p["character"].as_u64().unwrap_or(0) as u32);
+                    let pos = |p: &Value| {
+                        (
+                            p["line"].as_u64().unwrap_or(0) as u32,
+                            p["character"].as_u64().unwrap_or(0) as u32,
+                        )
+                    };
                     if r.is_object() {
                         text::apply_edit(&mut text, pos(&r["start"]), pos(&r["end"]), new_text);
                     } else {
@@ -326,7 +397,10 @@ impl Server {
             "textDocument/didClose" => {
                 self.docs.remove(&uri);
                 self.dirty.remove(&uri);
-                out.push(notification("textDocument/publishDiagnostics", json!({ "uri": uri, "diagnostics": [] })));
+                out.push(notification(
+                    "textDocument/publishDiagnostics",
+                    json!({ "uri": uri, "diagnostics": [] }),
+                ));
             }
             // initialized, $/cancelRequest (requests finish synchronously), $/setTrace,
             // workspace/didChangeConfiguration and anything else: nothing to do.
@@ -368,10 +442,16 @@ pub fn serve<R: Read, W: Write>(input: R, mut output: W) -> i32 {
         let code = match serde_json::from_slice::<Value>(&body) {
             Ok(msg) if msg.is_object() => {
                 // A bug in one handler should not take the editor's server down.
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.handle(&msg, &mut out)));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    server.handle(&msg, &mut out)
+                }));
                 r.unwrap_or_else(|_| {
                     if let Some(id) = msg.get("id") {
-                        out.push(error(id, INTERNAL_ERROR, "internal error (see the server's stderr)"));
+                        out.push(error(
+                            id,
+                            INTERNAL_ERROR,
+                            "internal error (see the server's stderr)",
+                        ));
                     }
                     None
                 })
@@ -402,7 +482,11 @@ pub fn run(args: &[String]) -> i32 {
                 );
                 return 0;
             }
-            other => return crate::cli::common::usage_error(&format!("lsp: unknown option '{other}' (only --stdio is supported)")),
+            other => {
+                return crate::cli::common::usage_error(&format!(
+                    "lsp: unknown option '{other}' (only --stdio is supported)"
+                ))
+            }
         }
     }
     serve(io::stdin().lock(), io::stdout().lock())
@@ -452,18 +536,27 @@ mod tests {
         ]);
         assert_eq!(code, 0);
         assert_eq!(out[0]["error"]["code"], SERVER_NOT_INITIALIZED);
-        assert_eq!(out[1]["result"]["capabilities"]["positionEncoding"], "utf-16");
+        assert_eq!(
+            out[1]["result"]["capabilities"]["positionEncoding"],
+            "utf-16"
+        );
         assert_eq!(out[1]["result"]["serverInfo"]["name"], "sitefile");
         assert_eq!(out[2]["id"], 2);
         assert_eq!(out[2]["error"]["code"], METHOD_NOT_FOUND);
-        assert_eq!((out[3]["id"].clone(), out[3]["result"].clone()), (json!(3), Value::Null));
+        assert_eq!(
+            (out[3]["id"].clone(), out[3]["result"].clone()),
+            (json!(3), Value::Null)
+        );
         assert_eq!(out[4]["error"]["code"], INVALID_REQUEST);
         assert_eq!(out.len(), 5);
     }
 
     #[test]
     fn exit_without_shutdown_and_eof() {
-        assert_eq!(session(vec![init(), json!({ "jsonrpc": "2.0", "method": "exit" })]).0, 1);
+        assert_eq!(
+            session(vec![init(), json!({ "jsonrpc": "2.0", "method": "exit" })]).0,
+            1
+        );
         assert_eq!(session(vec![init()]).0, 1);
     }
 
@@ -510,7 +603,13 @@ mod tests {
         assert_eq!(out[0]["params"]["version"], 3);
         let d = &out[0]["params"]["diagnostics"];
         assert_eq!(d.as_array().unwrap().len(), 1, "{d}");
-        assert_eq!((d[0]["severity"].clone(), d[0]["range"]["start"]["line"].clone()), (json!(2), json!(0)));
+        assert_eq!(
+            (
+                d[0]["severity"].clone(),
+                d[0]["range"]["start"]["line"].clone()
+            ),
+            (json!(2), json!(0))
+        );
         out.clear();
         s.flush(&mut out);
         assert!(out.is_empty()); // nothing changed
@@ -525,7 +624,10 @@ mod tests {
         msgs.extend(edits());
         msgs.push(json!({ "jsonrpc": "2.0", "id": 9, "method": "textDocument/documentSymbol", "params": { "textDocument": { "uri": URI } } }));
         let (_, out) = session(msgs);
-        let pubs = out.iter().filter(|m| m["method"] == "textDocument/publishDiagnostics").count();
+        let pubs = out
+            .iter()
+            .filter(|m| m["method"] == "textDocument/publishDiagnostics")
+            .count();
         assert_eq!(pubs, 1);
         let symbols = out.iter().find(|m| m["id"] == 9).unwrap();
         assert_eq!(symbols["result"].as_array().unwrap().len(), 2);
@@ -534,7 +636,10 @@ mod tests {
     #[test]
     fn file_labels() {
         assert_eq!(file_label("file:///a/b/Sitefile"), "Sitefile");
-        assert_eq!(file_label("file:///a/My%20Site.sitefile"), "My Site.sitefile");
+        assert_eq!(
+            file_label("file:///a/My%20Site.sitefile"),
+            "My Site.sitefile"
+        );
         assert_eq!(file_label("untitled:"), "untitled:");
         assert_eq!(file_label("file:///a/"), "Sitefile");
     }

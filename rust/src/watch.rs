@@ -38,8 +38,15 @@ pub fn is_ignored_change(abs: &Path, roots: &[PathBuf], ignored: &[PathBuf]) -> 
     if ignored.iter().any(|q| is_within(abs, q)) {
         return true;
     }
-    let Some(root) = roots.iter().find(|r| is_within(abs, r)) else { return false };
-    abs.strip_prefix(root).map(|rel| rel.iter().any(|seg| seg == ".git" || seg.to_str().is_some_and(matches_temp_pattern))).unwrap_or(false)
+    let Some(root) = roots.iter().find(|r| is_within(abs, r)) else {
+        return false;
+    };
+    abs.strip_prefix(root)
+        .map(|rel| {
+            rel.iter()
+                .any(|seg| seg == ".git" || seg.to_str().is_some_and(matches_temp_pattern))
+        })
+        .unwrap_or(false)
 }
 
 /// Canonical path of `p`, else of its parent joined with its name, else `p` made absolute.
@@ -64,7 +71,13 @@ struct Stamp {
 }
 
 fn stamp(m: &std::fs::Metadata) -> Stamp {
-    Stamp { kind: m.mode() & 0o170000, len: m.len(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()), ino: m.ino() }
+    Stamp {
+        kind: m.mode() & 0o170000,
+        len: m.len(),
+        mtime: (m.mtime(), m.mtime_nsec()),
+        ctime: (m.ctime(), m.ctime_nsec()),
+        ino: m.ino(),
+    }
 }
 
 type Snapshot = BTreeMap<PathBuf, Option<Stamp>>;
@@ -84,13 +97,17 @@ impl Watched {
     }
 
     fn walk(&self, dir: &Path, snap: &mut Snapshot) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if self.ignores(&p) {
                 continue;
             }
-            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            let Ok(m) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
             let is_dir = m.is_dir();
             snap.insert(p.clone(), Some(stamp(&m)));
             if is_dir {
@@ -140,19 +157,33 @@ pub fn watch_loop(
     on_started: &mut dyn FnMut() -> Result<()>,
     stop: &dyn Fn() -> bool,
 ) -> Result<i32> {
-    if !std::fs::metadata(o.context).map(|m| m.is_dir()).unwrap_or(false) {
-        return Err(SitefileError::plain(E_NOT_FOUND, format!("'{}' is not a directory", o.context)));
+    if !std::fs::metadata(o.context)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(SitefileError::plain(
+            E_NOT_FOUND,
+            format!("'{}' is not a directory", o.context),
+        ));
     }
-    let root = std::fs::canonicalize(o.context).map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("'{}': {e}", o.context)))?;
+    let root = std::fs::canonicalize(o.context)
+        .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("'{}': {e}", o.context)))?;
     let sitefile = resolve_real(&match o.sitefile {
         Some(f) => PathBuf::from(f),
         None => Path::new(o.context).join("Sitefile"),
     });
-    let lock = sitefile.parent().unwrap_or(Path::new("/")).join("Sitefile.lock");
+    let lock = sitefile
+        .parent()
+        .unwrap_or(Path::new("/"))
+        .join("Sitefile.lock");
     let mut files = vec![sitefile];
     files.extend(o.arg_files.iter().map(|f| resolve_real(Path::new(f))));
     // The build itself writes the export, Sitefile.lock and (maybe) the store; none of that is input.
-    let mut w = Watched { dirs: vec![root], files, ignored: vec![resolve_real(&resolve_store_home()), lock] };
+    let mut w = Watched {
+        dirs: vec![root],
+        files,
+        ignored: vec![resolve_real(&resolve_store_home()), lock],
+    };
 
     let mut last = w.scan();
     let mut run = |w: &mut Watched, last: &mut Snapshot| -> i32 {
@@ -175,7 +206,10 @@ pub fn watch_loop(
     if let Err(e) = on_started() {
         return Ok(crate::cli::common::report(&e));
     }
-    out(&format!("Watching {} for changes (Ctrl-C to stop)\n", o.context));
+    out(&format!(
+        "Watching {} for changes (Ctrl-C to stop)\n",
+        o.context
+    ));
 
     let mut dirty_since: Option<Instant> = None;
     while !stop() {
@@ -216,7 +250,11 @@ mod tests {
         assert!(ig("sub/.git/HEAD"));
         assert!(ig(".dist.sitefile-tmp-0a1b2c/index.html"));
         assert!(ig(".dist.sitefile-old-ff"));
-        assert!(is_ignored_change(Path::new("/home/.sitefile/cache/x"), &[root], &ignored));
+        assert!(is_ignored_change(
+            Path::new("/home/.sitefile/cache/x"),
+            &[root],
+            &ignored
+        ));
     }
 
     #[test]
@@ -226,7 +264,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "1").unwrap();
-        let w = Watched { dirs: vec![dir.clone()], files: vec![dir.join("missing.env")], ignored: vec![dir.join("dist")] };
+        let w = Watched {
+            dirs: vec![dir.clone()],
+            files: vec![dir.join("missing.env")],
+            ignored: vec![dir.join("dist")],
+        };
         let s1 = w.scan();
         assert!(s1.contains_key(&dir.join("a.txt")));
         assert_eq!(s1.get(&dir.join("missing.env")), Some(&None));

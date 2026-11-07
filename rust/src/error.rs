@@ -15,7 +15,11 @@ pub struct SourceSpan {
 
 impl SourceSpan {
     pub fn new(file: impl Into<String>, line: u32, column: u32) -> Self {
-        SourceSpan { file: file.into(), line, column }
+        SourceSpan {
+            file: file.into(),
+            line,
+            column,
+        }
     }
 }
 
@@ -40,18 +44,50 @@ macro_rules! codes {
 }
 
 codes!(
-    E_SYNTAX, E_UNKNOWN_INSTRUCTION, E_UNSUPPORTED, E_VALIDATION, E_UNDEFINED, E_DUPLICATE,
-    E_MISSING_ARG, E_TYPE,
-    E_PATH, E_PATH_ESCAPE, E_NOT_FOUND, E_UNSUPPORTED_FILE, E_HARDLINK, E_PATH_COLLISION,
+    E_SYNTAX,
+    E_UNKNOWN_INSTRUCTION,
+    E_UNSUPPORTED,
+    E_VALIDATION,
+    E_UNDEFINED,
+    E_DUPLICATE,
+    E_MISSING_ARG,
+    E_TYPE,
+    E_PATH,
+    E_PATH_ESCAPE,
+    E_NOT_FOUND,
+    E_UNSUPPORTED_FILE,
+    E_HARDLINK,
+    E_PATH_COLLISION,
     E_CONFLICT,
-    E_PROTOCOL, E_SSRF_BLOCKED, E_FETCH, E_FETCH_STATUS, E_FETCH_TIMEOUT, E_TOO_LARGE, E_REDIRECT,
-    E_INTEGRITY, E_LOCK_MISMATCH, E_LOCK_MISSING, E_UNPINNED, E_GIT, E_SECRET,
-    E_ARCHIVE, E_ARCHIVE_UNSAFE, E_ARCHIVE_LIMIT,
-    E_ENCODING, E_TEMPLATE, E_FRONTMATTER, E_DATA, E_SCHEMA,
+    E_PROTOCOL,
+    E_SSRF_BLOCKED,
+    E_FETCH,
+    E_FETCH_STATUS,
+    E_FETCH_TIMEOUT,
+    E_TOO_LARGE,
+    E_REDIRECT,
+    E_INTEGRITY,
+    E_LOCK_MISMATCH,
+    E_LOCK_MISSING,
+    E_UNPINNED,
+    E_GIT,
+    E_SECRET,
+    E_ARCHIVE,
+    E_ARCHIVE_UNSAFE,
+    E_ARCHIVE_LIMIT,
+    E_ENCODING,
+    E_TEMPLATE,
+    E_FRONTMATTER,
+    E_DATA,
+    E_SCHEMA,
     E_PLUGIN,
     E_BROKEN_LINK,
-    E_EXPORT, E_EXPORT_UNSAFE,
-    E_STORE, E_SERVER, E_REGISTRY, E_AUTH,
+    E_EXPORT,
+    E_EXPORT_UNSAFE,
+    E_STORE,
+    E_SERVER,
+    E_REGISTRY,
+    E_AUTH,
     E_BAKE,
     E_USAGE,
 );
@@ -72,13 +108,25 @@ pub struct SitefileError {
 
 impl SitefileError {
     pub fn new(code: ErrorCode, detail: impl Into<String>, span: Option<SourceSpan>) -> Self {
-        SitefileError { code, detail: detail.into(), span }
+        SitefileError {
+            code,
+            detail: detail.into(),
+            span,
+        }
     }
     pub fn at(code: ErrorCode, detail: impl Into<String>, span: &SourceSpan) -> Self {
-        SitefileError { code, detail: detail.into(), span: Some(span.clone()) }
+        SitefileError {
+            code,
+            detail: detail.into(),
+            span: Some(span.clone()),
+        }
     }
     pub fn plain(code: ErrorCode, detail: impl Into<String>) -> Self {
-        SitefileError { code, detail: detail.into(), span: None }
+        SitefileError {
+            code,
+            detail: detail.into(),
+            span: None,
+        }
     }
     /// `file:line:col: detail`, or just `detail`.
     pub fn message(&self) -> String {

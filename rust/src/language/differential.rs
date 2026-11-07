@@ -11,7 +11,9 @@
 
 use crate::build_args::BuildArgs;
 use crate::error::{SitefileError, SourceSpan};
-use crate::language::ast::{FragmentBody, FromBase, InlineBody, Instruction, Operand, Program, Source, TemplatePart};
+use crate::language::ast::{
+    FragmentBody, FromBase, InlineBody, Instruction, Operand, Program, Source, TemplatePart,
+};
 use crate::language::parser::{parse_sitefile, parse_sitefile_all};
 use crate::language::validate::validate;
 use crate::lsp::diagnostics::{analyze, ERROR, WARNING};
@@ -35,7 +37,11 @@ fn operand(o: &Operand) -> Value {
         .iter()
         .map(|p| match p {
             TemplatePart::Text(t) => json!({ "kind": "text", "value": t }),
-            TemplatePart::Var { name, path, span: s } => json!({ "kind": "var", "name": name, "path": path, "span": span(s) }),
+            TemplatePart::Var {
+                name,
+                path,
+                span: s,
+            } => json!({ "kind": "var", "name": name, "path": path, "span": span(s) }),
         })
         .collect();
     json!({ "parts": parts, "span": span(&o.span) })
@@ -69,14 +75,28 @@ fn each(e: &Option<crate::language::ast::ForEach>) -> Option<Value> {
             ("as", Some(json!(e.as_name))),
             ("list", Some(json!(e.list))),
             ("span", Some(span(&e.span))),
-            ("by", e.by.as_ref().map(|b| json!({ "key": b.key, "span": span(&b.span) }))),
-            ("page", e.page.as_ref().map(|p| obj(vec![("size", Some(operand(&p.size))), ("first", p.first.as_ref().map(operand)), ("span", Some(span(&p.span)))]))),
+            (
+                "by",
+                e.by.as_ref()
+                    .map(|b| json!({ "key": b.key, "span": span(&b.span) })),
+            ),
+            (
+                "page",
+                e.page.as_ref().map(|p| {
+                    obj(vec![
+                        ("size", Some(operand(&p.size))),
+                        ("first", p.first.as_ref().map(operand)),
+                        ("span", Some(span(&p.span))),
+                    ])
+                }),
+            ),
         ])
     })
 }
 
 fn stage_ref(f: &Option<crate::language::ast::StageRef>) -> Option<Value> {
-    f.as_ref().map(|f| json!({ "name": f.name, "span": span(&f.span) }))
+    f.as_ref()
+        .map(|f| json!({ "name": f.name, "span": span(&f.span) }))
 }
 
 pub(crate) fn instruction(ins: &Instruction) -> Value {
@@ -250,7 +270,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
 /// `{file, line, column}` objects become `[line, column]` (record.mjs `compact`).
 fn compact(v: Value) -> Value {
     match v {
-        Value::Object(m) if m.len() == 3 && m.contains_key("file") && m.contains_key("line") && m.contains_key("column") => {
+        Value::Object(m)
+            if m.len() == 3
+                && m.contains_key("file")
+                && m.contains_key("line")
+                && m.contains_key("column") =>
+        {
             json!([m["line"], m["column"]])
         }
         Value::Object(m) => Value::Object(m.into_iter().map(|(k, v)| (k, compact(v))).collect()),
@@ -267,7 +292,13 @@ fn error(e: &SitefileError) -> Value {
 fn placeholders(p: &Program) -> BuildArgs {
     let mut args = BuildArgs::new();
     for ins in &p.instructions {
-        if let Instruction::Arg { name, ty, default_value: None, .. } = ins {
+        if let Instruction::Arg {
+            name,
+            ty,
+            default_value: None,
+            ..
+        } = ins
+        {
             let v = match ty {
                 crate::language::ast::ValueType::Number => "0",
                 crate::language::ast::ValueType::Boolean => "false",
@@ -283,7 +314,11 @@ fn placeholders(p: &Program) -> BuildArgs {
 
 fn panics<T>(what: &str, src: &str, f: impl FnOnce() -> T) -> Result<T, String> {
     catch_unwind(AssertUnwindSafe(f)).map_err(|p| {
-        let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+        let msg = p
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
         format!("{what} panicked on {src:?}: {msg}")
     })
 }
@@ -292,7 +327,9 @@ fn panics<T>(what: &str, src: &str, f: impl FnOnce() -> T) -> Result<T, String> 
 fn check(case: &Value, positions: bool) -> Vec<String> {
     let src = case["input"].as_str().expect("input");
     let mut bad = Vec::new();
-    let mut fail = |what: &str, want: &Value, got: &Value| bad.push(format!("{what} {src:?}\n  want {want}\n  got  {got}"));
+    let mut fail = |what: &str, want: &Value, got: &Value| {
+        bad.push(format!("{what} {src:?}\n  want {want}\n  got  {got}"))
+    };
 
     // Parser and validator.
     let parsed = match panics("parse_sitefile", src, || parse_sitefile(src, FILE)) {
@@ -316,7 +353,9 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
             Err(m) => return vec![m],
         };
         validate_result = match &planned {
-            Ok(pl) => json!({ "ok": pl.warnings, "json": compact(pl.validate_json()), "lint": crate::lint::lint(p, pl, src, &[]) }),
+            Ok(pl) => {
+                json!({ "ok": pl.warnings, "json": compact(pl.validate_json()), "lint": crate::lint::lint(p, pl, src, &[]) })
+            }
             Err(e) => error(e),
         };
         // As text, the way `validate --json` prints it: JavaScript number formatting and key order.
@@ -331,8 +370,13 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
         Err(m) => bad.push(m),
         Ok(all) => match (&parsed, &all) {
             (Ok(a), Ok(b)) if a == b => {}
-            (Err(e), Err(es)) if es.first().is_some_and(|f| f.code == e.code && f.span == e.span && f.detail == e.detail) => {}
-            _ => bad.push(format!("parse_sitefile_all disagrees with parse_sitefile on {src:?}: {all:?}")),
+            (Err(e), Err(es))
+                if es.first().is_some_and(|f| {
+                    f.code == e.code && f.span == e.span && f.detail == e.detail
+                }) => {}
+            _ => bad.push(format!(
+                "parse_sitefile_all disagrees with parse_sitefile on {src:?}: {all:?}"
+            )),
         },
     }
 
@@ -341,18 +385,38 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
         Err(m) => bad.push(m),
         Ok(analysis) => {
             let lines = Lines::new(src);
-            let errors: Vec<_> = analysis.diagnostics.iter().filter(|d| d.severity == ERROR).collect();
+            let errors: Vec<_> = analysis
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == ERROR)
+                .collect();
             let warnings: Vec<String> = analysis
                 .diagnostics
                 .iter()
                 .filter(|d| d.severity == WARNING)
-                .map(|d| if d.message.starts_with("--build-arg") { d.message.clone() } else { format!("{FILE}:{}: {}", d.line + 1, d.message) })
+                .map(|d| {
+                    if d.message.starts_with("--build-arg") {
+                        d.message.clone()
+                    } else {
+                        format!("{FILE}:{}: {}", d.line + 1, d.message)
+                    }
+                })
                 .collect();
-            let note = format!(" (checked with placeholder values for {})", analysis.required_args.join(", "));
+            let note = format!(
+                " (checked with placeholder values for {})",
+                analysis.required_args.join(", ")
+            );
             if let Some(e) = validate_result["error"].as_array() {
-                let (code, line, col, detail) = (e[0].as_str().unwrap(), e[1].as_u64(), e[2].as_u64(), e[3].as_str().unwrap());
+                let (code, line, col, detail) = (
+                    e[0].as_str().unwrap(),
+                    e[1].as_u64(),
+                    e[2].as_u64(),
+                    e[3].as_str().unwrap(),
+                );
                 match errors.first() {
-                    None => bad.push(format!("lsp: no error diagnostic for {src:?}, validate says {e:?}")),
+                    None => bad.push(format!(
+                        "lsp: no error diagnostic for {src:?}, validate says {e:?}"
+                    )),
                     Some(d) => {
                         let message = d.message.strip_suffix(note.as_str()).unwrap_or(&d.message);
                         let want_line = line.map_or(0, |l| l as u32 - 1);
@@ -360,26 +424,41 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
                         let c0 = col.map_or(0, |c| (c as u32 - 1).min(lines.width(want_line)));
                         let at = d.start == c0 || (d.end == c0 && d.start + 1 == c0);
                         if d.code != Some(code) || d.line != want_line || !at || message != detail {
-                            bad.push(format!("lsp diagnostic for {src:?}\n  want {e:?}\n  got  {d:?}"));
+                            bad.push(format!(
+                                "lsp diagnostic for {src:?}\n  want {e:?}\n  got  {d:?}"
+                            ));
                         }
                     }
                 }
             } else {
                 // Only template syntax in RENDER heredoc bodies is checked by the LSP and not by `validate`.
                 if let Some(d) = errors.iter().find(|d| d.code != Some("E_TEMPLATE")) {
-                    bad.push(format!("lsp: unexpected error diagnostic for {src:?}: {d:?}"));
+                    bad.push(format!(
+                        "lsp: unexpected error diagnostic for {src:?}: {d:?}"
+                    ));
                 }
                 if let Some(w) = validate_result["ok"].as_array() {
                     // The planner's warnings, then the lint warnings, as `validate` prints them.
-                    let lint = validate_result["lint"].as_array().cloned().unwrap_or_default();
-                    let want: Vec<String> = w.iter().chain(lint.iter()).map(|w| w.as_str().unwrap().to_string()).collect();
+                    let lint = validate_result["lint"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    let want: Vec<String> = w
+                        .iter()
+                        .chain(lint.iter())
+                        .map(|w| w.as_str().unwrap().to_string())
+                        .collect();
                     if want != warnings {
-                        bad.push(format!("lsp warnings for {src:?}\n  want {want:?}\n  got  {warnings:?}"));
+                        bad.push(format!(
+                            "lsp warnings for {src:?}\n  want {want:?}\n  got  {warnings:?}"
+                        ));
                     }
                 }
             }
             // Editor features on the same text: no panics anywhere.
-            if let Err(m) = panics("lsp features", src, || editor_features(src, Some(&analysis), positions)) {
+            if let Err(m) = panics("lsp features", src, || {
+                editor_features(src, Some(&analysis), positions)
+            }) {
                 bad.push(m);
             }
         }
@@ -389,7 +468,11 @@ fn check(case: &Value, positions: bool) -> Vec<String> {
 
 /// Index the document, list its symbols and (with `positions`) ask for every
 /// position-based feature at a spread of positions.
-fn editor_features(src: &str, analysis: Option<&crate::lsp::diagnostics::Analysis>, positions: bool) {
+fn editor_features(
+    src: &str,
+    analysis: Option<&crate::lsp::diagnostics::Analysis>,
+    positions: bool,
+) {
     let lines = Lines::new(src);
     let ix = index::build(&lines);
     let _ = features::document_symbols(&lines, &ix);
@@ -401,7 +484,16 @@ fn editor_features(src: &str, analysis: Option<&crate::lsp::diagnostics::Analysi
         let l = l as u32;
         let w = crate::lsp::text::utf16_len(text);
         // The ends, both sides of the first few spaces, and a spread in between (and past the end).
-        let mut cols = vec![0, 1, w / 4, w / 2, (3 * w) / 4, w.saturating_sub(1), w, w + 1];
+        let mut cols = vec![
+            0,
+            1,
+            w / 4,
+            w / 2,
+            (3 * w) / 4,
+            w.saturating_sub(1),
+            w,
+            w + 1,
+        ];
         let mut c = 0;
         for ch in text.chars().take(64) {
             if crate::language::scanner::is_js_space(ch) && cols.len() < 16 {
@@ -431,19 +523,33 @@ fn run(cases: &[Value], every: usize) {
         failures.extend(check(case, i % every == 0));
     }
     let shown: Vec<_> = failures.iter().take(15).cloned().collect();
-    assert!(failures.is_empty(), "{} disagreements in {} inputs:\n{}", failures.len(), cases.len(), shown.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} disagreements in {} inputs:\n{}",
+        failures.len(),
+        cases.len(),
+        shown.join("\n")
+    );
 }
 
 fn load(path: &std::path::Path) -> Vec<Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).unwrap()
+    serde_json::from_str(
+        &std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+    )
+    .unwrap()
 }
 
 /// The committed fixture (`tests/fixtures/sitefile/fuzz.json`).
 #[test]
 fn differential_fixtures() {
-    let cases = load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sitefile/fuzz.json"));
+    let cases = load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sitefile/fuzz.json"),
+    );
     assert!(cases.len() >= 300, "only {} cases", cases.len());
-    let parsed = cases.iter().filter(|c| c["parse"].get("ok").is_some()).count();
+    let parsed = cases
+        .iter()
+        .filter(|c| c["parse"].get("ok").is_some())
+        .count();
     assert!(parsed >= 50, "only {parsed} inputs parse");
     // The position-based features build JSON for every call, which is slow in a debug build.
     run(&cases, 8);
@@ -453,7 +559,9 @@ fn differential_fixtures() {
 #[test]
 #[ignore]
 fn differential_external() {
-    let Ok(path) = std::env::var("SITEFILE_PARSER_FUZZ") else { return };
+    let Ok(path) = std::env::var("SITEFILE_PARSER_FUZZ") else {
+        return;
+    };
     let cases = load(std::path::Path::new(&path));
     run(&cases, 1);
     eprintln!("{} inputs agree", cases.len());
@@ -462,7 +570,17 @@ fn differential_external() {
 /// Hand-picked inputs for the panic checks alone (no TypeScript result needed).
 #[test]
 fn tolerant_paths_do_not_panic() {
-    for src in ["", "\r", "\r\n\r\n", "COPY <<A", "COPY <<-A /a\n\tA", "\u{2028}", "😀\n😀", "COPY \\\n\\\n\\", "RENDER <<H TO /x\n{{#each}}\nH"] {
+    for src in [
+        "",
+        "\r",
+        "\r\n\r\n",
+        "COPY <<A",
+        "COPY <<-A /a\n\tA",
+        "\u{2028}",
+        "😀\n😀",
+        "COPY \\\n\\\n\\",
+        "RENDER <<H TO /x\n{{#each}}\nH",
+    ] {
         let _ = parse_sitefile_all(src, FILE);
         let a = analyze(src, FILE);
         editor_features(src, Some(&a), true);

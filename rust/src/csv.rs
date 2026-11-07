@@ -26,7 +26,10 @@ pub struct CsvOptions {
 
 impl Default for CsvOptions {
     fn default() -> Self {
-        CsvOptions { header: true, delimiter: b',' }
+        CsvOptions {
+            header: true,
+            delimiter: b',',
+        }
     }
 }
 
@@ -42,15 +45,27 @@ pub fn parse_csv(text: &str, file: &str, options: &CsvOptions) -> Result<Value> 
     if !options.header {
         let rows = tokenize(strip_bom(text), file, options.delimiter)?;
         return Ok(Value::Array(
-            rows.into_iter().map(|r| Value::Array(r.fields.into_iter().map(Value::String).collect())).collect(),
+            rows.into_iter()
+                .map(|r| Value::Array(r.fields.into_iter().map(Value::String).collect()))
+                .collect(),
         ));
     }
-    Ok(Value::Array(records(text, file, options.delimiter)?.into_iter().map(Value::Object).collect()))
+    Ok(Value::Array(
+        records(text, file, options.delimiter)?
+            .into_iter()
+            .map(Value::Object)
+            .collect(),
+    ))
 }
 
 /// Parse CSV with a header row into an array with one object per record.
 pub fn parse_csv_records(text: &str, file: &str) -> Result<Value> {
-    Ok(Value::Array(records(text, file, b',')?.into_iter().map(Value::Object).collect()))
+    Ok(Value::Array(
+        records(text, file, b',')?
+            .into_iter()
+            .map(Value::Object)
+            .collect(),
+    ))
 }
 
 fn strip_bom(text: &str) -> &str {
@@ -59,16 +74,26 @@ fn strip_bom(text: &str) -> &str {
 
 fn records(text: &str, file: &str, delim: u8) -> Result<Vec<Map<String, Value>>> {
     let rows = tokenize(strip_bom(text), file, delim)?;
-    let Some(head) = rows.first() else { return Ok(Vec::new()) };
+    let Some(head) = rows.first() else {
+        return Ok(Vec::new());
+    };
 
     let mut seen = std::collections::HashSet::new();
     for (i, name) in head.fields.iter().enumerate() {
         let span = SourceSpan::new(file, head.line, head.cols[i]);
         if name.is_empty() {
-            return Err(SitefileError::new(E_DATA, format!("empty CSV column name in header (column {})", i + 1), Some(span)));
+            return Err(SitefileError::new(
+                E_DATA,
+                format!("empty CSV column name in header (column {})", i + 1),
+                Some(span),
+            ));
         }
         if !seen.insert(name.as_str()) {
-            return Err(SitefileError::new(E_DATA, format!("duplicate CSV column name '{name}'"), Some(span)));
+            return Err(SitefileError::new(
+                E_DATA,
+                format!("duplicate CSV column name '{name}'"),
+                Some(span),
+            ));
         }
     }
 
@@ -79,11 +104,20 @@ fn records(text: &str, file: &str, delim: u8) -> Result<Vec<Map<String, Value>>>
             if row.fields.len() != n {
                 return Err(SitefileError::new(
                     E_DATA,
-                    format!("expected {n} field{} but found {}", if n == 1 { "" } else { "s" }, row.fields.len()),
+                    format!(
+                        "expected {n} field{} but found {}",
+                        if n == 1 { "" } else { "s" },
+                        row.fields.len()
+                    ),
                     Some(SourceSpan::new(file, row.line, 1)),
                 ));
             }
-            let map: Map<String, Value> = head.fields.iter().cloned().zip(row.fields.iter().cloned().map(Value::String)).collect();
+            let map: Map<String, Value> = head
+                .fields
+                .iter()
+                .cloned()
+                .zip(row.fields.iter().cloned().map(Value::String))
+                .collect();
             Ok(js::object_order(map))
         })
         .collect()
@@ -99,7 +133,11 @@ fn tokenize(text: &str, file: &str, delim: u8) -> Result<Vec<Row>> {
     // Columns count UTF-16 code units from the start of the line.
     let col = |index: usize, ls: usize| js::utf16_len(&text[ls..index]) as u32 + 1;
     let fail = |detail: &str, l: u32, index: usize, ls: usize| -> SitefileError {
-        SitefileError::new(E_DATA, detail, Some(SourceSpan::new(file, l, col(index, ls))))
+        SitefileError::new(
+            E_DATA,
+            detail,
+            Some(SourceSpan::new(file, l, col(index, ls))),
+        )
     };
     let crlf = |i: usize| b[i] == b'\r' && b.get(i + 1) == Some(&b'\n');
 
@@ -118,7 +156,11 @@ fn tokenize(text: &str, file: &str, delim: u8) -> Result<Vec<Row>> {
             continue;
         }
 
-        let mut row = Row { fields: Vec::new(), cols: Vec::new(), line };
+        let mut row = Row {
+            fields: Vec::new(),
+            cols: Vec::new(),
+            line,
+        };
         loop {
             row.cols.push(col(i, line_start));
             let field;
@@ -149,7 +191,12 @@ fn tokenize(text: &str, file: &str, delim: u8) -> Result<Vec<Row>> {
                 }
                 let at_end = i >= n || b[i] == delim || b[i] == b'\n' || crlf(i);
                 if !at_end {
-                    return Err(fail("unexpected character after closing quote", line, i, line_start));
+                    return Err(fail(
+                        "unexpected character after closing quote",
+                        line,
+                        i,
+                        line_start,
+                    ));
                 }
                 // Only ASCII bytes were split off, so this is valid UTF-8.
                 field = String::from_utf8_lossy(&buf).into_owned();
@@ -201,7 +248,11 @@ mod tests {
     fn fails(t: &str, line: u32, column: u32, needle: &str) {
         let e = parse_csv_records(t, "data.csv").unwrap_err();
         assert_eq!(e.code, E_DATA);
-        assert_eq!(e.span, Some(SourceSpan::new("data.csv", line, column)), "{t:?}: {e}");
+        assert_eq!(
+            e.span,
+            Some(SourceSpan::new("data.csv", line, column)),
+            "{t:?}: {e}"
+        );
         assert!(e.detail.contains(needle), "{}", e.detail);
     }
 
@@ -224,7 +275,13 @@ mod tests {
     #[test]
     fn newlines_crlf_blank_lines() {
         let expected = json!([{ "a": "1", "b": "2" }, { "a": "3", "b": "4" }]);
-        for t in ["a,b\n1,2\n3,4", "a,b\n1,2\n3,4\n", "a,b\r\n1,2\r\n3,4\r\n", "a,b\n1,2\n\n3,4\n\n", "a,b\r\n1,2\r\n\r\n3,4"] {
+        for t in [
+            "a,b\n1,2\n3,4",
+            "a,b\n1,2\n3,4\n",
+            "a,b\r\n1,2\r\n3,4\r\n",
+            "a,b\n1,2\n\n3,4\n\n",
+            "a,b\r\n1,2\r\n\r\n3,4",
+        ] {
             assert_eq!(csv(t), expected, "{t:?}");
         }
     }
@@ -232,7 +289,14 @@ mod tests {
     #[test]
     fn bom_is_stripped() {
         assert_eq!(csv("\u{feff}a,b\n1,2\n"), json!([{ "a": "1", "b": "2" }]));
-        assert_eq!(parse_csv_records("\u{feff}a\n1\n", "f").unwrap()[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(
+            parse_csv_records("\u{feff}a\n1\n", "f").unwrap()[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 
     #[test]
@@ -241,8 +305,14 @@ mod tests {
             csv("a,b\n\"x \"\"y\"\" z\",\"1,2\"\n\"line1\nline2\",\"\"\n"),
             json!([{ "a": "x \"y\" z", "b": "1,2" }, { "a": "line1\nline2", "b": "" }])
         );
-        assert_eq!(csv("a,b\r\n\"l1\r\nl2\",x\r\n"), json!([{ "a": "l1\r\nl2", "b": "x" }]));
-        assert_eq!(csv("\"a b\",\"c,d\"\n1,2\n"), json!([{ "a b": "1", "c,d": "2" }]));
+        assert_eq!(
+            csv("a,b\r\n\"l1\r\nl2\",x\r\n"),
+            json!([{ "a": "l1\r\nl2", "b": "x" }])
+        );
+        assert_eq!(
+            csv("\"a b\",\"c,d\"\n1,2\n"),
+            json!([{ "a b": "1", "c,d": "2" }])
+        );
         assert_eq!(csv("a\n\"\"\"\"\n"), json!([{ "a": "\"" }]));
         assert_eq!(csv("a\n\"é😀\"\n"), json!([{ "a": "é😀" }]));
     }
@@ -252,30 +322,55 @@ mod tests {
         assert_eq!(csv("a,b\n x , y \n"), json!([{ "a": " x ", "b": " y " }]));
         assert_eq!(csv("a,b\n1,\n"), json!([{ "a": "1", "b": "" }]));
         assert_eq!(csv("a,b\n1,"), json!([{ "a": "1", "b": "" }]));
-        assert_eq!(parse_csv("a;b\n1,5;\"x;y\"\n", "f", &opts(true, b';')).unwrap(), json!([{ "a": "1,5", "b": "x;y" }]));
-        assert_eq!(parse_csv("a\tb\n1\t\"x\ty\"\n", "f", &opts(true, b'\t')).unwrap(), json!([{ "a": "1", "b": "x\ty" }]));
-        assert_eq!(parse_csv("a,b\n1,2\n", "f", &opts(true, b';')).unwrap(), json!([{ "a,b": "1,2" }]));
+        assert_eq!(
+            parse_csv("a;b\n1,5;\"x;y\"\n", "f", &opts(true, b';')).unwrap(),
+            json!([{ "a": "1,5", "b": "x;y" }])
+        );
+        assert_eq!(
+            parse_csv("a\tb\n1\t\"x\ty\"\n", "f", &opts(true, b'\t')).unwrap(),
+            json!([{ "a": "1", "b": "x\ty" }])
+        );
+        assert_eq!(
+            parse_csv("a,b\n1,2\n", "f", &opts(true, b';')).unwrap(),
+            json!([{ "a,b": "1,2" }])
+        );
     }
 
     #[test]
     fn header_false_returns_arrays() {
-        assert_eq!(parse_csv("a,b\n1\n2,3,4\n", "f", &opts(false, b',')).unwrap(), json!([["a", "b"], ["1"], ["2", "3", "4"]]));
-        assert_eq!(parse_csv("\"x,y\",z\n", "f", &opts(false, b',')).unwrap(), json!([["x,y", "z"]]));
+        assert_eq!(
+            parse_csv("a,b\n1\n2,3,4\n", "f", &opts(false, b',')).unwrap(),
+            json!([["a", "b"], ["1"], ["2", "3", "4"]])
+        );
+        assert_eq!(
+            parse_csv("\"x,y\",z\n", "f", &opts(false, b',')).unwrap(),
+            json!([["x,y", "z"]])
+        );
     }
 
     #[test]
     fn proto_column_and_key_order() {
         let rows = parse_csv_records("__proto__,b\nx,y\n", "f").unwrap();
-        assert_eq!(rows[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["__proto__", "b"]);
+        assert_eq!(
+            rows[0].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["__proto__", "b"]
+        );
         assert_eq!(rows[0]["__proto__"], json!("x"));
         let rows = parse_csv_records("b,2,a,1\nw,x,y,z\n", "f").unwrap();
-        assert_eq!(rows[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["1", "2", "b", "a"]);
+        assert_eq!(
+            rows[0].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["1", "2", "b", "a"]
+        );
     }
 
     #[test]
     fn differential_fixtures() {
-        crate::render::fixtures::check("csv.json", |t| parse_csv(t, "f.csv", &CsvOptions::default()));
-        crate::render::fixtures::check("csv-raw.json", |t| parse_csv(t, "f.csv", &opts(false, b',')));
+        crate::render::fixtures::check("csv.json", |t| {
+            parse_csv(t, "f.csv", &CsvOptions::default())
+        });
+        crate::render::fixtures::check("csv-raw.json", |t| {
+            parse_csv(t, "f.csv", &opts(false, b','))
+        });
     }
 
     #[test]

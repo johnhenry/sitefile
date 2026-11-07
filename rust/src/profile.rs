@@ -45,7 +45,10 @@ pub struct Span<'a> {
 impl Span<'_> {
     /// A span that records nothing (no profiler).
     pub fn none() -> Span<'static> {
-        Span { profiler: None, index: 0 }
+        Span {
+            profiler: None,
+            index: 0,
+        }
     }
 
     /// Start the clock of a reserved span.
@@ -80,7 +83,11 @@ impl Profiler {
     pub fn new(command: &str) -> Arc<Profiler> {
         let mut inner = Inner::default();
         inner.threads.insert(1, "build".into());
-        Arc::new(Profiler { command: command.to_string(), t0: Instant::now(), inner: Mutex::new(inner) })
+        Arc::new(Profiler {
+            command: command.to_string(),
+            t0: Instant::now(),
+            inner: Mutex::new(inner),
+        })
     }
 
     fn now(&self) -> u64 {
@@ -88,14 +95,30 @@ impl Profiler {
     }
 
     /// Reserve an event's place in the file now; its clock starts with `start()`.
-    pub fn reserve(&self, name: impl Into<String>, cat: &'static str, args: Args, tid: u64) -> Span<'_> {
+    pub fn reserve(
+        &self,
+        name: impl Into<String>,
+        cat: &'static str,
+        args: Args,
+        tid: u64,
+    ) -> Span<'_> {
         let mut m = Map::new();
         for (k, v) in args {
             m.insert(k.to_string(), v);
         }
         let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        i.slots.push(Slot { name: name.into(), cat, tid, args: m, ts: None, dur: None });
-        Span { profiler: Some(self), index: i.slots.len() - 1 }
+        i.slots.push(Slot {
+            name: name.into(),
+            cat,
+            tid,
+            args: m,
+            ts: None,
+            dur: None,
+        });
+        Span {
+            profiler: Some(self),
+            index: i.slots.len() - 1,
+        }
     }
 
     /// Start an event now, on the build thread.
@@ -128,12 +151,20 @@ impl Profiler {
             let dur = s.dur.unwrap_or(now.saturating_sub(ts));
             lines.push(json!({ "name": s.name, "cat": s.cat, "ph": "X", "ts": ts, "dur": dur, "pid": 1, "tid": s.tid, "args": args }).to_string());
         }
-        format!("{{\"traceEvents\":[\n{}\n],\n\"displayTimeUnit\":\"ms\"}}\n", lines.join(",\n"))
+        format!(
+            "{{\"traceEvents\":[\n{}\n],\n\"displayTimeUnit\":\"ms\"}}\n",
+            lines.join(",\n")
+        )
     }
 }
 
 /// `begin` on an optional profiler.
-pub fn begin<'a>(p: Option<&'a Profiler>, name: impl FnOnce() -> String, cat: &'static str, args: impl FnOnce() -> Args) -> Span<'a> {
+pub fn begin<'a>(
+    p: Option<&'a Profiler>,
+    name: impl FnOnce() -> String,
+    cat: &'static str,
+    args: impl FnOnce() -> Args,
+) -> Span<'a> {
     match p {
         Some(p) => p.begin(name(), cat, args()),
         None => Span::none(),
@@ -159,7 +190,17 @@ mod tests {
         let v: Value = serde_json::from_str(&p.to_json()).unwrap();
         let ev = v["traceEvents"].as_array().unwrap();
         let names: Vec<_> = ev.iter().map(|e| e["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["process_name", "thread_name", "thread_name", "a", "b", "open"]);
+        assert_eq!(
+            names,
+            [
+                "process_name",
+                "thread_name",
+                "thread_name",
+                "a",
+                "b",
+                "open"
+            ]
+        );
         assert_eq!(ev[3]["args"], json!({ "x": 2, "y": true }));
         assert_eq!(ev[4]["tid"], json!(2));
         assert_eq!(ev[5]["args"], json!({ "incomplete": true }));

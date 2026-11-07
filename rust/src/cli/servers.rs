@@ -6,14 +6,16 @@
 
 use super::args::{flag, flag_s, string, string_s, strings, OptSpec, Parsed};
 use super::common::{err, js_to_number, out, pretty_json, require_args, table, usage, Command};
-use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::build_args::collect_build_args;
+use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
+use crate::servers::{
+    is_running, load_served_tree, pid_alive, Bind, ServerRegistry, ServerSource, ServerState,
+};
+use crate::store::{now_iso, Store};
 use crate::tree::Tree;
 use crate::watch::{watch_loop, BuildOutcome, WatchOptions};
-use crate::servers::{is_running, load_served_tree, pid_alive, Bind, ServerRegistry, ServerSource, ServerState};
-use crate::store::{now_iso, Store};
 use serde_json::{Map, Value};
 use std::net::IpAddr;
 use std::path::Path;
@@ -76,19 +78,28 @@ fn send(pid: i64, sig: i32) -> bool {
 
 /// `-p` value: `port`, `host:port` or `[v6]:port`. Default bind is 127.0.0.1 with a free port.
 pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
-    let Some(spec) = spec else { return Ok(Bind { host: "127.0.0.1".into(), port: 0 }) };
+    let Some(spec) = spec else {
+        return Ok(Bind {
+            host: "127.0.0.1".into(),
+            port: 0,
+        });
+    };
     let bad = || usage(format!("-p expects [host:]port, got '{spec}'"));
     let is_port = |s: &str| (1..=5).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
     let (host, port) = if is_port(spec) {
         (None, spec)
     } else if let Some(rest) = spec.strip_prefix('[') {
-        let Some((h, p)) = rest.split_once("]:") else { return bad() };
+        let Some((h, p)) = rest.split_once("]:") else {
+            return bad();
+        };
         if h.is_empty() || !h.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') || !is_port(p) {
             return bad();
         }
         (Some(h), p)
     } else {
-        let Some((h, p)) = spec.split_once(':') else { return bad() };
+        let Some((h, p)) = spec.split_once(':') else {
+            return bad();
+        };
         if h.is_empty() || h.contains(['[', ']']) || !is_port(p) {
             return bad();
         }
@@ -103,9 +114,14 @@ pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
         host = "127.0.0.1".into();
     }
     if host.parse::<IpAddr>().is_err() {
-        return usage(format!("-p: host must be an IP address or 'localhost', got '{host}'"));
+        return usage(format!(
+            "-p: host must be an IP address or 'localhost', got '{host}'"
+        ));
     }
-    Ok(Bind { host, port: port as u16 })
+    Ok(Bind {
+        host,
+        port: port as u16,
+    })
 }
 
 fn is_wildcard(h: &str) -> bool {
@@ -114,23 +130,41 @@ fn is_wildcard(h: &str) -> bool {
 
 /// `^(\.\.?|~.*|\.\.?\/.*|\/.*|.*\/)$`: an argument that names a directory.
 fn looks_like_dir(arg: &str) -> bool {
-    arg == "." || arg == ".." || arg.starts_with('~') || arg.starts_with("./") || arg.starts_with("../") || arg.starts_with('/') || arg.ends_with('/')
+    arg == "."
+        || arg == ".."
+        || arg.starts_with('~')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with('/')
+        || arg.ends_with('/')
 }
 
 fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)> {
     if looks_like_dir(arg) {
         let dir = crate::export::exporter::resolve_path(Path::new(arg));
         if !std::fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false) {
-            return Err(SitefileError::plain(E_NOT_FOUND, format!("'{arg}' is not a directory")));
+            return Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("'{arg}' is not a directory"),
+            ));
         }
         let real = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
-        return Ok((dir.display().to_string(), ServerSource::Dir { path: real.display().to_string() }));
+        return Ok((
+            dir.display().to_string(),
+            ServerSource::Dir {
+                path: real.display().to_string(),
+            },
+        ));
     }
     match store.resolve(arg) {
         Ok(id) => Ok((arg.to_string(), ServerSource::Image { image_id: id })),
         Err(e) => {
-            if e.code == E_NOT_FOUND && std::fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false) {
-                return Err(SitefileError::plain(E_NOT_FOUND, format!("{} (to serve the directory, write ./{arg})", e.message())));
+            if e.code == E_NOT_FOUND && std::fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false)
+            {
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("{} (to serve the directory, write ./{arg})", e.message()),
+                ));
             }
             Err(e)
         }
@@ -146,9 +180,18 @@ fn start_detached(reg: &ServerRegistry, state: &ServerState) -> Result<ServerSta
         .append(true)
         .mode(0o600)
         .open(&state.log_file)
-        .map_err(|e| SitefileError::plain(E_SERVER, format!("cannot open '{}': {e}", state.log_file)))?;
-    let exe = std::env::current_exe().map_err(|e| SitefileError::plain(E_SERVER, format!("cannot find the sitefile executable: {e}")))?;
-    let log2 = log.try_clone().map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
+        .map_err(|e| {
+            SitefileError::plain(E_SERVER, format!("cannot open '{}': {e}", state.log_file))
+        })?;
+    let exe = std::env::current_exe().map_err(|e| {
+        SitefileError::plain(
+            E_SERVER,
+            format!("cannot find the sitefile executable: {e}"),
+        )
+    })?;
+    let log2 = log
+        .try_clone()
+        .map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
     let mut child = std::process::Command::new(exe)
         .arg("__serve-worker")
         .arg(&state.id)
@@ -158,7 +201,9 @@ fn start_detached(reg: &ServerRegistry, state: &ServerState) -> Result<ServerSta
         .env("SITEFILE_HOME", &reg.store.home)
         .process_group(0)
         .spawn()
-        .map_err(|e| SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}")))?;
+        .map_err(|e| {
+            SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}"))
+        })?;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let cur = reg.read(&state.id)?;
@@ -172,9 +217,18 @@ fn start_detached(reg: &ServerRegistry, state: &ServerState) -> Result<ServerSta
                 let _ = child.kill();
             }
             let why = error.unwrap_or_else(|| {
-                if exited { "the server process exited before it was ready".into() } else { "timed out waiting for the server to start".into() }
+                if exited {
+                    "the server process exited before it was ready".into()
+                } else {
+                    "timed out waiting for the server to start".into()
+                }
             });
-            return Err(SitefileError::plain(E_SERVER, why.strip_prefix("error[E_SERVER]: ").unwrap_or(&why).to_string()));
+            return Err(SitefileError::plain(
+                E_SERVER,
+                why.strip_prefix("error[E_SERVER]: ")
+                    .unwrap_or(&why)
+                    .to_string(),
+            ));
         }
         std::thread::sleep(Duration::from_millis(40));
     }
@@ -196,7 +250,14 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("no-lockfile"),
 ];
 /// serve flags that only mean something with --watch.
-const WATCH_ONLY: &[&str] = &["file", "target", "build-arg", "build-arg-file", "no-cache", "no-lockfile"];
+const WATCH_ONLY: &[&str] = &[
+    "file",
+    "target",
+    "build-arg",
+    "build-arg-file",
+    "no-cache",
+    "no-lockfile",
+];
 pub const SERVE: Command = Command {
     name: "serve",
     summary: "serve an image or directory over HTTP",
@@ -237,7 +298,10 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let store = Store::open_default()?;
     let (label, source) = resolve_source(&store, &v.positionals[0])?;
     if is_wildcard(&bind.host) {
-        err(&format!("warning: binding {}: the site will be reachable from other machines\n", bind.host));
+        err(&format!(
+            "warning: binding {}: the site will be reachable from other machines\n",
+            bind.host
+        ));
     }
 
     if !v.flag("detach") {
@@ -245,8 +309,21 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
-        let server = listen(Arc::new(tree), SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None, live_reload: None }, &bind.host, bind.port)?;
-        out(&format!("Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n", format_url(&server.host, server.port)));
+        let server = listen(
+            Arc::new(tree),
+            SiteServerOptions {
+                spa: v.flag("spa"),
+                log: Some(log),
+                server_id: None,
+                live_reload: None,
+            },
+            &bind.host,
+            bind.port,
+        )?;
+        out(&format!(
+            "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
+            format_url(&server.host, server.port)
+        ));
         wait_for_signal();
         server.close();
         return Ok(0);
@@ -273,7 +350,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     reg.write(&state)?;
     match start_detached(&reg, &state) {
         Ok(up) => {
-            out(&format!("Started {} ({}) serving {label} at {}\n", up.name, up.id, format_url(&up.host, up.port)));
+            out(&format!(
+                "Started {} ({}) serving {label} at {}\n",
+                up.name,
+                up.id,
+                format_url(&up.host, up.port)
+            ));
             Ok(0)
         }
         Err(e) => {
@@ -298,7 +380,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let arg_files = v.strs("build-arg-file");
     let arg_flags = v.strs("build-arg");
     if is_wildcard(&bind.host) {
-        err(&format!("warning: binding {}: the site will be reachable from other machines\n", bind.host));
+        err(&format!(
+            "warning: binding {}: the site will be reachable from other machines\n",
+            bind.host
+        ));
     }
     catch_signals();
 
@@ -309,7 +394,12 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let memo = crate::memo::watch_memo();
     let mut run_build = || -> BuildOutcome {
         let attempt = || -> Result<Tree> {
-            let mut options = BuildOptions { context_dir: context.clone(), sitefile: file.clone(), build_args: collect_build_args(&arg_files, &arg_flags)?, ..Default::default() };
+            let mut options = BuildOptions {
+                context_dir: context.clone(),
+                sitefile: file.clone(),
+                build_args: collect_build_args(&arg_files, &arg_flags)?,
+                ..Default::default()
+            };
             options.target = v.str("target").map(str::to_string);
             if v.flag("no-lockfile") {
                 options.lockfile = LockfileSetting::Disabled;
@@ -328,29 +418,56 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         match attempt() {
             Ok(tree) => {
                 let n = tree.len();
-                out(&format!("Built {n} file{} ({})\n", if n == 1 { "" } else { "s" }, tree.digest()));
+                out(&format!(
+                    "Built {n} file{} ({})\n",
+                    if n == 1 { "" } else { "s" },
+                    tree.digest()
+                ));
                 if let Ok(mut t) = current.write() {
                     *t = Arc::new(tree);
                 }
                 if started.get() {
                     live.reload();
                 }
-                BuildOutcome { code: 0, wrote: Vec::new() }
+                BuildOutcome {
+                    code: 0,
+                    wrote: Vec::new(),
+                }
             }
-            Err(e) => BuildOutcome { code: super::common::report(&e), wrote: Vec::new() },
+            Err(e) => BuildOutcome {
+                code: super::common::report(&e),
+                wrote: Vec::new(),
+            },
         }
     };
     let mut on_started = || -> Result<()> {
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
-        let opts = SiteServerOptions { spa: v.flag("spa"), log: Some(log), server_id: None, live_reload: Some(live.clone()) };
+        let opts = SiteServerOptions {
+            spa: v.flag("spa"),
+            log: Some(log),
+            server_id: None,
+            live_reload: Some(live.clone()),
+        };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
-        out(&format!("Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n", format_url(&s.host, s.port)));
+        out(&format!(
+            "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
+            format_url(&s.host, s.port)
+        ));
         server = Some(s);
         started.set(true);
         Ok(())
     };
-    let code = watch_loop(&WatchOptions { context: &context, sitefile: file.as_deref(), arg_files: &arg_files }, &mut run_build, &mut on_started, &|| received().is_some())?;
+    let code = watch_loop(
+        &WatchOptions {
+            context: &context,
+            sitefile: file.as_deref(),
+            arg_files: &arg_files,
+        },
+        &mut run_build,
+        &mut on_started,
+        &|| received().is_some(),
+    )?;
     live.close();
     if let Some(s) = server {
         s.close();
@@ -384,7 +501,17 @@ pub fn serve_worker(id: &str) -> i32 {
         let tree = load_served_tree(&reg.store, &state.source)?;
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
-        let server = listen(Arc::new(tree), SiteServerOptions { spa: state.spa, log: Some(log), server_id: Some(id.to_string()), live_reload: None }, &state.bind.host, state.bind.port)?;
+        let server = listen(
+            Arc::new(tree),
+            SiteServerOptions {
+                spa: state.spa,
+                log: Some(log),
+                server_id: Some(id.to_string()),
+                live_reload: None,
+            },
+            &state.bind.host,
+            state.bind.port,
+        )?;
         let (host, port) = (server.host.clone(), server.port);
         reg.update(id, |s| {
             s.pid = std::process::id() as i64;
@@ -393,7 +520,11 @@ pub fn serve_worker(id: &str) -> i32 {
             s.ready = true;
             s.error = None;
         })?;
-        stamp(&format!("serving {} ({n} files) at {}", state.image, format_url(&host, port)));
+        stamp(&format!(
+            "serving {} ({n} files) at {}",
+            state.image,
+            format_url(&host, port)
+        ));
         Ok(server)
     })();
     match started {
@@ -438,7 +569,12 @@ pub const PS: Command = Command {
 fn run_ps(v: &Parsed) -> Result<i32> {
     require_args(&v.positionals, 0, 0, "no arguments")?;
     let reg = ServerRegistry::open(None)?;
-    let views: Vec<_> = reg.all()?.iter().map(|s| reg.view(s)).filter(|s| v.flag("all") || s.status == "running").collect();
+    let views: Vec<_> = reg
+        .all()?
+        .iter()
+        .map(|s| reg.view(s))
+        .filter(|s| v.flag("all") || s.status == "running")
+        .collect();
     if v.flag("json") {
         // 'site' is the image reference or directory being served.
         let arr: Vec<Value> = views
@@ -461,12 +597,19 @@ fn run_ps(v: &Parsed) -> Result<i32> {
         out(&(pretty_json(&Value::Array(arr)) + "\n"));
         return Ok(0);
     }
-    let mut rows = vec![["NAME", "SITE", "URL", "STATUS", "ID"].iter().map(|s| s.to_string()).collect::<Vec<_>>()];
+    let mut rows = vec![["NAME", "SITE", "URL", "STATUS", "ID"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()];
     for s in &views {
         rows.push(vec![
             s.state.name.clone(),
             s.state.image.clone(),
-            if s.url.is_empty() { "-".into() } else { s.url.clone() },
+            if s.url.is_empty() {
+                "-".into()
+            } else {
+                s.url.clone()
+            },
             s.status.to_string(),
             s.state.id.clone(),
         ]);
@@ -496,7 +639,10 @@ pub fn stop_server(reg: &ServerRegistry, s: &ServerState, grace: Duration) -> Re
     if !gone(grace) {
         send(s.pid, SIGKILL);
         if !gone(Duration::from_secs(2)) {
-            return Err(SitefileError::plain(E_SERVER, format!("could not stop {} (pid {})", s.name, s.pid)));
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!("could not stop {} (pid {})", s.name, s.pid),
+            ));
         }
     }
     let _ = reg.update(&s.id, |x| x.ready = false);
@@ -504,7 +650,9 @@ pub fn stop_server(reg: &ServerRegistry, s: &ServerState, grace: Duration) -> Re
 }
 
 fn grace_of(v: &Parsed) -> Result<Duration> {
-    let Some(t) = v.str("time") else { return Ok(Duration::from_secs(5)) };
+    let Some(t) = v.str("time") else {
+        return Ok(Duration::from_secs(5));
+    };
     let n = js_to_number(t);
     if !n.is_finite() || n < 0.0 {
         return usage("--time expects a number of seconds");
@@ -513,7 +661,11 @@ fn grace_of(v: &Parsed) -> Result<Duration> {
 }
 
 /// Run `f` for each target; print each failure and keep going.
-fn each_target(reg: &ServerRegistry, keys: &[String], f: impl Fn(&ServerState) -> Result<String>) -> Result<i32> {
+fn each_target(
+    reg: &ServerRegistry,
+    keys: &[String],
+    f: impl Fn(&ServerState) -> Result<String>,
+) -> Result<i32> {
     let mut failed = false;
     for key in keys {
         match reg.find(key).and_then(|s| f(&s)) {
@@ -566,7 +718,10 @@ fn run_rm(v: &Parsed) -> Result<i32> {
     each_target(&reg, &v.positionals, |s| {
         if is_running(s) {
             if !force {
-                return Err(SitefileError::plain(E_SERVER, format!("{} is running; stop it first or use -f", s.name)));
+                return Err(SitefileError::plain(
+                    E_SERVER,
+                    format!("{} is running; stop it first or use -f", s.name),
+                ));
             }
             stop_server(&reg, s, Duration::from_secs(5))?;
         }
@@ -592,7 +747,11 @@ pub fn tail_lines(text: &str, n: usize) -> String {
     if lines.last() == Some(&"") {
         lines.pop();
     }
-    let keep = if n == 0 { &[][..] } else { &lines[lines.len().saturating_sub(n)..] };
+    let keep = if n == 0 {
+        &[][..]
+    } else {
+        &lines[lines.len().saturating_sub(n)..]
+    };
     keep.iter().map(|l| format!("{l}\n")).collect()
 }
 
@@ -619,7 +778,9 @@ fn run_logs(v: &Parsed) -> Result<i32> {
     let mut pos = offset;
     while received().is_none() {
         std::thread::sleep(Duration::from_millis(150));
-        let Ok(mut f) = std::fs::File::open(&s.log_file) else { continue };
+        let Ok(mut f) = std::fs::File::open(&s.log_file) else {
+            continue;
+        };
         let size = f.metadata().map(|m| m.len()).unwrap_or(0);
         if size < pos {
             pos = 0;
@@ -669,7 +830,13 @@ fn run_restart(v: &Parsed) -> Result<i32> {
             return Err(e);
         }
     };
-    out(&format!("Restarted {} ({}) serving {} at {}\n", up.name, up.id, up.image, format_url(&up.host, up.port)));
+    out(&format!(
+        "Restarted {} ({}) serving {} at {}\n",
+        up.name,
+        up.id,
+        up.image,
+        format_url(&up.host, up.port)
+    ));
     Ok(0)
 }
 
@@ -679,13 +846,28 @@ mod tests {
 
     #[test]
     fn publish_specs() {
-        assert_eq!(parse_publish(None).unwrap(), Bind { host: "127.0.0.1".into(), port: 0 });
+        assert_eq!(
+            parse_publish(None).unwrap(),
+            Bind {
+                host: "127.0.0.1".into(),
+                port: 0
+            }
+        );
         assert_eq!(parse_publish(Some("8080")).unwrap().port, 8080);
-        assert_eq!(parse_publish(Some("localhost:80")).unwrap().host, "127.0.0.1");
+        assert_eq!(
+            parse_publish(Some("localhost:80")).unwrap().host,
+            "127.0.0.1"
+        );
         assert_eq!(parse_publish(Some("[::1]:80")).unwrap().host, "::1");
         assert_eq!(parse_publish(Some("0.0.0.0:1")).unwrap().host, "0.0.0.0");
-        assert!(parse_publish(Some("99999")).unwrap_err().detail.contains("out of range"));
-        assert!(parse_publish(Some("example.com:80")).unwrap_err().detail.contains("must be an IP"));
+        assert!(parse_publish(Some("99999"))
+            .unwrap_err()
+            .detail
+            .contains("out of range"));
+        assert!(parse_publish(Some("example.com:80"))
+            .unwrap_err()
+            .detail
+            .contains("must be an IP"));
         assert!(parse_publish(Some("::1:80")).is_err());
     }
 }

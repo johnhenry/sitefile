@@ -7,7 +7,7 @@ use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::paths::nfc;
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::types::{Provenance, Resource};
-use crate::tree::{make_file, Node, Tree};
+use crate::tree::{make_file, ConflictPolicy, Node, Tree};
 use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::io;
@@ -30,7 +30,11 @@ pub struct LocalContextOptions {
 
 impl Default for LocalContextOptions {
     fn default() -> Self {
-        LocalContextOptions { ignore: None, sitefileignore: true, allow_hardlinks: false }
+        LocalContextOptions {
+            ignore: None,
+            sitefileignore: true,
+            allow_hardlinks: false,
+        }
     }
 }
 
@@ -55,7 +59,11 @@ const ELOOP: i32 = 40;
 const ELOOP: i32 = 62;
 
 fn display(rel: &str) -> String {
-    if rel.is_empty() { ".".into() } else { format!("./{rel}") }
+    if rel.is_empty() {
+        ".".into()
+    } else {
+        format!("./{rel}")
+    }
 }
 
 fn normalization_collision(rel: &str, span: Option<&SourceSpan>) -> SitefileError {
@@ -88,7 +96,13 @@ fn posix_normalize(p: &str) -> String {
     }
     let body = out.join("/");
     let trailing = p.ends_with('/') && !body.is_empty();
-    let mut s = if abs { format!("/{body}") } else if body.is_empty() { ".".into() } else { body };
+    let mut s = if abs {
+        format!("/{body}")
+    } else if body.is_empty() {
+        ".".into()
+    } else {
+        body
+    };
     if trailing {
         s.push('/');
     }
@@ -110,19 +124,39 @@ impl LocalContext {
         let root = match fs::canonicalize(dir) {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(SitefileError::plain(E_NOT_FOUND, format!("build context '{shown}' does not exist")))
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("build context '{shown}' does not exist"),
+                ))
             }
-            Err(e) => return Err(SitefileError::plain(E_NOT_FOUND, format!("cannot resolve build context '{shown}': {e}"))),
+            Err(e) => {
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("cannot resolve build context '{shown}': {e}"),
+                ))
+            }
         };
-        let st = fs::metadata(&root)
-            .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("cannot resolve build context '{shown}': {e}")))?;
+        let st = fs::metadata(&root).map_err(|e| {
+            SitefileError::plain(
+                E_NOT_FOUND,
+                format!("cannot resolve build context '{shown}': {e}"),
+            )
+        })?;
         if !st.is_dir() {
-            return Err(SitefileError::plain(E_UNSUPPORTED_FILE, format!("build context '{shown}' is not a directory")));
+            return Err(SitefileError::plain(
+                E_UNSUPPORTED_FILE,
+                format!("build context '{shown}' is not a directory"),
+            ));
         }
         let mut rules = IgnoreRules::empty();
         if options.sitefileignore && fs::symlink_metadata(root.join(SITEFILEIGNORE)).is_ok() {
             // Read through the sandbox: a symlinked .sitefileignore must stay inside the context.
-            let probe = LocalContext { root: root.clone(), ignore: vec![], rules: IgnoreRules::empty(), allow_hardlinks: true };
+            let probe = LocalContext {
+                root: root.clone(),
+                ignore: vec![],
+                rules: IgnoreRules::empty(),
+                allow_hardlinks: true,
+            };
             // A broken ignore file fails the build: skipping it could publish files it was meant to exclude.
             let (real, st) = probe.resolve(SITEFILEIGNORE, None, None).map_err(|e| {
                 if e.code != E_NOT_FOUND {
@@ -134,13 +168,23 @@ impl LocalContext {
                 )
             })?;
             if !st.is_file() {
-                return Err(SitefileError::plain(E_UNSUPPORTED_FILE, format!("'{SITEFILEIGNORE}' is not a regular file")));
+                return Err(SitefileError::plain(
+                    E_UNSUPPORTED_FILE,
+                    format!("'{SITEFILEIGNORE}' is not a regular file"),
+                ));
             }
-            let bytes = fs::read(&real)
-                .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("cannot read '{}': {e}", display(SITEFILEIGNORE))))?;
+            let bytes = fs::read(&real).map_err(|e| {
+                SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("cannot read '{}': {e}", display(SITEFILEIGNORE)),
+                )
+            })?;
             rules = IgnoreRules::parse(&nfc(&String::from_utf8_lossy(&bytes)));
         }
-        let ignore_list = options.ignore.clone().unwrap_or_else(|| vec![".git".to_string()]);
+        let ignore_list = options
+            .ignore
+            .clone()
+            .unwrap_or_else(|| vec![".git".to_string()]);
         let ignore = ignore_list
             .iter()
             .map(|p| {
@@ -151,7 +195,12 @@ impl LocalContext {
             })
             .filter(|p| !p.is_empty() && p != ".")
             .collect();
-        Ok(LocalContext { root, ignore, rules, allow_hardlinks: options.allow_hardlinks })
+        Ok(LocalContext {
+            root,
+            ignore,
+            rules,
+            allow_hardlinks: options.allow_hardlinks,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -163,7 +212,12 @@ impl LocalContext {
     }
 
     fn is_ignored(&self, rel: &str) -> bool {
-        self.ignore.iter().any(|ig| rel == ig || (rel.len() > ig.len() && rel.starts_with(ig.as_str()) && rel.as_bytes()[ig.len()] == b'/'))
+        self.ignore.iter().any(|ig| {
+            rel == ig
+                || (rel.len() > ig.len()
+                    && rel.starts_with(ig.as_str())
+                    && rel.as_bytes()[ig.len()] == b'/')
+        })
     }
 
     /// Hard-linked files may alias files outside the context, which realpath cannot detect.
@@ -185,7 +239,11 @@ impl LocalContext {
     /// Context-relative POSIX path of a real path inside root.
     fn rel_of_real(&self, real: &Path) -> String {
         match real.strip_prefix(&self.root) {
-            Ok(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"),
+            Ok(r) => r
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
             Err(_) => String::new(),
         }
     }
@@ -235,22 +293,35 @@ impl LocalContext {
     }
 
     /// Resolve a context-relative path to its real path and stats, enforcing the sandbox.
-    fn resolve(&self, rel: &str, span: Option<&SourceSpan>, link_name: Option<&str>) -> Result<(PathBuf, Metadata)> {
+    fn resolve(
+        &self,
+        rel: &str,
+        span: Option<&SourceSpan>,
+        link_name: Option<&str>,
+    ) -> Result<(PathBuf, Metadata)> {
         let abs = self.host_path(rel, span)?;
         let real = match fs::canonicalize(&abs) {
             Ok(r) => r,
             Err(e) => {
-                let detail = if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::NotADirectory {
+                let detail = if e.kind() == io::ErrorKind::NotFound
+                    || e.kind() == io::ErrorKind::NotADirectory
+                {
                     return Err(SitefileError::new(
                         E_NOT_FOUND,
                         match link_name {
                             Some(l) => format!("symlink '{l}' is dangling"),
-                            None => format!("'{}' does not exist in the build context", display(rel)),
+                            None => {
+                                format!("'{}' does not exist in the build context", display(rel))
+                            }
                         },
                         span.cloned(),
                     ));
                 } else if e.raw_os_error() == Some(ELOOP) {
-                    return Err(SitefileError::new(E_UNSUPPORTED_FILE, format!("'{}' is a symlink loop", display(rel)), span.cloned()));
+                    return Err(SitefileError::new(
+                        E_UNSUPPORTED_FILE,
+                        format!("'{}' is a symlink loop", display(rel)),
+                        span.cloned(),
+                    ));
                 } else {
                     format!("cannot resolve '{}': {e}", display(rel))
                 };
@@ -267,8 +338,13 @@ impl LocalContext {
                 span.cloned(),
             ));
         }
-        let st = fs::metadata(&real)
-            .map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot resolve '{}': {e}", display(rel)), span.cloned()))?;
+        let st = fs::metadata(&real).map_err(|e| {
+            SitefileError::new(
+                E_NOT_FOUND,
+                format!("cannot resolve '{}': {e}", display(rel)),
+                span.cloned(),
+            )
+        })?;
         Ok((real, st))
     }
 
@@ -297,23 +373,42 @@ impl LocalContext {
     }
 
     fn read_bytes(real: &Path, rel: &str, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
-        fs::read(real).map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot read '{}': {e}", display(rel)), span.cloned()))
+        fs::read(real).map_err(|e| {
+            SitefileError::new(
+                E_NOT_FOUND,
+                format!("cannot read '{}': {e}", display(rel)),
+                span.cloned(),
+            )
+        })
     }
 
     /// A context file as a [`Resource::File`].
     pub fn read_file(&self, rel: &str, span: Option<&SourceSpan>) -> Result<Resource> {
         let (real, st) = self.resolve(rel, span, None)?;
         if Self::kind_of(&st, rel, span)? != EntryKind::File {
-            return Err(SitefileError::new(E_UNSUPPORTED_FILE, format!("'{}' is a directory, not a file", display(rel)), span.cloned()));
+            return Err(SitefileError::new(
+                E_UNSUPPORTED_FILE,
+                format!("'{}' is a directory, not a file", display(rel)),
+                span.cloned(),
+            ));
         }
         self.check_hardlink(&st, rel, span)?;
         let bytes = Self::read_bytes(&real, rel, span)?;
         let digest = sha256(&bytes);
         Ok(Resource::File {
             bytes,
-            mode: if mode_of(&st) & 0o111 != 0 { 0o755 } else { 0o644 },
+            mode: if mode_of(&st) & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            },
             basename: basename(rel),
-            provenance: Provenance { uri: format!("./{rel}"), resolved_url: None, digest, git_commit: None },
+            provenance: Provenance {
+                uri: format!("./{rel}"),
+                resolved_url: None,
+                digest,
+                git_commit: None,
+            },
         })
     }
 
@@ -328,26 +423,61 @@ impl LocalContext {
 
     /// A context directory as a [`Resource::Tree`]. `.sitefileignore` rules and
     /// the ignore list apply below `rel`, never to `rel` itself.
-    pub fn read_tree(&self, rel: &str, origin: &str, span: Option<&SourceSpan>) -> Result<Resource> {
+    pub fn read_tree(
+        &self,
+        rel: &str,
+        origin: &str,
+        span: Option<&SourceSpan>,
+    ) -> Result<Resource> {
         self.read_tree_excluding(rel, origin, span, None)
     }
 
     /// [`read_tree`](Self::read_tree) without the paths `exclude` (COPY --exclude) matches, relative
     /// to `rel`, like `.sitefileignore` rules (excluded directories are not read).
-    pub fn read_tree_excluding(&self, rel: &str, origin: &str, span: Option<&SourceSpan>, exclude: Option<&IgnoreRules>) -> Result<Resource> {
+    pub fn read_tree_excluding(
+        &self,
+        rel: &str,
+        origin: &str,
+        span: Option<&SourceSpan>,
+        exclude: Option<&IgnoreRules>,
+    ) -> Result<Resource> {
         let (real, st) = self.resolve(rel, span, None)?;
         if Self::kind_of(&st, rel, span)? != EntryKind::Directory {
-            return Err(SitefileError::new(E_UNSUPPORTED_FILE, format!("'{}' is a file, not a directory", display(rel)), span.cloned()));
+            return Err(SitefileError::new(
+                E_UNSUPPORTED_FILE,
+                format!("'{}' is a file, not a directory", display(rel)),
+                span.cloned(),
+            ));
         }
         let mut files: Vec<(String, Node)> = Vec::new();
         let mut ancestors = HashSet::new();
         ancestors.insert(real.clone());
-        self.walk(&real, rel, "", origin, &mut ancestors, &mut files, span, exclude)?;
-        let tree = Tree::from_files(files)?;
+        self.walk(
+            &real,
+            rel,
+            "",
+            origin,
+            &mut ancestors,
+            &mut files,
+            span,
+            exclude,
+        )?;
+        // With the instruction's span: two names that differ only in case (possible on a
+        // case-sensitive file system) fail at the line that read the directory.
+        let tree = Tree::empty().with_files(files, ConflictPolicy::Error, span)?;
         let digest = tree.digest();
         Ok(Resource::Tree {
             tree,
-            provenance: Provenance { uri: if rel.is_empty() { "./".into() } else { format!("./{rel}") }, resolved_url: None, digest, git_commit: None },
+            provenance: Provenance {
+                uri: if rel.is_empty() {
+                    "./".into()
+                } else {
+                    format!("./{rel}")
+                },
+                resolved_url: None,
+                digest,
+                git_commit: None,
+            },
         })
     }
 
@@ -367,15 +497,30 @@ impl LocalContext {
         span: Option<&SourceSpan>,
         exclude: Option<&IgnoreRules>,
     ) -> Result<()> {
-        let rd = fs::read_dir(real_dir)
-            .map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot read directory '{}': {e}", display(ctx_rel)), span.cloned()))?;
+        let rd = fs::read_dir(real_dir).map_err(|e| {
+            SitefileError::new(
+                E_NOT_FOUND,
+                format!("cannot read directory '{}': {e}", display(ctx_rel)),
+                span.cloned(),
+            )
+        })?;
         let mut entries: Vec<(String, bool)> = Vec::new();
         for d in rd {
-            let d = d.map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot read directory '{}': {e}", display(ctx_rel)), span.cloned()))?;
+            let d = d.map_err(|e| {
+                SitefileError::new(
+                    E_NOT_FOUND,
+                    format!("cannot read directory '{}': {e}", display(ctx_rel)),
+                    span.cloned(),
+                )
+            })?;
             let name = d.file_name().into_string().map_err(|n| {
                 SitefileError::new(
                     E_UNSUPPORTED_FILE,
-                    format!("'{}' contains a file name that is not valid UTF-8: {}", display(ctx_rel), n.to_string_lossy()),
+                    format!(
+                        "'{}' contains a file name that is not valid UTF-8: {}",
+                        display(ctx_rel),
+                        n.to_string_lossy()
+                    ),
                     span.cloned(),
                 )
             })?;
@@ -389,10 +534,25 @@ impl LocalContext {
         for (raw, is_link) in entries {
             let name = nfc(&raw).into_owned();
             if !seen.insert(name.clone()) {
-                return Err(normalization_collision(&if ctx_rel.is_empty() { name } else { format!("{ctx_rel}/{name}") }, span));
+                return Err(normalization_collision(
+                    &if ctx_rel.is_empty() {
+                        name
+                    } else {
+                        format!("{ctx_rel}/{name}")
+                    },
+                    span,
+                ));
             }
-            let child_ctx = if ctx_rel.is_empty() { name.clone() } else { format!("{ctx_rel}/{name}") };
-            let child_tree = if tree_rel.is_empty() { name.clone() } else { format!("{tree_rel}/{name}") };
+            let child_ctx = if ctx_rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{ctx_rel}/{name}")
+            };
+            let child_tree = if tree_rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{tree_rel}/{name}")
+            };
             if self.is_ignored(&child_ctx) {
                 continue;
             }
@@ -407,8 +567,13 @@ impl LocalContext {
                     continue;
                 }
             } else {
-                st = fs::symlink_metadata(&child_real)
-                    .map_err(|e| SitefileError::new(E_NOT_FOUND, format!("cannot resolve '{}': {e}", display(&child_ctx)), span.cloned()))?;
+                st = fs::symlink_metadata(&child_real).map_err(|e| {
+                    SitefileError::new(
+                        E_NOT_FOUND,
+                        format!("cannot resolve '{}': {e}", display(&child_ctx)),
+                        span.cloned(),
+                    )
+                })?;
             }
 
             if self.rules.ignores(&child_ctx, st.is_dir()) {
@@ -421,13 +586,25 @@ impl LocalContext {
             if st.is_file() {
                 self.check_hardlink(&st, &child_ctx, span)?;
                 let bytes = Self::read_bytes(&child_real, &child_ctx, span)?;
-                out.push((format!("/{child_tree}"), make_file(bytes, origin, mode_of(&st))));
+                out.push((
+                    format!("/{child_tree}"),
+                    make_file(bytes, origin, mode_of(&st)),
+                ));
             } else if st.is_dir() {
                 if ancestors.contains(&child_real) {
                     continue; // directory symlink cycle
                 }
                 ancestors.insert(child_real.clone());
-                let r = self.walk(&child_real, &child_ctx, &child_tree, origin, ancestors, out, span, exclude);
+                let r = self.walk(
+                    &child_real,
+                    &child_ctx,
+                    &child_tree,
+                    origin,
+                    ancestors,
+                    out,
+                    span,
+                    exclude,
+                );
                 ancestors.remove(&child_real);
                 r?;
             } else {
@@ -456,8 +633,12 @@ pub(crate) mod tests {
     impl TempDir {
         pub(crate) fn new(prefix: &str) -> TempDir {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let p = std::env::temp_dir().join(format!("{prefix}{}-{n}-{nanos}", std::process::id()));
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let p =
+                std::env::temp_dir().join(format!("{prefix}{}-{n}-{nanos}", std::process::id()));
             fs::create_dir_all(&p).unwrap();
             TempDir(p)
         }
@@ -490,7 +671,12 @@ pub(crate) mod tests {
     }
     fn file_of(r: Resource) -> (Vec<u8>, u32, String, Provenance) {
         match r {
-            Resource::File { bytes, mode, basename, provenance } => (bytes, mode, basename, provenance),
+            Resource::File {
+                bytes,
+                mode,
+                basename,
+                provenance,
+            } => (bytes, mode, basename, provenance),
             other => panic!("expected file, got {}", other.kind()),
         }
     }
@@ -515,7 +701,11 @@ pub(crate) mod tests {
         let probe = dir.join("probe");
         fs::create_dir(&probe).unwrap();
         fs::write(probe.join(a), "1").unwrap();
-        let ok = fs::OpenOptions::new().write(true).create_new(true).open(probe.join(b)).is_ok()
+        let ok = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(probe.join(b))
+            .is_ok()
             && fs::read_dir(&probe).unwrap().count() == 2;
         fs::remove_dir_all(&probe).unwrap();
         ok
@@ -529,7 +719,9 @@ pub(crate) mod tests {
                 fs::create_dir(ctx.join(on_disk)).unwrap();
                 fs::write(ctx.join(on_disk).join(format!("{on_disk}.txt")), "hi").unwrap();
                 let c = open(ctx);
-                let rel = crate::paths::normalize_local(&format!("{named}/{named}.txt"), None).unwrap().path;
+                let rel = crate::paths::normalize_local(&format!("{named}/{named}.txt"), None)
+                    .unwrap()
+                    .path;
                 let (bytes, _, base, _) = file_of(c.read_file(&rel, None).unwrap());
                 assert_eq!(bytes, b"hi");
                 assert_eq!(base, format!("{NFC}.txt"));
@@ -550,7 +742,11 @@ pub(crate) mod tests {
             let c = open(ctx);
             let e = c.read_tree("", "test", None).unwrap_err();
             assert_eq!(e.code, E_PATH_COLLISION);
-            assert!(e.detail.contains("differ only in Unicode normalization"), "{}", e.detail);
+            assert!(
+                e.detail.contains("differ only in Unicode normalization"),
+                "{}",
+                e.detail
+            );
             assert_eq!(code(c.read_file(NFC, None)), E_PATH_COLLISION);
         });
     }
@@ -565,7 +761,12 @@ pub(crate) mod tests {
             fs::write(ctx.join("a.txt"), "2").unwrap();
             let e = open(ctx).read_tree("", "test", None).unwrap_err();
             assert_eq!(e.code, E_PATH_COLLISION);
-            assert!(e.detail.starts_with("'/a.txt' differs only in case from '/A.txt'"), "{}", e.detail);
+            assert!(
+                e.detail
+                    .starts_with("'/a.txt' differs only in case from '/A.txt'"),
+                "{}",
+                e.detail
+            );
         });
     }
 
@@ -574,7 +775,13 @@ pub(crate) mod tests {
         with_temp(|ctx, _| {
             let c = open(ctx);
             assert_eq!(c.root, fs::canonicalize(ctx).unwrap());
-            assert_eq!(code(LocalContext::open(ctx.join("nope"), &LocalContextOptions::default())), E_NOT_FOUND);
+            assert_eq!(
+                code(LocalContext::open(
+                    ctx.join("nope"),
+                    &LocalContextOptions::default()
+                )),
+                E_NOT_FOUND
+            );
         });
     }
 
@@ -683,9 +890,15 @@ pub(crate) mod tests {
             symlink(".git", ctx.join("gitlink")).unwrap();
 
             let def = open(ctx);
-            assert_eq!(tree_paths(&def), vec!["/dist/x/out.html", "/index.html", "/sub/.git/keep"]);
+            assert_eq!(
+                tree_paths(&def),
+                vec!["/dist/x/out.html", "/index.html", "/sub/.git/keep"]
+            );
 
-            let opts = LocalContextOptions { ignore: Some(vec![".git".into(), "dist/x".into()]), ..Default::default() };
+            let opts = LocalContextOptions {
+                ignore: Some(vec![".git".into(), "dist/x".into()]),
+                ..Default::default()
+            };
             let c = LocalContext::open(ctx, &opts).unwrap();
             let (t, prov) = tree_of(c.read_tree("", "COPY", None).unwrap());
             assert_eq!(paths(&t), vec!["/index.html", "/sub/.git/keep"]);
@@ -703,8 +916,14 @@ pub(crate) mod tests {
             fs::create_dir_all(ctx.join("dist")).unwrap();
             fs::write(ctx.join("dist/a"), "a").unwrap();
             fs::write(ctx.join("b"), "b").unwrap();
-            let opts = LocalContextOptions { ignore: Some(vec!["./dist/".into(), ".".into()]), ..Default::default() };
-            assert_eq!(tree_paths(&LocalContext::open(ctx, &opts).unwrap()), vec!["/b"]);
+            let opts = LocalContextOptions {
+                ignore: Some(vec!["./dist/".into(), ".".into()]),
+                ..Default::default()
+            };
+            assert_eq!(
+                tree_paths(&LocalContext::open(ctx, &opts).unwrap()),
+                vec!["/b"]
+            );
         });
     }
 
@@ -726,7 +945,10 @@ pub(crate) mod tests {
             assert_eq!(t1.get("/a.txt").unwrap().origin, "Sitefile:3 COPY");
             assert_eq!(p1.digest, p2.digest);
             assert_eq!(p1.uri, "./site");
-            assert_eq!(code(c.read_tree("site/a.txt", "x", None)), E_UNSUPPORTED_FILE);
+            assert_eq!(
+                code(c.read_tree("site/a.txt", "x", None)),
+                E_UNSUPPORTED_FILE
+            );
         });
     }
 
@@ -735,11 +957,22 @@ pub(crate) mod tests {
         with_temp(|ctx, _| {
             fs::create_dir(ctx.join("site")).unwrap();
             let pipe = ctx.join("site/pipe");
-            let made = std::process::Command::new("mkfifo").arg(&pipe).status().map(|s| s.success()).unwrap_or(false);
-            let _sock = if made { None } else { Some(std::os::unix::net::UnixListener::bind(ctx.join("site/sock")).unwrap()) };
+            let made = std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let _sock = if made {
+                None
+            } else {
+                Some(std::os::unix::net::UnixListener::bind(ctx.join("site/sock")).unwrap())
+            };
             let c = open(ctx);
             assert_eq!(code(c.read_tree("site", "COPY", None)), E_UNSUPPORTED_FILE);
-            assert_eq!(code(c.stat(if made { "site/pipe" } else { "site/sock" }, None)), E_UNSUPPORTED_FILE);
+            assert_eq!(
+                code(c.stat(if made { "site/pipe" } else { "site/sock" }, None)),
+                E_UNSUPPORTED_FILE
+            );
         });
     }
 
@@ -750,7 +983,11 @@ pub(crate) mod tests {
         with_temp(|ctx, _| {
             fs::create_dir_all(ctx.join("src/cache")).unwrap();
             fs::create_dir_all(ctx.join("node_modules/x")).unwrap();
-            fs::write(ctx.join(".sitefileignore"), "# c\nnode_modules/\n*.log\n/notes.txt\nsrc/cache/\n").unwrap();
+            fs::write(
+                ctx.join(".sitefileignore"),
+                "# c\nnode_modules/\n*.log\n/notes.txt\nsrc/cache/\n",
+            )
+            .unwrap();
             fs::write(ctx.join("a.html"), "a").unwrap();
             fs::write(ctx.join("a.log"), "l").unwrap();
             fs::write(ctx.join("notes.txt"), "n").unwrap();
@@ -758,7 +995,10 @@ pub(crate) mod tests {
             fs::write(ctx.join("src/b.log"), "l").unwrap();
             fs::write(ctx.join("src/cache/c"), "c").unwrap();
             fs::write(ctx.join("node_modules/x/i.js"), "i").unwrap();
-            assert_eq!(tree_paths(&open(ctx)), vec!["/.sitefileignore", "/a.html", "/src/notes.txt"]);
+            assert_eq!(
+                tree_paths(&open(ctx)),
+                vec!["/.sitefileignore", "/a.html", "/src/notes.txt"]
+            );
         });
     }
 
@@ -792,7 +1032,10 @@ pub(crate) mod tests {
             fs::write(ctx.join(".sitefileignore"), "build/\n*.log\n").unwrap();
             let c = open(ctx);
             assert_eq!(file_of(c.read_file("secret.log", None).unwrap()).0, b"s");
-            assert_eq!(paths(&tree_of(c.read_tree("build", "test", None).unwrap()).0), vec!["/x.txt"]);
+            assert_eq!(
+                paths(&tree_of(c.read_tree("build", "test", None).unwrap()).0),
+                vec!["/x.txt"]
+            );
         });
     }
 
@@ -801,8 +1044,14 @@ pub(crate) mod tests {
         with_temp(|ctx, _| {
             fs::write(ctx.join("a.log"), "l").unwrap();
             fs::write(ctx.join(".sitefileignore"), "*.log\n").unwrap();
-            let off = LocalContextOptions { sitefileignore: false, ..Default::default() };
-            assert_eq!(tree_paths(&LocalContext::open(ctx, &off).unwrap()), vec!["/.sitefileignore", "/a.log"]);
+            let off = LocalContextOptions {
+                sitefileignore: false,
+                ..Default::default()
+            };
+            assert_eq!(
+                tree_paths(&LocalContext::open(ctx, &off).unwrap()),
+                vec!["/.sitefileignore", "/a.log"]
+            );
             fs::remove_file(ctx.join(".sitefileignore")).unwrap();
             assert_eq!(tree_paths(&open(ctx)), vec!["/a.log"]);
         });
@@ -813,7 +1062,10 @@ pub(crate) mod tests {
         with_temp(|ctx, outside| {
             fs::write(outside.join("rules"), "*.log\n").unwrap();
             symlink(outside.join("rules"), ctx.join(".sitefileignore")).unwrap();
-            assert_eq!(code(LocalContext::open(ctx, &LocalContextOptions::default())), E_PATH_ESCAPE);
+            assert_eq!(
+                code(LocalContext::open(ctx, &LocalContextOptions::default())),
+                E_PATH_ESCAPE
+            );
         });
     }
 
@@ -821,7 +1073,10 @@ pub(crate) mod tests {
     fn sitefileignore_that_is_a_directory_is_refused() {
         with_temp(|ctx, _| {
             fs::create_dir(ctx.join(".sitefileignore")).unwrap();
-            assert_eq!(code(LocalContext::open(ctx, &LocalContextOptions::default())), E_UNSUPPORTED_FILE);
+            assert_eq!(
+                code(LocalContext::open(ctx, &LocalContextOptions::default())),
+                E_UNSUPPORTED_FILE
+            );
         });
     }
 
@@ -854,8 +1109,18 @@ pub(crate) mod tests {
     fn hard_links_are_allowed_with_allow_hardlinks() {
         with_temp(|ctx, outside| {
             fs::hard_link(outside.join("secret.txt"), ctx.join("innocent.txt")).unwrap();
-            let c = LocalContext::open(ctx, &LocalContextOptions { allow_hardlinks: true, ..Default::default() }).unwrap();
-            assert_eq!(file_of(c.read_file("innocent.txt", None).unwrap()).0, b"secret");
+            let c = LocalContext::open(
+                ctx,
+                &LocalContextOptions {
+                    allow_hardlinks: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                file_of(c.read_file("innocent.txt", None).unwrap()).0,
+                b"secret"
+            );
             assert_eq!(tree_paths(&c), vec!["/innocent.txt"]);
         });
     }
@@ -884,8 +1149,19 @@ pub(crate) mod tests {
             symlink(ctx.join("missing-ignore"), ctx.join(".sitefileignore")).unwrap();
             let e = LocalContext::open(ctx, &LocalContextOptions::default()).unwrap_err();
             assert_eq!(e.code, E_NOT_FOUND);
-            assert!(e.message().contains("symlink to a missing file"), "{}", e.message());
-            LocalContext::open(ctx, &LocalContextOptions { sitefileignore: false, ..Default::default() }).unwrap();
+            assert!(
+                e.message().contains("symlink to a missing file"),
+                "{}",
+                e.message()
+            );
+            LocalContext::open(
+                ctx,
+                &LocalContextOptions {
+                    sitefileignore: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         });
     }
 

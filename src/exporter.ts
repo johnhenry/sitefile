@@ -544,6 +544,10 @@ export async function exportFile(data: Uint8Array, outFile: string, options: Exp
   }
   const parentId = await verifiedParentId(parent);
   const outId = st ? idOf(st) : undefined;
+  // dev/ino alone can't tell a replaced file from the original: Linux often gives a file
+  // created right after an unlink the same inode number. Size and the nanosecond ctime
+  // can't survive a replacement (or any write) unchanged.
+  const outStamp = st ? await replacementStampOf(outReal) : undefined;
 
   let tmpId: FileId | undefined;
   let renamed = false;
@@ -565,7 +569,13 @@ export async function exportFile(data: Uint8Array, outFile: string, options: Exp
     }
     const cur = await lstatOrUndefined(outReal);
     if (outId) {
-      if (!cur || cur.isSymbolicLink() || !cur.isFile() || !sameId(idOf(cur), outId)) {
+      if (
+        !cur ||
+        cur.isSymbolicLink() ||
+        !cur.isFile() ||
+        !sameId(idOf(cur), outId) ||
+        !sameReplacementStamp(await replacementStampOf(outReal), outStamp)
+      ) {
         throw unsafe(`export destination '${outReal}' changed during export; aborting`);
       }
     } else if (cur) {
@@ -583,6 +593,24 @@ export async function exportFile(data: Uint8Array, outFile: string, options: Exp
     throw new SitefileError('E_EXPORT', `failed to export to '${outReal}': ${(e as Error).message}`, undefined, { cause: e });
   }
   return { outFile: outReal, bytes: data.byteLength };
+}
+
+interface ReplacementStamp {
+  readonly size: bigint;
+  readonly ctimeNs: bigint;
+}
+
+async function replacementStampOf(p: string): Promise<ReplacementStamp | undefined> {
+  try {
+    const st = await fs.lstat(p, { bigint: true });
+    return { size: st.size, ctimeNs: st.ctimeNs };
+  } catch {
+    return undefined;
+  }
+}
+
+function sameReplacementStamp(a: ReplacementStamp | undefined, b: ReplacementStamp | undefined): boolean {
+  return a !== undefined && b !== undefined && a.size === b.size && a.ctimeNs === b.ctimeNs;
 }
 
 /** Remove `p` only if it is a regular file with the identity we created. */

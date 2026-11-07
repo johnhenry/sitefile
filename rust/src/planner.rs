@@ -3,13 +3,15 @@
 
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{
-    imported_stage, stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, OciCompression, Operand, Program, Source, StageRef,
-    TemplatePart, ValueType,
-};
 use crate::fingerprint::check_pattern;
+use crate::language::ast::{
+    imported_stage, stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction,
+    OciCompression, Operand, Program, Source, StageRef, TemplatePart, ValueType,
+};
 use crate::paths::{normalize_local, normalize_virtual};
-use crate::site::{check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path};
+use crate::site::{
+    check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path,
+};
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -18,13 +20,26 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceRef {
     /// Content written in the Sitefile itself (heredoc); `body_line` is its first Sitefile line.
-    Inline { text: String, delimiter: String, body_line: u32, span: SourceSpan },
+    Inline {
+        text: String,
+        delimiter: String,
+        body_line: u32,
+        span: SourceSpan,
+    },
     /// `path` is a normalized virtual path inside an earlier stage's final tree (`--from=name`).
-    Stage { name: String, path: String, span: SourceSpan },
+    Stage {
+        name: String,
+        path: String,
+        span: SourceSpan,
+    },
     /// A context-relative path.
     Local { path: String, span: SourceSpan },
     /// `path` is a normalized virtual path inside the import, `/` for the whole import.
-    Import { name: String, path: String, span: SourceSpan },
+    Import {
+        name: String,
+        path: String,
+        span: SourceSpan,
+    },
 }
 
 impl SourceRef {
@@ -40,8 +55,12 @@ impl SourceRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportLocation {
-    Local { path: String },
-    Remote { url: String },
+    Local {
+        path: String,
+    },
+    Remote {
+        url: String,
+    },
     /// `git+https://…#ref:path` (src/resources/git.ts).
     Git(crate::resources::git::GitLocation),
 }
@@ -170,14 +189,39 @@ pub enum Operation {
     /// Rename the files matching `patterns` (checked, NFC; a trailing `/` became `/**`) to `name.<hash>.ext`
     /// and rewrite the HTML and CSS that reference them; `manifest` is where the JSON map of renames goes.
     /// `root` is the EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it.
-    Fingerprint { patterns: Vec<String>, manifest: Option<String>, root: String, overwrite: bool, span: SourceSpan },
+    Fingerprint {
+        patterns: Vec<String>,
+        manifest: Option<String>,
+        root: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
     /// `redirects` every REDIRECT source in the Sitefile.
-    CheckLinks { warn: bool, external: bool, root: String, redirects: Vec<String>, span: SourceSpan },
+    CheckLinks {
+        warn: bool,
+        external: bool,
+        root: String,
+        redirects: Vec<String>,
+        span: SourceSpan,
+    },
     /// sitemaps.org XML of the `.html` files in the tree at this point (`base` is checked, without trailing slashes).
-    Sitemap { base: String, dest: String, overwrite: bool, span: SourceSpan },
+    Sitemap {
+        base: String,
+        dest: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
-    Feed { list: String, base: String, link: Operand, dest: String, title: String, overwrite: bool, span: SourceSpan },
+    Feed {
+        list: String,
+        base: String,
+        link: Operand,
+        dest: String,
+        title: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// Run a plugin or tool; `dest` and option values are interpolated per FOR element at execution.
     Transform {
         source: Option<SourceRef>,
@@ -247,14 +291,24 @@ impl Operation {
 pub enum StageBase {
     Scratch,
     /// `path` is context-relative (`""` for the context root).
-    Local { path: String },
+    Local {
+        path: String,
+    },
     /// A copy of an earlier stage's final tree.
-    Stage { name: String },
+    Stage {
+        name: String,
+    },
     /// `FROM image <ref> [AT <dir>]`: the files of an OCI site image. `reference` is the evaluated
     /// reference as written; `local` (no registry host) names an image in the local store, never
     /// fetched; `at` is the normalized directory inside the image; `lead` is `FROM` or
     /// `STAGE <name> FROM`, for messages.
-    Image { reference: String, local: bool, at: Option<String>, lead: String, span: SourceSpan },
+    Image {
+        reference: String,
+        local: bool,
+        at: Option<String>,
+        lead: String,
+        span: SourceSpan,
+    },
 }
 
 /// One FROM and the operations that follow it.
@@ -312,12 +366,19 @@ pub struct Plan {
 /// the `/_redirects` and `/_headers` files EXPORT writes are not (they belong to the EXPORT path). An unknown
 /// name is a usage error that lists the named stages.
 pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
-    let Some(index) = p.stages.iter().position(|s| s.name.as_deref() == Some(name)) else {
+    let Some(index) = p
+        .stages
+        .iter()
+        .position(|s| s.name.as_deref() == Some(name))
+    else {
         let names: Vec<&str> = p.stages.iter().filter_map(|s| s.name.as_deref()).collect();
         let msg = if names.is_empty() {
             format!("--target '{name}' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)")
         } else {
-            format!("--target '{name}' does not name a stage (stages: {})", names.join(", "))
+            format!(
+                "--target '{name}' does not name a stage (stages: {})",
+                names.join(", ")
+            )
         };
         return Err(SitefileError::plain(E_USAGE, msg));
     };
@@ -353,7 +414,11 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
 
 /// [`plan`], where `arg_source` names where a build arg came from in messages (an imported Sitefile's
 /// come from the `ARG` clauses of its IMPORT).
-pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(&str) -> String) -> Result<Plan> {
+pub fn plan_with(
+    program: &Program,
+    build_args: &BuildArgs,
+    arg_source: &dyn Fn(&str) -> String,
+) -> Result<Plan> {
     let mut vars = Env::new();
     let mut fragments: Vec<FragmentSpec> = Vec::new();
     let mut var_order: Vec<String> = Vec::new();
@@ -372,7 +437,15 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
     let mut export_root = None;
     let mut export_compression = None;
 
-    fn bind(vars: &mut Env, order: &mut Vec<String>, name: &str, raw: &str, ty: ValueType, span: &SourceSpan, what: &str) -> Result<()> {
+    fn bind(
+        vars: &mut Env,
+        order: &mut Vec<String>,
+        name: &str,
+        raw: &str,
+        ty: ValueType,
+        span: &SourceSpan,
+        what: &str,
+    ) -> Result<()> {
         let v = coerce(raw, ty, Some(span), what)?;
         if vars.insert(name.to_string(), v).is_none() {
             order.push(name.to_string());
@@ -381,30 +454,75 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
     }
 
     // validate() guarantees a FROM precedes every operation.
-    fn operations<'a>(stages: &'a mut [Stage], span: &SourceSpan) -> Result<&'a mut Vec<Operation>> {
-        stages
-            .last_mut()
-            .map(|s| &mut s.operations)
-            .ok_or_else(|| SitefileError::at(E_VALIDATION, "an operation needs a FROM before it", span))
+    fn operations<'a>(
+        stages: &'a mut [Stage],
+        span: &SourceSpan,
+    ) -> Result<&'a mut Vec<Operation>> {
+        stages.last_mut().map(|s| &mut s.operations).ok_or_else(|| {
+            SitefileError::at(E_VALIDATION, "an operation needs a FROM before it", span)
+        })
     }
 
     for ins in &program.instructions {
         match ins {
-            Instruction::From { span, base, alias, stage_kw } => {
+            Instruction::From {
+                span,
+                base,
+                alias,
+                stage_kw,
+            } => {
                 let base = match base {
                     FromBase::Scratch => StageBase::Scratch,
-                    FromBase::Operand(op) => stage_base(op, &vars, &stages, &all_stage_names, &imports, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
-                    FromBase::Image { reference, at } => image_base(reference, at.as_ref(), &vars, &crate::language::validate::from_lead(*stage_kw, alias.as_deref()))?,
+                    FromBase::Operand(op) => stage_base(
+                        op,
+                        &vars,
+                        &stages,
+                        &all_stage_names,
+                        &imports,
+                        &crate::language::validate::from_lead(*stage_kw, alias.as_deref()),
+                    )?,
+                    FromBase::Image { reference, at } => image_base(
+                        reference,
+                        at.as_ref(),
+                        &vars,
+                        &crate::language::validate::from_lead(*stage_kw, alias.as_deref()),
+                    )?,
                 };
-                stages.push(Stage { name: alias.clone(), base, operations: Vec::new(), span: span.clone() });
+                stages.push(Stage {
+                    name: alias.clone(),
+                    base,
+                    operations: Vec::new(),
+                    span: span.clone(),
+                });
             }
-            Instruction::Arg { span, name, ty, default_value } => {
+            Instruction::Arg {
+                span,
+                name,
+                ty,
+                default_value,
+            } => {
                 declared_args.insert(name);
                 if let Some(given) = build_args.get(name) {
-                    bind(&mut vars, &mut var_order, name, given, *ty, span, &arg_source(name))?;
+                    bind(
+                        &mut vars,
+                        &mut var_order,
+                        name,
+                        given,
+                        *ty,
+                        span,
+                        &arg_source(name),
+                    )?;
                 } else if let Some(d) = default_value {
                     let raw = evaluate_operand(d, &vars)?;
-                    bind(&mut vars, &mut var_order, name, &raw, *ty, &d.span, &format!("ARG {name}"))?;
+                    bind(
+                        &mut vars,
+                        &mut var_order,
+                        name,
+                        &raw,
+                        *ty,
+                        &d.span,
+                        &format!("ARG {name}"),
+                    )?;
                 } else {
                     return Err(SitefileError::at(
                         E_MISSING_ARG,
@@ -415,13 +533,39 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
             }
             Instruction::Fragment { name, body, span } => {
                 let nodes = crate::language::validate::parse_fragment_body(body, &program.file)?;
-                fragments.push(FragmentSpec { name: name.clone(), text: body.text().to_string(), nodes: std::sync::Arc::new(nodes), span: span.clone() });
+                fragments.push(FragmentSpec {
+                    name: name.clone(),
+                    text: body.text().to_string(),
+                    nodes: std::sync::Arc::new(nodes),
+                    span: span.clone(),
+                });
             }
-            Instruction::Let { name, ty, value, .. } => {
+            Instruction::Let {
+                name, ty, value, ..
+            } => {
                 let raw = evaluate_operand(value, &vars)?;
-                bind(&mut vars, &mut var_order, name, &raw, *ty, &value.span, &format!("LET {name}"))?;
+                bind(
+                    &mut vars,
+                    &mut var_order,
+                    name,
+                    &raw,
+                    *ty,
+                    &value.span,
+                    &format!("LET {name}"),
+                )?;
             }
-            Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, drafts, secrets, args } => {
+            Instruction::Import {
+                span,
+                name,
+                uri,
+                as_kind,
+                integrity,
+                sort,
+                schema,
+                drafts,
+                secrets,
+                args,
+            } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 let location = classify_uri(&raw, &uri.span)?;
                 let schema_planned = match schema {
@@ -434,9 +578,17 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                 };
                 let args = args
                     .iter()
-                    .map(|a| Ok(PlannedArg { name: a.name.clone(), value: evaluate_operand(&a.value, &vars)?, span: a.span.clone() }))
+                    .map(|a| {
+                        Ok(PlannedArg {
+                            name: a.name.clone(),
+                            value: evaluate_operand(&a.value, &vars)?,
+                            span: a.span.clone(),
+                        })
+                    })
                     .collect::<Result<Vec<_>>>()?;
-                if *as_kind == Some(ImportKind::Sitefile) && matches!(location, ImportLocation::Remote { .. }) {
+                if *as_kind == Some(ImportKind::Sitefile)
+                    && matches!(location, ImportLocation::Remote { .. })
+                {
                     return Err(SitefileError::at(
                         E_PROTOCOL,
                         format!("IMPORT {name}: AS sitefile reads a context directory or a git+https:// repository, not a URL"),
@@ -469,10 +621,20 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     location,
                     as_kind: *as_kind,
                     integrity: integrity.clone(),
-                    sort: sort.as_ref().map(|s| ImportSort { key: s.key.clone(), descending: s.descending }),
+                    sort: sort.as_ref().map(|s| ImportSort {
+                        key: s.key.clone(),
+                        descending: s.descending,
+                    }),
                     schema: schema_planned,
                     drafts: drafts_planned,
-                    secrets: secrets.iter().map(|s| SecretRef { id: s.id.clone(), header: s.header.clone(), bearer: s.bearer }).collect(),
+                    secrets: secrets
+                        .iter()
+                        .map(|s| SecretRef {
+                            id: s.id.clone(),
+                            header: s.header.clone(),
+                            bearer: s.bearer,
+                        })
+                        .collect(),
                     args,
                     span: span.clone(),
                 };
@@ -482,8 +644,21 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     None => imports.push(spec),
                 }
             }
-            Instruction::Copy { span, source, dest, from, overwrite, exclude, chmod, parents } => {
-                let d = normalize_virtual(&evaluate_operand(dest, &vars)?, Some(&dest.span), "COPY destination")?;
+            Instruction::Copy {
+                span,
+                source,
+                dest,
+                from,
+                overwrite,
+                exclude,
+                chmod,
+                parents,
+            } => {
+                let d = normalize_virtual(
+                    &evaluate_operand(dest, &vars)?,
+                    Some(&dest.span),
+                    "COPY destination",
+                )?;
                 if matches!(source, Source::Inline(_)) && d.trailing_slash {
                     return Err(SitefileError::at(
                         E_PATH,
@@ -503,7 +678,16 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Render { span, template, dest, from, escape, each, overwrite, inline_svg } => {
+            Instruction::Render {
+                span,
+                template,
+                dest,
+                from,
+                escape,
+                each,
+                overwrite,
+                inline_svg,
+            } => {
                 if let Some(e) = each {
                     let template = source_ref(template, &vars, &imports, from.as_ref())?;
                     operations(&mut stages, span)?.push(Operation::Render {
@@ -515,7 +699,10 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                             dest: dest.clone(),
                             by: e.by.as_ref().map(|b| b.key.clone()),
                             page: match &e.page {
-                                Some(pg) => Some(RenderPage { size: page_size(&pg.size, &vars)?, first: pg.first.clone() }),
+                                Some(pg) => Some(RenderPage {
+                                    size: page_size(&pg.size, &vars)?,
+                                    first: pg.first.clone(),
+                                }),
                                 None => None,
                             },
                         }),
@@ -546,7 +733,12 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Plugin { span, name, uri, integrity } => {
+            Instruction::Plugin {
+                span,
+                name,
+                uri,
+                integrity,
+            } => {
                 let raw = evaluate_operand(uri, &vars)?;
                 if url_scheme(&raw).is_some() {
                     return Err(SitefileError::at(
@@ -563,10 +755,31 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                         &uri.span,
                     ));
                 }
-                plugins.push(PluginSpec { name: name.clone(), path: rel, integrity: integrity.clone(), span: span.clone() });
+                plugins.push(PluginSpec {
+                    name: name.clone(),
+                    path: rel,
+                    integrity: integrity.clone(),
+                    span: span.clone(),
+                });
             }
-            Instruction::Tool { span, name } => tools.push(ToolSpec { name: name.clone(), span: span.clone() }),
-            Instruction::Transform { span, source, from, plugin, dest, options, each, args, include, exclude, overwrite, .. } => {
+            Instruction::Tool { span, name } => tools.push(ToolSpec {
+                name: name.clone(),
+                span: span.clone(),
+            }),
+            Instruction::Transform {
+                span,
+                source,
+                from,
+                plugin,
+                dest,
+                options,
+                each,
+                args,
+                include,
+                exclude,
+                overwrite,
+                ..
+            } => {
                 let source = match source {
                     Some(s) => Some(source_ref(s, &vars, &imports, from.as_ref())?),
                     None => None,
@@ -575,8 +788,17 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     source,
                     plugin: plugin.clone(),
                     dest: dest.clone(),
-                    options: options.iter().map(|o| PlanOption { key: o.key.clone(), value: o.value.clone() }).collect(),
-                    each: each.as_ref().map(|e| TransformEach { as_name: e.as_name.clone(), list: e.list.clone() }),
+                    options: options
+                        .iter()
+                        .map(|o| PlanOption {
+                            key: o.key.clone(),
+                            value: o.value.clone(),
+                        })
+                        .collect(),
+                    each: each.as_ref().map(|e| TransformEach {
+                        as_name: e.as_name.clone(),
+                        list: e.list.clone(),
+                    }),
                     args: args.clone(),
                     include: include.clone(),
                     exclude: exclude.clone(),
@@ -584,21 +806,50 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Sitemap { span, base, dest, overwrite } => {
-                let base = check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
+            Instruction::Sitemap {
+                span,
+                base,
+                dest,
+                overwrite,
+            } => {
+                let base =
+                    check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/sitemap.xml", "SITEMAP")?;
-                operations(&mut stages, span)?.push(Operation::Sitemap { base, dest, overwrite: *overwrite, span: span.clone() });
+                operations(&mut stages, span)?.push(Operation::Sitemap {
+                    base,
+                    dest,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
             }
-            Instruction::Fingerprint { span, patterns, manifest, overwrite } => {
-                let patterns = patterns.iter().map(|o| check_pattern(&evaluate_operand(o, &vars)?, &o.span)).collect::<Result<Vec<_>>>()?;
+            Instruction::Fingerprint {
+                span,
+                patterns,
+                manifest,
+                overwrite,
+            } => {
+                let patterns = patterns
+                    .iter()
+                    .map(|o| check_pattern(&evaluate_operand(o, &vars)?, &o.span))
+                    .collect::<Result<Vec<_>>>()?;
                 let manifest = match manifest {
                     Some(m) => Some(file_dest(Some(m), &vars, "", "FINGERPRINT MANIFEST")?),
                     None => None,
                 };
                 // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
-                operations(&mut stages, span)?.push(Operation::Fingerprint { patterns, manifest, root: "/".into(), overwrite: *overwrite, span: span.clone() });
+                operations(&mut stages, span)?.push(Operation::Fingerprint {
+                    patterns,
+                    manifest,
+                    root: "/".into(),
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
             }
-            Instruction::CheckLinks { span, warn, external } => {
+            Instruction::CheckLinks {
+                span,
+                warn,
+                external,
+            } => {
                 // `root` and `redirects` are filled in below, once every line is planned.
                 operations(&mut stages, span)?.push(Operation::CheckLinks {
                     warn: *warn,
@@ -608,8 +859,18 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Feed { span, list, base, link, dest, title, overwrite, .. } => {
-                let base = check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
+            Instruction::Feed {
+                span,
+                list,
+                base,
+                link,
+                dest,
+                title,
+                overwrite,
+                ..
+            } => {
+                let base =
+                    check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/feed.xml", "FEED")?;
                 let title = match title {
                     Some(t) => evaluate_operand(t, &vars)?,
@@ -625,24 +886,67 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                     span: span.clone(),
                 });
             }
-            Instruction::Redirect { span, from, to, status, overwrite } => {
+            Instruction::Redirect {
+                span,
+                from,
+                to,
+                status,
+                overwrite,
+            } => {
                 redirects.push(RedirectSpec {
-                    from: check_site_path(&evaluate_operand(from, &vars)?, "REDIRECT source", &from.span)?,
+                    from: check_site_path(
+                        &evaluate_operand(from, &vars)?,
+                        "REDIRECT source",
+                        &from.span,
+                    )?,
                     to: check_redirect_target(&evaluate_operand(to, &vars)?, &to.span)?,
                     status: *status,
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
             }
-            Instruction::Header { span, pattern, name, value, overwrite } => {
+            Instruction::Header {
+                span,
+                pattern,
+                name,
+                value,
+                overwrite,
+            } => {
                 let name = check_header_name(&evaluate_operand(name, &vars)?, &name.span)?;
-                let pattern = check_site_path(&evaluate_operand(pattern, &vars)?, "HEADER path pattern", &pattern.span)?;
-                let words = value.iter().map(|v| evaluate_operand(v, &vars)).collect::<Result<Vec<_>>>()?;
+                let pattern = check_site_path(
+                    &evaluate_operand(pattern, &vars)?,
+                    "HEADER path pattern",
+                    &pattern.span,
+                )?;
+                let words = value
+                    .iter()
+                    .map(|v| evaluate_operand(v, &vars))
+                    .collect::<Result<Vec<_>>>()?;
                 let value = check_header_value(&words.join(" "), &name, &value[0].span)?;
-                headers.push(HeaderSpec { pattern, name, value, overwrite: *overwrite, span: span.clone() });
+                headers.push(HeaderSpec {
+                    pattern,
+                    name,
+                    value,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
             }
-            Instruction::Export { path, format, base, at, compression, .. } => {
-                export_path = Some(normalize_virtual(&evaluate_operand(path, &vars)?, Some(&path.span), "EXPORT path")?.path);
+            Instruction::Export {
+                path,
+                format,
+                base,
+                at,
+                compression,
+                ..
+            } => {
+                export_path = Some(
+                    normalize_virtual(
+                        &evaluate_operand(path, &vars)?,
+                        Some(&path.span),
+                        "EXPORT path",
+                    )?
+                    .path,
+                );
                 export_format = *format;
                 export_base = match base {
                     Some(b) => Some(evaluate_operand(b, &vars)?),
@@ -650,16 +954,25 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
                 };
                 if let Some(at) = at {
                     if *format != ExportFormat::Oci {
-                        return Err(SitefileError::at(E_VALIDATION, "EXPORT ... AT applies only to AS oci", &at.span));
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "EXPORT ... AT applies only to AS oci",
+                            &at.span,
+                        ));
                     }
                     let raw = evaluate_operand(at, &vars)?;
-                    export_root = Some(normalize_virtual(&raw, Some(&at.span), "EXPORT AT path")?.path);
+                    export_root =
+                        Some(normalize_virtual(&raw, Some(&at.span), "EXPORT AT path")?.path);
                 } else {
                     export_root = None;
                 }
                 if let Some((v, cspan)) = compression {
                     if *format != ExportFormat::Oci {
-                        return Err(SitefileError::at(E_VALIDATION, "EXPORT ... COMPRESSION applies only to AS oci", cspan));
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "EXPORT ... COMPRESSION applies only to AS oci",
+                            cspan,
+                        ));
                     }
                     export_compression = Some(*v);
                 } else {
@@ -674,7 +987,11 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
         for op in &mut st.operations {
             match op {
                 Operation::Fingerprint { root: r, .. } => *r = root.clone(),
-                Operation::CheckLinks { root: r, redirects: rs, .. } => {
+                Operation::CheckLinks {
+                    root: r,
+                    redirects: rs,
+                    ..
+                } => {
                     *r = root.clone();
                     *rs = redirects.iter().map(|x| x.from.clone()).collect();
                 }
@@ -693,12 +1010,17 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
     }
     for name in build_args.keys() {
         if !declared_args.contains(name) {
-            warnings.push(format!("--build-arg {name} does not match any ARG and was ignored"));
+            warnings.push(format!(
+                "--build-arg {name} does not match any ARG and was ignored"
+            ));
         }
     }
     let Some(export_path) = export_path.filter(|_| !stages.is_empty()) else {
         // validate() guarantees both.
-        return Err(SitefileError::plain(E_VALIDATION, "a Sitefile needs FROM and EXPORT"));
+        return Err(SitefileError::plain(
+            E_VALIDATION,
+            "a Sitefile needs FROM and EXPORT",
+        ));
     };
     Ok(Plan {
         file: program.file.clone(),
@@ -723,11 +1045,17 @@ pub fn plan_with(program: &Program, build_args: &BuildArgs, arg_source: &dyn Fn(
 
 /// `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default.
 fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Result<String> {
-    let Some(op) = op else { return Ok(fallback.to_string()) };
+    let Some(op) = op else {
+        return Ok(fallback.to_string());
+    };
     let raw = evaluate_operand(op, vars)?;
     let dest = normalize_virtual(&raw, Some(&op.span), &format!("{what} destination"))?;
     if dest.trailing_slash {
-        return Err(SitefileError::at(E_PATH, format!("{what} destination '{raw}' must be a file path, not a directory"), &op.span));
+        return Err(SitefileError::at(
+            E_PATH,
+            format!("{what} destination '{raw}' must be a file path, not a directory"),
+            &op.span,
+        ));
     }
     Ok(dest.path)
 }
@@ -737,7 +1065,11 @@ fn drafts_value(name: &str, op: &Operand, vars: &Env) -> Result<bool> {
     match evaluate_operand(op, vars)?.as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
-        raw => Err(SitefileError::at(E_VALIDATION, format!("IMPORT {name}: DRAFTS must be true or false, got '{raw}'"), &op.span)),
+        raw => Err(SitefileError::at(
+            E_VALIDATION,
+            format!("IMPORT {name}: DRAFTS must be true or false, got '{raw}'"),
+            &op.span,
+        )),
     }
 }
 
@@ -746,7 +1078,13 @@ fn page_size(op: &Operand, vars: &Env) -> Result<usize> {
     let raw = evaluate_operand(op, vars)?;
     let b = raw.as_bytes();
     if b.is_empty() || b.len() > 9 || b[0] == b'0' || !b.iter().all(u8::is_ascii_digit) {
-        return Err(SitefileError::at(E_VALIDATION, format!("RENDER … PAGE: '{raw}' is not a page size (a whole number from 1 to 999999999)"), &op.span));
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!(
+                "RENDER … PAGE: '{raw}' is not a page size (a whole number from 1 to 999999999)"
+            ),
+            &op.span,
+        ));
     }
     Ok(raw.parse().expect("digits"))
 }
@@ -755,19 +1093,37 @@ fn page_size(op: &Operand, vars: &Env) -> Result<usize> {
 fn schema_spec(name: &str, op: &Operand, vars: &Env, span: &SourceSpan) -> Result<ImportSchema> {
     let uri = evaluate_operand(op, vars)?;
     if url_scheme(&uri).is_some() {
-        return Err(SitefileError::at(E_PROTOCOL, format!("IMPORT {name}: SCHEMA must be a local file in the build context, not a URL"), &op.span));
+        return Err(SitefileError::at(
+            E_PROTOCOL,
+            format!("IMPORT {name}: SCHEMA must be a local file in the build context, not a URL"),
+            &op.span,
+        ));
     }
     let path = normalize_local(&uri, Some(&op.span))?.path;
     let lower = path.to_ascii_lowercase();
-    if ![".json", ".yaml", ".yml"].iter().any(|e| lower.ends_with(e)) {
-        return Err(SitefileError::at(E_VALIDATION, format!("IMPORT {name}: SCHEMA '{uri}' must be a .json, .yaml or .yml file"), &op.span));
+    if ![".json", ".yaml", ".yml"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+    {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("IMPORT {name}: SCHEMA '{uri}' must be a .json, .yaml or .yml file"),
+            &op.span,
+        ));
     }
-    Ok(ImportSchema { uri, path, span: span.clone() })
+    Ok(ImportSchema {
+        uri,
+        path,
+        span: span.clone(),
+    })
 }
 
 fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
     if crate::resources::git::is_git_uri(uri) {
-        return Ok(ImportLocation::Git(crate::resources::git::parse_git_uri(uri, Some(span))?));
+        return Ok(ImportLocation::Git(crate::resources::git::parse_git_uri(
+            uri,
+            Some(span),
+        )?));
     }
     if let Some(scheme) = url_scheme(uri) {
         let scheme = scheme.to_ascii_lowercase();
@@ -785,32 +1141,71 @@ fn classify_uri(uri: &str, span: &SourceSpan) -> Result<ImportLocation> {
             )),
         };
     }
-    Ok(ImportLocation::Local { path: normalize_local(uri, Some(span))?.path })
+    Ok(ImportLocation::Local {
+        path: normalize_local(uri, Some(span))?.path,
+    })
 }
 
 /// `image <ref> [AT <dir>]`: the reference must parse; a reference without a registry host names a local-store image.
-fn image_base(reference: &Operand, at: Option<&Operand>, vars: &Env, lead: &str) -> Result<StageBase> {
+fn image_base(
+    reference: &Operand,
+    at: Option<&Operand>,
+    vars: &Env,
+    lead: &str,
+) -> Result<StageBase> {
     let raw = evaluate_operand(reference, vars)?;
     let local = match crate::refs::parse_ref(&raw) {
         Ok(r) => r.registry.is_none(),
-        Err(e) => return Err(SitefileError::at(E_VALIDATION, format!("{lead} image: {}", e.detail), &reference.span)),
+        Err(e) => {
+            return Err(SitefileError::at(
+                E_VALIDATION,
+                format!("{lead} image: {}", e.detail),
+                &reference.span,
+            ))
+        }
     };
     let at = match at {
-        Some(op) => Some(normalize_virtual(&evaluate_operand(op, vars)?, Some(&op.span), "image directory")?.path),
+        Some(op) => Some(
+            normalize_virtual(
+                &evaluate_operand(op, vars)?,
+                Some(&op.span),
+                "image directory",
+            )?
+            .path,
+        ),
         None => None,
     };
-    Ok(StageBase::Image { reference: raw, local, at, lead: lead.to_string(), span: reference.span.clone() })
+    Ok(StageBase::Image {
+        reference: raw,
+        local,
+        at,
+        lead: lead.to_string(),
+        span: reference.span.clone(),
+    })
 }
 
 /// A bare identifier naming an earlier stage is a stage; anything else is a context-relative directory.
-fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String>, imports: &[ImportSpec], lead: &str) -> Result<StageBase> {
+fn stage_base(
+    op: &Operand,
+    vars: &Env,
+    earlier: &[Stage],
+    all: &BTreeSet<String>,
+    imports: &[ImportSpec],
+    lead: &str,
+) -> Result<StageBase> {
     let raw = evaluate_operand(op, vars)?;
-    if earlier.iter().any(|s| s.name.as_deref() == Some(raw.as_str())) {
+    if earlier
+        .iter()
+        .any(|s| s.name.as_deref() == Some(raw.as_str()))
+    {
         return Ok(StageBase::Stage { name: raw });
     }
     // `<import>+<stage>`: a stage of a Sitefile imported AS sitefile on an earlier line.
     if let Some((import, _)) = imported_stage(&raw) {
-        if imports.iter().any(|i| i.name == import && i.as_kind == Some(ImportKind::Sitefile)) {
+        if imports
+            .iter()
+            .any(|i| i.name == import && i.as_kind == Some(ImportKind::Sitefile))
+        {
             return Ok(StageBase::Stage { name: raw });
         }
     }
@@ -821,10 +1216,17 @@ fn stage_base(op: &Operand, vars: &Env, earlier: &[Stage], all: &BTreeSet<String
             &op.span,
         ));
     }
-    Ok(StageBase::Local { path: normalize_local(&raw, Some(&op.span))?.path })
+    Ok(StageBase::Local {
+        path: normalize_local(&raw, Some(&op.span))?.path,
+    })
 }
 
-fn source_ref(source: &Source, vars: &Env, imports: &[ImportSpec], from: Option<&StageRef>) -> Result<SourceRef> {
+fn source_ref(
+    source: &Source,
+    vars: &Env,
+    imports: &[ImportSpec],
+    from: Option<&StageRef>,
+) -> Result<SourceRef> {
     let op = match source {
         Source::Inline(b) => {
             return Ok(SourceRef::Inline {
@@ -839,8 +1241,17 @@ fn source_ref(source: &Source, vars: &Env, imports: &[ImportSpec], from: Option<
     let raw = evaluate_operand(op, vars)?;
     let span = op.span.clone();
     if let Some(from) = from {
-        let path = normalize_virtual(&raw, Some(&span), &format!("path inside stage '{}'", from.name))?.path;
-        return Ok(SourceRef::Stage { name: from.name.clone(), path, span });
+        let path = normalize_virtual(
+            &raw,
+            Some(&span),
+            &format!("path inside stage '{}'", from.name),
+        )?
+        .path;
+        return Ok(SourceRef::Stage {
+            name: from.name.clone(),
+            path,
+            span,
+        });
     }
     if url_scheme(&raw).is_some() {
         return Err(SitefileError::at(
@@ -862,9 +1273,16 @@ fn source_ref(source: &Source, vars: &Env, imports: &[ImportSpec], from: Option<
         } else {
             normalize_virtual(inner, Some(&span), &format!("path inside import '{name}'"))?.path
         };
-        return Ok(SourceRef::Import { name: name.to_string(), path, span });
+        return Ok(SourceRef::Import {
+            name: name.to_string(),
+            path,
+            span,
+        });
     }
-    Ok(SourceRef::Local { path: normalize_local(&raw, Some(&span))?.path, span })
+    Ok(SourceRef::Local {
+        path: normalize_local(&raw, Some(&span))?.path,
+        span,
+    })
 }
 
 /// A reference to a stage of an imported Sitefile (`FROM theme+assets`, `COPY --from=theme+assets …`).
@@ -883,7 +1301,12 @@ pub fn imported_stage_refs(stages: &[Stage]) -> Vec<ImportedStageRef> {
     let mut out = Vec::new();
     let mut add = |name: &str, span: &SourceSpan| {
         if let Some((import, stage)) = imported_stage(name) {
-            out.push(ImportedStageRef { name: name.to_string(), import: import.to_string(), stage: stage.to_string(), span: span.clone() });
+            out.push(ImportedStageRef {
+                name: name.to_string(),
+                import: import.to_string(),
+                stage: stage.to_string(),
+                span: span.clone(),
+            });
         }
     };
     for st in stages {
@@ -917,7 +1340,9 @@ fn operand_json(o: &Operand) -> Value {
         .iter()
         .map(|p| match p {
             TemplatePart::Text(t) => json!({ "kind": "text", "value": t }),
-            TemplatePart::Var { name, path, span } => json!({ "kind": "var", "name": name, "path": path, "span": span_json(span) }),
+            TemplatePart::Var { name, path, span } => {
+                json!({ "kind": "var", "name": name, "path": path, "span": span_json(span) })
+            }
         })
         .collect();
     json!({ "parts": parts, "span": span_json(&o.span) })
@@ -928,7 +1353,9 @@ fn js_number_json(n: f64) -> Value {
     if n.is_finite() && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
         return Value::from(n as i64);
     }
-    serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
+    serde_json::Number::from_f64(n)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 fn scalar_json(s: &Scalar) -> Value {
@@ -941,12 +1368,23 @@ fn scalar_json(s: &Scalar) -> Value {
 impl SourceRef {
     pub fn to_json(&self) -> Value {
         match self {
-            SourceRef::Inline { text, delimiter, body_line, span } => {
+            SourceRef::Inline {
+                text,
+                delimiter,
+                body_line,
+                span,
+            } => {
                 json!({ "kind": "inline", "text": text, "delimiter": delimiter, "bodyLine": body_line, "span": span_json(span) })
             }
-            SourceRef::Stage { name, path, span } => json!({ "kind": "stage", "name": name, "path": path, "span": span_json(span) }),
-            SourceRef::Local { path, span } => json!({ "kind": "local", "path": path, "span": span_json(span) }),
-            SourceRef::Import { name, path, span } => json!({ "kind": "import", "name": name, "path": path, "span": span_json(span) }),
+            SourceRef::Stage { name, path, span } => {
+                json!({ "kind": "stage", "name": name, "path": path, "span": span_json(span) })
+            }
+            SourceRef::Local { path, span } => {
+                json!({ "kind": "local", "path": path, "span": span_json(span) })
+            }
+            SourceRef::Import { name, path, span } => {
+                json!({ "kind": "import", "name": name, "path": path, "span": span_json(span) })
+            }
         }
     }
 }
@@ -982,10 +1420,16 @@ impl ImportSpec {
             m.insert("integrity".into(), json!(i));
         }
         if let Some(s) = &self.sort {
-            m.insert("sort".into(), json!({ "key": s.key, "descending": s.descending }));
+            m.insert(
+                "sort".into(),
+                json!({ "key": s.key, "descending": s.descending }),
+            );
         }
         if let Some(s) = &self.schema {
-            m.insert("schema".into(), json!({ "uri": s.uri, "path": s.path, "span": span_json(&s.span) }));
+            m.insert(
+                "schema".into(),
+                json!({ "uri": s.uri, "path": s.path, "span": span_json(&s.span) }),
+            );
         }
         if let Some(d) = self.drafts {
             m.insert("drafts".into(), json!(d));
@@ -993,7 +1437,12 @@ impl ImportSpec {
         if !self.secrets.is_empty() {
             m.insert(
                 "secrets".into(),
-                Value::Array(self.secrets.iter().map(|s| json!({ "id": s.id, "header": s.header, "bearer": s.bearer })).collect()),
+                Value::Array(
+                    self.secrets
+                        .iter()
+                        .map(|s| json!({ "id": s.id, "header": s.header, "bearer": s.bearer }))
+                        .collect(),
+                ),
             );
         }
         if !self.args.is_empty() {
@@ -1019,14 +1468,26 @@ impl Operation {
         let mut m = Map::new();
         m.insert("kind".into(), json!(self.keyword()));
         match self {
-            Operation::CheckLinks { warn, external, root, redirects, span } => {
+            Operation::CheckLinks {
+                warn,
+                external,
+                root,
+                redirects,
+                span,
+            } => {
                 m.insert("warn".into(), json!(warn));
                 m.insert("external".into(), json!(external));
                 m.insert("root".into(), json!(root));
                 m.insert("redirects".into(), json!(redirects));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Fingerprint { patterns, manifest, root, overwrite, span } => {
+            Operation::Fingerprint {
+                patterns,
+                manifest,
+                root,
+                overwrite,
+                span,
+            } => {
                 m.insert("patterns".into(), json!(patterns));
                 if let Some(d) = manifest {
                     m.insert("manifest".into(), json!(d));
@@ -1035,13 +1496,26 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Sitemap { base, dest, overwrite, span } => {
+            Operation::Sitemap {
+                base,
+                dest,
+                overwrite,
+                span,
+            } => {
                 m.insert("base".into(), json!(base));
                 m.insert("dest".into(), json!(dest));
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Feed { list, base, link, dest, title, overwrite, span } => {
+            Operation::Feed {
+                list,
+                base,
+                link,
+                dest,
+                title,
+                overwrite,
+                span,
+            } => {
                 m.insert("list".into(), json!(list));
                 m.insert("base".into(), json!(base));
                 m.insert("link".into(), operand_json(link));
@@ -1050,19 +1524,36 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Transform { source, plugin, dest, options, each, args, include, exclude, overwrite, span } => {
+            Operation::Transform {
+                source,
+                plugin,
+                dest,
+                options,
+                each,
+                args,
+                include,
+                exclude,
+                overwrite,
+                span,
+            } => {
                 if let Some(s) = source {
                     m.insert("source".into(), s.to_json());
                 }
                 m.insert("plugin".into(), json!(plugin));
                 m.insert("dest".into(), operand_json(dest));
-                let opts: Vec<Value> = options.iter().map(|o| json!({ "key": o.key, "value": operand_json(&o.value) })).collect();
+                let opts: Vec<Value> = options
+                    .iter()
+                    .map(|o| json!({ "key": o.key, "value": operand_json(&o.value) }))
+                    .collect();
                 m.insert("options".into(), Value::Array(opts));
                 if let Some(e) = each {
                     m.insert("each".into(), json!({ "as": e.as_name, "list": e.list }));
                 }
                 if let Some(a) = args {
-                    m.insert("args".into(), Value::Array(a.iter().map(operand_json).collect()));
+                    m.insert(
+                        "args".into(),
+                        Value::Array(a.iter().map(operand_json).collect()),
+                    );
                 }
                 if !include.is_empty() {
                     m.insert("include".into(), json!(include));
@@ -1073,7 +1564,16 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Copy { source, dest, dest_is_dir, overwrite, exclude, chmod, parents, span } => {
+            Operation::Copy {
+                source,
+                dest,
+                dest_is_dir,
+                overwrite,
+                exclude,
+                chmod,
+                parents,
+                span,
+            } => {
                 m.insert("source".into(), source.to_json());
                 m.insert("dest".into(), json!(dest));
                 m.insert("destIsDir".into(), json!(dest_is_dir));
@@ -1089,7 +1589,15 @@ impl Operation {
                 }
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Render { template, dest, each, escape, overwrite, inline_svg, span } => {
+            Operation::Render {
+                template,
+                dest,
+                each,
+                escape,
+                overwrite,
+                inline_svg,
+                span,
+            } => {
                 m.insert("template".into(), template.to_json());
                 m.insert("dest".into(), json!(dest));
                 if let Some(e) = each {
@@ -1134,7 +1642,13 @@ impl Stage {
                 StageBase::Scratch => json!({ "kind": "scratch" }),
                 StageBase::Local { path } => json!({ "kind": "local", "path": path }),
                 StageBase::Stage { name } => json!({ "kind": "stage", "name": name }),
-                StageBase::Image { reference, local, at, lead, span } => {
+                StageBase::Image {
+                    reference,
+                    local,
+                    at,
+                    lead,
+                    span,
+                } => {
                     let mut b = Map::new();
                     b.insert("kind".into(), json!("image"));
                     b.insert("ref".into(), json!(reference));
@@ -1148,7 +1662,10 @@ impl Stage {
                 }
             },
         );
-        m.insert("operations".into(), Value::Array(self.operations.iter().map(Operation::to_json).collect()));
+        m.insert(
+            "operations".into(),
+            Value::Array(self.operations.iter().map(Operation::to_json).collect()),
+        );
         m.insert("span".into(), span_json(&self.span));
         Value::Object(m)
     }
@@ -1157,7 +1674,9 @@ impl Stage {
 impl Plan {
     /// Variables in declaration order.
     pub fn ordered_vars(&self) -> impl Iterator<Item = (&str, &Scalar)> {
-        self.var_order.iter().filter_map(|n| self.vars.get(n).map(|v| (n.as_str(), v)))
+        self.var_order
+            .iter()
+            .filter_map(|n| self.vars.get(n).map(|v| (n.as_str(), v)))
     }
 
     /// The object `sitefile validate --json` prints: `{file, vars, imports, stages, export}` (and `target` with `--target`).
@@ -1187,7 +1706,10 @@ mod tests {
     use crate::language::validate::parse_program;
 
     fn args(pairs: &[(&str, &str)]) -> BuildArgs {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn plan_of(src: &str, a: &[(&str, &str)]) -> Result<Plan> {
@@ -1208,30 +1730,72 @@ mod tests {
             &[("TITLE", "Docs")],
         )
         .unwrap();
-        assert_eq!(p.vars.get("GREETING"), Some(&Scalar::Str("Welcome to Docs.".into())));
-        assert_eq!(p.ordered_vars().map(|(k, _)| k).collect::<Vec<_>>(), ["TITLE", "GREETING"]);
+        assert_eq!(
+            p.vars.get("GREETING"),
+            Some(&Scalar::Str("Welcome to Docs.".into()))
+        );
+        assert_eq!(
+            p.ordered_vars().map(|(k, _)| k).collect::<Vec<_>>(),
+            ["TITLE", "GREETING"]
+        );
         assert_eq!(p.stages.len(), 1);
         let ops = &p.stages[0].operations;
-        assert!(matches!(&ops[0], Operation::Copy { source: SourceRef::Local { path, .. }, dest, dest_is_dir: true, .. } if path == "public" && dest == "/"));
-        assert!(matches!(&ops[1], Operation::Render { template: SourceRef::Local { path, .. }, dest, escape: EscapeMode::Html, .. } if path == "templates/index.html" && dest == "/index.html"));
-        assert_eq!((p.export_path.as_str(), p.export_format), ("/", ExportFormat::Directory));
+        assert!(
+            matches!(&ops[0], Operation::Copy { source: SourceRef::Local { path, .. }, dest, dest_is_dir: true, .. } if path == "public" && dest == "/")
+        );
+        assert!(
+            matches!(&ops[1], Operation::Render { template: SourceRef::Local { path, .. }, dest, escape: EscapeMode::Html, .. } if path == "templates/index.html" && dest == "/index.html")
+        );
+        assert_eq!(
+            (p.export_path.as_str(), p.export_format),
+            ("/", ExportFormat::Directory)
+        );
         assert!(p.warnings.is_empty());
     }
 
     #[test]
     fn typed_args_and_missing_args() {
-        let p = plan_of("FROM scratch\nARG N: number = 3\nARG B: boolean = false\nEXPORT /", &[("N", "7")]).unwrap();
+        let p = plan_of(
+            "FROM scratch\nARG N: number = 3\nARG B: boolean = false\nEXPORT /",
+            &[("N", "7")],
+        )
+        .unwrap();
         assert_eq!(p.vars.get("N"), Some(&Scalar::Num(7.0)));
         assert_eq!(p.vars.get("B"), Some(&Scalar::Bool(false)));
-        plan_err("FROM scratch\nARG NAME\nEXPORT /", &[], E_MISSING_ARG, 2, "ARG NAME has no default; pass --build-arg NAME=<value>");
-        plan_err("FROM scratch\nARG N: number\nEXPORT /", &[("N", "abc")], E_TYPE, 2, "--build-arg N expects a number, got 'abc'");
-        plan_err("FROM scratch\nLET B: boolean = yes\nEXPORT /", &[], E_TYPE, 2, "LET B expects true or false");
+        plan_err(
+            "FROM scratch\nARG NAME\nEXPORT /",
+            &[],
+            E_MISSING_ARG,
+            2,
+            "ARG NAME has no default; pass --build-arg NAME=<value>",
+        );
+        plan_err(
+            "FROM scratch\nARG N: number\nEXPORT /",
+            &[("N", "abc")],
+            E_TYPE,
+            2,
+            "--build-arg N expects a number, got 'abc'",
+        );
+        plan_err(
+            "FROM scratch\nLET B: boolean = yes\nEXPORT /",
+            &[],
+            E_TYPE,
+            2,
+            "LET B expects true or false",
+        );
     }
 
     #[test]
     fn unknown_build_args_warn() {
-        let p = plan_of("FROM scratch\nARG A = 1\nEXPORT /", &[("EXTRA", "x"), ("A", "2")]).unwrap();
-        assert_eq!(p.warnings, ["--build-arg EXTRA does not match any ARG and was ignored"]);
+        let p = plan_of(
+            "FROM scratch\nARG A = 1\nEXPORT /",
+            &[("EXTRA", "x"), ("A", "2")],
+        )
+        .unwrap();
+        assert_eq!(
+            p.warnings,
+            ["--build-arg EXTRA does not match any ARG and was ignored"]
+        );
     }
 
     #[test]
@@ -1245,15 +1809,34 @@ mod tests {
         assert_eq!(p.vars.get("U"), Some(&Scalar::Str("y!".into())));
         assert_eq!((p.stages.len(), p.stages[0].span.line), (1, 2));
 
-        let p = plan_of("COPY ./a /a\nFROM scratch AS two\nCOPY ./b /b\nEXPORT /", &[]).unwrap();
+        let p = plan_of(
+            "COPY ./a /a\nFROM scratch AS two\nCOPY ./b /b\nEXPORT /",
+            &[],
+        )
+        .unwrap();
         assert_eq!(p.stages.len(), 2);
         assert_eq!(p.warnings, ["Sitefile:1: unnamed stage is not the last one, so its output can never be used; name it with FROM … AS <name>"]);
 
-        assert!(plan_of("FROM scratch\nEXPORT /", &[]).unwrap().warnings.is_empty());
-        assert!(plan_of("FROM scratch AS a\nFROM a\nEXPORT /", &[]).unwrap().warnings.is_empty());
-        let w = plan_of("FROM scratch\nFROM scratch\nFROM scratch AS c\nFROM c\nEXPORT /", &[("Z", "1")]).unwrap().warnings;
+        assert!(plan_of("FROM scratch\nEXPORT /", &[])
+            .unwrap()
+            .warnings
+            .is_empty());
+        assert!(plan_of("FROM scratch AS a\nFROM a\nEXPORT /", &[])
+            .unwrap()
+            .warnings
+            .is_empty());
+        let w = plan_of(
+            "FROM scratch\nFROM scratch\nFROM scratch AS c\nFROM c\nEXPORT /",
+            &[("Z", "1")],
+        )
+        .unwrap()
+        .warnings;
         assert_eq!(w.len(), 3);
-        assert!(w[0].starts_with("Sitefile:1: unnamed stage") && w[1].starts_with("Sitefile:2: unnamed stage") && w[2].contains("--build-arg Z"));
+        assert!(
+            w[0].starts_with("Sitefile:1: unnamed stage")
+                && w[1].starts_with("Sitefile:2: unnamed stage")
+                && w[2].contains("--build-arg Z")
+        );
     }
 
     #[test]
@@ -1264,74 +1847,234 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(p.imports[0].location, ImportLocation::Local { path: "site".into() });
-        assert_eq!(p.imports[1].location, ImportLocation::Remote { url: "https://example.com/demo.json".into() });
+        assert_eq!(
+            p.imports[0].location,
+            ImportLocation::Local {
+                path: "site".into()
+            }
+        );
+        assert_eq!(
+            p.imports[1].location,
+            ImportLocation::Remote {
+                url: "https://example.com/demo.json".into()
+            }
+        );
         assert_eq!(p.imports[1].uri, "https://example.com/demo.json");
         assert_eq!(p.warnings, ["Sitefile:5: INTEGRITY on a local import is checked but not recorded in the lockfile"]);
         let ops = &p.stages[0].operations;
-        assert!(matches!(&ops[0], Operation::Copy { source: SourceRef::Import { name, path, .. }, .. } if name == "site" && path == "/"));
-        assert!(matches!(&ops[1], Operation::Copy { source: SourceRef::Import { path, .. }, dest_is_dir: false, .. } if path == "/img/a.png"));
-        assert!(matches!(&ops[2], Operation::Copy { source: SourceRef::Local { path, .. }, .. } if path == "x:y"));
+        assert!(
+            matches!(&ops[0], Operation::Copy { source: SourceRef::Import { name, path, .. }, .. } if name == "site" && path == "/")
+        );
+        assert!(
+            matches!(&ops[1], Operation::Copy { source: SourceRef::Import { path, .. }, dest_is_dir: false, .. } if path == "/img/a.png")
+        );
+        assert!(
+            matches!(&ops[2], Operation::Copy { source: SourceRef::Local { path, .. }, .. } if path == "x:y")
+        );
         assert_eq!(p.export_path, "/out");
     }
 
     #[test]
     fn protocol_and_path_errors() {
-        plan_err("FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /", &[], E_PROTOCOL, 2, "unsupported protocol 'ftp:' (supported: https, git+https, relative paths)");
-        plan_err("FROM scratch\nIMPORT x FROM FILE:///etc/passwd\nEXPORT /", &[], E_PROTOCOL, 2, "file: URLs are not allowed");
-        plan_err("FROM scratch\nIMPORT x FROM ../up\nEXPORT /", &[], E_PATH_ESCAPE, 2, "escapes the build context");
-        plan_err("FROM scratch\nARG U = https://x/a\nCOPY ${U} /a\nEXPORT /", &[], E_VALIDATION, 3, "cannot read 'https://x/a' directly; IMPORT it under a name, then COPY name:");
-        plan_err("FROM scratch\nARG U = nope:a\nCOPY ${U} /a\nEXPORT /", &[], E_UNDEFINED, 3, "'nope:' does not name an IMPORT; write './nope:a' for a local file");
-        plan_err("FROM scratch\nCOPY a b\nEXPORT /", &[], E_PATH, 2, "COPY destination 'b' must be an absolute artifact path");
-        plan_err("FROM scratch\nRENDER ./t TO /d/\nEXPORT /", &[], E_PATH, 2, "RENDER destination '/d/' must be a file path, not a directory");
-        plan_err("FROM scratch\nCOPY <<E /dir/\nx\nE\nEXPORT /", &[], E_PATH, 2, "COPY of an inline body needs a file destination");
-        plan_err("FROM scratch\nEXPORT / AT /srv", &[], E_VALIDATION, 2, "EXPORT ... AT applies only to AS oci");
-        plan_err("FROM scratch\nEXPORT / AS zip COMPRESSION none", &[], E_VALIDATION, 2, "EXPORT ... COMPRESSION applies only to AS oci");
+        plan_err(
+            "FROM scratch\nIMPORT x FROM ftp://example.com/a\nEXPORT /",
+            &[],
+            E_PROTOCOL,
+            2,
+            "unsupported protocol 'ftp:' (supported: https, git+https, relative paths)",
+        );
+        plan_err(
+            "FROM scratch\nIMPORT x FROM FILE:///etc/passwd\nEXPORT /",
+            &[],
+            E_PROTOCOL,
+            2,
+            "file: URLs are not allowed",
+        );
+        plan_err(
+            "FROM scratch\nIMPORT x FROM ../up\nEXPORT /",
+            &[],
+            E_PATH_ESCAPE,
+            2,
+            "escapes the build context",
+        );
+        plan_err(
+            "FROM scratch\nARG U = https://x/a\nCOPY ${U} /a\nEXPORT /",
+            &[],
+            E_VALIDATION,
+            3,
+            "cannot read 'https://x/a' directly; IMPORT it under a name, then COPY name:",
+        );
+        plan_err(
+            "FROM scratch\nARG U = nope:a\nCOPY ${U} /a\nEXPORT /",
+            &[],
+            E_UNDEFINED,
+            3,
+            "'nope:' does not name an IMPORT; write './nope:a' for a local file",
+        );
+        plan_err(
+            "FROM scratch\nCOPY a b\nEXPORT /",
+            &[],
+            E_PATH,
+            2,
+            "COPY destination 'b' must be an absolute artifact path",
+        );
+        plan_err(
+            "FROM scratch\nRENDER ./t TO /d/\nEXPORT /",
+            &[],
+            E_PATH,
+            2,
+            "RENDER destination '/d/' must be a file path, not a directory",
+        );
+        plan_err(
+            "FROM scratch\nCOPY <<E /dir/\nx\nE\nEXPORT /",
+            &[],
+            E_PATH,
+            2,
+            "COPY of an inline body needs a file destination",
+        );
+        plan_err(
+            "FROM scratch\nEXPORT / AT /srv",
+            &[],
+            E_VALIDATION,
+            2,
+            "EXPORT ... AT applies only to AS oci",
+        );
+        plan_err(
+            "FROM scratch\nEXPORT / AS zip COMPRESSION none",
+            &[],
+            E_VALIDATION,
+            2,
+            "EXPORT ... COMPRESSION applies only to AS oci",
+        );
         let p = plan_of("FROM scratch\nEXPORT / AS oci COMPRESSION none", &[]).unwrap();
         assert_eq!(p.export_compression, Some(OciCompression::None));
-        assert_eq!(plan_of("FROM scratch\nEXPORT / AS oci", &[]).unwrap().export_compression, None);
+        assert_eq!(
+            plan_of("FROM scratch\nEXPORT / AS oci", &[])
+                .unwrap()
+                .export_compression,
+            None
+        );
     }
 
     #[test]
     fn plugins_and_tools() {
         let p = plan_of("FROM scratch\nPLUGIN a FROM ./plugins/a.mjs\nPLUGIN w FROM plugins/./w.wasm\nTOOL t\nTRANSFORM ./x WITH a TO /x OPTIONS k=v\nTRANSFORM ./y WITH t TO /y ARGS {input} {output}\nEXPORT /", &[]).unwrap();
-        assert_eq!(p.plugins.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(), ["plugins/a.mjs", "plugins/w.wasm"]);
+        assert_eq!(
+            p.plugins
+                .iter()
+                .map(|x| x.path.as_str())
+                .collect::<Vec<_>>(),
+            ["plugins/a.mjs", "plugins/w.wasm"]
+        );
         assert_eq!(p.tools[0].name, "t");
         let ops = &p.stages[0].operations;
-        assert!(matches!(&ops[0], Operation::Transform { source: Some(SourceRef::Local { path, .. }), options, args: None, .. } if path == "x" && options[0].key == "k"));
+        assert!(
+            matches!(&ops[0], Operation::Transform { source: Some(SourceRef::Local { path, .. }), options, args: None, .. } if path == "x" && options[0].key == "k")
+        );
         assert!(matches!(&ops[1], Operation::Transform { args: Some(a), .. } if a.len() == 2));
-        plan_err("FROM scratch\nPLUGIN a FROM https://x/a.mjs\nEXPORT /", &[], E_PROTOCOL, 2, "PLUGIN a: plugins must be local files in the build context, not URLs");
-        plan_err("FROM scratch\nPLUGIN a FROM ./a.js\nEXPORT /", &[], E_VALIDATION, 2, "PLUGIN a: './a.js' must be an ES module (.mjs) or a WebAssembly module (.wasm)");
+        plan_err(
+            "FROM scratch\nPLUGIN a FROM https://x/a.mjs\nEXPORT /",
+            &[],
+            E_PROTOCOL,
+            2,
+            "PLUGIN a: plugins must be local files in the build context, not URLs",
+        );
+        plan_err(
+            "FROM scratch\nPLUGIN a FROM ./a.js\nEXPORT /",
+            &[],
+            E_VALIDATION,
+            2,
+            "PLUGIN a: './a.js' must be an ES module (.mjs) or a WebAssembly module (.wasm)",
+        );
     }
 
     #[test]
     fn from_image_bases() {
         let p = plan_of("ARG V=2\nSTAGE t FROM image ghcr.io/me/theme:${V} AT /srv//www/\nFROM image theme:1 AS l\nFROM t\nEXPORT /", &[]).unwrap();
         match &p.stages[0].base {
-            StageBase::Image { reference, local, at, lead, span } => {
-                assert_eq!((reference.as_str(), *local, at.as_deref(), lead.as_str(), span.line, span.column), ("ghcr.io/me/theme:2", false, Some("/srv/www"), "STAGE t FROM", 2, 20));
+            StageBase::Image {
+                reference,
+                local,
+                at,
+                lead,
+                span,
+            } => {
+                assert_eq!(
+                    (
+                        reference.as_str(),
+                        *local,
+                        at.as_deref(),
+                        lead.as_str(),
+                        span.line,
+                        span.column
+                    ),
+                    (
+                        "ghcr.io/me/theme:2",
+                        false,
+                        Some("/srv/www"),
+                        "STAGE t FROM",
+                        2,
+                        20
+                    )
+                );
             }
             b => panic!("{b:?}"),
         }
-        assert!(matches!(&p.stages[1].base, StageBase::Image { local: true, at: None, lead, .. } if lead == "FROM"));
+        assert!(
+            matches!(&p.stages[1].base, StageBase::Image { local: true, at: None, lead, .. } if lead == "FROM")
+        );
         assert_eq!(p.stages[2].base, StageBase::Stage { name: "t".into() });
-        plan_err("FROM image Bad:1\nEXPORT /", &[], E_VALIDATION, 1, "FROM image: invalid image reference 'Bad:1'");
-        plan_err("FROM image t:1 AT rel\nEXPORT /", &[], E_PATH, 1, "image directory 'rel' must be an absolute artifact path");
+        plan_err(
+            "FROM image Bad:1\nEXPORT /",
+            &[],
+            E_VALIDATION,
+            1,
+            "FROM image: invalid image reference 'Bad:1'",
+        );
+        plan_err(
+            "FROM image t:1 AT rel\nEXPORT /",
+            &[],
+            E_PATH,
+            1,
+            "image directory 'rel' must be an absolute artifact path",
+        );
     }
 
     #[test]
     fn stages_and_from() {
         let p = plan_of("FROM ./base AS a\nCOPY ./x /x\nFROM a AS b\nCOPY --from=a /x /y\nFROM scratch\nCOPY --from=b /y/ /\nEXPORT /", &[]).unwrap();
         assert_eq!(p.stages.len(), 3);
-        assert_eq!(p.stages[0].base, StageBase::Local { path: "base".into() });
+        assert_eq!(
+            p.stages[0].base,
+            StageBase::Local {
+                path: "base".into()
+            }
+        );
         assert_eq!(p.stages[1].base, StageBase::Stage { name: "a".into() });
         assert_eq!(p.stages[2].base, StageBase::Scratch);
-        assert!(matches!(&p.stages[1].operations[0], Operation::Copy { source: SourceRef::Stage { name, path, .. }, .. } if name == "a" && path == "/x"));
+        assert!(
+            matches!(&p.stages[1].operations[0], Operation::Copy { source: SourceRef::Stage { name, path, .. }, .. } if name == "a" && path == "/x")
+        );
         // a stage name reached through a variable is still checked
-        plan_err("ARG S = later\nFROM ${S}\nFROM scratch AS later\nEXPORT /", &[], E_UNDEFINED, 2, "FROM later: stage 'later' is not defined before this line");
-        plan_err("ARG S = later\nSTAGE x FROM ${S}\nSTAGE later\nEXPORT /", &[], E_UNDEFINED, 2, "STAGE x FROM later: stage 'later' is not defined before this line");
+        plan_err(
+            "ARG S = later\nFROM ${S}\nFROM scratch AS later\nEXPORT /",
+            &[],
+            E_UNDEFINED,
+            2,
+            "FROM later: stage 'later' is not defined before this line",
+        );
+        plan_err(
+            "ARG S = later\nSTAGE x FROM ${S}\nSTAGE later\nEXPORT /",
+            &[],
+            E_UNDEFINED,
+            2,
+            "STAGE x FROM later: stage 'later' is not defined before this line",
+        );
         let p = plan_of("STAGE a\nSTAGE b FROM a\nFROM scratch\nEXPORT /", &[]).unwrap();
-        assert_eq!(p.stages.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), [Some("a".to_string()), Some("b".to_string()), None]);
+        assert_eq!(
+            p.stages.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            [Some("a".to_string()), Some("b".to_string()), None]
+        );
         let p = plan_of("ARG D = .\nFROM ${D}\nEXPORT /", &[]).unwrap();
         assert_eq!(p.stages[0].base, StageBase::Local { path: "".into() });
     }
@@ -1339,11 +2082,24 @@ mod tests {
     #[test]
     fn render_for_and_inline() {
         let p = plan_of("FROM scratch\nIMPORT posts FROM ./p AS markdown SORT BY date DESC\nRENDER ./t TO /p/${post.slug}.html FOR post IN posts\nRENDER <<T TO /i.html\nhi\nT\nEXPORT / AS oci AT /srv/www/", &[]).unwrap();
-        assert_eq!(p.imports[0].sort, Some(ImportSort { key: "date".into(), descending: true }));
+        assert_eq!(
+            p.imports[0].sort,
+            Some(ImportSort {
+                key: "date".into(),
+                descending: true
+            })
+        );
         let ops = &p.stages[0].operations;
-        assert!(matches!(&ops[0], Operation::Render { dest, each: Some(e), .. } if dest.is_empty() && e.as_name == "post" && e.list == "posts"));
-        assert!(matches!(&ops[1], Operation::Render { template: SourceRef::Inline { text, delimiter, body_line: 5, .. }, .. } if text == "hi\n" && delimiter == "T"));
-        assert_eq!((p.export_format, p.export_root.as_deref()), (ExportFormat::Oci, Some("/srv/www")));
+        assert!(
+            matches!(&ops[0], Operation::Render { dest, each: Some(e), .. } if dest.is_empty() && e.as_name == "post" && e.list == "posts")
+        );
+        assert!(
+            matches!(&ops[1], Operation::Render { template: SourceRef::Inline { text, delimiter, body_line: 5, .. }, .. } if text == "hi\n" && delimiter == "T")
+        );
+        assert_eq!(
+            (p.export_format, p.export_root.as_deref()),
+            (ExportFormat::Oci, Some("/srv/www"))
+        );
     }
 
     #[test]
@@ -1351,37 +2107,134 @@ mod tests {
         let p = plan_of("ARG URL = \"https://x.example/\"\nSITEMAP BASE ${URL}\nREDIRECT /a /b\nHEADER /* X-A: 1\nEXPORT /", &[]).unwrap();
         assert_eq!(
             p.stages[0].operations[0],
-            Operation::Sitemap { base: "https://x.example".into(), dest: "/sitemap.xml".into(), overwrite: false, span: SourceSpan::new("Sitefile", 2, 1) }
+            Operation::Sitemap {
+                base: "https://x.example".into(),
+                dest: "/sitemap.xml".into(),
+                overwrite: false,
+                span: SourceSpan::new("Sitefile", 2, 1)
+            }
         );
-        assert_eq!((p.redirects[0].from.as_str(), p.redirects[0].to.as_str(), p.redirects[0].status), ("/a", "/b", 301));
-        assert_eq!((p.headers[0].pattern.as_str(), p.headers[0].name.as_str(), p.headers[0].value.as_str()), ("/*", "X-A", "1"));
+        assert_eq!(
+            (
+                p.redirects[0].from.as_str(),
+                p.redirects[0].to.as_str(),
+                p.redirects[0].status
+            ),
+            ("/a", "/b", 301)
+        );
+        assert_eq!(
+            (
+                p.headers[0].pattern.as_str(),
+                p.headers[0].name.as_str(),
+                p.headers[0].value.as_str()
+            ),
+            ("/*", "X-A", "1")
+        );
         let j = p.stages[0].operations[0].to_json();
-        assert_eq!(j.as_object().unwrap().keys().collect::<Vec<_>>(), ["kind", "base", "dest", "overwrite", "span"]);
+        assert_eq!(
+            j.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["kind", "base", "dest", "overwrite", "span"]
+        );
         let cases: [(&str, ErrorCode, &str); 16] = [
-            ("SITEMAP BASE ftp://x", E_VALIDATION, "must be an absolute http(s) URL"),
-            ("SITEMAP BASE https://u@x", E_VALIDATION, "must be an absolute http(s) URL"),
-            ("SITEMAP BASE https://x/?q", E_VALIDATION, "must be an absolute http(s) URL"),
-            ("SITEMAP BASE https://", E_VALIDATION, "must be an absolute http(s) URL"),
-            ("SITEMAP BASE https://x TO /maps/", E_PATH, "must be a file path"),
-            ("SITEMAP BASE https://x TO maps.xml", E_PATH, "must be an absolute artifact path"),
-            ("REDIRECT old /b", E_VALIDATION, "REDIRECT source 'old' must be an absolute path"),
-            ("REDIRECT \"/a b\" /b", E_VALIDATION, "must not contain spaces or control characters"),
-            ("REDIRECT /a \"/b\\nX-Evil: 1\"", E_VALIDATION, "REDIRECT target must not contain"),
-            ("REDIRECT /a b", E_VALIDATION, "must be an absolute path or an http(s) URL"),
-            ("REDIRECT /a javascript:alert(1)", E_VALIDATION, "must be an absolute path or an http(s) URL"),
-            ("HEADER /* \"X A:\" 1", E_VALIDATION, "HEADER name must not contain spaces"),
-            ("HEADER /* X(A): 1", E_VALIDATION, "HEADER name 'X(A)' is not a valid header name"),
-            ("HEADER /* X-A: \"1\\nSet-Cookie: a=b\"", E_VALIDATION, "must not contain control characters"),
+            (
+                "SITEMAP BASE ftp://x",
+                E_VALIDATION,
+                "must be an absolute http(s) URL",
+            ),
+            (
+                "SITEMAP BASE https://u@x",
+                E_VALIDATION,
+                "must be an absolute http(s) URL",
+            ),
+            (
+                "SITEMAP BASE https://x/?q",
+                E_VALIDATION,
+                "must be an absolute http(s) URL",
+            ),
+            (
+                "SITEMAP BASE https://",
+                E_VALIDATION,
+                "must be an absolute http(s) URL",
+            ),
+            (
+                "SITEMAP BASE https://x TO /maps/",
+                E_PATH,
+                "must be a file path",
+            ),
+            (
+                "SITEMAP BASE https://x TO maps.xml",
+                E_PATH,
+                "must be an absolute artifact path",
+            ),
+            (
+                "REDIRECT old /b",
+                E_VALIDATION,
+                "REDIRECT source 'old' must be an absolute path",
+            ),
+            (
+                "REDIRECT \"/a b\" /b",
+                E_VALIDATION,
+                "must not contain spaces or control characters",
+            ),
+            (
+                "REDIRECT /a \"/b\\nX-Evil: 1\"",
+                E_VALIDATION,
+                "REDIRECT target must not contain",
+            ),
+            (
+                "REDIRECT /a b",
+                E_VALIDATION,
+                "must be an absolute path or an http(s) URL",
+            ),
+            (
+                "REDIRECT /a javascript:alert(1)",
+                E_VALIDATION,
+                "must be an absolute path or an http(s) URL",
+            ),
+            (
+                "HEADER /* \"X A:\" 1",
+                E_VALIDATION,
+                "HEADER name must not contain spaces",
+            ),
+            (
+                "HEADER /* X(A): 1",
+                E_VALIDATION,
+                "HEADER name 'X(A)' is not a valid header name",
+            ),
+            (
+                "HEADER /* X-A: \"1\\nSet-Cookie: a=b\"",
+                E_VALIDATION,
+                "must not contain control characters",
+            ),
             ("HEADER /* X-A: \" \"", E_VALIDATION, "the value is empty"),
-            ("HEADER assets/* X-A: 1", E_VALIDATION, "HEADER path pattern"),
+            (
+                "HEADER assets/* X-A: 1",
+                E_VALIDATION,
+                "HEADER path pattern",
+            ),
         ];
         for (src, code, contains) in cases {
             plan_err(&format!("{src}\nEXPORT /"), &[], code, 1, contains);
         }
         let p = plan_of("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x/ LINK /p/${item.slug}.html\nEXPORT /", &[]).unwrap();
         let j = p.stages[0].operations[0].to_json();
-        assert_eq!(j.as_object().unwrap().keys().collect::<Vec<_>>(), ["kind", "list", "base", "link", "dest", "title", "overwrite", "span"]);
-        assert_eq!((j["dest"].as_str(), j["title"].as_str()), (Some("/feed.xml"), Some("https://x")));
+        assert_eq!(
+            j.as_object().unwrap().keys().collect::<Vec<_>>(),
+            [
+                "kind",
+                "list",
+                "base",
+                "link",
+                "dest",
+                "title",
+                "overwrite",
+                "span"
+            ]
+        );
+        assert_eq!(
+            (j["dest"].as_str(), j["title"].as_str()),
+            (Some("/feed.xml"), Some("https://x"))
+        );
     }
 
     #[test]
@@ -1398,15 +2251,35 @@ mod tests {
     fn target_plan_keeps_stages_up_to_the_target() {
         let p = plan_of("STAGE a\nCOPY ./x /x\nSTAGE b FROM a\nREDIRECT /o /n\nHEADER /* X-A: 1\nEXPORT /site AS zip", &[]).unwrap();
         let t = target_plan(p.clone(), "a").unwrap();
-        assert_eq!(t.stages.iter().map(|s| s.name.as_deref()).collect::<Vec<_>>(), [Some("a")]);
-        assert_eq!((t.export_path.as_str(), t.export_format), ("/", ExportFormat::Zip));
+        assert_eq!(
+            t.stages
+                .iter()
+                .map(|s| s.name.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("a")]
+        );
+        assert_eq!(
+            (t.export_path.as_str(), t.export_format),
+            ("/", ExportFormat::Zip)
+        );
         assert!(t.redirects.is_empty() && t.headers.is_empty());
         assert_eq!(t.target.as_deref(), Some("a"));
-        assert!(serde_json::to_string(&t.validate_json()).unwrap().ends_with(r#""export":"/","target":"a"}"#));
+        assert!(serde_json::to_string(&t.validate_json())
+            .unwrap()
+            .ends_with(r#""export":"/","target":"a"}"#));
         assert_eq!(target_plan(p.clone(), "b").unwrap().stages.len(), 2);
         let e = target_plan(p, "c").unwrap_err();
-        assert_eq!((e.code, e.detail.as_str()), (ErrorCode::E_USAGE, "--target 'c' does not name a stage (stages: a, b)"));
+        assert_eq!(
+            (e.code, e.detail.as_str()),
+            (
+                ErrorCode::E_USAGE,
+                "--target 'c' does not name a stage (stages: a, b)"
+            )
+        );
         let unnamed = plan_of("FROM scratch\nEXPORT /", &[]).unwrap();
-        assert!(target_plan(unnamed, "a").unwrap_err().detail.contains("the Sitefile has no named stages"));
+        assert!(target_plan(unnamed, "a")
+            .unwrap_err()
+            .detail
+            .contains("the Sitefile has no named stages"));
     }
 }

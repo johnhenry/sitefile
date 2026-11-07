@@ -1,8 +1,14 @@
 # Sitefile
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fsitefile.svg)](https://www.npmjs.com/package/@johnhenry/sitefile)
+[![CI](https://github.com/johnhenry/sitefile/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhenry/sitefile/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fsitefile.svg)](LICENSE)
+
+Full documentation: [opensource.johnhenry.me/sitefile](https://opensource.johnhenry.me/sitefile/)
+
 Docker-inspired static artifact builder. Compose immutable filesystem trees from
 local and remote sources, render templates, and export a deployable directory —
-no container runtime, no shell.
+no container runtime, no shell, no runtime dependencies.
 
 ```
 # examples/hello/Sitefile
@@ -14,12 +20,48 @@ EXPORT / AS directory
 ```
 
 ```bash
-npm install && npm run build
-node lib/src/cli.js build examples/hello --build-arg TITLE="My site"
+sitefile build examples/hello --build-arg TITLE="My site"
 ```
 
 This writes `examples/hello/dist/index.html` (with the title substituted) and
 `examples/hello/dist/style.css`.
+
+## Contents
+
+- [Install](#install)
+- [Status](#status)
+- [CLI](#cli)
+- [Variants: `sitefile bake`](#variants-sitefile-bake)
+- [Watch mode](#watch-mode)
+- [Profiling a build](#profiling-a-build)
+- [Images and servers](#images-and-servers)
+- [Export formats](#export-formats)
+- [Rust implementation](#rust-implementation)
+- [Editor support](#editor-support)
+- [Docs](#docs)
+- [Development](#development)
+- [Adding a new plugin](#adding-a-new-plugin)
+- [Security model](#security-model)
+- [Family](#family)
+- [License](#license)
+
+## Install
+
+```bash
+npm install -g @johnhenry/sitefile   # the `sitefile` command (TypeScript implementation)
+npx @johnhenry/sitefile build .      # or without installing
+```
+
+Requires Node.js 26 or later; the npm package has no runtime dependencies.
+The Rust binary (faster, and the one that provides `sitefile lsp` for editors)
+builds from this repository: `cargo install --path rust`. Prebuilt binaries are
+not published yet (johnhenry/sitefile#69).
+
+`@johnhenry/sitefile` is a new package: it was never published to npm under any
+name, and `0.0.0` is its first version.
+
+The library API is the same engine the CLI uses (`import { … } from
+"@johnhenry/sitefile"`); see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Status
 
@@ -225,46 +267,12 @@ move images to and from any OCI registry. `--provenance` and `--sbom` attach a S
 CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed with it; the image ID does not change). See
 [docs/CLI.md](docs/CLI.md).
 
-## Safety defaults
-
-- Local reads stay inside the build context (no `..`, absolute paths or symlinks out).
-  Hard-linked files are refused (`E_HARDLINK`) unless `--allow-hardlinks`, since a
-  hard link can alias a file outside the context.
-- A `.sitefileignore` (gitignore-style subset) at the context root excludes files
-  from directory copies; explicitly named files are never ignored.
-- Remote imports are `https:` only, to public addresses only (checked at connect
-  time and on every redirect), size- and time-limited, never decompressed or executed.
-- Unpinned URLs are recorded in `Sitefile.lock` and must match on later builds.
-  `--strict-pins` refuses any remote import or BASE image that is not pinned
-  (`INTEGRITY`, `@sha256:` or a lockfile entry), for reproducible CI builds.
-- `IMPORT … FROM git+https://host/repo.git#ref:path` imports from Git without running
-  `git`: protocol v2 over the same HTTPS client and policy, every object's SHA-1 checked,
-  the commit recorded in `Sitefile.lock`, symlinks kept inside the tree, submodules
-  refused; `sitefile build https://host/repo.git#ref:dir` builds a repository
-  ([docs/LANGUAGE.md](docs/LANGUAGE.md#git-sources-githttps)).
-- Private APIs and repositories: `--secret id=token,env=API_TOKEN` with
-  `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`). Secrets go only to the
-  import's own origin and never into the output, caches, `Sitefile.lock`, vendor files,
-  provenance, traces or messages.
-- `sitefile vendor` stores every remote import (and the BASE image's blobs) under
-  `vendor/sitefile/` by content digest; builds then read them from there, verified,
-  with no network access ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
-- Writing different content to an existing path fails unless `--overwrite` is given.
-  Two output paths that differ only in case (`/A.html`, `/a.html`) always fail
-  (`E_PATH_COLLISION`), and every path is Unicode NFC, so a build gives the same
-  files and image IDs on macOS, Windows and Linux.
-- Export is staged in a temporary sibling and swapped in; a non-empty destination
-  outside the context is only replaced with `--force`.
-- Archive exports (`zip`, `tar`, `tgz`, `wbn`) write one file via a temporary sibling and
-  rename; `--out` may not be the context, its parent, root or home, nor a directory or
-  symlink, and an existing file outside the context needs `--force`.
-
 ## Export formats
 
 ```bash
-node lib/src/cli.js build examples/hello --format zip     # examples/hello/dist.zip
-node lib/src/cli.js build examples/hello -o hello.tar.gz      # format from the extension
-node lib/src/cli.js build examples/hello --format wbn --base-url https://example.com/
+sitefile build examples/hello --format zip     # examples/hello/dist.zip
+sitefile build examples/hello -o hello.tar.gz      # format from the extension
+sitefile build examples/hello --format wbn --base-url https://example.com/
 ```
 
 Archives are reproducible: sorted entries, fixed timestamps (or `SOURCE_DATE_EPOCH`),
@@ -318,11 +326,151 @@ stopgap in VS Code.
 - [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)
-- [AGENTS.md](AGENTS.md) — rules for coding agents working on this repo
+- [AGENTS.md](AGENTS.md) — the verification loop and rules for anyone (human or agent) changing this repo
 
 ## Development
 
 ```bash
-npm test        # compile with tsc, then run node:test suites
+npm ci
+npm test                 # compile with tsc, then run node:test suites
 npm run typecheck
+(cd rust && cargo build --release && cargo test --release)
+npm run conformance      # both implementations on every example and case
 ```
+
+From a clone, `node lib/src/cli.js` runs the TypeScript CLI after `npm run build`.
+See [AGENTS.md](AGENTS.md) for the full verification loop CI runs.
+
+## Adding a new plugin
+
+A plugin is a custom renderer that `TRANSFORM` calls. Write one ES module in its
+own folder that exports `transform(request)` and returns the bytes of the output
+file (or `{ files }` for several), declare it with `PLUGIN`, and allow it when you
+build:
+
+```js
+// plugins/upper/upper.mjs
+export const apiVersion = 1;
+export async function transform(request) {
+  return { bytes: (request.input?.text ?? '').toUpperCase() };
+}
+```
+
+```
+PLUGIN upper FROM ./plugins/upper/upper.mjs
+TRANSFORM ./title.txt WITH upper TO /title.txt
+```
+
+```bash
+sitefile build --allow-plugin upper
+```
+
+A WebAssembly plugin that imports nothing needs no flag. The request shape, the
+directory form (one call per file), the ABI for `.wasm` plugins, caching and the
+first-party image plugin are in [docs/PLUGINS.md](docs/PLUGINS.md); a complete
+example is `examples/motion/`. Run an external program instead with `TOOL` and
+`--allow-exec` (same document).
+
+## Security model
+
+A Sitefile can come from someone else (a Git URL, a theme image, a shared
+stage), so building one is treated as running untrusted input. Templates,
+imports and WebAssembly plugins are data; JavaScript plugins and external
+tools are code, and run only when you name them on the command line.
+
+**What Sitefile guarantees:**
+
+- **Local reads stay inside the build context.** No `..`, absolute paths or
+  symlinks out; hard-linked files are refused (`E_HARDLINK`) unless
+  `--allow-hardlinks`, since a hard link can alias a file outside the context.
+  A `.sitefileignore` (gitignore-style subset) at the context root excludes files
+  from directory copies; explicitly named files are never ignored.
+- **Remote imports are `https:` only, to public addresses only** — checked at
+  connect time and on every redirect (SSRF), size- and time-limited, never
+  decompressed or executed. `--allow-http` and `--allow-private-network` are the
+  only ways to widen this.
+- **Pins are enforced.** Unpinned URLs are recorded in `Sitefile.lock` and must
+  match on later builds; `--strict-pins` refuses any remote import or BASE image
+  that is not pinned (`INTEGRITY`, `@sha256:` or a lockfile entry).
+- **Git imports run no `git`.** `IMPORT … FROM git+https://host/repo.git#ref:path`
+  speaks protocol v2 over the same HTTPS client and policy, checks every object's
+  SHA-1, records the commit in `Sitefile.lock`, keeps symlinks inside the tree and
+  refuses submodules ([docs/LANGUAGE.md](docs/LANGUAGE.md#git-sources-githttps)).
+- **Secrets go only where they are sent.** `--secret id=token,env=API_TOKEN` with
+  `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`) sends the secret
+  only to that import's own origin, and never into the output, caches,
+  `Sitefile.lock`, vendor files, provenance, traces or messages.
+- **Nothing executes unless you allow it by name.** A JavaScript `PLUGIN` runs
+  only with `--allow-plugin <name>`, in its own Node process under Node's
+  permission model (read access to its own folder only, no writes, network,
+  processes or environment); a `TOOL` runs only with `--allow-exec <name>`, argv
+  only, no shell, scrubbed environment. The Sitefile cannot allow itself. A
+  WebAssembly plugin must import nothing (checked before the build starts) and
+  runs with a time and memory limit, so it needs no flag
+  ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **No silent overwrites.** Writing different content to an existing path fails
+  unless `--overwrite` is given. Two output paths that differ only in case
+  (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is
+  Unicode NFC, so a build gives the same files and image IDs on macOS, Windows
+  and Linux.
+- **Exports are atomic.** A directory export is staged in a temporary sibling and
+  swapped in; a non-empty destination outside the context is only replaced with
+  `--force`. Archive exports (`zip`, `tar`, `tgz`, `wbn`) write one file via a
+  temporary sibling and rename; `--out` may not be the context, its parent, root
+  or home, nor a directory or symlink, and an existing file outside the context
+  needs `--force`.
+- **Offline builds are verified.** `sitefile vendor` stores every remote import
+  (and the BASE image's blobs) under `vendor/sitefile/` by content digest; builds
+  then read them from there, verified, with no network access
+  ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
+- **`sitefile serve` listens on `127.0.0.1`**, GET/HEAD only, no directory
+  listings, unless `-p` names another address.
+
+**What is still yours:**
+
+- **What you allow is trusted code.** Node calls its permission model a "seat
+  belt" for trusted code, not a defence against deliberately malicious code.
+  `--allow-plugin`/`--allow-plugins` on a Sitefile you did not write runs its
+  author's JavaScript on your machine; `--allow-exec` runs a program on your
+  `PATH` with the arguments the Sitefile chose. Read them first.
+- **The content of what you build.** `RENDER --escape=html` escapes template
+  values; `${x|raw}` and templates without it do not. Markdown and data you
+  import from elsewhere end up in your pages as written.
+- **Unpinned remote content.** The lockfile catches a change; it does not tell
+  you whether the first version you locked was the one you meant. Use
+  `INTEGRITY`, `@sha256:` and `--strict-pins` for builds that must be
+  reproducible.
+- **Web Bundles are unsigned.** `EXPORT … AS wbn` writes an unsigned b2 bundle;
+  signing (for example for an Isolated Web App) happens outside Sitefile.
+- **Widening flags are yours to justify.** `--allow-http`,
+  `--allow-private-network`, `--allow-hardlinks`, `--force` and `serve -p
+  0.0.0.0:…` each turn off one of the guarantees above for that build.
+
+## Family
+
+Sitefile is the build orchestrator of the @johnhenry family's static tools. It
+runs the pipeline (pinned imports, stages, templates, sandboxed plugins, checks,
+exports); its siblings write file trees in code and serve the result. It has no
+runtime dependency on either: they meet at file formats, a directory or a `.wbn`
+Web Bundle.
+
+- **[`@johnhenry/fileable`](https://github.com/johnhenry/fileable)** -- writes
+  file trees in JSX (`Dir`, `File`, `Rm`), for scaffolding and codegen. A
+  fileable build's output directory, or its `encode="zip"` archive, is an
+  ordinary Sitefile input: `COPY ./generated/ /`, or `IMPORT gen FROM
+  ./site.zip AS tree` and `COPY gen:/ /` (both give the same output). Its
+  `encode="wbn"` archive is gzip around a Web Bundle, which `AS tree` does not
+  read yet (johnhenry/sitefile#141). Neither package depends on the other.
+- **[`@johnhenry/packfile`](https://github.com/johnhenry/packfile)** -- the
+  family's Web Bundle reader and in-memory server. `EXPORT / AS wbn BASE <url>`
+  writes a plain b2 Web Bundle that packfile's `fromWebBundle(buffer, { baseURL })`
+  reads back into exactly the exported files, and `createRouter()` serves as a
+  `(Request) => Response` handler. packfile's own archive format
+  (`fromArchive()`) is gzip around the same bundle under
+  `https://packfile.invalid/`: gzip a Sitefile bundle exported with that BASE and
+  `fromArchive()` reads it as is. `test/packfile-interop.test.ts` checks all
+  three; `@johnhenry/packfile` is a devDependency for that test only.
+
+## License
+
+[MIT](LICENSE)

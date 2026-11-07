@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The family's concurrency-cancel block lives in the reusable workflow
+# (johnhenry/workflows ci.yml@v1, group ci-<workflow>-<ref>). Don't repeat it
+# here: the same group at both levels is rejected as a deadlock before the
+# run starts. The rust, conformance, editors and actionlint jobs below are
+# repo-local and short enough not to need one.
+
+jobs:
+  # TypeScript reference implementation: typecheck, the node:test suite
+  # (including the packfile interop test and, on ubuntu-latest, the three
+  # container-engine tests, which need Docker), and the npm tarball's file list.
+  test:
+    uses: johnhenry/workflows/.github/workflows/ci.yml@v1
+    with:
+      # engines.node >=26.0.0 -- test the floor version directly rather
+      # than a matrix of now-unsupported older majors.
+      node-versions: '["26"]'
+      os: '["ubuntu-latest"]'
+      gate-commands: |
+        npm run typecheck
+        npm test
+        npm run examples
+        npm pack --dry-run
+
+  # Rust port (the shipped binary and the language server).
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # The plugin-host tests start `node --permission …` (the JavaScript
+      # plugin sandbox); the runner's default Node 20 doesn't have the flag.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: cargo test --release
+        run: cargo test --release
+
+      # Non-blocking: the port has not been triaged against clippy yet.
+      # Flip this to a hard failure once `cargo clippy --all-targets` is clean.
+      - name: cargo clippy (non-blocking)
+        continue-on-error: true
+        run: cargo clippy --release --all-targets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sitefile-linux
+          path: rust/target/release/sitefile
+          retention-days: 3
+
+  # Both implementations on the same inputs: same exit codes, error lines and
+  # output bytes (offline and network cases; the network cases need openssl,
+  # which ubuntu-latest has).
+  conformance:
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sitefile-linux
+          path: rust/target/release
+
+      - run: chmod +x rust/target/release/sitefile
+      - run: npm ci
+      - run: npm run build
+      - run: npm run conformance
+
+  editors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: VS Code extension
+        working-directory: editors/vscode
+        run: npm ci && npm test
+
+      - name: tree-sitter grammar
+        working-directory: editors/tree-sitter-sitefile
+        run: npm ci && npm test
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+
+  workflow-lint:
+    uses: johnhenry/workflows/.github/workflows/workflow-lint.yml@v1

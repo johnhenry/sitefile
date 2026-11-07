@@ -22,11 +22,15 @@
 use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::archive_writers::iso_millis;
-use crate::export::attest::{decode_referrers_index, encode_referrers_index, Referrer, ReferrerDescriptor, PREDICATE_ANNOTATION};
+use crate::export::attest::{
+    decode_referrers_index, encode_referrers_index, Referrer, ReferrerDescriptor,
+    PREDICATE_ANNOTATION,
+};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files_at, layout_tree, parse_config, parse_manifest,
-    site_layer_index, IndexEntry, LayoutParts, OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
+    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files_at,
+    layout_tree, parse_config, parse_manifest, site_layer_index, IndexEntry, LayoutParts,
+    OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
 };
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key, ImageRef};
 use crate::tree::Tree;
@@ -66,7 +70,13 @@ pub struct ImageDetails {
 
 impl ImageDetails {
     pub fn summary(&self) -> ImageSummary {
-        ImageSummary { id: self.id.clone(), tags: self.tags.clone(), created: self.created.clone(), files: self.files, size: self.size }
+        ImageSummary {
+            id: self.id.clone(),
+            tags: self.tags.clone(),
+            created: self.created.clone(),
+            files: self.files,
+            size: self.size,
+        }
     }
 }
 
@@ -115,7 +125,11 @@ fn store_error(msg: impl Into<String>) -> SitefileError {
 }
 
 pub fn short_id(id: &str) -> String {
-    id.strip_prefix("sha256:").unwrap_or(id).chars().take(12).collect()
+    id.strip_prefix("sha256:")
+        .unwrap_or(id)
+        .chars()
+        .take(12)
+        .collect()
 }
 
 /// The current time as `Date.prototype.toISOString()` would print it.
@@ -138,13 +152,19 @@ fn is_hex64(s: &str) -> bool {
 /// Paths added (`A`), removed (`D`) or changed (`C`) going from `a` to `b`
 /// (the `image diff` output lines, sorted by path).
 pub fn diff_trees(a: &Tree, b: &Tree) -> Vec<String> {
-    let paths: BTreeSet<&String> = a.entries().map(|(p, _)| p).chain(b.entries().map(|(p, _)| p)).collect();
+    let paths: BTreeSet<&String> = a
+        .entries()
+        .map(|(p, _)| p)
+        .chain(b.entries().map(|(p, _)| p))
+        .collect();
     let mut out = Vec::new();
     for p in paths {
         match (a.get(p), b.get(p)) {
             (None, Some(_)) => out.push(format!("A {p}")),
             (Some(_), None) => out.push(format!("D {p}")),
-            (Some(x), Some(y)) if x.digest != y.digest || x.mode != y.mode => out.push(format!("C {p}")),
+            (Some(x), Some(y)) if x.digest != y.digest || x.mode != y.mode => {
+                out.push(format!("C {p}"))
+            }
             _ => {}
         }
     }
@@ -166,17 +186,36 @@ impl Drop for LockGuard {
 impl Store {
     /// Open (creating if needed) the store at `home`.
     pub fn open(home: impl AsRef<Path>) -> Result<Store> {
-        let s = Store { home: crate::export::exporter::resolve_path(home.as_ref()) };
+        let s = Store {
+            home: crate::export::exporter::resolve_path(home.as_ref()),
+        };
         let blobs = s.home.join("blobs").join("sha256");
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&blobs)
-            .map_err(|e| store_error(format!("cannot open the store at '{}': {e}", s.home.display())))?;
-        match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(s.home.join("oci-layout")) {
-            Ok(mut f) => f.write_all(OCI_LAYOUT_BYTES).map_err(|e| store_error(format!("cannot write oci-layout: {e}")))?,
+            .map_err(|e| {
+                store_error(format!(
+                    "cannot open the store at '{}': {e}",
+                    s.home.display()
+                ))
+            })?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(s.home.join("oci-layout"))
+        {
+            Ok(mut f) => f
+                .write_all(OCI_LAYOUT_BYTES)
+                .map_err(|e| store_error(format!("cannot write oci-layout: {e}")))?,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(store_error(format!("cannot open the store at '{}': {e}", s.home.display()))),
+            Err(e) => {
+                return Err(store_error(format!(
+                    "cannot open the store at '{}': {e}",
+                    s.home.display()
+                )))
+            }
         }
         Ok(s)
     }
@@ -184,7 +223,10 @@ impl Store {
     /// The store at `home` if one exists there (nothing is created).
     pub fn open_existing(home: impl AsRef<Path>) -> Option<Store> {
         let home = crate::export::exporter::resolve_path(home.as_ref());
-        fs::metadata(home.join("blobs").join("sha256")).ok().filter(|m| m.is_dir()).map(|_| Store { home })
+        fs::metadata(home.join("blobs").join("sha256"))
+            .ok()
+            .filter(|m| m.is_dir())
+            .map(|_| Store { home })
     }
 
     /// Open the store at `$SITEFILE_HOME` or `~/.sitefile`.
@@ -204,7 +246,12 @@ impl Store {
         let lock = self.home.join("lock");
         let deadline = SystemTime::now() + Duration::from_secs(20);
         loop {
-            match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&lock) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&lock)
+            {
                 Ok(mut fh) => {
                     let _ = fh.write_all(std::process::id().to_string().as_bytes());
                     break;
@@ -215,12 +262,20 @@ impl Store {
                         continue;
                     }
                     if SystemTime::now() > deadline {
-                        return Err(store_error(format!("timed out waiting for the store lock '{}'", lock.display())));
+                        return Err(store_error(format!(
+                            "timed out waiting for the store lock '{}'",
+                            lock.display()
+                        )));
                     }
                     let jitter = u64::from_str_radix(&random_hex(1), 16).unwrap_or(0) * 30 / 255;
                     std::thread::sleep(Duration::from_millis(20 + jitter));
                 }
-                Err(e) => return Err(store_error(format!("cannot lock the store at '{}': {e}", self.home.display()))),
+                Err(e) => {
+                    return Err(store_error(format!(
+                        "cannot lock the store at '{}': {e}",
+                        self.home.display()
+                    )))
+                }
             }
         }
         let _guard = LockGuard(lock);
@@ -231,7 +286,11 @@ impl Store {
         let dir = dest.parent().unwrap_or(&self.home);
         let tmp = dir.join(format!(".tmp-{}", random_hex(6)));
         let r = (|| -> io::Result<()> {
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)?;
             f.write_all(data)?;
             drop(f);
             fs::rename(&tmp, dest)
@@ -255,7 +314,11 @@ impl Store {
 
     /// Normalize (one dangling entry per untagged image, none for tagged ones), sort, write.
     fn write_index(&self, entries: Vec<IndexEntry>) -> Result<()> {
-        let tagged: BTreeSet<String> = entries.iter().filter(|e| e.ref_name.is_some()).map(|e| e.digest.clone()).collect();
+        let tagged: BTreeSet<String> = entries
+            .iter()
+            .filter(|e| e.ref_name.is_some())
+            .map(|e| e.digest.clone())
+            .collect();
         let mut seen = BTreeSet::new();
         let mut out: Vec<IndexEntry> = entries
             .into_iter()
@@ -277,7 +340,11 @@ impl Store {
 
     /// `name:tag` -> image ID.
     pub fn refs(&self) -> Result<BTreeMap<String, String>> {
-        Ok(self.read_index()?.into_iter().filter_map(|e| e.ref_name.map(|r| (r, e.digest))).collect())
+        Ok(self
+            .read_index()?
+            .into_iter()
+            .filter_map(|e| e.ref_name.map(|r| (r, e.digest)))
+            .collect())
     }
 
     // ------------------------------------------------------------ blobs
@@ -286,11 +353,15 @@ impl Store {
     pub fn read_blob(&self, digest: &str, size: Option<u64>) -> Result<Vec<u8>> {
         let bytes = match fs::read(self.blob_file(digest)?) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(store_error(format!("blob {digest} is missing"))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(store_error(format!("blob {digest} is missing")))
+            }
             Err(e) => return Err(store_error(format!("cannot read blob {digest}: {e}"))),
         };
         if size.is_some_and(|s| s != bytes.len() as u64) || sha256(&bytes) != digest {
-            return Err(store_error(format!("blob {digest} is corrupt: its content does not match its digest")));
+            return Err(store_error(format!(
+                "blob {digest} is corrupt: its content does not match its digest"
+            )));
         }
         Ok(bytes)
     }
@@ -318,7 +389,11 @@ impl Store {
 
     /// True when the blob exists with the given size (content is verified when it was written).
     pub fn has_blob(&self, digest: &str, size: Option<u64>) -> bool {
-        match self.blob_file(digest).ok().and_then(|p| fs::metadata(p).ok()) {
+        match self
+            .blob_file(digest)
+            .ok()
+            .and_then(|p| fs::metadata(p).ok())
+        {
             Some(st) => st.is_file() && size.is_none_or(|s| s == st.len()),
             None => false,
         }
@@ -326,16 +401,26 @@ impl Store {
 
     /// Open a stored blob for streaming (for upload); write-time verification means no re-hash here.
     pub fn blob_reader(&self, digest: &str) -> Result<fs::File> {
-        fs::File::open(self.blob_file(digest)?).map_err(|e| store_error(format!("cannot read blob {digest}: {e}")))
+        fs::File::open(self.blob_file(digest)?)
+            .map_err(|e| store_error(format!("cannot read blob {digest}: {e}")))
     }
 
     /// Store a blob from a stream, verifying its size and sha256 while it is
     /// written to a temp file that is renamed into place only when both match.
     /// `max_bytes` (default `size`) bounds what is accepted.
-    pub fn import_blob(&self, digest: &str, size: u64, source: &mut dyn Read, max_bytes: Option<u64>) -> Result<()> {
+    pub fn import_blob(
+        &self,
+        digest: &str,
+        size: u64,
+        source: &mut dyn Read,
+        max_bytes: Option<u64>,
+    ) -> Result<()> {
         let max_bytes = max_bytes.unwrap_or(size);
         let dest = self.blob_file(digest)?;
-        let tmp = dest.parent().unwrap_or(&self.home).join(format!(".tmp-{}", random_hex(6)));
+        let tmp = dest
+            .parent()
+            .unwrap_or(&self.home)
+            .join(format!(".tmp-{}", random_hex(6)));
         let mut fh = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -351,23 +436,36 @@ impl Store {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(SitefileError::plain(E_FETCH, format!("blob {digest}: {e}"))),
+                    Err(e) => {
+                        return Err(SitefileError::plain(E_FETCH, format!("blob {digest}: {e}")))
+                    }
                 };
                 total += n as u64;
                 if total > size || total > max_bytes {
-                    return Err(SitefileError::plain(E_TOO_LARGE, format!("blob {digest} is larger than its declared size ({size} bytes)")));
+                    return Err(SitefileError::plain(
+                        E_TOO_LARGE,
+                        format!("blob {digest} is larger than its declared size ({size} bytes)"),
+                    ));
                 }
                 hash.update(&buf[..n]);
-                fh.write_all(&buf[..n]).map_err(|e| store_error(format!("cannot write '{}': {e}", tmp.display())))?;
+                fh.write_all(&buf[..n])
+                    .map_err(|e| store_error(format!("cannot write '{}': {e}", tmp.display())))?;
             }
             if total != size {
-                return Err(SitefileError::plain(E_INTEGRITY, format!("blob {digest} is truncated: got {total} of {size} bytes")));
+                return Err(SitefileError::plain(
+                    E_INTEGRITY,
+                    format!("blob {digest} is truncated: got {total} of {size} bytes"),
+                ));
             }
             let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
             if format!("sha256:{got}") != digest {
-                return Err(SitefileError::plain(E_INTEGRITY, format!("blob {digest}: content does not match its digest")));
+                return Err(SitefileError::plain(
+                    E_INTEGRITY,
+                    format!("blob {digest}: content does not match its digest"),
+                ));
             }
-            fs::rename(&tmp, &dest).map_err(|e| store_error(format!("cannot write '{}': {e}", dest.display())))
+            fs::rename(&tmp, &dest)
+                .map_err(|e| store_error(format!("cannot write '{}': {e}", dest.display())))
         })();
         if r.is_err() {
             let _ = fs::remove_file(&tmp);
@@ -388,18 +486,34 @@ impl Store {
         self.add_manifest_at(manifest_bytes, tag, SystemTime::now())
     }
 
-    pub fn add_manifest_at(&self, manifest_bytes: &[u8], tag: Option<&ImageRef>, now: SystemTime) -> Result<String> {
+    pub fn add_manifest_at(
+        &self,
+        manifest_bytes: &[u8],
+        tag: Option<&ImageRef>,
+        now: SystemTime,
+    ) -> Result<String> {
         let id = self.put_small_blob(manifest_bytes)?;
-        let parsed = parse_manifest(manifest_bytes).map_err(|e| store_error(format!("manifest {id} is not a usable image manifest: {e}")))?;
+        let parsed = parse_manifest(manifest_bytes).map_err(|e| {
+            store_error(format!("manifest {id} is not a usable image manifest: {e}"))
+        })?;
         for d in std::iter::once(&parsed.config).chain(parsed.layers.iter()) {
             if !self.has_blob(&d.digest, Some(d.size)) {
-                return Err(store_error(format!("image {} is incomplete: blob {} is missing", short_id(&id), d.digest)));
+                return Err(store_error(format!(
+                    "image {} is incomplete: blob {} is missing",
+                    short_id(&id),
+                    d.digest
+                )));
             }
         }
         self.with_lock(|| {
             let mut entries = self.read_index()?;
             if !entries.iter().any(|e| e.digest == id) {
-                entries.push(IndexEntry { digest: id.clone(), size: manifest_bytes.len() as u64, stored: Some(iso_of_time(now)), ..Default::default() });
+                entries.push(IndexEntry {
+                    digest: id.clone(),
+                    size: manifest_bytes.len() as u64,
+                    stored: Some(iso_of_time(now)),
+                    ..Default::default()
+                });
                 self.write_index(entries)?;
             }
             Ok(())
@@ -422,7 +536,12 @@ impl Store {
         self.add_image_at(tree, options, SystemTime::now())
     }
 
-    pub fn add_image_at(&self, tree: &Tree, options: &OciOptions, now: SystemTime) -> Result<AddResult> {
+    pub fn add_image_at(
+        &self,
+        tree: &Tree,
+        options: &OciOptions,
+        now: SystemTime,
+    ) -> Result<AddResult> {
         let img = build_oci_image(tree, options)?;
         self.with_lock(|| {
             self.put_blob(&img.layer_digest, &img.layer_bytes)?;
@@ -430,7 +549,10 @@ impl Store {
             self.put_blob(&img.manifest_digest, &img.manifest_bytes)?;
             let mut entries = self.read_index()?;
             if entries.iter().any(|e| e.digest == img.manifest_digest) {
-                return Ok(AddResult { id: img.manifest_digest.clone(), created: false });
+                return Ok(AddResult {
+                    id: img.manifest_digest.clone(),
+                    created: false,
+                });
             }
             let _ = fs::remove_file(self.referrers_file(&img.manifest_digest)?); // left over from a removed image
             entries.push(IndexEntry {
@@ -440,24 +562,48 @@ impl Store {
                 ..Default::default()
             });
             self.write_index(entries)?;
-            Ok(AddResult { id: img.manifest_digest.clone(), created: true })
+            Ok(AddResult {
+                id: img.manifest_digest.clone(),
+                created: true,
+            })
         })
     }
 
     /// Manifest and config of an image, digest-verified (not its layer).
     pub fn details(&self, id: &str) -> Result<ImageDetails> {
-        let entries: Vec<IndexEntry> = self.read_index()?.into_iter().filter(|e| e.digest == id).collect();
+        let entries: Vec<IndexEntry> = self
+            .read_index()?
+            .into_iter()
+            .filter(|e| e.digest == id)
+            .collect();
         let Some(first) = entries.first() else {
-            return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {}", short_id(id))));
+            return Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("no such image: {}", short_id(id)),
+            ));
         };
         let manifest_bytes = self.read_blob(id, Some(first.size))?;
         let corrupt = |e: String| store_error(format!("image {} is corrupt: {e}", short_id(id)));
         let manifest = parse_manifest(&manifest_bytes).map_err(corrupt)?;
-        let config = parse_config(&self.read_blob(&manifest.config.digest, Some(manifest.config.size))?).map_err(corrupt)?;
-        let mut stored: Vec<&String> = entries.iter().filter_map(|e| e.stored.as_ref().filter(|s| !s.is_empty())).collect();
+        let config =
+            parse_config(&self.read_blob(&manifest.config.digest, Some(manifest.config.size))?)
+                .map_err(corrupt)?;
+        let mut stored: Vec<&String> = entries
+            .iter()
+            .filter_map(|e| e.stored.as_ref().filter(|s| !s.is_empty()))
+            .collect();
         stored.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-        let created = stored.first().map(|s| s.to_string()).unwrap_or_else(|| config.created.clone());
-        let num = |k: &str| manifest.annotations.get(k).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0);
+        let created = stored
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| config.created.clone());
+        let num = |k: &str| {
+            manifest
+                .annotations
+                .get(k)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+        };
         let layer_size = site_layer_index(&manifest, &config)
             .and_then(|i| manifest.layers.get(i))
             .or(manifest.layers.first())
@@ -469,7 +615,11 @@ impl Store {
             created,
             files: num(ann::FILES),
             size: num(ann::SIZE),
-            root: config.labels.get(ann::ROOT).cloned().unwrap_or_else(|| "/".into()),
+            root: config
+                .labels
+                .get(ann::ROOT)
+                .cloned()
+                .unwrap_or_else(|| "/".into()),
             manifest,
             config,
             layer_size,
@@ -483,11 +633,23 @@ impl Store {
 
     /// [`Store::load_tree`] with the origin the files' origins and error messages name (default
     /// `image:<short id>`) and a directory inside the image to root the tree at (default: its root label).
-    pub fn load_tree_with(&self, id: &str, origin: Option<&str>, root: Option<&str>) -> Result<Tree> {
+    pub fn load_tree_with(
+        &self,
+        id: &str,
+        origin: Option<&str>,
+        root: Option<&str>,
+    ) -> Result<Tree> {
         let d = self.details(id)?;
-        let origin = origin.map(str::to_string).unwrap_or_else(|| format!("image:{}", short_id(id)));
-        let Some(layer) = site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i)) else {
-            return Err(store_error(format!("{origin}: not a Sitefile image (it has {} layers and no site layer)", d.manifest.layers.len())));
+        let origin = origin
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("image:{}", short_id(id)));
+        let Some(layer) =
+            site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i))
+        else {
+            return Err(store_error(format!(
+                "{origin}: not a Sitefile image (it has {} layers and no site layer)",
+                d.manifest.layers.len()
+            )));
         };
         let bytes = self.read_blob(&layer.digest, Some(layer.size))?;
         extract_image_files_at(&d.manifest, &d.config, &bytes, &origin, root)
@@ -498,8 +660,13 @@ impl Store {
     /// is self-contained.
     pub fn layout_of(&self, id: &str, ref_name: Option<&str>) -> Result<Tree> {
         let d = self.details(id)?;
-        let Some(site) = site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i)) else {
-            return Err(store_error(format!("image {} is not a Sitefile image and cannot be saved", short_id(id))));
+        let Some(site) =
+            site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i))
+        else {
+            return Err(store_error(format!(
+                "image {} is not a Sitefile image and cannot be saved",
+                short_id(id)
+            )));
         };
         let mut base: Vec<(String, Vec<u8>)> = Vec::new();
         for l in &d.manifest.layers {
@@ -537,9 +704,19 @@ impl Store {
         let bytes = match fs::read(self.referrers_file(id)?) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(store_error(format!("cannot read the attestations of {}: {e}", short_id(id)))),
+            Err(e) => {
+                return Err(store_error(format!(
+                    "cannot read the attestations of {}: {e}",
+                    short_id(id)
+                )))
+            }
         };
-        decode_referrers_index(&bytes).map_err(|e| store_error(format!("the attestations of {} are corrupt: {e}", short_id(id))))
+        decode_referrers_index(&bytes).map_err(|e| {
+            store_error(format!(
+                "the attestations of {} are corrupt: {e}",
+                short_id(id)
+            ))
+        })
     }
 
     /// The attestations stored for image `id`, with their blobs (digest-verified).
@@ -547,13 +724,21 @@ impl Store {
         let mut out = Vec::new();
         for d in self.referrer_descriptors(id)? {
             let manifest_bytes = self.read_blob(&d.digest, Some(d.size))?;
-            let m = parse_manifest(&manifest_bytes)
-                .map_err(|e| store_error(format!("attestation {} of {} is corrupt: {e}", short_id(&d.digest), short_id(id))))?;
+            let m = parse_manifest(&manifest_bytes).map_err(|e| {
+                store_error(format!(
+                    "attestation {} of {} is corrupt: {e}",
+                    short_id(&d.digest),
+                    short_id(id)
+                ))
+            })?;
             let mut blobs = vec![(d.digest.clone(), manifest_bytes)];
             for b in std::iter::once(&m.config).chain(m.layers.iter()) {
                 blobs.push((b.digest.clone(), self.read_blob(&b.digest, Some(b.size))?));
             }
-            out.push(Referrer { descriptor: d, blobs });
+            out.push(Referrer {
+                descriptor: d,
+                blobs,
+            });
         }
         Ok(out)
     }
@@ -566,7 +751,10 @@ impl Store {
         }
         self.with_lock(|| {
             if !self.read_index()?.iter().any(|e| e.digest == id) {
-                return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {}", short_id(id))));
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("no such image: {}", short_id(id)),
+                ));
             }
             for r in referrers {
                 for (d, b) in &r.blobs {
@@ -574,13 +762,23 @@ impl Store {
                 }
             }
             let kind = |d: &ReferrerDescriptor| {
-                (d.artifact_type.clone().unwrap_or_default(), d.annotations.as_ref().and_then(|a| a.get(PREDICATE_ANNOTATION)).cloned().unwrap_or_default())
+                (
+                    d.artifact_type.clone().unwrap_or_default(),
+                    d.annotations
+                        .as_ref()
+                        .and_then(|a| a.get(PREDICATE_ANNOTATION))
+                        .cloned()
+                        .unwrap_or_default(),
+                )
             };
             let fresh: Vec<_> = referrers.iter().map(|r| kind(&r.descriptor)).collect();
             let mut list: Vec<ReferrerDescriptor> = self
                 .referrer_descriptors(id)?
                 .into_iter()
-                .filter(|d| !fresh.contains(&kind(d)) && !referrers.iter().any(|r| r.descriptor.digest == d.digest))
+                .filter(|d| {
+                    !fresh.contains(&kind(d))
+                        && !referrers.iter().any(|r| r.descriptor.digest == d.digest)
+                })
                 .collect();
             list.extend(referrers.iter().map(|r| r.descriptor.clone()));
             let file = self.referrers_file(id)?;
@@ -600,7 +798,10 @@ impl Store {
         let mut out = Vec::new();
         for d in self.referrer_descriptors(id).unwrap_or_default() {
             out.push(d.digest[7..].to_string());
-            if let Ok(m) = self.read_blob(&d.digest, Some(d.size)).and_then(|b| parse_manifest(&b).map_err(store_error)) {
+            if let Ok(m) = self
+                .read_blob(&d.digest, Some(d.size))
+                .and_then(|b| parse_manifest(&b).map_err(store_error))
+            {
                 for b in std::iter::once(&m.config).chain(m.layers.iter()) {
                     out.push(b.digest[7..].to_string());
                 }
@@ -627,7 +828,12 @@ impl Store {
 
     fn ids_with_prefix(&self, input: &str) -> Result<Vec<String>> {
         let want = format!("sha256:{}", input.strip_prefix("sha256:").unwrap_or(input));
-        let ids: BTreeSet<String> = self.read_index()?.into_iter().map(|e| e.digest).filter(|d| d.starts_with(&want)).collect();
+        let ids: BTreeSet<String> = self
+            .read_index()?
+            .into_iter()
+            .map(|e| e.digest)
+            .filter(|d| d.starts_with(&want))
+            .collect();
         Ok(ids.into_iter().collect())
     }
 
@@ -639,40 +845,73 @@ impl Store {
                 return Ok(matches[0].clone());
             }
             if matches.len() > 1 {
-                return Err(store_error(format!("ambiguous image ID '{input}' matches {} images", matches.len())));
+                return Err(store_error(format!(
+                    "ambiguous image ID '{input}' matches {} images",
+                    matches.len()
+                )));
             }
         }
         let r = parse_local_ref(input)?;
         if let Some(d) = &r.digest {
             if !self.read_index()?.iter().any(|e| &e.digest == d) {
-                return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {input}")));
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("no such image: {input}"),
+                ));
             }
             return Ok(d.clone());
         }
-        self.refs()?.remove(&ref_key(&r)).ok_or_else(|| SitefileError::plain(E_NOT_FOUND, format!("no such image: {input}")))
+        self.refs()?
+            .remove(&ref_key(&r))
+            .ok_or_else(|| SitefileError::plain(E_NOT_FOUND, format!("no such image: {input}")))
     }
 
     /// Point `name:tag` at an image (replacing any previous target). Returns the `name:tag` key.
     pub fn tag(&self, id: &str, r: &ImageRef) -> Result<String> {
         if r.digest.is_some() {
-            return Err(SitefileError::plain(E_USAGE, "a tag must be name[:tag] or registry/name[:tag] (no digest)"));
+            return Err(SitefileError::plain(
+                E_USAGE,
+                "a tag must be name[:tag] or registry/name[:tag] (no digest)",
+            ));
         }
         let key = ref_key(r);
         self.with_lock(|| {
             let entries = self.read_index()?;
             let Some(mine) = entries.iter().find(|e| e.digest == id).cloned() else {
-                return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {}", short_id(id))));
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("no such image: {}", short_id(id)),
+                ));
             };
-            let previous = entries.iter().find(|e| e.ref_name.as_deref() == Some(key.as_str())).cloned();
-            let mut next: Vec<IndexEntry> = entries.iter().filter(|e| e.ref_name.as_deref() != Some(key.as_str())).cloned().collect();
+            let previous = entries
+                .iter()
+                .find(|e| e.ref_name.as_deref() == Some(key.as_str()))
+                .cloned();
+            let mut next: Vec<IndexEntry> = entries
+                .iter()
+                .filter(|e| e.ref_name.as_deref() != Some(key.as_str()))
+                .cloned()
+                .collect();
             // The old target stays as an untagged image if this was its last tag.
             if let Some(p) = previous {
                 if !next.iter().any(|e| e.digest == p.digest) {
-                    next.push(IndexEntry { ref_name: None, ..p });
+                    next.push(IndexEntry {
+                        ref_name: None,
+                        ..p
+                    });
                 }
             }
-            let stored = entries.iter().find(|e| e.digest == id && e.stored.as_deref().is_some_and(|s| !s.is_empty())).and_then(|e| e.stored.clone());
-            next.push(IndexEntry { digest: id.to_string(), size: mine.size, ref_name: Some(key.clone()), stored, ..Default::default() });
+            let stored = entries
+                .iter()
+                .find(|e| e.digest == id && e.stored.as_deref().is_some_and(|s| !s.is_empty()))
+                .and_then(|e| e.stored.clone());
+            next.push(IndexEntry {
+                digest: id.to_string(),
+                size: mine.size,
+                ref_name: Some(key.clone()),
+                stored,
+                ..Default::default()
+            });
             self.write_index(next)
         })?;
         Ok(key)
@@ -685,11 +924,19 @@ impl Store {
         self.with_lock(|| {
             let mut entries = self.read_index()?;
             let mut untagged = Vec::new();
-            let id_matches = if looks_like_image_id(input) { self.ids_with_prefix(input)? } else { vec![] };
+            let id_matches = if looks_like_image_id(input) {
+                self.ids_with_prefix(input)?
+            } else {
+                vec![]
+            };
             let id;
             if !id_matches.is_empty() || crate::digest::is_integrity(input) {
                 id = self.resolve(input)?;
-                let tags: Vec<String> = entries.iter().filter(|e| e.digest == id).filter_map(|e| e.ref_name.clone()).collect();
+                let tags: Vec<String> = entries
+                    .iter()
+                    .filter(|e| e.digest == id)
+                    .filter_map(|e| e.ref_name.clone())
+                    .collect();
                 if tags.len() > 1 && !force {
                     return Err(store_error(format!(
                         "image {} is referenced by {} tags ({}); remove a tag, or use -f",
@@ -703,23 +950,38 @@ impl Store {
             } else {
                 let r = parse_local_ref(input)?;
                 if r.digest.is_some() {
-                    return Err(SitefileError::plain(E_USAGE, "rmi takes name[:tag] or an image ID, not name@digest"));
+                    return Err(SitefileError::plain(
+                        E_USAGE,
+                        "rmi takes name[:tag] or an image ID, not name@digest",
+                    ));
                 }
                 let key = ref_key(&r);
-                let Some(target) = entries.iter().find(|e| e.ref_name.as_deref() == Some(key.as_str())) else {
-                    return Err(SitefileError::plain(E_NOT_FOUND, format!("no such image: {input}")));
+                let Some(target) = entries
+                    .iter()
+                    .find(|e| e.ref_name.as_deref() == Some(key.as_str()))
+                else {
+                    return Err(SitefileError::plain(
+                        E_NOT_FOUND,
+                        format!("no such image: {input}"),
+                    ));
                 };
                 id = target.digest.clone();
                 untagged.push(key.clone());
                 entries.retain(|e| e.ref_name.as_deref() != Some(key.as_str()));
                 if entries.iter().any(|e| e.digest == id) {
                     self.write_index(entries)?;
-                    return Ok(RemoveResult { untagged, deleted: None });
+                    return Ok(RemoveResult {
+                        untagged,
+                        deleted: None,
+                    });
                 }
             }
             self.write_index(entries)?;
             let _ = fs::remove_file(self.referrers_file(&id)?);
-            Ok(RemoveResult { untagged, deleted: Some(id) })
+            Ok(RemoveResult {
+                untagged,
+                deleted: Some(id),
+            })
         })
     }
 
@@ -730,14 +992,22 @@ impl Store {
     pub fn gc_view(&self) -> Result<GcView> {
         let entries = self.read_index()?;
         let blobs_of = |id: &str| -> Result<Vec<String>> {
-            let m = parse_manifest(&self.read_blob(id, None)?).map_err(|e| store_error(format!("image {} is corrupt: {e}", short_id(id))))?;
-            let mut v: Vec<String> =
-                std::iter::once(id).chain(std::iter::once(m.config.digest.as_str())).chain(m.layers.iter().map(|l| l.digest.as_str())).map(|d| d[7..].to_string()).collect();
+            let m = parse_manifest(&self.read_blob(id, None)?)
+                .map_err(|e| store_error(format!("image {} is corrupt: {e}", short_id(id))))?;
+            let mut v: Vec<String> = std::iter::once(id)
+                .chain(std::iter::once(m.config.digest.as_str()))
+                .chain(m.layers.iter().map(|l| l.digest.as_str()))
+                .map(|d| d[7..].to_string())
+                .collect();
             v.extend(self.referrer_blob_hexes(id));
             Ok(v)
         };
         let mut live = BTreeSet::new();
-        let tagged: BTreeSet<&str> = entries.iter().filter(|e| e.ref_name.is_some()).map(|e| e.digest.as_str()).collect();
+        let tagged: BTreeSet<&str> = entries
+            .iter()
+            .filter(|e| e.ref_name.is_some())
+            .map(|e| e.digest.as_str())
+            .collect();
         for id in &tagged {
             live.extend(blobs_of(id)?);
         }
@@ -756,7 +1026,10 @@ impl Store {
     /// Remove an untagged image from the index (its blobs stay). The caller holds the lock.
     pub fn drop_untagged_locked(&self, id: &str) -> Result<()> {
         let entries = self.read_index()?;
-        if entries.iter().any(|e| e.digest == id && e.ref_name.is_some()) {
+        if entries
+            .iter()
+            .any(|e| e.digest == id && e.ref_name.is_some())
+        {
             return Ok(());
         }
         self.write_index(entries.into_iter().filter(|e| e.digest != id).collect())?;
@@ -767,8 +1040,16 @@ impl Store {
     pub fn prune(&self) -> Result<PruneResult> {
         self.with_lock(|| {
             let entries = self.read_index()?;
-            let keep: Vec<IndexEntry> = entries.iter().filter(|e| e.ref_name.is_some()).cloned().collect();
-            let mut dropped: BTreeSet<String> = entries.iter().filter(|e| e.ref_name.is_none()).map(|e| e.digest.clone()).collect();
+            let keep: Vec<IndexEntry> = entries
+                .iter()
+                .filter(|e| e.ref_name.is_some())
+                .cloned()
+                .collect();
+            let mut dropped: BTreeSet<String> = entries
+                .iter()
+                .filter(|e| e.ref_name.is_none())
+                .map(|e| e.digest.clone())
+                .collect();
             for e in &keep {
                 dropped.remove(&e.digest);
             }
@@ -795,17 +1076,28 @@ impl Store {
             }
             let (mut blobs, mut bytes) = (0usize, 0u64);
             let dir = self.home.join("blobs").join("sha256");
-            let rd = fs::read_dir(&dir).map_err(|e| store_error(format!("cannot read '{}': {e}", dir.display())))?;
+            let rd = fs::read_dir(&dir)
+                .map_err(|e| store_error(format!("cannot read '{}': {e}", dir.display())))?;
             for ent in rd.flatten() {
                 let name = ent.file_name().to_string_lossy().into_owned();
                 let full = dir.join(&name);
-                let Ok(st) = fs::metadata(&full) else { continue };
+                let Ok(st) = fs::metadata(&full) else {
+                    continue;
+                };
                 if !st.is_file() {
                     continue;
                 }
-                let fresh = st.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_none_or(|age| age < Duration::from_secs(3600));
+                let fresh = st
+                    .modified()
+                    .ok()
+                    .and_then(|m| SystemTime::now().duration_since(m).ok())
+                    .is_none_or(|age| age < Duration::from_secs(3600));
                 // keep live blobs and fresh temp files
-                if if is_hex64(&name) { live.contains(&name) } else { fresh } {
+                if if is_hex64(&name) {
+                    live.contains(&name)
+                } else {
+                    fresh
+                } {
                     continue;
                 }
                 if fs::remove_file(&full).is_ok() {
@@ -813,14 +1105,24 @@ impl Store {
                     bytes += st.len();
                 }
             }
-            Ok(PruneResult { manifests: dropped.len(), blobs, bytes })
+            Ok(PruneResult {
+                manifests: dropped.len(),
+                blobs,
+                bytes,
+            })
         })
     }
 }
 
 fn lock_is_stale(lock: &Path) -> bool {
-    let (Ok(text), Ok(st)) = (fs::read_to_string(lock), fs::metadata(lock)) else { return false };
-    let age = st.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).unwrap_or_default();
+    let (Ok(text), Ok(st)) = (fs::read_to_string(lock), fs::metadata(lock)) else {
+        return false;
+    };
+    let age = st
+        .modified()
+        .ok()
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .unwrap_or_default();
     if age > Duration::from_secs(120) {
         return true;
     }
@@ -837,13 +1139,21 @@ mod tests {
     use crate::tree::make_file;
 
     fn mk(files: &[(&str, &str)]) -> Tree {
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap()
+        Tree::from_files(
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap()
     }
     fn blob_count(home: &Path) -> usize {
         fs::read_dir(home.join("blobs/sha256")).unwrap().count()
     }
     fn title(t: &str) -> OciOptions {
-        OciOptions { title: Some(t.into()), ..Default::default() }
+        OciOptions {
+            title: Some(t.into()),
+            ..Default::default()
+        }
     }
     fn lr(s: &str) -> ImageRef {
         parse_local_ref(s).unwrap()
@@ -861,10 +1171,20 @@ mod tests {
         assert!(crate::digest::is_integrity(&r.id));
         store.tag(&r.id, &lr("demo")).unwrap();
         store.tag(&r.id, &lr("demo:v1")).unwrap();
-        let idx: serde_json::Value = serde_json::from_slice(&fs::read(home.join("index.json")).unwrap()).unwrap();
+        let idx: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("index.json")).unwrap()).unwrap();
         assert_eq!(idx["mediaType"], "application/vnd.oci.image.index.v1+json");
-        let mut names: Vec<String> =
-            idx["manifests"].as_array().unwrap().iter().map(|m| m["annotations"][ann::REF_NAME].as_str().unwrap().to_string()).collect();
+        let mut names: Vec<String> = idx["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                m["annotations"][ann::REF_NAME]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
         names.sort();
         assert_eq!(names, ["demo:latest", "demo:v1"]);
         let list = store.list().unwrap();
@@ -882,14 +1202,24 @@ mod tests {
         let d = TmpDir::new("store");
         let store = Store::open(d.path()).unwrap();
         let t2020 = UNIX_EPOCH + Duration::from_secs(1_577_836_800);
-        let a = store.add_image_at(&mk(&[("/index.html", "same")]), &title("x"), t2020).unwrap();
-        let b = store.add_image_at(&mk(&[("/index.html", "same")]), &title("x"), UNIX_EPOCH + Duration::from_secs(1_893_456_000)).unwrap();
+        let a = store
+            .add_image_at(&mk(&[("/index.html", "same")]), &title("x"), t2020)
+            .unwrap();
+        let b = store
+            .add_image_at(
+                &mk(&[("/index.html", "same")]),
+                &title("x"),
+                UNIX_EPOCH + Duration::from_secs(1_893_456_000),
+            )
+            .unwrap();
         assert_eq!(a.id, b.id);
         assert!(!b.created);
         let l = store.list().unwrap();
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].created, "2020-01-01T00:00:00.000Z");
-        let c = store.add_image(&mk(&[("/index.html", "different")]), &title("x")).unwrap();
+        let c = store
+            .add_image(&mk(&[("/index.html", "different")]), &title("x"))
+            .unwrap();
         assert_ne!(c.id, a.id);
     }
 
@@ -909,8 +1239,14 @@ mod tests {
         let d = TmpDir::new("store");
         let home = d.path();
         let store = Store::open(home).unwrap();
-        let a = store.add_image(&mk(&[("/i.html", "one")]), &OciOptions::default()).unwrap().id;
-        let b = store.add_image(&mk(&[("/i.html", "two")]), &OciOptions::default()).unwrap().id;
+        let a = store
+            .add_image(&mk(&[("/i.html", "one")]), &OciOptions::default())
+            .unwrap()
+            .id;
+        let b = store
+            .add_image(&mk(&[("/i.html", "two")]), &OciOptions::default())
+            .unwrap()
+            .id;
         store.tag(&a, &lr("site:1")).unwrap();
         store.tag(&b, &lr("site:1")).unwrap();
         let list = store.list().unwrap();
@@ -923,9 +1259,18 @@ mod tests {
         assert_eq!(blob_count(home), before - 3);
         assert_eq!(store.list().unwrap().len(), 1);
         store.tag(&b, &lr("other")).unwrap();
-        assert_eq!(store.remove_image("other", false).unwrap(), RemoveResult { untagged: vec!["other:latest".into()], deleted: None });
+        assert_eq!(
+            store.remove_image("other", false).unwrap(),
+            RemoveResult {
+                untagged: vec!["other:latest".into()],
+                deleted: None
+            }
+        );
         store.tag(&b, &lr("other")).unwrap();
-        assert_eq!(store.remove_image(&short_id(&b), false).unwrap_err().code, E_STORE);
+        assert_eq!(
+            store.remove_image(&short_id(&b), false).unwrap_err().code,
+            E_STORE
+        );
         let mut r = store.remove_image(&short_id(&b), true).unwrap();
         r.untagged.sort();
         assert_eq!(r.untagged, ["other:latest", "site:1"]);
@@ -933,14 +1278,20 @@ mod tests {
         assert!(store.list().unwrap().is_empty());
         assert_eq!(store.prune().unwrap().blobs, 3);
         assert_eq!(blob_count(home), 0);
-        assert_eq!(store.remove_image("site:1", false).unwrap_err().code, E_NOT_FOUND);
+        assert_eq!(
+            store.remove_image("site:1", false).unwrap_err().code,
+            E_NOT_FOUND
+        );
     }
 
     #[test]
     fn short_ids_refs_and_digests_resolve() {
         let d = TmpDir::new("store");
         let store = Store::open(d.path()).unwrap();
-        let id = store.add_image(&mk(&[("/x", "1")]), &OciOptions::default()).unwrap().id;
+        let id = store
+            .add_image(&mk(&[("/x", "1")]), &OciOptions::default())
+            .unwrap()
+            .id;
         store.tag(&id, &lr("x")).unwrap();
         let hex = &id[7..];
         assert_eq!(store.resolve(&hex[..12]).unwrap(), id);
@@ -950,7 +1301,10 @@ mod tests {
         assert_eq!(store.resolve(&format!("x@{id}")).unwrap(), id);
         assert_eq!(store.resolve(&hex[..11]).unwrap_err().code, E_NOT_FOUND);
         assert_eq!(store.resolve("nope").unwrap_err().code, E_NOT_FOUND);
-        assert_eq!(store.resolve("registry.io/x").unwrap_err().code, E_NOT_FOUND);
+        assert_eq!(
+            store.resolve("registry.io/x").unwrap_err().code,
+            E_NOT_FOUND
+        );
     }
 
     #[test]
@@ -958,7 +1312,13 @@ mod tests {
         for which in ["layer", "config", "manifest"] {
             let d = TmpDir::new("store");
             let store = Store::open(d.path()).unwrap();
-            let id = store.add_image(&mk(&[("/index.html", &format!("content {which}"))]), &OciOptions::default()).unwrap().id;
+            let id = store
+                .add_image(
+                    &mk(&[("/index.html", &format!("content {which}"))]),
+                    &OciOptions::default(),
+                )
+                .unwrap()
+                .id;
             let det = store.details(&id).unwrap();
             let digest = match which {
                 "layer" => det.manifest.layers[0].digest.clone(),
@@ -970,14 +1330,30 @@ mod tests {
             let n = bytes.len();
             bytes[n - 3] ^= 0xff;
             fs::write(&file, bytes).unwrap();
-            let e = if which == "layer" { store.load_tree(&id).unwrap_err() } else { store.details(&id).unwrap_err() };
+            let e = if which == "layer" {
+                store.load_tree(&id).unwrap_err()
+            } else {
+                store.details(&id).unwrap_err()
+            };
             assert_eq!(e.code, E_STORE, "{which}");
-            assert!(e.detail.contains("corrupt") || e.detail.contains("does not match"), "{which}: {}", e.detail);
+            assert!(
+                e.detail.contains("corrupt") || e.detail.contains("does not match"),
+                "{which}: {}",
+                e.detail
+            );
         }
         let d = TmpDir::new("store");
         let store = Store::open(d.path()).unwrap();
-        let id = store.add_image(&mk(&[("/a", "b")]), &OciOptions::default()).unwrap().id;
-        fs::remove_file(store.blob_file(&store.details(&id).unwrap().manifest.layers[0].digest).unwrap()).unwrap();
+        let id = store
+            .add_image(&mk(&[("/a", "b")]), &OciOptions::default())
+            .unwrap()
+            .id;
+        fs::remove_file(
+            store
+                .blob_file(&store.details(&id).unwrap().manifest.layers[0].digest)
+                .unwrap(),
+        )
+        .unwrap();
         let e = store.load_tree(&id).unwrap_err();
         assert_eq!(e.code, E_STORE);
         assert!(e.detail.contains("missing"));
@@ -987,15 +1363,26 @@ mod tests {
     fn layout_of_is_the_stored_image_and_diff() {
         let d = TmpDir::new("store");
         let store = Store::open(d.path()).unwrap();
-        let a = mk(&[("/index.html", "hi"), ("/gone.txt", "x"), ("/same.txt", "s")]);
-        let b = mk(&[("/index.html", "changed"), ("/new.txt", "n"), ("/same.txt", "s")]);
+        let a = mk(&[
+            ("/index.html", "hi"),
+            ("/gone.txt", "x"),
+            ("/same.txt", "s"),
+        ]);
+        let b = mk(&[
+            ("/index.html", "changed"),
+            ("/new.txt", "n"),
+            ("/same.txt", "s"),
+        ]);
         let id = store.add_image(&a, &OciOptions::default()).unwrap().id;
         let layout = store.layout_of(&id, Some("blog:1")).unwrap();
         let idx = decode_index(&layout.get("/index.json").unwrap().bytes).unwrap();
         assert_eq!(idx[0].digest, id);
         assert_eq!(idx[0].ref_name.as_deref(), Some("1"));
         assert!(layout.is_file(&format!("/blobs/sha256/{}", &id[7..])));
-        assert_eq!(diff_trees(&a, &b), ["D /gone.txt", "C /index.html", "A /new.txt"]);
+        assert_eq!(
+            diff_trees(&a, &b),
+            ["D /gone.txt", "C /index.html", "A /new.txt"]
+        );
     }
 
     #[test]
@@ -1003,20 +1390,39 @@ mod tests {
         use crate::export::attest::{attestation_referrer, CYCLONEDX, SLSA};
         let d = TmpDir::new("store");
         let store = Store::open(d.path()).unwrap();
-        let id = store.add_image(&mk(&[("/index.html", "hi")]), &OciOptions::default()).unwrap().id;
+        let id = store
+            .add_image(&mk(&[("/index.html", "hi")]), &OciOptions::default())
+            .unwrap()
+            .id;
         let size = store.read_blob(&id, None).unwrap().len() as u64;
         let prov = attestation_referrer(&id, size, SLSA, serde_json::json!({ "v": 1 }));
         let sbom = attestation_referrer(&id, size, CYCLONEDX, serde_json::json!({}));
-        store.put_referrers(&id, &[prov.clone(), sbom.clone()]).unwrap();
+        store
+            .put_referrers(&id, &[prov.clone(), sbom.clone()])
+            .unwrap();
         // a newer provenance replaces the old one; the SBOM stays
         let prov2 = attestation_referrer(&id, size, SLSA, serde_json::json!({ "v": 2 }));
         store.put_referrers(&id, &[prov2.clone()]).unwrap();
-        let list: Vec<String> = store.referrer_descriptors(&id).unwrap().into_iter().map(|r| r.digest).collect();
-        assert_eq!(list, [sbom.descriptor.digest.clone(), prov2.descriptor.digest.clone()]);
+        let list: Vec<String> = store
+            .referrer_descriptors(&id)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.digest)
+            .collect();
+        assert_eq!(
+            list,
+            [
+                sbom.descriptor.digest.clone(),
+                prov2.descriptor.digest.clone()
+            ]
+        );
         // save: listed after the image, with their blobs
         let layout = store.layout_of(&id, None).unwrap();
         let idx = decode_index(&layout.get("/index.json").unwrap().bytes).unwrap();
-        assert_eq!(idx.iter().map(|e| e.digest.clone()).collect::<Vec<_>>(), [id.clone(), list[0].clone(), list[1].clone()]);
+        assert_eq!(
+            idx.iter().map(|e| e.digest.clone()).collect::<Vec<_>>(),
+            [id.clone(), list[0].clone(), list[1].clone()]
+        );
         for (dg, _) in &prov2.blobs {
             assert!(layout.is_file(&format!("/blobs/sha256/{}", &dg[7..])));
         }
@@ -1024,7 +1430,10 @@ mod tests {
         store.tag(&id, &parse_local_ref("x:1").unwrap()).unwrap();
         store.prune().unwrap();
         assert_eq!(store.referrers(&id).unwrap().len(), 2);
-        assert!(!store.has_blob(&prov.descriptor.digest, None), "the replaced provenance is garbage");
+        assert!(
+            !store.has_blob(&prov.descriptor.digest, None),
+            "the replaced provenance is garbage"
+        );
         store.remove_image("x:1", false).unwrap();
         store.prune().unwrap();
         assert!(store.referrer_descriptors(&id).unwrap().is_empty());
@@ -1037,11 +1446,31 @@ mod tests {
         let store = Store::open(d.path()).unwrap();
         let data = b"hello blob".to_vec();
         let digest = sha256(&data);
-        assert_eq!(store.import_blob(&digest, 5, &mut &data[..], None).unwrap_err().code, E_TOO_LARGE);
-        assert_eq!(store.import_blob(&digest, 20, &mut &data[..], None).unwrap_err().code, E_INTEGRITY);
+        assert_eq!(
+            store
+                .import_blob(&digest, 5, &mut &data[..], None)
+                .unwrap_err()
+                .code,
+            E_TOO_LARGE
+        );
+        assert_eq!(
+            store
+                .import_blob(&digest, 20, &mut &data[..], None)
+                .unwrap_err()
+                .code,
+            E_INTEGRITY
+        );
         let other = sha256(b"x");
-        assert_eq!(store.import_blob(&other, data.len() as u64, &mut &data[..], None).unwrap_err().code, E_INTEGRITY);
-        store.import_blob(&digest, data.len() as u64, &mut &data[..], None).unwrap();
+        assert_eq!(
+            store
+                .import_blob(&other, data.len() as u64, &mut &data[..], None)
+                .unwrap_err()
+                .code,
+            E_INTEGRITY
+        );
+        store
+            .import_blob(&digest, data.len() as u64, &mut &data[..], None)
+            .unwrap();
         assert!(store.has_blob(&digest, Some(data.len() as u64)));
         assert_eq!(store.read_blob(&digest, None).unwrap(), data);
         assert_eq!(blob_count(d.path()), 1, "no temp files left");
@@ -1065,7 +1494,10 @@ mod tests {
                 let home = home.clone();
                 std::thread::spawn(move || {
                     let s = Store::open(&home).unwrap();
-                    let id = s.add_image(&mk(&[("/i", &format!("{i}"))]), &OciOptions::default()).unwrap().id;
+                    let id = s
+                        .add_image(&mk(&[("/i", &format!("{i}"))]), &OciOptions::default())
+                        .unwrap()
+                        .id;
                     s.tag(&id, &lr(&format!("t:{i}"))).unwrap();
                 })
             })
@@ -1078,7 +1510,10 @@ mod tests {
 
     #[test]
     fn store_home_resolution() {
-        assert_eq!(resolve_store_home_from(Some("/x/y/../z")), PathBuf::from("/x/z"));
+        assert_eq!(
+            resolve_store_home_from(Some("/x/y/../z")),
+            PathBuf::from("/x/z")
+        );
         assert!(resolve_store_home_from(None).ends_with(".sitefile"));
         assert_eq!(short_id("sha256:0123456789abcdef"), "0123456789ab");
     }

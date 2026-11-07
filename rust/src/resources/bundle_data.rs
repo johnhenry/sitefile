@@ -23,13 +23,20 @@ pub fn bundle_value(bundle: &WebBundle) -> Value {
             o.insert("path".into(), Value::String(path_of(&e.url)));
             o.insert("status".into(), Value::from(e.status));
             o.insert("contentType".into(), Value::String(content_type.clone()));
-            let headers: Map<String, Value> = e.headers.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+            let headers: Map<String, Value> = e
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
             o.insert("headers".into(), Value::Object(headers));
             o.insert("size".into(), Value::from(e.body.len()));
             if is_textual(&content_type) {
                 if let Ok(s) = std::str::from_utf8(&e.body) {
                     // TextDecoder strips a leading BOM.
-                    o.insert("content".into(), Value::String(s.strip_prefix('\u{feff}').unwrap_or(s).to_string()));
+                    o.insert(
+                        "content".into(),
+                        Value::String(s.strip_prefix('\u{feff}').unwrap_or(s).to_string()),
+                    );
                 }
             }
             Value::Object(o)
@@ -37,7 +44,14 @@ pub fn bundle_value(bundle: &WebBundle) -> Value {
         .collect();
     let mut out = Map::new();
     out.insert("version".into(), Value::String(bundle.version.into()));
-    out.insert("primaryUrl".into(), bundle.primary_url.clone().map(Value::String).unwrap_or(Value::Null));
+    out.insert(
+        "primaryUrl".into(),
+        bundle
+            .primary_url
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+    );
     out.insert("entries".into(), Value::Array(entries));
     Value::Object(out)
 }
@@ -48,17 +62,29 @@ fn is_textual(content_type: &str) -> bool {
     if t.starts_with("text/") || t.starts_with("image/svg+xml") {
         return true;
     }
-    let Some(rest) = t.strip_prefix("application/") else { return false };
-    if ["json", "xml", "javascript", "ecmascript", "manifest+json"].iter().any(|p| rest.starts_with(p)) {
+    let Some(rest) = t.strip_prefix("application/") else {
+        return false;
+    };
+    if ["json", "xml", "javascript", "ecmascript", "manifest+json"]
+        .iter()
+        .any(|p| rest.starts_with(p))
+    {
         return true;
     }
-    let run = rest.bytes().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'+' | b'-')).count();
+    let run = rest
+        .bytes()
+        .take_while(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'+' | b'-')
+        })
+        .count();
     (0..=run).any(|i| rest[i..].starts_with("+json") || rest[i..].starts_with("+xml"))
 }
 
 /// `new URL(url).pathname`, or the URL itself if it does not parse.
 fn path_of(url: &str) -> String {
-    let Some((scheme, rest)) = split_scheme(url) else { return url.to_string() };
+    let Some((scheme, rest)) = split_scheme(url) else {
+        return url.to_string();
+    };
     let scheme = scheme.to_ascii_lowercase();
     if scheme == "http" || scheme == "https" {
         return match ureq::get(url).request_url() {
@@ -81,7 +107,12 @@ mod tests {
     use std::sync::Arc;
 
     fn entry(url: &str, ct: &str, body: &[u8]) -> BundleEntry {
-        BundleEntry { url: url.into(), status: 200, headers: vec![("content-type".into(), ct.into())], body: Arc::from(body) }
+        BundleEntry {
+            url: url.into(),
+            status: 200,
+            headers: vec![("content-type".into(), ct.into())],
+            body: Arc::from(body),
+        }
     }
 
     #[test]
@@ -110,15 +141,40 @@ mod tests {
         assert!(e[2].get("content").is_none());
         assert_eq!(e[3]["content"], "{}");
         let keys: Vec<&String> = e[0].as_object().unwrap().keys().collect();
-        assert_eq!(keys, vec!["url", "path", "status", "contentType", "headers", "size", "content"]);
+        assert_eq!(
+            keys,
+            vec![
+                "url",
+                "path",
+                "status",
+                "contentType",
+                "headers",
+                "size",
+                "content"
+            ]
+        );
     }
 
     #[test]
     fn textual_types() {
-        for t in ["text/html", " TEXT/plain", "application/json", "application/javascript", "application/manifest+json", "application/vnd.api+json", "application/atom+xml", "image/svg+xml"] {
+        for t in [
+            "text/html",
+            " TEXT/plain",
+            "application/json",
+            "application/javascript",
+            "application/manifest+json",
+            "application/vnd.api+json",
+            "application/atom+xml",
+            "image/svg+xml",
+        ] {
             assert!(is_textual(t), "{t}");
         }
-        for t in ["", "image/png", "application/octet-stream", "application/wasm"] {
+        for t in [
+            "",
+            "image/png",
+            "application/octet-stream",
+            "application/wasm",
+        ] {
             assert!(!is_textual(t), "{t}");
         }
     }

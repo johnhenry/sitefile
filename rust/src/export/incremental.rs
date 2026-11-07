@@ -12,8 +12,8 @@
 //! falls back to the full write-and-swap in `exporter.rs`.
 
 use super::exporter::{
-    assert_parent_unchanged, id_of, io_threads, is_real_dir, is_real_file, lstat_opt, random_hex, remove_if_same, show, split_parent, unsafe_err, ExportOptions,
-    ExportResult, FileId, Planned,
+    assert_parent_unchanged, id_of, io_threads, is_real_dir, is_real_file, lstat_opt, random_hex,
+    remove_if_same, show, split_parent, unsafe_err, ExportOptions, ExportResult, FileId, Planned,
 };
 use crate::error::Result;
 use std::collections::{HashMap, HashSet};
@@ -62,7 +62,14 @@ pub(super) struct Stamp {
 }
 
 pub(super) fn stamp_of(m: &fs::Metadata) -> Stamp {
-    Stamp { dev: m.dev(), ino: m.ino(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()), mode: m.mode() }
+    Stamp {
+        dev: m.dev(),
+        ino: m.ino(),
+        size: m.size(),
+        mtime: (m.mtime(), m.mtime_nsec()),
+        ctime: (m.ctime(), m.ctime_nsec()),
+        mode: m.mode(),
+    }
 }
 
 fn same_stamp(m: Option<&fs::Metadata>, s: &Stamp) -> bool {
@@ -105,8 +112,25 @@ pub(super) fn exported<'a>(
     files: impl Iterator<Item = (&'a str, &'a str, u32, Stamp)>,
     dirs: HashSet<String>,
 ) {
-    let files = files.map(|(p, digest, mode, stamp)| (p.to_string(), Recorded { digest: digest.to_string(), mode, stamp })).collect();
-    state.snapshot = Some(Snapshot { out_real: out_real.to_path_buf(), out_id, parent_id, files, dirs });
+    let files = files
+        .map(|(p, digest, mode, stamp)| {
+            (
+                p.to_string(),
+                Recorded {
+                    digest: digest.to_string(),
+                    mode,
+                    stamp,
+                },
+            )
+        })
+        .collect();
+    state.snapshot = Some(Snapshot {
+        out_real: out_real.to_path_buf(),
+        out_id,
+        parent_id,
+        files,
+        dirs,
+    });
 }
 
 fn depth(p: &str) -> usize {
@@ -127,10 +151,18 @@ fn matches_snapshot(out: &Path, snap: &Snapshot) -> bool {
     let mut dirs = 0usize;
     let mut pending = vec![String::new()];
     while let Some(rel) = pending.pop() {
-        let Ok(rd) = fs::read_dir(if rel.is_empty() { out.to_path_buf() } else { at(out, &rel) }) else { return false };
+        let Ok(rd) = fs::read_dir(if rel.is_empty() {
+            out.to_path_buf()
+        } else {
+            at(out, &rel)
+        }) else {
+            return false;
+        };
         for e in rd {
             let Ok(e) = e else { return false };
-            let Some(name) = e.file_name().to_str().map(str::to_string) else { return false };
+            let Some(name) = e.file_name().to_str().map(str::to_string) else {
+                return false;
+            };
             let p = format!("{rel}/{name}");
             let Ok(t) = e.file_type() else { return false };
             if t.is_dir() {
@@ -140,7 +172,9 @@ fn matches_snapshot(out: &Path, snap: &Snapshot) -> bool {
                 dirs += 1;
                 pending.push(p);
             } else if t.is_file() {
-                let Some(r) = snap.files.get(&p) else { return false };
+                let Some(r) = snap.files.get(&p) else {
+                    return false;
+                };
                 files.push((e.path(), &r.stamp));
             } else {
                 return false; // a symlink, socket, ...: never ours
@@ -153,7 +187,15 @@ fn matches_snapshot(out: &Path, snap: &Snapshot) -> bool {
     let threads = io_threads(files.len() / 256 + 1);
     let chunk = files.len().div_ceil(threads).max(1);
     std::thread::scope(|sc| {
-        let parts: Vec<_> = files.chunks(chunk).map(|part| sc.spawn(move || part.iter().all(|(p, s)| same_stamp(lstat_opt(p).ok().flatten().as_ref(), s)))).collect();
+        let parts: Vec<_> = files
+            .chunks(chunk)
+            .map(|part| {
+                sc.spawn(move || {
+                    part.iter()
+                        .all(|(p, s)| same_stamp(lstat_opt(p).ok().flatten().as_ref(), s))
+                })
+            })
+            .collect();
         parts.into_iter().all(|h| h.join().unwrap_or(false))
     })
 }
@@ -161,7 +203,13 @@ fn matches_snapshot(out: &Path, snap: &Snapshot) -> bool {
 /// Apply only the changes since the recorded export. None asks for the full swap: the
 /// destination is then either untouched or, if applying failed part way, about to be
 /// replaced whole.
-pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&fs::Metadata>, state: &mut ExportState, options: &ExportOptions) -> Option<ExportResult> {
+pub(super) fn try_incremental(
+    planned: &[Planned],
+    out_real: &Path,
+    st: Option<&fs::Metadata>,
+    state: &mut ExportState,
+    options: &ExportOptions,
+) -> Option<ExportResult> {
     let snap = state.snapshot.take()?; // recorded again only after a successful export
     let st = st?;
     if snap.out_real != out_real || !is_real_dir(st) || id_of(st) != snap.out_id {
@@ -175,15 +223,29 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
             None => true,
         })
         .collect();
-    let mut deletes: Vec<String> = snap.files.keys().filter(|p| !next.contains(p.as_str())).cloned().collect();
+    let mut deletes: Vec<String> = snap
+        .files
+        .keys()
+        .filter(|p| !next.contains(p.as_str()))
+        .cloned()
+        .collect();
     deletes.sort_unstable();
     if (writes.len() + deletes.len()) * 2 > planned.len().max(snap.files.len()) {
         return None;
     }
     let next_dirs = dirs_of(planned.iter().map(|e| e.path));
-    let mut remove_dirs: Vec<&str> = snap.dirs.iter().map(String::as_str).filter(|d| !next_dirs.contains(*d)).collect();
+    let mut remove_dirs: Vec<&str> = snap
+        .dirs
+        .iter()
+        .map(String::as_str)
+        .filter(|d| !next_dirs.contains(*d))
+        .collect();
     remove_dirs.sort_by(|a, b| depth(b).cmp(&depth(a)).then(a.cmp(b)));
-    let mut make_dirs: Vec<&str> = next_dirs.iter().map(String::as_str).filter(|d| !snap.dirs.contains(*d)).collect();
+    let mut make_dirs: Vec<&str> = next_dirs
+        .iter()
+        .map(String::as_str)
+        .filter(|d| !snap.dirs.contains(*d))
+        .collect();
     make_dirs.sort_by(|a, b| depth(a).cmp(&depth(b)).then(a.cmp(b)));
     let (parent, base) = split_parent(out_real);
 
@@ -194,8 +256,17 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
     // A new path must not exist yet, except as the very file or directory it replaces;
     // anything else is another spelling of an existing entry (case folding, Unicode
     // normalization): the full export reports that as a clean build does.
-    let going: HashSet<&str> = deletes.iter().map(String::as_str).chain(remove_dirs.iter().copied()).collect();
-    for p in writes.iter().map(|e| e.path).filter(|p| !snap.files.contains_key(*p)).chain(make_dirs.iter().copied()) {
+    let going: HashSet<&str> = deletes
+        .iter()
+        .map(String::as_str)
+        .chain(remove_dirs.iter().copied())
+        .collect();
+    for p in writes
+        .iter()
+        .map(|e| e.path)
+        .filter(|p| !snap.files.contains_key(*p))
+        .chain(make_dirs.iter().copied())
+    {
         if !matches!(lstat_opt(&at(out_real, p)), Ok(None)) && !going.contains(p) {
             return None;
         }
@@ -217,7 +288,11 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
         let mut staged = Vec::with_capacity(writes.len());
         for (i, e) in writes.iter().enumerate() {
             let file = tmp.join(i.to_string());
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&file)?;
             f.write_all(e.bytes)?;
             f.set_permissions(fs::Permissions::from_mode(e.mode))?;
             let id = id_of(&f.metadata()?);
@@ -237,13 +312,25 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
     }
 
     // Apply.
-    let Snapshot { out_id, parent_id, files: mut recorded, .. } = snap;
+    let Snapshot {
+        out_id,
+        parent_id,
+        files: mut recorded,
+        ..
+    } = snap;
     let apply = |recorded: &mut HashMap<String, Recorded>| -> Result<()> {
-        let io = |e: std::io::Error| unsafe_err(format!("failed to export to '{}': {e}", show(out_real)));
+        let io = |e: std::io::Error| {
+            unsafe_err(format!("failed to export to '{}': {e}", show(out_real)))
+        };
         assert_parent_unchanged(&parent, parent_id)?;
         match lstat_opt(out_real).map_err(io)? {
             Some(m) if is_real_dir(&m) && id_of(&m) == out_id => {}
-            _ => return Err(unsafe_err(format!("export destination '{}' changed during export; aborting", show(out_real)))),
+            _ => {
+                return Err(unsafe_err(format!(
+                    "export destination '{}' changed during export; aborting",
+                    show(out_real)
+                )))
+            }
         }
         for p in &deletes {
             let t = at(out_real, p);
@@ -277,9 +364,21 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
             fs::rename(file, &t).map_err(io)?;
             let now = match lstat_opt(&t).map_err(io)? {
                 Some(m) if is_real_file(&m) && id_of(&m) == *id => m,
-                _ => return Err(unsafe_err(format!("'{}' is not the file that was written", show(&t)))),
+                _ => {
+                    return Err(unsafe_err(format!(
+                        "'{}' is not the file that was written",
+                        show(&t)
+                    )))
+                }
             };
-            recorded.insert(e.path.to_string(), Recorded { digest: e.digest.to_string(), mode: e.mode, stamp: stamp_of(&now) });
+            recorded.insert(
+                e.path.to_string(),
+                Recorded {
+                    digest: e.digest.to_string(),
+                    mode: e.mode,
+                    stamp: stamp_of(&now),
+                },
+            );
         }
         Ok(())
     };
@@ -288,6 +387,19 @@ pub(super) fn try_incremental(planned: &[Planned], out_real: &Path, st: Option<&
     if !ok {
         return None; // the full swap replaces whatever was applied
     }
-    state.snapshot = Some(Snapshot { out_real: out_real.to_path_buf(), out_id, parent_id, files: recorded, dirs: next_dirs });
-    Some(ExportResult { out_dir: out_real.to_path_buf(), files: planned.len(), incremental: Some(Applied { written: writes.len(), removed: deletes.len() }) })
+    state.snapshot = Some(Snapshot {
+        out_real: out_real.to_path_buf(),
+        out_id,
+        parent_id,
+        files: recorded,
+        dirs: next_dirs,
+    });
+    Some(ExportResult {
+        out_dir: out_real.to_path_buf(),
+        files: planned.len(),
+        incremental: Some(Applied {
+            written: writes.len(),
+            removed: deletes.len(),
+        }),
+    })
 }
