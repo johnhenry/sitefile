@@ -325,6 +325,7 @@ stopgap in VS Code.
 - [docs/RUST.md](docs/RUST.md) — the Rust port: layout, parity checks, known differences
 - [docs/LSP.md](docs/LSP.md) — the language server for editors (`sitefile lsp`, Rust binary)
 - [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
+- [docs/DOCKER.md](docs/DOCKER.md) — Sitefile next to Docker: site images Docker runs, Dockerfile stages, shared registries
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)
 - [AGENTS.md](AGENTS.md) — the verification loop and rules for anyone (human or agent) changing this repo
