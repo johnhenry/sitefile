@@ -9,3 +9,4 @@ extracted_conversations/
 
 # Agent worktrees
 .claude/
+examples/fileable/plugins/fileable/node_modules/

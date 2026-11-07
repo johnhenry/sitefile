@@ -1,0 +1,7 @@
+{
+  "pages": [
+    { "slug": "sandbox", "order": 2, "title": "The sandbox", "body": "The plugin reads only its own folder, so fileable is **vendored** next to it." },
+    { "slug": "getting-started", "order": 1, "title": "Getting started", "body": "Run `node examples/fileable/vendor.mjs`, then build with `--allow-plugin fileable`." },
+    { "slug": "limits", "order": 3, "title": "Limits", "body": "No `cmd`, no local `src=` paths, no `env://`: they need what a plugin does not get." }
+  ]
+}
