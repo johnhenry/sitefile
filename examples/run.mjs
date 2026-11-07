@@ -1,0 +1,128 @@
+#!/usr/bin/env node
+// Examples smoke test: builds every example with the TypeScript CLI and checks
+// what each one is meant to show. Exits non-zero on the first failure.
+//
+//   npm run examples                 # all of them
+//   node examples/run.mjs blog       # one
+//
+// Needs `npm run build` first (the `examples` script does it). Every build gets
+// its own temporary output directory and SITEFILE_HOME, so nothing is written
+// to the examples or to ~/.sitefile (except `bake`, whose outputs are its own
+// gitignored examples/bake/dist/, removed afterwards).
+// Both implementations building every example identically is checked by
+// `npm run conformance`, not here.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const cli = path.join(here, '..', 'lib', 'src', 'cli.js');
+const home = mkdtempSync(path.join(os.tmpdir(), 'sitefile-examples-home-'));
+const temps = [home];
+
+function run(args, cwd = here) {
+  return execFileSync(process.execPath, [cli, ...args], {
+    cwd,
+    env: { ...process.env, SITEFILE_HOME: home, SOURCE_DATE_EPOCH: '' },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function build(name, args = []) {
+  const out = mkdtempSync(path.join(os.tmpdir(), `sitefile-example-${name}-`));
+  temps.push(out);
+  run(['build', path.join(here, name), '-o', path.join(out, 'site'), '--force', ...args]);
+  return path.join(out, 'site');
+}
+
+function files(dir, prefix = '') {
+  return readdirSync(dir).flatMap((n) => {
+    const abs = path.join(dir, n);
+    return statSync(abs).isDirectory() ? files(abs, `${prefix}${n}/`) : [`${prefix}${n}`];
+  });
+}
+
+const read = (dir, p) => readFileSync(path.join(dir, p), 'utf8');
+
+const examples = {
+  hello() {
+    const site = build('hello', ['--build-arg', 'TITLE=Tom & <Jerry>']);
+    assert.match(read(site, 'index.html'), /Tom &amp; &lt;Jerry&gt;/, 'build arg is substituted and HTML-escaped');
+    assert.ok(files(site).includes('style.css'));
+  },
+  inline() {
+    assert.ok(files(build('inline')).includes('index.html'), 'a template written inside the Sitefile renders');
+  },
+  multistage() {
+    assert.ok(files(build('multistage')).length > 0, 'the last stage is exported');
+  },
+  'shared-stages'() {
+    const site = build('shared-stages', ['--build-arg', 'ACCENT=teal']);
+    assert.match(read(site, 'assets/theme.css'), /teal/, "an ARG reaches the imported Sitefile's stages");
+  },
+  blog() {
+    const list = files(build('blog'));
+    for (const p of ['index.html', 'feed.xml', 'sitemap.xml', 'asset-manifest.json']) assert.ok(list.includes(p), `blog writes ${p}`);
+    assert.ok(list.some((p) => p.startsWith('posts/')) && list.some((p) => p.startsWith('tags/')), 'one page per post and per tag');
+  },
+  data() {
+    assert.ok(files(build('data')).length > 0, 'YAML, CSV and Web Bundle data render');
+  },
+  motion() {
+    assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
+    assert.ok(files(build('motion', ['--allow-plugin', 'motion'])).some((p) => p.endsWith('.svg')), 'the plugin writes SVG');
+  },
+  wasm() {
+    assert.ok(files(build('wasm')).some((p) => p.endsWith('.svg')), 'an import-free WebAssembly plugin runs with no flag');
+  },
+  image() {
+    const list = files(build('image'));
+    assert.ok(list.some((p) => /\.(png|jpe?g|webp)$/.test(p)), 'the image plugin writes resized images');
+  },
+  theme() {
+    // Stored as an image only: themed-site starts FROM it.
+    run(['build', path.join(here, 'theme'), '-t', 'theme:1']);
+    assert.match(run(['images']), /theme\s+1/, 'the theme is in the image store');
+  },
+  'themed-site'() {
+    if (!run(['images']).match(/theme\s+1/)) examples.theme();
+    assert.ok(files(build('themed-site')).includes('index.html'), 'a site builds FROM a stored theme image');
+  },
+  bake() {
+    const dist = path.join(here, 'bake', 'dist');
+    rmSync(dist, { recursive: true, force: true });
+    try {
+      run(['bake'], path.join(here, 'bake'));
+      const outs = readdirSync(dist).flatMap((env) => readdirSync(path.join(dist, env)).map((l) => `${env}/${l}`));
+      assert.equal(outs.length, 4, `one output per matrix combination (got ${outs.join(', ')})`);
+    } finally {
+      rmSync(dist, { recursive: true, force: true });
+    }
+  },
+};
+
+// Every example directory is covered, and nothing else is listed.
+const dirs = readdirSync(here).filter((n) => existsSync(path.join(here, n, 'Sitefile'))).sort();
+assert.deepEqual(Object.keys(examples).sort(), dirs, 'examples/run.mjs lists exactly the example directories');
+
+const only = process.argv.slice(2);
+let failed = 0;
+try {
+  for (const [name, check] of Object.entries(examples)) {
+    if (only.length && !only.includes(name)) continue;
+    try {
+      check();
+      console.log(`ok   ${name}`);
+    } catch (e) {
+      failed++;
+      console.log(`FAIL ${name}: ${e.stderr || e.message}`);
+    }
+  }
+} finally {
+  for (const d of temps) rmSync(d, { recursive: true, force: true });
+}
+process.exit(failed ? 1 : 0);

@@ -1,27 +1,59 @@
 {
-  "name": "sitefile",
-  "version": "0.1.0",
-  "description": "Docker-inspired static artifact builder",
+  "name": "@johnhenry/sitefile",
+  "version": "0.0.0",
+  "description": "Docker-inspired static artifact builder: compose immutable file trees from local and remote sources, render templates, and export a deployable site. No container runtime, no shell, no runtime dependencies.",
+  "keywords": [
+    "static-site",
+    "static-site-generator",
+    "build",
+    "dockerfile",
+    "reproducible-builds",
+    "web-bundle",
+    "oci",
+    "sitefile"
+  ],
+  "homepage": "https://opensource.johnhenry.me/sitefile/",
+  "bugs": {
+    "url": "https://github.com/johnhenry/sitefile/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnhenry/sitefile.git"
+  },
+  "license": "MIT",
+  "author": "John Henry",
   "type": "module",
-  "private": true,
   "bin": {
     "sitefile": "./lib/src/cli.js"
   },
   "exports": {
-    ".": "./lib/src/index.js"
+    ".": {
+      "types": "./lib/src/index.d.ts",
+      "default": "./lib/src/index.js"
+    }
   },
+  "types": "./lib/src/index.d.ts",
+  "files": [
+    "lib/src/",
+    "!lib/src/**/*.map",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "engines": {
-    "node": ">=22"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --import ./lib/test/helpers/isolate-home.js --test \"lib/test/**/*.test.js\"",
+    "examples": "npm run build && node examples/run.mjs",
     "conformance": "node conformance/run.mjs",
-    "bench": "node bench/generate.mjs && node bench/run.mjs"
+    "bench": "node bench/generate.mjs && node bench/run.mjs",
+    "prepack": "npm run build"
   },
-  "license": "MIT",
   "devDependencies": {
+    "@johnhenry/packfile": "^0.2.0",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
   }
