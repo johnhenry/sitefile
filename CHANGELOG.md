@@ -18,7 +18,8 @@
   `AS` format: `--format wbn` on an `AS oci COMPRESSION …` Sitefile does not
   inherit it. `test/packfile-interop.test.ts` now reads a gzip export built with
   `BASE https://packfile.invalid/` through plain `fromArchive(buffer)`; new
-  conformance cases compare the bytes of both implementations.
+  conformance cases compare the bytes of both implementations. Added in
+  3c537de (#149).
 
 ## 0.0.0 — first npm release (2026-11-06)
 
