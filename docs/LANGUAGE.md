@@ -14,6 +14,7 @@ Instructions:
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
 - `SITEMAP`, `FEED`, `REDIRECT` and `HEADER` (sitemap.xml, an Atom feed, `_redirects`, `_headers`): see Site files below.
 - `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` (content-hashed asset names, with the HTML and CSS that reference them rewritten): see Fingerprinting below.
+- `CHECKLINKS [--warn] [--external]` (fail, or warn, on links to files that do not exist): see Link checking below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -702,6 +703,57 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   FINGERPRINT step is reused only when the whole tree before it is unchanged
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
+
+### Link checking: CHECKLINKS (see `examples/blog/`)
+`CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
+files of the stage's tree **at its place in the stage** (like SITEMAP and
+FINGERPRINT; put it last, or after a FINGERPRINT to check the rewritten
+names) and fails the build if one points at nothing. It is an instruction,
+not a `build`/`validate` flag, so the check is part of the Sitefile (the same
+in `build`, `serve --watch` and CI) and can be placed per stage; `validate`
+only plans and never sees the files.
+
+- **What is checked**: the references the FINGERPRINT scanner finds (see
+  Fingerprinting: `href`, `src`, `srcset`, `poster`, … in HTML, `<style>` and
+  `style=` CSS, `url()` and `@import` in CSS) in every `.html`, `.htm` and
+  `.css` file (valid UTF-8), files in path order (UTF-8 bytes) and references
+  in file order. Fragments, queries of the same page, `mailto:`, `data:` and
+  other non-http schemes are skipped; `#fragment` targets are not checked.
+- **Found** means served the way `sitefile serve` and static hosts serve it:
+  the file itself, `<path>.html` (clean URLs: `/about` finds `/about.html`), or
+  `<path>/index.html`; a URL ending in `/` needs its `index.html`. Absolute
+  paths resolve under the EXPORT path, as for FINGERPRINT. A link a `REDIRECT`
+  of the Sitefile covers (its source exactly, or a `/*` prefix: `/blog/*`) is
+  not broken, wherever the REDIRECT line is.
+- **Broken links** fail the build with `E_BROKEN_LINK`, listing up to 20 (then
+  `… and N more`) as `<file>:<line>: <url> (<reason>)`:
+
+  ```
+  error[E_BROKEN_LINK]: Sitefile:12:1: CHECKLINKS: 2 broken links:
+    /index.html:4: css/site.css (not found: /css/site.css)
+    /docs/index.html:2: guide/ (not found: /docs/guide/)
+  ```
+
+  `<file>` is the tree path, `<line>` the line of the reference, `<url>` the
+  URL as written (character references and escapes decoded).
+- **`--warn`** prints one warning per broken link instead
+  (`warning: Sitefile:12 CHECKLINKS: broken link /index.html:4: css/site.css (not found: /css/site.css)`)
+  and the build goes on.
+- **`--external`** also requests every `http(s)://` and `//host` link
+  (`https:` is assumed), each URL once, in order of first use, one at a time,
+  through the same client and **network policy** as a remote IMPORT: https
+  only unless `--allow-http`, public addresses only unless
+  `--allow-private-network`, every redirect hop checked, the fetch timeout.
+  A link is broken when the request fails (`could not connect`, `no answer
+  within 30000 ms`, `too many or invalid redirects`) or answers 400 or more
+  (`HTTP 404`); a URL the policy refuses is reported as broken with the flag
+  that would allow it (`plain http is checked only with --allow-http`). The
+  response body is not read. Without `--external` nothing is requested, so a
+  build stays offline and reproducible.
+- **Elsewhere**: the step writes nothing (`why` never lists it); `graph`
+  labels it `CHECKLINKS [--warn] [--external]`. In watch mode an unchanged step
+  (the same tree before it) is not run again (no requests), and its warnings
+  are printed again.
 
 ### Lint rules (`sitefile validate`)
 Like `docker build --check`, `validate` (and the language server) warns about likely mistakes in a Sitefile that is

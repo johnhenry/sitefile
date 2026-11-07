@@ -44,6 +44,7 @@ pub mod servers;
 pub mod site;
 pub mod links;
 pub mod fingerprint;
+pub mod checklinks;
 pub mod store;
 pub mod cache_limit;
 

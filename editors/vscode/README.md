@@ -16,7 +16,7 @@ The grammar follows the real scanner and parser (`src/language/scanner.ts`,
 
 - **Instructions**, case-insensitive and optionally indented: `FROM`, `STAGE`,
   `ARG`, `LET`, `IMPORT`, `COPY`, `RENDER`, `TRANSFORM`, `PLUGIN`, `TOOL`,
-  `SITEMAP`, `FEED`, `REDIRECT`, `HEADER`, `FINGERPRINT`, `EXPORT`. `RUN`, `REMOVE`, `GENERATE`, `ASSERT`, `META` and `EXEC`, which the
+  `SITEMAP`, `FEED`, `REDIRECT`, `HEADER`, `FINGERPRINT`, `CHECKLINKS`, `EXPORT`. `RUN`, `REMOVE`, `GENERATE`, `ASSERT`, `META` and `EXEC`, which the
   parser rejects, are marked invalid.
 - **Clause keywords**: `AS`, `FROM`, `TO`, `FOR … IN`, `WITH`, `OPTIONS`,
   `ARGS`, `INTEGRITY`, `SORT BY … ASC|DESC`, `SCHEMA`, `BASE`, `AT`, `COMPRESSION`,

@@ -8,6 +8,10 @@
         "named": true
       },
       {
+        "type": "checklinks_instruction",
+        "named": true
+      },
+      {
         "type": "copy_instruction",
         "named": true
       },
@@ -163,6 +167,22 @@
           },
           {
             "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "checklinks_instruction",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
             "named": true
           }
         ]
@@ -2154,6 +2174,10 @@
   },
   {
     "type": "BY",
+    "named": false
+  },
+  {
+    "type": "CHECKLINKS",
     "named": false
   },
   {

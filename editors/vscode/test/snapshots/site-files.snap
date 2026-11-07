@@ -1102,6 +1102,48 @@
   ]
  },
  "27": {
+  "text": "CHECKLINKS --warn",
+  "tokens": [
+   [
+    "CHECKLINKS",
+    "meta.instruction.checklinks.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.checklinks.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.checklinks.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "warn",
+    "meta.instruction.checklinks.sitefile variable.parameter.flag.sitefile"
+   ]
+  ]
+ },
+ "28": {
+  "text": "CHECKLINKS --external",
+  "tokens": [
+   [
+    "CHECKLINKS",
+    "meta.instruction.checklinks.sitefile keyword.control.instruction.sitefile"
+   ],
+   [
+    " ",
+    "meta.instruction.checklinks.sitefile"
+   ],
+   [
+    "--",
+    "meta.instruction.checklinks.sitefile punctuation.definition.flag.sitefile"
+   ],
+   [
+    "external",
+    "meta.instruction.checklinks.sitefile variable.parameter.flag.sitefile"
+   ]
+  ]
+ },
+ "29": {
   "text": "EXPORT /",
   "tokens": [
    [

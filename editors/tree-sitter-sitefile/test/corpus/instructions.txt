@@ -433,3 +433,20 @@ fingerprint --overwrite /${D}/*.js "/x y/" manifest /asset-manifest.json
     (string
       (string_content))
     (path)))
+
+================================================================================
+CHECKLINKS with and without flags
+================================================================================
+
+CHECKLINKS
+checklinks --warn --external
+
+---
+
+(source_file
+  (checklinks_instruction)
+  (checklinks_instruction
+    (flag
+      (flag_name))
+    (flag
+      (flag_name))))
