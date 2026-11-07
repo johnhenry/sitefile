@@ -453,30 +453,57 @@ tools are code, and run only when you name them on the command line.
 Sitefile is the build orchestrator of the @johnhenry family's static tools. It
 runs the pipeline (pinned imports, stages, templates, sandboxed plugins, checks,
 exports); its siblings write file trees in code and serve the result. It has no
-runtime dependency on either: they meet at file formats, a directory or a `.wbn`
-Web Bundle.
+runtime dependency on either: they meet at file formats, a directory, a zip or
+a `.wbn` Web Bundle.
 
 - **[`@johnhenry/fileable`](https://github.com/johnhenry/fileable)** -- writes
   file trees in JSX (`Dir`, `File`, `Rm`), for scaffolding and codegen. A
-  fileable build's output directory, or its `encode="zip"` archive, is an
-  ordinary Sitefile input: `COPY ./generated/ /`, or `IMPORT gen FROM
-  ./site.zip AS tree` and `COPY gen:/ /` (both give the same output). Its
-  `encode="wbn"` archive is gzip around a Web Bundle, which `AS tree` does not
-  read yet (johnhenry/sitefile#141). Neither package depends on the other.
+  fileable build's output is an ordinary Sitefile input. Neither package
+  depends on the other.
 - **[`@johnhenry/packfile`](https://github.com/johnhenry/packfile)** -- the
-  family's Web Bundle reader and in-memory server. `EXPORT / AS wbn BASE <url>`
-  writes a plain b2 Web Bundle that packfile's `fromWebBundle(buffer, { baseURL })`
-  reads back into exactly the exported files, and `createRouter()` serves as a
-  `(Request) => Response` handler. The bundle's responses carry the site's
-  HEADER values and exact-path REDIRECTs (as 3xx with `location`), so
-  `createWebBundleRouter(new wbn.Bundle(bytes), { baseURL })`, which serves each
-  exchange's own status and headers, answers like `sitefile serve` for them.
-  packfile's own archive format
-  (`fromArchive()`) is gzip around the same bundle under
-  `https://packfile.invalid/`, which `EXPORT / AS wbn BASE https://packfile.invalid/
-  COMPRESSION gzip` (or `-o site.wbn.gz`) writes, so `fromArchive(buffer)` reads it
-  with no options. `test/packfile-interop.test.ts` checks all of these;
-  `@johnhenry/packfile` is a devDependency for that test only.
+  family's Web Bundle reader and in-memory server. It reads what `EXPORT … AS
+  wbn` writes and serves it as a `(Request) => Response` handler.
+  `@johnhenry/packfile` is a devDependency here for
+  `test/packfile-interop.test.ts` only.
+
+### Working together: what works today
+
+Checked on 2026-11-07 against the npm releases (`@johnhenry/sitefile` 0.0.0,
+`@johnhenry/fileable` 0.1.1, `@johnhenry/packfile` 0.2.0) and each
+repository's `main`. "Fixed on main, in the next release" means merged but
+not published: the npm versions still behave as the rest of that row says.
+
+| From | To | How | Status |
+| --- | --- | --- | --- |
+| fileable, loose output | Sitefile | `COPY ./generated/ /` | Works |
+| fileable, `encode="zip"` | Sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
+| fileable, `encode="wbn"` | Sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| fileable tree, rendered during a build | Sitefile | a JavaScript `TRANSFORM` plugin calling fileable's in-memory `toFiles()` | An example on main, not part of the npm package: [`examples/fileable/`](examples/fileable/) ([#145](https://github.com/johnhenry/sitefile/issues/145)). fileable is vendored into the plugin folder; `cmd`, local `src=` and `env://` fail with `E_PLUGIN` |
+| Sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`), and packfile's own tests read a bundle written by Sitefile 0.0.0 |
+| Sitefile `.wbn` | packfile `fromArchive()` | with 0.0.0 / 0.2.0: gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround. **Fixed on main, in the next release:** `EXPORT … AS wbn COMPRESSION gzip` (or `-o site.wbn.gz`) writes the gzip ([#143](https://github.com/johnhenry/sitefile/issues/143)), and `fromArchive()` takes a `baseURL` or the origin of the bundle's primary URL, so any `BASE` reads back ([packfile#18](https://github.com/johnhenry/packfile/issues/18)) |
+| Sitefile `HEADER` / `REDIRECT` | packfile `createWebBundleRouter()` | -- | **Not applied in 0.0.0:** only the `/_headers` and `/_redirects` files are in the bundle. **Fixed on main, in the next release:** each response carries its HEADER values, and exact-path 301/302/303/307/308 REDIRECTs are 3xx responses with `location` ([#144](https://github.com/johnhenry/sitefile/issues/144)). Splats, `200` rewrites and `404` rules stay in `/_redirects` only |
+| packfile `toArchive()` | Sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
+
+Gotchas when serving a Sitefile bundle with packfile:
+
+- **Pass `createRouter()` a path string for non-ASCII paths.** A `Request`
+  for `/docs/ünï/page.html` returns 404 because the pathname isn't
+  percent-decoded; the string `"/docs/ünï/page.html"` works
+  ([packfile#20](https://github.com/johnhenry/packfile/issues/20)).
+- **`fromWebBundle` skips the bundle's entry at the bare base URL.** Sitefile
+  stores the index page there as well as at `/index.html`; you get it from
+  `index.html`.
+- **The `baseURL` you pass to `fromWebBundle` must be the `BASE` you exported
+  with.** Entries under any other origin are skipped, so the wrong base reads
+  back as an empty map, without an error. packfile's `fromArchive()` on its
+  main branch (next release) defaults to the origin of the primary URL, which
+  Sitefile writes only when the site has `/index.html`; with a `BASE` that has
+  a path (`https://site.example/blog/`), the keys start with `blog/` unless you
+  pass that `baseURL`.
+- **HEADER and REDIRECT need `createWebBundleRouter()`** (on main, next
+  release): `createWebBundleRouter(new wbn.Bundle(bytes), { baseURL })` serves
+  each exchange's own status and headers. `createRouter()` serves a files map,
+  so it answers with the files only.
 
 ## License
 
