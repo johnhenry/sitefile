@@ -1,0 +1,7 @@
+# FINGERPRINT and CHECKLINKS are stage operations, so they run in an imported Sitefile too.
+STAGE site
+COPY ./assets/ /assets/
+COPY ./index.html /index.html
+FINGERPRINT /assets/ MANIFEST /manifest.json
+CHECKLINKS --warn
+EXPORT /

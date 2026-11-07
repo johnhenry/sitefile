@@ -138,6 +138,10 @@ Like `docker build --target`, `--target <stage>` builds up to a **named** stage 
   `error: --target 'x' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`.
   An unnamed stage cannot be a target. On `serve`, `--target` needs `--watch`.
 - A target stage with no files warns `--target <name>: stage '<name>' contains no files`.
+- **Imported stages** (`FROM theme+assets`, `--from=theme+assets`, see
+  [LANGUAGE.md](LANGUAGE.md#sitefile-imports-import--as-sitefile)): only those the stages up to the target read are
+  built; every `IMPORT … AS sitefile` is still read and its imports resolved. `--target` names a stage of this
+  Sitefile, never `theme+assets`.
 
 ```bash
 sitefile inspect examples/multistage --target theme      # the 'theme' stage's files
@@ -167,13 +171,16 @@ directory holds or which variables a template uses.
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
   `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`, `CHECKLINKS --warn`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
+  `stage:<import>+<stage>` for a stage of a Sitefile imported `AS sitefile` (labelled `stage assets of IMPORT theme`,
+  with the IMPORT's line; the imported Sitefile is not read, so its own operations are not shown),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
 - **Edges** point from what is read to what reads it: `base` (a stage's starting tree, a context directory, an
   image or an earlier stage, to its first operation), `next` (an operation's tree to the next operation, the last one to its
-  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation) and
+  stage), `input` (a source, `COPY --from` stage, plugin, tool or `FOR`/`FEED` list import to the operation, and
+  an `AS sitefile` import to each of its stages this Sitefile names) and
   `export` (the last stage and the site files to `export`).
-- **Order**: imports, plugins, tools, images (first use), local paths (first use), then per stage its operations and the stage, then
+- **Order**: imports, plugins, tools, images (first use), imported stages (first use), local paths (first use), then per stage its operations and the stage, then
   the site files and `export`. Edges in the order the stages are walked, without duplicates.
 - **Text**: one `id  label` line per node, followed by `  <- from (kind)` for each incoming edge, and
   `N nodes, M edges`.
@@ -227,6 +234,9 @@ tracking of the build: it compares each path before and after every operation of
 - `--json`: `{"path", "mode", "size", "digest", "origin", "history": [{"location", "instruction", "stage", "path",
   "action", "digest", "inputs": [...]}]}`.
 - With `--target`, `<path>` is a path in the target stage's tree.
+- Through a stage of a Sitefile imported `AS sitefile` (`FROM theme+assets`, `COPY --from=theme+assets`), the
+  history continues into that Sitefile: its entries have its locations (`theme/Sitefile:9`) and the stage as this
+  Sitefile names it (`theme+assets`; `theme+inner+x` two imports deep).
 
 ```
 $ sitefile why /index.html conformance/cases/why-overwrite

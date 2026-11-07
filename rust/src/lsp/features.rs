@@ -227,13 +227,13 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 _ if n >= 2 && prior[n - 2].upper() == "SECRET" => kw_items(["AS"], CIK_KEYWORD),
                 "AS" => kw_items(ImportKind::ALL.map(ImportKind::as_str), CIK_ENUM_MEMBER),
                 "SORT" => kw_items(["BY"], CIK_KEYWORD),
-                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" => Vec::new(),
+                "FROM" | "INTEGRITY" | "BY" | "SECRET" | "HEADER" | "ARG" => Vec::new(),
                 _ if n >= 4 => {
                     let mut v: Vec<Item> = Vec::new();
                     if n >= 2 && prior[n - 2].upper() == "BY" {
                         v.extend(kw_items(SORT_ORDERS, CIK_KEYWORD));
                     }
-                    for c in IMPORT_CLAUSES.iter().filter(|c| **c == "SECRET" || !used.contains(&c.to_string())) {
+                    for c in IMPORT_CLAUSES.iter().filter(|c| **c == "SECRET" || **c == "ARG" || !used.contains(&c.to_string())) {
                         v.push(if *c == "SORT" {
                             Item { label: "SORT BY".into(), kind: CIK_KEYWORD, detail: None, insert: Some("SORT BY ".into()) }
                         } else {
@@ -450,6 +450,9 @@ pub fn comment_hover(lines: &Lines, ix: &Index, line: u32, col: u32) -> Option<V
 }
 
 pub fn hover(ix: &Index, analysis: Option<&Analysis>, line: u32, col: u32) -> Option<Value> {
+    if let Some(r) = ix.imported_at(line, col) {
+        return Some(md(docs::imported_stage(&r.import, &r.stage), r.line, r.start, r.end));
+    }
     if let Some(o) = ix.occ_at(line, col) {
         if let Some(d) = o.def {
             return Some(md(def_markdown(ix, &ix.defs[d], analysis), o.line, o.start, o.end));
@@ -495,8 +498,53 @@ fn location(uri: &str, line: u32, start: u32, end: u32) -> Value {
 }
 
 pub fn definition(ix: &Index, uri: &str, line: u32, col: u32) -> Option<Value> {
+    if let Some(r) = ix.imported_at(line, col) {
+        return imported_definition(ix, uri, r);
+    }
     let d = &ix.defs[ix.occ_at(line, col)?.def?];
     Some(location(uri, d.line, d.start, d.end))
+}
+
+/// The local directory an `IMPORT name FROM <dir> AS sitefile` names, as written (None for Git, URLs and `${…}`).
+fn imported_dir<'a>(ix: &'a Index, import: &str) -> Option<&'a str> {
+    let def = ix.defs.iter().find(|d| d.kind == SymKind::Import && d.name == import)?;
+    let ins = &ix.instrs[def.instr];
+    let from = ins.find_kw("FROM", 2)?;
+    let dir = ins.words.get(from + 1)?.text.as_str();
+    let local = !dir.contains("://") && !dir.contains("${") && !dir.starts_with(['"', '\'']) && !dir.to_ascii_lowercase().starts_with("git+");
+    local.then_some(dir)
+}
+
+/// `file://` URI of an absolute path (`/` kept, other reserved and non-ASCII bytes percent-encoded).
+fn file_uri(p: &std::path::Path) -> String {
+    let mut s = String::from("file://");
+    for b in p.to_string_lossy().bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            s.push(b as char);
+        } else {
+            s.push_str(&format!("%{b:02X}"));
+        }
+    }
+    s
+}
+
+/// Go to the stage of a local Sitefile imported AS sitefile: `<dir>/Sitefile` next to this document
+/// (the build context is the document's directory), read from disk.
+fn imported_definition(ix: &Index, uri: &str, r: &crate::lsp::index::ImportedRef) -> Option<Value> {
+    let dir = imported_dir(ix, &r.import)?;
+    let base = crate::lsp::uri_path(uri)?;
+    let mut path = base.parent()?.to_path_buf();
+    for seg in dir.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        if seg == ".." {
+            return None; // outside the context: a build refuses it
+        }
+        path.push(seg);
+    }
+    path.push("Sitefile");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let other = crate::lsp::index::build(&Lines::new(&text));
+    let d = other.defs.iter().find(|d| d.kind == SymKind::Stage && d.name == r.stage)?;
+    Some(location(&file_uri(&path), d.line, d.start, d.end))
 }
 
 pub fn references(ix: &Index, uri: &str, line: u32, col: u32, include_decl: bool) -> Value {
@@ -678,11 +726,14 @@ mod tests {
     fn clause_values() {
         assert_eq!(labels("IMPORT p FROM ./x AS "), ImportKind::ALL.map(|k| k.as_str().to_string()));
         assert_eq!(labels("IMPORT p FROM ./x AS ma"), ImportKind::ALL.map(|k| k.as_str().to_string()));
-        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
-        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM ./x "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert_eq!(labels("IMPORT p FROM ./x AS json SORT BY date "), ["ASC", "DESC", "INTEGRITY", "SECRET", "ARG"]);
+        // ARG NAME=value repeats; nothing is offered for the name itself.
+        assert_eq!(labels("IMPORT t FROM ./t AS sitefile ARG A=1 "), ["INTEGRITY", "SORT BY", "SECRET", "ARG"]);
+        assert!(labels("IMPORT t FROM ./t AS sitefile ARG ").is_empty());
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok "), ["AS"]);
         assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS "), ["HEADER", "BEARER"]);
-        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET"]);
+        assert_eq!(labels("IMPORT p FROM https://e.x/d SECRET tok AS BEARER "), ["AS", "INTEGRITY", "SORT BY", "SECRET", "ARG"]);
         assert_eq!(labels("IMPORT p "), ["FROM"]);
         assert_eq!(labels("EXPORT / AS "), ExportFormat::ALL.map(|f| f.as_str().to_string()));
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
@@ -854,6 +905,34 @@ mod tests {
         assert!(rename(&ix, "file:///S", 8, 7, "9x").is_err());
         assert_eq!(prepare_rename(&ix, 4, 8).unwrap()["placeholder"], "assets");
         assert!(definition(&ix, "file:///S", 5, 2).is_none());
+    }
+
+    #[test]
+    fn imported_stages_definition_hover_references() {
+        // IMPORT … AS sitefile (issue #97): `theme+assets` is a use of `theme` and a stage of ./theme/Sitefile.
+        let dir = std::env::temp_dir().join(format!("sitefile-lsp-import-{}", crate::export::exporter::random_hex(6)));
+        std::fs::create_dir_all(dir.join("my theme")).unwrap();
+        std::fs::write(dir.join("my theme").join("Sitefile"), "ARG A = 1\n\nSTAGE assets\nEXPORT /\n").unwrap();
+        let src = "IMPORT theme FROM \"./my theme\" AS sitefile ARG A=2\nIMPORT git FROM git+https://e.x/t.git#v1 AS sitefile\nSTAGE s FROM theme+assets\nCOPY --from=theme+assets / /a/\nCOPY --from=git+x / /b/\nEXPORT /\n";
+        let ix = build(&Lines::new(src));
+        // Quoted directories are not followed (the word keeps its quotes); unquoted ones are.
+        assert!(definition(&ix, &file_uri(&dir.join("Sitefile")), 2, 21).is_none());
+        let src = src.replace("\"./my theme\"", "./my%20theme").replace("./my%20theme", "./mytheme");
+        std::fs::rename(dir.join("my theme"), dir.join("mytheme")).unwrap();
+        let ix = build(&Lines::new(&src));
+        let uri = file_uri(&dir.join("Sitefile"));
+        let d = definition(&ix, &uri, 2, 21).unwrap();
+        assert_eq!(d["uri"], file_uri(&dir.join("mytheme").join("Sitefile")));
+        assert_eq!(d["range"], range(2, 6, 2, 12));
+        assert_eq!(definition(&ix, &uri, 3, 20).unwrap()["range"], range(2, 6, 2, 12));
+        // The import part goes to the IMPORT; it is a reference of it.
+        assert_eq!(definition(&ix, &uri, 2, 15).unwrap()["range"], range(0, 7, 0, 12));
+        assert_eq!(references(&ix, &uri, 0, 8, true).as_array().unwrap().len(), 3);
+        // A Git import is not followed; hover explains the stage either way.
+        assert!(definition(&ix, &uri, 4, 17).is_none());
+        let h = hover(&ix, None, 2, 21).unwrap();
+        assert!(h["contents"]["value"].as_str().unwrap().contains("stage `assets` of the Sitefile imported as `theme`"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

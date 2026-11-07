@@ -79,6 +79,28 @@ function cases() {
     ex('hello', { suffix: ':build-arg', args: ['--build-arg', 'TITLE=Tom & <Jerry>'] }),
     ex('inline'),
     ex('multistage'),
+    // IMPORT … AS sitefile (issue #97): a site on the stages of ./theme/Sitefile, and the nested case's commands.
+    ex('shared-stages'),
+    ex('shared-stages', { suffix: ':build-arg', args: ['--build-arg', 'ACCENT=teal'] }),
+    ex('shared-stages', { suffix: ':inspect', command: 'inspect' }),
+    ex('shared-stages', { suffix: ':validate-json', command: 'validate', args: ['--json'] }),
+    ex('shared-stages', { suffix: ':graph-json', command: 'graph', args: ['--json'] }),
+    ex('shared-stages', { suffix: ':why', command: 'why', operands: ['/assets/theme.css'] }),
+    ...['inspect', 'why'].map((command) => ({
+      name: `case/sitefile-import:${command}`,
+      context: path.join(root, 'conformance', 'cases', 'sitefile-import'),
+      command,
+      operands: command === 'why' ? ['/who.txt'] : [],
+      args: ['--json'],
+    })),
+    // FINGERPRINT inside an imported Sitefile: why follows the rename into it.
+    {
+      name: 'case/sitefile-import-fingerprint:why',
+      context: path.join(root, 'conformance', 'cases', 'sitefile-import-fingerprint'),
+      command: 'why',
+      operands: ['/assets/site.0a8af8e447.css'],
+      args: ['--json'],
+    },
     ex('blog'),
     ex('data'),
     ex('motion', { args: ['--allow-plugin', 'motion'] }),

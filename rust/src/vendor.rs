@@ -9,7 +9,13 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::resources::git::GitSelection;
 use crate::resources::vendor::VendoredGit;
-use crate::executor::{fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, warn_unused_secrets, BuildOptions, Callback, LockfileSetting, Loaded, RemoteEnv};
+use crate::executor::{
+    fetch_git_import, fetch_remote_import, git_selection_bytes, load_program, read_imported_sitefile, root_sitefile_source, warn_unused_secrets, BuildOptions,
+    Callback, LockfileSetting, Loaded, RemoteEnv, SitefileSource,
+};
+use crate::language::ast::ImportKind;
+use crate::planner::{imported_stage_refs, ImportSpec, Plan, Stage};
+use crate::resources::git::GitLocation;
 use crate::secrets::{redact_error, redact_secrets};
 use crate::export::oci::parse_manifest;
 use crate::language::ast::ExportFormat;
@@ -33,6 +39,55 @@ pub struct VendorResult {
     pub bytes: u64,
     pub lockfile_written: bool,
     pub warnings: Vec<String>,
+}
+
+/// A Git import's content, vendored (a Sitefile imported from Git is read from it too).
+fn vendor_git(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_>, m: &mut VendorManifest, blobs: &mut BTreeMap<String, Vec<u8>>) -> Result<(String, GitSelection)> {
+    let (commit, selection) = fetch_git_import(spec, loc, env)?;
+    let bytes = git_selection_bytes(&selection)?;
+    let digest = sha256(&bytes);
+    let mode = match &selection {
+        GitSelection::File { mode, .. } => Some(if *mode == 0o755 { "755" } else { "644" }.to_string()),
+        GitSelection::Tree(_) => None,
+    };
+    m.git.insert(loc.url.clone(), VendoredGit { commit: commit.clone(), kind: selection.kind().into(), integrity: digest.clone(), size: bytes.len() as u64, mode });
+    blobs.insert(digest, bytes);
+    Ok((commit, selection))
+}
+
+/// Every remote input of `sp` (a Sitefile read from `source`), then those of the Sitefiles it imports AS sitefile.
+fn vendor_imports(
+    sp: &Plan,
+    source: &SitefileSource,
+    env: &RemoteEnv<'_>,
+    m: &mut VendorManifest,
+    blobs: &mut BTreeMap<String, Vec<u8>>,
+    nested: &mut Vec<Stage>,
+    warn: &Callback,
+) -> Result<()> {
+    let label = source.label().to_string();
+    let e = RemoteEnv { label: &label, ..*env };
+    for spec in &sp.imports {
+        if spec.as_kind == Some(ImportKind::Sitefile) {
+            let (sub, sub_source) = read_imported_sitefile(spec, source, &imported_stage_refs(&sp.stages), &mut |s, loc| vendor_git(s, loc, &e, m, blobs))?;
+            for w in &sub.warnings {
+                warn(w);
+            }
+            vendor_imports(&sub, &sub_source, env, m, blobs, nested, warn)?;
+            nested.extend(sub.stages);
+            continue;
+        }
+        if let ImportLocation::Git(loc) = &spec.location {
+            vendor_git(spec, loc, &e, m, blobs)?;
+            continue;
+        }
+        let ImportLocation::Remote { url } = &spec.location else { continue };
+        let (bytes, final_url) = fetch_remote_import(spec, url, &e)?;
+        let digest = sha256(&bytes);
+        m.resources.insert(url.clone(), VendoredResource { integrity: digest.clone(), size: bytes.len() as u64, resolved: final_url });
+        blobs.insert(digest, bytes);
+    }
+    Ok(())
 }
 
 pub fn vendor(options: &BuildOptions) -> Result<VendorResult> {
@@ -91,6 +146,8 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
     warn_unused_secrets(&p, &options.secrets, &warn);
     let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut m = VendorManifest::default();
+    // The stages of imported Sitefiles: their registry FROM images are vendored after this Sitefile's.
+    let mut nested_images: Vec<Stage> = Vec::new();
     {
         let env = RemoteEnv {
             policy: &options.fetch_policy,
@@ -103,31 +160,14 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
             archive_limits: options.archive_limits,
             secrets: &options.secrets,
         };
-        for spec in &p.imports {
-            if let ImportLocation::Git(loc) = &spec.location {
-                let (commit, selection) = fetch_git_import(spec, loc, &env)?;
-                let bytes = git_selection_bytes(&selection)?;
-                let digest = sha256(&bytes);
-                let mode = match &selection {
-                    GitSelection::File { mode, .. } => Some(if *mode == 0o755 { "755" } else { "644" }.to_string()),
-                    GitSelection::Tree(_) => None,
-                };
-                m.git.insert(loc.url.clone(), VendoredGit { commit, kind: selection.kind().into(), integrity: digest.clone(), size: bytes.len() as u64, mode });
-                blobs.insert(digest, bytes);
-                continue;
-            }
-            let ImportLocation::Remote { url } = &spec.location else { continue };
-            let (bytes, final_url) = fetch_remote_import(spec, url, &env)?;
-            let digest = sha256(&bytes);
-            m.resources.insert(url.clone(), VendoredResource { integrity: digest.clone(), size: bytes.len() as u64, resolved: final_url });
-            blobs.insert(digest, bytes);
-        }
+        let root = root_sitefile_source(options, &label, &sitefile_path)?;
+        vendor_imports(&p, &root, &env, &mut m, &mut blobs, &mut nested_images, &warn)?;
     }
 
     let mut lock = lock.into_inner().unwrap_or(None);
     // FROM image stage bases with a registry (local-store images are not vendored), then the BASE.
     let mut wanted: Vec<(String, String, bool, Option<SourceSpan>)> = Vec::new();
-    for st in &p.stages {
+    for st in p.stages.iter().chain(&nested_images) {
         if let StageBase::Image { reference, local: false, lead, span, .. } = &st.base {
             wanted.push((reference.clone(), format!("{lead} image"), false, Some(span.clone())));
         }

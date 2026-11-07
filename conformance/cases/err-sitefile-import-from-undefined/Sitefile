@@ -1,0 +1,5 @@
+# --from=<import>+<stage> needs an IMPORT … AS sitefile on an earlier line.
+FROM scratch
+COPY --from=theme+assets / /
+IMPORT theme FROM ./theme AS sitefile
+EXPORT /

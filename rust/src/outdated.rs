@@ -17,9 +17,9 @@
 
 use crate::digest::sha256;
 use crate::error::Result;
-use crate::executor::{load_program, BuildOptions, LockfileSetting, Loaded};
-use crate::language::ast::ExportFormat;
-use crate::planner::{plan, ImportLocation, StageBase};
+use crate::executor::{load_program, read_imported_sitefile, root_sitefile_source, BuildOptions, LockfileSetting, Loaded, SitefileSource};
+use crate::language::ast::{ExportFormat, ImportKind};
+use crate::planner::{imported_stage_refs, plan, ImportLocation, Plan, StageBase};
 use crate::refs::{parse_ref, with_default_registry};
 use crate::registry::{insecure_registries_from_env, make_client, process_env, RegistryOptions};
 use crate::resources::https::{fetch_remote_with, FetchRequest};
@@ -189,7 +189,7 @@ fn status_of(pin: Option<&str>, latest: &str) -> Status {
 }
 
 pub fn outdated(options: &BuildOptions) -> Result<Report> {
-    let Loaded { program, sitefile_path, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
     let p = plan(&program, &options.build_args)?;
     if let Some(w) = &options.on_warning {
         for m in &p.warnings {
@@ -202,9 +202,24 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         LockfileSetting::Default => Some(Lockfile::load(sitefile_path.parent().unwrap_or(Path::new("/")).join("Sitefile.lock"))?),
     };
     let mut inputs = Vec::new();
+    // Sitefiles imported AS sitefile, with the prefix their inputs are named by (`theme+`).
+    let mut nested: Vec<(String, Plan)> = Vec::new();
+    let root = root_sitefile_source(options, &label, &sitefile_path)?;
+    import_rows(&p, &root, "", options, lock.as_ref(), &mut inputs, &mut nested);
 
-    for spec in &p.imports {
+    // A registry image (BASE or a FROM image base): resolve its tag again and compare with the pin.
+    image_rows(&p, &nested, options, lock.as_ref(), &mut inputs);
+    Ok(Report { inputs })
+}
+
+/// The rows of `sp`'s imports (`sp` read from `source`), then of the Sitefiles it imports, named `<prefix><name>`.
+fn import_rows(sp: &Plan, source: &SitefileSource, prefix: &str, options: &BuildOptions, lock: Option<&Lockfile>, inputs: &mut Vec<Entry>, nested: &mut Vec<(String, Plan)>) {
+    for spec in &sp.imports {
+        let name = format!("{prefix}{}", spec.name);
+        let row_index = inputs.len();
+        let mut has_row = false;
         if let ImportLocation::Git(loc) = &spec.location {
+            has_row = true;
             // A ref is resolved again (ls-refs, nothing is downloaded): changed = the ref moved since it
             // was locked. A commit in the URL has no ref to follow.
             let locked = lock.as_ref().and_then(|l| l.get_git(&loc.url)).map(|e| e.commit.clone());
@@ -216,7 +231,7 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
                 None
             };
             let pin = loc.commit.clone().or(locked);
-            let mut e = Entry { kind: "import", name: spec.name.clone(), source: loc.url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
+            let mut e = Entry { kind: "import", name: name.clone(), source: loc.url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
             if loc.commit.is_some() {
                 e.status = Status::DigestOnly;
             } else {
@@ -233,10 +248,52 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
                 }
             }
             inputs.push(e);
+        } else if let ImportLocation::Remote { url } = &spec.location {
+            remote_row(spec, url, &name, options, lock, inputs);
+        }
+        if spec.as_kind != Some(ImportKind::Sitefile) || (has_row && inputs[row_index].status == Status::Error) {
             continue;
         }
-        let ImportLocation::Remote { url } = &spec.location else { continue };
-        let locked = lock.as_ref().and_then(|l| l.get(url));
+        // The inputs of an imported Sitefile, as pinned (a Git one is read at its pinned commit, else the ref's).
+        let limits = options.archive_limits;
+        let read = read_imported_sitefile(spec, source, &imported_stage_refs(&sp.stages), &mut |s, loc| {
+            let origin_headers = secret_headers(&s.name, &s.secrets, &s.span, &options.secrets)?;
+            let want = loc.commit.clone().or_else(|| lock.and_then(|l| l.get_git(&loc.url)).map(|e| e.commit.clone()));
+            let t = crate::resources::git::GitTransport { origin_headers: &origin_headers, ..crate::resources::git::GitTransport::new(&options.fetch_policy, Some(&s.span)) };
+            let objs = crate::resources::git::fetch_git_commit(&loc.repo, &loc.git_ref, want.as_deref(), t, &limits)?;
+            let selection = crate::resources::git::select_git_path(&objs, &loc.repo, &loc.path, &limits, Some(&s.span))?;
+            Ok((objs.commit.clone(), selection))
+        });
+        match read {
+            Ok((sub, sub_source)) => {
+                if let Some(w) = &options.on_warning {
+                    for m in &sub.warnings {
+                        w(m);
+                    }
+                }
+                let sub_prefix = format!("{name}+");
+                nested.push((sub_prefix.clone(), sub.clone()));
+                import_rows(&sub, &sub_source, &sub_prefix, options, lock, inputs, nested);
+            }
+            Err(err) => {
+                let error = Some((err.code.as_str().to_string(), redact_secrets(&err.detail, &options.secrets)));
+                if has_row {
+                    let e = &mut inputs[row_index];
+                    e.latest = None;
+                    e.status = Status::Error;
+                    e.error = error;
+                } else {
+                    inputs.push(Entry { kind: "import", name, source: spec.uri.clone(), pin: None, pinned_by: None, latest: None, status: Status::Error, newer_tag: None, error });
+                }
+            }
+        }
+    }
+}
+
+/// The row of an https IMPORT: the URL fetched again and its digest compared with the pin.
+fn remote_row(spec: &crate::planner::ImportSpec, url: &str, name: &str, options: &BuildOptions, lock: Option<&Lockfile>, inputs: &mut Vec<Entry>) {
+    {
+        let locked = lock.and_then(|l| l.get(url));
         let pin = spec.integrity.clone().or_else(|| locked.map(|e| e.integrity.clone()));
         let pinned_by = if spec.integrity.is_some() {
             Some("integrity")
@@ -245,7 +302,7 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         } else {
             None
         };
-        let mut e = Entry { kind: "import", name: spec.name.clone(), source: url.clone(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
+        let mut e = Entry { kind: "import", name: name.to_string(), source: url.to_string(), pin, pinned_by, latest: None, status: Status::Error, newer_tag: None, error: None };
         let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets)
             .and_then(|origin_headers| fetch_remote_with(url, &options.fetch_policy, None, &FetchRequest { origin_headers, ..FetchRequest::default() }));
         match r {
@@ -258,8 +315,10 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         }
         inputs.push(e);
     }
+}
 
-    // A registry image (BASE or a FROM image base): resolve its tag again and compare with the pin.
+/// The rows of the registry FROM images (this Sitefile's, then the imported ones', named `<prefix><stage>`) and the BASE.
+fn image_rows(p: &Plan, nested: &[(String, Plan)], options: &BuildOptions, lock: Option<&Lockfile>, inputs: &mut Vec<Entry>) {
     let image_row = |kind: &'static str, name: String, input: &str| -> Entry {
         let mut e = Entry { kind, name, source: input.to_string(), pin: None, pinned_by: None, latest: None, status: Status::Error, newer_tag: None, error: None };
         let r = (|| -> Result<()> {
@@ -310,16 +369,17 @@ pub fn outdated(options: &BuildOptions) -> Result<Report> {
         e
     };
     // FROM image stage bases with a registry (local-store images have no upstream), named by their stage.
-    for (i, st) in p.stages.iter().enumerate() {
-        if let StageBase::Image { reference, local: false, .. } = &st.base {
-            inputs.push(image_row("image", st.name.clone().unwrap_or_else(|| format!("#{}", i + 1)), reference));
+    for (prefix, sp) in std::iter::once(("", p)).chain(nested.iter().map(|(pre, sp)| (pre.as_str(), sp))) {
+        for (i, st) in sp.stages.iter().enumerate() {
+            if let StageBase::Image { reference, local: false, .. } = &st.base {
+                inputs.push(image_row("image", format!("{prefix}{}", st.name.clone().unwrap_or_else(|| format!("#{}", i + 1))), reference));
+            }
         }
     }
     let base_input = options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None });
     if let Some(input) = base_input {
         inputs.push(image_row("base", "BASE".into(), &input));
     }
-    Ok(Report { inputs })
 }
 
 #[cfg(test)]

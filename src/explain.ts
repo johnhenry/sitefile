@@ -2,9 +2,11 @@ import { statSync } from 'node:fs';
 import path from 'node:path';
 import { SitefileError } from './errors.js';
 import { joinVirtual, normalizeVirtual } from './paths.js';
-import type { Operation, Plan, SourceRef, Stage } from './planner.js';
-import type { BuildResult } from './executor.js';
+import { importedStageRefs, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
+import type { BuildResult, ImportedSitefile } from './executor.js';
 import type { FileNode, Tree } from './tree.js';
+import type { Resource } from './resources/types.js';
+import { importedStage } from './language/ast.js';
 
 // `sitefile graph` and `sitefile why` (issue #94): the dependency graph of a plan, and the history of one
 // output file. Both outputs are part of the CLI contract and identical in the Rust port (rust/src/explain.rs).
@@ -130,6 +132,16 @@ export function planGraph(p: Plan): Graph {
   };
   const list = (name: string): string | undefined => (imports.has(name) ? `import:${name}` : undefined);
 
+  // Stages of imported Sitefiles (IMPORT … AS sitefile) are read like stages: one node each, fed by the import.
+  const importedStages: GraphNode[] = [];
+  for (const ref of importedStageRefs(p.stages)) {
+    const id = `stage:${ref.name}`;
+    if (stageIds.has(ref.name)) continue;
+    const line = p.imports.find((i) => i.name === ref.import)?.span.line;
+    importedStages.push({ id, kind: 'stage', label: `stage ${ref.stage} of IMPORT ${ref.import}`, ...(line !== undefined ? { line } : {}) });
+    stageIds.set(ref.name, id);
+    edge(`import:${ref.import}`, id, 'input');
+  }
   const staged: GraphNode[] = [];
   const images: GraphNode[] = [];
   p.stages.forEach((stage, si) => {
@@ -180,6 +192,7 @@ export function planGraph(p: Plan): Graph {
     ...p.plugins.map((pl): GraphNode => ({ id: `plugin:${pl.name}`, kind: 'plugin', label: `PLUGIN ${pl.name} ${localLabel(pl.path)}`, line: pl.span.line })),
     ...p.tools.map((t): GraphNode => ({ id: `tool:${t.name}`, kind: 'tool', label: `TOOL ${t.name}`, line: t.span.line })),
     ...images,
+    ...importedStages,
     ...locals,
     ...staged,
     ...site,
@@ -281,39 +294,73 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
     if (result.output.isDirectory(want)) throw new SitefileError('E_NOT_FOUND', `'${want}' is a directory in the build output; name a file`);
     throw new SitefileError('E_NOT_FOUND', `'${want}' is not in the build output`);
   }
-  const at = (line: number): string => `${p.file}:${line}`;
-  const stageIndex = new Map<string, number>();
-  p.stages.forEach((s, i) => s.name !== undefined && stageIndex.set(s.name, i));
-  const finalOf = (i: number): Tree => steps[i]![steps[i]!.length - 1]!;
-  const resource = (name: string) => result.resources.get(name);
+  const root: WhyScope = {
+    plan: p,
+    steps,
+    prefix: '',
+    resource: (name) => result.resources.get(name),
+    isDir: (rel) => {
+      try {
+        return statSync(path.join(contextDir, rel)).isDirectory();
+      } catch {
+        return false; // gone since the build: show the path as written
+      }
+    },
+    imported: result.imported ?? new Map(),
+    ...(result.renames ? { renames: result.renames } : {}),
+  };
+  const scopes = new Map<ImportedSitefile, WhyScope>();
+  /** The scope of a Sitefile imported by `scope` (its own messages, steps and context). */
+  const scopeOf = (unit: ImportedSitefile, prefix: string): WhyScope => {
+    let s = scopes.get(unit);
+    if (!s) {
+      s = {
+        plan: unit.plan,
+        steps: unit.steps ?? [],
+        prefix,
+        resource: (name) => unit.resources.get(name),
+        isDir: (rel) => unit.isDirectory(rel),
+        imported: unit.imported,
+        renames: unit.renames,
+      };
+      scopes.set(unit, s);
+    }
+    return s;
+  };
+  /** The scope and index of the stage `name` (`build`, or `theme+assets` for a stage of an imported Sitefile). */
+  const locate = (scope: WhyScope, name: string): { scope: WhyScope; index: number } => {
+    const imp = importedStage(name);
+    const unit = imp ? scope.imported.get(imp.import) : undefined;
+    if (imp && unit) {
+      const s = scopeOf(unit, `${scope.prefix}${imp.import}+`);
+      return { scope: s, index: unit.plan.stages.findIndex((st) => st.name === imp.stage) };
+    }
+    return { scope, index: scope.plan.stages.findIndex((st) => st.name === name) };
+  };
+  const finalOf = (scope: WhyScope, i: number): Tree => scope.steps[i]![scope.steps[i]!.length - 1]!;
 
   /** Display and (for a stage) the file a source contributes to `file` written at `dest`. */
-  const copied = (ref: SourceRef, dest: string, file: string): { input: string; from?: { stage: number; path: string } } => {
+  const copied = (scope: WhyScope, ref: SourceRef, dest: string, file: string): { input: string; from?: { scope: WhyScope; stage: number; path: string } } => {
     const rel = file === dest ? undefined : below(dest, file);
     switch (ref.kind) {
       case 'inline':
         return { input: `<<${ref.delimiter}` };
       case 'local': {
-        let isDir = false;
-        try {
-          isDir = statSync(path.join(contextDir, ref.path)).isDirectory();
-        } catch {
-          // gone since the build: show the path as written
-        }
+        const isDir = scope.isDir(ref.path);
         const rest = isDir && rel !== undefined ? (ref.path === '' ? rel.slice(1) : ref.path + rel) : ref.path;
         return { input: localLabel(rest) };
       }
       case 'import': {
-        const res = resource(ref.name);
+        const res = scope.resource(ref.name);
         if (res?.kind !== 'tree') return { input: ref.path === '/' ? `import ${ref.name}` : `import ${ref.name}:${ref.path}` };
         const inner = res.tree.isFile(ref.path) || rel === undefined ? ref.path : under(ref.path, rel);
         return { input: `import ${ref.name}:${inner}` };
       }
       case 'stage': {
-        const i = stageIndex.get(ref.name)!;
-        const tree = finalOf(i);
+        const loc = locate(scope, ref.name);
+        const tree = finalOf(loc.scope, loc.index);
         const inner = tree.isFile(ref.path) || rel === undefined ? ref.path : under(ref.path, rel);
-        return { input: `stage ${ref.name}:${inner}`, ...(tree.isFile(inner) ? { from: { stage: i, path: inner } } : {}) };
+        return { input: `stage ${ref.name}:${inner}`, ...(tree.isFile(inner) ? { from: { scope: loc.scope, stage: loc.index, path: inner } } : {}) };
       }
     }
   };
@@ -329,38 +376,41 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         return `stage ${ref.name}:${ref.path}`;
     }
   };
-  const tools = new Set(p.tools.map((t) => t.name));
 
   /** The path `file` had before operation `upTo` of stage `si` when a FINGERPRINT there renamed it, and where. */
-  const renamedAt = (si: number, file: string, upTo: number): { index: number; from: string } | undefined => {
-    const ops = p.stages[si]!.operations;
+  const renamedAt = (scope: WhyScope, si: number, file: string, upTo: number): { index: number; from: string } | undefined => {
+    const ops = scope.plan.stages[si]!.operations;
     for (let i = upTo - 1; i >= 0; i--) {
       const op = ops[i]!;
       if (op.kind !== 'FINGERPRINT') continue;
-      const hit = result.renames?.get(op.span.line)?.find(([, to]) => to === file);
+      const hit = scope.renames?.get(op.span.line)?.find(([, to]) => to === file);
       if (hit) return { index: i, from: hit[0] };
     }
     return undefined;
   };
 
-  const history = (si: number, file: string, upTo = p.stages[si]!.operations.length): WhyEvent[] => {
-    const stage = p.stages[si]!;
-    const trees = steps[si]!;
-    const display = stageDisplay(stage, si);
+  const history = (scope: WhyScope, si: number, file: string, upTo = scope.plan.stages[si]!.operations.length): WhyEvent[] => {
+    const sp = scope.plan;
+    const at = (line: number): string => `${sp.file}:${line}`;
+    const stage = sp.stages[si]!;
+    const trees = scope.steps[si]!;
+    const display = scope.prefix + stageDisplay(stage, si);
     // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
-    const rename = renamedAt(si, file, upTo);
+    const rename = renamedAt(scope, si, file, upTo);
     if (rename) {
       const op = stage.operations[rename.index]!;
       const node = trees[rename.index + 1]!.get(file)!;
-      const events = history(si, rename.from, rename.index);
+      const events = history(scope, si, rename.from, rename.index);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: 'write', digest: node.digest, inputs: [`${rename.from} (renamed)`] });
-      return [...events, ...later(si, file, rename.index + 1, upTo, node)];
+      return [...events, ...later(scope, si, file, rename.index + 1, upTo, node)];
     }
     const events: WhyEvent[] = [];
-    let prev = trees[0]!.get(file);
+    const prev = trees[0]!.get(file);
     if (prev) {
-      if (stage.base.kind === 'stage') events.push(...history(stageIndex.get(stage.base.name)!, file));
-      else if (stage.base.kind === 'local') {
+      if (stage.base.kind === 'stage') {
+        const loc = locate(scope, stage.base.name);
+        events.push(...history(loc.scope, loc.index, file));
+      } else if (stage.base.kind === 'local') {
         const rest = stage.base.path === '' ? file.slice(1) : stage.base.path + file;
         events.push({ location: at(stage.span.line), instruction: stageLabel(stage), stage: display, path: file, action: 'write', digest: prev.digest, inputs: [localLabel(rest)] });
       } else if (stage.base.kind === 'image') {
@@ -368,14 +418,17 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         events.push({ location: at(stage.span.line), instruction: stageLabel(stage), stage: display, path: file, action: 'write', digest: prev.digest, inputs: [prev.origin] });
       }
     }
-    return [...events, ...later(si, file, 0, upTo, prev)];
+    return [...events, ...later(scope, si, file, 0, upTo, prev)];
   };
 
   /** The events of operations `from` to `upTo` (exclusive) of stage `si` that changed `file` (`prev`: before them). */
-  const later = (si: number, file: string, from: number, upTo: number, prev: FileNode | undefined): WhyEvent[] => {
-    const stage = p.stages[si]!;
-    const trees = steps[si]!;
-    const display = stageDisplay(stage, si);
+  const later = (scope: WhyScope, si: number, file: string, from: number, upTo: number, prev: FileNode | undefined): WhyEvent[] => {
+    const sp = scope.plan;
+    const at = (line: number): string => `${sp.file}:${line}`;
+    const tools = new Set(sp.tools.map((t) => t.name));
+    const stage = sp.stages[si]!;
+    const trees = scope.steps[si]!;
+    const display = scope.prefix + stageDisplay(stage, si);
     const events: WhyEvent[] = [];
     stage.operations.slice(from, upTo).forEach((op, k) => {
       const i = from + k;
@@ -386,8 +439,8 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       }
       const inputs: string[] = [];
       if (op.kind === 'COPY') {
-        const c = copied(op.source, op.dest, file);
-        if (c.from) events.push(...history(c.from.stage, c.from.path));
+        const c = copied(scope, op.source, op.dest, file);
+        if (c.from) events.push(...history(c.from.scope, c.from.stage, c.from.path));
         inputs.push(c.input);
       } else if (op.kind === 'RENDER') {
         inputs.push(readLabel(op.template));
@@ -408,11 +461,13 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
     return events;
   };
 
+
+  const at = (line: number): string => `${p.file}:${line}`;
   const lastIndex = p.stages.length - 1;
   const full = under(p.exportPath, want);
-  const events = history(lastIndex, full);
+  const events = history(root, lastIndex, full);
   // The EXPORT site files are added after the last stage.
-  const before = finalOf(lastIndex).get(full);
+  const before = finalOf(root, lastIndex).get(full);
   const after = result.tree.get(full);
   if (after && !same(before, after)) {
     const [rules, kind] = full === joinVirtual(p.exportPath, '_redirects') ? [p.redirects, 'REDIRECT'] : [p.headers, 'HEADER'];
@@ -427,6 +482,20 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
     });
   }
   return { path: want, mode: node.mode.toString(8), size: node.bytes.byteLength, digest: node.digest, origin: node.origin, history: events };
+}
+
+/** One Sitefile's view for `why`: the build's own, or one imported AS sitefile (stages shown as `theme+<stage>`). */
+interface WhyScope {
+  readonly plan: Plan;
+  readonly steps: readonly (readonly Tree[])[];
+  /** `theme+` for a Sitefile imported as `theme` ('' for the build's own). */
+  readonly prefix: string;
+  readonly resource: (name: string) => Resource | undefined;
+  /** Whether a context-relative path is a directory (a COPY of a directory lists the file inside it). */
+  readonly isDir: (rel: string) => boolean;
+  readonly imported: ReadonlyMap<string, ImportedSitefile>;
+  /** What each FINGERPRINT of this Sitefile renamed (old path, new path), by its line. */
+  readonly renames?: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
 
 export function whyText(r: WhyReport): string {

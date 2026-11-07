@@ -97,7 +97,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("type", s(ty.as_str())),
             ("value", Some(operand(value))),
         ]),
-        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, secrets } => obj(vec![
+        Instruction::Import { span: sp, name, uri, as_kind, integrity, sort, secrets, args } => obj(vec![
             ("kind", s("IMPORT")),
             ("span", Some(span(sp))),
             ("name", Some(json!(name))),
@@ -110,6 +110,10 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
                 (!secrets.is_empty()).then(|| {
                     Value::Array(secrets.iter().map(|x| json!({ "id": x.id, "header": x.header, "bearer": x.bearer, "span": span(&x.span) })).collect())
                 }),
+            ),
+            (
+                "args",
+                (!args.is_empty()).then(|| Value::Array(args.iter().map(|a| json!({ "name": a.name, "value": operand(&a.value), "span": span(&a.span) })).collect())),
             ),
         ]),
         Instruction::Copy { span: sp, source: src, dest, from, overwrite, exclude, chmod, parents } => obj(vec![
