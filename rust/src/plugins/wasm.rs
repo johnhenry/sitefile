@@ -810,7 +810,13 @@ mod tests {
         let out = run(&m, b"{}", &PluginPolicy::default()).unwrap();
         assert!(String::from_utf8(out).unwrap().contains("hello from wasm"));
         // Corrupt entry: falls back to compiling and rewrites a good file.
-        std::fs::write(&file, b"garbage").unwrap();
+        // `m` is mapped from `file`: drop it first, and replace the file rather than
+        // truncating it in place. Truncating a file under a live mapping is SIGBUS on
+        // Linux (the cache itself only ever replaces entries by rename).
+        drop(m);
+        let garbage = file.with_extension("garbage");
+        std::fs::write(&garbage, b"garbage").unwrap();
+        std::fs::rename(&garbage, &file).unwrap();
         let (_, o) = load_with_dir(Some(&dir), "p", &bytes, None).unwrap();
         assert_eq!((o, compiles() - c0), (Origin::Compiled, 2));
         assert_eq!(
