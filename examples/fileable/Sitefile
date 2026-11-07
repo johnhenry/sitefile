@@ -1,0 +1,8 @@
+# A fileable tree rendered straight into the build (no disk in between). Run `node vendor.mjs` once, then: sitefile build --allow-plugin fileable
+FROM scratch
+ARG TEMPLATE = "docs.mjs"
+PLUGIN fileable FROM ./plugins/fileable/fileable.mjs
+IMPORT docs FROM ./docs.json AS json
+COPY ./style.css /docs/style.css
+TRANSFORM docs: WITH fileable TO /docs/ OPTIONS template=${TEMPLATE} title="Fileable docs"
+EXPORT /

@@ -15,6 +15,7 @@ both implementations and requires identical output.
 | [`blog/`](./blog/) | Markdown posts with a frontmatter `SCHEMA`, one page per post (`FOR`), per tag (`BY`) and per page of 2 (`PAGE`), plus `FEED`, `SITEMAP`, `FINGERPRINT` and `CHECKLINKS`. |
 | [`data/`](./data/) | YAML, CSV and Web Bundle imports as template data, and a `.wbn` unpacked `AS tree`. |
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
+| [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
 | [`image/`](./image/) | The first-party image plugin (pinned with `INTEGRITY`) writes resized variants and a metadata file. |
 | [`theme/`](./theme/) | A site image: built with `-t theme:1` into the local image store rather than exported. |
@@ -31,7 +32,7 @@ sitefile build examples/hello --build-arg TITLE="My site"
 
 ## Runtime requirements
 
-Node 26 and nothing else: no network, no container engine and no external
+Node 26 and nothing else (plus `npm ci` at the repository root for `fileable/`, whose plugin vendors the `@johnhenry/fileable` devDependency): no network, no container engine and no external
 tools. Remote imports, registries and `TOOL` programs are covered by the
 network conformance cases (`conformance/cases/net-*`) and the test suite, which
 run local servers instead.

@@ -21,6 +21,19 @@
   conformance cases compare the bytes of both implementations. Added in
   3c537de (#149).
 
+- **Example: a fileable plugin for TRANSFORM** (`examples/fileable/`,
+  johnhenry/sitefile#145). A JavaScript plugin renders a `@johnhenry/fileable`
+  tree into the build with fileable's in-memory `toFiles()` and returns
+  `{ files }`, so a JSX file tree needs no directory or zip on disk in
+  between. fileable stays out of Sitefile's dependencies: it is a
+  devDependency, and `examples/fileable/vendor.mjs` copies the files its
+  browser entry point loads into the plugin folder (gitignored; nothing
+  generated is committed), the only folder a plugin can read. Its `cmd`
+  attribute and other features that need files, processes or the environment
+  fail with a clear `E_PLUGIN`. Checked by `npm run examples` and by
+  conformance (both CLIs). docs/PLUGINS.md, "Example: rendering a fileable
+  tree". Added in 0b5c4b3 (#147).
+
 - **`EXPORT … AS wbn` bakes HEADER and exact REDIRECT rules into the bundle's
   responses** (johnhenry/sitefile#144, #150). Each response gets the headers of the
   `/_headers` blocks matching its URL, with `sitefile serve`'s matching
