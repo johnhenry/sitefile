@@ -1,12 +1,16 @@
 //! `images`, `image inspect|prune|diff`, `tag`, `rmi`, `save` (port of `src/cli/images.ts`).
 
 use super::args::{flag, flag_s, string, string_s, OptSpec, Parsed};
-use super::common::{err, human_size, now_ms, out, pretty_json, relative_time, require_args, table, usage, Command};
+use super::common::{
+    err, human_size, now_ms, out, pretty_json, relative_time, require_args, table, usage, Command,
+};
 use crate::error::{ErrorCode, Result};
 use crate::executor::relative_path;
 use crate::export::archive_writers::{source_date_epoch, write_tar, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, random_hex, ExportOptions};
-use crate::export::formats::{encode_tree, format_from_extension, is_archive_format, EncodeOptions};
+use crate::export::formats::{
+    encode_tree, format_from_extension, is_archive_format, EncodeOptions,
+};
 use crate::export::oci::{media, site_layer_index, Descriptor};
 use crate::language::ast::ExportFormat;
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key};
@@ -18,7 +22,10 @@ pub const EXPORT_FORMATS: &str = "directory, zip, tar, tgz, wbn, oci";
 
 fn split(key: &str) -> (String, String) {
     let i = key.rfind(':').unwrap_or(key.len());
-    (key[..i].to_string(), key.get(i + 1..).unwrap_or("").to_string())
+    (
+        key[..i].to_string(),
+        key.get(i + 1..).unwrap_or("").to_string(),
+    )
 }
 
 /// A path relative to the cwd when it is inside it, else absolute.
@@ -40,7 +47,14 @@ pub fn descriptor_json(d: &Descriptor) -> Value {
     m.insert("digest".into(), Value::String(d.digest.clone()));
     m.insert("size".into(), Value::from(d.size));
     if let Some(a) = &d.annotations {
-        m.insert("annotations".into(), Value::Object(a.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()));
+        m.insert(
+            "annotations".into(),
+            Value::Object(
+                a.iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect(),
+            ),
+        );
     }
     Value::Object(m)
 }
@@ -117,7 +131,11 @@ fn run_images(v: &Parsed) -> Result<i32> {
         if digests {
             r.push(im.id.clone());
         }
-        r.extend([relative_time(&im.created, now), im.files.to_string(), human_size(im.size)]);
+        r.extend([
+            relative_time(&im.created, now),
+            im.files.to_string(),
+            human_size(im.size),
+        ]);
         body.push(r);
     }
     out(&table(&body));
@@ -129,7 +147,8 @@ pub const INSPECT: Command = Command {
     name: "image inspect",
     summary: "show an image manifest",
     usage: "image inspect <ref|id> [--json]",
-    description: "Show an image: its ID, tags, creation time, build metadata (ARG names only) and files.",
+    description:
+        "Show an image: its ID, tags, creation time, build metadata (ARG names only) and files.",
     flags: &["--json   machine-readable output"],
     options: INSPECT_OPTS,
     run: run_inspect,
@@ -141,11 +160,25 @@ fn run_inspect(v: &Parsed) -> Result<i32> {
     let id = store.resolve(&v.positionals[0])?;
     let d = store.details(&id)?;
     let tree = store.load_tree(&id)?; // verifies every digest
-    let files: Vec<(String, String, usize, String)> =
-        tree.entries().map(|(p, n)| (p.clone(), format!("{:o}", n.mode), n.bytes.len(), n.digest.clone())).collect();
+    let files: Vec<(String, String, usize, String)> = tree
+        .entries()
+        .map(|(p, n)| {
+            (
+                p.clone(),
+                format!("{:o}", n.mode),
+                n.bytes.len(),
+                n.digest.clone(),
+            )
+        })
+        .collect();
     let layer = d.manifest.layers.first();
     if v.flag("json") {
-        let labels: Map<String, Value> = d.config.labels.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+        let labels: Map<String, Value> = d
+            .config
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
         let o = json!({
             "id": id,
             "tags": d.tags,
@@ -165,8 +198,19 @@ fn run_inspect(v: &Parsed) -> Result<i32> {
     }
     let mut lines = vec![
         format!("ID:          {id}"),
-        format!("Tags:        {}", if d.tags.is_empty() { "<none>".to_string() } else { d.tags.join(", ") }),
-        format!("Stored:      {} ({})", d.created, relative_time(&d.created, now_ms())),
+        format!(
+            "Tags:        {}",
+            if d.tags.is_empty() {
+                "<none>".to_string()
+            } else {
+                d.tags.join(", ")
+            }
+        ),
+        format!(
+            "Stored:      {} ({})",
+            d.created,
+            relative_time(&d.created, now_ms())
+        ),
         format!("Platform:    {}/{}", d.config.os, d.config.architecture),
         format!("Root:        {}", d.root),
         format!(
@@ -178,14 +222,21 @@ fn run_inspect(v: &Parsed) -> Result<i32> {
                 _ => "gzip",
             }
         ),
-        format!("Diff ID:     {}", d.config.diff_ids.first().map(String::as_str).unwrap_or("-")),
+        format!(
+            "Diff ID:     {}",
+            d.config.diff_ids.first().map(String::as_str).unwrap_or("-")
+        ),
         format!("Config:      {}", d.manifest.config.digest),
         "Labels:".to_string(),
     ];
     for (k, val) in &d.config.labels {
         lines.push(format!("  {k}={val}"));
     }
-    lines.push(format!("Files:       {} ({})", files.len(), human_size(d.size)));
+    lines.push(format!(
+        "Files:       {} ({})",
+        files.len(),
+        human_size(d.size)
+    ));
     lines.push(String::new());
     for (p, m, s, _) in &files {
         lines.push(format!("{m}  {s:>8}  {p}"));
@@ -274,7 +325,12 @@ fn run_prune(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-const SAVE_OPTS: &[OptSpec] = &[string_s("out", 'o'), string("format"), string("base-url"), flag("force")];
+const SAVE_OPTS: &[OptSpec] = &[
+    string_s("out", 'o'),
+    string("format"),
+    string("base-url"),
+    flag("force"),
+];
 pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
@@ -300,52 +356,103 @@ impl Drop for Scratch {
 
 fn run_save(v: &Parsed) -> Result<i32> {
     require_args(&v.positionals, 1, 1, "an image reference")?;
-    let Some(out_path) = v.str("out").filter(|s| !s.is_empty()) else { return usage("save requires -o <out>") };
+    let Some(out_path) = v.str("out").filter(|s| !s.is_empty()) else {
+        return usage("save requires -o <out>");
+    };
     let mut format: Option<ExportFormat> = None;
     if v.has("format") {
         format = ExportFormat::parse(v.str("format").unwrap_or(""));
         if format.is_none() {
-            return usage(format!("--format expects one of {EXPORT_FORMATS} (or tar.gz)"));
+            return usage(format!(
+                "--format expects one of {EXPORT_FORMATS} (or tar.gz)"
+            ));
         }
     }
-    let format = format.or_else(|| format_from_extension(out_path)).unwrap_or(ExportFormat::Directory);
+    let format = format
+        .or_else(|| format_from_extension(out_path))
+        .unwrap_or(ExportFormat::Directory);
     let store = Store::open_default()?;
     let input = &v.positionals[0];
     let id = store.resolve(input)?;
     // An empty scratch directory as the "context": the destination is then always
     // outside it, so a non-empty directory or an existing file needs --force.
     let dir = std::env::temp_dir().join(format!("sitefile-save-{}", random_hex(3)));
-    std::fs::create_dir_all(&dir).map_err(|e| crate::error::SitefileError::plain(ErrorCode::E_EXPORT, format!("cannot create a temporary directory: {e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        crate::error::SitefileError::plain(
+            ErrorCode::E_EXPORT,
+            format!("cannot create a temporary directory: {e}"),
+        )
+    })?;
     let scratch = Scratch(crate::export::exporter::resolve_path(&dir));
     let opts = ExportOptions::new(&scratch.0).force(v.flag("force"));
     let out_p = Path::new(out_path);
     if format == ExportFormat::Oci {
         // The stored image as-is (same digests): an OCI archive for *.tar, else a layout directory.
-        let ref_name = if looks_like_image_id(input) { None } else { Some(ref_key(&parse_local_ref(input)?)) };
+        let ref_name = if looks_like_image_id(input) {
+            None
+        } else {
+            Some(ref_key(&parse_local_ref(input)?))
+        };
         let layout = store.layout_of(&id, ref_name.as_deref())?;
         if out_path.to_lowercase().ends_with(".tar") {
-            let data = write_tar(&layout, &WriterOptions { epoch: Some(source_date_epoch()?.unwrap_or(0)), dirs: Vec::new() })?;
+            let data = write_tar(
+                &layout,
+                &WriterOptions {
+                    epoch: Some(source_date_epoch()?.unwrap_or(0)),
+                    dirs: Vec::new(),
+                },
+            )?;
             let w = export_file(&data, out_p, &opts)?;
-            out(&format!("Saved {} to {} (oci archive, {} bytes)\n", short_id(&id), shown(&w.out_file), w.bytes));
+            out(&format!(
+                "Saved {} to {} (oci archive, {} bytes)\n",
+                short_id(&id),
+                shown(&w.out_file),
+                w.bytes
+            ));
         } else {
             let w = export_directory(&layout, out_p, &opts)?;
-            out(&format!("Saved {} to {} (oci layout)\n", short_id(&id), shown(&w.out_dir)));
+            out(&format!(
+                "Saved {} to {} (oci layout)\n",
+                short_id(&id),
+                shown(&w.out_dir)
+            ));
         }
         return Ok(0);
     }
     let tree = store.load_tree(&id)?;
     if !is_archive_format(format) {
         let w = export_directory(&tree, out_p, &opts)?;
-        out(&format!("Saved {} ({} files) to {}\n", short_id(&id), tree.len(), shown(&w.out_dir)));
+        out(&format!(
+            "Saved {} ({} files) to {}\n",
+            short_id(&id),
+            tree.len(),
+            shown(&w.out_dir)
+        ));
     } else {
         let data = encode_tree(
             &tree,
             format,
-            &EncodeOptions { writer: WriterOptions { epoch: source_date_epoch()?, dirs: Vec::new() }, base_url: v.str("base-url").map(str::to_string) },
+            &EncodeOptions {
+                writer: WriterOptions {
+                    epoch: source_date_epoch()?,
+                    dirs: Vec::new(),
+                },
+                base_url: v.str("base-url").map(str::to_string),
+            },
         )?;
         let w = export_file(&data, out_p, &opts)?;
-        let name = if format == ExportFormat::Tgz { "tar.gz" } else { format.as_str() };
-        out(&format!("Saved {} ({} files) to {} ({name}, {} bytes)\n", short_id(&id), tree.len(), shown(&w.out_file), w.bytes));
+        let name = if format == ExportFormat::Tgz {
+            "tar.gz"
+        } else {
+            format.as_str()
+        };
+        out(&format!(
+            "Saved {} ({} files) to {} ({name}, {} bytes)\n",
+            short_id(&id),
+            tree.len(),
+            shown(&w.out_file),
+            w.bytes
+        ));
     }
     drop(scratch);
     Ok(0)
@@ -367,6 +474,10 @@ fn run_diff(v: &Parsed) -> Result<i32> {
     let a = store.load_tree(&store.resolve(&v.positionals[0])?)?;
     let b = store.load_tree(&store.resolve(&v.positionals[1])?)?;
     let lines = diff_trees(&a, &b);
-    out(&if lines.is_empty() { String::new() } else { lines.join("\n") + "\n" });
+    out(&if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n") + "\n"
+    });
     Ok(0)
 }

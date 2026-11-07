@@ -12,7 +12,10 @@ pub fn read_message<R: BufRead>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
         let n = r.read_line(&mut line)?;
         if n == 0 {
             if saw_header {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "end of input inside message headers"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "end of input inside message headers",
+                ));
             }
             return Ok(None);
         }
@@ -26,21 +29,33 @@ pub fn read_message<R: BufRead>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
         }
         saw_header = true;
         let Some((name, value)) = line.split_once(':') else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("malformed header line '{line}'")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("malformed header line '{line}'"),
+            ));
         };
         if name.trim().eq_ignore_ascii_case("content-length") {
             let v = value.trim().parse::<usize>().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("invalid Content-Length '{}'", value.trim()))
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid Content-Length '{}'", value.trim()),
+                )
             })?;
             length = Some(v);
         }
     }
     let Some(len) = length else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "message without Content-Length"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "message without Content-Length",
+        ));
     };
     // Bodies are small (one Sitefile); refuse absurd sizes rather than allocate them.
     if len > 64 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "message larger than 64 MiB"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "message larger than 64 MiB",
+        ));
     }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body)?;
@@ -67,14 +82,22 @@ mod tests {
         let mut r = io::Cursor::new(buf);
         assert_eq!(read_message(&mut r).unwrap().unwrap(), br#"{"a":1}"#);
         // Content-Length counts bytes, not characters.
-        assert_eq!(read_message(&mut r).unwrap().unwrap(), "{\"é\":2}".as_bytes());
+        assert_eq!(
+            read_message(&mut r).unwrap().unwrap(),
+            "{\"é\":2}".as_bytes()
+        );
         assert!(read_message(&mut r).unwrap().is_none());
     }
 
     #[test]
     fn extra_headers_and_case() {
         let raw = b"content-length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}";
-        assert_eq!(read_message(&mut io::Cursor::new(&raw[..])).unwrap().unwrap(), b"{}");
+        assert_eq!(
+            read_message(&mut io::Cursor::new(&raw[..]))
+                .unwrap()
+                .unwrap(),
+            b"{}"
+        );
     }
 
     #[test]

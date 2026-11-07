@@ -95,7 +95,9 @@ pub(crate) fn url_parts(url: &str) -> Option<UrlParts> {
 }
 
 fn strip_brackets(host: &str) -> &str {
-    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 /// A URL rendered without any userinfo, safe for error messages.
@@ -119,20 +121,41 @@ pub fn redact_url(url: &str) -> String {
 }
 
 fn protocol_error(scheme: &str, url: &str, span: Option<&SourceSpan>) -> SitefileError {
-    let hint = if scheme == "http" { " (plain http requires --allow-http)" } else { "" };
-    SitefileError::new(E_PROTOCOL, format!("unsupported protocol '{scheme}:' for {}{hint}", redact_url(url)), span.cloned())
+    let hint = if scheme == "http" {
+        " (plain http requires --allow-http)"
+    } else {
+        ""
+    };
+    SitefileError::new(
+        E_PROTOCOL,
+        format!(
+            "unsupported protocol '{scheme}:' for {}{hint}",
+            redact_url(url)
+        ),
+        span.cloned(),
+    )
 }
 
 /// Parse and validate one hop before connecting.
 fn checked_hop(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) -> Result<Hop> {
     let Some((scheme, _)) = split_scheme(url.trim()) else {
-        return Err(SitefileError::new(E_PROTOCOL, format!("invalid URL '{}'", redact_url(url)), span.cloned()));
+        return Err(SitefileError::new(
+            E_PROTOCOL,
+            format!("invalid URL '{}'", redact_url(url)),
+            span.cloned(),
+        ));
     };
     let scheme = scheme.to_ascii_lowercase();
     if scheme != "https" && !(scheme == "http" && policy.allow_http) {
         return Err(protocol_error(&scheme, url, span));
     }
-    let hop = parse_hop(url).ok_or_else(|| SitefileError::new(E_PROTOCOL, format!("invalid URL '{}'", redact_url(url)), span.cloned()))?;
+    let hop = parse_hop(url).ok_or_else(|| {
+        SitefileError::new(
+            E_PROTOCOL,
+            format!("invalid URL '{}'", redact_url(url)),
+            span.cloned(),
+        )
+    })?;
     validate(&hop, policy, span)?;
     Ok(hop)
 }
@@ -144,14 +167,24 @@ fn validate(url: &Hop, policy: &FetchPolicy, span: Option<&SourceSpan>) -> Resul
     if url.has_credentials {
         return Err(SitefileError::new(
             E_PROTOCOL,
-            format!("URL {} contains credentials; credentials in URLs are not allowed", url.redacted),
+            format!(
+                "URL {} contains credentials; credentials in URLs are not allowed",
+                url.redacted
+            ),
             span.cloned(),
         ));
     }
     if url.host.is_empty() {
-        return Err(SitefileError::new(E_PROTOCOL, format!("URL {} has no host", url.redacted), span.cloned()));
+        return Err(SitefileError::new(
+            E_PROTOCOL,
+            format!("URL {} has no host", url.redacted),
+            span.cloned(),
+        ));
     }
-    if url.host.parse::<IpAddr>().is_ok() && !policy.allow_private_network && !is_public_address(&url.host) {
+    if url.host.parse::<IpAddr>().is_ok()
+        && !policy.allow_private_network
+        && !is_public_address(&url.host)
+    {
         return Err(SitefileError::new(
             E_SSRF_BLOCKED,
             format!(
@@ -211,7 +244,13 @@ impl GuardedResolver {
     /// `getaddrinfo` cannot be interrupted, so with a deadline the lookup runs
     /// on a helper thread and is abandoned (it finishes on its own) on timeout.
     fn lookup_bounded(&self, netloc: &str, hostname: &str) -> Result<Vec<SocketAddr>> {
-        let cannot = |e: io::Error| SitefileError::new(E_FETCH, format!("cannot resolve {hostname}: {e}"), self.span.clone());
+        let cannot = |e: io::Error| {
+            SitefileError::new(
+                E_FETCH,
+                format!("cannot resolve {hostname}: {e}"),
+                self.span.clone(),
+            )
+        };
         let Some((deadline, message)) = &self.deadline else {
             return (self.lookup)(netloc).map_err(cannot);
         };
@@ -240,7 +279,11 @@ impl GuardedResolver {
         };
         let addrs = self.lookup_bounded(netloc, &hostname)?;
         if addrs.is_empty() {
-            return Err(SitefileError::new(E_FETCH, format!("no addresses found for {hostname}"), self.span.clone()));
+            return Err(SitefileError::new(
+                E_FETCH,
+                format!("no addresses found for {hostname}"),
+                self.span.clone(),
+            ));
         }
         if !self.allow_private_network {
             if let Some(bad) = addrs.iter().find(|a| !is_public_ip(a.ip())) {
@@ -305,11 +348,16 @@ pub(crate) fn pem_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
 pub(crate) fn node_extra_ca_certs() -> &'static [Vec<u8>] {
     static EXTRA: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
     EXTRA.get_or_init(|| {
-        let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS").filter(|p| !p.is_empty()) else { return Vec::new() };
+        let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS").filter(|p| !p.is_empty()) else {
+            return Vec::new();
+        };
         match std::fs::read(&path) {
             Ok(pem) => pem_certificates(&pem),
             Err(e) => {
-                eprintln!("Warning: Ignoring extra certs from `{}`, load failed: {e}", path.to_string_lossy());
+                eprintln!(
+                    "Warning: Ignoring extra certs from `{}`, load failed: {e}",
+                    path.to_string_lossy()
+                );
                 Vec::new()
             }
         }
@@ -318,14 +366,21 @@ pub(crate) fn node_extra_ca_certs() -> &'static [Vec<u8>] {
 
 /// TLS settings for a client: `None` (ureq's defaults) unless extra CAs are
 /// configured through `NODE_EXTRA_CA_CERTS` or `ca`.
-pub(crate) fn tls_config(ca: Option<&[u8]>, span: Option<&SourceSpan>) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
+pub(crate) fn tls_config(
+    ca: Option<&[u8]>,
+    span: Option<&SourceSpan>,
+) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
     tls_config_from(node_extra_ca_certs(), ca, span)
 }
 
 /// The default roots plus `env_extra` (DER) and `ca` (PEM). The defaults are
 /// the same Mozilla roots (webpki-roots) ureq uses when no extra CA is set, so
 /// the extras are purely additive, as in Node (default store plus extra).
-fn tls_config_from(env_extra: &[Vec<u8>], ca: Option<&[u8]>, span: Option<&SourceSpan>) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
+fn tls_config_from(
+    env_extra: &[Vec<u8>],
+    ca: Option<&[u8]>,
+    span: Option<&SourceSpan>,
+) -> Result<Option<Arc<ureq::rustls::ClientConfig>>> {
     use ureq::rustls;
     if ca.is_none() && env_extra.is_empty() {
         return Ok(None);
@@ -333,14 +388,23 @@ fn tls_config_from(env_extra: &[Vec<u8>], ca: Option<&[u8]>, span: Option<&Sourc
     let fail = |why: String| SitefileError::new(E_FETCH, why, span.cloned());
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    roots.add_parsable_certificates(env_extra.iter().cloned().map(rustls::pki_types::CertificateDer::from));
+    roots.add_parsable_certificates(
+        env_extra
+            .iter()
+            .cloned()
+            .map(rustls::pki_types::CertificateDer::from),
+    );
     if let Some(ca) = ca {
         let extra = pem_certificates(ca);
         if extra.is_empty() {
-            return Err(fail("the extra CA certificate is not PEM (no 'BEGIN CERTIFICATE' block found)".into()));
+            return Err(fail(
+                "the extra CA certificate is not PEM (no 'BEGIN CERTIFICATE' block found)".into(),
+            ));
         }
         for der in extra {
-            roots.add(rustls::pki_types::CertificateDer::from(der)).map_err(|e| fail(format!("invalid extra CA certificate: {e}")))?;
+            roots
+                .add(rustls::pki_types::CertificateDer::from(der))
+                .map_err(|e| fail(format!("invalid extra CA certificate: {e}")))?;
         }
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -359,7 +423,10 @@ fn source_is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut depth = 0;
     while let Some(err) = cur {
         if let Some(io) = err.downcast_ref::<io::Error>() {
-            if matches!(io.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
+            if matches!(
+                io.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) {
                 return true;
             }
         }
@@ -375,22 +442,41 @@ fn source_is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
 /// Fetch a remote resource under the given network policy. Redirects are
 /// followed manually and every hop is re-validated; one deadline covers the
 /// whole fetch.
-pub fn fetch_remote(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>) -> Result<FetchResult> {
+pub fn fetch_remote(
+    url: &str,
+    policy: &FetchPolicy,
+    span: Option<&SourceSpan>,
+) -> Result<FetchResult> {
     fetch_remote_with(url, policy, span, &FetchRequest::default())
 }
 
 /// [`fetch_remote`] with a method, body and extra headers (see [`FetchRequest`]).
-pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSpan>, request: &FetchRequest) -> Result<FetchResult> {
+pub fn fetch_remote_with(
+    url: &str,
+    policy: &FetchPolicy,
+    span: Option<&SourceSpan>,
+    request: &FetchRequest,
+) -> Result<FetchResult> {
     let method = request.method.unwrap_or("GET");
     let started = Instant::now();
     let budget = Duration::from_millis(policy.timeout_ms);
     let deadline = started + budget;
-    let timeout_error =
-        || SitefileError::new(E_FETCH_TIMEOUT, format!("fetching {} timed out after {} ms", redact_url(url), policy.timeout_ms), span.cloned());
+    let timeout_error = || {
+        SitefileError::new(
+            E_FETCH_TIMEOUT,
+            format!(
+                "fetching {} timed out after {} ms",
+                redact_url(url),
+                policy.timeout_ms
+            ),
+            span.cloned(),
+        )
+    };
 
     let mut current = checked_hop(url, policy, span)?;
     let origin = current.origin.clone();
-    let resolver = GuardedResolver::new(policy, span).with_deadline(deadline, timeout_error().detail);
+    let resolver =
+        GuardedResolver::new(policy, span).with_deadline(deadline, timeout_error().detail);
     let mut builder = ureq::AgentBuilder::new()
         .redirects(0)
         .max_idle_connections(0)
@@ -439,7 +525,11 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
                 if Instant::now() >= deadline || source_is_timeout(&t) {
                     return Err(timeout_error());
                 }
-                return Err(SitefileError::new(E_FETCH, format!("fetching {} failed: {t}", current.redacted), span.cloned()));
+                return Err(SitefileError::new(
+                    E_FETCH,
+                    format!("fetching {} failed: {t}", current.redacted),
+                    span.cloned(),
+                ));
             }
         };
         let status = res.status();
@@ -457,7 +547,10 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
             let Some(location) = location else {
                 return Err(SitefileError::new(
                     E_REDIRECT,
-                    format!("redirect {status} from {} has no Location header", current.redacted),
+                    format!(
+                        "redirect {status} from {} has no Location header",
+                        current.redacted
+                    ),
                     span.cloned(),
                 ));
             };
@@ -465,28 +558,51 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
             if redirects > policy.max_redirects {
                 return Err(SitefileError::new(
                     E_REDIRECT,
-                    format!("too many redirects fetching {} (limit {})", redact_url(url), policy.max_redirects),
+                    format!(
+                        "too many redirects fetching {} (limit {})",
+                        redact_url(url),
+                        policy.max_redirects
+                    ),
                     span.cloned(),
                 ));
             }
             let base = ureq::get(&current.href);
-            let joined = base.request_url().ok().and_then(|b| b.as_url().join(&location).ok()).map(|u| u.to_string());
+            let joined = base
+                .request_url()
+                .ok()
+                .and_then(|b| b.as_url().join(&location).ok())
+                .map(|u| u.to_string());
             let Some(next) = joined else {
-                return Err(SitefileError::new(E_REDIRECT, format!("invalid redirect Location from {}", current.redacted), span.cloned()));
+                return Err(SitefileError::new(
+                    E_REDIRECT,
+                    format!("invalid redirect Location from {}", current.redacted),
+                    span.cloned(),
+                ));
             };
             current = checked_hop(&next, policy, span)?;
             continue;
         }
 
         if status != 200 {
-            return Err(SitefileError::new(E_FETCH_STATUS, format!("{method} {} returned HTTP {status}", current.redacted), span.cloned()));
+            return Err(SitefileError::new(
+                E_FETCH_STATUS,
+                format!("{method} {} returned HTTP {status}", current.redacted),
+                span.cloned(),
+            ));
         }
 
-        let encoding = res.header("content-encoding").unwrap_or("").trim().to_ascii_lowercase();
+        let encoding = res
+            .header("content-encoding")
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         if !encoding.is_empty() && encoding != "identity" {
             return Err(SitefileError::new(
                 E_FETCH,
-                format!("{} responded with content-encoding '{encoding}'; only identity is accepted", current.redacted),
+                format!(
+                    "{} responded with content-encoding '{encoding}'; only identity is accepted",
+                    current.redacted
+                ),
                 span.cloned(),
             ));
         }
@@ -494,12 +610,21 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
         if let Some(h) = res.header("content-length") {
             // Number(header): blank is 0, junk is NaN (ignored).
             let t = h.trim();
-            let declared = if t.is_empty() { Some(0.0) } else { t.parse::<f64>().ok() };
+            let declared = if t.is_empty() {
+                Some(0.0)
+            } else {
+                t.parse::<f64>().ok()
+            };
             if let Some(d) = declared.filter(|d| d.is_finite()) {
                 if d > policy.max_bytes as f64 {
                     return Err(SitefileError::new(
                         E_TOO_LARGE,
-                        format!("{} is {} bytes, exceeding the limit of {} bytes", current.redacted, crate::values::js_number(d), policy.max_bytes),
+                        format!(
+                            "{} is {} bytes, exceeding the limit of {} bytes",
+                            current.redacted,
+                            crate::values::js_number(d),
+                            policy.max_bytes
+                        ),
                         span.cloned(),
                     ));
                 }
@@ -517,7 +642,10 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
                     if (bytes.len() + n) as u64 > policy.max_bytes {
                         return Err(SitefileError::new(
                             E_TOO_LARGE,
-                            format!("{} exceeded the limit of {} bytes", current.redacted, policy.max_bytes),
+                            format!(
+                                "{} exceeded the limit of {} bytes",
+                                current.redacted, policy.max_bytes
+                            ),
                             span.cloned(),
                         ));
                     }
@@ -528,7 +656,11 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
                     if Instant::now() >= deadline || source_is_timeout(&e) {
                         return Err(timeout_error());
                     }
-                    return Err(SitefileError::new(E_FETCH, format!("error reading {}: {e}", current.redacted), span.cloned()));
+                    return Err(SitefileError::new(
+                        E_FETCH,
+                        format!("error reading {}: {e}", current.redacted),
+                        span.cloned(),
+                    ));
                 }
             }
         }
@@ -538,7 +670,11 @@ pub fn fetch_remote_with(url: &str, policy: &FetchPolicy, span: Option<&SourceSp
         let media_type = content_type
             .and_then(|ct| ct.split(';').next().map(|s| s.trim().to_ascii_lowercase()))
             .filter(|s| !s.is_empty());
-        return Ok(FetchResult { bytes, final_url: current.href, media_type });
+        return Ok(FetchResult {
+            bytes,
+            final_url: current.href,
+            media_type,
+        });
     }
 }
 
@@ -553,7 +689,11 @@ mod tests {
     use std::thread;
 
     fn local() -> FetchPolicy {
-        FetchPolicy { allow_http: true, allow_private_network: true, ..DEFAULT_FETCH_POLICY }
+        FetchPolicy {
+            allow_http: true,
+            allow_private_network: true,
+            ..DEFAULT_FETCH_POLICY
+        }
     }
 
     #[derive(Debug, Clone, Default)]
@@ -603,7 +743,10 @@ mod tests {
     }
 
     fn respond(s: &mut TcpStream, status: u16, headers: &[(&str, &str)], body: &str) {
-        let mut out = format!("HTTP/1.1 {status} X\r\nconnection: close\r\ncontent-length: {}\r\n", body.len());
+        let mut out = format!(
+            "HTTP/1.1 {status} X\r\nconnection: close\r\ncontent-length: {}\r\n",
+            body.len()
+        );
         for (k, v) in headers {
             out.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -632,15 +775,26 @@ mod tests {
         let s2 = seen.clone();
         let base = serve(move |req, s, _| {
             *s2.lock().unwrap() = Some(req.clone());
-            respond(s, 200, &[("content-type", "Text/Plain; charset=utf-8")], "hello");
+            respond(
+                s,
+                200,
+                &[("content-type", "Text/Plain; charset=utf-8")],
+                "hello",
+            );
         });
         let r = fetch_remote(&format!("{base}/a.txt"), &local(), None).unwrap();
         assert_eq!(r.bytes, b"hello");
         assert_eq!(r.final_url, format!("{base}/a.txt"));
         assert_eq!(r.media_type.as_deref(), Some("text/plain"));
         let req = seen.lock().unwrap().clone().unwrap();
-        assert_eq!(req.headers.get("accept-encoding").map(String::as_str), Some("identity"));
-        assert_eq!(req.headers.get("user-agent").map(String::as_str), Some("sitefile/0.1"));
+        assert_eq!(
+            req.headers.get("accept-encoding").map(String::as_str),
+            Some("identity")
+        );
+        assert_eq!(
+            req.headers.get("user-agent").map(String::as_str),
+            Some("sitefile/0.1")
+        );
         assert!(!req.headers.contains_key("cookie"));
         assert!(!req.headers.contains_key("authorization"));
     }
@@ -648,35 +802,87 @@ mod tests {
     #[test]
     fn http_is_rejected_by_default() {
         let base = serve(|_, s, _| respond(s, 200, &[], "x"));
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &DEFAULT_FETCH_POLICY, None)), E_PROTOCOL);
+        assert_eq!(
+            code(fetch_remote(
+                &format!("{base}/"),
+                &DEFAULT_FETCH_POLICY,
+                None
+            )),
+            E_PROTOCOL
+        );
     }
 
     #[test]
     fn unsupported_schemes_are_rejected() {
-        assert_eq!(code(fetch_remote("ftp://example.com/x", &local(), None)), E_PROTOCOL);
-        assert_eq!(code(fetch_remote("file:///etc/passwd", &local(), None)), E_PROTOCOL);
+        assert_eq!(
+            code(fetch_remote("ftp://example.com/x", &local(), None)),
+            E_PROTOCOL
+        );
+        assert_eq!(
+            code(fetch_remote("file:///etc/passwd", &local(), None)),
+            E_PROTOCOL
+        );
         assert_eq!(code(fetch_remote("not a url", &local(), None)), E_PROTOCOL);
         assert_eq!(code(fetch_remote("https://", &local(), None)), E_PROTOCOL);
         let e = fetch_remote("http://example.com/", &DEFAULT_FETCH_POLICY, None).unwrap_err();
-        assert!(e.message().contains("requires --allow-http"), "{}", e.message());
+        assert!(
+            e.message().contains("requires --allow-http"),
+            "{}",
+            e.message()
+        );
     }
 
     #[test]
     fn loopback_is_blocked_by_default_even_with_allow_http() {
         let base = serve(|_, s, _| respond(s, 200, &[], "x"));
         let port = port_of(&base);
-        let policy = FetchPolicy { allow_http: true, ..DEFAULT_FETCH_POLICY };
-        assert_eq!(code(fetch_remote(&format!("http://127.0.0.1:{port}/"), &policy, None)), E_SSRF_BLOCKED);
-        assert_eq!(code(fetch_remote(&format!("http://localhost:{port}/"), &policy, None)), E_SSRF_BLOCKED);
-        assert_eq!(code(fetch_remote(&format!("http://[::1]:{port}/"), &policy, None)), E_SSRF_BLOCKED);
-        assert_eq!(code(fetch_remote(&format!("https://localhost:{port}/"), &DEFAULT_FETCH_POLICY, None)), E_SSRF_BLOCKED);
+        let policy = FetchPolicy {
+            allow_http: true,
+            ..DEFAULT_FETCH_POLICY
+        };
+        assert_eq!(
+            code(fetch_remote(
+                &format!("http://127.0.0.1:{port}/"),
+                &policy,
+                None
+            )),
+            E_SSRF_BLOCKED
+        );
+        assert_eq!(
+            code(fetch_remote(
+                &format!("http://localhost:{port}/"),
+                &policy,
+                None
+            )),
+            E_SSRF_BLOCKED
+        );
+        assert_eq!(
+            code(fetch_remote(
+                &format!("http://[::1]:{port}/"),
+                &policy,
+                None
+            )),
+            E_SSRF_BLOCKED
+        );
+        assert_eq!(
+            code(fetch_remote(
+                &format!("https://localhost:{port}/"),
+                &DEFAULT_FETCH_POLICY,
+                None
+            )),
+            E_SSRF_BLOCKED
+        );
     }
 
     #[test]
     fn localhost_by_name_works_when_private_network_is_allowed() {
         let base = serve(|_, s, _| respond(s, 200, &[], "named"));
         // localhost may resolve to ::1 first; only assert we did not get an SSRF block.
-        match fetch_remote(&format!("http://localhost:{}/", port_of(&base)), &local(), None) {
+        match fetch_remote(
+            &format!("http://localhost:{}/", port_of(&base)),
+            &local(),
+            None,
+        ) {
             Ok(r) => assert_eq!(r.bytes, b"named"),
             Err(e) => assert_ne!(e.code, E_SSRF_BLOCKED, "{}", e.message()),
         }
@@ -717,16 +923,33 @@ mod tests {
                 respond(s, 200, &[], "ok")
             }
         });
-        assert_eq!(code(fetch_remote(&format!("{base}/loop"), &local(), None)), E_REDIRECT);
-        let two = FetchPolicy { max_redirects: 2, ..local() };
-        assert_eq!(code(fetch_remote(&format!("{base}/3"), &two, None)), E_REDIRECT);
-        assert_eq!(fetch_remote(&format!("{base}/2"), &two, None).unwrap().bytes, b"ok");
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/loop"), &local(), None)),
+            E_REDIRECT
+        );
+        let two = FetchPolicy {
+            max_redirects: 2,
+            ..local()
+        };
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/3"), &two, None)),
+            E_REDIRECT
+        );
+        assert_eq!(
+            fetch_remote(&format!("{base}/2"), &two, None)
+                .unwrap()
+                .bytes,
+            b"ok"
+        );
     }
 
     #[test]
     fn redirect_without_location_fails() {
         let base = serve(|_, s, _| respond(s, 302, &[], ""));
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &local(), None)), E_REDIRECT);
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/"), &local(), None)),
+            E_REDIRECT
+        );
     }
 
     #[test]
@@ -739,8 +962,14 @@ mod tests {
             };
             redirect(s, 302, target)
         });
-        assert_eq!(code(fetch_remote(&format!("{base}/ftp"), &local(), None)), E_PROTOCOL);
-        assert_eq!(code(fetch_remote(&format!("{base}/creds"), &local(), None)), E_PROTOCOL);
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/ftp"), &local(), None)),
+            E_PROTOCOL
+        );
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/creds"), &local(), None)),
+            E_PROTOCOL
+        );
     }
 
     #[test]
@@ -757,7 +986,16 @@ mod tests {
         assert_eq!(c("https://0x7f.1/", p), Err(E_SSRF_BLOCKED));
         assert_eq!(c("https://93.184.216.34/", p), Ok(()));
         assert_eq!(c("https://example.com/", p), Ok(()));
-        assert_eq!(c("https://10.255.255.1/", &FetchPolicy { allow_private_network: true, ..DEFAULT_FETCH_POLICY }), Ok(()));
+        assert_eq!(
+            c(
+                "https://10.255.255.1/",
+                &FetchPolicy {
+                    allow_private_network: true,
+                    ..DEFAULT_FETCH_POLICY
+                }
+            ),
+            Ok(())
+        );
     }
 
     #[test]
@@ -767,11 +1005,15 @@ mod tests {
             Ok(vec!["93.184.216.34:443".parse().unwrap()])
         }
         let msg = "fetching https://slow.test/ timed out after 150 ms".to_string();
-        let mut r = GuardedResolver::new(&DEFAULT_FETCH_POLICY, None).with_deadline(Instant::now() + Duration::from_millis(150), msg.clone());
+        let mut r = GuardedResolver::new(&DEFAULT_FETCH_POLICY, None)
+            .with_deadline(Instant::now() + Duration::from_millis(150), msg.clone());
         r.lookup = slow;
         let t = Instant::now();
         let e = r.resolve_checked("slow.test:443").unwrap_err();
-        assert!(t.elapsed() < Duration::from_secs(2), "lookup was not abandoned");
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "lookup was not abandoned"
+        );
         assert_eq!(e.code, E_FETCH_TIMEOUT);
         assert_eq!(e.detail, msg);
         // Through the ureq trait the error is kept for the fetch to report.
@@ -782,7 +1024,10 @@ mod tests {
     #[test]
     fn guarded_resolver_blocks_names_resolving_to_private_addresses() {
         let guarded = GuardedResolver::new(&DEFAULT_FETCH_POLICY, None);
-        assert_eq!(guarded.resolve_checked("localhost:80").unwrap_err().code, E_SSRF_BLOCKED);
+        assert_eq!(
+            guarded.resolve_checked("localhost:80").unwrap_err().code,
+            E_SSRF_BLOCKED
+        );
         // Through the ureq trait the error is kept for the fetch to report.
         assert!(ureq::Resolver::resolve(&guarded, "localhost:80").is_err());
         assert_eq!(guarded.take_error().map(|e| e.code), Some(E_SSRF_BLOCKED));
@@ -795,9 +1040,15 @@ mod tests {
     #[test]
     fn non_200_status_fails() {
         let base = serve(|_, s, _| respond(s, 404, &[], "nope"));
-        assert_eq!(code(fetch_remote(&format!("{base}/missing"), &local(), None)), E_FETCH_STATUS);
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/missing"), &local(), None)),
+            E_FETCH_STATUS
+        );
         let base = serve(|_, s, _| respond(s, 204, &[], ""));
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &local(), None)), E_FETCH_STATUS);
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/"), &local(), None)),
+            E_FETCH_STATUS
+        );
     }
 
     #[test]
@@ -807,13 +1058,22 @@ mod tests {
             thread::sleep(Duration::from_secs(3)); // never finish
         });
         let t0 = Instant::now();
-        let p = FetchPolicy { max_bytes: 100, timeout_ms: 5000, ..local() };
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &p, None)), E_TOO_LARGE);
+        let p = FetchPolicy {
+            max_bytes: 100,
+            timeout_ms: 5000,
+            ..local()
+        };
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/"), &p, None)),
+            E_TOO_LARGE
+        );
         assert!(t0.elapsed() < Duration::from_secs(2));
     }
 
     fn chunked(s: &mut TcpStream, chunks: &[String], finish: bool) {
-        let mut out = String::from("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n");
+        let mut out = String::from(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+        );
         for c in chunks {
             out.push_str(&format!("{:x}\r\n{c}\r\n", c.len()));
         }
@@ -825,9 +1085,28 @@ mod tests {
 
     #[test]
     fn streamed_body_over_the_cap_fails() {
-        let base = serve(|_, s, _| chunked(s, &["x".repeat(64), "x".repeat(64), "x".repeat(64)], true));
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &FetchPolicy { max_bytes: 100, ..local() }, None)), E_TOO_LARGE);
-        let r = fetch_remote(&format!("{base}/"), &FetchPolicy { max_bytes: 192, ..local() }, None).unwrap();
+        let base =
+            serve(|_, s, _| chunked(s, &["x".repeat(64), "x".repeat(64), "x".repeat(64)], true));
+        assert_eq!(
+            code(fetch_remote(
+                &format!("{base}/"),
+                &FetchPolicy {
+                    max_bytes: 100,
+                    ..local()
+                },
+                None
+            )),
+            E_TOO_LARGE
+        );
+        let r = fetch_remote(
+            &format!("{base}/"),
+            &FetchPolicy {
+                max_bytes: 192,
+                ..local()
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(r.bytes.len(), 192);
     }
 
@@ -835,7 +1114,17 @@ mod tests {
     fn overall_timeout_fires_for_a_hanging_server() {
         let base = serve(|_, _, _| thread::sleep(Duration::from_secs(3)));
         let t0 = Instant::now();
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &FetchPolicy { timeout_ms: 150, ..local() }, None)), E_FETCH_TIMEOUT);
+        assert_eq!(
+            code(fetch_remote(
+                &format!("{base}/"),
+                &FetchPolicy {
+                    timeout_ms: 150,
+                    ..local()
+                },
+                None
+            )),
+            E_FETCH_TIMEOUT
+        );
         assert!(t0.elapsed() < Duration::from_secs(2));
     }
 
@@ -846,7 +1135,17 @@ mod tests {
             thread::sleep(Duration::from_secs(3));
         });
         let t0 = Instant::now();
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &FetchPolicy { timeout_ms: 150, ..local() }, None)), E_FETCH_TIMEOUT);
+        assert_eq!(
+            code(fetch_remote(
+                &format!("{base}/"),
+                &FetchPolicy {
+                    timeout_ms: 150,
+                    ..local()
+                },
+                None
+            )),
+            E_FETCH_TIMEOUT
+        );
         assert!(t0.elapsed() < Duration::from_secs(2));
     }
 
@@ -857,16 +1156,32 @@ mod tests {
             let n: u32 = req.path[1..].parse().unwrap_or(0);
             redirect(s, 302, &format!("/{}", n + 1))
         });
-        let p = FetchPolicy { timeout_ms: 200, max_redirects: 50, ..local() };
-        assert_eq!(code(fetch_remote(&format!("{base}/0"), &p, None)), E_FETCH_TIMEOUT);
+        let p = FetchPolicy {
+            timeout_ms: 200,
+            max_redirects: 50,
+            ..local()
+        };
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/0"), &p, None)),
+            E_FETCH_TIMEOUT
+        );
     }
 
     #[test]
     fn compressed_content_encoding_is_rejected() {
-        let base = serve(|_, s, _| respond(s, 200, &[("content-encoding", "gzip")], "not really gzip"));
-        assert_eq!(code(fetch_remote(&format!("{base}/"), &local(), None)), E_FETCH);
+        let base =
+            serve(|_, s, _| respond(s, 200, &[("content-encoding", "gzip")], "not really gzip"));
+        assert_eq!(
+            code(fetch_remote(&format!("{base}/"), &local(), None)),
+            E_FETCH
+        );
         let base = serve(|_, s, _| respond(s, 200, &[("content-encoding", " Identity ")], "plain"));
-        assert_eq!(fetch_remote(&format!("{base}/"), &local(), None).unwrap().bytes, b"plain");
+        assert_eq!(
+            fetch_remote(&format!("{base}/"), &local(), None)
+                .unwrap()
+                .bytes,
+            b"plain"
+        );
     }
 
     #[test]
@@ -874,27 +1189,54 @@ mod tests {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         drop(l);
-        assert_eq!(code(fetch_remote(&format!("http://127.0.0.1:{port}/"), &local(), None)), E_FETCH);
+        assert_eq!(
+            code(fetch_remote(
+                &format!("http://127.0.0.1:{port}/"),
+                &local(),
+                None
+            )),
+            E_FETCH
+        );
     }
 
     #[test]
     fn extra_ca_must_be_pem() {
-        let p = FetchPolicy { ca: Some(b"not a certificate".to_vec()), ..DEFAULT_FETCH_POLICY };
-        assert_eq!(code(fetch_remote("https://example.com/", &p, None)), E_FETCH);
-        assert!(pem_certificates(b"x\n-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n").first() == Some(&vec![0, 1, 2]));
+        let p = FetchPolicy {
+            ca: Some(b"not a certificate".to_vec()),
+            ..DEFAULT_FETCH_POLICY
+        };
+        assert_eq!(
+            code(fetch_remote("https://example.com/", &p, None)),
+            E_FETCH
+        );
+        assert!(
+            pem_certificates(b"x\n-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n")
+                .first()
+                == Some(&vec![0, 1, 2])
+        );
     }
 
     #[test]
     fn tls_defaults_unless_an_extra_ca_is_configured() {
         assert!(tls_config_from(&[], None, None).unwrap().is_none());
         // NODE_EXTRA_CA_CERTS entries that do not parse are skipped (as Node does), not fatal.
-        assert!(tls_config_from(&[vec![0, 1, 2]], None, None).unwrap().is_some());
-        assert_eq!(tls_config_from(&[vec![0, 1, 2]], Some(b"not pem"), None).err().map(|e| e.code), Some(E_FETCH));
+        assert!(tls_config_from(&[vec![0, 1, 2]], None, None)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            tls_config_from(&[vec![0, 1, 2]], Some(b"not pem"), None)
+                .err()
+                .map(|e| e.code),
+            Some(E_FETCH)
+        );
     }
 
     #[test]
     fn redaction() {
-        assert_eq!(redact_url("https://u:p@example.com/a?b"), "https://example.com/a?b");
+        assert_eq!(
+            redact_url("https://u:p@example.com/a?b"),
+            "https://example.com/a?b"
+        );
         assert_eq!(redact_url("ftp://u:p@example.com/a"), "ftp://example.com/a");
         assert_eq!(redact_url("not a url"), "<invalid url>");
     }

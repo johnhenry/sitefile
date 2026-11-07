@@ -1,4 +1,6 @@
 pub mod archive;
+#[cfg(test)]
+mod archive_differential;
 pub mod bundle_data;
 pub mod convert;
 pub mod git;
@@ -10,5 +12,3 @@ pub mod netpolicy;
 pub mod types;
 pub mod vendor;
 pub mod wbn_reader;
-#[cfg(test)]
-mod archive_differential;

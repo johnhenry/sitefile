@@ -1,7 +1,9 @@
 //! `sitefile outdated` (port of `src/cli/outdated.ts`).
 
 use super::args::{flag, string, string_s, strings, OptSpec, Parsed};
-use super::common::{err, is_safe_integer, js_to_number, out, pretty_json, require_args, table, usage, Command};
+use super::common::{
+    err, is_safe_integer, js_to_number, out, pretty_json, require_args, table, usage, Command,
+};
 use crate::build_args::collect_build_args;
 use crate::error::Result;
 use crate::executor::{BuildOptions, Callback, LockfileSetting};
@@ -59,7 +61,13 @@ fn positive(raw: Option<&str>, flag: &str) -> Result<Option<u64>> {
 }
 
 /// The order statuses are counted in the summary line.
-const ORDER: [Status; 5] = [Status::Changed, Status::Unpinned, Status::Error, Status::DigestOnly, Status::Current];
+const ORDER: [Status; 5] = [
+    Status::Changed,
+    Status::Unpinned,
+    Status::Error,
+    Status::DigestOnly,
+    Status::Current,
+];
 
 /// The text report: a table, one line per error, and a summary line.
 pub fn format_outdated(r: &Report) -> String {
@@ -67,7 +75,19 @@ pub fn format_outdated(r: &Report) -> String {
         return "No remote inputs: the Sitefile has no remote IMPORT, no registry FROM image and no BASE image\n".into();
     }
     let short = |d: &Option<String>| d.as_deref().map(short_id).unwrap_or_else(|| "-".into());
-    let mut rows: Vec<Vec<String>> = vec![["KIND", "NAME", "SOURCE", "PINNED", "BY", "LATEST", "STATUS", "NEWER TAG"].iter().map(|s| s.to_string()).collect()];
+    let mut rows: Vec<Vec<String>> = vec![[
+        "KIND",
+        "NAME",
+        "SOURCE",
+        "PINNED",
+        "BY",
+        "LATEST",
+        "STATUS",
+        "NEWER TAG",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()];
     for i in &r.inputs {
         rows.push(vec![
             i.kind.to_string(),
@@ -92,10 +112,21 @@ pub fn format_outdated(r: &Report) -> String {
         .filter(|st| r.count(**st) > 0)
         .map(|st| {
             let k = r.count(*st);
-            format!("{k} {}", if *st == Status::Error && k != 1 { "errors" } else { st.as_str() })
+            format!(
+                "{k} {}",
+                if *st == Status::Error && k != 1 {
+                    "errors"
+                } else {
+                    st.as_str()
+                }
+            )
         })
         .collect();
-    s.push_str(&format!("{n} remote input{}: {}\n", if n == 1 { "" } else { "s" }, counts.join(", ")));
+    s.push_str(&format!(
+        "{n} remote input{}: {}\n",
+        if n == 1 { "" } else { "s" },
+        counts.join(", ")
+    ));
     s
 }
 
@@ -109,7 +140,9 @@ fn run_outdated(v: &Parsed) -> Result<i32> {
         build_args: collect_build_args(&v.strs("build-arg-file"), &v.strs("build-arg"))?,
         secrets: crate::secrets::load_secrets(&v.strs("secret"), &crate::secrets::process_env)?,
         base_image: v.str("base").map(str::to_string),
-        insecure_registries: super::registry::insecure_registries_from_env(&v.strs("insecure-registry")),
+        insecure_registries: super::registry::insecure_registries_from_env(
+            &v.strs("insecure-registry"),
+        ),
         ..Default::default()
     };
     if v.flag("no-lockfile") {

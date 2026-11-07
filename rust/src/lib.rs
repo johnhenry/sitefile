@@ -10,54 +10,54 @@ pub mod casefold_data;
 pub mod cbor;
 pub mod deflate;
 pub mod digest;
-pub mod sha1;
 pub mod error;
 pub mod paths;
+pub mod sha1;
 pub mod tree;
 pub mod values;
 
 // Language
 pub mod build_args;
 pub mod language;
-pub mod planner;
 pub mod lint;
+pub mod planner;
 pub mod secrets;
 
 // Templates and data formats
+pub mod bake;
 pub mod csv;
 pub mod documents;
 pub mod frontmatter;
 pub mod markdown;
-pub mod render;
 pub mod media;
-pub mod schema;
 pub mod pages;
+pub mod render;
+pub mod schema;
 pub mod yaml;
-pub mod bake;
 
 // Inputs
 pub mod resources;
 
 // Outputs, store and servers
+pub mod cache_limit;
+pub mod checklinks;
 pub mod export;
+pub mod fingerprint;
+pub mod links;
 pub mod refs;
 pub mod server;
 pub mod servers;
 pub mod site;
-pub mod links;
-pub mod fingerprint;
-pub mod checklinks;
 pub mod store;
-pub mod cache_limit;
 
 // Build, plugins, registry and CLI
 pub mod base_image;
 pub mod cli;
 pub mod executor;
-pub mod outdated;
 pub mod explain;
-pub mod plugins;
 pub mod memo;
+pub mod outdated;
+pub mod plugins;
 pub mod profile;
 pub mod vendor;
 pub mod watch;

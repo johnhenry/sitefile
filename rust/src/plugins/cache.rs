@@ -116,10 +116,17 @@ fn js_string(s: &str, out: &mut String) {
 
 /// A property name JavaScript treats as an array index (iterated first, in numeric order).
 fn array_index(k: &str) -> Option<u32> {
-    if k.is_empty() || k.len() > 10 || !k.bytes().all(|b| b.is_ascii_digit()) || (k.len() > 1 && k.starts_with('0')) {
+    if k.is_empty()
+        || k.len() > 10
+        || !k.bytes().all(|b| b.is_ascii_digit())
+        || (k.len() > 1 && k.starts_with('0'))
+    {
         return None;
     }
-    k.parse::<u64>().ok().filter(|n| *n < u32::MAX as u64).map(|n| n as u32)
+    k.parse::<u64>()
+        .ok()
+        .filter(|n| *n < u32::MAX as u64)
+        .map(|n| n as u32)
 }
 
 fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
@@ -220,7 +227,11 @@ pub fn mtime_ms(meta: &fs::Metadata) -> f64 {
 
 #[cfg(not(unix))]
 pub fn mtime_ms(meta: &fs::Metadata) -> f64 {
-    match meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()) {
+    match meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+    {
         Some(d) => d.as_secs() as f64 * 1000.0 + d.subsec_nanos() as f64 / 1_000_000.0,
         None => 0.0,
     }
@@ -242,7 +253,11 @@ pub struct CacheEntry {
 
 impl CacheEntry {
     fn manifest_json(&self) -> Value {
-        let files: Vec<Value> = self.files.iter().map(|(p, h, n)| json!([p, h, n])).collect();
+        let files: Vec<Value> = self
+            .files
+            .iter()
+            .map(|(p, h, n)| json!([p, h, n]))
+            .collect();
         json!({ "version": CACHE_VERSION, "kind": self.kind, "files": files })
     }
 }
@@ -267,7 +282,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl TransformCache {
     /// `dir` holds `entries/` and `blobs/` (the CLI uses `$SITEFILE_HOME/cache/transform`).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        TransformCache { dir: dir.into(), stats: CacheStats::default(), remote: None }
+        TransformCache {
+            dir: dir.into(),
+            stats: CacheStats::default(),
+            remote: None,
+        }
     }
 
     /// Consult `remote` on a local miss and report every entry used or written to it.
@@ -288,7 +307,10 @@ impl TransformCache {
         let raw = match fs::read_to_string(&file) {
             Ok(r) => r,
             Err(_) => {
-                let fetched = self.remote.as_ref().and_then(|r| r.fetch(key, &self.dir.join("blobs")));
+                let fetched = self
+                    .remote
+                    .as_ref()
+                    .and_then(|r| r.fetch(key, &self.dir.join("blobs")));
                 let Some(entry) = fetched else {
                     self.stats.misses += 1;
                     return None;
@@ -334,7 +356,10 @@ impl TransformCache {
             return None;
         }
         let mut loaded: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut entry = CacheEntry { kind: kind.to_string(), files: Vec::new() };
+        let mut entry = CacheEntry {
+            kind: kind.to_string(),
+            files: Vec::new(),
+        };
         for f in files {
             let f = f.as_array()?;
             let p = f.first().and_then(Value::as_str)?;
@@ -345,10 +370,16 @@ impl TransformCache {
                 let _ = fs::remove_file(self.blob_path(hex));
                 return None;
             }
-            entry.files.push((p.to_string(), hex.to_string(), bytes.len() as u64));
+            entry
+                .files
+                .push((p.to_string(), hex.to_string(), bytes.len() as u64));
             loaded.push((p.to_string(), bytes));
         }
-        let result = if kind == "file" { loaded.pop().map(|(_, b)| PluginResult::File(b))? } else { PluginResult::Files(loaded) };
+        let result = if kind == "file" {
+            loaded.pop().map(|(_, b)| PluginResult::File(b))?
+        } else {
+            PluginResult::Files(loaded)
+        };
         Some((result, entry))
     }
 
@@ -366,21 +397,36 @@ impl TransformCache {
     fn try_put(&self, key: &str, result: &PluginResult) -> io::Result<CacheEntry> {
         let (kind, pairs): (&str, Vec<(&str, &[u8])>) = match result {
             PluginResult::File(b) => ("file", vec![("", b.as_slice())]),
-            PluginResult::Files(fs) => ("files", fs.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect()),
+            PluginResult::Files(fs) => (
+                "files",
+                fs.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect(),
+            ),
         };
-        let mut entry = CacheEntry { kind: kind.to_string(), files: Vec::new() };
+        let mut entry = CacheEntry {
+            kind: kind.to_string(),
+            files: Vec::new(),
+        };
         for (p, bytes) in pairs {
             let digest = sha256(bytes);
             let hex = &digest["sha256:".len()..];
             write_atomic(&self.blob_path(hex), bytes, true)?;
-            entry.files.push((p.to_string(), hex.to_string(), bytes.len() as u64));
+            entry
+                .files
+                .push((p.to_string(), hex.to_string(), bytes.len() as u64));
         }
-        write_atomic(&self.entry_path(key), js_json(&entry.manifest_json()).as_bytes(), false)?;
+        write_atomic(
+            &self.entry_path(key),
+            js_json(&entry.manifest_json()).as_bytes(),
+            false,
+        )?;
         Ok(entry)
     }
 
     pub fn info(&self) -> CacheInfo {
-        let entries = read_names(&self.dir.join("entries")).iter().filter(|n| n.ends_with(".json")).count() as u64;
+        let entries = read_names(&self.dir.join("entries"))
+            .iter()
+            .filter(|n| n.ends_with(".json"))
+            .count() as u64;
         let mut blobs = 0;
         let mut bytes = 0;
         for n in read_names(&self.dir.join("blobs")) {
@@ -391,7 +437,12 @@ impl TransformCache {
                 }
             }
         }
-        CacheInfo { dir: self.dir.clone(), entries, blobs, bytes }
+        CacheInfo {
+            dir: self.dir.clone(),
+            entries,
+            blobs,
+            bytes,
+        }
     }
 
     /// Remove entries not used for `older_than` (zero removes all), then every
@@ -403,13 +454,18 @@ impl TransformCache {
     /// [`prune`](Self::prune) with an explicit "now".
     pub fn prune_at(&self, older_than: Duration, now: SystemTime) -> PruneResult {
         let older_ms = older_than.as_secs_f64() * 1000.0;
-        let now_ms = now.duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
+        let now_ms = now
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         let mut out = PruneResult::default();
         let mut live = std::collections::HashSet::new();
         let entries = self.dir.join("entries");
         for n in read_names(&entries) {
             let file = entries.join(&n);
-            let Ok(st) = fs::metadata(&file) else { continue };
+            let Ok(st) = fs::metadata(&file) else {
+                continue;
+            };
             if older_ms == 0.0 || now_ms - mtime_ms(&st) >= older_ms || !n.ends_with(".json") {
                 let _ = remove_any(&file);
                 out.entries += 1;
@@ -458,7 +514,10 @@ fn remove_any(p: &Path) -> io::Result<()> {
 
 fn read_names(dir: &Path) -> Vec<String> {
     match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect(),
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -478,7 +537,10 @@ fn write_atomic(file: &Path, data: &[u8], keep_if_same_size: bool) -> io::Result
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut tmp = file.as_os_str().to_owned();
     tmp.push(format!(".{}.{n}{nanos:x}.tmp", std::process::id()));
@@ -501,7 +563,11 @@ pub fn digest_folder(dir: &Path) -> io::Result<Option<String>> {
     digest_folder_with_limits(dir, DIGEST_FOLDER_MAX_FILES, DIGEST_FOLDER_MAX_BYTES)
 }
 
-pub fn digest_folder_with_limits(dir: &Path, max_files: u64, max_bytes: u64) -> io::Result<Option<String>> {
+pub fn digest_folder_with_limits(
+    dir: &Path,
+    max_files: u64,
+    max_bytes: u64,
+) -> io::Result<Option<String>> {
     struct Walk<'a> {
         dir: &'a Path,
         h: Sha256,
@@ -511,7 +577,11 @@ pub fn digest_folder_with_limits(dir: &Path, max_files: u64, max_bytes: u64) -> 
         max_bytes: u64,
     }
     fn walk(w: &mut Walk<'_>, rel: &str) -> io::Result<bool> {
-        let here = if rel.is_empty() { w.dir.to_path_buf() } else { w.dir.join(rel) };
+        let here = if rel.is_empty() {
+            w.dir.to_path_buf()
+        } else {
+            w.dir.join(rel)
+        };
         let mut entries: Vec<(String, fs::FileType)> = Vec::new();
         for e in fs::read_dir(&here)? {
             let e = e?;
@@ -519,7 +589,11 @@ pub fn digest_folder_with_limits(dir: &Path, max_files: u64, max_bytes: u64) -> 
         }
         entries.sort_by(|a, b| utf16_cmp(&a.0, &b.0));
         for (name, ft) in entries {
-            let r = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let r = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
             if ft.is_dir() {
                 if !walk(w, &r)? {
                     return Ok(false);
@@ -536,9 +610,18 @@ pub fn digest_folder_with_limits(dir: &Path, max_files: u64, max_bytes: u64) -> 
         }
         Ok(true)
     }
-    let mut w = Walk { dir, h: Sha256::new(), files: 0, bytes: 0, max_files, max_bytes };
+    let mut w = Walk {
+        dir,
+        h: Sha256::new(),
+        files: 0,
+        bytes: 0,
+        max_files,
+        max_bytes,
+    };
     if walk(&mut w, "")? {
-        Ok(Some(w.h.finalize().iter().map(|b| format!("{b:02x}")).collect()))
+        Ok(Some(
+            w.h.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+        ))
     } else {
         Ok(None)
     }
@@ -551,14 +634,20 @@ mod tests {
 
     pub(crate) fn tmp(prefix: &str) -> PathBuf {
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let d = std::env::temp_dir().join(format!("{prefix}{}-{n}-{nanos}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         d
     }
 
     fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf()
     }
 
     #[test]
@@ -589,29 +678,63 @@ mod tests {
         let a = json!({ "b": 1, "a": { "d": [1, { "z": 1 }], "c": null } });
         let b = json!({ "a": { "c": null, "d": [1, { "z": 1 }] }, "b": 1 });
         assert_eq!(canonical_json(&a), canonical_json(&b));
-        assert_eq!(canonical_json(&a), r#"{"a":{"c":null,"d":[1,{"z":1}]},"b":1}"#);
+        assert_eq!(
+            canonical_json(&a),
+            r#"{"a":{"c":null,"d":[1,{"z":1}]},"b":1}"#
+        );
         let base = json!({ "code": { "plugin": "x" }, "request": { "dest": "/a", "options": { "n": "1" } } });
         let k = cache_key(&base);
         assert!(is_hex64(&k));
-        assert_eq!(cache_key(&json!({ "request": base["request"], "code": base["code"] })), k);
-        assert_ne!(cache_key(&json!({ "code": { "plugin": "y" }, "request": base["request"] })), k);
-        assert_ne!(cache_key(&json!({ "code": base["code"], "request": { "dest": "/a", "options": { "n": "2" } } })), k);
+        assert_eq!(
+            cache_key(&json!({ "request": base["request"], "code": base["code"] })),
+            k
+        );
+        assert_ne!(
+            cache_key(&json!({ "code": { "plugin": "y" }, "request": base["request"] })),
+            k
+        );
+        assert_ne!(
+            cache_key(
+                &json!({ "code": base["code"], "request": { "dest": "/a", "options": { "n": "2" } } })
+            ),
+            k
+        );
         // JavaScript iterates array-index keys first; non-BMP keys sort by UTF-16.
-        assert_eq!(canonical_json(&json!({ "b": 1, "10": 2, "9": 3, "a": 4 })), r#"{"9":3,"10":2,"a":4,"b":1}"#);
-        assert_eq!(canonical_json(&json!({ "\u{10000}": 1, "\u{ffff}": 2 })), "{\"\u{10000}\":1,\"\u{ffff}\":2}");
-        assert_eq!(canonical_json(&json!("a\"\\\n\u{1}\u{7f}é")), "\"a\\\"\\\\\\n\\u0001\u{7f}é\"");
+        assert_eq!(
+            canonical_json(&json!({ "b": 1, "10": 2, "9": 3, "a": 4 })),
+            r#"{"9":3,"10":2,"a":4,"b":1}"#
+        );
+        assert_eq!(
+            canonical_json(&json!({ "\u{10000}": 1, "\u{ffff}": 2 })),
+            "{\"\u{10000}\":1,\"\u{ffff}\":2}"
+        );
+        assert_eq!(
+            canonical_json(&json!("a\"\\\n\u{1}\u{7f}é")),
+            "\"a\\\"\\\\\\n\\u0001\u{7f}é\""
+        );
     }
 
     /// Cases committed with the keys the TypeScript implementation computes
     /// (`testdata/cache-keys.json`, generated by `node` on lib/src/plugins/cache.js).
     #[test]
     fn cache_keys_match_the_typescript_fixture() {
-        let fixture: Value = serde_json::from_str(include_str!("testdata/cache-keys.json")).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("testdata/cache-keys.json")).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
         assert!(cases.len() >= 5);
         for c in cases {
-            assert_eq!(canonical_json(&c["parts"]), c["canonical"].as_str().unwrap(), "canonical json of {}", c["parts"]);
-            assert_eq!(cache_key(&c["parts"]), c["key"].as_str().unwrap(), "key of {}", c["parts"]);
+            assert_eq!(
+                canonical_json(&c["parts"]),
+                c["canonical"].as_str().unwrap(),
+                "canonical json of {}",
+                c["parts"]
+            );
+            assert_eq!(
+                cache_key(&c["parts"]),
+                c["key"].as_str().unwrap(),
+                "key of {}",
+                c["parts"]
+            );
         }
     }
 
@@ -619,16 +742,27 @@ mod tests {
     #[test]
     fn cache_keys_match_live_typescript() {
         let lib = repo_root().join("lib/src/plugins/cache.js");
-        if !lib.exists() || std::process::Command::new("node").arg("--version").output().is_err() {
+        if !lib.exists()
+            || std::process::Command::new("node")
+                .arg("--version")
+                .output()
+                .is_err()
+        {
             eprintln!("skipped: needs node and `npm run build` (lib/src/plugins/cache.js)");
             return;
         }
-        let fixture: Value = serde_json::from_str(include_str!("testdata/cache-keys.json")).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("testdata/cache-keys.json")).unwrap();
         let src = format!(
             "import {{ cacheKey, canonicalJson }} from {url};\nimport {{ readFileSync }} from 'node:fs';\nconst cases = JSON.parse(readFileSync(0, 'utf8'));\nprocess.stdout.write(JSON.stringify(cases.map((p) => [canonicalJson(p), cacheKey(p)])));",
             url = js_json(&Value::String(format!("file://{}", lib.display())))
         );
-        let parts: Vec<Value> = fixture["cases"].as_array().unwrap().iter().map(|c| c["parts"].clone()).collect();
+        let parts: Vec<Value> = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["parts"].clone())
+            .collect();
         let mut child = std::process::Command::new("node")
             .args(["--input-type=module", "-e", &src])
             .stdin(std::process::Stdio::piped())
@@ -636,7 +770,12 @@ mod tests {
             .spawn()
             .unwrap();
         use std::io::Write;
-        child.stdin.take().unwrap().write_all(serde_json::to_string(&parts).unwrap().as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::to_string(&parts).unwrap().as_bytes())
+            .unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
         let got: Vec<(String, String)> = serde_json::from_slice(&out.stdout).unwrap();
@@ -653,7 +792,10 @@ mod tests {
         assert!(c.get("k1").is_none());
         assert_eq!(c.stats.misses, 1);
         c.put("k1", &PluginResult::File(b"alpha".to_vec()));
-        let files = PluginResult::Files(vec![("a.txt".into(), b"A".to_vec()), ("sub/b.bin".into(), vec![1, 2, 3])]);
+        let files = PluginResult::Files(vec![
+            ("a.txt".into(), b"A".to_vec()),
+            ("sub/b.bin".into(), vec![1, 2, 3]),
+        ]);
         c.put("k2", &files);
         assert_eq!(c.stats.writes, 2);
         assert_eq!(c.get("k1"), Some(PluginResult::File(b"alpha".to_vec())));
@@ -661,7 +803,13 @@ mod tests {
         assert_eq!(c.stats.hits, 2);
         // the manifest is what cache.ts writes
         let m = fs::read_to_string(c.entry_path("k1")).unwrap();
-        assert_eq!(m, format!(r#"{{"version":1,"kind":"file","files":[["","{}",5]]}}"#, crate::digest::hex_of(&sha256(b"alpha"))));
+        assert_eq!(
+            m,
+            format!(
+                r#"{{"version":1,"kind":"file","files":[["","{}",5]]}}"#,
+                crate::digest::hex_of(&sha256(b"alpha"))
+            )
+        );
 
         let blob = c.blob_path(crate::digest::hex_of(&sha256(b"alpha")));
         // 1. tampered blob
@@ -710,14 +858,27 @@ mod tests {
         let i = c.info();
         assert_eq!((i.entries, i.blobs, i.bytes), (2, 2, 9));
         let past = SystemTime::now() - Duration::from_secs(10 * 86_400);
-        fs::OpenOptions::new().write(true).open(c.entry_path("a")).unwrap().set_modified(past).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(c.entry_path("a"))
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
         let r = c.prune(Duration::from_secs(7 * 86_400));
         assert_eq!((r.entries, r.blobs, r.bytes), (1, 1, 5));
         assert_eq!(c.info().entries, 1);
         assert!(c.get("b").is_some());
         let all = c.prune(Duration::ZERO);
         assert_eq!((all.entries, all.blobs), (1, 1));
-        assert_eq!(c.info(), CacheInfo { dir: d.clone(), entries: 0, blobs: 0, bytes: 0 });
+        assert_eq!(
+            c.info(),
+            CacheInfo {
+                dir: d.clone(),
+                entries: 0,
+                blobs: 0,
+                bytes: 0
+            }
+        );
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -741,9 +902,19 @@ mod tests {
                 "import {{ digestFolder }} from {};\nprocess.stdout.write(String(await digestFolder(process.argv[1])));",
                 js_json(&Value::String(format!("file://{}", lib.display())))
             );
-            if let Ok(out) = std::process::Command::new("node").args(["--input-type=module", "-e", &src, d.to_str().unwrap()]).output() {
-                assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-                assert_eq!(String::from_utf8_lossy(&out.stdout), digest_folder(&d).unwrap().unwrap());
+            if let Ok(out) = std::process::Command::new("node")
+                .args(["--input-type=module", "-e", &src, d.to_str().unwrap()])
+                .output()
+            {
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout),
+                    digest_folder(&d).unwrap().unwrap()
+                );
             }
         }
         fs::remove_dir_all(&d).unwrap();

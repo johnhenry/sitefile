@@ -4,43 +4,70 @@
 //! Messages and warnings match the TypeScript implementation word for word;
 //! `../conformance` checks it.
 
-use crate::base_image::{base_ref, base_ref_as, read_layer_blobs, resolve_base, resolve_from_image, FromImage, ResolveBaseOptions};
+use crate::base_image::{
+    base_ref, base_ref_as, read_layer_blobs, resolve_base, resolve_from_image, FromImage,
+    ResolveBaseOptions,
+};
 use crate::build_args::BuildArgs;
-use crate::registry::RegistryOptions;
-use crate::store::Store;
+use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
 use crate::digest::sha256;
-use crate::documents::{data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument};
-use crate::memo::DocMemo;
+use crate::documents::{
+    data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
+};
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::export::archive_writers::{source_date_epoch, WriterOptions};
-use crate::export::exporter::{export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions};
+use crate::export::exporter::{
+    export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions,
+};
 use crate::export::formats::{encode_tree, is_archive_format, EncodeOptions};
-use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions};
-use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart};
+use crate::export::oci::{
+    build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions,
+};
+use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
+use crate::language::ast::{
+    ExportFormat, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart,
+    FEED_ITEM,
+};
 use crate::language::validate::parse_program;
+use crate::memo::DocMemo;
+use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
-use crate::planner::{imported_stage_refs, plan, plan_with, target_plan, ImportLocation, FragmentSpec, ImportSpec, ImportedStageRef, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
+use crate::planner::{
+    imported_stage_refs, plan, plan_with, target_plan, FragmentSpec, ImportLocation, ImportSpec,
+    ImportedStageRef, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase,
+};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
-use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
-use crate::plugins::host::{run_bounded, transform_jobs, PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
+use crate::plugins::exec::{
+    resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY,
+};
+use crate::plugins::host::{
+    run_bounded, transform_jobs, PluginHost, PluginInput, PluginPolicy, PluginRequest,
+    PluginResult, DEFAULT_PLUGIN_POLICY,
+};
 use crate::plugins::wasm::check_wasm_plugin;
 use crate::profile::{begin, Profiler};
-use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, SharedMemo};
-use crate::render::{decode_utf8, fragment_not_value, parse_render_template, render_template_with, resolve_json_path, walk, TemplateContext, TemplateNode};
+use crate::registry::RegistryOptions;
+use crate::render::{
+    decode_utf8, fragment_not_value, parse_render_template, render_template_with,
+    resolve_json_path, walk, TemplateContext, TemplateNode,
+};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
+use crate::resources::git::{
+    fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport,
+};
 use crate::resources::https::{fetch_remote_with, FetchRequest};
-use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::resources::ignore::IgnoreRules;
 use crate::resources::local::{EntryKind, LocalContext, LocalContextOptions};
 use crate::resources::lockfile::{GitLockEntry, LockEntry, Lockfile};
-use crate::resources::git::{fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport};
-use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::resources::types::{
     ArchiveLimits, FetchPolicy, Resource, ValueFormat, DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY,
 };
-use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
-use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
-use crate::site::{atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry};
+use crate::resources::vendor::{find_vendor_dir, Vendor};
+use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
+use crate::site::{
+    atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry,
+};
+use crate::store::Store;
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -257,7 +284,13 @@ fn cwd() -> PathBuf {
 
 /// `path.join(a, b)`: joined and normalized, relative stays relative.
 pub fn join_path(a: &str, b: &str) -> String {
-    let joined = if a.is_empty() { b.to_string() } else if b.is_empty() { a.to_string() } else { format!("{a}/{b}") };
+    let joined = if a.is_empty() {
+        b.to_string()
+    } else if b.is_empty() {
+        a.to_string()
+    } else {
+        format!("{a}/{b}")
+    };
     normalize_posix(&joined)
 }
 
@@ -282,7 +315,13 @@ pub fn normalize_posix(p: &str) -> String {
         }
     }
     let body = out.join("/");
-    let mut s = if abs { format!("/{body}") } else if body.is_empty() { ".".into() } else { body };
+    let mut s = if abs {
+        format!("/{body}")
+    } else if body.is_empty() {
+        ".".into()
+    } else {
+        body
+    };
     if p.ends_with('/') && !s.ends_with('/') {
         s.push('/');
     }
@@ -290,7 +329,11 @@ pub fn normalize_posix(p: &str) -> String {
 }
 
 /// Read, parse and validate a Sitefile.
-pub fn load_program(context_dir: &str, sitefile: Option<&str>, label: Option<&str>) -> Result<Loaded> {
+pub fn load_program(
+    context_dir: &str,
+    sitefile: Option<&str>,
+    label: Option<&str>,
+) -> Result<Loaded> {
     let given = match sitefile {
         Some(s) => s.to_string(),
         None => join_path(context_dir, "Sitefile"),
@@ -299,29 +342,60 @@ pub fn load_program(context_dir: &str, sitefile: Option<&str>, label: Option<&st
     let source = std::fs::read(&sitefile_path)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         // A Git context names its Sitefile by the label (the checkout is a temporary directory).
-        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("cannot read Sitefile '{}'", label.map(str::to_string).unwrap_or_else(|| sitefile_path.display().to_string()))))?;
+        .map_err(|_| {
+            SitefileError::plain(
+                E_NOT_FOUND,
+                format!(
+                    "cannot read Sitefile '{}'",
+                    label
+                        .map(str::to_string)
+                        .unwrap_or_else(|| sitefile_path.display().to_string())
+                ),
+            )
+        })?;
     let rel = relative_path(&cwd(), &sitefile_path);
     let label = if let Some(l) = label {
         l.to_string()
     } else if rel.is_empty() {
-        sitefile_path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        sitefile_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
     } else {
         rel
     };
-    Ok(Loaded { program: parse_program(&source, &label)?, sitefile_path, label, source })
+    Ok(Loaded {
+        program: parse_program(&source, &label)?,
+        sitefile_path,
+        label,
+        source,
+    })
 }
 
 /// Parse, validate and evaluate variables, without reading any sources.
 pub fn plan_build(options: &BuildOptions) -> Result<Plan> {
-    let loaded = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let loaded = load_program(
+        &options.context_dir,
+        options.sitefile.as_deref(),
+        options.label.as_deref(),
+    )?;
     plan_for(&loaded.program, options)
 }
 
 /// `validate`'s lint warnings (`crate::lint`) for the whole Sitefile (a `--target` does not narrow them).
 pub fn lint_build(options: &BuildOptions, disabled: &[String]) -> Result<Vec<String>> {
-    let loaded = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let loaded = load_program(
+        &options.context_dir,
+        options.sitefile.as_deref(),
+        options.label.as_deref(),
+    )?;
     let p = plan(&loaded.program, &options.build_args)?;
-    Ok(crate::lint::lint(&loaded.program, &p, &loaded.source, disabled))
+    Ok(crate::lint::lint(
+        &loaded.program,
+        &p,
+        &loaded.source,
+        disabled,
+    ))
 }
 
 /// The plan of a program for these options (`target` applied).
@@ -362,7 +436,12 @@ fn lock_path_for(setting: &LockfileSetting, sitefile_path: &Path) -> Option<Path
     match setting {
         LockfileSetting::Disabled => None,
         LockfileSetting::Path(p) => Some(p.clone()),
-        LockfileSetting::Default => Some(sitefile_path.parent().unwrap_or(Path::new("/")).join("Sitefile.lock")),
+        LockfileSetting::Default => Some(
+            sitefile_path
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .join("Sitefile.lock"),
+        ),
     }
 }
 
@@ -371,7 +450,13 @@ fn base_ref_of(options: &BuildOptions, p: &Plan) -> Option<String> {
     if options.skip_base {
         return None;
     }
-    options.base_image.clone().or_else(|| if p.export_format == ExportFormat::Oci { p.export_base.clone() } else { None })
+    options.base_image.clone().or_else(|| {
+        if p.export_format == ExportFormat::Oci {
+            p.export_base.clone()
+        } else {
+            None
+        }
+    })
 }
 
 /// How the remote inputs of a `--strict-pins` build are pinned: remote IMPORTs by name
@@ -391,7 +476,10 @@ pub fn image_lock_key(reference: &str, lead: &str, span: &SourceSpan) -> Result<
 
 impl Pins {
     pub fn import(&self, name: &str) -> Option<&'static str> {
-        self.imports.iter().find(|(n, _)| n == name).map(|(_, b)| *b)
+        self.imports
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| *b)
     }
 }
 
@@ -420,7 +508,9 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
                 &spec.span,
             ));
         }
-        let ImportLocation::Remote { url } = &spec.location else { continue };
+        let ImportLocation::Remote { url } = &spec.location else {
+            continue;
+        };
         if spec.integrity.is_some() {
             pins.imports.push((spec.name.clone(), "integrity"));
             continue;
@@ -439,7 +529,16 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
         ));
     }
     for st in &p.stages {
-        let StageBase::Image { reference, local: false, lead, span, .. } = &st.base else { continue };
+        let StageBase::Image {
+            reference,
+            local: false,
+            lead,
+            span,
+            ..
+        } = &st.base
+        else {
+            continue;
+        };
         let b = base_ref_as(reference, Some(span), &format!("{lead} image"))?;
         if b.r.digest.is_some() {
             pins.images.push((st.span.line, "digest"));
@@ -477,7 +576,12 @@ pub fn check_pins(p: &Plan, lock: Option<&Lockfile>, base: Option<&str>) -> Resu
 
 /// `validate --strict-pins`: check the pins of `p` against the lockfile without building or fetching.
 pub fn check_plan_pins(options: &BuildOptions, p: &Plan) -> Result<()> {
-    let sitefile_path = resolve_path(Path::new(&options.sitefile.clone().unwrap_or_else(|| join_path(&options.context_dir, "Sitefile"))));
+    let sitefile_path = resolve_path(Path::new(
+        &options
+            .sitefile
+            .clone()
+            .unwrap_or_else(|| join_path(&options.context_dir, "Sitefile")),
+    ));
     let lock = match lock_path_for(&options.lockfile, &sitefile_path) {
         Some(path) => Some(Lockfile::load(path)?),
         None => None,
@@ -499,7 +603,11 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
     }
     match build_unredacted(&redacted) {
         Ok(r) => {
-            let warnings = r.warnings.iter().map(|w| redact_secrets(w, &secrets)).collect();
+            let warnings = r
+                .warnings
+                .iter()
+                .map(|w| redact_secrets(w, &secrets))
+                .collect();
             Ok(BuildResult { warnings, ..r })
         }
         Err(e) => Err(redact_error(e, &secrets)),
@@ -508,7 +616,11 @@ pub fn build(options: &BuildOptions) -> Result<BuildResult> {
 
 /// `--secret` ids that no IMPORT … SECRET names (likely a typo).
 pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
-    let used: std::collections::HashSet<&str> = p.imports.iter().flat_map(|s| s.secrets.iter().map(|x| x.id.as_str())).collect();
+    let used: std::collections::HashSet<&str> = p
+        .imports
+        .iter()
+        .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
@@ -519,13 +631,18 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
 }
 
 fn build_unredacted(options: &BuildOptions) -> Result<BuildResult> {
-    let Some(memo) = &options.memo else { return build_once(options) };
+    let Some(memo) = &options.memo else {
+        return build_once(options);
+    };
     lock_memo(memo).begin();
     let r = build_once(options);
     let mut m = lock_memo(memo);
     m.finish(r.is_ok());
     let stats = m.stats;
-    r.map(|r| BuildResult { memo_stats: Some(stats), ..r })
+    r.map(|r| BuildResult {
+        memo_stats: Some(stats),
+        ..r
+    })
 }
 
 fn build_once(options: &BuildOptions) -> Result<BuildResult> {
@@ -541,14 +658,26 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
 fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
-    let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
+    let Loaded {
+        program,
+        sitefile_path,
+        label,
+        ..
+    } = load_program(
+        &options.context_dir,
+        options.sitefile.as_deref(),
+        options.label.as_deref(),
+    )?;
     let full = plan(&program, &options.build_args)?;
     let all_stages = full.stages.clone();
     let p = match &options.target {
         Some(t) => target_plan(full, t)?,
         None => full,
     };
-    let mut parse_args = vec![("imports", json!(p.imports.len())), ("stages", json!(p.stages.len()))];
+    let mut parse_args = vec![
+        ("imports", json!(p.imports.len())),
+        ("stages", json!(p.stages.len())),
+    ];
     if let Some(t) = &p.target {
         parse_args.push(("target", json!(t)));
     }
@@ -573,8 +702,12 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let tools = resolve_tools(&p, options, &warn)?;
     let plugin_permission = check_plugins(&p, options, &warn)?;
 
-    let context_real = std::fs::canonicalize(&options.context_dir)
-        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
+    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+        SitefileError::plain(
+            E_NOT_FOUND,
+            format!("build context '{}' does not exist", options.context_dir),
+        )
+    })?;
     let mut ignore = vec![".git".to_string()];
     // The same paths, absolute: an imported Sitefile's context inside this one skips them too.
     let mut skip: Vec<PathBuf> = Vec::new();
@@ -618,7 +751,11 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     }
     let local = LocalContext::open(
         &context_real,
-        &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
+        &LocalContextOptions {
+            ignore: Some(ignore),
+            sitefileignore: true,
+            allow_hardlinks: options.allow_hardlinks,
+        },
     )?;
     let vendor = match &vendor_dir {
         Some(d) => Some(Vendor::open(&local, d)?),
@@ -630,11 +767,25 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     };
     // BASE: the image to build on (resolved after the files, below).
     let base_ref = base_ref_of(options, &p);
-    let mut pins = if options.strict_pins { Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?) } else { None };
+    let mut pins = if options.strict_pins {
+        Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?)
+    } else {
+        None
+    };
     let mut lock = lock;
     // A --target build skips later stages; their FROM image lockfile entries are kept all the same.
     for st in &all_stages[p.stages.len()..] {
-        if let (StageBase::Image { reference, local: false, lead, span, .. }, Some(l)) = (&st.base, lock.as_mut()) {
+        if let (
+            StageBase::Image {
+                reference,
+                local: false,
+                lead,
+                span,
+                ..
+            },
+            Some(l),
+        ) = (&st.base, lock.as_mut())
+        {
             l.mark_image_used(&image_lock_key(reference, lead, span)?);
         }
     }
@@ -666,12 +817,22 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
                 let tid = i as u64 + 2;
                 pr.name_thread(tid, format!("import {}", spec.name));
                 let as_kind = spec.as_kind.map(|k| k.as_str()).unwrap_or("file");
-                pr.reserve(format!("import {}", spec.name), "import", vec![("uri", json!(spec.uri)), ("as", json!(as_kind))], tid)
+                pr.reserve(
+                    format!("import {}", spec.name),
+                    "import",
+                    vec![("uri", json!(spec.uri)), ("as", json!(as_kind))],
+                    tid,
+                )
             })
         })
         .collect();
     // Sitefile imports (AS sitefile) load after the others, one after the other, in Sitefile order.
-    let indexed: Vec<(usize, &ImportSpec)> = p.imports.iter().enumerate().filter(|(_, s)| s.as_kind != Some(ImportKind::Sitefile)).collect();
+    let indexed: Vec<(usize, &ImportSpec)> = p
+        .imports
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.as_kind != Some(ImportKind::Sitefile))
+        .collect();
     let resolved = map_limit(&indexed, options.concurrency.max(1), |(i, spec)| {
         if let Some(s) = &import_spans[*i] {
             s.start();
@@ -700,7 +861,13 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         let w = warn.clone();
         move |m: &str| w(m)
     };
-    let from_image_in = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan, unit: Option<&str>| -> Result<FromImage> {
+    let from_image_in = |reference: &str,
+                         at: Option<&str>,
+                         is_local: bool,
+                         lead: &str,
+                         span: &SourceSpan,
+                         unit: Option<&str>|
+     -> Result<FromImage> {
         let store = match image_store.get() {
             Some(s) => s,
             None => {
@@ -725,16 +892,22 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         };
         let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let r = resolve_from_image(reference, at, is_local, guard.as_mut(), &o)?;
-        used_images.lock().unwrap_or_else(|e| e.into_inner()).push(FromImageUse {
-            name: r.name.clone(),
-            digest: r.digest.clone(),
-            line: span.line,
-            local: is_local,
-            import: unit.map(str::to_string),
-        });
+        used_images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(FromImageUse {
+                name: r.name.clone(),
+                digest: r.digest.clone(),
+                line: span.line,
+                local: is_local,
+                import: unit.map(str::to_string),
+            });
         Ok(r)
     };
-    let from_image = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan| from_image_in(reference, at, is_local, lead, span, None);
+    let from_image =
+        |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan| {
+            from_image_in(reference, at, is_local, lead, span, None)
+        };
 
     let units_env = UnitsEnv {
         remote: env.remote,
@@ -750,10 +923,22 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         tool_policy: options.tool_policy,
         from_image: &from_image_in,
     };
-    let root_id = if options.sitefile.is_none() { context_real.to_string_lossy().into_owned() } else { realpath_loose(&sitefile_path).to_string_lossy().into_owned() };
+    let root_id = if options.sitefile.is_none() {
+        context_real.to_string_lossy().into_owned()
+    } else {
+        realpath_loose(&sitefile_path)
+            .to_string_lossy()
+            .into_owned()
+    };
     let root_chain = vec![(root_id, label.clone())];
     let scope = root_scope(options, &label);
-    let root = Importer { name: None, label: &label, local: &local, scope: &scope, chain: &root_chain };
+    let root = Importer {
+        name: None,
+        label: &label,
+        local: &local,
+        scope: &scope,
+        chain: &root_chain,
+    };
     let full_refs = imported_stage_refs(&all_stages);
     let mut resources: HashMap<String, Resource> = HashMap::new();
     let mut resource_list: Vec<(String, Resource)> = Vec::new();
@@ -771,7 +956,11 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
                 if let Some(s) = &import_spans[i] {
                     s.end(vec![("kind", json!("tree"))]);
                 }
-                let key = if options.memo.is_some() { memo_key(&["sitefile", &label, &format!("{spec:?}"), &unit.digest]) } else { String::new() };
+                let key = if options.memo.is_some() {
+                    memo_key(&["sitefile", &label, &format!("{spec:?}"), &unit.digest])
+                } else {
+                    String::new()
+                };
                 let res = unit.resource();
                 units.push((spec.name.clone(), unit));
                 (res, key)
@@ -782,7 +971,8 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         resource_keys.insert(spec.name.clone(), key);
     }
     if let Some(pins) = pins.as_mut() {
-        pins.imports.extend(units_env.pins.lock().map(|p| p.clone()).unwrap_or_default());
+        pins.imports
+            .extend(units_env.pins.lock().map(|p| p.clone()).unwrap_or_default());
     }
     let memo = options.memo.as_deref();
     // The Sitefile label and its ARG/LET values (sorted: Env is a HashMap).
@@ -791,8 +981,17 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             let mut vars: Vec<_> = p.vars.iter().collect();
             vars.sort_by(|a, b| a.0.cmp(b.0));
             // html LETs are part of it: they are not values, but a template that uses one renders their text.
-            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
-            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
+            let fragments: Vec<(&str, &str)> = p
+                .fragments
+                .iter()
+                .map(|f| (f.name.as_str(), f.text.as_str()))
+                .collect();
+            memo_key(&[
+                "env",
+                &label,
+                &format!("{vars:?}"),
+                &format!("{fragments:?}"),
+            ])
         }
         None => String::new(),
     };
@@ -811,7 +1010,10 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugins: PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m)),
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
         tool_policy: options.tool_policy,
-        cache: options.cache_dir.as_ref().map(|d| TransformCache::new(d).with_remote(options.remote_cache.clone())),
+        cache: options
+            .cache_dir
+            .as_ref()
+            .map(|d| TransformCache::new(d).with_remote(options.remote_cache.clone())),
         plugin_digests: HashMap::new(),
         stats: TransformStats::default(),
         profiler: prof,
@@ -834,16 +1036,33 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let mut current_renames: BTreeMap<String, String> = BTreeMap::new();
     let run = (|| -> Result<Tree> {
         for spec in &p.plugins {
-            let s = begin(prof, || format!("PLUGIN {}", spec.name), "plugin", || vec![("path", json!(format!("./{}", spec.path)))]);
+            let s = begin(
+                prof,
+                || format!("PLUGIN {}", spec.name),
+                "plugin",
+                || vec![("path", json!(format!("./{}", spec.path)))],
+            );
             register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
             s.end(Vec::new());
         }
         // The stages of imported Sitefiles this build reads (`FROM theme+assets`, `--from=theme+assets`).
-        provide_imported_stages(&mut units, &imported_stage_refs(&p.stages), &mut exec.stages, &mut exec.stage_keys, &mut stage_renames, &units_env)?;
+        provide_imported_stages(
+            &mut units,
+            &imported_stage_refs(&p.stages),
+            &mut exec.stages,
+            &mut exec.stage_keys,
+            &mut stage_renames,
+            &units_env,
+        )?;
         let mut tree = Tree::empty();
         for (i, stage) in p.stages.iter().enumerate() {
             let name = stage.name.clone().unwrap_or_else(|| format!("#{}", i + 1));
-            let s = begin(prof, || format!("stage {name}"), "stage", || vec![("from", json!(stage_from(stage)))]);
+            let s = begin(
+                prof,
+                || format!("stage {name}"),
+                "stage",
+                || vec![("from", json!(stage_from(stage)))],
+            );
             let (start, mut key) = exec.start_stage(stage)?;
             tree = start;
             current_renames = match &stage.base {
@@ -853,7 +1072,12 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             let mut record = steps.as_ref().map(|_| vec![tree.clone()]);
             for op in &stage.operations {
                 let line = op.span().line;
-                let o = begin(prof, || format!("{label}:{line} {}", op.keyword()), "operation", || vec![("line", json!(line))]);
+                let o = begin(
+                    prof,
+                    || format!("{label}:{line} {}", op.keyword()),
+                    "operation",
+                    || vec![("line", json!(line))],
+                );
                 exec.renames.clone_from(&current_renames);
                 let (out, k, state) = exec.execute_op(op, tree, &key)?;
                 tree = out;
@@ -895,7 +1119,13 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let images = used_images.into_inner().unwrap_or_default();
 
     if tree.is_file(&p.export_path) {
-        return Err(SitefileError::plain(E_EXPORT, format!("EXPORT path '{}' is a file; export a directory", p.export_path)));
+        return Err(SitefileError::plain(
+            E_EXPORT,
+            format!(
+                "EXPORT path '{}' is a file; export a directory",
+                p.export_path
+            ),
+        ));
     }
     let tree = with_site_rules(tree, &p, &label, &current_renames)?;
     let output = tree.subtree(&p.export_path);
@@ -966,31 +1196,70 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
 /// REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
 /// A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
 /// names its new URL.
-fn with_site_rules(mut tree: Tree, p: &Plan, label: &str, renames: &BTreeMap<String, String>) -> Result<Tree> {
+fn with_site_rules(
+    mut tree: Tree,
+    p: &Plan,
+    label: &str,
+    renames: &BTreeMap<String, String>,
+) -> Result<Tree> {
     let url_below = |path: &str| -> Option<String> {
         if p.export_path == "/" {
             Some(path.to_string())
         } else {
-            path.strip_prefix(&format!("{}/", p.export_path)).map(|rest| format!("/{rest}"))
+            path.strip_prefix(&format!("{}/", p.export_path))
+                .map(|rest| format!("/{rest}"))
         }
     };
-    let urls: HashMap<String, String> = renames.iter().filter_map(|(a, b)| Some((url_below(a)?, url_below(b)?))).collect();
+    let urls: HashMap<String, String> = renames
+        .iter()
+        .filter_map(|(a, b)| Some((url_below(a)?, url_below(b)?)))
+        .collect();
     let renamed = |s: &str| urls.get(s).cloned().unwrap_or_else(|| s.to_string());
     let to: Vec<String> = p.redirects.iter().map(|r| renamed(&r.to)).collect();
     let patterns: Vec<String> = p.headers.iter().map(|h| renamed(&h.pattern)).collect();
-    let redirects = redirects_file(p.redirects.iter().zip(&to).map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)));
-    let headers = headers_file(p.headers.iter().zip(&patterns).map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())));
+    let redirects = redirects_file(
+        p.redirects
+            .iter()
+            .zip(&to)
+            .map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)),
+    );
+    let headers = headers_file(
+        p.headers
+            .iter()
+            .zip(&patterns)
+            .map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())),
+    );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
     let files: [SiteFile; 2] = [
-        ("_redirects", redirects, p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(), "REDIRECT"),
-        ("_headers", headers, p.headers.iter().map(|h| (h.overwrite, &h.span)).collect(), "HEADER"),
+        (
+            "_redirects",
+            redirects,
+            p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(),
+            "REDIRECT",
+        ),
+        (
+            "_headers",
+            headers,
+            p.headers.iter().map(|h| (h.overwrite, &h.span)).collect(),
+            "HEADER",
+        ),
     ];
     for (name, text, rules, kind) in files {
-        let Some((_, first)) = rules.first() else { continue };
+        let Some((_, first)) = rules.first() else {
+            continue;
+        };
         let policy = policy_of(rules.iter().any(|(o, _)| *o));
-        let node = make_file(text.into_bytes(), format!("{label}:{} {kind}", first.line), 0o644);
-        tree = tree.with_files([(join_virtual(&p.export_path, name), node)], policy, Some(first))?;
+        let node = make_file(
+            text.into_bytes(),
+            format!("{label}:{} {kind}", first.line),
+            0o644,
+        );
+        tree = tree.with_files(
+            [(join_virtual(&p.export_path, name), node)],
+            policy,
+            Some(first),
+        )?;
     }
     Ok(tree)
 }
@@ -1051,11 +1320,33 @@ pub fn image_attestations(
     if !request.any() {
         return Ok(Vec::new());
     }
-    let facts = build_facts(result, &options.context_dir, options.sitefile.as_deref(), options.label.as_deref(), &options.build_args, options.platform.as_deref())?;
-    let cfg = crate::export::oci::parse_config(config_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("image config: {e}")))?;
-    let title = cfg.labels.get(crate::export::oci::ann::TITLE).map(String::as_str);
-    let subject = AttestSubject { digest: manifest_digest, size: manifest_bytes.len() as u64, files: &result.output, root, title };
-    Ok(make_attestations(&subject, &facts, request, source_date_epoch()?))
+    let facts = build_facts(
+        result,
+        &options.context_dir,
+        options.sitefile.as_deref(),
+        options.label.as_deref(),
+        &options.build_args,
+        options.platform.as_deref(),
+    )?;
+    let cfg = crate::export::oci::parse_config(config_bytes)
+        .map_err(|e| SitefileError::plain(E_STORE, format!("image config: {e}")))?;
+    let title = cfg
+        .labels
+        .get(crate::export::oci::ann::TITLE)
+        .map(String::as_str);
+    let subject = AttestSubject {
+        digest: manifest_digest,
+        size: manifest_bytes.len() as u64,
+        files: &result.output,
+        root,
+        title,
+    };
+    Ok(make_attestations(
+        &subject,
+        &facts,
+        request,
+        source_date_epoch()?,
+    ))
 }
 
 /// OCI options for the build's exported tree (shared by `-t` image storage).
@@ -1070,7 +1361,9 @@ pub fn oci_options(
 ) -> Result<OciOptions> {
     let meta = image_meta(Path::new(context_dir), git, labels.clone());
     Ok(OciOptions {
-        root: root.map(str::to_string).or_else(|| result.plan.export_root.clone()),
+        root: root
+            .map(str::to_string)
+            .or_else(|| result.plan.export_root.clone()),
         platform: platform.map(str::to_string),
         epoch: source_date_epoch()?,
         title: meta.title,
@@ -1078,25 +1371,45 @@ pub fn oci_options(
         revision: meta.revision,
         labels: meta.labels,
         base: result.base.clone(),
-        compression: compression.or(result.plan.export_compression).unwrap_or_default(),
+        compression: compression
+            .or(result.plan.export_compression)
+            .unwrap_or_default(),
     })
 }
 
 /// Build, then write the exported tree to `out_dir`: a directory for the
 /// `directory` format, a single file for zip, tar, tgz and wbn; oci writes an
 /// OCI archive for `*.tar` and an image layout directory otherwise.
-pub fn build_to_directory(options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
+pub fn build_to_directory(
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
     let result = build(options)?;
     let format = target.format.unwrap_or(result.plan.export_format);
-    let span = begin(options.profiler.as_deref(), || "export".into(), "export", || vec![("format", json!(format.as_str()))]);
+    let span = begin(
+        options.profiler.as_deref(),
+        || "export".into(),
+        "export",
+        || vec![("format", json!(format.as_str()))],
+    );
     let r = export_build(result, format, options, out_dir, target);
     span.end(Vec::new());
     r
 }
 
-fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOptions, out_dir: &str, target: &ExportTarget) -> Result<ExportedBuild> {
+fn export_build(
+    result: BuildResult,
+    format: ExportFormat,
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
     // Watch mode: a directory export writes only what changed since the session's last one.
-    let export_state = options.memo.as_ref().map(|m| lock_memo(m).export_state.clone());
+    let export_state = options
+        .memo
+        .as_ref()
+        .map(|m| lock_memo(m).export_state.clone());
     if format != ExportFormat::Directory {
         if let Some(s) = &export_state {
             crate::export::incremental::clear_shared(s);
@@ -1105,7 +1418,15 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
-        let opts = oci_options(&result, &options.context_dir, target.oci_root.as_deref(), target.oci_compression, options.platform.as_deref(), &target.image_labels, target.git_labels)?;
+        let opts = oci_options(
+            &result,
+            &options.context_dir,
+            target.oci_root.as_deref(),
+            target.oci_compression,
+            options.platform.as_deref(),
+            &target.image_labels,
+            target.git_labels,
+        )?;
         let img = build_oci_image(&result.output, &opts)?;
         // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {
@@ -1113,9 +1434,23 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
             None => Vec::new(),
         };
         let ref_name = target.oci_ref_name.as_deref();
-        let referrers = image_attestations(&result, &img.manifest_digest, &img.manifest_bytes, &img.config_bytes, &img.root, options, target.attest)?;
+        let referrers = image_attestations(
+            &result,
+            &img.manifest_digest,
+            &img.manifest_bytes,
+            &img.config_bytes,
+            &img.root,
+            options,
+            target.attest,
+        )?;
         if out_dir.to_lowercase().ends_with(".tar") {
-            let data = oci_archive(img.parts(), ref_name, source_date_epoch()?, &base_blobs, &referrers)?;
+            let data = oci_archive(
+                img.parts(),
+                ref_name,
+                source_date_epoch()?,
+                &base_blobs,
+                &referrers,
+            )?;
             let written = export_file(&data, out, &export_options)?;
             let digest = sha256(&data);
             return Ok(ExportedBuild {
@@ -1128,24 +1463,62 @@ fn export_build(result: BuildResult, format: ExportFormat, options: &BuildOption
                 incremental: None,
             });
         }
-        let written = export_directory(&layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?, out, &export_options)?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: Some(img.manifest_digest.clone()), incremental: None });
+        let written = export_directory(
+            &layout_tree(img.parts(), ref_name, &base_blobs, &referrers)?,
+            out,
+            &export_options,
+        )?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_dir,
+            bytes: None,
+            file_digest: None,
+            manifest_digest: Some(img.manifest_digest.clone()),
+            incremental: None,
+        });
     }
     if !is_archive_format(format) {
-        let written = export_directory(&result.output, out, &export_options.incremental(export_state))?;
-        return Ok(ExportedBuild { result, format, out_path: written.out_dir, bytes: None, file_digest: None, manifest_digest: None, incremental: written.incremental });
+        let written = export_directory(
+            &result.output,
+            out,
+            &export_options.incremental(export_state),
+        )?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_dir,
+            bytes: None,
+            file_digest: None,
+            manifest_digest: None,
+            incremental: written.incremental,
+        });
     }
     let data = encode_tree(
         &result.output,
         format,
         &EncodeOptions {
-            writer: WriterOptions { epoch: source_date_epoch()?, dirs: Vec::new() },
-            base_url: target.base_url.clone().or_else(|| result.plan.export_base.clone()),
+            writer: WriterOptions {
+                epoch: source_date_epoch()?,
+                dirs: Vec::new(),
+            },
+            base_url: target
+                .base_url
+                .clone()
+                .or_else(|| result.plan.export_base.clone()),
         },
     )?;
     let written = export_file(&data, out, &export_options)?;
     let digest = sha256(&data);
-    Ok(ExportedBuild { result, format, out_path: written.out_file, bytes: Some(written.bytes), file_digest: Some(digest), manifest_digest: None, incremental: None })
+    Ok(ExportedBuild {
+        result,
+        format,
+        out_path: written.out_file,
+        bytes: Some(written.bytes),
+        file_digest: Some(digest),
+        manifest_digest: None,
+        incremental: None,
+    })
 }
 
 // ---------------------------------------------------------------- imports
@@ -1180,20 +1553,45 @@ pub fn git_selection_bytes(selection: &GitSelection) -> Result<Vec<u8>> {
     match selection {
         GitSelection::File { bytes, .. } => Ok(bytes.to_vec()),
         GitSelection::Tree(files) => {
-            let tree = Tree::from_files(files.iter().map(|(p, b, m)| (p.clone(), make_file(b.clone(), "vendor", *m))))?;
-            crate::export::archive_writers::write_tar(&tree, &WriterOptions { epoch: Some(0), dirs: Vec::new() })
+            let tree = Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, b, m)| (p.clone(), make_file(b.clone(), "vendor", *m))),
+            )?;
+            crate::export::archive_writers::write_tar(
+                &tree,
+                &WriterOptions {
+                    epoch: Some(0),
+                    dirs: Vec::new(),
+                },
+            )
         }
     }
 }
 
 /// The content of a Git IMPORT, checked against the lockfile (and recorded there): (commit, selection).
 /// See the TypeScript `fetchGitImport`.
-pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_>) -> Result<(String, GitSelection)> {
+pub fn fetch_git_import(
+    spec: &ImportSpec,
+    loc: &GitLocation,
+    env: &RemoteEnv<'_>,
+) -> Result<(String, GitSelection)> {
     let url = &loc.url;
     let span = Some(&spec.span);
-    let entry = env.lock.lock().ok().and_then(|l| l.as_ref().and_then(|l| l.get_git(url).cloned()));
+    let entry = env
+        .lock
+        .lock()
+        .ok()
+        .and_then(|l| l.as_ref().and_then(|l| l.get_git(url).cloned()));
     if env.frozen && entry.is_none() {
-        return Err(SitefileError::at(E_LOCK_MISSING, format!("IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+        return Err(SitefileError::at(
+            E_LOCK_MISSING,
+            format!(
+                "IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)",
+                spec.name
+            ),
+            &spec.span,
+        ));
     }
     if let (Some(e), Some(c)) = (&entry, &loc.commit) {
         if &e.commit != c {
@@ -1204,28 +1602,47 @@ pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_
             ));
         }
     }
-    let mut want: Option<String> = loc.commit.clone().or_else(|| entry.as_ref().filter(|_| !env.update).map(|e| e.commit.clone()));
+    let mut want: Option<String> = loc.commit.clone().or_else(|| {
+        entry
+            .as_ref()
+            .filter(|_| !env.update)
+            .map(|e| e.commit.clone())
+    });
     let vendored = env.vendor.and_then(|(v, _)| v.git(url));
     let use_vendored = match (vendored, &want) {
         (Some(_), None) => !env.update,
         (Some(v), Some(w)) => &v.commit == w,
         (None, _) => false,
     };
-    let selection = if let (true, Some((v, local)), Some(ve)) = (use_vendored, env.vendor, vendored) {
+    let selection = if let (true, Some((v, local)), Some(ve)) = (use_vendored, env.vendor, vendored)
+    {
         want = Some(ve.commit.clone());
         let basename = loc.path.rsplit('/').next().unwrap_or("");
         v.read_git(local, url, ve, basename, &env.archive_limits, span)?
     } else {
         if let Some((v, _)) = env.vendor {
-            let at = if vendored.is_some() { format!(" at commit {}", want.as_deref().unwrap_or("the latest")) } else { String::new() };
+            let at = if vendored.is_some() {
+                format!(" at commit {}", want.as_deref().unwrap_or("the latest"))
+            } else {
+                String::new()
+            };
             (env.warn)(&format!(
                 "{}:{}: IMPORT {}: '{url}' is not vendored in {}{at}; fetching it (run 'sitefile vendor' to add it)",
                 env.label, spec.span.line, spec.name, v.dir
             ));
         }
         let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
-        let transport = GitTransport { origin_headers: &origin_headers, ..GitTransport::new(env.policy, span) };
-        let objs = fetch_git_commit(&loc.repo, &loc.git_ref, want.as_deref(), transport, &env.archive_limits)?;
+        let transport = GitTransport {
+            origin_headers: &origin_headers,
+            ..GitTransport::new(env.policy, span)
+        };
+        let objs = fetch_git_commit(
+            &loc.repo,
+            &loc.git_ref,
+            want.as_deref(),
+            transport,
+            &env.archive_limits,
+        )?;
         want = Some(objs.commit.clone());
         select_git_path(&objs, &loc.repo, &loc.path, &env.archive_limits, span)?
     };
@@ -1241,7 +1658,12 @@ pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_
     }
     if let Ok(mut l) = env.lock.lock() {
         if let Some(l) = l.as_mut() {
-            l.record_git(url, GitLockEntry { commit: want.clone() });
+            l.record_git(
+                url,
+                GitLockEntry {
+                    commit: want.clone(),
+                },
+            );
         }
     }
     Ok((want, selection))
@@ -1249,11 +1671,26 @@ pub fn fetch_git_import(spec: &ImportSpec, loc: &GitLocation, env: &RemoteEnv<'_
 
 /// The bytes of a remote IMPORT and its final URL, checked against its INTEGRITY and the lockfile (and
 /// recorded there): read from the vendor directory when it has the URL, otherwise fetched.
-pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) -> Result<(Vec<u8>, String)> {
+pub fn fetch_remote_import(
+    spec: &ImportSpec,
+    url: &str,
+    env: &RemoteEnv<'_>,
+) -> Result<(Vec<u8>, String)> {
     let span = Some(&spec.span);
-    let entry = env.lock.lock().ok().and_then(|l| l.as_ref().and_then(|l| l.get(url).cloned()));
+    let entry = env
+        .lock
+        .lock()
+        .ok()
+        .and_then(|l| l.as_ref().and_then(|l| l.get(url).cloned()));
     if env.frozen && entry.is_none() {
-        return Err(SitefileError::at(E_LOCK_MISSING, format!("IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+        return Err(SitefileError::at(
+            E_LOCK_MISSING,
+            format!(
+                "IMPORT {}: '{url}' is not in the lockfile (--frozen-lockfile)",
+                spec.name
+            ),
+            &spec.span,
+        ));
     }
     let vendored = env.vendor.and_then(|(v, _)| v.resource(url));
     if let (Some((v, _)), None) = (env.vendor, vendored) {
@@ -1265,15 +1702,27 @@ pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) ->
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
-            let f = fetch_remote_with(url, env.policy, span, &FetchRequest { origin_headers, ..FetchRequest::default() })?;
+            let origin_headers =
+                secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let f = fetch_remote_with(
+                url,
+                env.policy,
+                span,
+                &FetchRequest {
+                    origin_headers,
+                    ..FetchRequest::default()
+                },
+            )?;
             (f.bytes, f.final_url)
         }
     };
     let digest = sha256(&bytes);
     if let Some(i) = &spec.integrity {
         verify_integrity(&bytes, i, url, span)?;
-    } else if let Some(e) = entry.as_ref().filter(|e| !env.update && e.integrity != digest) {
+    } else if let Some(e) = entry
+        .as_ref()
+        .filter(|e| !env.update && e.integrity != digest)
+    {
         return Err(SitefileError::at(
             E_LOCK_MISMATCH,
             format!(
@@ -1283,14 +1732,31 @@ pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) ->
             &spec.span,
         ));
     } else if entry.is_none() {
-        (env.warn)(&format!("{}:{}: IMPORT {} is not pinned; add INTEGRITY {digest} for a reproducible build", env.label, spec.span.line, spec.name));
+        (env.warn)(&format!(
+            "{}:{}: IMPORT {} is not pinned; add INTEGRITY {digest} for a reproducible build",
+            env.label, spec.span.line, spec.name
+        ));
     }
     if env.frozen && entry.as_ref().is_some_and(|e| e.integrity != digest) {
-        return Err(SitefileError::at(E_LOCK_MISMATCH, format!("IMPORT {}: '{url}' does not match the lockfile (--frozen-lockfile)", spec.name), &spec.span));
+        return Err(SitefileError::at(
+            E_LOCK_MISMATCH,
+            format!(
+                "IMPORT {}: '{url}' does not match the lockfile (--frozen-lockfile)",
+                spec.name
+            ),
+            &spec.span,
+        ));
     }
     if let Ok(mut l) = env.lock.lock() {
         if let Some(l) = l.as_mut() {
-            l.record(url, LockEntry { integrity: digest, size: bytes.len() as u64, resolved: final_url.clone() });
+            l.record(
+                url,
+                LockEntry {
+                    integrity: digest,
+                    size: bytes.len() as u64,
+                    resolved: final_url.clone(),
+                },
+            );
         }
     }
     Ok((bytes, final_url))
@@ -1298,7 +1764,11 @@ pub fn fetch_remote_import(spec: &ImportSpec, url: &str, env: &RemoteEnv<'_>) ->
 
 /// Run `f` over `items` with at most `limit` at once; results in input order.
 /// The first failure (by position) is returned.
-fn map_limit<T: Sync, R: Send>(items: &[T], limit: usize, f: impl Fn(&T) -> Result<R> + Sync) -> Result<Vec<R>> {
+fn map_limit<T: Sync, R: Send>(
+    items: &[T],
+    limit: usize,
+    f: impl Fn(&T) -> Result<R> + Sync,
+) -> Result<Vec<R>> {
     if items.is_empty() {
         return Ok(Vec::new());
     }
@@ -1338,7 +1808,14 @@ fn trim_trailing_slashes(s: &str) -> String {
 }
 
 fn integrity_on_dir(spec: &ImportSpec) -> SitefileError {
-    SitefileError::at(E_VALIDATION, format!("IMPORT {}: INTEGRITY applies to files, not directories", spec.name), &spec.span)
+    SitefileError::at(
+        E_VALIDATION,
+        format!(
+            "IMPORT {}: INTEGRITY applies to files, not directories",
+            spec.name
+        ),
+        &spec.span,
+    )
 }
 
 /// `path.posix.basename(new URL(url).pathname)`.
@@ -1349,7 +1826,11 @@ fn url_basename(url: &str) -> String {
         None => "/",
     };
     let path = path.split(['?', '#']).next().unwrap_or("");
-    path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Read an import. The key identifies the result for incremental rebuilds: the
@@ -1357,22 +1838,40 @@ fn url_basename(url: &str) -> String {
 /// it read. With a memo, conversions (Markdown, data, archives) whose key is
 /// unchanged are reused; a collection's documents are memoized one by one.
 fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, String)> {
-    let origin = format!("{}:{} IMPORT {}", env.remote.label, spec.span.line, spec.name);
+    let origin = format!(
+        "{}:{} IMPORT {}",
+        env.remote.label, spec.span.line, spec.name
+    );
     let span = Some(&spec.span);
-    let id = if env.memo.is_some() { format!("{spec:?}") } else { String::new() };
-    let key_of = |raw: &str| if env.memo.is_some() { memo_key(&["import", env.remote.label, &id, raw]) } else { String::new() };
-    // `compute` gets the per-document memo (children of this import's entry).
-    let convert = |key: &str, compute: &dyn Fn(Option<DocMemo>) -> Result<Resource>| -> Result<Resource> {
-        let Some(memo) = env.memo else { return compute(None) };
-        memoize(memo, key, None, |children| {
-            let docs = |parts: &[&str], make: &mut dyn FnMut() -> Result<MarkdownDocument>| -> Result<MarkdownDocument> {
-                let mut all = vec!["document"];
-                all.extend_from_slice(parts);
-                memoize(memo, &memo_key(&all), Some(children), |_| make())
-            };
-            compute(Some(&docs))
-        })
+    let id = if env.memo.is_some() {
+        format!("{spec:?}")
+    } else {
+        String::new()
     };
+    let key_of = |raw: &str| {
+        if env.memo.is_some() {
+            memo_key(&["import", env.remote.label, &id, raw])
+        } else {
+            String::new()
+        }
+    };
+    // `compute` gets the per-document memo (children of this import's entry).
+    let convert =
+        |key: &str, compute: &dyn Fn(Option<DocMemo>) -> Result<Resource>| -> Result<Resource> {
+            let Some(memo) = env.memo else {
+                return compute(None);
+            };
+            memoize(memo, key, None, |children| {
+                let docs = |parts: &[&str],
+                            make: &mut dyn FnMut() -> Result<MarkdownDocument>|
+                 -> Result<MarkdownDocument> {
+                    let mut all = vec!["document"];
+                    all.extend_from_slice(parts);
+                    memoize(memo, &memo_key(&all), Some(children), |_| make())
+                };
+                compute(Some(&docs))
+            })
+        };
     match &spec.location {
         ImportLocation::Local { path: rel } => {
             if env.local.stat(rel, span)? == EntryKind::Directory {
@@ -1381,11 +1880,24 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                         if spec.integrity.is_some() {
                             return Err(integrity_on_dir(spec));
                         }
-                        let Resource::Tree { tree, provenance } = env.local.read_tree(rel, &origin, span)? else { unreachable!() };
+                        let Resource::Tree { tree, provenance } =
+                            env.local.read_tree(rel, &origin, span)?
+                        else {
+                            unreachable!()
+                        };
                         let key = key_of(&provenance.digest);
                         let res = convert(&key, &|docs| {
-                            let list = markdown_collection(&tree, &trim_trailing_slashes(&spec.uri), span, docs)?;
-                            Ok(Resource::Value { format: ValueFormat::Markdown, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                            let list = markdown_collection(
+                                &tree,
+                                &trim_trailing_slashes(&spec.uri),
+                                span,
+                                docs,
+                            )?;
+                            Ok(Resource::Value {
+                                format: ValueFormat::Markdown,
+                                value: Value::Array(list.into_iter().map(Value::Object).collect()),
+                                provenance: provenance.clone(),
+                            })
                         })?;
                         return Ok((res, key));
                     }
@@ -1393,19 +1905,42 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                         if spec.integrity.is_some() {
                             return Err(integrity_on_dir(spec));
                         }
-                        let Resource::Tree { tree, provenance } = env.local.read_tree(rel, &origin, span)? else { unreachable!() };
-                        let (kind, format) = if k == ImportKind::Json { (DataKind::Json, ValueFormat::Json) } else { (DataKind::Yaml, ValueFormat::Yaml) };
+                        let Resource::Tree { tree, provenance } =
+                            env.local.read_tree(rel, &origin, span)?
+                        else {
+                            unreachable!()
+                        };
+                        let (kind, format) = if k == ImportKind::Json {
+                            (DataKind::Json, ValueFormat::Json)
+                        } else {
+                            (DataKind::Yaml, ValueFormat::Yaml)
+                        };
                         let key = key_of(&provenance.digest);
                         let res = convert(&key, &|docs| {
-                            let list = data_collection(&tree, kind, &trim_trailing_slashes(&spec.uri), span, docs)?;
-                            Ok(Resource::Value { format, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                            let list = data_collection(
+                                &tree,
+                                kind,
+                                &trim_trailing_slashes(&spec.uri),
+                                span,
+                                docs,
+                            )?;
+                            Ok(Resource::Value {
+                                format,
+                                value: Value::Array(list.into_iter().map(Value::Object).collect()),
+                                provenance: provenance.clone(),
+                            })
                         })?;
                         return Ok((res, key));
                     }
                     Some(k) if k != ImportKind::Tree => {
                         return Err(SitefileError::at(
                             E_TYPE,
-                            format!("IMPORT {}: '{}' is a directory and cannot be imported AS {}", spec.name, spec.uri, k.as_str()),
+                            format!(
+                                "IMPORT {}: '{}' is a directory and cannot be imported AS {}",
+                                spec.name,
+                                spec.uri,
+                                k.as_str()
+                            ),
                             &spec.span,
                         ));
                     }
@@ -1419,7 +1954,15 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                 return Ok((res, key));
             }
             let file = env.local.read_file(rel, span)?;
-            let Resource::File { bytes, mode, basename, provenance } = &file else { unreachable!() };
+            let Resource::File {
+                bytes,
+                mode,
+                basename,
+                provenance,
+            } = &file
+            else {
+                unreachable!()
+            };
             if let Some(i) = &spec.integrity {
                 verify_integrity(bytes, i, &spec.uri, span)?;
             }
@@ -1427,8 +1970,15 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             match spec.as_kind {
                 None | Some(ImportKind::File) => Ok((file, key)),
                 Some(kind) => {
-                    let info = BytesInfo { uri: spec.uri.clone(), resolved_url: None, basename: basename.clone(), mode: Some(*mode) };
-                    let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
+                    let info = BytesInfo {
+                        uri: spec.uri.clone(),
+                        resolved_url: None,
+                        basename: basename.clone(),
+                        mode: Some(*mode),
+                    };
+                    let res = convert(&key, &|_| {
+                        bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+                    })?;
                     Ok((res, key))
                 }
             }
@@ -1437,16 +1987,31 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             let (commit, selection) = fetch_git_import(spec, loc, &env.remote)?;
             let resolved_url = pinned_git_url(loc, &commit);
             match selection {
-                GitSelection::File { bytes, mode, basename } => {
+                GitSelection::File {
+                    bytes,
+                    mode,
+                    basename,
+                } => {
                     let digest = sha256(&bytes);
                     let key = key_of(&format!("{commit}\0{digest}\0{mode}"));
-                    let info = BytesInfo { uri: spec.uri.clone(), resolved_url: Some(resolved_url), basename, mode: Some(mode) };
+                    let info = BytesInfo {
+                        uri: spec.uri.clone(),
+                        resolved_url: Some(resolved_url),
+                        basename,
+                        mode: Some(mode),
+                    };
                     let kind = spec.as_kind.unwrap_or(ImportKind::File);
-                    let res = convert(&key, &|_| bytes_to_resource(bytes.to_vec(), kind, &info, span, env.archive_limits))?;
+                    let res = convert(&key, &|_| {
+                        bytes_to_resource(bytes.to_vec(), kind, &info, span, env.archive_limits)
+                    })?;
                     Ok((with_commit(res, &commit), key))
                 }
                 GitSelection::Tree(files) => {
-                    let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, origin.clone(), m))))?;
+                    let tree = Tree::from_files(
+                        files
+                            .into_iter()
+                            .map(|(p, b, m)| (p, make_file(b, origin.clone(), m))),
+                    )?;
                     let provenance = crate::resources::types::Provenance {
                         uri: spec.uri.clone(),
                         resolved_url: Some(resolved_url),
@@ -1459,21 +2024,42 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                         Some(ImportKind::Markdown) => {
                             let res = convert(&key, &|docs| {
                                 let list = markdown_collection(&tree, &base, span, docs)?;
-                                Ok(Resource::Value { format: ValueFormat::Markdown, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                                Ok(Resource::Value {
+                                    format: ValueFormat::Markdown,
+                                    value: Value::Array(
+                                        list.into_iter().map(Value::Object).collect(),
+                                    ),
+                                    provenance: provenance.clone(),
+                                })
                             })?;
                             Ok((res, key))
                         }
                         Some(k @ (ImportKind::Json | ImportKind::Yaml)) => {
-                            let (kind, format) = if k == ImportKind::Json { (DataKind::Json, ValueFormat::Json) } else { (DataKind::Yaml, ValueFormat::Yaml) };
+                            let (kind, format) = if k == ImportKind::Json {
+                                (DataKind::Json, ValueFormat::Json)
+                            } else {
+                                (DataKind::Yaml, ValueFormat::Yaml)
+                            };
                             let res = convert(&key, &|docs| {
                                 let list = data_collection(&tree, kind, &base, span, docs)?;
-                                Ok(Resource::Value { format, value: Value::Array(list.into_iter().map(Value::Object).collect()), provenance: provenance.clone() })
+                                Ok(Resource::Value {
+                                    format,
+                                    value: Value::Array(
+                                        list.into_iter().map(Value::Object).collect(),
+                                    ),
+                                    provenance: provenance.clone(),
+                                })
                             })?;
                             Ok((res, key))
                         }
                         Some(k) if k != ImportKind::Tree => Err(SitefileError::at(
                             E_TYPE,
-                            format!("IMPORT {}: '{}' is a directory and cannot be imported AS {}", spec.name, spec.uri, k.as_str()),
+                            format!(
+                                "IMPORT {}: '{}' is a directory and cannot be imported AS {}",
+                                spec.name,
+                                spec.uri,
+                                k.as_str()
+                            ),
                             &spec.span,
                         )),
                         _ => Ok((Resource::Tree { tree, provenance }, key)),
@@ -1485,10 +2071,21 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             let kind = spec.as_kind.unwrap_or(ImportKind::File);
             let (bytes, final_url) = fetch_remote_import(spec, url, &env.remote)?;
             let base = url_basename(&final_url);
-            let basename = if base.is_empty() { spec.name.clone() } else { base };
+            let basename = if base.is_empty() {
+                spec.name.clone()
+            } else {
+                base
+            };
             let key = key_of(&format!("{}\0{final_url}", sha256(&bytes)));
-            let info = BytesInfo { uri: url.clone(), resolved_url: Some(final_url), basename, mode: None };
-            let res = convert(&key, &|_| bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits))?;
+            let info = BytesInfo {
+                uri: url.clone(),
+                resolved_url: Some(final_url),
+                basename,
+                mode: None,
+            };
+            let res = convert(&key, &|_| {
+                bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+            })?;
             Ok((res, key))
         }
     }
@@ -1496,25 +2093,55 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
 
 fn with_commit(res: Resource, commit: &str) -> Resource {
     match res {
-        Resource::File { bytes, mode, basename, mut provenance } => {
+        Resource::File {
+            bytes,
+            mode,
+            basename,
+            mut provenance,
+        } => {
             provenance.git_commit = Some(commit.to_string());
-            Resource::File { bytes, mode, basename, provenance }
+            Resource::File {
+                bytes,
+                mode,
+                basename,
+                provenance,
+            }
         }
-        Resource::Tree { tree, mut provenance } => {
+        Resource::Tree {
+            tree,
+            mut provenance,
+        } => {
             provenance.git_commit = Some(commit.to_string());
             Resource::Tree { tree, provenance }
         }
-        Resource::Value { format, value, mut provenance } => {
+        Resource::Value {
+            format,
+            value,
+            mut provenance,
+        } => {
             provenance.git_commit = Some(commit.to_string());
-            Resource::Value { format, value, provenance }
+            Resource::Value {
+                format,
+                value,
+                provenance,
+            }
         }
     }
 }
 
 /// `IMPORT … DRAFTS false`: leave out the elements whose `draft` is `true` (or the text `true`, as in a CSV cell).
 fn without_drafts(spec: &ImportSpec, res: Resource) -> Result<Resource> {
-    let Some(keep) = spec.drafts else { return Ok(res) };
-    let Resource::Value { format, value, provenance } = res else { return Ok(res) };
+    let Some(keep) = spec.drafts else {
+        return Ok(res);
+    };
+    let Resource::Value {
+        format,
+        value,
+        provenance,
+    } = res
+    else {
+        return Ok(res);
+    };
     let Value::Array(items) = value else {
         return Err(SitefileError::at(
             E_TYPE,
@@ -1525,34 +2152,79 @@ fn without_drafts(spec: &ImportSpec, res: Resource) -> Result<Resource> {
     let items = if keep {
         items
     } else {
-        items.into_iter().filter(|d| !matches!(d.get("draft"), Some(Value::Bool(true))) && d.get("draft").and_then(Value::as_str) != Some("true")).collect()
+        items
+            .into_iter()
+            .filter(|d| {
+                !matches!(d.get("draft"), Some(Value::Bool(true)))
+                    && d.get("draft").and_then(Value::as_str) != Some("true")
+            })
+            .collect()
     };
-    Ok(Resource::Value { format, value: Value::Array(items), provenance })
+    Ok(Resource::Value {
+        format,
+        value: Value::Array(items),
+        provenance,
+    })
 }
 
 /// `IMPORT … SCHEMA <path>`: read and compile the schema file, then check the import's documents.
 fn check_import_schema(spec: &ImportSpec, res: &Resource, local: &LocalContext) -> Result<()> {
-    let Some(schema) = &spec.schema else { return Ok(()) };
+    let Some(schema) = &spec.schema else {
+        return Ok(());
+    };
     let what = format!("IMPORT {}", spec.name);
     let Resource::Value { format, value, .. } = res else {
-        return Err(SitefileError::at(E_TYPE, format!("{what}: SCHEMA checks documents, but the import is a {}", res.kind()), &spec.span));
+        return Err(SitefileError::at(
+            E_TYPE,
+            format!(
+                "{what}: SCHEMA checks documents, but the import is a {}",
+                res.kind()
+            ),
+            &spec.span,
+        ));
     };
-    let Resource::File { bytes, .. } = local.read_file(&schema.path, Some(&schema.span))? else { unreachable!("read_file returns a file") };
-    let text = decode_utf8(&bytes, &format!("schema '{}'", schema.uri), Some(&schema.span))?;
+    let Resource::File { bytes, .. } = local.read_file(&schema.path, Some(&schema.span))? else {
+        unreachable!("read_file returns a file")
+    };
+    let text = decode_utf8(
+        &bytes,
+        &format!("schema '{}'", schema.uri),
+        Some(&schema.span),
+    )?;
     let parsed = if schema.path.to_ascii_lowercase().ends_with(".json") {
-        serde_json::from_str::<Value>(&text)
-            .map_err(|e| SitefileError::at(E_SCHEMA, format!("{what}: schema '{}' is not valid JSON: {e}", schema.uri), &schema.span))?
+        serde_json::from_str::<Value>(&text).map_err(|e| {
+            SitefileError::at(
+                E_SCHEMA,
+                format!("{what}: schema '{}' is not valid JSON: {e}", schema.uri),
+                &schema.span,
+            )
+        })?
     } else {
         crate::yaml::parse_yaml(&text, &schema.uri)?
     };
     let compiled = crate::schema::compile_schema(&parsed, &schema.uri, &what, &schema.span)?;
-    crate::schema::check_schema(value, &compiled, &what, *format == ValueFormat::Csv, &spec.span)
+    crate::schema::check_schema(
+        value,
+        &compiled,
+        &what,
+        *format == ValueFormat::Csv,
+        &spec.span,
+    )
 }
 
 /// Apply an import's SORT BY to a list value.
 fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
-    let Some(sort) = &spec.sort else { return Ok(res) };
-    let Resource::Value { format, value, provenance } = res else { return Ok(res) };
+    let Some(sort) = &spec.sort else {
+        return Ok(res);
+    };
+    let Resource::Value {
+        format,
+        value,
+        provenance,
+    } = res
+    else {
+        return Ok(res);
+    };
     let Value::Array(items) = value else {
         return Err(SitefileError::at(
             E_TYPE,
@@ -1561,9 +2233,20 @@ fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
         ));
     };
     if !items.iter().all(Value::is_object) {
-        return Err(SitefileError::at(E_TYPE, format!("IMPORT {}: SORT BY needs a list of objects with a '{}' field", spec.name, sort.key), &spec.span));
+        return Err(SitefileError::at(
+            E_TYPE,
+            format!(
+                "IMPORT {}: SORT BY needs a list of objects with a '{}' field",
+                spec.name, sort.key
+            ),
+            &spec.span,
+        ));
     }
-    Ok(Resource::Value { format, value: Value::Array(sort_documents(items, &sort.key, sort.descending)), provenance })
+    Ok(Resource::Value {
+        format,
+        value: Value::Array(sort_documents(items, &sort.key, sort.descending)),
+        provenance,
+    })
 }
 
 // ---------------------------------------------------------------- Sitefile imports (IMPORT … AS sitefile)
@@ -1597,10 +2280,16 @@ fn posix_dirname(p: &str) -> String {
 /// The label scope of the build's own Sitefile.
 fn root_scope(options: &BuildOptions, label: &str) -> LabelScope {
     if options.sitefile.is_none() {
-        return LabelScope { prefix: String::new(), dir: posix_dirname(label) };
+        return LabelScope {
+            prefix: String::new(),
+            dir: posix_dirname(label),
+        };
     }
     let rel = relative_path(&cwd(), &resolve_path(Path::new(&options.context_dir)));
-    LabelScope { prefix: String::new(), dir: if rel.is_empty() { ".".into() } else { rel } }
+    LabelScope {
+        prefix: String::new(),
+        dir: if rel.is_empty() { ".".into() } else { rel },
+    }
 }
 
 /// The ARG values an `IMPORT … AS sitefile` passes, checked against the imported Sitefile's ARGs.
@@ -1609,14 +2298,25 @@ pub fn imported_args(spec: &ImportSpec, program: &Program) -> Result<BuildArgs> 
         .instructions
         .iter()
         .filter_map(|i| match i {
-            Instruction::Arg { name, default_value, .. } => Some((name.as_str(), default_value.is_some())),
+            Instruction::Arg {
+                name,
+                default_value,
+                ..
+            } => Some((name.as_str(), default_value.is_some())),
             _ => None,
         })
         .collect();
     let mut args = BuildArgs::new();
     for a in &spec.args {
         if !declared.iter().any(|(n, _)| *n == a.name) {
-            return Err(SitefileError::at(E_UNDEFINED, format!("IMPORT {}: {} has no ARG {}", spec.name, program.file, a.name), &a.span));
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!(
+                    "IMPORT {}: {} has no ARG {}",
+                    spec.name, program.file, a.name
+                ),
+                &a.span,
+            ));
         }
         args.set(a.name.clone(), a.value.clone());
     }
@@ -1624,7 +2324,10 @@ pub fn imported_args(spec: &ImportSpec, program: &Program) -> Result<BuildArgs> 
         if !has_default && args.get(name).is_none() {
             return Err(SitefileError::at(
                 E_MISSING_ARG,
-                format!("IMPORT {}: ARG {name} of {} has no default; set it with ARG {name}=<value>", spec.name, program.file),
+                format!(
+                    "IMPORT {}: ARG {name} of {} has no default; set it with ARG {name}=<value>",
+                    spec.name, program.file
+                ),
                 &spec.span,
             ));
         }
@@ -1634,13 +2337,21 @@ pub fn imported_args(spec: &ImportSpec, program: &Program) -> Result<BuildArgs> 
 
 /// Parse, check and plan an imported Sitefile: no PLUGIN or TOOL, the IMPORT's ARG clauses, and the
 /// stages `refs` (references from the importing Sitefile) must exist.
-pub fn plan_imported_sitefile(spec: &ImportSpec, source: &str, label: &str, refs: &[ImportedStageRef]) -> Result<Plan> {
+pub fn plan_imported_sitefile(
+    spec: &ImportSpec,
+    source: &str,
+    label: &str,
+    refs: &[ImportedStageRef],
+) -> Result<Plan> {
     let program = parse_program(source, label)?;
     for ins in &program.instructions {
         if let Instruction::Plugin { name, span, .. } | Instruction::Tool { name, span } = ins {
             return Err(SitefileError::at(
                 E_UNSUPPORTED,
-                format!("{} {name}: a Sitefile imported AS sitefile cannot run plugins or tools", ins.keyword()),
+                format!(
+                    "{} {name}: a Sitefile imported AS sitefile cannot run plugins or tools",
+                    ins.keyword()
+                ),
                 span,
             ));
         }
@@ -1653,8 +2364,16 @@ pub fn plan_imported_sitefile(spec: &ImportSpec, source: &str, label: &str, refs
         if r.import != spec.name || names.contains(&r.stage.as_str()) {
             continue;
         }
-        let which = if names.is_empty() { "it has no named stages".to_string() } else { format!("stages: {}", names.join(", ")) };
-        return Err(SitefileError::at(E_UNDEFINED, format!("{}: {label} has no stage '{}' ({which})", r.name, r.stage), &r.span));
+        let which = if names.is_empty() {
+            "it has no named stages".to_string()
+        } else {
+            format!("stages: {}", names.join(", "))
+        };
+        return Err(SitefileError::at(
+            E_UNDEFINED,
+            format!("{}: {label} has no stage '{}' ({which})", r.name, r.stage),
+            &r.span,
+        ));
     }
     Ok(p)
 }
@@ -1719,7 +2438,10 @@ impl ImportedSitefile {
             bytes: self.sitefile_bytes.clone(),
             mode: 0o644,
             basename: "Sitefile".into(),
-            provenance: crate::resources::types::Provenance { digest: self.digest.clone(), ..self.provenance.clone() },
+            provenance: crate::resources::types::Provenance {
+                digest: self.digest.clone(),
+                ..self.provenance.clone()
+            },
         }
     }
 }
@@ -1751,7 +2473,8 @@ struct UnitsEnv<'a> {
     plugin_policy: PluginPolicy,
     tool_policy: ToolPolicy,
     /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span, the imported Sitefile's qualified name).
-    from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan, Option<&str>) -> Result<FromImage>,
+    from_image:
+        &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan, Option<&str>) -> Result<FromImage>,
 }
 
 /// Who imports a Sitefile: the build's own Sitefile or another imported one.
@@ -1768,14 +2491,25 @@ struct Importer<'a> {
 fn import_temp_dir() -> Result<PathBuf> {
     let base = std::env::temp_dir();
     for _ in 0..16 {
-        let p = base.join(format!("sitefile-import-{}", crate::export::exporter::random_hex(6)));
+        let p = base.join(format!(
+            "sitefile-import-{}",
+            crate::export::exporter::random_hex(6)
+        ));
         match std::fs::create_dir(&p) {
             Ok(()) => return Ok(p),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(SitefileError::plain(E_EXPORT, format!("cannot write a Git checkout to a temporary directory: {e}"))),
+            Err(e) => {
+                return Err(SitefileError::plain(
+                    E_EXPORT,
+                    format!("cannot write a Git checkout to a temporary directory: {e}"),
+                ))
+            }
         }
     }
-    Err(SitefileError::plain(E_EXPORT, "cannot write a Git checkout to a temporary directory: no unique name"))
+    Err(SitefileError::plain(
+        E_EXPORT,
+        "cannot write a Git checkout to a temporary directory: no unique name",
+    ))
 }
 
 /// Write a tree to a new temporary directory (a Git import's checkout).
@@ -1802,7 +2536,12 @@ fn materialize_tree(tree: &Tree, env: &UnitsEnv<'_>) -> Result<PathBuf> {
         }
         Ok(())
     };
-    write().map_err(|e| SitefileError::plain(E_EXPORT, format!("cannot write a Git checkout to a temporary directory: {e}")))?;
+    write().map_err(|e| {
+        SitefileError::plain(
+            E_EXPORT,
+            format!("cannot write a Git checkout to a temporary directory: {e}"),
+        )
+    })?;
     Ok(dir)
 }
 
@@ -1819,10 +2558,27 @@ fn not_a_sitefile_url(spec: &ImportSpec) -> SitefileError {
 }
 
 /// The cycle and depth checks of a Sitefile import (`id` is the imported Sitefile's identity).
-fn check_import_chain(spec: &ImportSpec, chain: &[(String, String)], id: &str, label: &str) -> Result<()> {
+fn check_import_chain(
+    spec: &ImportSpec,
+    chain: &[(String, String)],
+    id: &str,
+    label: &str,
+) -> Result<()> {
     if let Some(seen) = chain.iter().position(|(c, _)| c == id) {
-        let cycle: Vec<&str> = chain[seen..].iter().map(|(_, l)| l.as_str()).chain([label]).collect();
-        return Err(SitefileError::at(E_VALIDATION, format!("IMPORT {}: Sitefile import cycle: {}", spec.name, cycle.join(" -> ")), &spec.span));
+        let cycle: Vec<&str> = chain[seen..]
+            .iter()
+            .map(|(_, l)| l.as_str())
+            .chain([label])
+            .collect();
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!(
+                "IMPORT {}: Sitefile import cycle: {}",
+                spec.name,
+                cycle.join(" -> ")
+            ),
+            &spec.span,
+        ));
     }
     if chain.len() > MAX_SITEFILE_IMPORT_DEPTH {
         return Err(SitefileError::at(
@@ -1837,7 +2593,12 @@ fn check_import_chain(spec: &ImportSpec, chain: &[(String, String)], id: &str, l
 /// Load an `IMPORT name FROM <dir|git+https://…> AS sitefile`: find its context (a directory of the
 /// importer's context, or a Git tree written to a temporary directory), read and plan its Sitefile with the
 /// IMPORT's ARGs, check the stages `refs` name, and resolve its imports exactly as a build would.
-fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[ImportedStageRef], env: &UnitsEnv<'_>) -> Result<ImportedSitefile> {
+fn load_sitefile_import(
+    spec: &ImportSpec,
+    importer: &Importer<'_>,
+    refs: &[ImportedStageRef],
+    env: &UnitsEnv<'_>,
+) -> Result<ImportedSitefile> {
     let qualified = match importer.name {
         Some(n) => format!("{n}+{}", spec.name),
         None => spec.name.clone(),
@@ -1846,12 +2607,24 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
     let span = Some(&spec.span);
     let (host_dir, scope, id, display, provenance, git_tree) = match &spec.location {
         ImportLocation::Git(loc) => {
-            let remote = RemoteEnv { label: importer.label, ..env.remote };
+            let remote = RemoteEnv {
+                label: importer.label,
+                ..env.remote
+            };
             let (commit, selection) = fetch_git_import(spec, loc, &remote)?;
             let display = format!("'{}'", loc.url);
-            let GitSelection::Tree(files) = selection else { return Err(not_a_sitefile_dir(spec, &display)) };
-            let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, origin.clone(), m))))?;
-            let scope = LabelScope { prefix: format!("git+{}#{commit}:", loc.repo), dir: loc.path.clone() };
+            let GitSelection::Tree(files) = selection else {
+                return Err(not_a_sitefile_dir(spec, &display));
+            };
+            let tree = Tree::from_files(
+                files
+                    .into_iter()
+                    .map(|(p, b, m)| (p, make_file(b, origin.clone(), m))),
+            )?;
+            let scope = LabelScope {
+                prefix: format!("git+{}#{commit}:", loc.repo),
+                dir: loc.path.clone(),
+            };
             let id = format!("{}{}", scope.prefix, loc.path);
             let provenance = crate::resources::types::Provenance {
                 uri: spec.uri.clone(),
@@ -1863,14 +2636,26 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
             (dir, scope, id, display, provenance, Some(tree))
         }
         ImportLocation::Local { path: rel } => {
-            let display = if rel.is_empty() { "'./'".to_string() } else { format!("'./{rel}'") };
+            let display = if rel.is_empty() {
+                "'./'".to_string()
+            } else {
+                format!("'./{rel}'")
+            };
             if importer.local.stat(rel, span)? != EntryKind::Directory {
                 return Err(not_a_sitefile_dir(spec, &display));
             }
             let dir = importer.local.real_path(rel, span)?;
-            let scope = LabelScope { prefix: importer.scope.prefix.clone(), dir: join_path(&importer.scope.dir, rel) };
+            let scope = LabelScope {
+                prefix: importer.scope.prefix.clone(),
+                dir: join_path(&importer.scope.dir, rel),
+            };
             let id = dir.to_string_lossy().into_owned();
-            let provenance = crate::resources::types::Provenance { uri: spec.uri.clone(), resolved_url: None, digest: String::new(), git_commit: None };
+            let provenance = crate::resources::types::Provenance {
+                uri: spec.uri.clone(),
+                resolved_url: None,
+                digest: String::new(),
+                git_commit: None,
+            };
             (dir, scope, id, display, provenance, None)
         }
         ImportLocation::Remote { .. } => return Err(not_a_sitefile_url(spec)),
@@ -1886,16 +2671,32 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
             ignore.push(rel);
         }
     }
-    let local = LocalContext::open(&host_dir, &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: env.allow_hardlinks })?;
+    let local = LocalContext::open(
+        &host_dir,
+        &LocalContextOptions {
+            ignore: Some(ignore),
+            sitefileignore: true,
+            allow_hardlinks: env.allow_hardlinks,
+        },
+    )?;
     let sitefile_bytes = match local.read_file("Sitefile", span) {
         Ok(Resource::File { bytes, .. }) => bytes,
         Ok(_) => unreachable!("read_file returns a file"),
         Err(e) if e.code == E_NOT_FOUND => {
-            return Err(SitefileError::at(E_NOT_FOUND, format!("IMPORT {}: {display} has no Sitefile", spec.name), &spec.span));
+            return Err(SitefileError::at(
+                E_NOT_FOUND,
+                format!("IMPORT {}: {display} has no Sitefile", spec.name),
+                &spec.span,
+            ));
         }
         Err(e) => return Err(e),
     };
-    let p = plan_imported_sitefile(spec, &String::from_utf8_lossy(&sitefile_bytes), &label, refs)?;
+    let p = plan_imported_sitefile(
+        spec,
+        &String::from_utf8_lossy(&sitefile_bytes),
+        &label,
+        refs,
+    )?;
     for w in &p.warnings {
         (env.remote.warn)(w);
     }
@@ -1912,17 +2713,42 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
     }
     // Its FROM image lockfile entries are kept even when its stages are not built.
     for st in &p.stages {
-        if let StageBase::Image { reference, local: false, lead, span, .. } = &st.base {
+        if let StageBase::Image {
+            reference,
+            local: false,
+            lead,
+            span,
+            ..
+        } = &st.base
+        {
             let key = image_lock_key(reference, lead, span)?;
-            if let Some(l) = env.remote.lock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            if let Some(l) = env
+                .remote
+                .lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
                 l.mark_image_used(&key);
             }
         }
     }
 
     // Its imports, as a build of it would resolve them (every one, as for a --target build).
-    let ienv = ImportEnv { local: &local, archive_limits: &env.remote.archive_limits, remote: RemoteEnv { label: &label, ..env.remote }, memo: env.memo };
-    let plain: Vec<&ImportSpec> = p.imports.iter().filter(|s| s.as_kind != Some(ImportKind::Sitefile)).collect();
+    let ienv = ImportEnv {
+        local: &local,
+        archive_limits: &env.remote.archive_limits,
+        remote: RemoteEnv {
+            label: &label,
+            ..env.remote
+        },
+        memo: env.memo,
+    };
+    let plain: Vec<&ImportSpec> = p
+        .imports
+        .iter()
+        .filter(|s| s.as_kind != Some(ImportKind::Sitefile))
+        .collect();
     let resolved = map_limit(&plain, env.concurrency.max(1), |s| resolve_import(s, &ienv))?;
     let mut by_name: HashMap<String, (Resource, String)> = HashMap::new();
     for (s, (res, key)) in plain.iter().zip(resolved) {
@@ -1940,7 +2766,13 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
     let nested_refs = imported_stage_refs(&p.stages);
     let mut chain = importer.chain.to_vec();
     chain.push((id, label.clone()));
-    let me = Importer { name: Some(&qualified), label: &label, local: &local, scope: &scope, chain: &chain };
+    let me = Importer {
+        name: Some(&qualified),
+        label: &label,
+        local: &local,
+        scope: &scope,
+        chain: &chain,
+    };
     for s in &p.imports {
         if let Some((res, key)) = by_name.remove(&s.name) {
             resources.push((s.name.clone(), sorted(s, res)?));
@@ -1949,7 +2781,11 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
         }
         let unit = load_sitefile_import(s, &me, &nested_refs, env)?;
         resources.push((s.name.clone(), unit.resource()));
-        let key = if env.memo.is_some() { memo_key(&["sitefile", &label, &format!("{s:?}"), &unit.digest]) } else { String::new() };
+        let key = if env.memo.is_some() {
+            memo_key(&["sitefile", &label, &format!("{s:?}"), &unit.digest])
+        } else {
+            String::new()
+        };
         resource_keys.insert(s.name.clone(), key);
         imported.push((s.name.clone(), unit));
     }
@@ -1958,8 +2794,17 @@ fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[Impo
             let mut vars: Vec<_> = p.vars.iter().collect();
             vars.sort_by(|a, b| a.0.cmp(b.0));
             // html LETs are part of it: they are not values, but a template that uses one renders their text.
-            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
-            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
+            let fragments: Vec<(&str, &str)> = p
+                .fragments
+                .iter()
+                .map(|f| (f.name.as_str(), f.text.as_str()))
+                .collect();
+            memo_key(&[
+                "env",
+                &label,
+                &format!("{vars:?}"),
+                &format!("{fragments:?}"),
+            ])
         }
         None => String::new(),
     };
@@ -2005,7 +2850,16 @@ fn provide_imported_stages(
     env: &UnitsEnv<'_>,
 ) -> Result<()> {
     for (name, unit) in units.iter_mut() {
-        let upto = refs.iter().filter(|r| r.import == *name).filter_map(|r| unit.plan.stages.iter().position(|s| s.name.as_deref() == Some(r.stage.as_str()))).max();
+        let upto = refs
+            .iter()
+            .filter(|r| r.import == *name)
+            .filter_map(|r| {
+                unit.plan
+                    .stages
+                    .iter()
+                    .position(|s| s.name.as_deref() == Some(r.stage.as_str()))
+            })
+            .max();
         let Some(upto) = upto else { continue };
         build_unit_stages(unit, upto, env)?;
         for st in &unit.plan.stages[..unit.built] {
@@ -2013,8 +2867,14 @@ fn provide_imported_stages(
             if let Some(t) = unit.stage_trees.get(n) {
                 stages.insert(format!("{name}+{n}"), t.clone());
             }
-            keys.insert(format!("{name}+{n}"), unit.stage_keys.get(n).cloned().unwrap_or_default());
-            renames.insert(format!("{name}+{n}"), unit.stage_renames.get(n).cloned().unwrap_or_default());
+            keys.insert(
+                format!("{name}+{n}"),
+                unit.stage_keys.get(n).cloned().unwrap_or_default(),
+            );
+            renames.insert(
+                format!("{name}+{n}"),
+                unit.stage_renames.get(n).cloned().unwrap_or_default(),
+            );
         }
     }
     Ok(())
@@ -2029,7 +2889,14 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
     let mut keys = std::mem::take(&mut unit.stage_keys);
     let refs = imported_stage_refs(&unit.plan.stages[..=upto]);
     let mut stage_renames = std::mem::take(&mut unit.stage_renames);
-    let provided = provide_imported_stages(&mut unit.imported, &refs, &mut stages, &mut keys, &mut stage_renames, env);
+    let provided = provide_imported_stages(
+        &mut unit.imported,
+        &refs,
+        &mut stages,
+        &mut keys,
+        &mut stage_renames,
+        env,
+    );
     if let Err(e) = provided {
         unit.stage_trees = stages;
         unit.stage_keys = keys;
@@ -2039,7 +2906,9 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
     let warn = env.remote.warn.clone();
     let unit_name = unit.name.clone();
     let partials: Partials = Mutex::new(HashMap::new());
-    let from_image = |r: &str, a: Option<&str>, l: bool, le: &str, s: &SourceSpan| (env.from_image)(r, a, l, le, s, Some(&unit_name));
+    let from_image = |r: &str, a: Option<&str>, l: bool, le: &str, s: &SourceSpan| {
+        (env.from_image)(r, a, l, le, s, Some(&unit_name))
+    };
     let mut exec = Exec {
         local: &unit.local,
         resources: &unit.resource_map,
@@ -2106,7 +2975,9 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
         Ok(())
     })();
     exec.plugins.close();
-    let Exec { stages, stage_keys, .. } = exec;
+    let Exec {
+        stages, stage_keys, ..
+    } = exec;
     unit.stage_trees = stages;
     unit.stage_keys = stage_keys;
     unit.stage_renames = stage_renames;
@@ -2121,8 +2992,19 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
 /// Where an imported Sitefile is read from by `vendor` and `outdated`, which never build it: a directory of
 /// a local context, or a directory of a Git tree held in memory.
 pub enum SitefileSource {
-    Local { local: LocalContext, scope: LabelScope, label: String, chain: Vec<(String, String)> },
-    Tree { tree: Tree, dir: String, scope: LabelScope, label: String, chain: Vec<(String, String)> },
+    Local {
+        local: LocalContext,
+        scope: LabelScope,
+        label: String,
+        chain: Vec<(String, String)>,
+    },
+    Tree {
+        tree: Tree,
+        dir: String,
+        scope: LabelScope,
+        label: String,
+        chain: Vec<(String, String)>,
+    },
 }
 
 impl SitefileSource {
@@ -2133,21 +3015,43 @@ impl SitefileSource {
     }
     fn parts(&self) -> (&LabelScope, &[(String, String)]) {
         match self {
-            SitefileSource::Local { scope, chain, .. } | SitefileSource::Tree { scope, chain, .. } => (scope, chain),
+            SitefileSource::Local { scope, chain, .. }
+            | SitefileSource::Tree { scope, chain, .. } => (scope, chain),
         }
     }
 }
 
 /// The source of the build's own Sitefile, for [`read_imported_sitefile`].
-pub fn root_sitefile_source(options: &BuildOptions, label: &str, sitefile_path: &Path) -> Result<SitefileSource> {
-    let context_real = std::fs::canonicalize(&options.context_dir)
-        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
+pub fn root_sitefile_source(
+    options: &BuildOptions,
+    label: &str,
+    sitefile_path: &Path,
+) -> Result<SitefileSource> {
+    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+        SitefileError::plain(
+            E_NOT_FOUND,
+            format!("build context '{}' does not exist", options.context_dir),
+        )
+    })?;
     let local = LocalContext::open(
         &context_real,
-        &LocalContextOptions { ignore: Some(vec![".git".into()]), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
+        &LocalContextOptions {
+            ignore: Some(vec![".git".into()]),
+            sitefileignore: true,
+            allow_hardlinks: options.allow_hardlinks,
+        },
     )?;
-    let id = if options.sitefile.is_none() { context_real.to_string_lossy().into_owned() } else { realpath_loose(sitefile_path).to_string_lossy().into_owned() };
-    Ok(SitefileSource::Local { local, scope: root_scope(options, label), label: label.to_string(), chain: vec![(id, label.to_string())] })
+    let id = if options.sitefile.is_none() {
+        context_real.to_string_lossy().into_owned()
+    } else {
+        realpath_loose(sitefile_path).to_string_lossy().into_owned()
+    };
+    Ok(SitefileSource::Local {
+        local,
+        scope: root_scope(options, label),
+        label: label.to_string(),
+        chain: vec![(id, label.to_string())],
+    })
 }
 
 /// Read and plan the Sitefile an `IMPORT … AS sitefile` of `from` names, without building it (for `vendor`
@@ -2169,43 +3073,84 @@ pub fn read_imported_sitefile(
         ImportLocation::Git(loc) => {
             let (commit, selection) = fetch_git(spec, loc)?;
             let display = format!("'{}'", loc.url);
-            let GitSelection::Tree(files) = selection else { return Err(not_a_sitefile_dir(spec, &display)) };
-            let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, "git", m))))?;
-            let scope = LabelScope { prefix: format!("git+{}#{commit}:", loc.repo), dir: loc.path.clone() };
+            let GitSelection::Tree(files) = selection else {
+                return Err(not_a_sitefile_dir(spec, &display));
+            };
+            let tree = Tree::from_files(
+                files
+                    .into_iter()
+                    .map(|(p, b, m)| (p, make_file(b, "git", m))),
+            )?;
+            let scope = LabelScope {
+                prefix: format!("git+{}#{commit}:", loc.repo),
+                dir: loc.path.clone(),
+            };
             let id = format!("{}{}", scope.prefix, loc.path);
             let bytes = tree.get("/Sitefile").map(|n| n.bytes.to_vec());
             (scope, id, display, bytes, Made::Tree(tree, String::new()))
         }
         ImportLocation::Local { path: rel } => {
-            let display = if rel.is_empty() { "'./'".to_string() } else { format!("'./{rel}'") };
-            let scope = LabelScope { prefix: from_scope.prefix.clone(), dir: join_path(&from_scope.dir, rel) };
+            let display = if rel.is_empty() {
+                "'./'".to_string()
+            } else {
+                format!("'./{rel}'")
+            };
+            let scope = LabelScope {
+                prefix: from_scope.prefix.clone(),
+                dir: join_path(&from_scope.dir, rel),
+            };
             match from {
                 SitefileSource::Local { local: parent, .. } => {
                     if parent.stat(rel, span)? != EntryKind::Directory {
                         return Err(not_a_sitefile_dir(spec, &display));
                     }
                     let real = parent.real_path(rel, span)?;
-                    let local = LocalContext::open(&real, &LocalContextOptions { ignore: Some(vec![".git".into()]), sitefileignore: true, allow_hardlinks: false })?;
+                    let local = LocalContext::open(
+                        &real,
+                        &LocalContextOptions {
+                            ignore: Some(vec![".git".into()]),
+                            sitefileignore: true,
+                            allow_hardlinks: false,
+                        },
+                    )?;
                     let bytes = match local.read_file("Sitefile", span) {
                         Ok(Resource::File { bytes, .. }) => Some(bytes),
                         Ok(_) => None,
                         Err(e) if e.code == E_NOT_FOUND => None,
                         Err(e) => return Err(e),
                     };
-                    (scope, real.to_string_lossy().into_owned(), display, bytes, Made::Local(local))
+                    (
+                        scope,
+                        real.to_string_lossy().into_owned(),
+                        display,
+                        bytes,
+                        Made::Local(local),
+                    )
                 }
                 SitefileSource::Tree { tree, dir, .. } => {
                     let joined = join_path(dir, rel);
                     let sub = if joined == "." { String::new() } else { joined };
-                    let at = if sub.is_empty() { "/".to_string() } else { format!("/{sub}") };
+                    let at = if sub.is_empty() {
+                        "/".to_string()
+                    } else {
+                        format!("/{sub}")
+                    };
                     if tree.is_file(&at) {
                         return Err(not_a_sitefile_dir(spec, &display));
                     }
                     if !tree.is_directory(&at) {
-                        return Err(SitefileError::at(E_NOT_FOUND, format!("{} does not exist in the build context", display), &spec.span));
+                        return Err(SitefileError::at(
+                            E_NOT_FOUND,
+                            format!("{} does not exist in the build context", display),
+                            &spec.span,
+                        ));
                     }
                     let id = format!("{}{}", from_scope.prefix, scope.dir);
-                    let file = if at == "/" { "/Sitefile".to_string() } else { format!("{at}/Sitefile") };
+                    let file = if at == "/" {
+                        "/Sitefile".to_string()
+                    } else {
+                        format!("{at}/Sitefile")
+                    };
                     let bytes = tree.get(&file).map(|n| n.bytes.to_vec());
                     (scope, id, display, bytes, Made::Tree(tree.clone(), sub))
                 }
@@ -2216,14 +3161,29 @@ pub fn read_imported_sitefile(
     let label = sitefile_label(&scope);
     check_import_chain(spec, chain, &id, &label)?;
     let Some(bytes) = bytes else {
-        return Err(SitefileError::at(E_NOT_FOUND, format!("IMPORT {}: {display} has no Sitefile", spec.name), &spec.span));
+        return Err(SitefileError::at(
+            E_NOT_FOUND,
+            format!("IMPORT {}: {display} has no Sitefile", spec.name),
+            &spec.span,
+        ));
     };
     let p = plan_imported_sitefile(spec, &String::from_utf8_lossy(&bytes), &label, refs)?;
     let mut chain = chain.to_vec();
     chain.push((id, label.clone()));
     let source = match made {
-        Made::Local(local) => SitefileSource::Local { local, scope, label, chain },
-        Made::Tree(tree, dir) => SitefileSource::Tree { tree, dir, scope, label, chain },
+        Made::Local(local) => SitefileSource::Local {
+            local,
+            scope,
+            label,
+            chain,
+        },
+        Made::Tree(tree, dir) => SitefileSource::Tree {
+            tree,
+            dir,
+            scope,
+            label,
+            chain,
+        },
     };
     Ok((p, source))
 }
@@ -2231,7 +3191,12 @@ pub fn read_imported_sitefile(
 // ---------------------------------------------------------------- plugins and tools
 
 /// Check a plugin file (sandbox, own folder, integrity) and register it.
-fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHost, permission: &PluginPermission) -> Result<()> {
+fn register_plugin(
+    spec: &PluginSpec,
+    local: &LocalContext,
+    host: &mut PluginHost,
+    permission: &PluginPermission,
+) -> Result<()> {
     let span = Some(&spec.span);
     let (real, bytes) = local.real_file(&spec.path, span)?;
     if let Some(i) = &spec.integrity {
@@ -2247,7 +3212,10 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
     permission.check(spec)?;
     // A JS plugin may read its whole folder, so that folder must not be the context itself.
     if real.parent() == Some(local.root()) {
-        let base = real.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let base = real
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         return Err(SitefileError::at(
             E_VALIDATION,
             format!("PLUGIN {}: put the plugin in its own folder (e.g. ./plugins/{base}); a plugin can read every file next to it", spec.name),
@@ -2260,7 +3228,9 @@ fn register_plugin(spec: &PluginSpec, local: &LocalContext, host: &mut PluginHos
 
 fn is_identifier(s: &str) -> bool {
     let mut c = s.chars();
-    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    c.next()
+        .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+        && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Which JavaScript PLUGINs `--allow-plugin` / `--allow-plugins` let run.
@@ -2292,13 +3262,19 @@ fn check_plugins(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Plugin
     let mut names: Vec<String> = Vec::new();
     for name in &options.allow_plugin {
         if !is_identifier(name) {
-            return Err(SitefileError::plain(E_USAGE, format!("--allow-plugin expects a PLUGIN name (an identifier), got '{name}'")));
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("--allow-plugin expects a PLUGIN name (an identifier), got '{name}'"),
+            ));
         }
         if !names.contains(name) {
             names.push(name.clone());
         }
     }
-    let permission = PluginPermission { all: options.allow_all_plugins, names };
+    let permission = PluginPermission {
+        all: options.allow_all_plugins,
+        names,
+    };
     for spec in &p.plugins {
         if !spec.path.ends_with(".wasm") {
             permission.check(spec)?;
@@ -2306,7 +3282,9 @@ fn check_plugins(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Plugin
     }
     for name in &permission.names {
         if !p.plugins.iter().any(|s| &s.name == name) {
-            warn(&format!("--allow-plugin {name} does not match any PLUGIN and was ignored"));
+            warn(&format!(
+                "--allow-plugin {name} does not match any PLUGIN and was ignored"
+            ));
         }
     }
     Ok(permission)
@@ -2343,7 +3321,12 @@ fn resolve_tools(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Vec<Re
                 &t.span,
             ));
         };
-        let tool = resolve_tool(&t.name, explicit.as_deref(), search_path.as_deref(), Some(&t.span))?;
+        let tool = resolve_tool(
+            &t.name,
+            explicit.as_deref(),
+            search_path.as_deref(),
+            Some(&t.span),
+        )?;
         if let Some(n) = &options.on_notice {
             n(&format!("tool {} -> {}", t.name, tool.path.display()));
         }
@@ -2351,7 +3334,9 @@ fn resolve_tools(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Vec<Re
     }
     for (name, _) in &allowed {
         if !p.tools.iter().any(|t| &t.name == name) {
-            warn(&format!("--allow-exec {name} does not match any TOOL and was ignored"));
+            warn(&format!(
+                "--allow-exec {name} does not match any TOOL and was ignored"
+            ));
         }
     }
     Ok(out)
@@ -2376,7 +3361,10 @@ struct Scope<'a> {
 
 impl<'a> Scope<'a> {
     fn with_item(self, name: &'a str, value: &'a Value) -> Scope<'a> {
-        Scope { each: Some((name, value)), ..self }
+        Scope {
+            each: Some((name, value)),
+            ..self
+        }
     }
 
     /// Whether `name` is an html fragment: an html LET or an `IMPORT … AS html`.
@@ -2384,7 +3372,14 @@ impl<'a> Scope<'a> {
         if self.each.is_some_and(|(n, _)| n == name) {
             return false;
         }
-        self.fragments.iter().any(|f| f.name == name) || matches!(self.resources.get(name), Some(Resource::Value { format: ValueFormat::Html, .. }))
+        self.fragments.iter().any(|f| f.name == name)
+            || matches!(
+                self.resources.get(name),
+                Some(Resource::Value {
+                    format: ValueFormat::Html,
+                    ..
+                })
+            )
     }
 
     /// The parsed template of fragment `name` (an imported partial is parsed on first use).
@@ -2392,7 +3387,12 @@ impl<'a> Scope<'a> {
         if let Some(f) = self.fragments.iter().find(|f| f.name == name) {
             return Ok(f.nodes.clone());
         }
-        let Some(Resource::Value { format: ValueFormat::Html, value, provenance }) = self.resources.get(name) else {
+        let Some(Resource::Value {
+            format: ValueFormat::Html,
+            value,
+            provenance,
+        }) = self.resources.get(name)
+        else {
             return Ok(Arc::new(Vec::new()));
         };
         if let Some(n) = self.partials.lock().ok().and_then(|m| m.get(name).cloned()) {
@@ -2408,7 +3408,12 @@ impl<'a> Scope<'a> {
 
     /// Render a parsed template against this scope (values, blocks, html fragments and, with
     /// `files`, `${file …}` on the stage's tree and RENDER --inline-svg).
-    fn render(&self, nodes: &[TemplateNode], escape: crate::language::ast::EscapeMode, files: (&dyn crate::media::TemplateTree, bool)) -> Result<String> {
+    fn render(
+        &self,
+        nodes: &[TemplateNode],
+        escape: crate::language::ast::EscapeMode,
+        files: (&dyn crate::media::TemplateTree, bool),
+    ) -> Result<String> {
         let ctx = TemplateContext {
             is_fragment: &|n: &str| self.is_fragment(n),
             fragment: &|n: &str| self.fragment(n),
@@ -2457,12 +3462,22 @@ impl<'a> Scope<'a> {
         }
         if let Some(v) = self.vars.get(name) {
             if !p.is_empty() {
-                return Err(SitefileError::at(E_TYPE, format!("'{name}' is an ARG/LET value; dotted access only works on JSON imports"), span));
+                return Err(SitefileError::at(
+                    E_TYPE,
+                    format!(
+                        "'{name}' is an ARG/LET value; dotted access only works on JSON imports"
+                    ),
+                    span,
+                ));
             }
             return Ok(v.clone());
         }
         let Some(res) = self.resources.get(name) else {
-            return Err(SitefileError::at(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), span));
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!("'{name}' is not an ARG, LET or IMPORT"),
+                span,
+            ));
         };
         let Resource::Value { format, value, .. } = res else {
             return Err(SitefileError::at(
@@ -2488,7 +3503,13 @@ impl<'a> Scope<'a> {
     }
 
     /// Any value (lists, documents, scalars) for template blocks and FOR. `loose`: missing → None.
-    fn value_of(&self, name: &str, p: &[String], span: &SourceSpan, loose: bool) -> Result<Option<Cow<'a, Value>>> {
+    fn value_of(
+        &self,
+        name: &str,
+        p: &[String],
+        span: &SourceSpan,
+        loose: bool,
+    ) -> Result<Option<Cow<'a, Value>>> {
         if let Some((n, v)) = self.each {
             if n == name {
                 return Ok(walk(v, p, name, span, loose)?.map(Cow::Borrowed));
@@ -2502,7 +3523,11 @@ impl<'a> Scope<'a> {
             if loose {
                 return Ok(None);
             }
-            return Err(SitefileError::at(E_UNDEFINED, format!("'{name}' is not an ARG, LET or IMPORT"), span));
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!("'{name}' is not an ARG, LET or IMPORT"),
+                span,
+            ));
         };
         let Resource::Value { value, .. } = res else {
             return Err(SitefileError::at(
@@ -2520,7 +3545,9 @@ impl<'a> Scope<'a> {
         for part in &op.parts {
             match part {
                 TemplatePart::Text(t) => out.push_str(t),
-                TemplatePart::Var { name, path, span } => out.push_str(&self.lookup(name, path, span)?.to_js_string()),
+                TemplatePart::Var { name, path, span } => {
+                    out.push_str(&self.lookup(name, path, span)?.to_js_string())
+                }
             }
         }
         Ok(out)
@@ -2532,14 +3559,22 @@ fn source_path(r: &SourceRef) -> String {
     match r {
         SourceRef::Local { path, .. } => path.clone(),
         SourceRef::Inline { .. } => String::new(),
-        SourceRef::Stage { path, .. } | SourceRef::Import { path, .. } => path.trim_start_matches('/').to_string(),
+        SourceRef::Stage { path, .. } | SourceRef::Import { path, .. } => {
+            path.trim_start_matches('/').to_string()
+        }
     }
 }
 
 /// A directory source without the files `exclude` (COPY --exclude) matches, relative to its root.
 fn excluding(tree: Tree, exclude: Option<&IgnoreRules>) -> Result<Tree> {
-    let Some(rules) = exclude else { return Ok(tree) };
-    Tree::from_files(tree.entries().filter(|(p, _)| !rules.excludes(&p[1..])).map(|(p, n)| (p.clone(), n.clone())))
+    let Some(rules) = exclude else {
+        return Ok(tree);
+    };
+    Tree::from_files(
+        tree.entries()
+            .filter(|(p, _)| !rules.excludes(&p[1..]))
+            .map(|(p, n)| (p.clone(), n.clone())),
+    )
 }
 
 enum Source {
@@ -2618,7 +3653,11 @@ fn stage_from(stage: &Stage) -> String {
         StageBase::Stage { name } => name.clone(),
         StageBase::Local { path } if path.is_empty() => "./".into(),
         StageBase::Local { path } => format!("./{path}"),
-        StageBase::Image { reference, at: Some(at), .. } => format!("image {reference} AT {at}"),
+        StageBase::Image {
+            reference,
+            at: Some(at),
+            ..
+        } => format!("image {reference} AT {at}"),
         StageBase::Image { reference, .. } => format!("image {reference}"),
     }
 }
@@ -2637,34 +3676,86 @@ fn policy_of(overwrite: bool) -> ConflictPolicy {
 
 impl<'a> Exec<'a> {
     fn scope(&self) -> Scope<'a> {
-        Scope { vars: self.vars, resources: self.resources, fragments: self.fragments, partials: self.partials, each: None }
+        Scope {
+            vars: self.vars,
+            resources: self.resources,
+            fragments: self.fragments,
+            partials: self.partials,
+            each: None,
+        }
     }
 
     /// The tree a stage starts from, and its key.
     fn start_stage(&self, stage: &Stage) -> Result<(Tree, String)> {
         match &stage.base {
-            StageBase::Scratch => Ok((Tree::empty(), if self.memo.is_some() { memo_key(&["scratch", &self.env_key]) } else { String::new() })),
+            StageBase::Scratch => Ok((
+                Tree::empty(),
+                if self.memo.is_some() {
+                    memo_key(&["scratch", &self.env_key])
+                } else {
+                    String::new()
+                },
+            )),
             StageBase::Stage { name } => {
-                let tree = self.stages.get(name).cloned().ok_or_else(|| unknown_stage(name, &stage.span))?;
+                let tree = self
+                    .stages
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| unknown_stage(name, &stage.span))?;
                 Ok((tree, self.stage_keys.get(name).cloned().unwrap_or_default()))
             }
             StageBase::Local { path } => {
-                let display = if path.is_empty() { "./".to_string() } else { format!("./{path}") };
+                let display = if path.is_empty() {
+                    "./".to_string()
+                } else {
+                    format!("./{path}")
+                };
                 if self.local.stat(path, Some(&stage.span))? != EntryKind::Directory {
-                    return Err(SitefileError::at(E_TYPE, format!("FROM '{display}' is a file; FROM needs a directory"), &stage.span));
+                    return Err(SitefileError::at(
+                        E_TYPE,
+                        format!("FROM '{display}' is a file; FROM needs a directory"),
+                        &stage.span,
+                    ));
                 }
-                match self.local.read_tree(path, &format!("{}:{} FROM", self.label, stage.span.line), Some(&stage.span))? {
+                match self.local.read_tree(
+                    path,
+                    &format!("{}:{} FROM", self.label, stage.span.line),
+                    Some(&stage.span),
+                )? {
                     Resource::Tree { tree, provenance } => {
-                        let key = if self.memo.is_some() { memo_key(&["from", &self.env_key, &stage.span.line.to_string(), path, &provenance.digest]) } else { String::new() };
+                        let key = if self.memo.is_some() {
+                            memo_key(&[
+                                "from",
+                                &self.env_key,
+                                &stage.span.line.to_string(),
+                                path,
+                                &provenance.digest,
+                            ])
+                        } else {
+                            String::new()
+                        };
                         Ok((tree, key))
                     }
                     _ => unreachable!("read_tree returns a tree"),
                 }
             }
-            StageBase::Image { reference, local, at, lead, span } => {
+            StageBase::Image {
+                reference,
+                local,
+                at,
+                lead,
+                span,
+            } => {
                 let img = (self.from_image)(reference, at.as_deref(), *local, lead, span)?;
                 let key = if self.memo.is_some() {
-                    memo_key(&["image", &self.env_key, &stage.span.line.to_string(), reference, at.as_deref().unwrap_or(""), &img.digest])
+                    memo_key(&[
+                        "image",
+                        &self.env_key,
+                        &stage.span.line.to_string(),
+                        reference,
+                        at.as_deref().unwrap_or(""),
+                        &img.digest,
+                    ])
                 } else {
                     String::new()
                 };
@@ -2674,9 +3765,19 @@ impl<'a> Exec<'a> {
     }
 
     /// `exclude` (COPY --exclude) drops the matching files of a directory source (a local one is walked without them).
-    fn read_source(&self, r: &SourceRef, origin: &str, exclude: Option<&IgnoreRules>) -> Result<Source> {
+    fn read_source(
+        &self,
+        r: &SourceRef,
+        origin: &str,
+        exclude: Option<&IgnoreRules>,
+    ) -> Result<Source> {
         match r {
-            SourceRef::Inline { text, delimiter, body_line, .. } => Ok(Source::File {
+            SourceRef::Inline {
+                text,
+                delimiter,
+                body_line,
+                ..
+            } => Ok(Source::File {
                 bytes: Arc::from(text.as_bytes()),
                 mode: 0o644,
                 basename: String::new(),
@@ -2687,27 +3788,75 @@ impl<'a> Exec<'a> {
             SourceRef::Local { path, span } => {
                 let label = format!("./{path}");
                 if self.local.stat(path, Some(span))? == EntryKind::Directory {
-                    let Resource::Tree { tree, provenance } = self.local.read_tree_excluding(path, origin, Some(span), exclude)? else { unreachable!() };
-                    return Ok(Source::Tree { tree, label, digest: provenance.digest });
+                    let Resource::Tree { tree, provenance } =
+                        self.local
+                            .read_tree_excluding(path, origin, Some(span), exclude)?
+                    else {
+                        unreachable!()
+                    };
+                    return Ok(Source::Tree {
+                        tree,
+                        label,
+                        digest: provenance.digest,
+                    });
                 }
-                let Resource::File { bytes, mode, basename, provenance } = self.local.read_file(path, Some(span))? else { unreachable!() };
+                let Resource::File {
+                    bytes,
+                    mode,
+                    basename,
+                    provenance,
+                } = self.local.read_file(path, Some(span))?
+                else {
+                    unreachable!()
+                };
                 let digest = format!("{}\0{mode}\0{basename}", provenance.digest);
-                Ok(Source::File { bytes: Arc::from(bytes), mode, basename, label, inline: None, digest })
+                Ok(Source::File {
+                    bytes: Arc::from(bytes),
+                    mode,
+                    basename,
+                    label,
+                    inline: None,
+                    digest,
+                })
             }
             SourceRef::Stage { name, path, span } => {
-                let tree = self.stages.get(name).ok_or_else(|| unknown_stage(name, span))?;
+                let tree = self
+                    .stages
+                    .get(name)
+                    .ok_or_else(|| unknown_stage(name, span))?;
                 let label = format!("--from={name} {path}");
                 if let Some(node) = tree.get(path) {
-                    return Ok(Source::File { bytes: node.bytes.clone(), mode: node.mode, basename: basename_virtual(path).to_string(), label, inline: None, digest: String::new() });
+                    return Ok(Source::File {
+                        bytes: node.bytes.clone(),
+                        mode: node.mode,
+                        basename: basename_virtual(path).to_string(),
+                        label,
+                        inline: None,
+                        digest: String::new(),
+                    });
                 }
                 if tree.is_directory(path) {
-                    return Ok(Source::Tree { tree: excluding(tree.subtree(path), exclude)?, label, digest: String::new() });
+                    return Ok(Source::Tree {
+                        tree: excluding(tree.subtree(path), exclude)?,
+                        label,
+                        digest: String::new(),
+                    });
                 }
-                Err(SitefileError::at(E_NOT_FOUND, format!("'{path}' does not exist in stage '{name}'"), span))
+                Err(SitefileError::at(
+                    E_NOT_FOUND,
+                    format!("'{path}' does not exist in stage '{name}'"),
+                    span,
+                ))
             }
             SourceRef::Import { name, path, span } => {
-                let label = if path == "/" { format!("{name}:") } else { format!("{name}:{path}") };
-                let res = self.resources.get(name).ok_or_else(|| SitefileError::at(E_UNDEFINED, format!("unknown import '{name}'"), span))?;
+                let label = if path == "/" {
+                    format!("{name}:")
+                } else {
+                    format!("{name}:{path}")
+                };
+                let res = self.resources.get(name).ok_or_else(|| {
+                    SitefileError::at(E_UNDEFINED, format!("unknown import '{name}'"), span)
+                })?;
                 match res {
                     Resource::Value { format, .. } => Err(SitefileError::at(
                         E_TYPE,
@@ -2747,8 +3896,17 @@ impl<'a> Exec<'a> {
         match r {
             SourceRef::Inline { .. } => "inline".into(),
             SourceRef::Local { .. } => format!("local\0{digest}"),
-            SourceRef::Stage { name, .. } => format!("stage\0{}", self.stage_keys.get(name).map(String::as_str).unwrap_or("")),
-            SourceRef::Import { name, .. } => format!("import\0{}", self.resource_keys.get(name).map(String::as_str).unwrap_or("")),
+            SourceRef::Stage { name, .. } => format!(
+                "stage\0{}",
+                self.stage_keys.get(name).map(String::as_str).unwrap_or("")
+            ),
+            SourceRef::Import { name, .. } => format!(
+                "import\0{}",
+                self.resource_keys
+                    .get(name)
+                    .map(String::as_str)
+                    .unwrap_or("")
+            ),
         }
     }
 
@@ -2769,21 +3927,51 @@ impl<'a> Exec<'a> {
     /// A memoized step's files: replays the warnings it printed after those this run already
     /// printed before the lookup (the same code ran up to here, so they are a prefix).
     fn memo_lookup(&mut self, key: &Option<String>) -> Option<Produced> {
-        let (Some(memo), Some(k)) = (self.memo, key) else { return None };
+        let (Some(memo), Some(k)) = (self.memo, key) else {
+            return None;
+        };
         let (files, warnings) = lock_memo(memo).get::<(Files, Vec<String>)>(k)?;
-        let seen = self.recorded.as_ref().and_then(|r| r.lock().ok().map(|r| r.len())).unwrap_or(0);
+        let seen = self
+            .recorded
+            .as_ref()
+            .and_then(|r| r.lock().ok().map(|r| r.len()))
+            .unwrap_or(0);
         for w in warnings.iter().skip(seen) {
             (self.warn)(w);
         }
-        Some(Produced { files, key: Some(k.clone()), hit: true })
+        Some(Produced {
+            files,
+            key: Some(k.clone()),
+            hit: true,
+        })
     }
 
     /// Memoize a step's files under `key` (with the warnings it printed), unless `store` is false.
-    fn memo_store(&mut self, key: Option<String>, files: Files, children: Vec<String>, store: bool) -> Produced {
-        let (Some(memo), Some(k), true) = (self.memo, key, store) else { return Produced { files, key: None, hit: false } };
-        let warnings = self.recorded.as_ref().and_then(|r| r.lock().ok().map(|r| r.clone())).unwrap_or_default();
+    fn memo_store(
+        &mut self,
+        key: Option<String>,
+        files: Files,
+        children: Vec<String>,
+        store: bool,
+    ) -> Produced {
+        let (Some(memo), Some(k), true) = (self.memo, key, store) else {
+            return Produced {
+                files,
+                key: None,
+                hit: false,
+            };
+        };
+        let warnings = self
+            .recorded
+            .as_ref()
+            .and_then(|r| r.lock().ok().map(|r| r.clone()))
+            .unwrap_or_default();
         lock_memo(memo).set(k.clone(), (files.clone(), warnings), children);
-        Produced { files, key: Some(k), hit: false }
+        Produced {
+            files,
+            key: Some(k),
+            hit: false,
+        }
     }
 
     /// `produce`, with the warnings it prints recorded (a memoized step replays them).
@@ -2810,7 +3998,12 @@ impl<'a> Exec<'a> {
     /// whose key (the operation and everything it reads) is unchanged reuses its files, and
     /// one whose input tree is also unchanged reuses the resulting tree. The result's key
     /// chains the input tree's key with the step's, like image layers.
-    fn execute_op(&mut self, op: &Operation, tree: Tree, prev: &str) -> Result<(Tree, String, Option<&'static str>)> {
+    fn execute_op(
+        &mut self,
+        op: &Operation,
+        tree: Tree,
+        prev: &str,
+    ) -> Result<(Tree, String, Option<&'static str>)> {
         let span = op.span();
         let Some(memo) = self.memo else {
             if let Operation::Sitemap { .. } = op {
@@ -2826,7 +4019,11 @@ impl<'a> Exec<'a> {
                 return Ok((out, String::new(), None));
             }
             let p = self.produce(op, &tree, "")?;
-            return Ok((tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?, String::new(), None));
+            return Ok((
+                tree.with_files(p.files, policy_of(op_overwrite(op)), Some(span))?,
+                String::new(),
+                None,
+            ));
         };
         let op_id = memo_key(&["op", &self.env_key, &format!("{op:?}")]);
         if let Operation::CheckLinks { .. } = op {
@@ -2874,7 +4071,11 @@ impl<'a> Exec<'a> {
             };
             let (out, renames) = self.fingerprint(op, &tree, &record)?;
             let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
-            lock_memo(memo).set(key.clone(), (out.clone(), renames.clone(), warnings), Vec::new());
+            lock_memo(memo).set(
+                key.clone(),
+                (out.clone(), renames.clone(), warnings),
+                Vec::new(),
+            );
             self.last_renames = Some(renames);
             return Ok((out, key, Some("miss")));
         }
@@ -2896,7 +4097,12 @@ impl<'a> Exec<'a> {
             None => {
                 let mut parts: Vec<String> = vec!["files".into()];
                 for (f, n) in &p.files {
-                    parts.extend([f.clone(), n.mode.to_string(), n.digest.clone(), n.origin.clone()]);
+                    parts.extend([
+                        f.clone(),
+                        n.mode.to_string(),
+                        n.digest.clone(),
+                        n.origin.clone(),
+                    ]);
                 }
                 memo_key(&parts.iter().map(String::as_str).collect::<Vec<_>>())
             }
@@ -2911,24 +4117,76 @@ impl<'a> Exec<'a> {
     }
 
     fn check_links(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<()> {
-        let Operation::CheckLinks { warn: as_warnings, external, root, redirects, span } = op else { unreachable!() };
-        let op = CheckLinksOp { warn: *as_warnings, external: *external, root, redirects, span };
+        let Operation::CheckLinks {
+            warn: as_warnings,
+            external,
+            root,
+            redirects,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
+        let op = CheckLinksOp {
+            warn: *as_warnings,
+            external: *external,
+            root,
+            redirects,
+            span,
+        };
         let broken = broken_links(tree, &op, &self.fetch_policy);
-        report_broken_links(&broken, &op, &format!("{}:{} CHECKLINKS", self.label, span.line), warn)
+        report_broken_links(
+            &broken,
+            &op,
+            &format!("{}:{} CHECKLINKS", self.label, span.line),
+            warn,
+        )
     }
 
-    fn fingerprint(&self, op: &Operation, tree: &Tree, warn: &dyn Fn(&str)) -> Result<(Tree, Vec<(String, String)>)> {
-        let Operation::Fingerprint { patterns, manifest, root, overwrite, span } = op else { unreachable!() };
+    fn fingerprint(
+        &self,
+        op: &Operation,
+        tree: &Tree,
+        warn: &dyn Fn(&str),
+    ) -> Result<(Tree, Vec<(String, String)>)> {
+        let Operation::Fingerprint {
+            patterns,
+            manifest,
+            root,
+            overwrite,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
         let origin = format!("{}:{} FINGERPRINT", self.label, span.line);
-        let op = FingerprintOp { patterns, manifest: manifest.as_deref(), root, overwrite: *overwrite, span };
+        let op = FingerprintOp {
+            patterns,
+            manifest: manifest.as_deref(),
+            root,
+            overwrite: *overwrite,
+            span,
+        };
         fingerprint(tree, &op, &origin, warn)
     }
 
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
-        let Operation::Sitemap { base, dest, overwrite, span } = op else { unreachable!() };
+        let Operation::Sitemap {
+            base,
+            dest,
+            overwrite,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
         let origin = format!("{}:{} SITEMAP", self.label, span.line);
         let xml = sitemap_xml(&tree, base);
-        tree.with_files([(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))], policy_of(*overwrite), Some(span))
+        tree.with_files(
+            [(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))],
+            policy_of(*overwrite),
+            Some(span),
+        )
     }
 
     /// The files an operation (other than SITEMAP) adds; `op_id` is its memo identity ("" without a memo).
@@ -2951,33 +4209,72 @@ impl<'a> Exec<'a> {
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
-            Operation::Fingerprint { .. } => unreachable!("FINGERPRINT reads the tree: execute_op runs it"),
-            Operation::CheckLinks { .. } => unreachable!("CHECKLINKS reads the tree: execute_op runs it"),
-            Operation::Copy { source, dest, dest_is_dir, exclude, chmod, parents, span, .. } => {
+            Operation::Fingerprint { .. } => {
+                unreachable!("FINGERPRINT reads the tree: execute_op runs it")
+            }
+            Operation::CheckLinks { .. } => {
+                unreachable!("CHECKLINKS reads the tree: execute_op runs it")
+            }
+            Operation::Copy {
+                source,
+                dest,
+                dest_is_dir,
+                exclude,
+                chmod,
+                parents,
+                span,
+                ..
+            } => {
                 let rules = (!exclude.is_empty()).then(|| IgnoreRules::from_patterns(exclude));
                 let src = self.read_source(source, &origin, rules.as_ref())?;
                 // --parents: the source's own path (inside the context, import or stage) is kept under the destination.
-                let kept = if *parents { source_path(source) } else { String::new() };
+                let kept = if *parents {
+                    source_path(source)
+                } else {
+                    String::new()
+                };
                 if let (Some(_), Source::File { label, .. }) = (&rules, &src) {
-                    return Err(SitefileError::at(E_TYPE, format!("--exclude filters a directory, but '{label}' is a file"), source.span()));
+                    return Err(SitefileError::at(
+                        E_TYPE,
+                        format!("--exclude filters a directory, but '{label}' is a file"),
+                        source.span(),
+                    ));
                 }
-                let into_dir = matches!(src, Source::File { .. }) && (*parents || *dest_is_dir || tree.is_directory(dest));
+                let into_dir = matches!(src, Source::File { .. })
+                    && (*parents || *dest_is_dir || tree.is_directory(dest));
                 let key = memoized.then(|| {
-                    let shape = if matches!(src, Source::File { .. }) { into_dir.to_string() } else { "tree".into() };
+                    let shape = if matches!(src, Source::File { .. }) {
+                        into_dir.to_string()
+                    } else {
+                        "tree".into()
+                    };
                     memo_key(&["copy", op_id, &self.source_key(source, &src), &shape])
                 });
                 if let Some(hit) = self.memo_lookup(&key) {
                     return Ok(hit);
                 }
                 let files: Files = match src {
-                    Source::File { bytes, mode, basename, label, inline, .. } => {
+                    Source::File {
+                        bytes,
+                        mode,
+                        basename,
+                        label,
+                        inline,
+                        ..
+                    } => {
                         if into_dir && inline.is_some() {
                             return Err(SitefileError::at(E_PATH, format!("'{dest}' is a directory; an inline {label} body needs a file destination"), span));
                         }
-                        let target = if into_dir { join_virtual(dest, if kept.is_empty() { &basename } else { &kept }) } else { dest.clone() };
+                        let target = if into_dir {
+                            join_virtual(dest, if kept.is_empty() { &basename } else { &kept })
+                        } else {
+                            dest.clone()
+                        };
                         vec![(target, make_file(bytes, origin, chmod.unwrap_or(mode)))]
                     }
-                    Source::Tree { tree: src, label, .. } => {
+                    Source::Tree {
+                        tree: src, label, ..
+                    } => {
                         if src.is_empty() {
                             (self.warn)(&if rules.is_some() {
                                 format!("{origin}: --exclude leaves no files of '{label}' to copy")
@@ -2985,25 +4282,66 @@ impl<'a> Exec<'a> {
                                 format!("{origin}: '{label}' contains no files")
                             });
                         }
-                        let at = if kept.is_empty() { dest.clone() } else { join_virtual(dest, &kept) };
+                        let at = if kept.is_empty() {
+                            dest.clone()
+                        } else {
+                            join_virtual(dest, &kept)
+                        };
                         src.mounted_at(&at)
                             .into_iter()
                             .map(|(p, n)| {
                                 let mode = chmod.unwrap_or(n.mode);
-                                (p, Arc::new(FileNode { bytes: n.bytes.clone(), mode, digest: n.digest.clone(), origin: origin.clone() }))
+                                (
+                                    p,
+                                    Arc::new(FileNode {
+                                        bytes: n.bytes.clone(),
+                                        mode,
+                                        digest: n.digest.clone(),
+                                        origin: origin.clone(),
+                                    }),
+                                )
                             })
                             .collect()
                     }
                 };
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
-            Operation::Render { template, dest, each, escape, inline_svg, span, .. } => {
+            Operation::Render {
+                template,
+                dest,
+                each,
+                escape,
+                inline_svg,
+                span,
+                ..
+            } => {
                 let src = self.read_source(template, &origin, None)?;
-                let source_key = if memoized { self.source_key(template, &src) } else { String::new() };
-                let Source::File { bytes, inline, label, .. } = src else {
-                    return Err(SitefileError::at(E_TYPE, format!("RENDER template '{}' is a directory, not a file", src.label()), template.span()));
+                let source_key = if memoized {
+                    self.source_key(template, &src)
+                } else {
+                    String::new()
                 };
-                let text = decode_utf8(&bytes, &format!("template '{label}'"), Some(template.span()))?;
+                let Source::File {
+                    bytes,
+                    inline,
+                    label,
+                    ..
+                } = src
+                else {
+                    return Err(SitefileError::at(
+                        E_TYPE,
+                        format!(
+                            "RENDER template '{}' is a directory, not a file",
+                            src.label()
+                        ),
+                        template.span(),
+                    ));
+                };
+                let text = decode_utf8(
+                    &bytes,
+                    &format!("template '{label}'"),
+                    Some(template.span()),
+                )?;
                 let parts = match &inline {
                     Some((file, first)) => parse_render_template(&text, file, *first)?,
                     None => parse_render_template(&text, &label, 1)?,
@@ -3011,14 +4349,25 @@ impl<'a> Exec<'a> {
                 // What the template names, the FOR list and the destination's variables (ARG/LET values are in op_id).
                 // A template with `${file …}` (itself or in a fragment) reads the tree, so the input tree is part of its key.
                 let scope = self.scope();
-                let (deps, reads_files) = if memoized { scope.render_deps(&parts) } else { (BTreeSet::new(), false) };
+                let (deps, reads_files) = if memoized {
+                    scope.render_deps(&parts)
+                } else {
+                    (BTreeSet::new(), false)
+                };
                 let template_key = if memoized {
-                    memo_key(&["template", &source_key, if reads_files { &self.input_key } else { "" }])
+                    memo_key(&[
+                        "template",
+                        &source_key,
+                        if reads_files { &self.input_key } else { "" },
+                    ])
                 } else {
                     String::new()
                 };
                 let renames = self.renames.clone();
-                let file_tree = FileTree { tree, renames: &renames };
+                let file_tree = FileTree {
+                    tree,
+                    renames: &renames,
+                };
                 let files_ctx: (&dyn crate::media::TemplateTree, bool) = (&file_tree, *inline_svg);
                 let key = memoized.then(|| {
                     let mut names = deps.clone();
@@ -3057,9 +4406,14 @@ impl<'a> Exec<'a> {
                     None => None,
                 };
                 if items.is_empty() && !(each.page.is_some() && groups.is_none()) {
-                    (self.warn)(&format!("{origin}: FOR {as_name} IN {list} renders nothing: '{list}' is empty"));
+                    (self.warn)(&format!(
+                        "{origin}: FOR {as_name} IN {list} renders nothing: '{list}' is empty"
+                    ));
                 } else if groups.as_ref().is_some_and(|g| g.is_empty()) {
-                    (self.warn)(&format!("{origin}: {what} renders nothing: no element has '{}'", each.by.as_deref().unwrap_or_default()));
+                    (self.warn)(&format!(
+                        "{origin}: {what} renders nothing: no element has '{}'",
+                        each.by.as_deref().unwrap_or_default()
+                    ));
                 }
                 let dest_of = |item: &Value, op: &Operand| -> Result<String> {
                     let mut raw = String::new();
@@ -3067,14 +4421,28 @@ impl<'a> Exec<'a> {
                         match part {
                             TemplatePart::Text(t) => raw.push_str(t),
                             TemplatePart::Var { name, path, span } => {
-                                let v = if name == as_name { resolve_json_path(item, path, as_name, span)? } else { scope.lookup(name, path, span)? };
+                                let v = if name == as_name {
+                                    resolve_json_path(item, path, as_name, span)?
+                                } else {
+                                    scope.lookup(name, path, span)?
+                                };
                                 raw.push_str(&v.to_js_string());
                             }
                         }
                     }
-                    let target = normalize_virtual(&raw, Some(&op.span), &format!("RENDER destination for {as_name}"))?;
+                    let target = normalize_virtual(
+                        &raw,
+                        Some(&op.span),
+                        &format!("RENDER destination for {as_name}"),
+                    )?;
                     if target.trailing_slash {
-                        return Err(SitefileError::at(E_PATH, format!("RENDER destination '{raw}' must be a file path, not a directory"), &op.span));
+                        return Err(SitefileError::at(
+                            E_PATH,
+                            format!(
+                                "RENDER destination '{raw}' must be a file path, not a directory"
+                            ),
+                            &op.span,
+                        ));
                     }
                     Ok(target.path)
                 };
@@ -3085,7 +4453,12 @@ impl<'a> Exec<'a> {
                     let runs: Vec<(Option<String>, Vec<Value>)> = match &groups {
                         Some(gs) => gs
                             .iter()
-                            .map(|g| (g["key"].as_str().map(str::to_string), g["items"].as_array().cloned().unwrap_or_default()))
+                            .map(|g| {
+                                (
+                                    g["key"].as_str().map(str::to_string),
+                                    g["items"].as_array().cloned().unwrap_or_default(),
+                                )
+                            })
                             .collect(),
                         None => vec![(None, items.clone())],
                     };
@@ -3102,8 +4475,18 @@ impl<'a> Exec<'a> {
                         let urls: Vec<String> = paths.iter().map(|p| page_url("", p)).collect();
                         for (i, (mut m, path)) in pages.into_iter().zip(paths).enumerate() {
                             m.insert("url".into(), json!(urls[i]));
-                            m.insert("prev".into(), json!(if i > 0 { urls[i - 1].clone() } else { String::new() }));
-                            m.insert("next".into(), json!(urls.get(i + 1).cloned().unwrap_or_default()));
+                            m.insert(
+                                "prev".into(),
+                                json!(if i > 0 {
+                                    urls[i - 1].clone()
+                                } else {
+                                    String::new()
+                                }),
+                            );
+                            m.insert(
+                                "next".into(),
+                                json!(urls.get(i + 1).cloned().unwrap_or_default()),
+                            );
                             elements.push((Cow::Owned(Value::Object(m)), path));
                         }
                     }
@@ -3125,7 +4508,11 @@ impl<'a> Exec<'a> {
                 }
                 // An element's page depends on the template, the element and the imports the template
                 // names (other than the loop variable), so editing one document re-renders one page.
-                let refs_key = if memoized { self.names_key(deps, Some(as_name)) } else { String::new() };
+                let refs_key = if memoized {
+                    self.names_key(deps, Some(as_name))
+                } else {
+                    String::new()
+                };
                 let children: Mutex<Vec<String>> = Mutex::new(Vec::new());
                 let mut files: Files = Vec::new();
                 for (item, target_path) in &elements {
@@ -3137,7 +4524,13 @@ impl<'a> Exec<'a> {
                     };
                     let node = match self.memo {
                         Some(memo) => {
-                            let item_key = memo_key(&["item", op_id, &template_key, &refs_key, &value_key(item)]);
+                            let item_key = memo_key(&[
+                                "item",
+                                op_id,
+                                &template_key,
+                                &refs_key,
+                                &value_key(item),
+                            ]);
                             memoize(memo, &item_key, Some(&children), |_| page())?
                         }
                         None => page()?,
@@ -3150,22 +4543,42 @@ impl<'a> Exec<'a> {
     }
 
     fn feed_files(&mut self, op: &Operation) -> Result<Files> {
-        let Operation::Feed { list, base, link, dest, title, span, .. } = op else { unreachable!() };
+        let Operation::Feed {
+            list,
+            base,
+            link,
+            dest,
+            title,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
         let origin = format!("{}:{} FEED", self.label, span.line);
         let scope = self.scope();
         let items = scope.value_of(list, &[], span, false)?;
         let Some(Value::Array(items)) = items.as_deref() else {
-            return Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{list}' is not a list (import a directory AS markdown)"), span));
+            return Err(SitefileError::at(
+                E_TYPE,
+                format!("FEED {list}: '{list}' is not a list (import a directory AS markdown)"),
+                span,
+            ));
         };
         if items.is_empty() {
-            (self.warn)(&format!("{origin}: '{list}' is empty, so the feed has no entries"));
+            (self.warn)(&format!(
+                "{origin}: '{list}' is empty, so the feed has no entries"
+            ));
         }
         let mut entries = Vec::new();
         for (i, item) in items.iter().enumerate() {
             let Value::Object(doc) = item else {
                 return Err(SitefileError::at(
                     E_TYPE,
-                    format!("FEED {list}: element {} is not a document (an object with title and date)", i + 1),
+                    format!(
+                        "FEED {list}: element {} is not a document (an object with title and date)",
+                        i + 1
+                    ),
                     span,
                 ));
             };
@@ -3176,8 +4589,14 @@ impl<'a> Exec<'a> {
             let text = |key: &str| -> Result<Option<String>> {
                 match doc.get(key) {
                     None | Some(Value::Null) => Ok(None),
-                    Some(v @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => Ok(Some(js_string_of(v))),
-                    Some(_) => Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{key}' of document '{name}' is not text"), span)),
+                    Some(v @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => {
+                        Ok(Some(js_string_of(v)))
+                    }
+                    Some(_) => Err(SitefileError::at(
+                        E_TYPE,
+                        format!("FEED {list}: '{key}' of document '{name}' is not text"),
+                        span,
+                    )),
                 }
             };
             let required = |key: &str| -> Result<String> {
@@ -3196,18 +4615,46 @@ impl<'a> Exec<'a> {
             };
             let raw = scope.with_item(FEED_ITEM, item).interpolate(link)?;
             let l = normalize_virtual(&raw, Some(&link.span), "FEED LINK")?;
-            let path = if l.path == "/" || !l.trailing_slash { l.path } else { format!("{}/", l.path) };
+            let path = if l.path == "/" || !l.trailing_slash {
+                l.path
+            } else {
+                format!("{}/", l.path)
+            };
             let author = text("author")?.filter(|a| !a.is_empty());
             let summary = text("excerpt")?.filter(|s| !s.is_empty());
             let content = text("content")?;
-            entries.push(FeedEntry { title, url: page_url(base, &path), date, author, summary, content });
+            entries.push(FeedEntry {
+                title,
+                url: page_url(base, &path),
+                date,
+                author,
+                summary,
+                content,
+            });
         }
         let xml = atom_xml(title, &format!("{base}/"), &page_url(base, dest), &entries);
-        Ok(vec![(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))])
+        Ok(vec![(
+            dest.clone(),
+            make_file(xml.into_bytes(), origin, 0o644),
+        )])
     }
 
     fn produce_transform(&mut self, op: &Operation, op_id: &str) -> Result<Produced> {
-        let Operation::Transform { source, plugin, dest, options, each, args, include, exclude, span, .. } = op else { unreachable!() };
+        let Operation::Transform {
+            source,
+            plugin,
+            dest,
+            options,
+            each,
+            args,
+            include,
+            exclude,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
         let origin = format!("{}:{} TRANSFORM", self.label, span.line);
         let scope = self.scope();
         let list_value;
@@ -3215,10 +4662,20 @@ impl<'a> Exec<'a> {
             Some(e) => {
                 list_value = scope.value_of(&e.list, &[], span, false)?;
                 let Some(Value::Array(list)) = list_value.as_deref() else {
-                    return Err(SitefileError::at(E_TYPE, format!("FOR {} IN {}: '{}' is not a list", e.as_name, e.list, e.list), span));
+                    return Err(SitefileError::at(
+                        E_TYPE,
+                        format!(
+                            "FOR {} IN {}: '{}' is not a list",
+                            e.as_name, e.list, e.list
+                        ),
+                        span,
+                    ));
                 };
                 if list.is_empty() {
-                    (self.warn)(&format!("{origin}: FOR {} IN {} produces nothing: the list is empty", e.as_name, e.list));
+                    (self.warn)(&format!(
+                        "{origin}: FOR {} IN {} produces nothing: the list is empty",
+                        e.as_name, e.list
+                    ));
                 }
                 list.iter().map(Some).collect()
             }
@@ -3237,7 +4694,11 @@ impl<'a> Exec<'a> {
                 SourceRef::Import { name, path, span } => match self.resources.get(name) {
                     Some(Resource::Value { value, .. }) => {
                         if path != "/" {
-                            return Err(SitefileError::at(E_PATH, format!("import '{name}' is a value; use '{name}:'"), span));
+                            return Err(SitefileError::at(
+                                E_PATH,
+                                format!("import '{name}' is a value; use '{name}:'"),
+                                span,
+                            ));
                         }
                         Some(value.clone())
                     }
@@ -3267,11 +4728,20 @@ impl<'a> Exec<'a> {
                         }
                         dir = Some((including(tree, include)?, label));
                     }
-                    Source::File { bytes, basename, label, .. } => {
+                    Source::File {
+                        bytes,
+                        basename,
+                        label,
+                        ..
+                    } => {
                         if filtered {
                             return Err(SitefileError::at(E_TYPE, format!("--include and --exclude filter a directory, but '{label}' is a file"), src_ref.span()));
                         }
-                        let name = if basename.is_empty() { label.clone() } else { basename };
+                        let name = if basename.is_empty() {
+                            label.clone()
+                        } else {
+                            basename
+                        };
                         input = Some(PluginInput::new(label, name, bytes.to_vec()));
                     }
                 }
@@ -3280,7 +4750,13 @@ impl<'a> Exec<'a> {
 
         let tool = self.tools.get(plugin).cloned();
         if let (Some(_), None, None, Some(s)) = (&tool, &input, &dir, source) {
-            return Err(SitefileError::at(E_TYPE, format!("TRANSFORM … WITH {plugin}: a TOOL needs a file source, not a value import"), s.span()));
+            return Err(SitefileError::at(
+                E_TYPE,
+                format!(
+                    "TRANSFORM … WITH {plugin}: a TOOL needs a file source, not a value import"
+                ),
+                s.span(),
+            ));
         }
         let input_digest = input.as_ref().map(|i| sha256(&i.bytes));
         let mut plugin_digest: Option<String> = None;
@@ -3304,7 +4780,12 @@ impl<'a> Exec<'a> {
 
         // Incremental rebuilds: the same code (plugin digest, or tool binary), source, data, list and interpolated names.
         let code = match (&tool, &plugin_digest) {
-            (Some(t), _) => Some(format!("tool\0{}\0{}\0{}", t.path.display(), t.size, t.mtime_ms)),
+            (Some(t), _) => Some(format!(
+                "tool\0{}\0{}\0{}",
+                t.path.display(),
+                t.size,
+                t.mtime_ms
+            )),
             (None, Some(d)) => Some(format!("plugin\0{d}")),
             (None, None) => None,
         };
@@ -3324,22 +4805,48 @@ impl<'a> Exec<'a> {
             if let Some(e) = each {
                 names.insert(e.list.clone());
             }
-            memo_key(&["transform", op_id, &src_key, &code, &self.names_key(names, None)])
+            memo_key(&[
+                "transform",
+                op_id,
+                &src_key,
+                &code,
+                &self.names_key(names, None),
+            ])
         });
         if let Some((tree, label)) = dir {
             if let Some(hit) = self.memo_lookup(&key) {
                 return Ok(hit);
             }
-            let file_base = memo.map(|_| memo_key(&["transform-file", op_id, &code, &self.names_key(operand_refs.clone(), None)]));
+            let file_base = memo.map(|_| {
+                memo_key(&[
+                    "transform-file",
+                    op_id,
+                    &code,
+                    &self.names_key(operand_refs.clone(), None),
+                ])
+            });
             let mut children: Vec<String> = Vec::new();
-            let ctx = DirTransform { tree: &tree, label: &label, file_base, tool: tool.as_ref(), plugin_digest: plugin_digest.as_deref(), memo };
+            let ctx = DirTransform {
+                tree: &tree,
+                label: &label,
+                file_base,
+                tool: tool.as_ref(),
+                plugin_digest: plugin_digest.as_deref(),
+                memo,
+            };
             let files = self.transform_files(op, &ctx, &mut children)?;
             let store = tool.is_some() || self.plugins.cacheable(plugin);
             return Ok(self.memo_store(key, files, children, store));
         }
         // One FOR element's files: the same request gives the same result (the list itself is not read).
         let item_base = match (memo, each) {
-            (Some(_), Some(e)) => Some(memo_key(&["transform-item", op_id, &src_key, &code, &self.names_key(operand_refs, Some(&e.as_name))])),
+            (Some(_), Some(e)) => Some(memo_key(&[
+                "transform-item",
+                op_id,
+                &src_key,
+                &code,
+                &self.names_key(operand_refs, Some(&e.as_name)),
+            ])),
             _ => None,
         };
         if let Some(hit) = self.memo_lookup(&key) {
@@ -3419,7 +4926,10 @@ impl<'a> Exec<'a> {
                 }
                 req.insert("options".into(), Value::Object(om));
                 if let (Some(i), Some(dg)) = (&input, &input_digest) {
-                    req.insert("input".into(), json!({ "path": i.path, "name": i.name, "digest": dg }));
+                    req.insert(
+                        "input".into(),
+                        json!({ "path": i.path, "name": i.name, "digest": dg }),
+                    );
                 }
                 if let Some(dt) = &data {
                     req.insert("data".into(), dt.clone());
@@ -3427,7 +4937,9 @@ impl<'a> Exec<'a> {
                 if let Some(it) = item {
                     req.insert("item".into(), it.clone());
                 }
-                Some(cache_key(&json!({ "code": code, "request": Value::Object(req) })))
+                Some(cache_key(
+                    &json!({ "code": code, "request": Value::Object(req) }),
+                ))
             } else {
                 None
             };
@@ -3435,13 +4947,25 @@ impl<'a> Exec<'a> {
                 self.profiler,
                 || format!("TRANSFORM {plugin} {}", d.path),
                 "transform",
-                || vec![("plugin", json!(plugin)), ("tool", json!(tool.is_some())), ("dest", json!(d.path))],
+                || {
+                    vec![
+                        ("plugin", json!(plugin)),
+                        ("tool", json!(tool.is_some())),
+                        ("dest", json!(d.path)),
+                    ]
+                },
             );
             let mut result: Option<PluginResult> = match (&cached, self.cache.as_mut()) {
                 (Some(k), Some(c)) => c.get(k),
                 _ => None,
             };
-            let cache_state = if cached.is_none() { "off" } else if result.is_some() { "hit" } else { "miss" };
+            let cache_state = if cached.is_none() {
+                "off"
+            } else if result.is_some() {
+                "hit"
+            } else {
+                "miss"
+            };
             if result.is_none() {
                 let r = if let Some(t) = &tool {
                     self.stats.tool_runs += 1;
@@ -3449,11 +4973,20 @@ impl<'a> Exec<'a> {
                         args: argv.clone().unwrap_or_default(),
                         dest: d.path.clone(),
                         options: opts.clone(),
-                        input: input.as_ref().map(|i| ToolInput { name: i.name.clone(), bytes: i.bytes.clone() }),
+                        input: input.as_ref().map(|i| ToolInput {
+                            name: i.name.clone(),
+                            bytes: i.bytes.clone(),
+                        }),
                     };
                     // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
                     let warn = self.unrecorded.clone();
-                    run_tool(t, &call, &self.tool_policy, &move |l: &str| warn(l), Some(span))?
+                    run_tool(
+                        t,
+                        &call,
+                        &self.tool_policy,
+                        &move |l: &str| warn(l),
+                        Some(span),
+                    )?
                 } else {
                     self.plugins.call(plugin, &request, Some(span))?
                 };
@@ -3482,9 +5015,18 @@ impl<'a> Exec<'a> {
                     // { files }: placed under the destination directory.
                     for (rel, bytes) in list {
                         let base = if d.path == "/" { "" } else { d.path.as_str() };
-                        let p = normalize_virtual(&format!("{base}/{rel}"), Some(&dest.span), &format!("file '{rel}' returned by PLUGIN {plugin}"))?.path;
+                        let p = normalize_virtual(
+                            &format!("{base}/{rel}"),
+                            Some(&dest.span),
+                            &format!("file '{rel}' returned by PLUGIN {plugin}"),
+                        )?
+                        .path;
                         if rel.contains("..") || rel.starts_with('/') {
-                            return Err(SitefileError::at(E_PLUGIN, format!("PLUGIN {plugin} returned an unsafe path '{rel}'"), span));
+                            return Err(SitefileError::at(
+                                E_PLUGIN,
+                                format!("PLUGIN {plugin} returned an unsafe path '{rel}'"),
+                                span,
+                            ));
                         }
                         item_files.push((p, make_file(bytes, origin.clone(), 0o644)));
                     }
@@ -3507,12 +5049,32 @@ impl<'a> Exec<'a> {
     /// and calls run up to `transform_jobs()` at a time (a JavaScript plugin, one process, takes
     /// one at a time). Files, tool output, profile events and errors come in path order whatever
     /// order the calls finish in.
-    fn transform_files(&mut self, op: &Operation, ctx: &DirTransform, children: &mut Vec<String>) -> Result<Files> {
-        let Operation::Transform { plugin, dest, options, args, include, exclude, span, .. } = op else { unreachable!() };
+    fn transform_files(
+        &mut self,
+        op: &Operation,
+        ctx: &DirTransform,
+        children: &mut Vec<String>,
+    ) -> Result<Files> {
+        let Operation::Transform {
+            plugin,
+            dest,
+            options,
+            args,
+            include,
+            exclude,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
         let line = format!("{}:{} TRANSFORM", self.label, span.line);
         if ctx.tree.is_empty() {
             (self.warn)(&if !include.is_empty() || !exclude.is_empty() {
-                format!("{line}: --include/--exclude leave no files of '{}' to transform", ctx.label)
+                format!(
+                    "{line}: --include/--exclude leave no files of '{}' to transform",
+                    ctx.label
+                )
             } else {
                 format!("{line}: '{}' contains no files", ctx.label)
             });
@@ -3520,7 +5082,11 @@ impl<'a> Exec<'a> {
         let scope = self.scope();
         let raw_dest = scope.interpolate(dest)?;
         normalize_virtual(&raw_dest, Some(&dest.span), "TRANSFORM destination")?;
-        let dir_dest = if raw_dest.ends_with('/') { raw_dest.clone() } else { format!("{raw_dest}/") };
+        let dir_dest = if raw_dest.ends_with('/') {
+            raw_dest.clone()
+        } else {
+            format!("{raw_dest}/")
+        };
         if ctx.tool.is_some() && star_name(&raw_dest).is_none() {
             return Err(SitefileError::at(
                 E_PLUGIN,
@@ -3540,7 +5106,12 @@ impl<'a> Exec<'a> {
             }
         }
         let argv: Vec<String> = match ctx.tool {
-            Some(_) => args.as_deref().unwrap_or(&[]).iter().map(|a| scope.interpolate(a)).collect::<Result<_>>()?,
+            Some(_) => args
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|a| scope.interpolate(a))
+                .collect::<Result<_>>()?,
             None => Vec::new(),
         };
         let store = |host: &PluginHost| ctx.tool.is_some() || host.cacheable(plugin);
@@ -3560,13 +5131,27 @@ impl<'a> Exec<'a> {
             result: Option<PluginResult>,
             cache: &'static str,
         }
-        let entries: Vec<(String, Node)> = ctx.tree.entries().map(|(p, n)| (p.clone(), n.clone())).collect();
+        let entries: Vec<(String, Node)> = ctx
+            .tree
+            .entries()
+            .map(|(p, n)| (p.clone(), n.clone()))
+            .collect();
         let mut done: Vec<Option<Files>> = vec![None; entries.len()];
         let mut jobs: Vec<Job> = Vec::new();
         for (index, (p, node)) in entries.iter().enumerate() {
             let rel = &p[1..];
-            let label = format!("{}{rel}", if ctx.label.ends_with('/') { ctx.label.to_string() } else { format!("{}/", ctx.label) });
-            let file_key = ctx.file_base.as_ref().map(|b| memo_key(&[b, rel, &node.digest]));
+            let label = format!(
+                "{}{rel}",
+                if ctx.label.ends_with('/') {
+                    ctx.label.to_string()
+                } else {
+                    format!("{}/", ctx.label)
+                }
+            );
+            let file_key = ctx
+                .file_base
+                .as_ref()
+                .map(|b| memo_key(&[b, rel, &node.digest]));
             if let (Some(m), Some(k)) = (ctx.memo, &file_key) {
                 children.push(k.clone());
                 if let Some(reused) = lock_memo(m).get::<Files>(k) {
@@ -3576,8 +5161,14 @@ impl<'a> Exec<'a> {
             }
             let per_file = file_dest(&raw_dest, rel);
             let d = normalize_virtual(&per_file, Some(&dest.span), "TRANSFORM destination")?;
-            let input = PluginInput::new(label.clone(), basename_virtual(p).to_string(), node.bytes.to_vec());
-            let cached = if self.cache.is_some() && (ctx.tool.is_some() || ctx.plugin_digest.is_some()) {
+            let input = PluginInput::new(
+                label.clone(),
+                basename_virtual(p).to_string(),
+                node.bytes.to_vec(),
+            );
+            let cached = if self.cache.is_some()
+                && (ctx.tool.is_some() || ctx.plugin_digest.is_some())
+            {
                 let code = match ctx.tool {
                     Some(t) => json!({
                         "tool": { "path": t.path.to_string_lossy(), "size": t.size, "mtimeMs": t.mtime_ms },
@@ -3593,13 +5184,25 @@ impl<'a> Exec<'a> {
                 }
                 req.insert("options".into(), Value::Object(om));
                 req.insert("input".into(), json!({ "path": input.path, "name": input.name, "digest": sha256(&input.bytes) }));
-                Some(cache_key(&json!({ "code": code, "request": Value::Object(req) })))
+                Some(cache_key(
+                    &json!({ "code": code, "request": Value::Object(req) }),
+                ))
             } else {
                 None
             };
-            let ev_args = vec![("plugin", json!(plugin)), ("tool", json!(ctx.tool.is_some())), ("dest", json!(d.path)), ("input", json!(label))];
+            let ev_args = vec![
+                ("plugin", json!(plugin)),
+                ("tool", json!(ctx.tool.is_some())),
+                ("dest", json!(d.path)),
+                ("input", json!(label)),
+            ];
             let ev = match self.profiler {
-                Some(pr) => pr.reserve(format!("TRANSFORM {plugin} {}", d.path), "transform", ev_args, 1),
+                Some(pr) => pr.reserve(
+                    format!("TRANSFORM {plugin} {}", d.path),
+                    "transform",
+                    ev_args,
+                    1,
+                ),
                 None => crate::profile::Span::none(),
             };
             let mut job = Job {
@@ -3609,7 +5212,13 @@ impl<'a> Exec<'a> {
                 raw_dest: per_file,
                 path: d.path.clone(),
                 trailing_slash: d.trailing_slash,
-                request: PluginRequest { dest: d.path.clone(), options: opts.clone(), input: Some(input), data: None, item: None },
+                request: PluginRequest {
+                    dest: d.path.clone(),
+                    options: opts.clone(),
+                    input: Some(input),
+                    data: None,
+                    item: None,
+                },
                 cache: if cached.is_some() { "miss" } else { "off" },
                 cached,
                 memo_key: file_key,
@@ -3629,16 +5238,31 @@ impl<'a> Exec<'a> {
         }
 
         // The misses, a few at a time (a JavaScript plugin's one process takes one call at a time).
-        let misses: Vec<usize> = (0..jobs.len()).filter(|&i| jobs[i].result.is_none()).collect();
+        let misses: Vec<usize> = (0..jobs.len())
+            .filter(|&i| jobs[i].result.is_none())
+            .collect();
         let settled: Vec<Option<Result<PluginResult>>> = if let Some(t) = ctx.tool {
             let policy = &self.tool_policy;
             let jobs_ref = &jobs;
             let out = run_bounded(misses.len(), transform_jobs(), |k| {
                 let job = &jobs_ref[misses[k]];
                 job.span.start();
-                let input = job.request.input.as_ref().map(|i| ToolInput { name: i.name.clone(), bytes: i.bytes.clone() });
-                let call = ToolCall { args: argv.clone(), dest: job.path.clone(), options: opts.clone(), input };
-                let log = |l: &str| job.logs.lock().unwrap_or_else(|e| e.into_inner()).push(l.to_string());
+                let input = job.request.input.as_ref().map(|i| ToolInput {
+                    name: i.name.clone(),
+                    bytes: i.bytes.clone(),
+                });
+                let call = ToolCall {
+                    args: argv.clone(),
+                    dest: job.path.clone(),
+                    options: opts.clone(),
+                    input,
+                };
+                let log = |l: &str| {
+                    job.logs
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(l.to_string())
+                };
                 let r = run_tool(t, &call, policy, &log, Some(span));
                 if r.is_ok() {
                     job.span.end(vec![("cache", json!(job.cache))]);
@@ -3692,13 +5316,23 @@ impl<'a> Exec<'a> {
         // In path order: tool output, the first failure, cache writes and the files.
         for (ji, job) in jobs.iter_mut().enumerate() {
             // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
-            for l in job.logs.get_mut().unwrap_or_else(|e| e.into_inner()).drain(..) {
+            for l in job
+                .logs
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..)
+            {
                 (self.unrecorded)(&l);
             }
             if let Some(e) = errors.remove(&ji) {
-                return Err(SitefileError { detail: format!("{}: {}", job.label, e.detail), ..e });
+                return Err(SitefileError {
+                    detail: format!("{}: {}", job.label, e.detail),
+                    ..e
+                });
             }
-            let Some(result) = job.result.take() else { unreachable!("every job before the first failure ran") };
+            let Some(result) = job.result.take() else {
+                unreachable!("every job before the first failure ran")
+            };
             if job.cache == "miss" && store(&self.plugins) {
                 if let (Some(k), Some(c)) = (&job.cached, self.cache.as_mut()) {
                     c.put(k, &result);
@@ -3717,14 +5351,33 @@ impl<'a> Exec<'a> {
                             &dest.span,
                         ));
                     }
-                    files.push((job.path.clone(), make_file(bytes, job.origin.clone(), 0o644)));
+                    files.push((
+                        job.path.clone(),
+                        make_file(bytes, job.origin.clone(), 0o644),
+                    ));
                 }
                 PluginResult::Files(list) => {
                     for (rel, bytes) in list {
-                        let base = if job.path == "/" { "" } else { job.path.as_str() };
-                        let p = normalize_virtual(&format!("{base}/{rel}"), Some(&dest.span), &format!("file '{rel}' returned by PLUGIN {plugin}"))?.path;
+                        let base = if job.path == "/" {
+                            ""
+                        } else {
+                            job.path.as_str()
+                        };
+                        let p = normalize_virtual(
+                            &format!("{base}/{rel}"),
+                            Some(&dest.span),
+                            &format!("file '{rel}' returned by PLUGIN {plugin}"),
+                        )?
+                        .path;
                         if rel.contains("..") || rel.starts_with('/') {
-                            return Err(SitefileError::at(E_PLUGIN, format!("{}: PLUGIN {plugin} returned an unsafe path '{rel}'", job.label), span));
+                            return Err(SitefileError::at(
+                                E_PLUGIN,
+                                format!(
+                                    "{}: PLUGIN {plugin} returned an unsafe path '{rel}'",
+                                    job.label
+                                ),
+                                span,
+                            ));
                         }
                         files.push((p, make_file(bytes, job.origin.clone(), 0o644)));
                     }
@@ -3779,7 +5432,11 @@ fn including(tree: Tree, include: &[String]) -> Result<Tree> {
         return Ok(tree);
     }
     let rules = IgnoreRules::from_patterns(include);
-    Tree::from_files(tree.entries().filter(|(p, _)| rules.excludes(&p[1..])).map(|(p, n)| (p.clone(), n.clone())))
+    Tree::from_files(
+        tree.entries()
+            .filter(|(p, _)| rules.excludes(&p[1..]))
+            .map(|(p, n)| (p.clone(), n.clone())),
+    )
 }
 
 /// The last segment of a TRANSFORM destination when it names each file of a directory source:
@@ -3806,7 +5463,14 @@ pub(crate) fn file_dest(dest: &str, rel: &str) -> String {
             };
             format!("{base}{rel_dir}{stem}{}", &star[1..])
         }
-        None => format!("{}{rel_dir}", if dest.ends_with('/') { dest.to_string() } else { format!("{dest}/") }),
+        None => format!(
+            "{}{rel_dir}",
+            if dest.ends_with('/') {
+                dest.to_string()
+            } else {
+                format!("{dest}/")
+            }
+        ),
     }
 }
 
@@ -3849,7 +5513,9 @@ fn uses_files(nodes: &[TemplateNode]) -> bool {
     nodes.iter().any(|n| match n {
         TemplateNode::File { .. } => true,
         TemplateNode::Each { body, empty, .. } => uses_files(body) || uses_files(empty),
-        TemplateNode::If { then, otherwise, .. } => uses_files(then) || uses_files(otherwise),
+        TemplateNode::If {
+            then, otherwise, ..
+        } => uses_files(then) || uses_files(otherwise),
         _ => false,
     })
 }
@@ -3895,12 +5561,19 @@ pub(crate) fn template_names(nodes: &[TemplateNode]) -> BTreeSet<String> {
                         out.insert(name.to_string());
                     }
                 }
-                TemplateNode::Each { list, body, empty, .. } => {
+                TemplateNode::Each {
+                    list, body, empty, ..
+                } => {
                     out.insert(list.name.clone());
                     walk_nodes(body, out);
                     walk_nodes(empty, out);
                 }
-                TemplateNode::If { cond, then, otherwise, .. } => {
+                TemplateNode::If {
+                    cond,
+                    then,
+                    otherwise,
+                    ..
+                } => {
                     out.insert(cond.name.clone());
                     walk_nodes(then, out);
                     walk_nodes(otherwise, out);
@@ -3924,7 +5597,10 @@ mod tests {
 
     #[test]
     fn relative_and_join() {
-        assert_eq!(relative_path(Path::new("/a/b"), Path::new("/a/b/c/d")), "c/d");
+        assert_eq!(
+            relative_path(Path::new("/a/b"), Path::new("/a/b/c/d")),
+            "c/d"
+        );
         assert_eq!(relative_path(Path::new("/a/b"), Path::new("/a/x")), "../x");
         assert_eq!(relative_path(Path::new("/a"), Path::new("/a")), "");
         assert_eq!(join_path(".", "dist"), "dist");
@@ -3941,14 +5617,22 @@ mod tests {
 
     fn strict_ctx(sitefile: &str, lock: Option<&str>) -> (PathBuf, BuildOptions) {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!("sitefile-pins-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let dir = std::env::temp_dir().join(format!(
+            "sitefile-pins-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Sitefile"), sitefile).unwrap();
         if let Some(l) = lock {
             std::fs::write(dir.join("Sitefile.lock"), l).unwrap();
         }
-        let mut o = BuildOptions { context_dir: dir.display().to_string(), strict_pins: true, ..Default::default() };
+        let mut o = BuildOptions {
+            context_dir: dir.display().to_string(),
+            strict_pins: true,
+            ..Default::default()
+        };
         // Nothing listens on port 9: a fetch fails with E_FETCH, so E_UNPINNED proves the check ran first.
         o.fetch_policy.allow_private_network = true;
         (dir, o)
@@ -3959,20 +5643,40 @@ mod tests {
 
     #[test]
     fn strict_pins_refuses_unpinned_imports_before_fetching() {
-        let (dir, o) = strict_ctx(&format!("FROM scratch\nIMPORT p FROM ./\nIMPORT lib FROM {URL}\nEXPORT /\n"), None);
+        let (dir, o) = strict_ctx(
+            &format!("FROM scratch\nIMPORT p FROM ./\nIMPORT lib FROM {URL}\nEXPORT /\n"),
+            None,
+        );
         let e = build(&o).err().unwrap();
         assert_eq!(e.code, E_UNPINNED);
         assert_eq!(e.span.as_ref().map(|s| s.line), Some(3));
-        assert!(e.detail.starts_with(&format!("IMPORT lib: '{URL}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>")), "{}", e.detail);
+        assert!(
+            e.detail.starts_with(&format!(
+                "IMPORT lib: '{URL}' is not pinned (--strict-pins); add INTEGRITY sha256:<hex>"
+            )),
+            "{}",
+            e.detail
+        );
         // INTEGRITY is a pin: the build gets as far as fetching
-        let (_, o) = strict_ctx(&format!("FROM scratch\nIMPORT lib FROM {URL} INTEGRITY {PIN}\nEXPORT /\n"), None);
+        let (_, o) = strict_ctx(
+            &format!("FROM scratch\nIMPORT lib FROM {URL} INTEGRITY {PIN}\nEXPORT /\n"),
+            None,
+        );
         assert_eq!(build(&o).err().unwrap().code, E_FETCH);
         // so is a lockfile entry, unless --no-lockfile
-        let lock = format!(r#"{{"version":1,"resources":{{"{URL}":{{"integrity":"{PIN}","size":1,"resolved":"{URL}"}}}}}}"#);
-        let (_, o) = strict_ctx(&format!("FROM scratch\nIMPORT lib FROM {URL}\nEXPORT /\n"), Some(&lock));
+        let lock = format!(
+            r#"{{"version":1,"resources":{{"{URL}":{{"integrity":"{PIN}","size":1,"resolved":"{URL}"}}}}}}"#
+        );
+        let (_, o) = strict_ctx(
+            &format!("FROM scratch\nIMPORT lib FROM {URL}\nEXPORT /\n"),
+            Some(&lock),
+        );
         assert_eq!(build(&o).err().unwrap().code, E_FETCH);
         assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
-        let o = BuildOptions { lockfile: LockfileSetting::Disabled, ..o };
+        let o = BuildOptions {
+            lockfile: LockfileSetting::Disabled,
+            ..o
+        };
         assert_eq!(build(&o).err().unwrap().code, E_UNPINNED);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3988,15 +5692,31 @@ mod tests {
             "BASE 127.0.0.1:9/lib/base:1: '127.0.0.1:9/lib/base:1' is not pinned (--strict-pins); pin it with @sha256:..., or record it in Sitefile.lock with a build without --strict-pins"
         );
         // skipped bases (non-oci exports, inspect) are not checked
-        let skip = BuildOptions { skip_base: true, ..o.clone() };
+        let skip = BuildOptions {
+            skip_base: true,
+            ..o.clone()
+        };
         assert!(check_plan_pins(&skip, &plan_build(&skip).unwrap()).is_ok());
         // a lockfile entry or a digest pins it; --base is checked like the Sitefile's BASE
-        let lock = format!(r#"{{"version":1,"resources":{{}},"images":{{"127.0.0.1:9/lib/base:1":{{"digest":"{PIN}"}}}}}}"#);
+        let lock = format!(
+            r#"{{"version":1,"resources":{{}},"images":{{"127.0.0.1:9/lib/base:1":{{"digest":"{PIN}"}}}}}}"#
+        );
         let (_, o) = strict_ctx(tagged, Some(&lock));
         assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
-        let other = BuildOptions { base_image: Some("127.0.0.1:9/lib/base:2".into()), ..o };
-        assert_eq!(check_plan_pins(&other, &plan_build(&other).unwrap()).unwrap_err().code, E_UNPINNED);
-        let (_, o) = strict_ctx(&format!("FROM scratch\nEXPORT / AS oci BASE 127.0.0.1:9/lib/base:1@{PIN}\n"), None);
+        let other = BuildOptions {
+            base_image: Some("127.0.0.1:9/lib/base:2".into()),
+            ..o
+        };
+        assert_eq!(
+            check_plan_pins(&other, &plan_build(&other).unwrap())
+                .unwrap_err()
+                .code,
+            E_UNPINNED
+        );
+        let (_, o) = strict_ctx(
+            &format!("FROM scratch\nEXPORT / AS oci BASE 127.0.0.1:9/lib/base:1@{PIN}\n"),
+            None,
+        );
         assert!(check_plan_pins(&o, &plan_build(&o).unwrap()).is_ok());
     }
 
@@ -4005,7 +5725,14 @@ mod tests {
         let items: Vec<u32> = (0..20).collect();
         let r = map_limit(&items, 4, |i| Ok(i * 2)).unwrap();
         assert_eq!(r, (0..20).map(|i| i * 2).collect::<Vec<_>>());
-        let e = map_limit(&items, 4, |i| if *i == 3 || *i == 7 { Err(SitefileError::plain(E_FETCH, format!("{i}"))) } else { Ok(*i) }).unwrap_err();
+        let e = map_limit(&items, 4, |i| {
+            if *i == 3 || *i == 7 {
+                Err(SitefileError::plain(E_FETCH, format!("{i}")))
+            } else {
+                Ok(*i)
+            }
+        })
+        .unwrap_err();
         assert_eq!(e.detail, "3");
     }
 }

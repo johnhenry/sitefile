@@ -22,13 +22,22 @@ pub type Node = Arc<FileNode>;
 
 /// Reduce a mode to 0o644 or 0o755.
 pub fn normalize_mode(mode: u32) -> u32 {
-    if mode & 0o111 != 0 { 0o755 } else { 0o644 }
+    if mode & 0o111 != 0 {
+        0o755
+    } else {
+        0o644
+    }
 }
 
 pub fn make_file(bytes: impl Into<Arc<[u8]>>, origin: impl Into<String>, mode: u32) -> Node {
     let bytes: Arc<[u8]> = bytes.into();
     let digest = sha256(&bytes);
-    Arc::new(FileNode { bytes, mode: normalize_mode(mode), digest, origin: origin.into() })
+    Arc::new(FileNode {
+        bytes,
+        mode: normalize_mode(mode),
+        digest,
+        origin: origin.into(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +111,12 @@ impl Tree {
     /// reverse. A path (or one of its directories) equal to an existing one
     /// under simple case folding but spelled differently fails with
     /// E_PATH_COLLISION whatever the policy.
-    pub fn with_files<I>(&self, additions: I, policy: ConflictPolicy, span: Option<&SourceSpan>) -> Result<Tree>
+    pub fn with_files<I>(
+        &self,
+        additions: I,
+        policy: ConflictPolicy,
+        span: Option<&SourceSpan>,
+    ) -> Result<Tree>
     where
         I: IntoIterator<Item = (String, Node)>,
     {
@@ -115,7 +129,11 @@ impl Tree {
                 std::borrow::Cow::Owned(p) => p,
             };
             if path == "/" || dirs.contains(&path) {
-                return Err(SitefileError::new(E_CONFLICT, format!("cannot write file '{path}': it is a directory"), span.cloned()));
+                return Err(SitefileError::new(
+                    E_CONFLICT,
+                    format!("cannot write file '{path}': it is a directory"),
+                    span.cloned(),
+                ));
             }
             let chain = prefixes(&path);
             let ancestors = &chain[..chain.len() - 1];
@@ -123,7 +141,10 @@ impl Tree {
                 if let Some(f) = files.get(a) {
                     return Err(SitefileError::new(
                         E_CONFLICT,
-                        format!("cannot write '{path}': '{a}' is a file (written by {})", f.origin),
+                        format!(
+                            "cannot write '{path}': '{a}' is a file (written by {})",
+                            f.origin
+                        ),
                         span.cloned(),
                     ));
                 }
@@ -131,11 +152,19 @@ impl Tree {
             for (p, key) in &chain {
                 if let Some(prior) = folded.get(key) {
                     if prior.path != *p {
-                        let by = format!("{} by {}", if prior.dir { "created" } else { "written" }, prior.origin);
+                        let by = format!(
+                            "{} by {}",
+                            if prior.dir { "created" } else { "written" },
+                            prior.origin
+                        );
                         let what = format!("'{p}' differs only in case from '{}' ({by}); case-insensitive file systems cannot hold both", prior.path);
                         return Err(SitefileError::new(
                             E_PATH_COLLISION,
-                            if *p == path { what } else { format!("cannot write '{path}': {what}") },
+                            if *p == path {
+                                what
+                            } else {
+                                format!("cannot write '{path}': {what}")
+                            },
                             span.cloned(),
                         ));
                     }
@@ -155,14 +184,36 @@ impl Tree {
             }
             for (a, key) in ancestors {
                 if dirs.insert(a.clone()) {
-                    folded.insert(key.clone(), Arc::new(Owner { path: a.clone(), origin: node.origin.clone(), dir: true }));
+                    folded.insert(
+                        key.clone(),
+                        Arc::new(Owner {
+                            path: a.clone(),
+                            origin: node.origin.clone(),
+                            dir: true,
+                        }),
+                    );
                 }
             }
-            let key = chain.last().expect("a path has at least one segment").1.clone();
-            folded.insert(key, Arc::new(Owner { path: path.clone(), origin: node.origin.clone(), dir: false }));
+            let key = chain
+                .last()
+                .expect("a path has at least one segment")
+                .1
+                .clone();
+            folded.insert(
+                key,
+                Arc::new(Owner {
+                    path: path.clone(),
+                    origin: node.origin.clone(),
+                    dir: false,
+                }),
+            );
             files.insert(path, node);
         }
-        Ok(Tree { files, dirs, folded })
+        Ok(Tree {
+            files,
+            dirs,
+            folded,
+        })
     }
 
     /// The files under a directory, re-rooted at `/`.
@@ -183,7 +234,16 @@ impl Tree {
     pub fn mounted_at(&self, dir: &str) -> Vec<(String, Node)> {
         self.files
             .iter()
-            .map(|(p, n)| (if dir == "/" { p.clone() } else { format!("{dir}{p}") }, n.clone()))
+            .map(|(p, n)| {
+                (
+                    if dir == "/" {
+                        p.clone()
+                    } else {
+                        format!("{dir}{p}")
+                    },
+                    n.clone(),
+                )
+            })
             .collect()
     }
 
@@ -217,11 +277,34 @@ mod tests {
     fn conflicts_and_identical_writes() {
         let t = Tree::from_files([("/a/b.txt".to_string(), f("x"))]).unwrap();
         assert!(t.is_directory("/a"));
-        assert!(t.with_files([("/a/b.txt".into(), f("x"))], ConflictPolicy::Error, None).is_ok());
-        assert_eq!(t.with_files([("/a/b.txt".into(), f("y"))], ConflictPolicy::Error, None).unwrap_err().code, E_CONFLICT);
-        assert!(t.with_files([("/a/b.txt".into(), f("y"))], ConflictPolicy::Overwrite, None).is_ok());
-        assert_eq!(t.with_files([("/a".into(), f("y"))], ConflictPolicy::Overwrite, None).unwrap_err().code, E_CONFLICT);
-        assert_eq!(t.with_files([("/a/b.txt/c".into(), f("y"))], ConflictPolicy::Error, None).unwrap_err().code, E_CONFLICT);
+        assert!(t
+            .with_files([("/a/b.txt".into(), f("x"))], ConflictPolicy::Error, None)
+            .is_ok());
+        assert_eq!(
+            t.with_files([("/a/b.txt".into(), f("y"))], ConflictPolicy::Error, None)
+                .unwrap_err()
+                .code,
+            E_CONFLICT
+        );
+        assert!(t
+            .with_files(
+                [("/a/b.txt".into(), f("y"))],
+                ConflictPolicy::Overwrite,
+                None
+            )
+            .is_ok());
+        assert_eq!(
+            t.with_files([("/a".into(), f("y"))], ConflictPolicy::Overwrite, None)
+                .unwrap_err()
+                .code,
+            E_CONFLICT
+        );
+        assert_eq!(
+            t.with_files([("/a/b.txt/c".into(), f("y"))], ConflictPolicy::Error, None)
+                .unwrap_err()
+                .code,
+            E_CONFLICT
+        );
     }
     fn g(s: &str) -> Node {
         make_file(s.as_bytes().to_vec(), format!("Sitefile:1 COPY {s}"), 0o644)
@@ -238,24 +321,56 @@ mod tests {
             collision(t.with_files([("/a.html".into(), g("b"))], ConflictPolicy::Error, None)),
             "'/a.html' differs only in case from '/A.html' (written by Sitefile:1 COPY A); case-insensitive file systems cannot hold both"
         );
-        collision(t.with_files([("/a.html".into(), g("b"))], ConflictPolicy::Overwrite, None));
+        collision(t.with_files(
+            [("/a.html".into(), g("b"))],
+            ConflictPolicy::Overwrite,
+            None,
+        ));
         collision(t.with_files([("/a.html".into(), g("A"))], ConflictPolicy::Error, None));
-        assert_eq!(t.with_files([("/A.html".into(), g("A"))], ConflictPolicy::Error, None).unwrap().len(), 1);
-        assert_eq!(t.with_files([("/A.html".into(), g("B"))], ConflictPolicy::Error, None).unwrap_err().code, E_CONFLICT);
+        assert_eq!(
+            t.with_files([("/A.html".into(), g("A"))], ConflictPolicy::Error, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            t.with_files([("/A.html".into(), g("B"))], ConflictPolicy::Error, None)
+                .unwrap_err()
+                .code,
+            E_CONFLICT
+        );
 
         let d = Tree::from_files([("/Docs/x".to_string(), g("x"))]).unwrap();
         assert_eq!(
             collision(d.with_files([("/docs/y".into(), g("y"))], ConflictPolicy::Error, None)),
             "cannot write '/docs/y': '/docs' differs only in case from '/Docs' (created by Sitefile:1 COPY x); case-insensitive file systems cannot hold both"
         );
-        assert!(collision(d.with_files([("/docs".into(), g("y"))], ConflictPolicy::Overwrite, None)).starts_with("'/docs' differs only in case from '/Docs'"));
+        assert!(collision(d.with_files(
+            [("/docs".into(), g("y"))],
+            ConflictPolicy::Overwrite,
+            None
+        ))
+        .starts_with("'/docs' differs only in case from '/Docs'"));
         collision(d.with_files([("/DOCS/x/z".into(), g("y"))], ConflictPolicy::Error, None));
         let u = Tree::from_files([("/readme".to_string(), g("r"))]).unwrap();
-        assert!(collision(u.with_files([("/README/a".into(), g("a"))], ConflictPolicy::Error, None)).contains("'/README' differs only in case from '/readme'"));
-        assert_eq!(d.with_files([("/Docs/y".into(), g("y"))], ConflictPolicy::Error, None).unwrap().len(), 2);
+        assert!(collision(u.with_files(
+            [("/README/a".into(), g("a"))],
+            ConflictPolicy::Error,
+            None
+        ))
+        .contains("'/README' differs only in case from '/readme'"));
+        assert_eq!(
+            d.with_files([("/Docs/y".into(), g("y"))], ConflictPolicy::Error, None)
+                .unwrap()
+                .len(),
+            2
+        );
         let s = Tree::from_files([("/Σ.html".to_string(), g("s"))]).unwrap();
         collision(s.with_files([("/ς.html".into(), g("s"))], ConflictPolicy::Error, None));
-        collision(Tree::from_files([("/a".to_string(), g("1")), ("/A".to_string(), g("2"))]));
+        collision(Tree::from_files([
+            ("/a".to_string(), g("1")),
+            ("/A".to_string(), g("2")),
+        ]));
     }
     #[test]
     fn paths_are_nfc() {
@@ -263,17 +378,42 @@ mod tests {
         let nfd = "/cafe\u{301}/index.html";
         let a = Tree::from_files([(nfc.to_string(), g("x"))]).unwrap();
         let b = Tree::from_files([(nfd.to_string(), g("x"))]).unwrap();
-        assert_eq!(b.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec![nfc]);
+        assert_eq!(
+            b.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+            vec![nfc]
+        );
         assert_eq!(a.digest(), b.digest());
-        assert_eq!(a.with_files([(nfd.into(), g("x"))], ConflictPolicy::Error, None).unwrap().len(), 1);
-        assert_eq!(a.with_files([(nfd.into(), g("y"))], ConflictPolicy::Error, None).unwrap_err().code, E_CONFLICT);
-        collision(a.with_files([("/CAFE\u{301}/index.html".into(), g("x"))], ConflictPolicy::Error, None));
+        assert_eq!(
+            a.with_files([(nfd.into(), g("x"))], ConflictPolicy::Error, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            a.with_files([(nfd.into(), g("y"))], ConflictPolicy::Error, None)
+                .unwrap_err()
+                .code,
+            E_CONFLICT
+        );
+        collision(a.with_files(
+            [("/CAFE\u{301}/index.html".into(), g("x"))],
+            ConflictPolicy::Error,
+            None,
+        ));
     }
     #[test]
     fn subtree_and_digest_format() {
-        let t = Tree::from_files([("/x/a".to_string(), f("1")), ("/x/b".to_string(), f("2")), ("/y".to_string(), f("3"))]).unwrap();
+        let t = Tree::from_files([
+            ("/x/a".to_string(), f("1")),
+            ("/x/b".to_string(), f("2")),
+            ("/y".to_string(), f("3")),
+        ])
+        .unwrap();
         let s = t.subtree("/x");
-        assert_eq!(s.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec!["/a", "/b"]);
+        assert_eq!(
+            s.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+            vec!["/a", "/b"]
+        );
         assert!(s.digest().starts_with("sha256:"));
     }
 }

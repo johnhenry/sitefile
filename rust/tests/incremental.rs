@@ -4,7 +4,9 @@
 
 use sitefile::build_args::BuildArgs;
 use sitefile::digest::sha256;
-use sitefile::executor::{build, build_to_directory, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting};
+use sitefile::executor::{
+    build, build_to_directory, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting,
+};
 use sitefile::export::exporter::{export_directory, ExportOptions};
 use sitefile::export::incremental::{Applied, ExportState, SharedExportState};
 use sitefile::memo::BuildMemo;
@@ -18,14 +20,21 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-incremental-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-incremental-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -53,7 +62,10 @@ impl Rng {
     }
 }
 
-const WORDS: &[&str] = &["alpha", "beta", "gamma", "delta", "tree", "stage", "render", "import", "export", "digest", "page", "post", "feed"];
+const WORDS: &[&str] = &[
+    "alpha", "beta", "gamma", "delta", "tree", "stage", "render", "import", "export", "digest",
+    "page", "post", "feed",
+];
 
 fn put(file: &Path, text: &str) {
     fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -119,7 +131,11 @@ impl Site {
             s.public.insert(format!("d{}/f{i}.txt", i % 2), w);
         }
         fs::create_dir_all(s.dir.join("plugins")).unwrap();
-        fs::copy(repo_root().join("examples/wasm/plugins/badge.wasm"), s.dir.join("plugins/badge.wasm")).unwrap();
+        fs::copy(
+            repo_root().join("examples/wasm/plugins/badge.wasm"),
+            s.dir.join("plugins/badge.wasm"),
+        )
+        .unwrap();
         s.write();
         s
     }
@@ -139,7 +155,16 @@ impl Site {
         let title = format!("Post {i} {}", self.word());
         let body = self.words(8);
         let tags = vec![self.word()];
-        self.posts.insert(format!("2026-01-{day}-p{i}.md"), Post { title, date: format!("2026-02-{day}"), body, tags, draft: false });
+        self.posts.insert(
+            format!("2026-01-{day}-p{i}.md"),
+            Post {
+                title,
+                date: format!("2026-02-{day}"),
+                body,
+                tags,
+                draft: false,
+            },
+        );
     }
 
     fn write(&self) {
@@ -149,11 +174,21 @@ impl Site {
             let draft = if p.draft { "draft: true\n" } else { "" };
             put(
                 &self.dir.join("posts").join(name),
-                &format!("---\ntitle: \"{}\"\ndate: {}\ntags: [{}]\n{draft}---\n# {}\n\n{}\n", p.title, p.date, p.tags.join(", "), p.title, p.body),
+                &format!(
+                    "---\ntitle: \"{}\"\ndate: {}\ntags: [{}]\n{draft}---\n# {}\n\n{}\n",
+                    p.title,
+                    p.date,
+                    p.tags.join(", "),
+                    p.title,
+                    p.body
+                ),
             );
         }
         if self.bad_post {
-            put(&self.dir.join("posts/zz-bad.md"), "---\ntitle: [unclosed\n---\nbody\n");
+            put(
+                &self.dir.join("posts/zz-bad.md"),
+                "---\ntitle: [unclosed\n---\nbody\n",
+            );
         }
         for (name, text) in &self.public {
             put(&self.dir.join("public").join(name), text);
@@ -164,16 +199,35 @@ impl Site {
             "<h1>${post.title}</h1><nav>${#each posts as o}<a href=\"/${o.slug}\">${o.title}</a>${/each}</nav>",
             "<h1>${post.title}</h1><footer>${site.title}</footer>",
         ];
-        let index_templates = ["<ul>${#each posts as p}<li>${p.title}</li>${/each}</ul>", "<h1>${site.title}</h1>${#if posts}<p>posts</p>${/if}"];
-        put(&self.dir.join("templates/post.html"), post_templates[self.post_template]);
-        put(&self.dir.join("templates/index.html"), index_templates[self.index_template]);
-        put(&self.dir.join("data/site.json"), &serde_json::json!({ "title": self.site_title }).to_string());
+        let index_templates = [
+            "<ul>${#each posts as p}<li>${p.title}</li>${/each}</ul>",
+            "<h1>${site.title}</h1>${#if posts}<p>posts</p>${/if}",
+        ];
+        put(
+            &self.dir.join("templates/post.html"),
+            post_templates[self.post_template],
+        );
+        put(
+            &self.dir.join("templates/index.html"),
+            index_templates[self.index_template],
+        );
+        put(
+            &self.dir.join("data/site.json"),
+            &serde_json::json!({ "title": self.site_title }).to_string(),
+        );
         put(
             &self.dir.join("schema.yaml"),
-            if self.bad_schema { "required: [missing]\n" } else { "required: [title]\nproperties:\n  tags: {type: list, items: string}\n  draft: boolean\n" },
+            if self.bad_schema {
+                "required: [missing]\n"
+            } else {
+                "required: [title]\nproperties:\n  tags: {type: list, items: string}\n  draft: boolean\n"
+            },
         );
         let rows: Vec<String> = self.rows.iter().map(|(a, n)| format!("{a},{n}")).collect();
-        put(&self.dir.join("data/rows.csv"), &format!("name,n\n{}\n", rows.join("\n")));
+        put(
+            &self.dir.join("data/rows.csv"),
+            &format!("name,n\n{}\n", rows.join("\n")),
+        );
         let a = "COPY ./public/ /static/";
         let b = "COPY --from=assets /x/ /assets/";
         let mut lines = vec![
@@ -223,9 +277,28 @@ impl Site {
     /// One random edit; returns what it did.
     fn mutate(&mut self) -> &'static str {
         const KINDS: &[&str] = &[
-            "post-body", "post-title", "post-date", "add-post", "remove-post", "post-template", "index-template", "public-edit", "public-add",
-            "public-remove", "site-json", "rows", "arg", "sitefile-line", "sitefile-swap", "bad-post", "target", "post-draft", "drafts-arg", "schema",
-            "post-tags", "nothing",
+            "post-body",
+            "post-title",
+            "post-date",
+            "add-post",
+            "remove-post",
+            "post-template",
+            "index-template",
+            "public-edit",
+            "public-add",
+            "public-remove",
+            "site-json",
+            "rows",
+            "arg",
+            "sitefile-line",
+            "sitefile-swap",
+            "bad-post",
+            "target",
+            "post-draft",
+            "drafts-arg",
+            "schema",
+            "post-tags",
+            "nothing",
         ];
         let kind = KINDS[self.r.below(KINDS.len())];
         let names: Vec<String> = self.posts.keys().cloned().collect();
@@ -294,7 +367,13 @@ impl Site {
             "sitefile-line" => self.extra_line = !self.extra_line,
             "sitefile-swap" => self.swapped = !self.swapped,
             "bad-post" => self.bad_post = !self.bad_post,
-            "target" => self.target = if self.target.is_none() { Some("assets".into()) } else { None },
+            "target" => {
+                self.target = if self.target.is_none() {
+                    Some("assets".into())
+                } else {
+                    None
+                }
+            }
             "post-draft" => {
                 let n = pick(&mut self.r, &names);
                 let p = self.posts.get_mut(&n).unwrap();
@@ -318,7 +397,13 @@ impl Site {
         let mut args = BuildArgs::new();
         args.set("SITE", self.arg.clone());
         args.set("DRAFTS", self.drafts.to_string());
-        BuildOptions { context_dir: self.dir.to_string_lossy().into_owned(), lockfile: LockfileSetting::Disabled, build_args: args, target: self.target.clone(), ..Default::default() }
+        BuildOptions {
+            context_dir: self.dir.to_string_lossy().into_owned(),
+            lockfile: LockfileSetting::Disabled,
+            build_args: args,
+            target: self.target.clone(),
+            ..Default::default()
+        }
     }
 }
 
@@ -331,32 +416,61 @@ struct Outcome {
 }
 
 fn listing(t: &Tree) -> Vec<String> {
-    t.entries().map(|(p, n)| format!("{p} {:o} {} {}", n.mode, n.digest, n.origin)).collect()
+    t.entries()
+        .map(|(p, n)| format!("{p} {:o} {} {}", n.mode, n.digest, n.origin))
+        .collect()
 }
 
 /// Build, or with `out` build and export there (`--force`); the export says whether it was incremental.
-fn outcome_to(mut options: BuildOptions, out: Option<&Path>) -> (Outcome, Option<(BuildResult, Option<Applied>)>) {
+fn outcome_to(
+    mut options: BuildOptions,
+    out: Option<&Path>,
+) -> (Outcome, Option<(BuildResult, Option<Applied>)>) {
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let w = warnings.clone();
     let cb: Callback = Arc::new(move |m: &str| w.lock().unwrap().push(m.to_string()));
     options.on_warning = Some(cb);
     let built = match out {
         None => build(&options).map(|r| (r, None)),
-        Some(out) => build_to_directory(&options, &out.to_string_lossy(), &ExportTarget { force: true, ..Default::default() }).map(|e| (e.result, e.incremental)),
+        Some(out) => build_to_directory(
+            &options,
+            &out.to_string_lossy(),
+            &ExportTarget {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .map(|e| (e.result, e.incremental)),
     };
     match built {
         Ok((r, applied)) => {
-            let o = Outcome { files: Some(listing(&r.output)), tree: Some(listing(&r.tree)), warnings: warnings.lock().unwrap().clone(), error: None };
+            let o = Outcome {
+                files: Some(listing(&r.output)),
+                tree: Some(listing(&r.tree)),
+                warnings: warnings.lock().unwrap().clone(),
+                error: None,
+            };
             (o, Some((r, applied)))
         }
-        Err(e) => (Outcome { files: None, tree: None, warnings: warnings.lock().unwrap().clone(), error: Some(format!("{}: {}", e.code.as_str(), e.message())) }, None),
+        Err(e) => (
+            Outcome {
+                files: None,
+                tree: None,
+                warnings: warnings.lock().unwrap().clone(),
+                error: Some(format!("{}: {}", e.code.as_str(), e.message())),
+            },
+            None,
+        ),
     }
 }
 
 /// Everything under `dir`, for byte-for-byte comparison: type, path, permission bits, contents.
 fn list_dir(dir: &Path) -> Option<Vec<String>> {
     fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
-        let mut names: Vec<String> = fs::read_dir(dir.join(rel.trim_start_matches('/'))).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> = fs::read_dir(dir.join(rel.trim_start_matches('/')))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         names.sort();
         for name in names {
             let p = format!("{rel}/{name}");
@@ -364,12 +478,18 @@ fn list_dir(dir: &Path) -> Option<Vec<String>> {
             let m = fs::symlink_metadata(&full).unwrap();
             let mode = m.permissions().mode() & 0o7777;
             if m.file_type().is_symlink() {
-                out.push(format!("l {p} -> {}", fs::read_link(&full).unwrap().display()));
+                out.push(format!(
+                    "l {p} -> {}",
+                    fs::read_link(&full).unwrap().display()
+                ));
             } else if m.is_dir() {
                 out.push(format!("d {p} {mode:o}"));
                 walk(dir, &p, out);
             } else {
-                out.push(format!("f {p} {mode:o} {}", sha256(&fs::read(&full).unwrap())));
+                out.push(format!(
+                    "f {p} {mode:o} {}",
+                    sha256(&fs::read(&full).unwrap())
+                ));
             }
         }
     }
@@ -381,13 +501,31 @@ fn list_dir(dir: &Path) -> Option<Vec<String>> {
     Some(out)
 }
 
-const TAMPERS: &[&str] = &["rewrite-same-size", "append", "add-file", "add-dir", "delete-file", "delete-dir", "chmod", "file-to-symlink", "dir-to-symlink"];
+const TAMPERS: &[&str] = &[
+    "rewrite-same-size",
+    "append",
+    "add-file",
+    "add-dir",
+    "delete-file",
+    "delete-dir",
+    "chmod",
+    "file-to-symlink",
+    "dir-to-symlink",
+];
 
 /// Modify an exported directory behind the exporter's back (`victim`: a directory outside it).
 fn tamper(out: &Path, victim: &Path, kind: &str, pick: &mut dyn FnMut(usize) -> usize) {
     let all = list_dir(out).unwrap_or_default();
-    let files: Vec<String> = all.iter().filter(|l| l.starts_with("f ")).map(|l| l.split(' ').nth(1).unwrap().to_string()).collect();
-    let dirs: Vec<String> = all.iter().filter(|l| l.starts_with("d ")).map(|l| l.split(' ').nth(1).unwrap().to_string()).collect();
+    let files: Vec<String> = all
+        .iter()
+        .filter(|l| l.starts_with("f "))
+        .map(|l| l.split(' ').nth(1).unwrap().to_string())
+        .collect();
+    let dirs: Vec<String> = all
+        .iter()
+        .filter(|l| l.starts_with("d "))
+        .map(|l| l.split(' ').nth(1).unwrap().to_string())
+        .collect();
     let at = |p: &str| out.join(p.trim_start_matches('/'));
     if files.is_empty() {
         return;
@@ -402,15 +540,30 @@ fn tamper(out: &Path, victim: &Path, kind: &str, pick: &mut dyn FnMut(usize) -> 
                 *b = if *b == b'X' { b'Y' } else { b'X' };
             }
             fs::write(&f, &bytes).unwrap();
-            let mtime = std::time::UNIX_EPOCH + std::time::Duration::new(m.mtime() as u64, m.mtime_nsec() as u32);
-            fs::File::options().write(true).open(&f).unwrap().set_modified(mtime).unwrap();
+            let mtime = std::time::UNIX_EPOCH
+                + std::time::Duration::new(m.mtime() as u64, m.mtime_nsec() as u32);
+            fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
         }
         "append" => {
             use std::io::Write;
-            fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(b"tampered").unwrap();
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&f)
+                .unwrap()
+                .write_all(b"tampered")
+                .unwrap();
         }
         "add-file" => {
-            let d = if dirs.is_empty() { out.to_path_buf() } else { at(&dirs[pick(dirs.len())]) };
+            let d = if dirs.is_empty() {
+                out.to_path_buf()
+            } else {
+                at(&dirs[pick(dirs.len())])
+            };
             fs::write(d.join("stray.txt"), "stray").unwrap();
         }
         "add-dir" => fs::create_dir_all(out.join("stray-dir")).unwrap(),
@@ -495,7 +648,10 @@ fn random_edits(seed: u32) {
     // The memo was used, and exports wrote only the changes (the others: the first export,
     // large changes such as switching --target, and the exports after tampering).
     assert!(reused > 0);
-    assert!(incremental_exports >= 8, "{incremental_exports} incremental exports");
+    assert!(
+        incremental_exports >= 8,
+        "{incremental_exports} incremental exports"
+    );
     assert!(tampered > 0);
 }
 
@@ -561,7 +717,11 @@ fn an_edit_reruns_only_what_read_it() {
         .filter(|e| e["cat"] == "operation")
         .map(|e| {
             let n = e["name"].as_str().unwrap();
-            format!("{} {}", n.rsplit_once("Sitefile:").map(|(_, r)| r).unwrap_or(n), e["args"]["memo"].as_str().unwrap_or("-"))
+            format!(
+                "{} {}",
+                n.rsplit_once("Sitefile:").map(|(_, r)| r).unwrap_or(n),
+                e["args"]["memo"].as_str().unwrap_or("-")
+            )
         })
         .collect();
     assert_eq!(
@@ -603,11 +763,17 @@ fn files(n: usize, extra: &[(&str, &str, u32)]) -> Tree {
     for i in 0..n {
         let p = format!("/d{}/f{i}.txt", i % 3);
         if !extra.iter().any(|(q, ..)| *q == p) {
-            list.push((p, make_file(format!("file {i}").into_bytes(), "test", 0o644)));
+            list.push((
+                p,
+                make_file(format!("file {i}").into_bytes(), "test", 0o644),
+            ));
         }
     }
     for (p, text, mode) in extra {
-        list.push((p.to_string(), make_file(text.as_bytes().to_vec(), "test", *mode)));
+        list.push((
+            p.to_string(),
+            make_file(text.as_bytes().to_vec(), "test", *mode),
+        ));
     }
     Tree::from_files(list).unwrap()
 }
@@ -626,9 +792,18 @@ impl Pair {
         let ctx = work.0.join("ctx");
         fs::create_dir_all(&ctx).unwrap();
         let out = ctx.join("dist");
-        Pair { work, ctx, out, state: Arc::new(Mutex::new(ExportState::default())) }
+        Pair {
+            work,
+            ctx,
+            out,
+            state: Arc::new(Mutex::new(ExportState::default())),
+        }
     }
-    fn run_with(&self, t: &Tree, before_apply: Option<Arc<dyn Fn() + Send + Sync>>) -> Option<Applied> {
+    fn run_with(
+        &self,
+        t: &Tree,
+        before_apply: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Option<Applied> {
         let mut o = ExportOptions::new(&self.ctx).incremental(Some(self.state.clone()));
         o.before_apply = before_apply;
         let r = export_directory(t, &self.out, &o).unwrap();
@@ -658,21 +833,43 @@ fn incremental_export_writes_only_what_changed() {
     let other = ino(&p.out.join("d0/f0.txt"));
     assert_eq!(p.run(&files(20, &[])), applied(0, 0));
     assert_eq!(ino(&p.out.join("d1/f1.txt")), one);
-    assert_eq!(p.run(&files(20, &[("/d1/f1.txt", "edited", 0o644)])), applied(1, 0));
+    assert_eq!(
+        p.run(&files(20, &[("/d1/f1.txt", "edited", 0o644)])),
+        applied(1, 0)
+    );
     assert_ne!(ino(&p.out.join("d1/f1.txt")), one);
     assert_eq!(ino(&p.out.join("d0/f0.txt")), other);
     // A mode change alone is a change.
-    assert_eq!(p.run(&files(20, &[("/d1/f1.txt", "edited", 0o755)])), applied(1, 0));
-    assert_eq!(fs::metadata(p.out.join("d1/f1.txt")).unwrap().permissions().mode() & 0o777, 0o755);
+    assert_eq!(
+        p.run(&files(20, &[("/d1/f1.txt", "edited", 0o755)])),
+        applied(1, 0)
+    );
+    assert_eq!(
+        fs::metadata(p.out.join("d1/f1.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
 }
 
 #[test]
 fn incremental_export_removes_files_and_emptied_directories() {
     let p = Pair::new();
-    p.run(&files(20, &[("/x/y/z.txt", "z", 0o644), ("/p", "file", 0o644)]));
-    assert_eq!(p.run(&files(20, &[("/p/q.txt", "now a directory", 0o644)])), applied(1, 2));
+    p.run(&files(
+        20,
+        &[("/x/y/z.txt", "z", 0o644), ("/p", "file", 0o644)],
+    ));
+    assert_eq!(
+        p.run(&files(20, &[("/p/q.txt", "now a directory", 0o644)])),
+        applied(1, 2)
+    );
     assert!(!p.out.join("x").exists());
-    assert_eq!(p.run(&files(20, &[("/p", "a file again", 0o644)])), applied(1, 1));
+    assert_eq!(
+        p.run(&files(20, &[("/p", "a file again", 0o644)])),
+        applied(1, 1)
+    );
 }
 
 #[test]
@@ -697,9 +894,21 @@ fn incremental_export_detects_and_undoes_tampering() {
             n += 1;
             (n - 1) % len
         });
-        assert_eq!(p.run(&files(20, &[("/d0/f0.txt", "edit", 0o644)])), None, "{kind}");
-        assert_eq!(list_dir(&victim).unwrap(), [format!("f /secret.txt 644 {}", sha256(b"secret"))], "{kind}");
-        assert_eq!(p.run(&files(20, &[("/d0/f0.txt", "edit 2", 0o644)])), applied(1, 0), "{kind}");
+        assert_eq!(
+            p.run(&files(20, &[("/d0/f0.txt", "edit", 0o644)])),
+            None,
+            "{kind}"
+        );
+        assert_eq!(
+            list_dir(&victim).unwrap(),
+            [format!("f /secret.txt 644 {}", sha256(b"secret"))],
+            "{kind}"
+        );
+        assert_eq!(
+            p.run(&files(20, &[("/d0/f0.txt", "edit 2", 0o644)])),
+            applied(1, 0),
+            "{kind}"
+        );
     }
 }
 
@@ -708,10 +917,29 @@ fn incremental_export_catches_changes_made_while_staging() {
     let p = Pair::new();
     p.run(&files(20, &[]));
     let f = p.out.join("d0/f0.txt");
-    assert_eq!(p.run_with(&files(20, &[("/d0/f0.txt", "edit", 0o644)]), Some(Arc::new(move || fs::write(&f, "someone else").unwrap()))), None);
+    assert_eq!(
+        p.run_with(
+            &files(20, &[("/d0/f0.txt", "edit", 0o644)]),
+            Some(Arc::new(move || fs::write(&f, "someone else").unwrap()))
+        ),
+        None
+    );
     let d = p.out.join("new");
-    assert_eq!(p.run_with(&files(20, &[("/d0/f0.txt", "edit", 0o644), ("/new/a.txt", "a", 0o644)]), Some(Arc::new(move || fs::create_dir(&d).unwrap()))), None);
-    let left: Vec<String> = fs::read_dir(&p.ctx).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.contains("sitefile-")).collect();
+    assert_eq!(
+        p.run_with(
+            &files(
+                20,
+                &[("/d0/f0.txt", "edit", 0o644), ("/new/a.txt", "a", 0o644)]
+            ),
+            Some(Arc::new(move || fs::create_dir(&d).unwrap()))
+        ),
+        None
+    );
+    let left: Vec<String> = fs::read_dir(&p.ctx)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("sitefile-"))
+        .collect();
     assert!(left.is_empty(), "{left:?}");
 }
 
@@ -719,7 +947,15 @@ fn incremental_export_catches_changes_made_while_staging() {
 fn incremental_export_other_or_replaced_destination_is_full() {
     let p = Pair::new();
     let state: SharedExportState = Arc::new(Mutex::new(ExportState::default()));
-    let exp = |to: &str, s: Option<&SharedExportState>| export_directory(&files(20, &[]), &p.ctx.join(to), &ExportOptions::new(&p.ctx).incremental(s.cloned())).unwrap().incremental;
+    let exp = |to: &str, s: Option<&SharedExportState>| {
+        export_directory(
+            &files(20, &[]),
+            &p.ctx.join(to),
+            &ExportOptions::new(&p.ctx).incremental(s.cloned()),
+        )
+        .unwrap()
+        .incremental
+    };
     exp("a", Some(&state));
     assert_eq!(exp("b", Some(&state)), None);
     assert!(exp("b", Some(&state)).is_some());

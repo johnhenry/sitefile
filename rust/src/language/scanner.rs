@@ -48,8 +48,14 @@ impl LogicalLine {
 pub fn is_js_space(c: char) -> bool {
     matches!(
         c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
     )
 }
 
@@ -152,7 +158,12 @@ fn heredoc_markers(text: &[char]) -> Vec<Marker> {
                     j += 1;
                 }
                 if text.get(j).is_none_or(|c| is_js_space(*c)) {
-                    out.push(Marker { at: i, length: j - i, strip, delimiter: text[name_start..j].iter().collect() });
+                    out.push(Marker {
+                        at: i,
+                        length: j - i,
+                        strip,
+                        delimiter: text[name_start..j].iter().collect(),
+                    });
                 }
             }
         }
@@ -216,15 +227,27 @@ fn utf16_len(chars: &[char]) -> u32 {
 /// A comment line: check a `# sitefile=N` directive (only allowed before the first instruction).
 fn directive(raw: &str, line: u32, file: &str, late: bool, saw_version: &mut bool) -> Result<()> {
     let chars: Vec<char> = raw.chars().collect();
-    let Some(hash) = chars.iter().position(|c| *c == '#') else { return Ok(()) };
-    let Some(eq) = version_directive(&chars[hash..]) else { return Ok(()) };
+    let Some(hash) = chars.iter().position(|c| *c == '#') else {
+        return Ok(());
+    };
+    let Some(eq) = version_directive(&chars[hash..]) else {
+        return Ok(());
+    };
     let col = |k: usize| utf16_len(&chars[..k]) + 1;
     let at = SourceSpan::new(file, line, col(hash));
     if late {
-        return Err(SitefileError::at(E_SYNTAX, "the '# sitefile=' directive must come before the first instruction", &at));
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            "the '# sitefile=' directive must come before the first instruction",
+            &at,
+        ));
     }
     if *saw_version {
-        return Err(SitefileError::at(E_SYNTAX, "'# sitefile=' given twice", &at));
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            "'# sitefile=' given twice",
+            &at,
+        ));
     }
     *saw_version = true;
     let rest = &chars[hash + eq..];
@@ -232,7 +255,8 @@ fn directive(raw: &str, line: u32, file: &str, late: bool, saw_version: &mut boo
     let value: String = rest.iter().collect();
     let version = js_trim(&value);
     let vat = SourceSpan::new(file, line, col(hash + eq + lead));
-    let digits = version.starts_with(|c: char| ('1'..='9').contains(&c)) && version.chars().all(|c| c.is_ascii_digit());
+    let digits = version.starts_with(|c: char| ('1'..='9').contains(&c))
+        && version.chars().all(|c| c.is_ascii_digit());
     if !digits {
         return Err(SitefileError::at(
             E_SYNTAX,
@@ -269,7 +293,11 @@ pub struct CommentLine {
 }
 
 /// [`logical_lines`], also collecting every comment line (for `# sitefile-lint:`).
-pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<CommentLine>) -> Result<Vec<LogicalLine>> {
+pub fn logical_lines_with_comments(
+    source: &str,
+    file: &str,
+    comments: &mut Vec<CommentLine>,
+) -> Result<Vec<LogicalLine>> {
     let mut out: Vec<LogicalLine> = Vec::new();
     let mut text: Vec<char> = Vec::new();
     let mut positions: Vec<Pos> = Vec::new();
@@ -287,7 +315,11 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
     for (index, raw) in physical.iter().enumerate() {
         let line = (index + 1) as u32;
         if let Some(open) = heredoc_body.as_mut() {
-            let candidate = if open.marker.strip { raw.trim_start_matches('\t') } else { raw };
+            let candidate = if open.marker.strip {
+                raw.trim_start_matches('\t')
+            } else {
+                raw
+            };
             if candidate == open.marker.delimiter {
                 let body: String = open.lines.iter().map(|l| format!("{l}\n")).collect();
                 let heredoc = Heredoc {
@@ -309,9 +341,19 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
         let trimmed = js_trim(raw);
         if trimmed.starts_with('#') {
             if let Some(hash) = raw.find('#') {
-                comments.push(CommentLine { line, column: utf16_len(&raw[..hash].chars().collect::<Vec<_>>()) + 1, text: raw[hash..].to_string() });
+                comments.push(CommentLine {
+                    line,
+                    column: utf16_len(&raw[..hash].chars().collect::<Vec<_>>()) + 1,
+                    text: raw[hash..].to_string(),
+                });
             }
-            directive(raw, line, file, !out.is_empty() || continuing, &mut saw_version)?;
+            directive(
+                raw,
+                line,
+                file,
+                !out.is_empty() || continuing,
+                &mut saw_version,
+            )?;
             continue;
         }
         if trimmed.is_empty() {
@@ -328,7 +370,11 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
         cols.push(acc);
 
         let cont = trailing_backslashes(&chars) % 2 == 1;
-        let body = if cont { &chars[..chars.len() - 1] } else { &chars[..] };
+        let body = if cont {
+            &chars[..chars.len() - 1]
+        } else {
+            &chars[..]
+        };
         let mut start = 0;
         if continuing {
             while start < body.len() && is_js_space(body[start]) {
@@ -347,10 +393,16 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
         }
         for c in start..stop {
             text.push(body[c]);
-            positions.push(Pos { line, column: cols[c] + 1 });
+            positions.push(Pos {
+                line,
+                column: cols[c] + 1,
+            });
         }
         if stop > start || !continuing {
-            end = Pos { line, column: cols[stop] + 1 };
+            end = Pos {
+                line,
+                column: cols[stop] + 1,
+            };
         }
         if cont {
             continuing = true;
@@ -363,8 +415,12 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
             heredoc: None,
         };
         // /^\S+/: an indented first piece has no keyword here.
-        let keyword: String =
-            logical.chars.iter().take_while(|c| !is_js_space(**c)).collect::<String>().to_uppercase();
+        let keyword: String = logical
+            .chars
+            .iter()
+            .take_while(|c| !is_js_space(**c))
+            .collect::<String>()
+            .to_uppercase();
         if HEREDOC_INSTRUCTIONS.contains(&keyword.as_str()) || is_html_let(&logical.chars) {
             let markers = heredoc_markers(&logical.chars);
             if let Some(second) = markers.get(1) {
@@ -376,22 +432,37 @@ pub fn logical_lines_with_comments(source: &str, file: &str, comments: &mut Vec<
                 ));
             }
             if let Some(first) = markers.into_iter().next() {
-                heredoc_body = Some(OpenHeredoc { marker: first, lines: Vec::new(), start: line + 1 });
+                heredoc_body = Some(OpenHeredoc {
+                    marker: first,
+                    lines: Vec::new(),
+                    start: line + 1,
+                });
             }
         }
         out.push(logical);
         continuing = false;
     }
     if let Some(open) = heredoc_body {
-        let owner = out.last().map(|o| o.positions[open.marker.at]).unwrap_or(Pos { line: 1, column: 1 });
+        let owner = out
+            .last()
+            .map(|o| o.positions[open.marker.at])
+            .unwrap_or(Pos { line: 1, column: 1 });
         return Err(SitefileError::at(
             E_SYNTAX,
-            format!("inline body is missing its closing '{}' line", open.marker.delimiter),
+            format!(
+                "inline body is missing its closing '{}' line",
+                open.marker.delimiter
+            ),
             &span_of(file, owner),
         ));
     }
     if continuing && !js_trim(&text.iter().collect::<String>()).is_empty() {
-        out.push(LogicalLine { chars: text, positions, end, heredoc: None });
+        out.push(LogicalLine {
+            chars: text,
+            positions,
+            end,
+            heredoc: None,
+        });
     }
     Ok(out)
 }
@@ -415,7 +486,13 @@ pub struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     pub fn new(line: &'a LogicalLine, file: &'a str) -> Self {
-        Cursor { line, t: &line.chars, i: 0, inline_used: false, file }
+        Cursor {
+            line,
+            t: &line.chars,
+            i: 0,
+            inline_used: false,
+            file,
+        }
     }
 
     pub fn file(&self) -> &str {
@@ -510,7 +587,11 @@ impl<'a> Cursor<'a> {
     pub fn expect_keyword(&mut self, kw: &str) -> Result<()> {
         let at = self.span();
         if !self.keyword(kw) {
-            return Err(SitefileError::at(E_SYNTAX, format!("expected {}", kw.to_uppercase()), &at));
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("expected {}", kw.to_uppercase()),
+                &at,
+            ));
         }
         Ok(())
     }
@@ -539,7 +620,11 @@ impl<'a> Cursor<'a> {
         if let Some(next) = self.peek(0) {
             if !is_js_space(next) && !stops.contains(next) {
                 // JavaScript reports one UTF-16 unit: half of an astral character, which prints as U+FFFD.
-                let shown = if next.len_utf16() > 1 { '\u{fffd}' } else { next };
+                let shown = if next.len_utf16() > 1 {
+                    '\u{fffd}'
+                } else {
+                    next
+                };
                 return Err(self.error(E_SYNTAX, format!("invalid {what}: unexpected '{shown}'")));
             }
         }
@@ -556,8 +641,16 @@ impl<'a> Cursor<'a> {
         let w = self.word();
         let w = &w[2..];
         Some(match w.split_once('=') {
-            None => Flag { name: w.to_string(), value: None, span },
-            Some((n, v)) => Flag { name: n.to_string(), value: Some(v.to_string()), span },
+            None => Flag {
+                name: w.to_string(),
+                value: None,
+                span,
+            },
+            Some((n, v)) => Flag {
+                name: n.to_string(),
+                value: Some(v.to_string()),
+                span,
+            },
         })
     }
 
@@ -580,7 +673,9 @@ impl<'a> Cursor<'a> {
             stop -= 1;
         }
         self.i = self.t.len();
-        let multiline = stop > start && self.line.positions.get(start).map(|p| p.line) != self.line.positions.get(stop - 1).map(|p| p.line);
+        let multiline = stop > start
+            && self.line.positions.get(start).map(|p| p.line)
+                != self.line.positions.get(stop - 1).map(|p| p.line);
         (self.slice(start, stop), self.span_at(start), multiline)
     }
 
@@ -594,7 +689,12 @@ impl<'a> Cursor<'a> {
         let span = self.span_at(self.i);
         self.i += h.length;
         self.inline_used = true;
-        Some(InlineBody { delimiter: h.delimiter.clone(), text: h.text.clone(), span, body_line: h.body_line })
+        Some(InlineBody {
+            delimiter: h.delimiter.clone(),
+            text: h.text.clone(),
+            span,
+            body_line: h.body_line,
+        })
     }
 
     /// Fail if the line has a heredoc that was not used as the source.
@@ -626,7 +726,11 @@ impl<'a> Cursor<'a> {
         }
 
         if quote == '\'' {
-            let Some(close) = self.t[start + 1..].iter().position(|c| *c == '\'').map(|k| k + start + 1) else {
+            let Some(close) = self.t[start + 1..]
+                .iter()
+                .position(|c| *c == '\'')
+                .map(|k| k + start + 1)
+            else {
                 return Err(self.error_at(E_SYNTAX, "unterminated single-quoted string", start));
             };
             if close > start + 1 {
@@ -638,7 +742,11 @@ impl<'a> Cursor<'a> {
             self.i += 1;
             loop {
                 let Some(ch) = self.peek(0) else {
-                    return Err(self.error_at(E_SYNTAX, "unterminated double-quoted string", start));
+                    return Err(self.error_at(
+                        E_SYNTAX,
+                        "unterminated double-quoted string",
+                        start,
+                    ));
                 };
                 if ch == '"' {
                     self.i += 1;
@@ -646,7 +754,11 @@ impl<'a> Cursor<'a> {
                 }
                 if ch == '\\' {
                     let Some(next) = self.peek(1) else {
-                        return Err(self.error_at(E_SYNTAX, "unterminated double-quoted string", start));
+                        return Err(self.error_at(
+                            E_SYNTAX,
+                            "unterminated double-quoted string",
+                            start,
+                        ));
                     };
                     let c = match next {
                         'n' => '\n',
@@ -677,7 +789,10 @@ impl<'a> Cursor<'a> {
                     self.i += 1;
                 }
             }
-            return Ok(Operand { parts, span: self.span_at(start) });
+            return Ok(Operand {
+                parts,
+                span: self.span_at(start),
+            });
         }
 
         if let Some(after) = self.peek(0) {
@@ -685,7 +800,10 @@ impl<'a> Cursor<'a> {
                 return Err(self.error(E_SYNTAX, "unexpected character after closing quote"));
             }
         }
-        Ok(Operand { parts, span: self.span_at(start) })
+        Ok(Operand {
+            parts,
+            span: self.span_at(start),
+        })
     }
 
     /// At `${`: read `${NAME}` or `${NAME.key…}`.
@@ -705,11 +823,16 @@ impl<'a> Cursor<'a> {
         while self.peek(0) == Some('.') {
             self.i += 1;
             let seg_start = self.i;
-            while matches!(self.peek(0), Some(c) if c == '_' || c == '-' || c.is_ascii_alphanumeric()) {
+            while matches!(self.peek(0), Some(c) if c == '_' || c == '-' || c.is_ascii_alphanumeric())
+            {
                 self.i += 1;
             }
             if self.i == seg_start {
-                return Err(self.error_at(E_SYNTAX, format!("expected a key after '.' in ${{{name}…}}"), at));
+                return Err(self.error_at(
+                    E_SYNTAX,
+                    format!("expected a key after '.' in ${{{name}…}}"),
+                    at,
+                ));
             }
             path.push(self.slice(seg_start, self.i));
         }
@@ -717,7 +840,11 @@ impl<'a> Cursor<'a> {
             return Err(self.error_at(E_SYNTAX, "unterminated ${...}: expected }", at));
         }
         self.i += 1;
-        Ok(TemplatePart::Var { name, path, span: self.span_at(at) })
+        Ok(TemplatePart::Var {
+            name,
+            path,
+            span: self.span_at(at),
+        })
     }
 }
 
@@ -726,18 +853,37 @@ mod tests {
     use super::*;
 
     fn texts(src: &str) -> Vec<String> {
-        logical_lines(src, "Sitefile").unwrap().iter().map(|l| l.text()).collect()
+        logical_lines(src, "Sitefile")
+            .unwrap()
+            .iter()
+            .map(|l| l.text())
+            .collect()
     }
 
     #[test]
     fn version_directive() {
         let at = |src: &str| {
-            logical_lines(src, "Sitefile").map(|_| ()).map_err(|e| (e.code, e.span.map(|s| (s.line, s.column)), e.detail))
+            logical_lines(src, "Sitefile")
+                .map(|_| ())
+                .map_err(|e| (e.code, e.span.map(|s| (s.line, s.column)), e.detail))
         };
-        for ok in ["# sitefile=1\nEXPORT /", "#sitefile=1", "# SiteFile = 1 ", "\t#\tsitefile\t=\t1", "\u{feff}# sitefile=1", "# a\n\n# sitefile=1\nEXPORT /"] {
+        for ok in [
+            "# sitefile=1\nEXPORT /",
+            "#sitefile=1",
+            "# SiteFile = 1 ",
+            "\t#\tsitefile\t=\t1",
+            "\u{feff}# sitefile=1",
+            "# a\n\n# sitefile=1\nEXPORT /",
+        ] {
             assert_eq!(at(ok), Ok(()), "{ok:?}");
         }
-        for other in ["# sitefile: 2", "# sitefile-lint: disable=x", "# sitefiles=2", "# \u{17f}itefile=2", "COPY <<EOF /a\n# sitefile=2\nEOF"] {
+        for other in [
+            "# sitefile: 2",
+            "# sitefile-lint: disable=x",
+            "# sitefiles=2",
+            "# \u{17f}itefile=2",
+            "COPY <<EOF /a\n# sitefile=2\nEOF",
+        ] {
             assert_eq!(at(other), Ok(()), "{other:?}");
         }
         let (code, span, detail) = at("# sitefile=2\nEXPORT /").unwrap_err();
@@ -745,10 +891,16 @@ mod tests {
         assert_eq!(detail, "this Sitefile uses syntax version 2; this sitefile supports version 1 (upgrade sitefile)");
         assert_eq!(at("  # sitefile= 01").unwrap_err().1, Some((1, 15)));
         assert_eq!(at("\u{3000}# sitefile=x").unwrap_err().1, Some((1, 13)));
-        assert_eq!(at("# sitefile=1\n# sitefile=1").unwrap_err().2, "'# sitefile=' given twice");
+        assert_eq!(
+            at("# sitefile=1\n# sitefile=1").unwrap_err().2,
+            "'# sitefile=' given twice"
+        );
         let (code, span, _) = at("COPY a /a\n  # sitefile=1").unwrap_err();
         assert_eq!((code, span), (E_SYNTAX, Some((2, 3))));
-        assert_eq!(at("COPY a \\\n# sitefile=1\n /a").unwrap_err().1, Some((2, 1)));
+        assert_eq!(
+            at("COPY a \\\n# sitefile=1\n /a").unwrap_err().1,
+            Some((2, 1))
+        );
     }
 
     #[test]

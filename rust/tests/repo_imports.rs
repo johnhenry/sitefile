@@ -19,7 +19,11 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-repo-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-repo-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -49,11 +53,21 @@ impl Repo {
         let mut sorted: Vec<(String, String, String)> = entries
             .iter()
             .map(|(mode, name, v)| {
-                let id = if *mode == "40000" || *mode == "160000" { v.to_string() } else { self.put(ObjType::Blob, v.as_bytes().to_vec()) };
+                let id = if *mode == "40000" || *mode == "160000" {
+                    v.to_string()
+                } else {
+                    self.put(ObjType::Blob, v.as_bytes().to_vec())
+                };
                 (mode.to_string(), name.to_string(), id)
             })
             .collect();
-        sorted.sort_by_key(|(m, n, _)| if m == "40000" { format!("{n}/") } else { n.clone() });
+        sorted.sort_by_key(|(m, n, _)| {
+            if m == "40000" {
+                format!("{n}/")
+            } else {
+                n.clone()
+            }
+        });
         for (mode, name, id) in sorted {
             out.extend(format!("{mode} {name}\0").as_bytes());
             out.extend((0..20).map(|i| u8::from_str_radix(&id[i * 2..i * 2 + 2], 16).unwrap()));
@@ -61,7 +75,13 @@ impl Repo {
         self.put(ObjType::Tree, out)
     }
     fn commit(&mut self, tree: &str, message: &str) -> String {
-        self.put(ObjType::Commit, format!("tree {tree}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\n{message}\n").into_bytes())
+        self.put(
+            ObjType::Commit,
+            format!(
+                "tree {tree}\nauthor T <t@e> 0 +0000\ncommitter T <t@e> 0 +0000\n\n{message}\n"
+            )
+            .into_bytes(),
+        )
     }
     fn reachable(&self, commit: &str) -> Vec<String> {
         let mut out = vec![commit.to_string()];
@@ -124,7 +144,13 @@ fn pack(repo: &Repo, ids: &[String]) -> Vec<u8> {
             ObjType::Tag => 4,
         };
         match &prev_blob {
-            Some((boff, base)) if *kind == ObjType::Blob && data.len() > base.len() && data.starts_with(base) && base.len() > 8 && base.len() < 0x10000 => {
+            Some((boff, base))
+                if *kind == ObjType::Blob
+                    && data.len() > base.len()
+                    && data.starts_with(base)
+                    && base.len() > 8
+                    && base.len() < 0x10000 =>
+            {
                 let tail = &data[base.len()..];
                 let varint = |mut n: usize| {
                     let mut v = Vec::new();
@@ -142,7 +168,12 @@ fn pack(repo: &Repo, ids: &[String]) -> Vec<u8> {
                 };
                 let mut d = varint(base.len());
                 d.extend(varint(data.len()));
-                d.extend([0x80 | 0x10 | 0x20, (base.len() & 0xff) as u8, (base.len() >> 8) as u8, tail.len() as u8]);
+                d.extend([
+                    0x80 | 0x10 | 0x20,
+                    (base.len() & 0xff) as u8,
+                    (base.len() >> 8) as u8,
+                    tail.len() as u8,
+                ]);
                 d.extend_from_slice(tail);
                 out.extend(obj_header(6, d.len()));
                 let rel = off - boff;
@@ -186,7 +217,11 @@ fn pkt_lines(body: &[u8]) -> Vec<String> {
             i += 4;
             continue;
         }
-        out.push(String::from_utf8_lossy(&body[i + 4..i + n]).trim_end_matches('\n').to_string());
+        out.push(
+            String::from_utf8_lossy(&body[i + 4..i + n])
+                .trim_end_matches('\n')
+                .to_string(),
+        );
         i += n;
     }
     out
@@ -220,45 +255,64 @@ fn serve(repo: Shared) -> (String, Arc<AtomicUsize>) {
             let _ = reader.read_exact(&mut body);
             let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
             let repo = repo.lock().unwrap().clone();
-            let (ct, resp): (&str, Vec<u8>) = if path == "/repo.git/info/refs?service=git-upload-pack" {
-                let mut v = pkt(b"# service=git-upload-pack\n");
-                v.extend(b"0000");
-                for l in ["version 2\n", "ls-refs\n", "fetch=shallow\n", "object-format=sha1\n"] {
-                    v.extend(pkt(l.as_bytes()));
-                }
-                v.extend(b"0000");
-                ("application/x-git-upload-pack-advertisement", v)
-            } else if path == "/repo.git/git-upload-pack" {
-                let lines = pkt_lines(&body);
-                let mut v = Vec::new();
-                if lines.first().map(String::as_str) == Some("command=ls-refs") {
-                    let prefixes: Vec<&str> = lines.iter().filter_map(|l| l.strip_prefix("ref-prefix ")).collect();
-                    for (name, id, peeled) in &repo.refs {
-                        if prefixes.iter().any(|p| name.starts_with(p)) {
-                            let p = peeled.as_ref().map(|p| format!(" peeled:{p}")).unwrap_or_default();
-                            v.extend(pkt(format!("{id} {name}{p}\n").as_bytes()));
+            let (ct, resp): (&str, Vec<u8>) =
+                if path == "/repo.git/info/refs?service=git-upload-pack" {
+                    let mut v = pkt(b"# service=git-upload-pack\n");
+                    v.extend(b"0000");
+                    for l in [
+                        "version 2\n",
+                        "ls-refs\n",
+                        "fetch=shallow\n",
+                        "object-format=sha1\n",
+                    ] {
+                        v.extend(pkt(l.as_bytes()));
+                    }
+                    v.extend(b"0000");
+                    ("application/x-git-upload-pack-advertisement", v)
+                } else if path == "/repo.git/git-upload-pack" {
+                    let lines = pkt_lines(&body);
+                    let mut v = Vec::new();
+                    if lines.first().map(String::as_str) == Some("command=ls-refs") {
+                        let prefixes: Vec<&str> = lines
+                            .iter()
+                            .filter_map(|l| l.strip_prefix("ref-prefix "))
+                            .collect();
+                        for (name, id, peeled) in &repo.refs {
+                            if prefixes.iter().any(|p| name.starts_with(p)) {
+                                let p = peeled
+                                    .as_ref()
+                                    .map(|p| format!(" peeled:{p}"))
+                                    .unwrap_or_default();
+                                v.extend(pkt(format!("{id} {name}{p}\n").as_bytes()));
+                            }
                         }
+                        v.extend(b"0000");
+                    } else {
+                        let want = lines
+                            .iter()
+                            .find_map(|l| l.strip_prefix("want "))
+                            .unwrap()
+                            .to_string();
+                        let p = pack(&repo, &repo.reachable(&want));
+                        v.extend(pkt(b"shallow-info\n"));
+                        v.extend(pkt(format!("shallow {want}\n").as_bytes()));
+                        v.extend(b"0001");
+                        v.extend(pkt(b"packfile\n"));
+                        for chunk in p.chunks(8000) {
+                            let mut c = vec![1u8];
+                            c.extend_from_slice(chunk);
+                            v.extend(pkt(&c));
+                        }
+                        v.extend(b"0000");
                     }
-                    v.extend(b"0000");
+                    ("application/x-git-upload-pack-result", v)
                 } else {
-                    let want = lines.iter().find_map(|l| l.strip_prefix("want ")).unwrap().to_string();
-                    let p = pack(&repo, &repo.reachable(&want));
-                    v.extend(pkt(b"shallow-info\n"));
-                    v.extend(pkt(format!("shallow {want}\n").as_bytes()));
-                    v.extend(b"0001");
-                    v.extend(pkt(b"packfile\n"));
-                    for chunk in p.chunks(8000) {
-                        let mut c = vec![1u8];
-                        c.extend_from_slice(chunk);
-                        v.extend(pkt(&c));
-                    }
-                    v.extend(b"0000");
-                }
-                ("application/x-git-upload-pack-result", v)
-            } else {
-                let _ = write!(stream, "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-                continue;
-            };
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
+                };
             let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {ct}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", resp.len());
             let _ = stream.write_all(&resp);
         }
@@ -267,8 +321,17 @@ fn serve(repo: Shared) -> (String, Arc<AtomicUsize>) {
 }
 
 fn sitefile(home: &Path, cwd: &Path, args: &[&str]) -> (i32, String, String) {
-    let o = Command::new(BIN).args(args).current_dir(cwd).env("SITEFILE_HOME", home).output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into())
+    let o = Command::new(BIN)
+        .args(args)
+        .current_dir(cwd)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into(),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }
 
 const NET: [&str; 2] = ["--allow-http", "--allow-private-network"];
@@ -277,15 +340,44 @@ const NET: [&str; 2] = ["--allow-http", "--allow-private-network"];
 fn fixture() -> (Shared, String, String) {
     let mut r = Repo::default();
     let big = "shared prefix line\n".repeat(20);
-    let docs = r.tree(&[("100644", "a.md", "---\ntitle: A\n---\n# A\n"), ("120000", "link.md", "a.md"), ("100755", "run.sh", "#!/bin/sh\n"), ("100644", "big.txt", &big), ("100644", "big2.txt", &format!("{big}two\n"))]);
+    let docs = r.tree(&[
+        ("100644", "a.md", "---\ntitle: A\n---\n# A\n"),
+        ("120000", "link.md", "a.md"),
+        ("100755", "run.sh", "#!/bin/sh\n"),
+        ("100644", "big.txt", &big),
+        ("100644", "big2.txt", &format!("{big}two\n")),
+    ]);
     let site1 = r.tree(&[("100644", "index.html", "<h1>v1</h1>\n")]);
-    let t1 = r.tree(&[("40000", "docs", &docs), ("40000", "site", &site1), ("100644", "Sitefile", "FROM scratch\nCOPY ./site/ /\nEXPORT /\n"), ("160000", "mod", &"a".repeat(40))]);
+    let t1 = r.tree(&[
+        ("40000", "docs", &docs),
+        ("40000", "site", &site1),
+        (
+            "100644",
+            "Sitefile",
+            "FROM scratch\nCOPY ./site/ /\nEXPORT /\n",
+        ),
+        ("160000", "mod", &"a".repeat(40)),
+    ]);
     let c1 = r.commit(&t1, "one");
     let site2 = r.tree(&[("100644", "index.html", "<h1>v2</h1>\n")]);
-    let t2 = r.tree(&[("40000", "site", &site2), ("100644", "Sitefile", "FROM scratch\nCOPY ./site/ /\nEXPORT /\n")]);
+    let t2 = r.tree(&[
+        ("40000", "site", &site2),
+        (
+            "100644",
+            "Sitefile",
+            "FROM scratch\nCOPY ./site/ /\nEXPORT /\n",
+        ),
+    ]);
     let c2 = r.commit(&t2, "two");
-    let tag = r.put(ObjType::Tag, format!("object {c1}\ntype commit\ntag v1\ntagger T <t@e> 0 +0000\n\nv1\n").into_bytes());
-    r.refs = vec![("HEAD".into(), c2.clone(), None), ("refs/heads/main".into(), c2.clone(), None), ("refs/tags/v1".into(), tag, Some(c1.clone()))];
+    let tag = r.put(
+        ObjType::Tag,
+        format!("object {c1}\ntype commit\ntag v1\ntagger T <t@e> 0 +0000\n\nv1\n").into_bytes(),
+    );
+    r.refs = vec![
+        ("HEAD".into(), c2.clone(), None),
+        ("refs/heads/main".into(), c2.clone(), None),
+        ("refs/tags/v1".into(), tag, Some(c1.clone())),
+    ];
     (Arc::new(Mutex::new(r)), c1, c2)
 }
 
@@ -312,39 +404,96 @@ fn imports_lock_vendor_outdated_and_contexts() {
     // --strict-pins refuses the unpinned refs before fetching
     let (code, _, err) = sitefile(&home, &t.0, &["build", c, NET[0], NET[1], "--strict-pins"]);
     assert_eq!(code, 1);
-    assert!(err.contains("error[E_UNPINNED]") && err.contains("name a commit (#<40 hex>[:path])"), "{err}");
+    assert!(
+        err.contains("error[E_UNPINNED]") && err.contains("name a commit (#<40 hex>[:path])"),
+        "{err}"
+    );
 
     let (code, out, err) = sitefile(&home, &t.0, &["build", c, NET[0], NET[1]]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.contains(&format!("IMPORT docs is not pinned; pin commit {c1} (#{c1}:docs) for a reproducible build")), "{err}");
+    assert!(
+        err.contains(&format!(
+            "IMPORT docs is not pinned; pin commit {c1} (#{c1}:docs) for a reproducible build"
+        )),
+        "{err}"
+    );
     assert!(out.contains("Updated Sitefile.lock"), "{out}");
     let dist = ctx.join("dist");
-    assert_eq!(fs::read_to_string(dist.join("d/link.md")).unwrap(), "---\ntitle: A\n---\n# A\n");
-    assert_eq!(fs::read_to_string(dist.join("index.html")).unwrap(), "<h1>v2</h1>\n");
-    assert!(fs::read_to_string(dist.join("d/big2.txt")).unwrap().ends_with("two\n"));
+    assert_eq!(
+        fs::read_to_string(dist.join("d/link.md")).unwrap(),
+        "---\ntitle: A\n---\n# A\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dist.join("index.html")).unwrap(),
+        "<h1>v2</h1>\n"
+    );
+    assert!(fs::read_to_string(dist.join("d/big2.txt"))
+        .unwrap()
+        .ends_with("two\n"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(dist.join("d/run.sh")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            fs::metadata(dist.join("d/run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
     }
     let lock = fs::read_to_string(ctx.join("Sitefile.lock")).unwrap();
     assert_eq!(
         lock,
         format!("{{\n  \"version\": 1,\n  \"resources\": {{}},\n  \"git\": {{\n    \"git+{base}/repo.git#main:site\": {{\n      \"commit\": \"{c2}\"\n    }},\n    \"git+{base}/repo.git#v1:docs\": {{\n      \"commit\": \"{c1}\"\n    }}\n  }}\n}}\n")
     );
-    let (code, _, err) = sitefile(&home, &t.0, &["build", c, NET[0], NET[1], "--strict-pins", "--frozen-lockfile"]);
+    let (code, _, err) = sitefile(
+        &home,
+        &t.0,
+        &[
+            "build",
+            c,
+            NET[0],
+            NET[1],
+            "--strict-pins",
+            "--frozen-lockfile",
+        ],
+    );
     assert_eq!(code, 0, "{err}");
 
     // vendor, then an offline build that makes no request
     let (code, out, err) = sitefile(&home, &t.0, &["vendor", c, NET[0], NET[1]]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.starts_with("Vendored 2 resources and 0 images (2 blobs"), "{out}");
-    let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(ctx.join("vendor/sitefile/manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["git"][format!("git+{base}/repo.git#v1:docs")]["kind"], "tree");
+    assert!(
+        out.starts_with("Vendored 2 resources and 0 images (2 blobs"),
+        "{out}"
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(ctx.join("vendor/sitefile/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["git"][format!("git+{base}/repo.git#v1:docs")]["kind"],
+        "tree"
+    );
     let before = count.load(Ordering::SeqCst);
-    let (code, _, err) = sitefile(&home, &t.0, &["build", c, "--frozen-lockfile", "-o", t.0.join("out").to_str().unwrap()]);
+    let (code, _, err) = sitefile(
+        &home,
+        &t.0,
+        &[
+            "build",
+            c,
+            "--frozen-lockfile",
+            "-o",
+            t.0.join("out").to_str().unwrap(),
+        ],
+    );
     assert_eq!(code, 0, "{err}");
-    assert_eq!(count.load(Ordering::SeqCst), before, "no request with a vendored copy");
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        before,
+        "no request with a vendored copy"
+    );
     fs::remove_dir_all(ctx.join("vendor")).unwrap();
 
     // outdated: a locked ref that moved is changed (lock docs at c2 by hand), a commit pin is digest-only
@@ -361,7 +510,13 @@ fn imports_lock_vendor_outdated_and_contexts() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| (i["status"].as_str().unwrap().into(), i["pinnedBy"].as_str().unwrap_or("-").into(), i["latest"].as_str().unwrap_or("-").into()))
+        .map(|i| {
+            (
+                i["status"].as_str().unwrap().into(),
+                i["pinnedBy"].as_str().unwrap_or("-").into(),
+                i["latest"].as_str().unwrap_or("-").into(),
+            )
+        })
         .collect();
     assert_eq!(
         rows,
@@ -375,14 +530,32 @@ fn imports_lock_vendor_outdated_and_contexts() {
     assert_eq!(v["inputs"][3]["error"]["code"], "E_NOT_FOUND");
 
     // INTEGRITY on a Git import, a submodule
-    fs::write(ctx.join("Sitefile"), format!("FROM scratch\nIMPORT a FROM git+{base}/repo.git#main INTEGRITY sha256:{}\nEXPORT /\n", "0".repeat(64))).unwrap();
+    fs::write(
+        ctx.join("Sitefile"),
+        format!(
+            "FROM scratch\nIMPORT a FROM git+{base}/repo.git#main INTEGRITY sha256:{}\nEXPORT /\n",
+            "0".repeat(64)
+        ),
+    )
+    .unwrap();
     let (code, _, err) = sitefile(&home, &t.0, &["validate", c]);
     assert_eq!(code, 1);
-    assert!(err.contains("error[E_VALIDATION]") && err.contains("INTEGRITY does not apply to Git imports"), "{err}");
-    fs::write(ctx.join("Sitefile"), format!("FROM scratch\nIMPORT a FROM git+{base}/repo.git#v1\nEXPORT /\n")).unwrap();
+    assert!(
+        err.contains("error[E_VALIDATION]")
+            && err.contains("INTEGRITY does not apply to Git imports"),
+        "{err}"
+    );
+    fs::write(
+        ctx.join("Sitefile"),
+        format!("FROM scratch\nIMPORT a FROM git+{base}/repo.git#v1\nEXPORT /\n"),
+    )
+    .unwrap();
     let (code, _, err) = sitefile(&home, &t.0, &["build", c, NET[0], NET[1], "--no-lockfile"]);
     assert_eq!(code, 1);
-    assert!(err.contains("error[E_UNSUPPORTED_FILE]") && err.contains("'mod' is a Git submodule"), "{err}");
+    assert!(
+        err.contains("error[E_UNSUPPORTED_FILE]") && err.contains("'mod' is a Git submodule"),
+        "{err}"
+    );
 
     // a Git URL context: fetched, built into ./dist of the working directory, removed
     let cwd = t.0.join("cwd");
@@ -390,8 +563,14 @@ fn imports_lock_vendor_outdated_and_contexts() {
     let url = format!("{base}/repo.git");
     let (code, out, err) = sitefile(&home, &cwd, &["build", &url, NET[0], NET[1]]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.starts_with(&format!("context: {url} at commit {c2}\n")), "{err}");
-    assert_eq!(fs::read_to_string(cwd.join("dist/index.html")).unwrap(), "<h1>v2</h1>\n");
+    assert!(
+        err.starts_with(&format!("context: {url} at commit {c2}\n")),
+        "{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(cwd.join("dist/index.html")).unwrap(),
+        "<h1>v2</h1>\n"
+    );
     assert!(out.starts_with("Exported 1 file to dist ("), "{out}");
     let (code, _, err) = sitefile(&home, &cwd, &["build", &url, "--watch"]);
     assert_eq!(code, 2, "{err}");

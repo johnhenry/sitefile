@@ -14,7 +14,12 @@ pub struct Lines {
 
 impl Lines {
     pub fn new(text: &str) -> Lines {
-        Lines { lines: text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect() }
+        Lines {
+            lines: text
+                .split('\n')
+                .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+                .collect(),
+        }
     }
     pub fn len(&self) -> usize {
         self.lines.len()
@@ -67,7 +72,10 @@ pub fn offset_of(text: &str, line: u32, character: u32) -> usize {
             None => return text.len(),
         }
     }
-    let end = text[start..].find('\n').map(|nl| start + nl).unwrap_or(text.len());
+    let end = text[start..]
+        .find('\n')
+        .map(|nl| start + nl)
+        .unwrap_or(text.len());
     let line_text = &text[start..end];
     let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
     start + utf16_to_byte(line_text, character)

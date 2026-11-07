@@ -19,5 +19,9 @@ pub fn hex_of(digest: &str) -> &str {
 
 /// `sha256:<64 lowercase hex>`
 pub fn is_integrity(s: &str) -> bool {
-    s.len() == 71 && s.starts_with("sha256:") && s[7..].bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    s.len() == 71
+        && s.starts_with("sha256:")
+        && s[7..]
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }

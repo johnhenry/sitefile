@@ -7,7 +7,11 @@ use crate::error::SourceSpan;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
     Text(String),
-    Var { name: String, path: Vec<String>, span: SourceSpan },
+    Var {
+        name: String,
+        path: Vec<String>,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,8 +178,14 @@ pub enum ExportFormat {
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 6] =
-        [ExportFormat::Directory, ExportFormat::Zip, ExportFormat::Tar, ExportFormat::Tgz, ExportFormat::Wbn, ExportFormat::Oci];
+    pub const ALL: [ExportFormat; 6] = [
+        ExportFormat::Directory,
+        ExportFormat::Zip,
+        ExportFormat::Tar,
+        ExportFormat::Tgz,
+        ExportFormat::Wbn,
+        ExportFormat::Oci,
+    ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
         let lower = name.to_ascii_lowercase();
@@ -304,18 +314,40 @@ pub enum FromBase {
     Scratch,
     Operand(Operand),
     /// `image <ref> [AT <dir>]`: the files of an OCI site image (a registry or the local store).
-    Image { reference: Operand, at: Option<Operand> },
+    Image {
+        reference: Operand,
+        at: Option<Operand>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     /// `stage_kw` is set for `STAGE name [FROM base]` (same meaning as `FROM base AS name`); used only in error messages.
-    From { span: SourceSpan, base: FromBase, alias: Option<String>, stage_kw: bool },
-    Arg { span: SourceSpan, name: String, ty: ValueType, default_value: Option<Operand> },
-    Let { span: SourceSpan, name: String, ty: ValueType, value: Operand },
+    From {
+        span: SourceSpan,
+        base: FromBase,
+        alias: Option<String>,
+        stage_kw: bool,
+    },
+    Arg {
+        span: SourceSpan,
+        name: String,
+        ty: ValueType,
+        default_value: Option<Operand>,
+    },
+    Let {
+        span: SourceSpan,
+        name: String,
+        ty: ValueType,
+        value: Operand,
+    },
     /// `LET name: html = <markup>` / `LET name: html <<HTML`: an html fragment, evaluated where a
     /// RENDER template uses it (the IR of TypeScript's `FragmentInstruction`, kind `LET`, type `html`).
-    Fragment { span: SourceSpan, name: String, body: FragmentBody },
+    Fragment {
+        span: SourceSpan,
+        name: String,
+        body: FragmentBody,
+    },
     Import {
         span: SourceSpan,
         name: String,
@@ -355,8 +387,16 @@ pub enum Instruction {
         /// `--inline-svg`: the template's `${file … | svg}` may paste SVG markup into the page.
         inline_svg: bool,
     },
-    Plugin { span: SourceSpan, name: String, uri: Operand, integrity: Option<String> },
-    Tool { span: SourceSpan, name: String },
+    Plugin {
+        span: SourceSpan,
+        name: String,
+        uri: Operand,
+        integrity: Option<String>,
+    },
+    Tool {
+        span: SourceSpan,
+        name: String,
+    },
     Transform {
         span: SourceSpan,
         source: Option<Source>,
@@ -374,7 +414,12 @@ pub enum Instruction {
         overwrite: bool,
     },
     /// `SITEMAP [--overwrite] BASE <url> [TO <dest>]` (dest defaults to `/sitemap.xml`).
-    Sitemap { span: SourceSpan, base: Operand, dest: Option<Operand>, overwrite: bool },
+    Sitemap {
+        span: SourceSpan,
+        base: Operand,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
     /// `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]`; LINK may use `${item…}`.
     Feed {
         span: SourceSpan,
@@ -387,14 +432,35 @@ pub enum Instruction {
         overwrite: bool,
     },
     /// `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]`.
-    Redirect { span: SourceSpan, from: Operand, to: Operand, status: u16, overwrite: bool },
+    Redirect {
+        span: SourceSpan,
+        from: Operand,
+        to: Operand,
+        status: u16,
+        overwrite: bool,
+    },
     /// `HEADER [--overwrite] <pattern> <Name>: <value …>`; `name` has no trailing colon, `value` words are joined with a space.
-    Header { span: SourceSpan, pattern: Operand, name: Operand, value: Vec<Operand>, overwrite: bool },
+    Header {
+        span: SourceSpan,
+        pattern: Operand,
+        name: Operand,
+        value: Vec<Operand>,
+        overwrite: bool,
+    },
     /// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`: rename matching files to `name.<hash>.ext`
     /// and rewrite the HTML and CSS that reference them.
-    Fingerprint { span: SourceSpan, patterns: Vec<Operand>, manifest: Option<Operand>, overwrite: bool },
+    Fingerprint {
+        span: SourceSpan,
+        patterns: Vec<Operand>,
+        manifest: Option<Operand>,
+        overwrite: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
-    CheckLinks { span: SourceSpan, warn: bool, external: bool },
+    CheckLinks {
+        span: SourceSpan,
+        warn: bool,
+        external: bool,
+    },
     Export {
         span: SourceSpan,
         path: Operand,
@@ -484,7 +550,8 @@ pub fn imported_stage(name: &str) -> Option<(&str, &str)> {
 
 pub fn is_ident(s: &str) -> bool {
     let mut c = s.chars();
-    matches!(c.next(), Some(ch) if ch == '_' || ch.is_ascii_alphabetic()) && c.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    matches!(c.next(), Some(ch) if ch == '_' || ch.is_ascii_alphabetic())
+        && c.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 /// Every stage alias declared anywhere in the file.

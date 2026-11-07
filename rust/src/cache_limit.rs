@@ -45,7 +45,9 @@ fn is_hex64(s: &str) -> bool {
 /// case-insensitive); `0` = no limit.
 pub fn parse_size(raw: &str) -> Option<u64> {
     let s = raw.trim();
-    let num_end = s.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(s.len());
+    let num_end = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
     let (num, rest) = s.split_at(num_end);
     // \d+(\.\d+)?
     let (int, frac) = match num.split_once('.') {
@@ -82,7 +84,12 @@ pub fn format_limit(bytes: u64) -> String {
     if bytes == 0 {
         return "unlimited".into();
     }
-    for (u, n) in [("TiB", 1u64 << 40), ("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)] {
+    for (u, n) in [
+        ("TiB", 1u64 << 40),
+        ("GiB", 1 << 30),
+        ("MiB", 1 << 20),
+        ("KiB", 1 << 10),
+    ] {
         if bytes % n == 0 {
             return format!("{}{u}", bytes / n);
         }
@@ -93,7 +100,9 @@ pub fn format_limit(bytes: u64) -> String {
 /// The limit from `$SITEFILE_CACHE_MAX` (unset or empty: the default). A bad
 /// value warns and uses the default.
 pub fn cache_limit_from(raw: Option<&str>, warn: &mut dyn FnMut(&str)) -> u64 {
-    let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else { return DEFAULT_CACHE_MAX };
+    let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else {
+        return DEFAULT_CACHE_MAX;
+    };
     if let Some(n) = parse_size(raw) {
         return n;
     }
@@ -140,7 +149,10 @@ struct FileStat {
 
 fn files(dir: &Path) -> Vec<FileStat> {
     let mut names: Vec<String> = match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect(),
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
         Err(_) => return Vec::new(),
     };
     names.sort();
@@ -149,7 +161,12 @@ fn files(dir: &Path) -> Vec<FileStat> {
         .filter_map(|name| {
             let file = dir.join(&name);
             let st = fs::symlink_metadata(&file).ok().filter(|m| m.is_file())?;
-            Some(FileStat { name, file, size: st.len(), mtime: mtime_ms(&st) })
+            Some(FileStat {
+                name,
+                file,
+                size: st.len(),
+                mtime: mtime_ms(&st),
+            })
         })
         .collect()
 }
@@ -192,7 +209,17 @@ struct Model {
 impl Model {
     fn blob(&mut self, key: String, f: &FileStat, grace: f64) {
         self.total += f.size;
-        self.blobs.insert(key, Blob { file: f.file.clone(), size: f.size, mtime: f.mtime, grace, refs: 0, gone: false });
+        self.blobs.insert(
+            key,
+            Blob {
+                file: f.file.clone(),
+                size: f.size,
+                mtime: f.mtime,
+                grace,
+                refs: 0,
+                gone: false,
+            },
+        );
     }
     fn root(&mut self, r: Root) {
         self.total += r.size;
@@ -207,7 +234,11 @@ impl Model {
 
 fn add_transform(m: &mut Model, dir: &Path) -> u64 {
     for f in files(&dir.join("blobs")) {
-        let grace = if is_hex64(&f.name) { CACHE_GRACE_MS } else { LONG_GRACE_MS };
+        let grace = if is_hex64(&f.name) {
+            CACHE_GRACE_MS
+        } else {
+            LONG_GRACE_MS
+        };
         m.blob(format!("t:{}", f.name), &f, grace);
     }
     let mut entries = 0;
@@ -218,9 +249,18 @@ fn add_transform(m: &mut Model, dir: &Path) -> u64 {
         }
         entries += 1;
         let mut refs: Vec<String> = Vec::new();
-        if let Some(Value::Array(list)) = fs::read_to_string(&f.file).ok().and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|j| j.get("files").cloned()) {
+        if let Some(Value::Array(list)) = fs::read_to_string(&f.file)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|j| j.get("files").cloned())
+        {
             for x in list {
-                if let Some(h) = x.as_array().and_then(|a| a.get(1)).and_then(Value::as_str).filter(|h| is_hex64(h)) {
+                if let Some(h) = x
+                    .as_array()
+                    .and_then(|a| a.get(1))
+                    .and_then(Value::as_str)
+                    .filter(|h| is_hex64(h))
+                {
                     let k = format!("t:{h}");
                     if !refs.contains(&k) {
                         refs.push(k);
@@ -228,7 +268,15 @@ fn add_transform(m: &mut Model, dir: &Path) -> u64 {
                 }
             }
         }
-        m.root(Root { key: format!("t:entries/{}", f.name), file: Some(f.file.clone()), size: f.size, mtime: f.mtime, grace: CACHE_GRACE_MS, refs, image: None });
+        m.root(Root {
+            key: format!("t:entries/{}", f.name),
+            file: Some(f.file.clone()),
+            size: f.size,
+            mtime: f.mtime,
+            grace: CACHE_GRACE_MS,
+            refs,
+            image: None,
+        });
     }
     entries
 }
@@ -240,7 +288,11 @@ fn add_wasm(m: &mut Model, dir: &Path) -> u64 {
         if ok {
             modules += 1;
         }
-        m.blob(format!("w:{}", f.name), &f, if ok { CACHE_GRACE_MS } else { LONG_GRACE_MS });
+        m.blob(
+            format!("w:{}", f.name),
+            &f,
+            if ok { CACHE_GRACE_MS } else { LONG_GRACE_MS },
+        );
     }
     modules
 }
@@ -255,7 +307,11 @@ fn add_store(m: &mut Model, store: &Store, dir: &Path) -> Result<(u64, u64)> {
         }
     }
     for (id, blobs) in view.untagged {
-        let mtime = m.blobs.get(&format!("s:{}", &id[7..])).map(|b| b.mtime).unwrap_or(0.0);
+        let mtime = m
+            .blobs
+            .get(&format!("s:{}", &id[7..]))
+            .map(|b| b.mtime)
+            .unwrap_or(0.0);
         let mut refs: Vec<String> = Vec::new();
         for h in blobs.iter().filter(|h| !view.live.contains(*h)) {
             let k = format!("s:{h}");
@@ -263,7 +319,15 @@ fn add_store(m: &mut Model, store: &Store, dir: &Path) -> Result<(u64, u64)> {
                 refs.push(k);
             }
         }
-        m.root(Root { key: format!("s:image/{id}"), file: None, size: 0, mtime, grace: LONG_GRACE_MS, refs, image: Some(id) });
+        m.root(Root {
+            key: format!("s:image/{id}"),
+            file: None,
+            size: 0,
+            mtime,
+            grace: LONG_GRACE_MS,
+            refs,
+            image: Some(id),
+        });
     }
     Ok((all.len() as u64, all.iter().map(|f| f.size).sum()))
 }
@@ -287,10 +351,34 @@ pub fn cache_usage(home: &Path) -> Result<Vec<CacheUsage>> {
     }
     let (server_items, server_bytes) = size_of(&p.servers);
     Ok(vec![
-        CacheUsage { name: "transform", path: p.transform, items: entries, bytes: t.total, evictable: t.total },
-        CacheUsage { name: "wasm", path: p.wasm, items: modules, bytes: w.total, evictable: w.total },
-        CacheUsage { name: "store", path: p.store, items: store_items, bytes: store_bytes, evictable: s.total },
-        CacheUsage { name: "servers", path: p.servers, items: server_items, bytes: server_bytes, evictable: 0 },
+        CacheUsage {
+            name: "transform",
+            path: p.transform,
+            items: entries,
+            bytes: t.total,
+            evictable: t.total,
+        },
+        CacheUsage {
+            name: "wasm",
+            path: p.wasm,
+            items: modules,
+            bytes: w.total,
+            evictable: w.total,
+        },
+        CacheUsage {
+            name: "store",
+            path: p.store,
+            items: store_items,
+            bytes: store_bytes,
+            evictable: s.total,
+        },
+        CacheUsage {
+            name: "servers",
+            path: p.servers,
+            items: server_items,
+            bytes: server_bytes,
+            evictable: 0,
+        },
     ])
 }
 
@@ -305,7 +393,10 @@ pub struct EvictResult {
 }
 
 pub fn now_ms() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
 }
 
 /// Delete least recently used evictable data until it fits in `limit` bytes
@@ -321,9 +412,22 @@ pub fn enforce_cache_limit_at(home: &Path, limit: u64, now: f64) -> Result<Evict
     }
     let p = cache_paths(home);
     // Upper bound first (it counts tagged images too): under the limit, nothing more to do.
-    let bound: u64 = [p.transform.join("blobs"), p.transform.join("entries"), p.wasm.clone(), p.store.clone()].iter().map(|d| size_of(d).1).sum();
+    let bound: u64 = [
+        p.transform.join("blobs"),
+        p.transform.join("entries"),
+        p.wasm.clone(),
+        p.store.clone(),
+    ]
+    .iter()
+    .map(|d| size_of(d).1)
+    .sum();
     if bound <= limit {
-        return Ok(EvictResult { items: 0, bytes: 0, before: bound, after: bound });
+        return Ok(EvictResult {
+            items: 0,
+            bytes: 0,
+            before: bound,
+            after: bound,
+        });
     }
     let store = Store::open_existing(home);
     let run = || -> Result<EvictResult> {
@@ -339,8 +443,18 @@ pub fn enforce_cache_limit_at(home: &Path, limit: u64, now: f64) -> Result<Evict
             Root(usize),
             Blob(String),
         }
-        let mut cands: Vec<(f64, String, Cand)> = m.roots.iter().enumerate().map(|(i, r)| (r.mtime, r.key.clone(), Cand::Root(i))).collect();
-        cands.extend(m.blobs.iter().filter(|(_, b)| b.refs == 0).map(|(k, b)| (b.mtime, k.clone(), Cand::Blob(k.clone()))));
+        let mut cands: Vec<(f64, String, Cand)> = m
+            .roots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.mtime, r.key.clone(), Cand::Root(i)))
+            .collect();
+        cands.extend(
+            m.blobs
+                .iter()
+                .filter(|(_, b)| b.refs == 0)
+                .map(|(k, b)| (b.mtime, k.clone(), Cand::Blob(k.clone()))),
+        );
         cands.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         for (_, _, c) in cands {
             if m.total <= limit {
@@ -362,7 +476,9 @@ pub fn enforce_cache_limit_at(home: &Path, limit: u64, now: f64) -> Result<Evict
                     items += 1;
                     let refs = m.roots[i].refs.clone();
                     for k in refs {
-                        let Some(b) = m.blobs.get_mut(&k) else { continue };
+                        let Some(b) = m.blobs.get_mut(&k) else {
+                            continue;
+                        };
                         if b.gone {
                             continue;
                         }
@@ -375,7 +491,9 @@ pub fn enforce_cache_limit_at(home: &Path, limit: u64, now: f64) -> Result<Evict
                     }
                 }
                 Cand::Blob(k) => {
-                    let Some(b) = m.blobs.get_mut(&k) else { continue };
+                    let Some(b) = m.blobs.get_mut(&k) else {
+                        continue;
+                    };
                     if !b.gone && b.refs == 0 && now - b.mtime >= b.grace {
                         let _ = fs::remove_file(&b.file);
                         b.gone = true;
@@ -385,7 +503,12 @@ pub fn enforce_cache_limit_at(home: &Path, limit: u64, now: f64) -> Result<Evict
                 }
             }
         }
-        Ok(EvictResult { items, bytes: before - m.total, before, after: m.total })
+        Ok(EvictResult {
+            items,
+            bytes: before - m.total,
+            before,
+            after: m.total,
+        })
     };
     match &store {
         Some(s) => s.with_lock(run),
@@ -410,17 +533,35 @@ mod tests {
     }
     fn age(file: &Path, ms_ago: f64) {
         let now = SystemTime::now();
-        let t = if ms_ago >= 0.0 { now - Duration::from_millis(ms_ago as u64) } else { now + Duration::from_millis((-ms_ago) as u64) };
-        fs::OpenOptions::new().write(true).open(file).unwrap().set_modified(t).unwrap();
+        let t = if ms_ago >= 0.0 {
+            now - Duration::from_millis(ms_ago as u64)
+        } else {
+            now + Duration::from_millis((-ms_ago) as u64)
+        };
+        fs::OpenOptions::new()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
     }
     fn hex(c: &str) -> String {
         c.repeat(64)
     }
     fn mk(files: &[(&str, &str)]) -> Tree {
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap()
+        Tree::from_files(
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap()
     }
     fn usage_of(home: &Path, name: &str) -> CacheUsage {
-        cache_usage(home).unwrap().into_iter().find(|c| c.name == name).unwrap()
+        cache_usage(home)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap()
     }
 
     #[test]
@@ -460,15 +601,27 @@ mod tests {
         let mut c = TransformCache::new(home.join("cache/transform"));
         c.put("a", &PluginResult::File(vec![b'A'; 100]));
         c.put("b", &PluginResult::File(vec![b'B'; 100]));
-        c.put("c", &PluginResult::Files(vec![("x".into(), vec![b'C'; 100]), ("y".into(), vec![b'A'; 100])]));
-        let entry = |k: &str| home.join("cache/transform/entries").join(format!("{k}.json"));
+        c.put(
+            "c",
+            &PluginResult::Files(vec![
+                ("x".into(), vec![b'C'; 100]),
+                ("y".into(), vec![b'A'; 100]),
+            ]),
+        );
+        let entry = |k: &str| {
+            home.join("cache/transform/entries")
+                .join(format!("{k}.json"))
+        };
         age(&entry("a"), 3.0 * HOUR);
         age(&entry("b"), 2.0 * HOUR);
         age(&entry("c"), HOUR);
         for f in files(&home.join("cache/transform/blobs")) {
             age(&f.file, 3.0 * HOUR);
         }
-        assert!(c.get("a").is_some(), "hit: a becomes the most recently used");
+        assert!(
+            c.get("a").is_some(),
+            "hit: a becomes the most recently used"
+        );
         let t = usage_of(home, "transform");
         assert_eq!(t.items, 3);
         let r = enforce_cache_limit_at(home, t.evictable - 1, later()).unwrap();
@@ -491,8 +644,20 @@ mod tests {
         let r = enforce_cache_limit(home, 1).unwrap();
         assert_eq!(r.items, 0);
         assert!(c.get("a").is_some());
-        assert_eq!(enforce_cache_limit_at(home, 1024, later()).unwrap(), EvictResult { items: 0, bytes: 0, before: r.before, after: r.before });
-        assert_eq!(enforce_cache_limit_at(home, 0, later()).unwrap().items, 0, "0 = no limit");
+        assert_eq!(
+            enforce_cache_limit_at(home, 1024, later()).unwrap(),
+            EvictResult {
+                items: 0,
+                bytes: 0,
+                before: r.before,
+                after: r.before
+            }
+        );
+        assert_eq!(
+            enforce_cache_limit_at(home, 0, later()).unwrap().items,
+            0,
+            "0 = no limit"
+        );
     }
 
     #[test]
@@ -501,8 +666,14 @@ mod tests {
         let home = d.path();
         let w = home.join("cache/wasm");
         fs::create_dir_all(&w).unwrap();
-        let (a, b) = (w.join(format!("{}.cwasm", hex("a"))), w.join(format!("{}.cwasm", hex("b"))));
-        let (tc, td) = (w.join(format!(".{}.1.0.tmp", hex("c"))), w.join(format!(".{}.1.0.tmp", hex("d"))));
+        let (a, b) = (
+            w.join(format!("{}.cwasm", hex("a"))),
+            w.join(format!("{}.cwasm", hex("b"))),
+        );
+        let (tc, td) = (
+            w.join(format!(".{}.1.0.tmp", hex("c"))),
+            w.join(format!(".{}.1.0.tmp", hex("d"))),
+        );
         for (p, ch) in [(&a, "a"), (&b, "b"), (&tc, "c"), (&td, "d")] {
             fs::write(p, ch.repeat(50)).unwrap();
         }
@@ -516,7 +687,10 @@ mod tests {
         assert_eq!(r.items, 2);
         let mut left: Vec<String> = files(&w).into_iter().map(|f| f.name).collect();
         left.sort();
-        let mut want = vec![format!(".{}.1.0.tmp", hex("c")), format!("{}.cwasm", hex("b"))];
+        let mut want = vec![
+            format!(".{}.1.0.tmp", hex("c")),
+            format!("{}.cwasm", hex("b")),
+        ];
         want.sort();
         assert_eq!(left, want);
     }
@@ -527,12 +701,22 @@ mod tests {
         let home = d.path();
         let store = Store::open(home).unwrap();
         let site = mk(&[("/index.html", "shared layer")]);
-        let o1 = OciOptions { labels: [("v".to_string(), "1".to_string())].into_iter().collect(), ..Default::default() };
-        let o2 = OciOptions { labels: [("v".to_string(), "2".to_string())].into_iter().collect(), ..Default::default() };
+        let o1 = OciOptions {
+            labels: [("v".to_string(), "1".to_string())].into_iter().collect(),
+            ..Default::default()
+        };
+        let o2 = OciOptions {
+            labels: [("v".to_string(), "2".to_string())].into_iter().collect(),
+            ..Default::default()
+        };
         let tagged = store.add_image(&site, &o1).unwrap();
-        store.tag(&tagged.id, &parse_local_ref("site:1").unwrap()).unwrap();
+        store
+            .tag(&tagged.id, &parse_local_ref("site:1").unwrap())
+            .unwrap();
         let shared = store.add_image(&site, &o2).unwrap();
-        let own = store.add_image(&mk(&[("/index.html", "other")]), &OciOptions::default()).unwrap();
+        let own = store
+            .add_image(&mk(&[("/index.html", "other")]), &OciOptions::default())
+            .unwrap();
         let blobs = home.join("blobs/sha256");
         let stray = blobs.join(hex("e"));
         fs::write(&stray, "stray").unwrap();
@@ -542,14 +726,23 @@ mod tests {
         assert_eq!(before.items, 10); // 3 + 2 (layer shared with the tagged one) + 3 + stray + tmp
         assert!(before.evictable > 0 && before.evictable < before.bytes);
 
-        assert_eq!(enforce_cache_limit_at(home, 1, now_ms() + 59.0 * 60_000.0).unwrap().items, 0);
+        assert_eq!(
+            enforce_cache_limit_at(home, 1, now_ms() + 59.0 * 60_000.0)
+                .unwrap()
+                .items,
+            0
+        );
         age(&tmp, -3.0 * HOUR);
         let r = enforce_cache_limit_at(home, 1, later()).unwrap();
         assert_eq!(r.items, 3, "two untagged images and the stray blob");
         let ids: Vec<String> = store.list().unwrap().into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![tagged.id.clone()]);
         assert!(!ids.contains(&shared.id) && !ids.contains(&own.id));
-        assert_eq!(store.load_tree(&tagged.id).unwrap().len(), 1, "the tagged image is intact");
+        assert_eq!(
+            store.load_tree(&tagged.id).unwrap().len(),
+            1,
+            "the tagged image is intact"
+        );
         assert!(!stray.exists());
         assert!(tmp.exists());
         let after = usage_of(home, "store");
@@ -564,6 +757,10 @@ mod tests {
         fs::write(home.join("blobs/sha256").join(hex("f")), "x".repeat(5000)).unwrap();
         fs::write(home.join("index.json"), "{not json").unwrap();
         let e = enforce_cache_limit_at(home, 1024, later()).unwrap_err();
-        assert!(e.message().contains("index.json is corrupt"), "{}", e.message());
+        assert!(
+            e.message().contains("index.json is corrupt"),
+            "{}",
+            e.message()
+        );
     }
 }

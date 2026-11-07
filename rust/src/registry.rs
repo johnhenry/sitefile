@@ -47,8 +47,12 @@
 use crate::digest::{is_integrity, sha256};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::attest::{referrers_tag, Referrer, ReferrerDescriptor};
-use crate::export::oci::{media, parse_config, parse_manifest, parse_platform, Descriptor, ParsedManifest};
-use crate::refs::{canonical_ref, is_component, is_tag, parse_ref, ref_key, with_default_registry, ImageRef};
+use crate::export::oci::{
+    media, parse_config, parse_manifest, parse_platform, Descriptor, ParsedManifest,
+};
+use crate::refs::{
+    canonical_ref, is_component, is_tag, parse_ref, ref_key, with_default_registry, ImageRef,
+};
 use crate::resources::https::{redact_url, tls_config, GuardedResolver};
 use crate::resources::netpolicy::is_public_address;
 use crate::resources::types::{FetchPolicy, DEFAULT_FETCH_POLICY};
@@ -71,15 +75,24 @@ pub type Env = BTreeMap<String, String>;
 
 /// The current process environment (non-UTF-8 entries are skipped).
 pub fn process_env() -> Env {
-    std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
+    std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect()
 }
 
 /// Registries reachable over plain http: `--insecure-registry` flags plus
 /// `$SITEFILE_INSECURE_REGISTRIES` (comma-separated), deduplicated in order.
 pub fn insecure_registries_from_env(extra: &[String], env: &Env) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let from_env = env.get("SITEFILE_INSECURE_REGISTRIES").map(String::as_str).unwrap_or("");
-    for s in extra.iter().map(String::as_str).chain(from_env.split(',').map(str::trim).filter(|s| !s.is_empty())) {
+    let from_env = env
+        .get("SITEFILE_INSECURE_REGISTRIES")
+        .map(String::as_str)
+        .unwrap_or("");
+    for s in extra
+        .iter()
+        .map(String::as_str)
+        .chain(from_env.split(',').map(str::trim).filter(|s| !s.is_empty()))
+    {
         if !out.iter().any(|x| x == s) {
             out.push(s.to_string());
         }
@@ -100,7 +113,11 @@ pub struct Credentials {
 
 impl Credentials {
     pub fn basic(username: impl Into<String>, password: impl Into<String>) -> Credentials {
-        Credentials { username: Some(username.into()), password: Some(password.into()), identity_token: None }
+        Credentials {
+            username: Some(username.into()),
+            password: Some(password.into()),
+            identity_token: None,
+        }
     }
 }
 
@@ -109,7 +126,10 @@ impl fmt::Debug for Credentials {
         f.debug_struct("Credentials")
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field("identity_token", &self.identity_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "identity_token",
+                &self.identity_token.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -121,8 +141,16 @@ const DEFAULT_HELPER_TIMEOUT_MS: u64 = 15_000;
 fn host_key(k: &str) -> String {
     let b = k.as_bytes();
     let alpha = b.iter().take_while(|c| c.is_ascii_alphabetic()).count();
-    let no_scheme = if alpha > 0 && k[alpha..].starts_with("://") { &k[alpha + 3..] } else { k };
-    let host = no_scheme.split('/').next().unwrap_or("").to_ascii_lowercase();
+    let no_scheme = if alpha > 0 && k[alpha..].starts_with("://") {
+        &k[alpha + 3..]
+    } else {
+        k
+    };
+    let host = no_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if DOCKER_HUB_KEYS.contains(&host.as_str()) {
         "docker.io".into()
     } else {
@@ -139,14 +167,20 @@ pub fn docker_config_path(env: &Env) -> PathBuf {
     match env.get("DOCKER_CONFIG").filter(|d| !d.is_empty()) {
         Some(d) => PathBuf::from(d).join("config.json"),
         None => {
-            let home = env.get("HOME").cloned().or_else(|| std::env::var("HOME").ok()).unwrap_or_else(|| "/".into());
+            let home = env
+                .get("HOME")
+                .cloned()
+                .or_else(|| std::env::var("HOME").ok())
+                .unwrap_or_else(|| "/".into());
             PathBuf::from(home).join(".docker").join("config.json")
         }
     }
 }
 
 fn nonempty(v: Option<&Value>) -> Option<String> {
-    v.and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+    v.and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn split_user_pass(text: &str) -> Option<Credentials> {
@@ -158,12 +192,18 @@ fn split_user_pass(text: &str) -> Option<Credentials> {
 
 /// Node's lenient `Buffer.from(s, 'base64')`: whitespace and padding are optional.
 fn lenient_base64(s: &str) -> Vec<u8> {
-    let clean: String = s.chars().filter(|c| !c.is_whitespace() && *c != '=').map(|c| match c {
-        '-' => '+',
-        '_' => '/',
-        c => c,
-    }).collect();
-    base64::engine::general_purpose::STANDARD_NO_PAD.decode(clean.as_bytes()).unwrap_or_default()
+    let clean: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '=')
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .collect();
+    base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(clean.as_bytes())
+        .unwrap_or_default()
 }
 
 fn from_entry(e: &Value) -> Option<Credentials> {
@@ -176,8 +216,13 @@ fn from_entry(e: &Value) -> Option<Credentials> {
             return Some(c);
         }
     }
-    if let Some(tok) = nonempty(o.get("identitytoken")).or_else(|| nonempty(o.get("identityToken"))) {
-        return Some(Credentials { identity_token: Some(tok), username: nonempty(o.get("username")), password: None });
+    if let Some(tok) = nonempty(o.get("identitytoken")).or_else(|| nonempty(o.get("identityToken")))
+    {
+        return Some(Credentials {
+            identity_token: Some(tok),
+            username: nonempty(o.get("username")),
+            password: None,
+        });
     }
     match (nonempty(o.get("username")), nonempty(o.get("password"))) {
         (Some(u), Some(p)) => Some(Credentials::basic(u, p)),
@@ -187,16 +232,28 @@ fn from_entry(e: &Value) -> Option<Credentials> {
 
 fn valid_helper_name(name: &str) -> bool {
     let b = name.as_bytes();
-    !b.is_empty() && b.len() <= 64 && b[0].is_ascii_alphanumeric() && b.iter().all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    !b.is_empty()
+        && b.len() <= 64
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
 /// Docker's `docker-credential-<name> get`: the server URL on stdin, JSON on
 /// stdout. Runs without a shell, with exactly `env` as its environment (the
 /// program is looked up on `env`'s `PATH`). Its output is never put in an error.
-pub fn run_credential_helper(name: &str, server_url: &str, env: &Env, timeout_ms: u64) -> Result<Option<Credentials>> {
+pub fn run_credential_helper(
+    name: &str,
+    server_url: &str,
+    env: &Env,
+    timeout_ms: u64,
+) -> Result<Option<Credentials>> {
     if !valid_helper_name(name) {
         let shown: String = name.chars().take(40).collect();
-        return Err(SitefileError::plain(E_AUTH, format!("refusing to run credential helper with unusual name '{shown}'")));
+        return Err(SitefileError::plain(
+            E_AUTH,
+            format!("refusing to run credential helper with unusual name '{shown}'"),
+        ));
     }
     let program = format!("docker-credential-{name}");
     let failed = || SitefileError::plain(E_AUTH, format!("credential helper {program} failed"));
@@ -259,12 +316,19 @@ pub fn run_credential_helper(name: &str, server_url: &str, env: &Env, timeout_ms
         }
         return Err(failed());
     }
-    let j: Value = serde_json::from_str(&text)
-        .map_err(|_| SitefileError::plain(E_AUTH, format!("credential helper {program} returned unreadable output")))?;
+    let j: Value = serde_json::from_str(&text).map_err(|_| {
+        SitefileError::plain(
+            E_AUTH,
+            format!("credential helper {program} returned unreadable output"),
+        )
+    })?;
     let user = nonempty(j.get("Username"));
     let secret = nonempty(j.get("Secret"));
     Ok(match (user, secret) {
-        (Some(u), Some(s)) if u == "<token>" => Some(Credentials { identity_token: Some(s), ..Default::default() }),
+        (Some(u), Some(s)) if u == "<token>" => Some(Credentials {
+            identity_token: Some(s),
+            ..Default::default()
+        }),
         (Some(u), Some(s)) => Some(Credentials::basic(u, s)),
         _ => None,
     })
@@ -274,23 +338,41 @@ fn read_json_file(file: &std::path::Path) -> Result<Option<Value>> {
     let text = match std::fs::read(file) {
         Ok(b) => String::from_utf8_lossy(&b).into_owned(),
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(SitefileError::plain(E_AUTH, format!("cannot read {}: {e}", file.display()))),
+        Err(e) => {
+            return Err(SitefileError::plain(
+                E_AUTH,
+                format!("cannot read {}: {e}", file.display()),
+            ))
+        }
     };
-    serde_json::from_str(&text).map(Some).map_err(|_| SitefileError::plain(E_AUTH, format!("{} is not valid JSON", file.display())))
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|_| SitefileError::plain(E_AUTH, format!("{} is not valid JSON", file.display())))
 }
 
 /// Resolve credentials for `registry` (canonical host, e.g. `docker.io` or
 /// `localhost:5000`); `None` means anonymous access.
-pub fn resolve_credentials(registry: &str, explicit: Option<&Credentials>, env: &Env) -> Result<Option<Credentials>> {
+pub fn resolve_credentials(
+    registry: &str,
+    explicit: Option<&Credentials>,
+    env: &Env,
+) -> Result<Option<Credentials>> {
     resolve_credentials_with_timeout(registry, explicit, env, DEFAULT_HELPER_TIMEOUT_MS)
 }
 
-pub fn resolve_credentials_with_timeout(registry: &str, explicit: Option<&Credentials>, env: &Env, helper_timeout_ms: u64) -> Result<Option<Credentials>> {
+pub fn resolve_credentials_with_timeout(
+    registry: &str,
+    explicit: Option<&Credentials>,
+    env: &Env,
+    helper_timeout_ms: u64,
+) -> Result<Option<Credentials>> {
     if let Some(c) = explicit {
         return Ok(Some(c.clone()));
     }
     if let Some(raw) = env.get("SITEFILE_REGISTRY_AUTH").filter(|s| !s.is_empty()) {
-        let bad = || SitefileError::plain(E_AUTH, "SITEFILE_REGISTRY_AUTH must be a JSON object mapping registry hosts to \"user:password\"");
+        let bad = || {
+            SitefileError::plain(E_AUTH, "SITEFILE_REGISTRY_AUTH must be a JSON object mapping registry hosts to \"user:password\"")
+        };
         let j: Value = serde_json::from_str(raw).map_err(|_| bad())?;
         let o = j.as_object().ok_or_else(bad)?;
         for (k, v) in o {
@@ -301,9 +383,17 @@ pub fn resolve_credentials_with_timeout(registry: &str, explicit: Option<&Creden
             }
         }
     }
-    let Some(cfg) = read_json_file(&docker_config_path(env))? else { return Ok(None) };
-    let Some(cfg) = cfg.as_object() else { return Ok(None) };
-    let server_url = if host_key(registry) == "docker.io" { "https://index.docker.io/v1/".to_string() } else { host_key(registry) };
+    let Some(cfg) = read_json_file(&docker_config_path(env))? else {
+        return Ok(None);
+    };
+    let Some(cfg) = cfg.as_object() else {
+        return Ok(None);
+    };
+    let server_url = if host_key(registry) == "docker.io" {
+        "https://index.docker.io/v1/".to_string()
+    } else {
+        host_key(registry)
+    };
     if let Some(helpers) = cfg.get("credHelpers").and_then(Value::as_object) {
         for (k, v) in helpers {
             if let (true, Some(name)) = (key_matches(k, registry), nonempty(Some(v))) {
@@ -375,7 +465,10 @@ impl fmt::Debug for RegistryOptions {
         f.debug_struct("RegistryOptions")
             .field("insecure_registries", &self.insecure_registries)
             .field("allow_private_network", &self.allow_private_network)
-            .field("credentials", &self.credentials.as_ref().map(|_| "<provider>"))
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<provider>"),
+            )
             .field("limits", &self.limits)
             .finish()
     }
@@ -384,11 +477,18 @@ impl fmt::Debug for RegistryOptions {
 /// Build a client for a (canonical) registry name, with credentials resolved
 /// lazily from `explicit`, then `env` ($SITEFILE_REGISTRY_AUTH, Docker config),
 /// unless `options.credentials` is already set.
-pub fn make_client(registry: &str, options: &RegistryOptions, explicit: Option<Credentials>, env: &Env) -> RegistryClient {
+pub fn make_client(
+    registry: &str,
+    options: &RegistryOptions,
+    explicit: Option<Credentials>,
+    env: &Env,
+) -> RegistryClient {
     let mut o = options.clone();
     if o.credentials.is_none() {
         let (reg, env) = (registry.to_string(), env.clone());
-        o.credentials = Some(Arc::new(move || resolve_credentials(&reg, explicit.as_ref(), &env)));
+        o.credentials = Some(Arc::new(move || {
+            resolve_credentials(&reg, explicit.as_ref(), &env)
+        }));
     }
     RegistryClient::new(registry, o)
 }
@@ -424,7 +524,11 @@ fn parse_url(s: &str) -> Option<Url> {
     Some(Url {
         href: u.as_str().to_string(),
         scheme: u.scheme().to_string(),
-        hostname: host_str.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host_str).to_string(),
+        hostname: host_str
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host_str)
+            .to_string(),
         host,
         has_userinfo: !u.username().is_empty() || u.password().is_some_and(|p| !p.is_empty()),
     })
@@ -441,8 +545,14 @@ fn edit_query(url: &str, remove: &[&str], add: &[(&str, &str)], clear: bool) -> 
     let req = url_agent().get(url);
     let ru = req.request_url().ok()?;
     let mut u = ru.as_url().clone();
-    let kept: Vec<(String, String)> =
-        if clear { vec![] } else { u.query_pairs().filter(|(k, _)| !remove.contains(&k.as_ref())).map(|(k, v)| (k.into_owned(), v.into_owned())).collect() };
+    let kept: Vec<(String, String)> = if clear {
+        vec![]
+    } else {
+        u.query_pairs()
+            .filter(|(k, _)| !remove.contains(&k.as_ref()))
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect()
+    };
     if kept.is_empty() && add.is_empty() {
         u.set_query(None);
     } else {
@@ -460,7 +570,9 @@ fn edit_query(url: &str, remove: &[&str], add: &[(&str, &str)], clear: bool) -> 
 
 /// `application/x-www-form-urlencoded` serialization.
 fn form_encode(pairs: &[(&str, &str)]) -> String {
-    edit_query("http://x/", &[], pairs, true).and_then(|s| s.split_once('?').map(|(_, q)| q.to_string())).unwrap_or_default()
+    edit_query("http://x/", &[], pairs, true)
+        .and_then(|s| s.split_once('?').map(|(_, q)| q.to_string()))
+        .unwrap_or_default()
 }
 
 fn hostname_of(host_port: &str) -> &str {
@@ -479,12 +591,25 @@ pub fn is_loopback_host(hostname: &str) -> bool {
         return true;
     }
     let parts: Vec<&str> = h.split('.').collect();
-    parts.len() == 4 && parts[0] == "127" && parts[1..].iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    parts.len() == 4
+        && parts[0] == "127"
+        && parts[1..]
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Control characters to spaces, at most 200 characters.
 fn clean(s: &str) -> String {
-    s.chars().map(|c| if (c as u32) < 0x20 || c as u32 == 0x7f { ' ' } else { c }).take(200).collect()
+    s.chars()
+        .map(|c| {
+            if (c as u32) < 0x20 || c as u32 == 0x7f {
+                ' '
+            } else {
+                c
+            }
+        })
+        .take(200)
+        .collect()
 }
 
 // ================================================================ client
@@ -526,7 +651,10 @@ pub struct ManifestResponse {
 /// A request body, reopened for each attempt (a 401 retry sends it again).
 pub enum Body<'a> {
     Bytes(&'a [u8]),
-    Stream { length: u64, open: &'a dyn Fn() -> Result<Box<dyn Read + Send>> },
+    Stream {
+        length: u64,
+        open: &'a dyn Fn() -> Result<Box<dyn Read + Send>>,
+    },
 }
 
 impl Body<'_> {
@@ -569,7 +697,10 @@ fn parse_challenge(h: Option<&str>) -> Option<Challenge> {
             let vs = i + 2;
             match rest[vs..].find('"') {
                 Some(e) => {
-                    params.insert(rest[s..i].to_ascii_lowercase(), rest[vs..vs + e].to_string());
+                    params.insert(
+                        rest[s..i].to_ascii_lowercase(),
+                        rest[vs..vs + e].to_string(),
+                    );
                     i = vs + e + 1;
                 }
                 None => break,
@@ -584,7 +715,10 @@ fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
     for _ in 0..8 {
         let Some(err) = cur else { break };
         if let Some(io) = err.downcast_ref::<io::Error>() {
-            if matches!(io.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
+            if matches!(
+                io.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) {
                 return true;
             }
         }
@@ -619,9 +753,15 @@ struct Transport {
 
 impl Transport {
     fn new(allow_private: bool, timeout: Duration) -> Transport {
-        let policy = FetchPolicy { allow_private_network: allow_private, ..DEFAULT_FETCH_POLICY };
+        let policy = FetchPolicy {
+            allow_private_network: allow_private,
+            ..DEFAULT_FETCH_POLICY
+        };
         let last = Arc::new(Mutex::new(None));
-        let guard = Guard { inner: GuardedResolver::new(&policy, None), last: last.clone() };
+        let guard = Guard {
+            inner: GuardedResolver::new(&policy, None),
+            last: last.clone(),
+        };
         let mut builder = ureq::AgentBuilder::new()
             .redirects(0)
             .max_idle_connections(0)
@@ -637,7 +777,10 @@ impl Transport {
         if let Ok(Some(config)) = tls_config(None, None) {
             builder = builder.tls_config(config);
         }
-        Transport { agent: builder.build(), last }
+        Transport {
+            agent: builder.build(),
+            last,
+        }
     }
     fn take_error(&self) -> Option<SitefileError> {
         self.last.lock().ok().and_then(|mut g| g.take())
@@ -684,7 +827,13 @@ impl BlobReader {
 impl Read for BlobReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if Instant::now() > self.deadline {
-            let e = SitefileError::plain(E_FETCH_TIMEOUT, format!("downloading blob {} exceeded {} ms", self.digest, self.deadline_ms));
+            let e = SitefileError::plain(
+                E_FETCH_TIMEOUT,
+                format!(
+                    "downloading blob {} exceeded {} ms",
+                    self.digest, self.deadline_ms
+                ),
+            );
             let msg = e.message();
             self.error = Some(e);
             return Err(io::Error::new(io::ErrorKind::TimedOut, msg));
@@ -694,9 +843,15 @@ impl Read for BlobReader {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Err(e),
             Err(e) => {
                 let se = if is_timeout(&e) {
-                    SitefileError::plain(E_FETCH_TIMEOUT, format!("GET {} timed out after {} ms", self.url, self.timeout_ms))
+                    SitefileError::plain(
+                        E_FETCH_TIMEOUT,
+                        format!("GET {} timed out after {} ms", self.url, self.timeout_ms),
+                    )
                 } else {
-                    SitefileError::plain(E_REGISTRY, format!("error downloading blob {}: {e}", self.digest))
+                    SitefileError::plain(
+                        E_REGISTRY,
+                        format!("error downloading blob {}: {e}", self.digest),
+                    )
                 };
                 let msg = se.message();
                 self.error = Some(se);
@@ -719,7 +874,10 @@ impl RegistryClient {
         let host = crate::refs::registry_api_host(registry).to_string();
         let loopback = is_loopback_host(hostname_of(&host));
         let insecure = loopback
-            || options.insecure_registries.iter().any(|h| h.eq_ignore_ascii_case(&host) || h.eq_ignore_ascii_case(registry));
+            || options
+                .insecure_registries
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(&host) || h.eq_ignore_ascii_case(registry));
         let timeout = Duration::from_millis(options.limits.timeout_ms.max(1));
         RegistryClient {
             registry: registry.to_string(),
@@ -743,7 +901,8 @@ impl RegistryClient {
     }
 
     fn same_origin(&self, u: &Url) -> bool {
-        self.origin().is_some_and(|o| o.scheme == u.scheme && o.host == u.host)
+        self.origin()
+            .is_some_and(|o| o.scheme == u.scheme && o.host == u.host)
     }
 
     /// Refuse hops that leave the registry's origin unless they are safe.
@@ -753,7 +912,10 @@ impl RegistryClient {
         }
         let shown = redact_url(&u.href);
         if u.has_userinfo {
-            return Err(SitefileError::plain(E_PROTOCOL, format!("refusing a URL with credentials ({shown})")));
+            return Err(SitefileError::plain(
+                E_PROTOCOL,
+                format!("refusing a URL with credentials ({shown})"),
+            ));
         }
         let loopback_pair = self.loopback && is_loopback_host(&u.hostname);
         if u.scheme != "https" && !(u.scheme == "http" && loopback_pair) {
@@ -762,7 +924,11 @@ impl RegistryClient {
                 format!("{}: refusing to follow a redirect or token realm to {shown}: it must use https", self.registry),
             ));
         }
-        if u.hostname.parse::<IpAddr>().is_ok() && !is_public_address(&u.hostname) && !self.options.allow_private_network && !loopback_pair {
+        if u.hostname.parse::<IpAddr>().is_ok()
+            && !is_public_address(&u.hostname)
+            && !self.options.allow_private_network
+            && !loopback_pair
+        {
             return Err(SitefileError::plain(
                 E_SSRF_BLOCKED,
                 format!(
@@ -774,18 +940,35 @@ impl RegistryClient {
         Ok(())
     }
 
-    fn send_once(&self, method: &str, url: &Url, headers: &[(String, String)], body: Option<&Body<'_>>, timeout: Option<Duration>) -> Result<ureq::Response> {
+    fn send_once(
+        &self,
+        method: &str,
+        url: &Url,
+        headers: &[(String, String)],
+        body: Option<&Body<'_>>,
+        timeout: Option<Duration>,
+    ) -> Result<ureq::Response> {
         let loopback_pair = self.loopback && is_loopback_host(&url.hostname);
-        let t = if self.same_origin(url) || loopback_pair { &self.private } else { &self.public };
+        let t = if self.same_origin(url) || loopback_pair {
+            &self.private
+        } else {
+            &self.public
+        };
         let shown = redact_url(&url.href);
-        let mut req = t.agent.request(method, &url.href).set("accept-encoding", "identity").set("user-agent", USER_AGENT);
+        let mut req = t
+            .agent
+            .request(method, &url.href)
+            .set("accept-encoding", "identity")
+            .set("user-agent", USER_AGENT);
         for (k, v) in headers {
             req = req.set(k, v);
         }
         if let Some(d) = timeout {
             req = req.timeout(d);
         }
-        let ms = timeout.map(|d| d.as_millis() as u64).unwrap_or(self.limits.timeout_ms);
+        let ms = timeout
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(self.limits.timeout_ms);
         let result = match body {
             None if method == "POST" || method == "PUT" => req.send_bytes(&[]),
             None => req.call(),
@@ -805,14 +988,28 @@ impl RegistryClient {
                     if e.code == E_SSRF_BLOCKED {
                         return Err(e);
                     }
-                    return Err(SitefileError::plain(E_REGISTRY, format!("{method} {shown} failed: {}", e.detail)));
+                    return Err(SitefileError::plain(
+                        E_REGISTRY,
+                        format!("{method} {shown} failed: {}", e.detail),
+                    ));
                 }
                 if is_timeout(&tr) {
-                    return Err(SitefileError::plain(E_FETCH_TIMEOUT, format!("{method} {shown} timed out after {ms} ms")));
+                    return Err(SitefileError::plain(
+                        E_FETCH_TIMEOUT,
+                        format!("{method} {shown} timed out after {ms} ms"),
+                    ));
                 }
-                let why = tr.message().map(str::to_string).unwrap_or_else(|| tr.kind().to_string());
-                let src = std::error::Error::source(&tr).map(|s| format!(": {s}")).unwrap_or_default();
-                Err(SitefileError::plain(E_REGISTRY, format!("{method} {shown} failed: {why}{src}")))
+                let why = tr
+                    .message()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| tr.kind().to_string());
+                let src = std::error::Error::source(&tr)
+                    .map(|s| format!(": {s}"))
+                    .unwrap_or_default();
+                Err(SitefileError::plain(
+                    E_REGISTRY,
+                    format!("{method} {shown} failed: {why}{src}"),
+                ))
             }
         }
     }
@@ -828,7 +1025,9 @@ impl RegistryClient {
         timeout: Option<Duration>,
     ) -> Result<ureq::Response> {
         let first = redact_url(url);
-        let mut cur = parse_url(url).ok_or_else(|| SitefileError::plain(E_REGISTRY, format!("cannot request {first}: invalid URL")))?;
+        let mut cur = parse_url(url).ok_or_else(|| {
+            SitefileError::plain(E_REGISTRY, format!("cannot request {first}: invalid URL"))
+        })?;
         let mut hops = 0;
         loop {
             self.check_target(&cur)?;
@@ -843,16 +1042,27 @@ impl RegistryClient {
             }
             let shown = redact_url(&cur.href);
             let Some(loc) = res.header("location").map(str::to_string) else {
-                return Err(SitefileError::plain(E_REDIRECT, format!("redirect {status} from {shown} has no Location header")));
+                return Err(SitefileError::plain(
+                    E_REDIRECT,
+                    format!("redirect {status} from {shown} has no Location header"),
+                ));
             };
             drop(res);
             if hops >= MAX_REDIRECTS {
-                return Err(SitefileError::plain(E_REDIRECT, format!("too many redirects from {first} (limit {MAX_REDIRECTS})")));
+                return Err(SitefileError::plain(
+                    E_REDIRECT,
+                    format!("too many redirects from {first} (limit {MAX_REDIRECTS})"),
+                ));
             }
             hops += 1;
             cur = join_url(&cur.href, &loc)
                 .and_then(|u| parse_url(&u))
-                .ok_or_else(|| SitefileError::plain(E_REDIRECT, format!("invalid redirect Location from {shown}")))?;
+                .ok_or_else(|| {
+                    SitefileError::plain(
+                        E_REDIRECT,
+                        format!("invalid redirect Location from {shown}"),
+                    )
+                })?;
         }
     }
 
@@ -861,14 +1071,21 @@ impl RegistryClient {
         if let Some(o) = self.origin() {
             return Ok(o);
         }
-        let bad = || SitefileError::plain(E_USAGE, format!("invalid registry host '{}'", self.host));
+        let bad =
+            || SitefileError::plain(E_USAGE, format!("invalid registry host '{}'", self.host));
         let https = parse_url(&format!("https://{}/", self.host)).ok_or_else(bad)?;
         *self.origin.lock().unwrap() = Some(https.clone());
         if !self.insecure {
             return Ok(https);
         }
         let probe = parse_url(&format!("{}v2/", https.href)).ok_or_else(bad)?;
-        match self.send_once("GET", &probe, &[], None, Some(Duration::from_millis(self.limits.timeout_ms.min(5000)))) {
+        match self.send_once(
+            "GET",
+            &probe,
+            &[],
+            None,
+            Some(Duration::from_millis(self.limits.timeout_ms.min(5000))),
+        ) {
             Ok(_) => Ok(https),
             Err(e) if e.code != E_REGISTRY && e.code != E_FETCH_TIMEOUT => Err(e),
             Err(_) => {
@@ -894,21 +1111,51 @@ impl RegistryClient {
     // ------------------------------------------------------------ auth
 
     fn basic_header(c: &Credentials) -> String {
-        let raw = format!("{}:{}", c.username.as_deref().unwrap_or(""), c.password.as_deref().unwrap_or(""));
-        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw.as_bytes()))
+        let raw = format!(
+            "{}:{}",
+            c.username.as_deref().unwrap_or(""),
+            c.password.as_deref().unwrap_or("")
+        );
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+        )
     }
 
-    fn fetch_token(&self, chal: &Challenge, scope: &str, creds: Option<&Credentials>) -> Result<String> {
-        let no_realm = || SitefileError::plain(E_AUTH, format!("{}: the registry's token challenge has no usable realm", self.registry));
+    fn fetch_token(
+        &self,
+        chal: &Challenge,
+        scope: &str,
+        creds: Option<&Credentials>,
+    ) -> Result<String> {
+        let no_realm = || {
+            SitefileError::plain(
+                E_AUTH,
+                format!(
+                    "{}: the registry's token challenge has no usable realm",
+                    self.registry
+                ),
+            )
+        };
         let realm = chal.params.get("realm").ok_or_else(no_realm)?;
-        let realm_url = parse_url(realm).filter(|u| !u.scheme.is_empty() && realm.contains(':')).ok_or_else(no_realm)?;
-        let scopes: Vec<(&str, &str)> = scope.split(' ').filter(|s| !s.is_empty()).map(|s| ("scope", s)).collect();
+        let realm_url = parse_url(realm)
+            .filter(|u| !u.scheme.is_empty() && realm.contains(':'))
+            .ok_or_else(no_realm)?;
+        let scopes: Vec<(&str, &str)> = scope
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(|s| ("scope", s))
+            .collect();
         let mut add: Vec<(&str, &str)> = Vec::new();
         if let Some(s) = chal.params.get("service") {
             add.push(("service", s));
         }
         add.extend(scopes);
-        let remove: &[&str] = if chal.params.contains_key("service") { &["service"] } else { &[] };
+        let remove: &[&str] = if chal.params.contains_key("service") {
+            &["service"]
+        } else {
+            &[]
+        };
         let mut url = edit_query(&realm_url.href, remove, &add, false).ok_or_else(no_realm)?;
         let mut headers: Vec<(String, String)> = vec![("accept".into(), "application/json".into())];
         let mut method = "GET";
@@ -917,29 +1164,65 @@ impl RegistryClient {
         if let Some(tok) = creds.and_then(|c| c.identity_token.as_deref()) {
             method = "POST";
             let service = chal.params.get("service").map(String::as_str).unwrap_or("");
-            form = form_encode(&[("grant_type", "refresh_token"), ("service", service), ("scope", scope), ("client_id", "sitefile"), ("refresh_token", tok)]);
+            form = form_encode(&[
+                ("grant_type", "refresh_token"),
+                ("service", service),
+                ("scope", scope),
+                ("client_id", "sitefile"),
+                ("refresh_token", tok),
+            ]);
             url = edit_query(&url, &[], &[], true).ok_or_else(no_realm)?;
-            headers.push(("content-type".into(), "application/x-www-form-urlencoded".into()));
+            headers.push((
+                "content-type".into(),
+                "application/x-www-form-urlencoded".into(),
+            ));
             body = Some(Body::Bytes(form.as_bytes()));
-        } else if let Some(c) = creds.filter(|c| c.username.as_deref().is_some_and(|u| !u.is_empty()) && c.password.is_some()) {
+        } else if let Some(c) = creds.filter(|c| {
+            c.username.as_deref().is_some_and(|u| !u.is_empty()) && c.password.is_some()
+        }) {
             headers.push(("authorization".into(), Self::basic_header(c)));
         }
         let res = self.follow(method, &url, &headers, body.as_ref(), None, None)?;
         let status = res.status();
         if status != 200 {
-            let hint = if status == 401 || status == 403 { " (credentials rejected or missing)" } else { "" };
+            let hint = if status == 401 || status == 403 {
+                " (credentials rejected or missing)"
+            } else {
+                ""
+            };
             return Err(SitefileError::plain(
                 E_AUTH,
-                format!("{}: the token endpoint {} answered HTTP {status}{hint}", self.registry, redact_url(&url)),
+                format!(
+                    "{}: the token endpoint {} answered HTTP {status}{hint}",
+                    self.registry,
+                    redact_url(&url)
+                ),
             ));
         }
         let bytes = read_body(res, self.limits.max_manifest_bytes)?;
-        let j: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| SitefileError::plain(E_AUTH, format!("{}: the token endpoint returned unreadable output", self.registry)))?;
-        let pick = |k: &str| j.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+        let j: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            SitefileError::plain(
+                E_AUTH,
+                format!(
+                    "{}: the token endpoint returned unreadable output",
+                    self.registry
+                ),
+            )
+        })?;
+        let pick = |k: &str| {
+            j.get(k)
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
         pick("token")
             .or_else(|| pick("access_token"))
-            .ok_or_else(|| SitefileError::plain(E_AUTH, format!("{}: the token endpoint returned no token", self.registry)))
+            .ok_or_else(|| {
+                SitefileError::plain(
+                    E_AUTH,
+                    format!("{}: the token endpoint returned no token", self.registry),
+                )
+            })
     }
 
     fn authenticate(&self, chal: &Challenge, scope: &str, use_creds: bool) -> Result<String> {
@@ -955,21 +1238,52 @@ impl RegistryClient {
             ));
         }
         if chal.scheme == "basic" {
-            let c = creds.as_ref().filter(|c| c.username.as_deref().is_some_and(|u| !u.is_empty()) && c.password.is_some());
+            let c = creds.as_ref().filter(|c| {
+                c.username.as_deref().is_some_and(|u| !u.is_empty()) && c.password.is_some()
+            });
             let Some(c) = c else {
-                return Err(SitefileError::plain(E_AUTH, format!("{}: Basic authentication needs a username and password", self.registry)));
+                return Err(SitefileError::plain(
+                    E_AUTH,
+                    format!(
+                        "{}: Basic authentication needs a username and password",
+                        self.registry
+                    ),
+                ));
             };
             return Ok(Self::basic_header(c));
         }
         if chal.scheme == "bearer" {
-            let s = chal.params.get("scope").filter(|s| !s.is_empty()).map(String::as_str).unwrap_or(scope);
-            return Ok(format!("Bearer {}", self.fetch_token(chal, s, creds.as_ref())?));
+            let s = chal
+                .params
+                .get("scope")
+                .filter(|s| !s.is_empty())
+                .map(String::as_str)
+                .unwrap_or(scope);
+            return Ok(format!(
+                "Bearer {}",
+                self.fetch_token(chal, s, creds.as_ref())?
+            ));
         }
-        Err(SitefileError::plain(E_AUTH, format!("{}: unsupported authentication scheme '{}'", self.registry, clean(&chal.scheme))))
+        Err(SitefileError::plain(
+            E_AUTH,
+            format!(
+                "{}: unsupported authentication scheme '{}'",
+                self.registry,
+                clean(&chal.scheme)
+            ),
+        ))
     }
 
     /// Send a request, answering a 401 challenge (anonymous token first, then credentials).
-    fn call(&self, method: &str, url: &str, scope: &str, headers: &[(String, String)], body: Option<&Body<'_>>, timeout: Option<Duration>) -> Result<ureq::Response> {
+    fn call(
+        &self,
+        method: &str,
+        url: &str,
+        scope: &str,
+        headers: &[(String, String)],
+        body: Option<&Body<'_>>,
+        timeout: Option<Duration>,
+    ) -> Result<ureq::Response> {
         self.init()?;
         let mut used_creds = false;
         let mut attempt = 0;
@@ -979,15 +1293,22 @@ impl RegistryClient {
             if res.status() != 401 || attempt >= 2 {
                 return Ok(res);
             }
-            let Some(chal) = parse_challenge(res.header("www-authenticate")) else { return Ok(res) };
+            let Some(chal) = parse_challenge(res.header("www-authenticate")) else {
+                return Ok(res);
+            };
             drop(res);
             // Pushing needs credentials from the start; for pulls try an anonymous token before them.
-            let mut want_creds = scope.split(' ').any(|x| x.ends_with(",push") || x.ends_with(":push"));
+            let mut want_creds = scope
+                .split(' ')
+                .any(|x| x.ends_with(",push") || x.ends_with(":push"));
             if attempt == 1 {
                 if used_creds {
                     return Err(SitefileError::plain(
                         E_AUTH,
-                        format!("{}: access denied (the credentials were rejected or lack permission)", self.registry),
+                        format!(
+                            "{}: access denied (the credentials were rejected or lack permission)",
+                            self.registry
+                        ),
                     ));
                 }
                 want_creds = true;
@@ -1008,21 +1329,41 @@ impl RegistryClient {
         let mut detail = String::new();
         if let Ok(b) = read_body(res, 64 * 1024) {
             if let Ok(j) = serde_json::from_slice::<Value>(&b) {
-                let errs = j.get("errors").and_then(Value::as_array).cloned().unwrap_or_default();
+                let errs = j
+                    .get("errors")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 detail = errs
                     .iter()
                     .take(3)
                     .map(|e| {
-                        [e.get("code"), e.get("message")].iter().filter_map(|x| x.and_then(Value::as_str)).map(clean).collect::<Vec<_>>().join(": ")
+                        [e.get("code"), e.get("message")]
+                            .iter()
+                            .filter_map(|x| x.and_then(Value::as_str))
+                            .map(clean)
+                            .collect::<Vec<_>>()
+                            .join(": ")
                     })
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join("; ");
             }
         }
-        let msg = format!("{}: {what} failed: HTTP {status}{}", self.registry, if detail.is_empty() { String::new() } else { format!(" ({detail})") });
+        let msg = format!(
+            "{}: {what} failed: HTTP {status}{}",
+            self.registry,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({detail})")
+            }
+        );
         Err(match status {
-            401 | 403 => SitefileError::plain(E_AUTH, format!("{msg}; check your credentials and permissions")),
+            401 | 403 => SitefileError::plain(
+                E_AUTH,
+                format!("{msg}; check your credentials and permissions"),
+            ),
             404 => SitefileError::plain(E_NOT_FOUND, msg),
             _ => SitefileError::plain(E_REGISTRY, msg),
         })
@@ -1030,7 +1371,10 @@ impl RegistryClient {
 
     fn repo_path<'r>(&self, repo: &'r str) -> Result<&'r str> {
         if !valid_repo(repo) {
-            return Err(SitefileError::plain(E_USAGE, format!("invalid repository name '{repo}'")));
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("invalid repository name '{repo}'"),
+            ));
         }
         Ok(repo)
     }
@@ -1049,37 +1393,69 @@ impl RegistryClient {
 
     pub fn get_manifest(&self, repo: &str, reference: &str) -> Result<ManifestResponse> {
         if !valid_reference(reference) {
-            return Err(SitefileError::plain(E_USAGE, format!("invalid reference '{reference}'")));
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("invalid reference '{reference}'"),
+            ));
         }
         let url = self.v2(&format!("{}/manifests/{reference}", self.repo_path(repo)?))?;
         let headers = [("accept".to_string(), MANIFEST_ACCEPT.to_string())];
-        let res = self.call("GET", &url, &format!("repository:{repo}:pull"), &headers, None, None)?;
+        let res = self.call(
+            "GET",
+            &url,
+            &format!("repository:{repo}:pull"),
+            &headers,
+            None,
+            None,
+        )?;
         if res.status() != 200 {
             return self.fail(res, &format!("GET manifest {repo}:{}", clean(reference)));
         }
         let claimed = res.header("docker-content-digest").map(str::to_string);
-        let content_type = res.header("content-type").unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let content_type = res
+            .header("content-type")
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         let bytes = read_body(res, self.limits.max_manifest_bytes)?;
         let digest = sha256(&bytes);
         if reference.starts_with("sha256:") && digest != reference {
             return Err(SitefileError::plain(
                 E_INTEGRITY,
-                format!("{}/{repo}: manifest content does not match the requested digest {reference}", self.registry),
+                format!(
+                    "{}/{repo}: manifest content does not match the requested digest {reference}",
+                    self.registry
+                ),
             ));
         }
         if let Some(c) = claimed.filter(|c| *c != digest) {
             return Err(SitefileError::plain(
                 E_INTEGRITY,
-                format!("{}/{repo}: manifest does not match the digest the registry reported ({})", self.registry, clean(&c)),
+                format!(
+                    "{}/{repo}: manifest does not match the digest the registry reported ({})",
+                    self.registry,
+                    clean(&c)
+                ),
             ));
         }
         let mut media_type = content_type;
         if media_type.is_empty() || media_type == "application/json" || media_type == "text/plain" {
-            if let Some(mt) = serde_json::from_slice::<Value>(&bytes).ok().and_then(|j| j.get("mediaType").and_then(Value::as_str).map(str::to_string)) {
+            if let Some(mt) = serde_json::from_slice::<Value>(&bytes).ok().and_then(|j| {
+                j.get("mediaType")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }) {
                 media_type = mt;
             }
         }
-        Ok(ManifestResponse { bytes, digest, media_type })
+        Ok(ManifestResponse {
+            bytes,
+            digest,
+            media_type,
+        })
     }
 
     /// `GET /v2/<repo>/tags/list`, following `Link: <...>; rel="next"` pages on this registry (at most
@@ -1088,20 +1464,38 @@ impl RegistryClient {
         let mut out = Vec::new();
         let mut url = self.v2(&format!("{}/tags/list?n=1000", self.repo_path(repo)?))?;
         for _ in 0..10 {
-            let res = self.call("GET", &url, &format!("repository:{repo}:pull"), &[], None, None)?;
+            let res = self.call(
+                "GET",
+                &url,
+                &format!("repository:{repo}:pull"),
+                &[],
+                None,
+                None,
+            )?;
             if res.status() != 200 {
                 return self.fail(res, &format!("GET tags {repo}"));
             }
             let link = res.header("link").map(str::to_string);
             let bytes = read_body(res, self.limits.max_manifest_bytes)?;
-            let j: Value = serde_json::from_slice(&bytes)
-                .map_err(|_| SitefileError::plain(E_REGISTRY, format!("{}/{repo}: the tag list is not valid JSON", self.registry)))?;
-            for t in j.get("tags").and_then(Value::as_array).into_iter().flatten() {
+            let j: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                SitefileError::plain(
+                    E_REGISTRY,
+                    format!("{}/{repo}: the tag list is not valid JSON", self.registry),
+                )
+            })?;
+            for t in j
+                .get("tags")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 if let Some(t) = t.as_str().filter(|t| is_tag(t)) {
                     out.push(t.to_string());
                 }
             }
-            let Some(next) = link.as_deref().and_then(next_link) else { break };
+            let Some(next) = link.as_deref().and_then(next_link) else {
+                break;
+            };
             url = format!("{}{next}", self.init()?.href.trim_end_matches('/'));
         }
         Ok(out)
@@ -1109,7 +1503,14 @@ impl RegistryClient {
 
     pub fn has_blob(&self, repo: &str, digest: &str) -> Result<bool> {
         let url = self.v2(&format!("{}/blobs/{digest}", self.repo_path(repo)?))?;
-        let res = self.call("HEAD", &url, &format!("repository:{repo}:pull,push"), &[], None, None)?;
+        let res = self.call(
+            "HEAD",
+            &url,
+            &format!("repository:{repo}:pull,push"),
+            &[],
+            None,
+            None,
+        )?;
         match res.status() {
             200 => Ok(true),
             404 => Ok(false),
@@ -1122,27 +1523,55 @@ impl RegistryClient {
         if desc.size > self.limits.max_blob_bytes {
             return Err(SitefileError::plain(
                 E_TOO_LARGE,
-                format!("blob {} is {} bytes, exceeding the limit of {} bytes", desc.digest, desc.size, self.limits.max_blob_bytes),
+                format!(
+                    "blob {} is {} bytes, exceeding the limit of {} bytes",
+                    desc.digest, desc.size, self.limits.max_blob_bytes
+                ),
             ));
         }
         let url = self.v2(&format!("{}/blobs/{}", self.repo_path(repo)?, desc.digest))?;
         let started = Instant::now();
-        let res = self.call("GET", &url, &format!("repository:{repo}:pull"), &[], None, None)?;
+        let res = self.call(
+            "GET",
+            &url,
+            &format!("repository:{repo}:pull"),
+            &[],
+            None,
+            None,
+        )?;
         if res.status() != 200 {
             return self.fail(res, &format!("GET blob {}", desc.digest));
         }
-        let enc = res.header("content-encoding").unwrap_or("").trim().to_ascii_lowercase();
+        let enc = res
+            .header("content-encoding")
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         if !enc.is_empty() && enc != "identity" {
             return Err(SitefileError::plain(
                 E_REGISTRY,
-                format!("{}: blob {} came with content-encoding '{}'; only identity is accepted", self.registry, desc.digest, clean(&enc)),
+                format!(
+                    "{}: blob {} came with content-encoding '{}'; only identity is accepted",
+                    self.registry,
+                    desc.digest,
+                    clean(&enc)
+                ),
             ));
         }
-        if let Some(declared) = res.header("content-length").and_then(|h| h.trim().parse::<f64>().ok()).filter(|d| d.is_finite()) {
+        if let Some(declared) = res
+            .header("content-length")
+            .and_then(|h| h.trim().parse::<f64>().ok())
+            .filter(|d| d.is_finite())
+        {
             if declared > desc.size as f64 {
                 return Err(SitefileError::plain(
                     E_TOO_LARGE,
-                    format!("blob {}: the server sent {} bytes for a {}-byte blob", desc.digest, crate::values::js_number(declared), desc.size),
+                    format!(
+                        "blob {}: the server sent {} bytes for a {}-byte blob",
+                        desc.digest,
+                        crate::values::js_number(declared),
+                        desc.size
+                    ),
                 ));
             }
         }
@@ -1160,7 +1589,13 @@ impl RegistryClient {
 
     /// Make a blob exist in `repo`: tries a cross-repository mount from
     /// `mount_from` (same registry) when given, else a monolithic upload (POST then PUT).
-    pub fn push_blob(&self, repo: &str, desc: &Descriptor, body: &Body<'_>, mount_from: Option<&str>) -> Result<BlobPush> {
+    pub fn push_blob(
+        &self,
+        repo: &str,
+        desc: &Descriptor,
+        body: &Body<'_>,
+        mount_from: Option<&str>,
+    ) -> Result<BlobPush> {
         let scope = match mount_from {
             Some(m) => format!("repository:{repo}:pull,push repository:{m}:pull"),
             None => format!("repository:{repo}:pull,push"),
@@ -1168,8 +1603,15 @@ impl RegistryClient {
         let mut start = self.v2(&format!("{}/blobs/uploads/", self.repo_path(repo)?))?;
         if let Some(m) = mount_from {
             let from = self.repo_path(m)?;
-            start = edit_query(&start, &["mount", "from"], &[("mount", &desc.digest), ("from", from)], false)
-                .ok_or_else(|| SitefileError::plain(E_REGISTRY, format!("{}: invalid upload URL", self.registry)))?;
+            start = edit_query(
+                &start,
+                &["mount", "from"],
+                &[("mount", &desc.digest), ("from", from)],
+                false,
+            )
+            .ok_or_else(|| {
+                SitefileError::plain(E_REGISTRY, format!("{}: invalid upload URL", self.registry))
+            })?;
         }
         let post = self.call("POST", &start, &scope, &[], None, None)?;
         match post.status() {
@@ -1178,14 +1620,32 @@ impl RegistryClient {
             _ => return self.fail(post, &format!("start upload of {}", desc.digest)),
         }
         let Some(loc) = post.header("location").map(str::to_string) else {
-            return Err(SitefileError::plain(E_REGISTRY, format!("{}: upload response has no Location header", self.registry)));
+            return Err(SitefileError::plain(
+                E_REGISTRY,
+                format!("{}: upload response has no Location header", self.registry),
+            ));
         };
         drop(post);
         let target = join_url(&start, &loc)
             .and_then(|t| edit_query(&t, &["digest"], &[("digest", &desc.digest)], false))
-            .ok_or_else(|| SitefileError::plain(E_REGISTRY, format!("{}: invalid upload Location", self.registry)))?;
-        let headers = [("content-type".to_string(), "application/octet-stream".to_string())];
-        let put = self.call("PUT", &target, &scope, &headers, Some(body), Some(Duration::from_millis(self.limits.blob_deadline_ms)))?;
+            .ok_or_else(|| {
+                SitefileError::plain(
+                    E_REGISTRY,
+                    format!("{}: invalid upload Location", self.registry),
+                )
+            })?;
+        let headers = [(
+            "content-type".to_string(),
+            "application/octet-stream".to_string(),
+        )];
+        let put = self.call(
+            "PUT",
+            &target,
+            &scope,
+            &headers,
+            Some(body),
+            Some(Duration::from_millis(self.limits.blob_deadline_ms)),
+        )?;
         match put.status() {
             201 | 204 => Ok(BlobPush::Uploaded),
             _ => self.fail(put, &format!("upload of {}", desc.digest)),
@@ -1193,20 +1653,44 @@ impl RegistryClient {
     }
 
     /// `PUT` a manifest at a tag or digest; returns the digest the registry confirms.
-    pub fn put_manifest(&self, repo: &str, reference: &str, bytes: &[u8], media_type: &str) -> Result<String> {
-        Ok(self.put_manifest_full(repo, reference, bytes, media_type)?.0)
+    pub fn put_manifest(
+        &self,
+        repo: &str,
+        reference: &str,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> Result<String> {
+        Ok(self
+            .put_manifest_full(repo, reference, bytes, media_type)?
+            .0)
     }
 
     /// [`Self::put_manifest`], also returning the `OCI-Subject` response header: a
     /// registry that implements the referrers API sets it when the manifest has
     /// a `subject` (distribution spec v1.1).
-    pub fn put_manifest_full(&self, repo: &str, reference: &str, bytes: &[u8], media_type: &str) -> Result<(String, Option<String>)> {
+    pub fn put_manifest_full(
+        &self,
+        repo: &str,
+        reference: &str,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> Result<(String, Option<String>)> {
         if !valid_reference(reference) {
-            return Err(SitefileError::plain(E_USAGE, format!("invalid reference '{reference}'")));
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("invalid reference '{reference}'"),
+            ));
         }
         let url = self.v2(&format!("{}/manifests/{reference}", self.repo_path(repo)?))?;
         let headers = [("content-type".to_string(), media_type.to_string())];
-        let res = self.call("PUT", &url, &format!("repository:{repo}:pull,push"), &headers, Some(&Body::Bytes(bytes)), None)?;
+        let res = self.call(
+            "PUT",
+            &url,
+            &format!("repository:{repo}:pull,push"),
+            &headers,
+            Some(&Body::Bytes(bytes)),
+            None,
+        )?;
         if res.status() != 201 && res.status() != 200 {
             return self.fail(res, &format!("PUT manifest {repo}:{}", clean(reference)));
         }
@@ -1214,7 +1698,11 @@ impl RegistryClient {
         if let Some(c) = res.header("docker-content-digest").filter(|c| *c != digest) {
             return Err(SitefileError::plain(
                 E_INTEGRITY,
-                format!("{}/{repo}: the registry stored the manifest as {}, expected {digest}", self.registry, clean(c)),
+                format!(
+                    "{}/{repo}: the registry stored the manifest as {}, expected {digest}",
+                    self.registry,
+                    clean(c)
+                ),
             ));
         }
         let subject = res.header("oci-subject").map(str::to_string);
@@ -1231,14 +1719,24 @@ fn read_body(res: ureq::Response, max: u64) -> Result<Vec<u8>> {
             Ok(0) => return Ok(out),
             Ok(n) => {
                 if (out.len() + n) as u64 > max {
-                    return Err(SitefileError::plain(E_TOO_LARGE, format!("registry response exceeded {max} bytes")));
+                    return Err(SitefileError::plain(
+                        E_TOO_LARGE,
+                        format!("registry response exceeded {max} bytes"),
+                    ));
                 }
                 out.extend_from_slice(&buf[..n]);
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
-                let code = if is_timeout(&e) { E_FETCH_TIMEOUT } else { E_REGISTRY };
-                return Err(SitefileError::plain(code, format!("error reading registry response: {e}")));
+                let code = if is_timeout(&e) {
+                    E_FETCH_TIMEOUT
+                } else {
+                    E_REGISTRY
+                };
+                return Err(SitefileError::plain(
+                    code,
+                    format!("error reading registry response: {e}"),
+                ));
             }
         }
     }
@@ -1259,9 +1757,17 @@ fn is_manifest_type(t: &str) -> bool {
 /// Pick the manifest descriptor for `os/arch` from an image index / manifest list.
 pub fn select_platform(index_bytes: &[u8], platform: &str) -> Result<Descriptor> {
     let (os, arch) = parse_platform(Some(platform))?;
-    let j: Value = serde_json::from_slice(index_bytes)
-        .map_err(|_| SitefileError::plain(E_REGISTRY, "the registry returned an unreadable image index"))?;
-    let list = j.get("manifests").and_then(Value::as_array).cloned().unwrap_or_default();
+    let j: Value = serde_json::from_slice(index_bytes).map_err(|_| {
+        SitefileError::plain(
+            E_REGISTRY,
+            "the registry returned an unreadable image index",
+        )
+    })?;
+    let list = j
+        .get("manifests")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut have: Vec<String> = Vec::new();
     let mut hits: Vec<(Descriptor, String)> = Vec::new();
     let js = |v: Option<&Value>| match v {
@@ -1270,23 +1776,46 @@ pub fn select_platform(index_bytes: &[u8], platform: &str) -> Result<Descriptor>
         Some(v) => v.to_string(),
     };
     for m in &list {
-        let Some(p) = m.get("platform").filter(|p| p.is_object()) else { continue };
-        let digest = m.get("digest").and_then(Value::as_str).filter(|d| is_integrity(d));
+        let Some(p) = m.get("platform").filter(|p| p.is_object()) else {
+            continue;
+        };
+        let digest = m
+            .get("digest")
+            .and_then(Value::as_str)
+            .filter(|d| is_integrity(d));
         let size = m.get("size").and_then(Value::as_u64);
-        let (Some(digest), Some(size)) = (digest, size) else { continue };
+        let (Some(digest), Some(size)) = (digest, size) else {
+            continue;
+        };
         if p.get("architecture").and_then(Value::as_str) == Some("unknown") {
             continue;
         }
-        let variant = p.get("variant").and_then(Value::as_str).unwrap_or("").to_string();
+        let variant = p
+            .get("variant")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let (p_os, p_arch) = (js(p.get("os")), js(p.get("architecture")));
-        have.push(if variant.is_empty() { format!("{p_os}/{p_arch}") } else { format!("{p_os}/{p_arch}/{variant}") });
+        have.push(if variant.is_empty() {
+            format!("{p_os}/{p_arch}")
+        } else {
+            format!("{p_os}/{p_arch}/{variant}")
+        });
         if p_os == os && p_arch == arch {
             let mt = match m.get("mediaType") {
                 Some(Value::String(s)) => s.clone(),
                 None | Some(Value::Null) => media::MANIFEST.to_string(),
                 Some(v) => v.to_string(),
             };
-            hits.push((Descriptor { media_type: mt, digest: digest.to_string(), size, annotations: None }, variant));
+            hits.push((
+                Descriptor {
+                    media_type: mt,
+                    digest: digest.to_string(),
+                    size,
+                    annotations: None,
+                },
+                variant,
+            ));
         }
     }
     let best = hits.iter().find(|h| h.1.is_empty()).or(hits.first());
@@ -1299,8 +1828,17 @@ pub fn select_platform(index_bytes: &[u8], platform: &str) -> Result<Descriptor>
                     uniq.push(h);
                 }
             }
-            let avail = if uniq.is_empty() { "none".to_string() } else { uniq.join(", ") };
-            Err(SitefileError::plain(E_REGISTRY, format!("the image has no {platform} variant (available: {avail}); pass --platform")))
+            let avail = if uniq.is_empty() {
+                "none".to_string()
+            } else {
+                uniq.join(", ")
+            };
+            Err(SitefileError::plain(
+                E_REGISTRY,
+                format!(
+                    "the image has no {platform} variant (available: {avail}); pass --platform"
+                ),
+            ))
         }
     }
 }
@@ -1321,11 +1859,20 @@ fn sniff_media_type(bytes: &[u8]) -> String {
     }
 }
 
-fn fetch_manifest_cached(store: &Store, client: &RegistryClient, repo: &str, reference: &str) -> Result<ManifestResponse> {
+fn fetch_manifest_cached(
+    store: &Store,
+    client: &RegistryClient,
+    repo: &str,
+    reference: &str,
+) -> Result<ManifestResponse> {
     if reference.starts_with("sha256:") && store.has_blob(reference, None) {
         if let Ok(bytes) = store.read_blob(reference, None) {
             let media_type = sniff_media_type(&bytes);
-            return Ok(ManifestResponse { bytes, digest: reference.to_string(), media_type });
+            return Ok(ManifestResponse {
+                bytes,
+                digest: reference.to_string(),
+                media_type,
+            });
         }
         // corrupt cache entry: fetch again
     }
@@ -1366,9 +1913,17 @@ pub struct PullResult {
 }
 
 /// Pull an image into the store: verifies every blob's sha256 while streaming, then registers the manifest.
-pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &PullImageOptions<'_>) -> Result<PullResult> {
+pub fn pull_image(
+    store: &Store,
+    client: &RegistryClient,
+    r: &ImageRef,
+    o: &PullImageOptions<'_>,
+) -> Result<PullResult> {
     let Some(registry) = r.registry.clone() else {
-        return Err(SitefileError::plain(E_USAGE, "internal: pullImage needs a registry reference"));
+        return Err(SitefileError::plain(
+            E_USAGE,
+            "internal: pullImage needs a registry reference",
+        ));
     };
     let platform = o.platform.clone().unwrap_or_else(|| "linux/amd64".into());
     let say = |m: &str| {
@@ -1377,7 +1932,12 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
         }
     };
     let repo = r.name.as_str();
-    let reference = o.root_digest.clone().or_else(|| r.digest.clone()).or_else(|| r.tag.clone()).unwrap_or_else(|| "latest".into());
+    let reference = o
+        .root_digest
+        .clone()
+        .or_else(|| r.digest.clone())
+        .or_else(|| r.tag.clone())
+        .unwrap_or_else(|| "latest".into());
     let limits = client.limits;
     let reg = &client.registry;
 
@@ -1388,27 +1948,40 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
     } else if is_manifest_type(&root.media_type) {
         root.clone()
     } else {
-        let mt = if root.media_type.is_empty() { "unknown" } else { &root.media_type };
+        let mt = if root.media_type.is_empty() {
+            "unknown"
+        } else {
+            &root.media_type
+        };
         return Err(SitefileError::plain(
             E_UNSUPPORTED,
             format!("{reg}/{repo}: unsupported manifest type '{mt}' (expected an OCI or Docker v2 image)"),
         ));
     };
 
-    let parsed = parse_manifest(&manifest.bytes).map_err(|e| SitefileError::plain(E_REGISTRY, format!("{reg}/{repo}: {e}")))?;
+    let parsed = parse_manifest(&manifest.bytes)
+        .map_err(|e| SitefileError::plain(E_REGISTRY, format!("{reg}/{repo}: {e}")))?;
     if !is_config_type(&parsed.config.media_type) {
         return Err(SitefileError::plain(
             E_UNSUPPORTED,
-            format!("{reg}/{repo}: the artifact is not a container image (config type '{}')", parsed.config.media_type),
+            format!(
+                "{reg}/{repo}: the artifact is not a container image (config type '{}')",
+                parsed.config.media_type
+            ),
         ));
     }
-    let blobs: Vec<&Descriptor> = std::iter::once(&parsed.config).chain(parsed.layers.iter()).collect();
+    let blobs: Vec<&Descriptor> = std::iter::once(&parsed.config)
+        .chain(parsed.layers.iter())
+        .collect();
     let mut total: u64 = 0;
     for d in &blobs {
         if d.size > limits.max_blob_bytes {
             return Err(SitefileError::plain(
                 E_TOO_LARGE,
-                format!("blob {} is {} bytes, exceeding the limit of {} bytes (--max-download-bytes)", d.digest, d.size, limits.max_blob_bytes),
+                format!(
+                    "blob {} is {} bytes, exceeding the limit of {} bytes (--max-download-bytes)",
+                    d.digest, d.size, limits.max_blob_bytes
+                ),
             ));
         }
         total = total.saturating_add(d.size);
@@ -1416,7 +1989,10 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
     if total > limits.max_total_bytes {
         return Err(SitefileError::plain(
             E_TOO_LARGE,
-            format!("{reg}/{repo} totals {total} bytes, exceeding the limit of {} bytes", limits.max_total_bytes),
+            format!(
+                "{reg}/{repo} totals {total} bytes, exceeding the limit of {} bytes",
+                limits.max_total_bytes
+            ),
         ));
     }
     let mut seen = std::collections::HashSet::new();
@@ -1427,24 +2003,43 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
             continue;
         }
         let mut reader = client.get_blob(repo, d)?;
-        if let Err(e) = store.import_blob(&d.digest, d.size, &mut reader, Some(limits.max_blob_bytes)) {
+        if let Err(e) =
+            store.import_blob(&d.digest, d.size, &mut reader, Some(limits.max_blob_bytes))
+        {
             return Err(reader.take_error().unwrap_or(e));
         }
-        say(&format!("{}: pulled ({} bytes)", short_id(&d.digest), d.size));
+        say(&format!(
+            "{}: pulled ({} bytes)",
+            short_id(&d.digest),
+            d.size
+        ));
     }
 
     let config_bytes = store.read_blob(&parsed.config.digest, Some(parsed.config.size))?;
     let config: Map<String, Value> = serde_json::from_slice::<Value>(&config_bytes)
         .ok()
         .and_then(|v| v.as_object().cloned())
-        .ok_or_else(|| SitefileError::plain(E_REGISTRY, format!("{reg}/{repo}: the image config is not a JSON object")))?;
+        .ok_or_else(|| {
+            SitefileError::plain(
+                E_REGISTRY,
+                format!("{reg}/{repo}: the image config is not a JSON object"),
+            )
+        })?;
     if o.enforce_platform {
         let (os, arch) = parse_platform(Some(&platform))?;
-        let cfg = parse_config(&config_bytes).map_err(|e| SitefileError::plain(E_REGISTRY, format!("{reg}/{repo}: invalid image config: {e}")))?;
+        let cfg = parse_config(&config_bytes).map_err(|e| {
+            SitefileError::plain(
+                E_REGISTRY,
+                format!("{reg}/{repo}: invalid image config: {e}"),
+            )
+        })?;
         if cfg.os != os || cfg.architecture != arch {
             return Err(SitefileError::plain(
                 E_REGISTRY,
-                format!("{reg}/{repo} is {}/{}, not {platform}; pass --platform", cfg.os, cfg.architecture),
+                format!(
+                    "{reg}/{repo} is {}/{}, not {platform}; pass --platform",
+                    cfg.os, cfg.architecture
+                ),
             ));
         }
     }
@@ -1455,7 +2050,12 @@ pub fn pull_image(store: &Store, client: &RegistryClient, r: &ImageRef, o: &Pull
         digest: None,
     });
     let id = store.add_manifest(&manifest.bytes, tag_ref.as_ref())?;
-    Ok(PullResult { id, root_digest: root.digest, manifest: parsed, config })
+    Ok(PullResult {
+        id,
+        root_digest: root.digest,
+        manifest: parsed,
+        config,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1483,10 +2083,14 @@ pub fn push_image(
     };
     let repo = r.name.as_str();
     if let Some(d) = r.digest.as_deref().filter(|d| *d != id) {
-        return Err(SitefileError::plain(E_USAGE, format!("the reference pins {d} but the local image is {id}")));
+        return Err(SitefileError::plain(
+            E_USAGE,
+            format!("the reference pins {d} but the local image is {id}"),
+        ));
     }
     let manifest_bytes = store.read_blob(id, None)?;
-    let parsed = parse_manifest(&manifest_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("image {id}: {e}")))?;
+    let parsed = parse_manifest(&manifest_bytes)
+        .map_err(|e| SitefileError::plain(E_STORE, format!("image {id}: {e}")))?;
     // Layers of the BASE image can be mounted from its repository when it lives on this registry.
     let mut mount_from: Option<String> = None;
     let mut base_layers: Vec<String> = Vec::new();
@@ -1495,7 +2099,10 @@ pub fn push_image(
             if b.registry.as_deref() == Some(client.registry.as_str()) && b.name != repo {
                 mount_from = Some(b.name);
                 let n = parsed.layers.len().saturating_sub(1);
-                base_layers = parsed.layers[..n].iter().map(|l| l.digest.clone()).collect();
+                base_layers = parsed.layers[..n]
+                    .iter()
+                    .map(|l| l.digest.clone())
+                    .collect();
             }
         }
     }
@@ -1512,31 +2119,65 @@ pub fn push_image(
             continue;
         }
         if !store.has_blob(&d.digest, Some(d.size)) {
-            return Err(SitefileError::plain(E_STORE, format!("blob {} is missing from the local store; cannot push", d.digest)));
+            return Err(SitefileError::plain(
+                E_STORE,
+                format!(
+                    "blob {} is missing from the local store; cannot push",
+                    d.digest
+                ),
+            ));
         }
         let digest = d.digest.clone();
-        let open = move || -> Result<Box<dyn Read + Send>> { Ok(Box::new(store.blob_reader(&digest)?)) };
-        let body = Body::Stream { length: d.size, open: &open };
-        let mount = if base_layers.contains(&d.digest) { mount_from.as_deref() } else { None };
+        let open =
+            move || -> Result<Box<dyn Read + Send>> { Ok(Box::new(store.blob_reader(&digest)?)) };
+        let body = Body::Stream {
+            length: d.size,
+            open: &open,
+        };
+        let mount = if base_layers.contains(&d.digest) {
+            mount_from.as_deref()
+        } else {
+            None
+        };
         match client.push_blob(repo, d, &body, mount)? {
             BlobPush::Mounted => {
                 counts.mounted += 1;
-                say(&format!("{}: mounted from {} ({} bytes)", short_id(&d.digest), mount.unwrap_or(""), d.size));
+                say(&format!(
+                    "{}: mounted from {} ({} bytes)",
+                    short_id(&d.digest),
+                    mount.unwrap_or(""),
+                    d.size
+                ));
             }
             BlobPush::Uploaded => {
                 counts.uploaded += 1;
-                say(&format!("{}: pushed ({} bytes)", short_id(&d.digest), d.size));
+                say(&format!(
+                    "{}: pushed ({} bytes)",
+                    short_id(&d.digest),
+                    d.size
+                ));
             }
         }
     }
     let media_type = serde_json::from_slice::<Value>(&manifest_bytes)
         .ok()
-        .and_then(|j| j.get("mediaType").and_then(Value::as_str).map(str::to_string))
+        .and_then(|j| {
+            j.get("mediaType")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| media::MANIFEST.to_string());
-    let reference = r.tag.clone().or_else(|| r.digest.clone()).unwrap_or_else(|| "latest".into());
+    let reference = r
+        .tag
+        .clone()
+        .or_else(|| r.digest.clone())
+        .unwrap_or_else(|| "latest".into());
     let digest = client.put_manifest(repo, &reference, &manifest_bytes, &media_type)?;
     if digest != id {
-        return Err(SitefileError::plain(E_INTEGRITY, format!("the registry reports digest {digest}, expected {id}")));
+        return Err(SitefileError::plain(
+            E_INTEGRITY,
+            format!("the registry reports digest {digest}, expected {id}"),
+        ));
     }
     counts.attestations = push_referrers(client, repo, id, &store.referrers(id)?, &say)?;
     Ok((digest, manifest_bytes.len() as u64, counts))
@@ -1547,29 +2188,68 @@ pub fn push_image(
 /// the referrers API answers with an `OCI-Subject` header; for the others the
 /// referrers tag schema is used: the image index at tag `sha256-<hex>` lists
 /// them (merged with what it already lists).
-pub fn push_referrers(client: &RegistryClient, repo: &str, subject: &str, referrers: &[Referrer], say: &dyn Fn(&str)) -> Result<usize> {
+pub fn push_referrers(
+    client: &RegistryClient,
+    repo: &str,
+    subject: &str,
+    referrers: &[Referrer],
+    say: &dyn Fn(&str),
+) -> Result<usize> {
     let mut fallback: Vec<&ReferrerDescriptor> = Vec::new();
     for r in referrers {
         let blob = |d: &str| r.blobs.iter().find(|(k, _)| k == d).map(|(_, b)| b);
         let Some(manifest_bytes) = blob(&r.descriptor.digest) else {
-            return Err(SitefileError::plain(E_STORE, format!("attestation {} is missing from the local store; cannot push", r.descriptor.digest)));
+            return Err(SitefileError::plain(
+                E_STORE,
+                format!(
+                    "attestation {} is missing from the local store; cannot push",
+                    r.descriptor.digest
+                ),
+            ));
         };
-        let m = parse_manifest(manifest_bytes).map_err(|e| SitefileError::plain(E_STORE, format!("attestation {}: {e}", r.descriptor.digest)))?;
+        let m = parse_manifest(manifest_bytes).map_err(|e| {
+            SitefileError::plain(E_STORE, format!("attestation {}: {e}", r.descriptor.digest))
+        })?;
         for d in std::iter::once(&m.config).chain(m.layers.iter()) {
             if client.has_blob(repo, &d.digest)? {
                 continue;
             }
             let Some(bytes) = blob(&d.digest) else {
-                return Err(SitefileError::plain(E_STORE, format!("blob {} is missing from the local store; cannot push", d.digest)));
+                return Err(SitefileError::plain(
+                    E_STORE,
+                    format!(
+                        "blob {} is missing from the local store; cannot push",
+                        d.digest
+                    ),
+                ));
             };
             client.push_blob(repo, d, &Body::Bytes(bytes), None)?;
         }
-        let (digest, oci_subject) = client.put_manifest_full(repo, &r.descriptor.digest, manifest_bytes, media::MANIFEST)?;
+        let (digest, oci_subject) = client.put_manifest_full(
+            repo,
+            &r.descriptor.digest,
+            manifest_bytes,
+            media::MANIFEST,
+        )?;
         if digest != r.descriptor.digest {
-            return Err(SitefileError::plain(E_INTEGRITY, format!("the registry reports digest {digest}, expected {}", r.descriptor.digest)));
+            return Err(SitefileError::plain(
+                E_INTEGRITY,
+                format!(
+                    "the registry reports digest {digest}, expected {}",
+                    r.descriptor.digest
+                ),
+            ));
         }
-        let what = r.descriptor.predicate_type().map(str::to_string).or_else(|| r.descriptor.artifact_type.clone()).unwrap_or_else(|| "artifact".into());
-        say(&format!("{}: attestation pushed ({what})", short_id(&r.descriptor.digest)));
+        let what = r
+            .descriptor
+            .predicate_type()
+            .map(str::to_string)
+            .or_else(|| r.descriptor.artifact_type.clone())
+            .unwrap_or_else(|| "artifact".into());
+        say(&format!(
+            "{}: attestation pushed ({what})",
+            short_id(&r.descriptor.digest)
+        ));
         if oci_subject.is_none() {
             fallback.push(&r.descriptor);
         }
@@ -1579,7 +2259,10 @@ pub fn push_referrers(client: &RegistryClient, repo: &str, subject: &str, referr
         let mut listed: Vec<Value> = Vec::new();
         match client.get_manifest(repo, &tag) {
             Ok(cur) => {
-                if let Some(list) = serde_json::from_slice::<Value>(&cur.bytes).ok().and_then(|j| j.get("manifests").and_then(Value::as_array).cloned()) {
+                if let Some(list) = serde_json::from_slice::<Value>(&cur.bytes)
+                    .ok()
+                    .and_then(|j| j.get("manifests").and_then(Value::as_array).cloned())
+                {
                     listed = list.into_iter().filter(Value::is_object).collect();
                 }
             }
@@ -1587,7 +2270,14 @@ pub fn push_referrers(client: &RegistryClient, repo: &str, subject: &str, referr
             Err(e) if e.code == E_NOT_FOUND => {}
             Err(e) => return Err(e),
         }
-        let missing: Vec<&&ReferrerDescriptor> = fallback.iter().filter(|f| !listed.iter().any(|l| l.get("digest").and_then(Value::as_str) == Some(f.digest.as_str()))).collect();
+        let missing: Vec<&&ReferrerDescriptor> = fallback
+            .iter()
+            .filter(|f| {
+                !listed
+                    .iter()
+                    .any(|l| l.get("digest").and_then(Value::as_str) == Some(f.digest.as_str()))
+            })
+            .collect();
         if missing.is_empty() {
             say(&format!("referrers tag {tag}: up to date"));
         } else {
@@ -1596,7 +2286,10 @@ pub fn push_referrers(client: &RegistryClient, repo: &str, subject: &str, referr
             let n = manifests.len();
             let bytes = crate::export::oci::canonical_json(&serde_json::json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": manifests })).into_bytes();
             client.put_manifest(repo, &tag, &bytes, media::INDEX)?;
-            say(&format!("referrers tag {tag}: {n} attestation{}", if n == 1 { "" } else { "s" }));
+            say(&format!(
+                "referrers tag {tag}: {n} attestation{}",
+                if n == 1 { "" } else { "s" }
+            ));
         }
     }
     Ok(referrers.len())
@@ -1660,7 +2353,10 @@ impl Lines<'_> {
 }
 
 fn effective(options: &RegistryOptions, env: &Env) -> RegistryOptions {
-    RegistryOptions { insecure_registries: insecure_registries_from_env(&options.insecure_registries, env), ..options.clone() }
+    RegistryOptions {
+        insecure_registries: insecure_registries_from_env(&options.insecure_registries, env),
+        ..options.clone()
+    }
 }
 
 /// `sitefile push <registry/name[:tag]>`. Prints (via `on_event` and the report):
@@ -1674,22 +2370,55 @@ pub fn push(store: &Store, ref_str: &str, o: &PushOptions<'_>) -> Result<PushRep
         ));
     }
     let r = canonical_ref(&ref0);
-    let key = ref_key(&ImageRef { digest: None, ..r.clone() });
-    let id = if r.digest.is_some() && r.tag.is_none() { r.digest.clone() } else { store.refs()?.get(&key).cloned() };
+    let key = ref_key(&ImageRef {
+        digest: None,
+        ..r.clone()
+    });
+    let id = if r.digest.is_some() && r.tag.is_none() {
+        r.digest.clone()
+    } else {
+        store.refs()?.get(&key).cloned()
+    };
     let id = match id {
         Some(id) if store.has_image(&id)? => id,
-        _ => return Err(SitefileError::plain(E_NOT_FOUND, format!("no local image {key}; tag one first: sitefile tag <image> {key}"))),
+        _ => {
+            return Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("no local image {key}; tag one first: sitefile tag <image> {key}"),
+            ))
+        }
     };
     let env = o.env.clone().unwrap_or_else(process_env);
     let registry = r.registry.clone().unwrap_or_default();
-    let client = make_client(&registry, &effective(&o.registry, &env), o.explicit_credentials.clone(), &env);
-    let out = std::cell::RefCell::new(Lines { lines: vec![], on_event: o.on_event });
-    out.borrow_mut().say(format!("The push refers to repository [{registry}/{}]", r.name));
+    let client = make_client(
+        &registry,
+        &effective(&o.registry, &env),
+        o.explicit_credentials.clone(),
+        &env,
+    );
+    let out = std::cell::RefCell::new(Lines {
+        lines: vec![],
+        on_event: o.on_event,
+    });
+    out.borrow_mut().say(format!(
+        "The push refers to repository [{registry}/{}]",
+        r.name
+    ));
     let say = |m: &str| out.borrow_mut().say(m.to_string());
     let (digest, size, c) = push_image(store, &client, &id, &r, Some(&say))?;
-    out.borrow_mut().say(format!("{}: digest: {digest} size: {size}", r.tag.as_deref().unwrap_or("digest")));
+    out.borrow_mut().say(format!(
+        "{}: digest: {digest} size: {size}",
+        r.tag.as_deref().unwrap_or("digest")
+    ));
     let lines = out.into_inner().lines;
-    Ok(PushReport { digest, size, uploaded: c.uploaded, mounted: c.mounted, existing: c.existing, lines })
+    Ok(PushReport {
+        digest,
+        size,
+        uploaded: c.uploaded,
+        mounted: c.mounted,
+        existing: c.existing,
+        lines,
+    })
 }
 
 /// `sitefile pull <[registry/]name[:tag][@sha256:...]>`. A bare name means
@@ -1699,8 +2428,16 @@ pub fn pull(store: &Store, ref_str: &str, o: &PullOptions<'_>) -> Result<PullRep
     let r = with_default_registry(&parse_ref(ref_str)?);
     let env = o.env.clone().unwrap_or_else(process_env);
     let registry = r.registry.clone().unwrap_or_default();
-    let client = make_client(&registry, &effective(&o.registry, &env), o.explicit_credentials.clone(), &env);
-    let out = std::cell::RefCell::new(Lines { lines: vec![], on_event: o.on_event });
+    let client = make_client(
+        &registry,
+        &effective(&o.registry, &env),
+        o.explicit_credentials.clone(),
+        &env,
+    );
+    let out = std::cell::RefCell::new(Lines {
+        lines: vec![],
+        on_event: o.on_event,
+    });
     let say = |m: &str| out.borrow_mut().say(m.to_string());
     let res = pull_image(
         store,
@@ -1719,9 +2456,14 @@ pub fn pull(store: &Store, ref_str: &str, o: &PullOptions<'_>) -> Result<PullRep
         None => ref_key(&r),
         Some(d) => format!("{registry}/{}@{d}", r.name),
     };
-    out.borrow_mut().say(format!("Pulled {shown} (image {})", short_id(&res.id)));
+    out.borrow_mut()
+        .say(format!("Pulled {shown} (image {})", short_id(&res.id)));
     let lines = out.into_inner().lines;
-    Ok(PullReport { id: res.id, root_digest: res.root_digest, lines })
+    Ok(PullReport {
+        id: res.id,
+        root_digest: res.root_digest,
+        lines,
+    })
 }
 
 // ================================================================ test support
@@ -1812,7 +2554,10 @@ pub(crate) mod mock {
         }
         fn add_blob(&mut self, repo: &str, d: &str, b: Vec<u8>) {
             self.blobs.insert(d.to_string(), b);
-            self.repo_blobs.entry(repo.to_string()).or_default().insert(d.to_string());
+            self.repo_blobs
+                .entry(repo.to_string())
+                .or_default()
+                .insert(d.to_string());
         }
     }
 
@@ -1827,7 +2572,12 @@ pub(crate) mod mock {
 
     impl Default for SeedImage<'_> {
         fn default() -> Self {
-            SeedImage { layers: vec![], config: json!({}), arch: "amd64", docker: false }
+            SeedImage {
+                layers: vec![],
+                config: json!({}),
+                arch: "amd64",
+                docker: false,
+            }
         }
     }
 
@@ -1855,7 +2605,10 @@ pub(crate) mod mock {
             if b[i] == b'+' {
                 out.push(b' ');
             } else if b[i] == b'%' && i + 3 <= b.len() {
-                match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                match std::str::from_utf8(&b[i + 1..i + 3])
+                    .ok()
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+                {
                     Some(v) => {
                         out.push(v);
                         i += 2;
@@ -1906,7 +2659,10 @@ pub(crate) mod mock {
             }
         }
         let mut body = Vec::new();
-        if headers.get("transfer-encoding").is_some_and(|t| t.eq_ignore_ascii_case("chunked")) {
+        if headers
+            .get("transfer-encoding")
+            .is_some_and(|t| t.eq_ignore_ascii_case("chunked"))
+        {
             loop {
                 let mut sz = String::new();
                 r.read_line(&mut sz).ok()?;
@@ -1918,14 +2674,28 @@ pub(crate) mod mock {
                 }
                 body.extend_from_slice(&chunk[..n]);
             }
-        } else if let Some(n) = headers.get("content-length").and_then(|n| n.parse::<usize>().ok()) {
+        } else if let Some(n) = headers
+            .get("content-length")
+            .and_then(|n| n.parse::<usize>().ok())
+        {
             body = vec![0u8; n];
             r.read_exact(&mut body).ok()?;
         }
-        Some(HttpReq { method, target, headers, body })
+        Some(HttpReq {
+            method,
+            target,
+            headers,
+            body,
+        })
     }
 
-    pub fn respond(stream: &mut TcpStream, status: u16, body: &[u8], headers: &[(&str, String)], head: bool) {
+    pub fn respond(
+        stream: &mut TcpStream,
+        status: u16,
+        body: &[u8],
+        headers: &[(&str, String)],
+        head: bool,
+    ) {
         let mut out = format!("HTTP/1.1 {status} X\r\nconnection: close\r\n");
         let mut has_len = false;
         for (k, v) in headers {
@@ -1964,7 +2734,10 @@ pub(crate) mod mock {
     }
 
     pub fn basic(user: &str, pass: &str) -> String {
-        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}")))
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        )
     }
 
     pub struct MockRegistry {
@@ -1975,7 +2748,10 @@ pub(crate) mod mock {
 
     impl MockRegistry {
         pub fn start(options: MockOptions) -> MockRegistry {
-            let state = Arc::new(Mutex::new(State { options, ..Default::default() }));
+            let state = Arc::new(Mutex::new(State {
+                options,
+                ..Default::default()
+            }));
             let st = state.clone();
             let port_cell = Arc::new(Mutex::new(0u16));
             let pc = port_cell.clone();
@@ -1984,7 +2760,10 @@ pub(crate) mod mock {
                 handle(&st, port, req, s)
             });
             *port_cell.lock().unwrap() = port;
-            MockRegistry { host: format!("127.0.0.1:{port}"), state }
+            MockRegistry {
+                host: format!("127.0.0.1:{port}"),
+                state,
+            }
         }
         pub fn set_options(&self, f: impl FnOnce(&mut MockOptions)) {
             f(&mut self.state.lock().unwrap().options);
@@ -2002,7 +2781,11 @@ pub(crate) mod mock {
             self.state.lock().unwrap().manifests.get(key).cloned()
         }
         pub fn set_manifest(&self, key: &str, bytes: &[u8]) {
-            self.state.lock().unwrap().manifests.insert(key.to_string(), bytes.to_vec());
+            self.state
+                .lock()
+                .unwrap()
+                .manifests
+                .insert(key.to_string(), bytes.to_vec());
         }
         pub fn has_blob(&self, d: &str) -> bool {
             self.state.lock().unwrap().blobs.contains_key(d)
@@ -2013,8 +2796,21 @@ pub(crate) mod mock {
             let mut layer_digests = Vec::new();
             let mut diff_ids = Vec::new();
             for files in &img.layers {
-                let tree = Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "seed", 0o644)))).unwrap();
-                let tar = write_tar(&tree, &WriterOptions { epoch: Some(0), dirs: vec![] }).unwrap();
+                let tree = Tree::from_files(files.iter().map(|(p, c)| {
+                    (
+                        p.to_string(),
+                        make_file(c.as_bytes().to_vec(), "seed", 0o644),
+                    )
+                }))
+                .unwrap();
+                let tar = write_tar(
+                    &tree,
+                    &WriterOptions {
+                        epoch: Some(0),
+                        dirs: vec![],
+                    },
+                )
+                .unwrap();
                 let gz = gzip_tar(&tar);
                 let d = sha256(&gz);
                 st.add_blob(repo, &d, gz);
@@ -2042,9 +2838,16 @@ pub(crate) mod mock {
                     "application/vnd.docker.image.rootfs.diff.tar.gzip",
                 )
             } else {
-                ("application/vnd.oci.image.manifest.v1+json", "application/vnd.oci.image.config.v1+json", "application/vnd.oci.image.layer.v1.tar+gzip")
+                (
+                    "application/vnd.oci.image.manifest.v1+json",
+                    "application/vnd.oci.image.config.v1+json",
+                    "application/vnd.oci.image.layer.v1.tar+gzip",
+                )
             };
-            let layers: Vec<Value> = layer_digests.iter().map(|d| json!({"mediaType": lt, "digest": d, "size": st.blobs[d].len()})).collect();
+            let layers: Vec<Value> = layer_digests
+                .iter()
+                .map(|d| json!({"mediaType": lt, "digest": d, "size": st.blobs[d].len()}))
+                .collect();
             let manifest_bytes = canonical_json(&json!({
                 "schemaVersion": 2,
                 "mediaType": mt,
@@ -2053,9 +2856,16 @@ pub(crate) mod mock {
             }))
             .into_bytes();
             let md = sha256(&manifest_bytes);
-            st.manifests.insert(format!("{repo}@{md}"), manifest_bytes.clone());
-            st.manifests.insert(format!("{repo}:{tag}"), manifest_bytes.clone());
-            Seeded { manifest_digest: md, manifest_bytes, layer_digests, diff_ids }
+            st.manifests
+                .insert(format!("{repo}@{md}"), manifest_bytes.clone());
+            st.manifests
+                .insert(format!("{repo}:{tag}"), manifest_bytes.clone());
+            Seeded {
+                manifest_digest: md,
+                manifest_bytes,
+                layer_digests,
+                diff_ids,
+            }
         }
     }
 
@@ -2063,7 +2873,11 @@ pub(crate) mod mock {
         let mut st = state.lock().unwrap();
         let path = req.target.split('?').next().unwrap_or("").to_string();
         let auth = req.headers.get("authorization").cloned();
-        st.requests.push(MockRequest { method: req.method.clone(), url: req.target.clone(), authorization: auth.clone() });
+        st.requests.push(MockRequest {
+            method: req.method.clone(),
+            url: req.target.clone(),
+            authorization: auth.clone(),
+        });
         let o = st.options.clone();
         let head = req.method == "HEAD";
         let json_h = || vec![("content-type", "application/json".to_string())];
@@ -2071,10 +2885,16 @@ pub(crate) mod mock {
         let param = |k: &str| params.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
 
         if path == "/token" {
-            let search = req.target.find('?').map(|i| req.target[i..].to_string()).unwrap_or_default();
+            let search = req
+                .target
+                .find('?')
+                .map(|i| req.target[i..].to_string())
+                .unwrap_or_default();
             st.token_calls.push(search);
             drop(st);
-            let wants_push = params.iter().any(|(k, v)| k == "scope" && v.contains("push"));
+            let wants_push = params
+                .iter()
+                .any(|(k, v)| k == "scope" && v.contains("push"));
             let ok = auth.as_deref() == Some(basic(&o.user, &o.pass).as_str());
             if ok {
                 return respond(s, 200, br#"{"token":"tok-full"}"#, &json_h(), false);
@@ -2083,7 +2903,13 @@ pub(crate) mod mock {
                 return respond(s, 200, br#"{"token":"tok-anon"}"#, &json_h(), false);
             }
             if auth.is_some() {
-                return respond(s, 401, br#"{"errors":[{"code":"UNAUTHORIZED","message":"bad credentials"}]}"#, &[], false);
+                return respond(
+                    s,
+                    401,
+                    br#"{"errors":[{"code":"UNAUTHORIZED","message":"bad credentials"}]}"#,
+                    &[],
+                    false,
+                );
             }
             // like Docker Hub: a token without the push scope
             return respond(s, 200, br#"{"token":"tok-denied"}"#, &json_h(), false);
@@ -2095,7 +2921,11 @@ pub(crate) mod mock {
             for kind in ["/blobs/uploads", "/blobs/", "/manifests/"] {
                 if let Some(i) = p.find(kind) {
                     let rest = p[i + kind.len()..].trim_start_matches('/');
-                    return Some((p[..i].to_string(), kind.trim_matches('/').to_string(), rest.to_string()));
+                    return Some((
+                        p[..i].to_string(),
+                        kind.trim_matches('/').to_string(),
+                        rest.to_string(),
+                    ));
                 }
             }
             None
@@ -2104,19 +2934,30 @@ pub(crate) mod mock {
         let unauthorized = br#"{"errors":[{"code":"UNAUTHORIZED","message":"auth"}]}"#;
         if o.auth == Auth::Basic && auth.as_deref() != Some(basic(&o.user, &o.pass).as_str()) {
             drop(st);
-            return respond(s, 401, unauthorized, &[("www-authenticate", "Basic realm=\"mock\"".into())], head);
+            return respond(
+                s,
+                401,
+                unauthorized,
+                &[("www-authenticate", "Basic realm=\"mock\"".into())],
+                head,
+            );
         }
         if o.auth == Auth::Bearer {
             let tok = auth.as_deref().and_then(|a| a.strip_prefix("Bearer "));
             let good = tok == Some("tok-full") || (tok == Some("tok-anon") && !writes);
             if !good {
                 let scope = if parsed.is_some() {
-                    format!(",scope=\"repository:{repo}:{}\"", if writes { "pull,push" } else { "pull" })
+                    format!(
+                        ",scope=\"repository:{repo}:{}\"",
+                        if writes { "pull,push" } else { "pull" }
+                    )
                 } else {
                     String::new()
                 };
                 drop(st);
-                let chal = format!("Bearer realm=\"http://127.0.0.1:{port}/token\",service=\"mock\"{scope}");
+                let chal = format!(
+                    "Bearer realm=\"http://127.0.0.1:{port}/token\",service=\"mock\"{scope}"
+                );
                 return respond(s, 401, unauthorized, &[("www-authenticate", chal)], head);
             }
         }
@@ -2125,9 +2966,16 @@ pub(crate) mod mock {
             return respond(s, 200, b"{}", &[], head);
         }
         // Tag listing, paginated like the distribution spec: ?n=<count>&last=<tag>, with a Link header to the next page.
-        if let Some(name) = path.strip_prefix("/v2/").and_then(|p| p.strip_suffix("/tags/list")) {
+        if let Some(name) = path
+            .strip_prefix("/v2/")
+            .and_then(|p| p.strip_suffix("/tags/list"))
+        {
             let prefix = format!("{name}:");
-            let mut all: Vec<String> = st.manifests.keys().filter_map(|k| k.strip_prefix(&prefix).map(str::to_string)).collect();
+            let mut all: Vec<String> = st
+                .manifests
+                .keys()
+                .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
+                .collect();
             all.sort();
             drop(st);
             if all.is_empty() {
@@ -2137,33 +2985,76 @@ pub(crate) mod mock {
                 Some(last) => all.into_iter().filter(|t| *t > last).collect(),
                 None => all,
             };
-            let n = param("n").and_then(|n| n.parse::<usize>().ok()).unwrap_or(from.len()).min(o.tag_page_size.unwrap_or(usize::MAX));
+            let n = param("n")
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(from.len())
+                .min(o.tag_page_size.unwrap_or(usize::MAX));
             let page: Vec<String> = from.iter().take(n).cloned().collect();
             let mut headers = json_h();
             if from.len() > page.len() {
-                headers.push(("link", format!("</v2/{name}/tags/list?n={n}&last={}>; rel=\"next\"", page.last().cloned().unwrap_or_default())));
+                headers.push((
+                    "link",
+                    format!(
+                        "</v2/{name}/tags/list?n={n}&last={}>; rel=\"next\"",
+                        page.last().cloned().unwrap_or_default()
+                    ),
+                ));
             }
-            let body = serde_json::to_vec(&json!({ "name": name, "tags": page })).unwrap_or_default();
+            let body =
+                serde_json::to_vec(&json!({ "name": name, "tags": page })).unwrap_or_default();
             return respond(s, 200, &body, &headers, head);
         }
         let Some((_, kind, rest)) = parsed else {
             drop(st);
-            return respond(s, 404, br#"{"errors":[{"code":"NAME_UNKNOWN","message":"nope"}]}"#, &[], head);
+            return respond(
+                s,
+                404,
+                br#"{"errors":[{"code":"NAME_UNKNOWN","message":"nope"}]}"#,
+                &[],
+                head,
+            );
         };
         let m = req.method.as_str();
         if kind == "blobs" && (m == "GET" || m == "HEAD") {
-            let Some(b) = st.blobs.get(&rest).cloned().filter(|_| st.has_blob(&repo, &rest)) else {
+            let Some(b) = st
+                .blobs
+                .get(&rest)
+                .cloned()
+                .filter(|_| st.has_blob(&repo, &rest))
+            else {
                 drop(st);
-                return respond(s, 404, br#"{"errors":[{"code":"BLOB_UNKNOWN","message":"no"}]}"#, &[], head);
+                return respond(
+                    s,
+                    404,
+                    br#"{"errors":[{"code":"BLOB_UNKNOWN","message":"no"}]}"#,
+                    &[],
+                    head,
+                );
             };
             drop(st);
             if head {
-                return respond(s, 200, b"", &[("content-length", b.len().to_string())], true);
+                return respond(
+                    s,
+                    200,
+                    b"",
+                    &[("content-length", b.len().to_string())],
+                    true,
+                );
             }
             if let Some(to) = &o.redirect_blobs_to {
-                return respond(s, 307, b"", &[("location", format!("{to}/blob/{}", &rest[7..]))], false);
+                return respond(
+                    s,
+                    307,
+                    b"",
+                    &[("location", format!("{to}/blob/{}", &rest[7..]))],
+                    false,
+                );
             }
-            let out = if o.corrupt.as_deref() == Some(rest.as_str()) { vec![0x41u8; b.len()] } else { b };
+            let out = if o.corrupt.as_deref() == Some(rest.as_str()) {
+                vec![0x41u8; b.len()]
+            } else {
+                b
+            };
             return respond(s, 200, &out, &[], false);
         }
         if kind == "blobs/uploads" && m == "POST" {
@@ -2172,35 +3063,68 @@ pub(crate) mod mock {
                     let b = st.blobs[&mount].clone();
                     st.add_blob(&repo, &mount, b);
                     drop(st);
-                    return respond(s, 201, b"", &[("location", format!("/v2/{repo}/blobs/{mount}"))], false);
+                    return respond(
+                        s,
+                        201,
+                        b"",
+                        &[("location", format!("/v2/{repo}/blobs/{mount}"))],
+                        false,
+                    );
                 }
             }
             st.counter += 1;
             let id = format!("upload-{}", st.counter);
             st.uploads.insert(id.clone(), repo.clone());
             drop(st);
-            return respond(s, 202, b"", &[("location", format!("/v2/{repo}/blobs/uploads/{id}?_state=x"))], false);
+            return respond(
+                s,
+                202,
+                b"",
+                &[(
+                    "location",
+                    format!("/v2/{repo}/blobs/uploads/{id}?_state=x"),
+                )],
+                false,
+            );
         }
         if kind == "blobs/uploads" && m == "PUT" {
             let d = param("digest").unwrap_or_default();
             if !st.uploads.contains_key(&rest) || sha256(&req.body) != d {
                 drop(st);
-                return respond(s, 400, br#"{"errors":[{"code":"DIGEST_INVALID","message":"bad digest"}]}"#, &[], false);
+                return respond(
+                    s,
+                    400,
+                    br#"{"errors":[{"code":"DIGEST_INVALID","message":"bad digest"}]}"#,
+                    &[],
+                    false,
+                );
             }
             st.uploads.remove(&rest);
             st.add_blob(&repo, &d, req.body.clone());
             drop(st);
-            return respond(s, 201, b"", &[("location", format!("/v2/{repo}/blobs/{d}")), ("docker-content-digest", d.clone())], false);
+            return respond(
+                s,
+                201,
+                b"",
+                &[
+                    ("location", format!("/v2/{repo}/blobs/{d}")),
+                    ("docker-content-digest", d.clone()),
+                ],
+                false,
+            );
         }
         if kind == "manifests" && m == "PUT" {
             let d = sha256(&req.body);
             st.manifests.insert(format!("{repo}@{d}"), req.body.clone());
             if !rest.starts_with("sha256:") {
-                st.manifests.insert(format!("{repo}:{rest}"), req.body.clone());
+                st.manifests
+                    .insert(format!("{repo}:{rest}"), req.body.clone());
             }
             let referrers_api = st.options.referrers_api;
             drop(st);
-            let subject = serde_json::from_slice::<Value>(&req.body).ok().and_then(|j| j["subject"]["digest"].as_str().map(str::to_string));
+            let subject = serde_json::from_slice::<Value>(&req.body)
+                .ok()
+                .and_then(|j| j["subject"]["digest"].as_str().map(str::to_string));
             let mut headers = vec![("docker-content-digest", d)];
             if let Some(sub) = subject.filter(|_| referrers_api) {
                 headers.push(("oci-subject", sub));
@@ -2208,10 +3132,20 @@ pub(crate) mod mock {
             return respond(s, 201, b"", &headers, false);
         }
         if kind == "manifests" && (m == "GET" || m == "HEAD") {
-            let key = if rest.starts_with("sha256:") { format!("{repo}@{rest}") } else { format!("{repo}:{rest}") };
+            let key = if rest.starts_with("sha256:") {
+                format!("{repo}@{rest}")
+            } else {
+                format!("{repo}:{rest}")
+            };
             let Some(mut b) = st.manifests.get(&key).cloned() else {
                 drop(st);
-                return respond(s, 404, br#"{"errors":[{"code":"MANIFEST_UNKNOWN","message":"no such manifest"}]}"#, &[], head);
+                return respond(
+                    s,
+                    404,
+                    br#"{"errors":[{"code":"MANIFEST_UNKNOWN","message":"no such manifest"}]}"#,
+                    &[],
+                    head,
+                );
             };
             drop(st);
             if let (Some(sw), true) = (&o.swap_manifest, rest.starts_with("sha256:")) {
@@ -2219,10 +3153,20 @@ pub(crate) mod mock {
             }
             let mt = serde_json::from_slice::<Value>(&b)
                 .ok()
-                .and_then(|j| j.get("mediaType").and_then(Value::as_str).map(str::to_string))
+                .and_then(|j| {
+                    j.get("mediaType")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .unwrap_or_else(|| "application/vnd.oci.image.manifest.v1+json".into());
             let d = sha256(&b);
-            return respond(s, 200, &b, &[("content-type", mt), ("docker-content-digest", d)], head);
+            return respond(
+                s,
+                200,
+                &b,
+                &[("content-type", mt), ("docker-content-digest", d)],
+                head,
+            );
         }
         drop(st);
         respond(s, 405, b"", &[], head)
@@ -2239,14 +3183,27 @@ pub(crate) mod mock {
         let (rq, st) = (requests.clone(), reg.state.clone());
         let port = serve(move |req, s| {
             let authorization = req.headers.get("authorization").cloned();
-            rq.lock().unwrap().push(MockRequest { method: req.method.clone(), url: req.target.clone(), authorization });
-            let b = req.target.strip_prefix("/blob/").and_then(|hex| st.lock().unwrap().blobs.get(&format!("sha256:{hex}")).cloned());
+            rq.lock().unwrap().push(MockRequest {
+                method: req.method.clone(),
+                url: req.target.clone(),
+                authorization,
+            });
+            let b = req.target.strip_prefix("/blob/").and_then(|hex| {
+                st.lock()
+                    .unwrap()
+                    .blobs
+                    .get(&format!("sha256:{hex}"))
+                    .cloned()
+            });
             match b {
                 Some(b) => respond(s, 200, &b, &[], false),
                 None => respond(s, 404, b"", &[], false),
             }
         });
-        MockCdn { url: format!("http://127.0.0.1:{port}"), requests }
+        MockCdn {
+            url: format!("http://127.0.0.1:{port}"),
+            requests,
+        }
     }
 
     /// A fresh temp directory (never ~/.sitefile or ~/.docker).
@@ -2254,8 +3211,14 @@ pub(crate) mod mock {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let d = std::env::temp_dir().join(format!("sitefile-reg-{prefix}{}-{n}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = std::env::temp_dir().join(format!(
+            "sitefile-reg-{prefix}{}-{n}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -2263,7 +3226,10 @@ pub(crate) mod mock {
     /// An environment that names an empty Docker config dir and nothing else secret.
     pub fn clean_env() -> crate::registry::Env {
         let mut e = crate::registry::Env::new();
-        e.insert("DOCKER_CONFIG".into(), tmp("docker-empty-").display().to_string());
+        e.insert(
+            "DOCKER_CONFIG".into(),
+            tmp("docker-empty-").display().to_string(),
+        );
         e.insert("HOME".into(), tmp("home-").display().to_string());
         e.insert("PATH".into(), "/usr/bin:/bin".into());
         e
@@ -2284,13 +3250,26 @@ mod tests {
     const SECRET: &str = "s3cr3t-pw-do-not-print";
 
     fn blog_tree() -> Tree {
-        let files = [("/index.html", "<h1>Home</h1>"), ("/style.css", "body{}"), ("/about/index.html", "<h1>About</h1>")];
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "test", 0o644)))).unwrap()
+        let files = [
+            ("/index.html", "<h1>Home</h1>"),
+            ("/style.css", "body{}"),
+            ("/about/index.html", "<h1>About</h1>"),
+        ];
+        Tree::from_files(files.iter().map(|(p, c)| {
+            (
+                p.to_string(),
+                make_file(c.as_bytes().to_vec(), "test", 0o644),
+            )
+        }))
+        .unwrap()
     }
 
     /// A store with the blog site built and tagged `r`.
     fn build_blog(store: &Store, r: &str) -> String {
-        let id = store.add_image(&blog_tree(), &OciOptions::default()).unwrap().id;
+        let id = store
+            .add_image(&blog_tree(), &OciOptions::default())
+            .unwrap()
+            .id;
         store.tag(&id, &parse_local_ref(r).unwrap()).unwrap();
         id
     }
@@ -2314,11 +3293,25 @@ mod tests {
     }
 
     fn push_with(store: &Store, r: &str, env: Env) -> Result<PushReport> {
-        push(store, r, &PushOptions { env: Some(env), ..Default::default() })
+        push(
+            store,
+            r,
+            &PushOptions {
+                env: Some(env),
+                ..Default::default()
+            },
+        )
     }
 
     fn pull_with(store: &Store, r: &str, env: Env) -> Result<PullReport> {
-        pull(store, r, &PullOptions { env: Some(env), ..Default::default() })
+        pull(
+            store,
+            r,
+            &PullOptions {
+                env: Some(env),
+                ..Default::default()
+            },
+        )
     }
 
     fn client(host: &str) -> RegistryClient {
@@ -2339,7 +3332,10 @@ mod tests {
     fn attest(store: &Store, id: &str) -> Vec<String> {
         use crate::export::attest::{attestation_referrer, CYCLONEDX, SLSA};
         let size = store.read_blob(id, None).unwrap().len() as u64;
-        let refs = vec![attestation_referrer(id, size, SLSA, json!({ "p": 1 })), attestation_referrer(id, size, CYCLONEDX, json!({ "s": 1 }))];
+        let refs = vec![
+            attestation_referrer(id, size, SLSA, json!({ "p": 1 })),
+            attestation_referrer(id, size, CYCLONEDX, json!({ "s": 1 })),
+        ];
         store.put_referrers(id, &refs).unwrap();
         refs.iter().map(|r| r.descriptor.digest.clone()).collect()
     }
@@ -2356,32 +3352,73 @@ mod tests {
         let p = push_with(&store, &remote, clean_env()).unwrap();
         let tag = referrers_tag(&id);
         let n = p.lines.len();
-        assert_eq!(p.lines[n - 4], format!("{}: attestation pushed (https://slsa.dev/provenance/v1)", short_id(&digests[0])));
-        assert_eq!(p.lines[n - 3], format!("{}: attestation pushed (https://cyclonedx.org/bom)", short_id(&digests[1])));
-        assert_eq!(p.lines[n - 2], format!("referrers tag {tag}: 2 attestations"));
+        assert_eq!(
+            p.lines[n - 4],
+            format!(
+                "{}: attestation pushed (https://slsa.dev/provenance/v1)",
+                short_id(&digests[0])
+            )
+        );
+        assert_eq!(
+            p.lines[n - 3],
+            format!(
+                "{}: attestation pushed (https://cyclonedx.org/bom)",
+                short_id(&digests[1])
+            )
+        );
+        assert_eq!(
+            p.lines[n - 2],
+            format!("referrers tag {tag}: 2 attestations")
+        );
         assert!(p.lines[n - 1].starts_with(&format!("1: digest: {id} size: ")));
-        assert_eq!(sha256(&reg.manifest("team/blog:1").unwrap()), id, "the tag still names the image");
-        let idx: Value = serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
-        let listed: Vec<&str> = idx["manifests"].as_array().unwrap().iter().map(|m| m["digest"].as_str().unwrap()).collect();
-        assert_eq!(listed, digests.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(
+            sha256(&reg.manifest("team/blog:1").unwrap()),
+            id,
+            "the tag still names the image"
+        );
+        let idx: Value =
+            serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
+        let listed: Vec<&str> = idx["manifests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["digest"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            listed,
+            digests.iter().map(String::as_str).collect::<Vec<_>>()
+        );
         assert!(reg.has_blob(&empty_digest()));
         for d in &digests {
             assert!(reg.has_manifest(&format!("team/blog@{d}")));
         }
         // entries another tool listed are kept; a repeat push changes nothing
         let foreign = json!({ "mediaType": media::MANIFEST, "digest": format!("sha256:{}", "b".repeat(64)), "size": 1, "artifactType": "application/example" });
-        reg.set_manifest(&format!("team/blog:{tag}"), serde_json::to_string(&json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": [foreign] })).unwrap().as_bytes());
+        reg.set_manifest(
+            &format!("team/blog:{tag}"),
+            serde_json::to_string(
+                &json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": [foreign] }),
+            )
+            .unwrap()
+            .as_bytes(),
+        );
         push_with(&store, &remote, clean_env()).unwrap();
-        let idx: Value = serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
+        let idx: Value =
+            serde_json::from_slice(&reg.manifest(&format!("team/blog:{tag}")).unwrap()).unwrap();
         assert_eq!(idx["manifests"].as_array().unwrap().len(), 3);
         assert_eq!(idx["manifests"][0]["digest"], foreign["digest"]);
         let p3 = push_with(&store, &remote, clean_env()).unwrap();
-        assert!(p3.lines.contains(&format!("referrers tag {tag}: up to date")));
+        assert!(p3
+            .lines
+            .contains(&format!("referrers tag {tag}: up to date")));
     }
 
     #[test]
     fn registries_with_the_referrers_api_get_no_fallback_tag() {
-        let reg = MockRegistry::start(MockOptions { referrers_api: true, ..Default::default() });
+        let reg = MockRegistry::start(MockOptions {
+            referrers_api: true,
+            ..Default::default()
+        });
         let store = new_store();
         let id = build_blog(&store, "blog:1");
         attest(&store, &id);
@@ -2389,7 +3426,12 @@ mod tests {
         store.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
         let p = push_with(&store, &remote, clean_env()).unwrap();
         assert!(!p.lines.iter().any(|l| l.starts_with("referrers tag")));
-        assert!(reg.manifest(&format!("team/blog:{}", crate::export::attest::referrers_tag(&id))).is_none());
+        assert!(reg
+            .manifest(&format!(
+                "team/blog:{}",
+                crate::export::attest::referrers_tag(&id)
+            ))
+            .is_none());
     }
 
     #[test]
@@ -2400,16 +3442,25 @@ mod tests {
         let remote = format!("{}/team/blog:1", reg.host);
         store1.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
         let p = push_with(&store1, &remote, clean_env()).unwrap();
-        assert_eq!(p.lines[0], format!("The push refers to repository [{}/team/blog]", reg.host));
+        assert_eq!(
+            p.lines[0],
+            format!("The push refers to repository [{}/team/blog]", reg.host)
+        );
         let last = p.lines.last().unwrap();
-        assert!(last.starts_with(&format!("1: digest: {id} size: ")), "{last}");
+        assert!(
+            last.starts_with(&format!("1: digest: {id} size: ")),
+            "{last}"
+        );
         assert_eq!(p.uploaded, 2);
         assert!(reg.has_manifest(&format!("team/blog@{id}")));
         // a second push uploads nothing new: only the manifest is PUT again
         let puts = || reg.requests().iter().filter(|r| r.method == "PUT").count();
         let before = puts();
         let p2 = push_with(&store1, &remote, clean_env()).unwrap();
-        assert!(p2.lines.iter().any(|l| l.ends_with(": layer already exists")));
+        assert!(p2
+            .lines
+            .iter()
+            .any(|l| l.ends_with(": layer already exists")));
         assert_eq!(p2.existing, 2);
         assert_eq!(puts() - before, 1);
 
@@ -2417,10 +3468,26 @@ mod tests {
         let store2 = new_store();
         let events = std::cell::RefCell::new(Vec::new());
         let on = |m: &str| events.borrow_mut().push(m.to_string());
-        let pl = pull(&store2, &remote, &PullOptions { env: Some(clean_env()), on_event: Some(&on), ..Default::default() }).unwrap();
-        assert_eq!(*events.borrow(), pl.lines, "on_event sees exactly the report lines");
+        let pl = pull(
+            &store2,
+            &remote,
+            &PullOptions {
+                env: Some(clean_env()),
+                on_event: Some(&on),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            *events.borrow(),
+            pl.lines,
+            "on_event sees exactly the report lines"
+        );
         assert_eq!(pl.lines[pl.lines.len() - 2], format!("Digest: {id}"));
-        assert_eq!(pl.lines.last().unwrap(), &format!("Pulled {remote} (image {})", short_id(&id)));
+        assert_eq!(
+            pl.lines.last().unwrap(),
+            &format!("Pulled {remote} (image {})", short_id(&id))
+        );
         assert_eq!(store2.resolve(&remote).unwrap(), id);
         assert!(store2.load_tree(&id).unwrap().get("/index.html").is_some());
 
@@ -2428,7 +3495,10 @@ mod tests {
         store2.remove_image(&id, true).unwrap();
         let by_digest = format!("{}/team/blog@{id}", reg.host);
         let pd = pull_with(&store2, &by_digest, clean_env()).unwrap();
-        assert_eq!(pd.lines.last().unwrap(), &format!("Pulled {by_digest} (image {})", short_id(&id)));
+        assert_eq!(
+            pd.lines.last().unwrap(),
+            &format!("Pulled {by_digest} (image {})", short_id(&id))
+        );
         assert!(store2.has_image(&id).unwrap());
     }
 
@@ -2437,7 +3507,16 @@ mod tests {
         use crate::language::ast::OciCompression;
         let reg = MockRegistry::start(MockOptions::default());
         let store1 = new_store();
-        let id = store1.add_image(&blog_tree(), &OciOptions { compression: OciCompression::None, ..Default::default() }).unwrap().id;
+        let id = store1
+            .add_image(
+                &blog_tree(),
+                &OciOptions {
+                    compression: OciCompression::None,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id;
         let remote = format!("{}/team/plain:1", reg.host);
         store1.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
         push_with(&store1, &remote, clean_env()).unwrap();
@@ -2463,26 +3542,65 @@ mod tests {
     #[test]
     fn pull_verifies_blob_digests_and_keeps_nothing_on_corruption() {
         let reg = MockRegistry::start(MockOptions::default());
-        let seeded = reg.seed_image("lib/app", "1", SeedImage { layers: vec![vec![("/a.txt", "aaa")], vec![("/b.txt", "bbb")]], ..Default::default() });
+        let seeded = reg.seed_image(
+            "lib/app",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/a.txt", "aaa")], vec![("/b.txt", "bbb")]],
+                ..Default::default()
+            },
+        );
         let bad = seeded.layer_digests[1].clone();
         reg.set_options(|o| o.corrupt = Some(bad.clone()));
         let store = new_store();
-        let (c, _) = code(pull_with(&store, &format!("{}/lib/app:1", reg.host), clean_env()));
+        let (c, _) = code(pull_with(
+            &store,
+            &format!("{}/lib/app:1", reg.host),
+            clean_env(),
+        ));
         assert_eq!(c, E_INTEGRITY);
         assert!(store.list().unwrap().is_empty());
-        let names: Vec<String> =
-            std::fs::read_dir(store.home.join("blobs/sha256")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-        assert!(!names.contains(&bad[7..].to_string()), "the corrupt blob is not stored");
-        assert!(names.iter().all(|n| n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit())), "no temp files left: {names:?}");
+        let names: Vec<String> = std::fs::read_dir(store.home.join("blobs/sha256"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            !names.contains(&bad[7..].to_string()),
+            "the corrupt blob is not stored"
+        );
+        assert!(
+            names
+                .iter()
+                .all(|n| n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit())),
+            "no temp files left: {names:?}"
+        );
     }
 
     #[test]
     fn a_manifest_fetched_by_digest_must_hash_to_that_digest() {
         let reg = MockRegistry::start(MockOptions::default());
-        let a = reg.seed_image("lib/app", "1", SeedImage { layers: vec![vec![("/a", "a")]], ..Default::default() });
-        let b = reg.seed_image("lib/other", "1", SeedImage { layers: vec![vec![("/b", "b")]], ..Default::default() });
+        let a = reg.seed_image(
+            "lib/app",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/a", "a")]],
+                ..Default::default()
+            },
+        );
+        let b = reg.seed_image(
+            "lib/other",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/b", "b")]],
+                ..Default::default()
+            },
+        );
         reg.set_options(|o| o.swap_manifest = Some(b.manifest_bytes.clone()));
-        let (c, _) = code(pull_with(&new_store(), &format!("{}/lib/app@{}", reg.host, a.manifest_digest), clean_env()));
+        let (c, _) = code(pull_with(
+            &new_store(),
+            &format!("{}/lib/app@{}", reg.host, a.manifest_digest),
+            clean_env(),
+        ));
         assert_eq!(c, E_INTEGRITY);
     }
 
@@ -2490,10 +3608,23 @@ mod tests {
     fn size_limits_max_download_bytes() {
         let reg = MockRegistry::start(MockOptions::default());
         let big = "x".repeat(5000);
-        reg.seed_image("lib/app", "1", SeedImage { layers: vec![vec![("/big", big.as_str())]], ..Default::default() });
+        reg.seed_image(
+            "lib/app",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/big", big.as_str())]],
+                ..Default::default()
+            },
+        );
         let o = PullOptions {
             env: Some(clean_env()),
-            registry: RegistryOptions { limits: RegistryLimits { max_blob_bytes: 100, ..Default::default() }, ..Default::default() },
+            registry: RegistryOptions {
+                limits: RegistryLimits {
+                    max_blob_bytes: 100,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (c, m) = code(pull(&new_store(), &format!("{}/lib/app:1", reg.host), &o));
@@ -2503,8 +3634,25 @@ mod tests {
     #[test]
     fn pull_picks_the_platform_variant_from_an_index() {
         let reg = MockRegistry::start(MockOptions::default());
-        let amd = reg.seed_image("lib/multi", "amd", SeedImage { layers: vec![vec![("/f", "amd")]], docker: true, ..Default::default() });
-        let arm = reg.seed_image("lib/multi", "arm", SeedImage { layers: vec![vec![("/f", "arm")]], arch: "arm64", docker: true, ..Default::default() });
+        let amd = reg.seed_image(
+            "lib/multi",
+            "amd",
+            SeedImage {
+                layers: vec![vec![("/f", "amd")]],
+                docker: true,
+                ..Default::default()
+            },
+        );
+        let arm = reg.seed_image(
+            "lib/multi",
+            "arm",
+            SeedImage {
+                layers: vec![vec![("/f", "arm")]],
+                arch: "arm64",
+                docker: true,
+                ..Default::default()
+            },
+        );
         let index = canonical_json(&json!({
             "schemaVersion": 2,
             "mediaType": media::DOCKER_LIST,
@@ -2522,25 +3670,54 @@ mod tests {
         let s1 = new_store();
         let r1 = pull_with(&s1, &remote, clean_env()).unwrap();
         assert!(r1.lines.contains(&format!("Digest: {}", sha256(&index))));
-        assert_eq!(s1.resolve(&remote).unwrap(), amd.manifest_digest, "default platform is linux/amd64");
+        assert_eq!(
+            s1.resolve(&remote).unwrap(),
+            amd.manifest_digest,
+            "default platform is linux/amd64"
+        );
 
         let s2 = new_store();
-        pull(&s2, &remote, &PullOptions { env: Some(clean_env()), platform: Some("linux/arm64".into()), ..Default::default() }).unwrap();
+        pull(
+            &s2,
+            &remote,
+            &PullOptions {
+                env: Some(clean_env()),
+                platform: Some("linux/arm64".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let d = s2.details(&arm.manifest_digest).unwrap();
         assert_eq!(d.config.architecture, "arm64");
         assert_eq!(d.manifest.layers[0].media_type, media::DOCKER_LAYER);
 
-        let o = PullOptions { env: Some(clean_env()), platform: Some("linux/s390x".into()), ..Default::default() };
+        let o = PullOptions {
+            env: Some(clean_env()),
+            platform: Some("linux/s390x".into()),
+            ..Default::default()
+        };
         let (c, m) = code(pull(&new_store(), &remote, &o));
         assert_eq!(c, E_REGISTRY);
-        assert!(m.contains("no linux/s390x variant (available: linux/amd64, linux/arm64/v8)"), "{m}");
-        assert_eq!(select_platform(br#"{"manifests":[]}"#, "linux/amd64").unwrap_err().code, E_REGISTRY);
+        assert!(
+            m.contains("no linux/s390x variant (available: linux/amd64, linux/arm64/v8)"),
+            "{m}"
+        );
+        assert_eq!(
+            select_platform(br#"{"manifests":[]}"#, "linux/amd64")
+                .unwrap_err()
+                .code,
+            E_REGISTRY
+        );
     }
 
     #[test]
     fn registry_errors_name_the_server_problem() {
         let reg = MockRegistry::start(MockOptions::default());
-        let (c, m) = code(pull_with(&new_store(), &format!("{}/lib/missing:1", reg.host), clean_env()));
+        let (c, m) = code(pull_with(
+            &new_store(),
+            &format!("{}/lib/missing:1", reg.host),
+            clean_env(),
+        ));
         assert_eq!(c, E_NOT_FOUND);
         assert!(m.contains("404") && m.contains("MANIFEST_UNKNOWN"), "{m}");
     }
@@ -2549,23 +3726,52 @@ mod tests {
 
     #[test]
     fn bearer_auth_anonymous_pull_credentials_for_push_no_secrets() {
-        let reg = MockRegistry::start(MockOptions { auth: Auth::Bearer, user: "alice".into(), pass: SECRET.into(), ..Default::default() });
-        reg.seed_image("lib/pub", "1", SeedImage { layers: vec![vec![("/f", "f")]], ..Default::default() });
+        let reg = MockRegistry::start(MockOptions {
+            auth: Auth::Bearer,
+            user: "alice".into(),
+            pass: SECRET.into(),
+            ..Default::default()
+        });
+        reg.seed_image(
+            "lib/pub",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/f", "f")]],
+                ..Default::default()
+            },
+        );
         let store = new_store();
         let anon = pull_with(&store, &format!("{}/lib/pub:1", reg.host), clean_env()).unwrap();
-        let scopes: Vec<String> = reg.token_calls().iter().filter_map(|c| c.split("scope=").nth(1).map(|s| s.split('&').next().unwrap().to_string())).collect();
+        let scopes: Vec<String> = reg
+            .token_calls()
+            .iter()
+            .filter_map(|c| {
+                c.split("scope=")
+                    .nth(1)
+                    .map(|s| s.split('&').next().unwrap().to_string())
+            })
+            .collect();
         assert_eq!(scopes, vec!["repository%3Alib%2Fpub%3Apull"]);
-        assert!(reg.requests().iter().any(|r| r.authorization.as_deref() == Some("Bearer tok-anon")));
+        assert!(reg
+            .requests()
+            .iter()
+            .any(|r| r.authorization.as_deref() == Some("Bearer tok-anon")));
 
         let id = build_blog(&store, "blog:1");
         let remote = format!("{}/alice/blog:1", reg.host);
         store.tag(&id, &parse_local_ref(&remote).unwrap()).unwrap();
         let denied = push_with(&store, &remote, clean_env()).unwrap_err();
         assert_eq!(denied.code, E_AUTH);
-        assert!(denied.message().contains("no credentials"), "{}", denied.message());
+        assert!(
+            denied.message().contains("no credentials"),
+            "{}",
+            denied.message()
+        );
 
         // credentials from the Docker config `auths`
-        let cfg = docker_config(json!({ "auths": { reg.host.clone(): { "auth": b64(&format!("alice:{SECRET}")) } } }));
+        let cfg = docker_config(
+            json!({ "auths": { reg.host.clone(): { "auth": b64(&format!("alice:{SECRET}")) } } }),
+        );
         let ok = push_with(&store, &remote, env_with(&[("DOCKER_CONFIG", &cfg)])).unwrap();
         assert!(reg.has_manifest(&format!("alice/blog@{id}")));
         let mut outputs: Vec<String> = ok.lines.clone();
@@ -2573,13 +3779,26 @@ mod tests {
         outputs.push(denied.message());
         outputs.push(format!("{denied:?}"));
         for out in &outputs {
-            assert!(!out.contains("tok-") && !out.contains(SECRET), "no token or password in output: {out}");
+            assert!(
+                !out.contains("tok-") && !out.contains(SECRET),
+                "no token or password in output: {out}"
+            );
         }
         // Basic credentials only go to the token endpoint, never to /v2/ with a bearer challenge
-        assert!(reg.requests().iter().filter(|r| r.url.starts_with("/v2/")).all(|r| !r.authorization.as_deref().unwrap_or("").starts_with("Basic ")));
+        assert!(reg
+            .requests()
+            .iter()
+            .filter(|r| r.url.starts_with("/v2/"))
+            .all(|r| !r
+                .authorization
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Basic ")));
 
         // wrong password: rejected, secret not echoed
-        let bad = docker_config(json!({ "auths": { reg.host.clone(): { "auth": b64(&format!("alice:wrong-{SECRET}")) } } }));
+        let bad = docker_config(
+            json!({ "auths": { reg.host.clone(): { "auth": b64(&format!("alice:wrong-{SECRET}")) } } }),
+        );
         let no = push_with(&store, &remote, env_with(&[("DOCKER_CONFIG", &bad)])).unwrap_err();
         assert_eq!(no.code, E_AUTH);
         assert!(!no.message().contains(SECRET) && !format!("{no:?}").contains(SECRET));
@@ -2587,8 +3806,20 @@ mod tests {
 
     #[test]
     fn basic_auth_via_env_and_via_the_client_api() {
-        let reg = MockRegistry::start(MockOptions { auth: Auth::Basic, user: "bob".into(), pass: SECRET.into(), ..Default::default() });
-        reg.seed_image("lib/priv", "1", SeedImage { layers: vec![vec![("/f", "f")]], ..Default::default() });
+        let reg = MockRegistry::start(MockOptions {
+            auth: Auth::Basic,
+            user: "bob".into(),
+            pass: SECRET.into(),
+            ..Default::default()
+        });
+        reg.seed_image(
+            "lib/priv",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/f", "f")]],
+                ..Default::default()
+            },
+        );
         let store = new_store();
         let r = format!("{}/lib/priv:1", reg.host);
         assert_eq!(pull_with(&store, &r, clean_env()).unwrap_err().code, E_AUTH);
@@ -2598,12 +3829,39 @@ mod tests {
 
         let s2 = new_store();
         let provider: CredentialProvider = Arc::new(|| Ok(Some(Credentials::basic("bob", SECRET))));
-        let c = RegistryClient::new(&reg.host, RegistryOptions { credentials: Some(provider), ..Default::default() });
-        let res = pull_image(&s2, &c, &parse_ref(&r).unwrap(), &PullImageOptions { tag: true, ..Default::default() }).unwrap();
+        let c = RegistryClient::new(
+            &reg.host,
+            RegistryOptions {
+                credentials: Some(provider),
+                ..Default::default()
+            },
+        );
+        let res = pull_image(
+            &s2,
+            &c,
+            &parse_ref(&r).unwrap(),
+            &PullImageOptions {
+                tag: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(res.id.starts_with("sha256:"));
         let wrong: CredentialProvider = Arc::new(|| Ok(Some(Credentials::basic("bob", "nope"))));
-        let c = RegistryClient::new(&reg.host, RegistryOptions { credentials: Some(wrong), ..Default::default() });
-        let e = pull_image(&s2, &c, &parse_ref(&format!("{}/lib/priv:2", reg.host)).unwrap(), &PullImageOptions::default()).unwrap_err();
+        let c = RegistryClient::new(
+            &reg.host,
+            RegistryOptions {
+                credentials: Some(wrong),
+                ..Default::default()
+            },
+        );
+        let e = pull_image(
+            &s2,
+            &c,
+            &parse_ref(&format!("{}/lib/priv:2", reg.host)).unwrap(),
+            &PullImageOptions::default(),
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_AUTH);
         assert!(!e.message().contains("nope"));
     }
@@ -2621,7 +3879,12 @@ mod tests {
 
     #[test]
     fn credential_helpers_only_the_named_one_url_on_stdin_nothing_on_argv() {
-        let reg = MockRegistry::start(MockOptions { auth: Auth::Bearer, user: "carol".into(), pass: SECRET.into(), ..Default::default() });
+        let reg = MockRegistry::start(MockOptions {
+            auth: Auth::Bearer,
+            user: "carol".into(),
+            pass: SECRET.into(),
+            ..Default::default()
+        });
         let bin = tmp("helper-bin-");
         let log = bin.join("log.txt");
         fake_helper(&bin, &log);
@@ -2633,29 +3896,60 @@ mod tests {
 
         // credHelpers[host]
         let cfg = docker_config(json!({ "credHelpers": { reg.host.clone(): "fake" } }));
-        let r = push_with(&store, &remote, env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg)])).unwrap();
-        assert_eq!(std::fs::read_to_string(&log).unwrap().trim(), format!("args=get server={}", reg.host));
+        let r = push_with(
+            &store,
+            &remote,
+            env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg)]),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().trim(),
+            format!("args=get server={}", reg.host)
+        );
         assert!(r.lines.iter().all(|l| !l.contains(SECRET)));
 
         // credsStore, with an empty auths entry as `docker login` writes it
         std::fs::remove_file(&log).unwrap();
-        let cfg2 = docker_config(json!({ "auths": { reg.host.clone(): {} }, "credsStore": "fake" }));
-        push_with(&store, &remote, env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg2)])).unwrap();
+        let cfg2 =
+            docker_config(json!({ "auths": { reg.host.clone(): {} }, "credsStore": "fake" }));
+        push_with(
+            &store,
+            &remote,
+            env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg2)]),
+        )
+        .unwrap();
         assert!(log.exists());
 
         // a config that names no helper never runs one, even if one is on PATH
         std::fs::remove_file(&log).unwrap();
         let cfg3 = docker_config(json!({ "auths": {} }));
-        assert!(push_with(&store, &remote, env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg3)])).is_err());
+        assert!(push_with(
+            &store,
+            &remote,
+            env_with(&[("PATH", &path), ("DOCKER_CONFIG", &cfg3)])
+        )
+        .is_err());
         assert!(!log.exists());
     }
 
     #[test]
     fn credential_helper_names_are_restricted_and_a_missing_helper_is_clear() {
         let env = Env::new();
-        assert_eq!(run_credential_helper("a b; rm -rf /", "x", &env, 1000).unwrap_err().code, E_AUTH);
-        assert_eq!(run_credential_helper("../evil", "x", &env, 1000).unwrap_err().code, E_AUTH);
-        let cfg = docker_config(json!({ "credHelpers": { "registry.example.com": "no-such-helper-xyz" } }));
+        assert_eq!(
+            run_credential_helper("a b; rm -rf /", "x", &env, 1000)
+                .unwrap_err()
+                .code,
+            E_AUTH
+        );
+        assert_eq!(
+            run_credential_helper("../evil", "x", &env, 1000)
+                .unwrap_err()
+                .code,
+            E_AUTH
+        );
+        let cfg = docker_config(
+            json!({ "credHelpers": { "registry.example.com": "no-such-helper-xyz" } }),
+        );
         let env = env_with(&[("DOCKER_CONFIG", &cfg), ("PATH", "/nonexistent")]);
         let e = resolve_credentials("registry.example.com", None, &env).unwrap_err();
         assert_eq!(e.code, E_AUTH);
@@ -2674,18 +3968,42 @@ mod tests {
         }));
         let env = env_with(&[("DOCKER_CONFIG", &cfg)]);
         let get = |r: &str| resolve_credentials(r, None, &env).unwrap();
-        assert_eq!(get("docker.io"), Some(Credentials::basic("hubuser", "hubpass")));
+        assert_eq!(
+            get("docker.io"),
+            Some(Credentials::basic("hubuser", "hubpass"))
+        );
         assert_eq!(get("ghcr.io"), Some(Credentials::basic("g", "gp")));
-        assert_eq!(get("reg.example.com:5000"), Some(Credentials::basic("u", "p:with:colons")));
-        assert_eq!(get("tok.example.com"), Some(Credentials { identity_token: Some("refresh-me".into()), ..Default::default() }));
+        assert_eq!(
+            get("reg.example.com:5000"),
+            Some(Credentials::basic("u", "p:with:colons"))
+        );
+        assert_eq!(
+            get("tok.example.com"),
+            Some(Credentials {
+                identity_token: Some("refresh-me".into()),
+                ..Default::default()
+            })
+        );
         assert_eq!(get("other.example.com"), None);
         // explicit beats everything; $SITEFILE_REGISTRY_AUTH beats the config
         let x = Credentials::basic("x", "y");
-        assert_eq!(resolve_credentials("ghcr.io", Some(&x), &env).unwrap(), Some(x.clone()));
-        let e2 = env_with(&[("DOCKER_CONFIG", &cfg), ("SITEFILE_REGISTRY_AUTH", r#"{"ghcr.io":"e:f"}"#)]);
-        assert_eq!(resolve_credentials("ghcr.io", None, &e2).unwrap(), Some(Credentials::basic("e", "f")));
+        assert_eq!(
+            resolve_credentials("ghcr.io", Some(&x), &env).unwrap(),
+            Some(x.clone())
+        );
+        let e2 = env_with(&[
+            ("DOCKER_CONFIG", &cfg),
+            ("SITEFILE_REGISTRY_AUTH", r#"{"ghcr.io":"e:f"}"#),
+        ]);
+        assert_eq!(
+            resolve_credentials("ghcr.io", None, &e2).unwrap(),
+            Some(Credentials::basic("e", "f"))
+        );
         let e3 = env_with(&[("DOCKER_CONFIG", &cfg), ("SITEFILE_REGISTRY_AUTH", "nope")]);
-        assert_eq!(resolve_credentials("ghcr.io", None, &e3).unwrap_err().code, E_AUTH);
+        assert_eq!(
+            resolve_credentials("ghcr.io", None, &e3).unwrap_err().code,
+            E_AUTH
+        );
         // secrets never in Debug output
         let dbg = format!("{:?}", Credentials::basic("user", SECRET));
         assert!(!dbg.contains(SECRET) && dbg.contains("user"));
@@ -2694,32 +4012,70 @@ mod tests {
     #[test]
     fn insecure_registries_merge_flags_and_env() {
         let env = env_with(&[("SITEFILE_INSECURE_REGISTRIES", " a:5000, b ,,a:5000")]);
-        assert_eq!(insecure_registries_from_env(&["c".into(), "a:5000".into()], &env), vec!["c", "a:5000", "b"]);
+        assert_eq!(
+            insecure_registries_from_env(&["c".into(), "a:5000".into()], &env),
+            vec!["c", "a:5000", "b"]
+        );
     }
 
     // ------------------------------------------------------------ transport policy
 
     #[test]
     fn blob_redirects_to_a_cdn_are_followed_without_authorization() {
-        let reg = MockRegistry::start(MockOptions { auth: Auth::Basic, ..Default::default() });
+        let reg = MockRegistry::start(MockOptions {
+            auth: Auth::Basic,
+            ..Default::default()
+        });
         let cdn = start_cdn(&reg);
-        reg.seed_image("lib/app", "1", SeedImage { layers: vec![vec![("/f", "f")]], ..Default::default() });
+        reg.seed_image(
+            "lib/app",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/f", "f")]],
+                ..Default::default()
+            },
+        );
         reg.set_options(|o| o.redirect_blobs_to = Some(cdn.url.clone()));
         let auth = json!({ reg.host.clone(): "u:p" }).to_string();
-        pull_with(&new_store(), &format!("{}/lib/app:1", reg.host), env_with(&[("SITEFILE_REGISTRY_AUTH", &auth)])).unwrap();
+        pull_with(
+            &new_store(),
+            &format!("{}/lib/app:1", reg.host),
+            env_with(&[("SITEFILE_REGISTRY_AUTH", &auth)]),
+        )
+        .unwrap();
         let reqs = cdn.requests.lock().unwrap().clone();
         assert!(!reqs.is_empty());
-        assert!(reqs.iter().all(|q| q.authorization.is_none()), "credentials are not forwarded");
+        assert!(
+            reqs.iter().all(|q| q.authorization.is_none()),
+            "credentials are not forwarded"
+        );
     }
 
     #[test]
     fn redirects_are_revalidated() {
         let reg = MockRegistry::start(MockOptions::default());
-        reg.seed_image("lib/app", "1", SeedImage { layers: vec![vec![("/f", "f")]], ..Default::default() });
+        reg.seed_image(
+            "lib/app",
+            "1",
+            SeedImage {
+                layers: vec![vec![("/f", "f")]],
+                ..Default::default()
+            },
+        );
         let r = parse_ref(&format!("{}/lib/app:1", reg.host)).unwrap();
-        for (target, want) in [("http://203.0.113.9", E_PROTOCOL), ("https://10.0.0.5", E_SSRF_BLOCKED), ("https://user:pw@example.com", E_PROTOCOL)] {
+        for (target, want) in [
+            ("http://203.0.113.9", E_PROTOCOL),
+            ("https://10.0.0.5", E_SSRF_BLOCKED),
+            ("https://user:pw@example.com", E_PROTOCOL),
+        ] {
             reg.set_options(|o| o.redirect_blobs_to = Some(target.into()));
-            let e = pull_image(&new_store(), &client(&reg.host), &r, &PullImageOptions::default()).unwrap_err();
+            let e = pull_image(
+                &new_store(),
+                &client(&reg.host),
+                &r,
+                &PullImageOptions::default(),
+            )
+            .unwrap_err();
             assert_eq!(e.code, want, "{target}: {}", e.message());
             assert!(!e.message().contains("pw@"));
         }
@@ -2728,9 +4084,22 @@ mod tests {
     #[test]
     fn a_non_loopback_registry_is_reached_over_https_only() {
         // 192.0.2.1 (TEST-NET-1) never answers; no plain-http attempt is made.
-        let c = RegistryClient::new("192.0.2.1:5000", RegistryOptions { limits: RegistryLimits { timeout_ms: 300, ..Default::default() }, ..Default::default() });
+        let c = RegistryClient::new(
+            "192.0.2.1:5000",
+            RegistryOptions {
+                limits: RegistryLimits {
+                    timeout_ms: 300,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
         let e = c.ping().unwrap_err();
-        assert!(e.message().contains("https://192.0.2.1:5000"), "{}", e.message());
+        assert!(
+            e.message().contains("https://192.0.2.1:5000"),
+            "{}",
+            e.message()
+        );
     }
 
     #[test]
@@ -2741,7 +4110,16 @@ mod tests {
         c.ping().unwrap();
         assert_eq!(c.init().unwrap().scheme, "http");
         assert!(!client("192.0.2.1:5000").insecure);
-        assert!(RegistryClient::new("reg.example:5000", RegistryOptions { insecure_registries: vec!["REG.example:5000".into()], ..Default::default() }).insecure);
+        assert!(
+            RegistryClient::new(
+                "reg.example:5000",
+                RegistryOptions {
+                    insecure_registries: vec!["REG.example:5000".into()],
+                    ..Default::default()
+                }
+            )
+            .insecure
+        );
     }
 
     #[test]
@@ -2760,6 +4138,11 @@ mod tests {
         let store = new_store();
         let id = build_blog(&store, "blog:1");
         let r = parse_ref(&format!("{}/x/y@sha256:{}", reg.host, "0".repeat(64))).unwrap();
-        assert_eq!(push_image(&store, &client(&reg.host), &id, &r, None).unwrap_err().code, E_USAGE);
+        assert_eq!(
+            push_image(&store, &client(&reg.host), &id, &r, None)
+                .unwrap_err()
+                .code,
+            E_USAGE
+        );
     }
 }

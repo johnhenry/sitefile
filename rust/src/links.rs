@@ -93,10 +93,16 @@ pub fn decode_html(s: &str) -> Mapped {
                 return Some(c.to_string());
             }
             let b = name.as_bytes();
-            if b.len() >= 2 && b.len() <= 9 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_digit) {
+            if b.len() >= 2 && b.len() <= 9 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_digit)
+            {
                 return Some(code_point(name[1..].parse::<u32>().ok()?).to_string());
             }
-            if b.len() >= 3 && b.len() <= 10 && b[0] == b'#' && (b[1] == b'x' || b[1] == b'X') && b[2..].iter().all(u8::is_ascii_hexdigit) {
+            if b.len() >= 3
+                && b.len() <= 10
+                && b[0] == b'#'
+                && (b[1] == b'x' || b[1] == b'X')
+                && b[2..].iter().all(u8::is_ascii_hexdigit)
+            {
                 return Some(code_point(u32::from_str_radix(&name[2..], 16).ok()?).to_string());
             }
             None
@@ -186,7 +192,13 @@ struct Lines(Vec<usize>);
 
 impl Lines {
     fn new(text: &str) -> Lines {
-        Lines(text.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| i).collect())
+        Lines(
+            text.bytes()
+                .enumerate()
+                .filter(|(_, b)| *b == b'\n')
+                .map(|(i, _)| i)
+                .collect(),
+        )
     }
     fn at(&self, pos: usize) -> u32 {
         (self.0.partition_point(|&p| p < pos) + 1) as u32
@@ -202,7 +214,14 @@ struct Collector<'a> {
 impl Collector<'_> {
     fn push(&mut self, start: usize, end: usize, url: String, css: bool) {
         let line = self.lines.at(start);
-        self.out.push(Reference { start, end, raw: self.text[start..end].to_string(), url, line, css });
+        self.out.push(Reference {
+            start,
+            end,
+            raw: self.text[start..end].to_string(),
+            url,
+            line,
+            css,
+        });
     }
 }
 
@@ -210,7 +229,10 @@ fn find_from(text: &[u8], pat: &[u8], from: usize) -> Option<usize> {
     if from > text.len() {
         return None;
     }
-    text[from..].windows(pat.len()).position(|w| w == pat).map(|k| k + from)
+    text[from..]
+        .windows(pat.len())
+        .position(|w| w == pat)
+        .map(|k| k + from)
 }
 
 fn find_byte(text: &[u8], c: u8, from: usize) -> Option<usize> {
@@ -270,7 +292,12 @@ fn scan_css_range(col: &mut Collector, from: usize, to: usize) {
                 }
                 Some(end) => {
                     if after_import {
-                        col.push(i + 1, end, trimmed(&decode_css_text(&text[i + 1..end])), true);
+                        col.push(
+                            i + 1,
+                            end,
+                            trimmed(&decode_css_text(&text[i + 1..end])),
+                            true,
+                        );
                     }
                     after_import = false;
                     i = end + 1;
@@ -324,13 +351,20 @@ fn css_url(col: &mut Collector, mut i: usize, to: usize) -> usize {
     }
     let q = b[i];
     if q == b'"' || q == b'\'' {
-        let Some(end) = css_string_end(b, i, to) else { return i + 1 };
+        let Some(end) = css_string_end(b, i, to) else {
+            return i + 1;
+        };
         let mut k = end + 1;
         while k < to && is_ws(b[k]) {
             k += 1;
         }
         if k < to && b[k] == b')' {
-            col.push(i + 1, end, trimmed(&decode_css_text(&text[i + 1..end])), true);
+            col.push(
+                i + 1,
+                end,
+                trimmed(&decode_css_text(&text[i + 1..end])),
+                true,
+            );
             return k + 1;
         }
         return end + 1;
@@ -365,7 +399,11 @@ fn css_url(col: &mut Collector, mut i: usize, to: usize) -> usize {
 
 /// The URLs a CSS file references, in order.
 pub fn scan_css(text: &str) -> Vec<Reference> {
-    let mut col = Collector { text, lines: Lines::new(text), out: Vec::new() };
+    let mut col = Collector {
+        text,
+        lines: Lines::new(text),
+        out: Vec::new(),
+    };
     scan_css_range(&mut col, 0, text.len());
     col.out
 }
@@ -429,22 +467,37 @@ fn html_attribute(col: &mut Collector, tag: &str, name: &str, start: usize, end:
         }
         return;
     }
-    let url = name == "src" || name == "poster" || name == "xlink:href" || (name == "href" && tag != "base") || (name == "data" && tag == "object");
+    let url = name == "src"
+        || name == "poster"
+        || name == "xlink:href"
+        || (name == "href" && tag != "base")
+        || (name == "data" && tag == "object");
     if !url {
         return;
     }
     let (a, b) = trim_ws(value.as_bytes());
-    col.push(start + a, start + b, trimmed(&decode_html_text(&value[a..b])), false);
+    col.push(
+        start + a,
+        start + b,
+        trimmed(&decode_html_text(&value[a..b])),
+        false,
+    );
 }
 
 /// The URLs an HTML file references, in order (including those of its CSS).
 pub fn scan_html(text: &str) -> Vec<Reference> {
-    let mut col = Collector { text, lines: Lines::new(text), out: Vec::new() };
+    let mut col = Collector {
+        text,
+        lines: Lines::new(text),
+        out: Vec::new(),
+    };
     let b = text.as_bytes();
     let n = b.len();
     let mut i = 0;
     while i < n {
-        let Some(lt) = find_byte(b, b'<', i) else { break };
+        let Some(lt) = find_byte(b, b'<', i) else {
+            break;
+        };
         i = lt;
         let next = b.get(i + 1).copied();
         if b[i..].starts_with(b"<!--") {
@@ -531,10 +584,14 @@ pub fn scan_html(text: &str) -> Vec<Reference> {
 fn index_of_close_tag(b: &[u8], tag: &str, from: usize) -> usize {
     let mut i = from;
     loop {
-        let Some(j) = find_from(b, b"</", i) else { return b.len() };
+        let Some(j) = find_from(b, b"</", i) else {
+            return b.len();
+        };
         let after = j + 2 + tag.len();
         let name = &b[j + 2..after.min(b.len())];
-        if name.eq_ignore_ascii_case(tag.as_bytes()) && (after >= b.len() || is_ws(b[after]) || b[after] == b'/' || b[after] == b'>') {
+        if name.eq_ignore_ascii_case(tag.as_bytes())
+            && (after >= b.len() || is_ws(b[after]) || b[after] == b'/' || b[after] == b'>')
+        {
             return j;
         }
         i = j + 2;
@@ -557,7 +614,11 @@ pub fn reference_kind(path: &str) -> Option<&'static str> {
 pub fn scan_file(path: &str, bytes: &[u8]) -> Option<(String, Vec<Reference>)> {
     let kind = reference_kind(path)?;
     let text = std::str::from_utf8(bytes).ok()?;
-    let refs = if kind == "html" { scan_html(text) } else { scan_css(text) };
+    let refs = if kind == "html" {
+        scan_html(text)
+    } else {
+        scan_css(text)
+    };
     Some((text.to_string(), refs))
 }
 
@@ -583,7 +644,11 @@ pub fn percent_decode(seg: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit()
+        {
             out.push(u8::from_str_radix(&seg[i + 1..i + 3], 16).unwrap());
             i += 3;
         } else {
@@ -617,20 +682,39 @@ pub fn resolve_reference(url: &str, from: &str, root: &str) -> Target {
     }
     if let Some(n) = scheme_len(url) {
         let s = url[..n].to_ascii_lowercase();
-        return if s == "http:" || s == "https:" { Target::External(url.to_string()) } else { Target::None };
+        return if s == "http:" || s == "https:" {
+            Target::External(url.to_string())
+        } else {
+            Target::None
+        };
     }
     let raw = url.find(['?', '#']).map_or(url, |k| &url[..k]);
-    let root_segs: Vec<String> = if root == "/" { Vec::new() } else { root.split('/').skip(1).map(str::to_string).collect() };
+    let root_segs: Vec<String> = if root == "/" {
+        Vec::new()
+    } else {
+        root.split('/').skip(1).map(str::to_string).collect()
+    };
     let below = root == "/" || from.starts_with(&format!("{root}/"));
     let absolute = raw.starts_with('/');
     let mut segs: Vec<String> = if absolute {
         root_segs.clone()
     } else {
         let dir: Vec<&str> = from.split('/').skip(1).collect();
-        dir[..dir.len().saturating_sub(1)].iter().map(|s| s.to_string()).collect()
+        dir[..dir.len().saturating_sub(1)]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     };
-    let floor = if absolute || below { root_segs.len() } else { 0 };
-    let parts: Vec<&str> = if absolute { raw.split('/').skip(1).collect() } else { raw.split('/').collect() };
+    let floor = if absolute || below {
+        root_segs.len()
+    } else {
+        0
+    };
+    let parts: Vec<&str> = if absolute {
+        raw.split('/').skip(1).collect()
+    } else {
+        raw.split('/').collect()
+    };
     let mut dir = false;
     for (i, part) in parts.iter().enumerate() {
         let last = i == parts.len() - 1;
@@ -654,7 +738,10 @@ pub fn resolve_reference(url: &str, from: &str, root: &str) -> Target {
         dir = true;
     }
     let path = format!("/{}", segs.join("/"));
-    Target::Internal { path: crate::paths::nfc(&path).into_owned(), dir }
+    Target::Internal {
+        path: crate::paths::nfc(&path).into_owned(),
+        dir,
+    }
 }
 
 // ---------------------------------------------------------------- rewriting
@@ -691,39 +778,71 @@ pub fn relative_url(from: &str, to: &str) -> String {
 
 /// The reference `raw` (written in `from`, resolved to `old_path`) pointing at `new_path` instead (see
 /// `renameReference` in the TypeScript module).
-pub fn rename_reference(raw: &str, css: bool, from: &str, old_path: &str, new_path: &str) -> String {
-    let Mapped { text, map } = if css { decode_css(raw) } else { decode_html(raw) };
+pub fn rename_reference(
+    raw: &str,
+    css: bool,
+    from: &str,
+    old_path: &str,
+    new_path: &str,
+) -> String {
+    let Mapped { text, map } = if css {
+        decode_css(raw)
+    } else {
+        decode_html(raw)
+    };
     let (t0, t1) = trim_ws(text.as_bytes());
     let url = &text[t0..t1];
     let path_end = t0 + url.find(['?', '#']).unwrap_or(url.len());
-    let seg_start = if path_end > t0 { text[t0..path_end].rfind('/').map_or(t0, |k| t0 + k + 1) } else { t0 };
+    let seg_start = if path_end > t0 {
+        text[t0..path_end].rfind('/').map_or(t0, |k| t0 + k + 1)
+    } else {
+        t0
+    };
     let seg = &text[seg_start..path_end];
     let old_base = basename(old_path);
     let new_base = basename(new_path);
-    let insert_at = |offset: usize, insert: &str| format!("{}{insert}{}", &raw[..map[offset]], &raw[map[offset]..]);
+    let insert_at = |offset: usize, insert: &str| {
+        format!("{}{insert}{}", &raw[..map[offset]], &raw[map[offset]..])
+    };
     if percent_decode(seg) == old_base {
         match old_base.rfind('.') {
             Some(dot) if dot > 0 => {
                 let ext = &old_base[dot..];
                 if let Some(d) = seg.rfind('.') {
                     if percent_decode(&seg[d..]) == ext {
-                        return insert_at(seg_start + d, &new_base[dot..new_base.len() - ext.len()]);
+                        return insert_at(
+                            seg_start + d,
+                            &new_base[dot..new_base.len() - ext.len()],
+                        );
                     }
                 }
             }
             _ => return insert_at(path_end, &new_base[old_base.len()..]),
         }
     }
-    format!("{}{}{}", &raw[..map[t0]], relative_url(from, new_path), &raw[map[path_end]..])
+    format!(
+        "{}{}{}",
+        &raw[..map[t0]],
+        relative_url(from, new_path),
+        &raw[map[path_end]..]
+    )
 }
 
 /// `text` with each reference whose target `rename` maps to a new path rewritten; None when nothing changed.
-pub fn rewrite_references(text: &str, refs: &[Reference], from: &str, root: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
+pub fn rewrite_references(
+    text: &str,
+    refs: &[Reference],
+    from: &str,
+    root: &str,
+    rename: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     let mut changed = false;
     for r in refs {
-        let Target::Internal { path, dir: false } = resolve_reference(&r.url, from, root) else { continue };
+        let Target::Internal { path, dir: false } = resolve_reference(&r.url, from, root) else {
+            continue;
+        };
         let Some(to) = rename(&path) else { continue };
         out.push_str(&text[at..r.start]);
         out.push_str(&rename_reference(&r.raw, r.css, from, &path, &to));
@@ -750,36 +869,134 @@ mod tests {
         let html = "<link href='a.css'>\n<img src=\" b.png \" srcset=\"c.png 1x, d%20e.png 2x\">\n<base href=/x/><object data=o.svg></object>\n<!-- <img src=no.png> --><script src=s.js>var x = '<img src=no.png>'</script>\n<style>@import 'i.css'; p{background:url(\"bg.png\")}</style><p style=\"background: url(p.png)\">\n<a href=\"x?a=1&amp;b=2\">";
         assert_eq!(
             urls(&scan_html(html)),
-            [(1, "a.css"), (2, "b.png"), (2, "c.png"), (2, "d%20e.png"), (3, "o.svg"), (4, "s.js"), (5, "i.css"), (5, "bg.png"), (5, "p.png"), (6, "x?a=1&b=2")]
+            [
+                (1, "a.css"),
+                (2, "b.png"),
+                (2, "c.png"),
+                (2, "d%20e.png"),
+                (3, "o.svg"),
+                (4, "s.js"),
+                (5, "i.css"),
+                (5, "bg.png"),
+                (5, "p.png"),
+                (6, "x?a=1&b=2")
+            ]
         );
     }
 
     #[test]
     fn css_comments_strings_and_escapes() {
         let css = "/* url(no.png) */ a { content: \"url(no.png)\"; background: url( 'x\\2e png' ) }\n@import url(i.css);\n.myurl(no) { b: url(y\\).png) }";
-        assert_eq!(urls(&scan_css(css)), [(1, "x.png"), (2, "i.css"), (3, "y).png")]);
+        assert_eq!(
+            urls(&scan_css(css)),
+            [(1, "x.png"), (2, "i.css"), (3, "y).png")]
+        );
     }
 
     #[test]
     fn resolve() {
-        assert_eq!(resolve_reference("../img/a.png?x#y", "/css/site.css", "/"), Target::Internal { path: "/img/a.png".into(), dir: false });
-        assert_eq!(resolve_reference("/../../a/", "/x.html", "/"), Target::Internal { path: "/a".into(), dir: true });
-        assert_eq!(resolve_reference("caf%C3%A9.css", "/x.html", "/"), Target::Internal { path: "/café.css".into(), dir: false });
-        assert_eq!(resolve_reference("mailto:x@y", "/x.html", "/"), Target::None);
+        assert_eq!(
+            resolve_reference("../img/a.png?x#y", "/css/site.css", "/"),
+            Target::Internal {
+                path: "/img/a.png".into(),
+                dir: false
+            }
+        );
+        assert_eq!(
+            resolve_reference("/../../a/", "/x.html", "/"),
+            Target::Internal {
+                path: "/a".into(),
+                dir: true
+            }
+        );
+        assert_eq!(
+            resolve_reference("caf%C3%A9.css", "/x.html", "/"),
+            Target::Internal {
+                path: "/café.css".into(),
+                dir: false
+            }
+        );
+        assert_eq!(
+            resolve_reference("mailto:x@y", "/x.html", "/"),
+            Target::None
+        );
         assert_eq!(resolve_reference("#top", "/x.html", "/"), Target::None);
-        assert_eq!(resolve_reference("//cdn.example/a.js", "/x.html", "/"), Target::External("//cdn.example/a.js".into()));
-        assert_eq!(resolve_reference("HTTPS://e.x/", "/x.html", "/"), Target::External("HTTPS://e.x/".into()));
-        assert_eq!(resolve_reference("/img/a.png", "/www/x.html", "/www"), Target::Internal { path: "/www/img/a.png".into(), dir: false });
-        assert_eq!(resolve_reference("../../img/a.png", "/www/x.html", "/www"), Target::Internal { path: "/www/img/a.png".into(), dir: false });
-        assert_eq!(resolve_reference("../../img/a.png", "/src/x.html", "/www"), Target::Internal { path: "/img/a.png".into(), dir: false });
+        assert_eq!(
+            resolve_reference("//cdn.example/a.js", "/x.html", "/"),
+            Target::External("//cdn.example/a.js".into())
+        );
+        assert_eq!(
+            resolve_reference("HTTPS://e.x/", "/x.html", "/"),
+            Target::External("HTTPS://e.x/".into())
+        );
+        assert_eq!(
+            resolve_reference("/img/a.png", "/www/x.html", "/www"),
+            Target::Internal {
+                path: "/www/img/a.png".into(),
+                dir: false
+            }
+        );
+        assert_eq!(
+            resolve_reference("../../img/a.png", "/www/x.html", "/www"),
+            Target::Internal {
+                path: "/www/img/a.png".into(),
+                dir: false
+            }
+        );
+        assert_eq!(
+            resolve_reference("../../img/a.png", "/src/x.html", "/www"),
+            Target::Internal {
+                path: "/img/a.png".into(),
+                dir: false
+            }
+        );
     }
 
     #[test]
     fn rename() {
-        assert_eq!(rename_reference("css/a.css?v=1", false, "/x.html", "/css/a.css", "/css/a.0123456789.css"), "css/a.0123456789.css?v=1");
-        assert_eq!(rename_reference("LICENSE", false, "/x.html", "/LICENSE", "/LICENSE.0123456789"), "LICENSE.0123456789");
-        assert_eq!(rename_reference("caf&#xe9;&#46;png#x", false, "/x.html", "/café.png", "/café.0123456789.png"), "caf&#xe9;.0123456789&#46;png#x");
-        assert_eq!(rename_reference(" a\\2e png ", true, "/x.css", "/a.png", "/a.0123456789.png"), " a.0123456789\\2e png ");
-        assert_eq!(rename_reference("/a/b%2Ecss?v", false, "/a/x/y.html", "/a/b.css", "/a/b.0123456789.css"), "../b.0123456789.css?v");
+        assert_eq!(
+            rename_reference(
+                "css/a.css?v=1",
+                false,
+                "/x.html",
+                "/css/a.css",
+                "/css/a.0123456789.css"
+            ),
+            "css/a.0123456789.css?v=1"
+        );
+        assert_eq!(
+            rename_reference(
+                "LICENSE",
+                false,
+                "/x.html",
+                "/LICENSE",
+                "/LICENSE.0123456789"
+            ),
+            "LICENSE.0123456789"
+        );
+        assert_eq!(
+            rename_reference(
+                "caf&#xe9;&#46;png#x",
+                false,
+                "/x.html",
+                "/café.png",
+                "/café.0123456789.png"
+            ),
+            "caf&#xe9;.0123456789&#46;png#x"
+        );
+        assert_eq!(
+            rename_reference(" a\\2e png ", true, "/x.css", "/a.png", "/a.0123456789.png"),
+            " a.0123456789\\2e png "
+        );
+        assert_eq!(
+            rename_reference(
+                "/a/b%2Ecss?v",
+                false,
+                "/a/x/y.html",
+                "/a/b.css",
+                "/a/b.0123456789.css"
+            ),
+            "../b.0123456789.css?v"
+        );
     }
 }

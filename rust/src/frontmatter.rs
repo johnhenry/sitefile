@@ -36,10 +36,19 @@ pub fn parse_frontmatter(text: &str, file: &str) -> Result<ParsedFrontmatter> {
     }
 
     if lines[0] != "---" {
-        return Ok(ParsedFrontmatter { data: Map::new(), body: text.to_string(), body_line: 1 });
+        return Ok(ParsedFrontmatter {
+            data: Map::new(),
+            body: text.to_string(),
+            body_line: 1,
+        });
     }
 
-    let Some(close) = lines.iter().skip(1).position(|l| *l == "---" || *l == "...").map(|k| k + 1) else {
+    let Some(close) = lines
+        .iter()
+        .skip(1)
+        .position(|l| *l == "---" || *l == "...")
+        .map(|k| k + 1)
+    else {
         return Err(SitefileError::new(
             E_FRONTMATTER,
             "unterminated frontmatter: missing closing '---'",
@@ -49,7 +58,11 @@ pub fn parse_frontmatter(text: &str, file: &str) -> Result<ParsedFrontmatter> {
 
     let data = parse_block(&lines[1..close].join("\n"), file)?;
     let body_start = starts.get(close + 1).copied().unwrap_or(src.len());
-    Ok(ParsedFrontmatter { data, body: src[body_start..].to_string(), body_line: close as u32 + 2 })
+    Ok(ParsedFrontmatter {
+        data,
+        body: src[body_start..].to_string(),
+        body_line: close as u32 + 2,
+    })
 }
 
 fn parse_block(block: &str, file: &str) -> Result<Map<String, Value>> {
@@ -76,8 +89,16 @@ mod tests {
     fn fails(t: &str, line: u32, column: u32, needle: &str) {
         let e = parse_frontmatter(t, "post.md").unwrap_err();
         assert_eq!(e.code, E_FRONTMATTER, "{t:?}: {e}");
-        assert_eq!(e.span, Some(SourceSpan::new("post.md", line, column)), "{t:?}: {e}");
-        assert!(needle.split('|').any(|n| e.detail.contains(n)), "{}", e.detail);
+        assert_eq!(
+            e.span,
+            Some(SourceSpan::new("post.md", line, column)),
+            "{t:?}: {e}"
+        );
+        assert!(
+            needle.split('|').any(|n| e.detail.contains(n)),
+            "{}",
+            e.detail
+        );
     }
 
     #[test]
@@ -86,7 +107,14 @@ mod tests {
         assert!(r.data.is_empty());
         assert_eq!(r.body, "# Hello\n---\nx\n");
         assert_eq!(r.body_line, 1);
-        assert_eq!(fm(""), ParsedFrontmatter { data: Map::new(), body: String::new(), body_line: 1 });
+        assert_eq!(
+            fm(""),
+            ParsedFrontmatter {
+                data: Map::new(),
+                body: String::new(),
+                body_line: 1
+            }
+        );
         assert_eq!(fm("--- x\na: 1\n---\n").body_line, 1);
         assert_eq!(fm("\n---\na: 1\n---\n").body_line, 1);
     }
@@ -100,7 +128,10 @@ mod tests {
         );
         assert_eq!(r.body, "Body\n");
         assert_eq!(r.body_line, 11);
-        assert_eq!(data("---\ndate: 2026-01-02\nv: 1.2.3\nn: 12abc\n---\n"), json!({ "date": "2026-01-02", "v": "1.2.3", "n": "12abc" }));
+        assert_eq!(
+            data("---\ndate: 2026-01-02\nv: 1.2.3\nn: 12abc\n---\n"),
+            json!({ "date": "2026-01-02", "v": "1.2.3", "n": "12abc" })
+        );
     }
 
     #[test]
@@ -126,21 +157,36 @@ mod tests {
     #[test]
     fn crlf_bom_and_closers() {
         let r = fm("\u{feff}---\r\ntitle: Hi\r\ntags: [a]\r\n---\r\nBody\r\nmore");
-        assert_eq!(Value::Object(r.data), json!({ "title": "Hi", "tags": ["a"] }));
+        assert_eq!(
+            Value::Object(r.data),
+            json!({ "title": "Hi", "tags": ["a"] })
+        );
         assert_eq!(r.body, "Body\r\nmore");
         assert_eq!(r.body_line, 5);
         let r = fm("---\na: 1\n...\nB");
-        assert_eq!((Value::Object(r.data), r.body.as_str(), r.body_line), (json!({ "a": 1 }), "B", 4));
+        assert_eq!(
+            (Value::Object(r.data), r.body.as_str(), r.body_line),
+            (json!({ "a": 1 }), "B", 4)
+        );
         let r = fm("---\n---");
-        assert_eq!((r.data.is_empty(), r.body.as_str(), r.body_line), (true, "", 3));
+        assert_eq!(
+            (r.data.is_empty(), r.body.as_str(), r.body_line),
+            (true, "", 3)
+        );
         let r = fm("---\n---\n");
-        assert_eq!((r.data.is_empty(), r.body.as_str(), r.body_line), (true, "", 3));
+        assert_eq!(
+            (r.data.is_empty(), r.body.as_str(), r.body_line),
+            (true, "", 3)
+        );
         assert_eq!(fm("---\na: 1\n---\nx\n---\ny").body, "x\n---\ny");
     }
 
     #[test]
     fn keys_and_proto() {
-        assert_eq!(data("---\n_a-b_1: http://x.com:80/p\n---\n"), json!({ "_a-b_1": "http://x.com:80/p" }));
+        assert_eq!(
+            data("---\n_a-b_1: http://x.com:80/p\n---\n"),
+            json!({ "_a-b_1": "http://x.com:80/p" })
+        );
         let r = fm("---\n__proto__: x\n---\n");
         assert_eq!(r.data.keys().collect::<Vec<_>>(), ["__proto__"]);
         assert_eq!(r.data["__proto__"], json!("x"));
@@ -148,12 +194,18 @@ mod tests {
 
     #[test]
     fn nested_structures() {
-        assert_eq!(data("---\na:\n  b: 1\n  c: [x, {y: 2}]\n---\n"), json!({ "a": { "b": 1, "c": ["x", { "y": 2 }] } }));
+        assert_eq!(
+            data("---\na:\n  b: 1\n  c: [x, {y: 2}]\n---\n"),
+            json!({ "a": { "b": 1, "c": ["x", { "y": 2 }] } })
+        );
         assert_eq!(
             data("---\na: {b: 1}\nl:\n  - [1]\n  - n: 1\n    m: 2\nt: [1, [2]]\n---\n"),
             json!({ "a": { "b": 1 }, "l": [[1], { "n": 1, "m": 2 }], "t": [1, [2]] })
         );
-        assert_eq!(data("---\na: |\n  x\n  y\nb: >-\n  p\n  q\n1bad: x\n---\n"), json!({ "a": "x\ny\n", "b": "p q", "1bad": "x" }));
+        assert_eq!(
+            data("---\na: |\n  x\n  y\nb: >-\n  p\n  q\n1bad: x\n---\n"),
+            json!({ "a": "x\ny\n", "b": "p q", "1bad": "x" })
+        );
     }
 
     #[test]
@@ -176,7 +228,12 @@ mod tests {
         fails("---\na: *x\n---\n", 2, 4, "anchors");
         fails("---\njust text\n---\n", 2, 1, "key: value");
         fails("---\n- orphan\n---\n", 2, 1, "without a preceding key");
-        fails("---\na: x\n- y\n---\n", 3, 1, "without a preceding key|list");
+        fails(
+            "---\na: x\n- y\n---\n",
+            3,
+            1,
+            "without a preceding key|list",
+        );
         fails("---\na: \"open\n---\n", 2, 4, "unterminated quoted");
         fails("---\na: \"x\" y\n---\n", 2, 8, "unexpected text");
         fails("---\na: \"bad \\q\"\n---\n", 2, 9, "escape");

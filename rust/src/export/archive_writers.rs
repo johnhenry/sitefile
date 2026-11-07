@@ -8,9 +8,9 @@
 //! included: deflated zip entries and gzip streams come from `crate::deflate`,
 //! the same deterministic encoder as `src/deflate.ts`.
 
+pub use crate::deflate::crc32;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::tree::Tree;
-pub use crate::deflate::crc32;
 
 #[derive(Debug, Clone, Default)]
 pub struct WriterOptions {
@@ -32,8 +32,13 @@ pub fn source_date_epoch() -> Result<Option<u64>> {
 pub fn source_date_epoch_from(raw: Option<&str>) -> Result<Option<u64>> {
     match raw {
         None | Some("") => Ok(None),
-        Some(r) if r.len() <= 12 && r.bytes().all(|b| b.is_ascii_digit()) => Ok(Some(r.parse().unwrap_or(0))),
-        Some(r) => Err(SitefileError::plain(E_USAGE, format!("SOURCE_DATE_EPOCH must be a non-negative integer, got '{r}'"))),
+        Some(r) if r.len() <= 12 && r.bytes().all(|b| b.is_ascii_digit()) => {
+            Ok(Some(r.parse().unwrap_or(0)))
+        }
+        Some(r) => Err(SitefileError::plain(
+            E_USAGE,
+            format!("SOURCE_DATE_EPOCH must be a non-negative integer, got '{r}'"),
+        )),
     }
 }
 
@@ -50,11 +55,20 @@ fn entries_of(tree: &Tree) -> Result<Vec<Entry<'_>>> {
                 || p.ends_with('/')
                 || p.contains('\0')
                 || p.contains('\\')
-                || p.split('/').skip(1).any(|s| s.is_empty() || s == "." || s == "..");
+                || p.split('/')
+                    .skip(1)
+                    .any(|s| s.is_empty() || s == "." || s == "..");
             if bad {
-                return Err(SitefileError::plain(E_EXPORT, format!("invalid artifact path '{p}'")));
+                return Err(SitefileError::plain(
+                    E_EXPORT,
+                    format!("invalid artifact path '{p}'"),
+                ));
             }
-            Ok(Entry { name: &p[1..], bytes: &n.bytes, mode: n.mode })
+            Ok(Entry {
+                name: &p[1..],
+                bytes: &n.bytes,
+                mode: n.mode,
+            })
         })
         .collect()
 }
@@ -76,14 +90,30 @@ pub(crate) fn civil(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d, (rem / 3600) as u32, ((rem % 3600) / 60) as u32, (rem % 60) as u32)
+    (
+        y,
+        m,
+        d,
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    )
 }
 
 /// `Date.prototype.toISOString()` for a time in milliseconds.
 pub(crate) fn iso_millis(ms: i64) -> String {
     let (y, mo, d, h, mi, s) = civil(ms.div_euclid(1000));
-    let year = if (0..=9999).contains(&y) { format!("{y:04}") } else if y < 0 { format!("-{:06}", -y) } else { format!("+{y:06}") };
-    format!("{year}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{:03}Z", ms.rem_euclid(1000))
+    let year = if (0..=9999).contains(&y) {
+        format!("{y:04}")
+    } else if y < 0 {
+        format!("-{:06}", -y)
+    } else {
+        format!("+{y:06}")
+    };
+    format!(
+        "{year}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{:03}Z",
+        ms.rem_euclid(1000)
+    )
 }
 
 // --------------------------------------------------------------------- zip
@@ -92,7 +122,9 @@ const ZIP_MAX_ENTRIES: usize = 0xffff;
 const ZIP_MAX: u64 = 0xffff_ffff;
 
 fn dos_date_time(epoch: Option<u64>) -> (u16, u16) {
-    let Some(e) = epoch else { return (0, (1 << 5) | 1) }; // 1980-01-01 00:00:00
+    let Some(e) = epoch else {
+        return (0, (1 << 5) | 1);
+    }; // 1980-01-01 00:00:00
     let (y, mo, d, h, mi, s) = civil(e.max(315_532_800) as i64); // clamp to 1980-01-01
     let year = y.min(2107);
     // Seconds are stored in 2-second units.
@@ -118,8 +150,21 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
     for e in &entries {
         let name = e.name.as_bytes();
         if name.len() > 0xffff {
-            let short: String = e.name.encode_utf16().take(60).collect::<Vec<u16>>().iter().map(|&u| char::from_u32(u as u32).unwrap_or('\u{fffd}')).collect();
-            return Err(SitefileError::plain(E_EXPORT, format!("zip entry name is too long ({} bytes): '{short}…'", name.len())));
+            let short: String = e
+                .name
+                .encode_utf16()
+                .take(60)
+                .collect::<Vec<u16>>()
+                .iter()
+                .map(|&u| char::from_u32(u as u32).unwrap_or('\u{fffd}'))
+                .collect();
+            return Err(SitefileError::plain(
+                E_EXPORT,
+                format!(
+                    "zip entry name is too long ({} bytes): '{short}…'",
+                    name.len()
+                ),
+            ));
         }
         let deflated = deflate_raw(e.bytes);
         let stored = deflated.len() >= e.bytes.len();
@@ -132,7 +177,10 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         }
         let offset = out.len() as u64;
         if offset > ZIP_MAX {
-            return Err(SitefileError::plain(E_EXPORT, "zip export does not support archives of 4 GiB or more (zip64 is not implemented)"));
+            return Err(SitefileError::plain(
+                E_EXPORT,
+                "zip export does not support archives of 4 GiB or more (zip64 is not implemented)",
+            ));
         }
         let method: u16 = if stored { 0 } else { 8 };
         let crc = crc32(e.bytes);
@@ -170,7 +218,10 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
     let offset = out.len() as u64;
     let cd_size = central.len() as u64;
     if offset + cd_size > ZIP_MAX {
-        return Err(SitefileError::plain(E_EXPORT, "zip export does not support archives of 4 GiB or more (zip64 is not implemented)"));
+        return Err(SitefileError::plain(
+            E_EXPORT,
+            "zip export does not support archives of 4 GiB or more (zip64 is not implemented)",
+        ));
     }
     out.extend(central);
     out.extend(0x0605_4b50u32.to_le_bytes());
@@ -206,7 +257,14 @@ fn utf8_head(s: &str, max: usize) -> &[u8] {
     &b[..end]
 }
 
-fn tar_header(name: &[u8], prefix: &[u8], size: u64, mode: u32, mtime: u64, typ: u8) -> [u8; BLOCK] {
+fn tar_header(
+    name: &[u8],
+    prefix: &[u8],
+    size: u64,
+    mode: u32,
+    mtime: u64,
+    typ: u8,
+) -> [u8; BLOCK] {
     let mut h = [0u8; BLOCK];
     let n = name.len().min(100);
     h[..n].copy_from_slice(&name[..n]);
@@ -269,14 +327,33 @@ fn ustar_split(name: &[u8]) -> Option<(&[u8], &[u8])> {
 pub fn write_tar(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
     let mtime = options.epoch.unwrap_or(0);
     let entries = entries_of(tree)?;
-    let mut out = Vec::with_capacity(entries.iter().map(|e| e.bytes.len() + 2 * BLOCK).sum::<usize>() + 2 * BLOCK);
+    let mut out = Vec::with_capacity(
+        entries
+            .iter()
+            .map(|e| e.bytes.len() + 2 * BLOCK)
+            .sum::<usize>()
+            + 2 * BLOCK,
+    );
     let mut n = 0usize;
     for d in &options.dirs {
-        out.extend(tar_header(format!("{d}/").as_bytes(), &[], 0, 0o755, mtime, b'5'));
+        out.extend(tar_header(
+            format!("{d}/").as_bytes(),
+            &[],
+            0,
+            0o755,
+            mtime,
+            b'5',
+        ));
     }
     for e in &entries {
         if e.bytes.len() as u64 > TAR_MAX_SIZE {
-            return Err(SitefileError::plain(E_EXPORT, format!("tar export does not support files of 8 GiB or more: '/{}'", e.name)));
+            return Err(SitefileError::plain(
+                E_EXPORT,
+                format!(
+                    "tar export does not support files of 8 GiB or more: '/{}'",
+                    e.name
+                ),
+            ));
         }
         let (name, prefix) = match ustar_split(e.name.as_bytes()) {
             Some(s) => s,
@@ -284,12 +361,26 @@ pub fn write_tar(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
                 let rec = pax_record("path", e.name);
                 let pname = format!("PaxHeaders/{n}");
                 n += 1;
-                out.extend(tar_header(pname.as_bytes(), &[], rec.len() as u64, 0o644, mtime, b'x'));
+                out.extend(tar_header(
+                    pname.as_bytes(),
+                    &[],
+                    rec.len() as u64,
+                    0o644,
+                    mtime,
+                    b'x',
+                ));
                 push_padded(&mut out, &rec);
                 (utf8_head(e.name, 100), &[][..])
             }
         };
-        out.extend(tar_header(name, prefix, e.bytes.len() as u64, e.mode, mtime, b'0'));
+        out.extend(tar_header(
+            name,
+            prefix,
+            e.bytes.len() as u64,
+            e.mode,
+            mtime,
+            b'0',
+        ));
         push_padded(&mut out, e.bytes);
     }
     out.resize(out.len() + 2 * BLOCK, 0);
@@ -314,16 +405,35 @@ pub(crate) mod tests {
     use std::io::Read;
 
     pub fn mk(files: &[(&str, &[u8], u32)]) -> Tree {
-        Tree::from_files(files.iter().map(|(p, b, m)| (p.to_string(), make_file(b.to_vec(), "test", *m)))).unwrap()
+        Tree::from_files(
+            files
+                .iter()
+                .map(|(p, b, m)| (p.to_string(), make_file(b.to_vec(), "test", *m))),
+        )
+        .unwrap()
     }
 
     pub fn sample() -> Tree {
         let blob: Vec<u8> = (0..200u32).map(|i| ((i * 37) % 256) as u8).collect();
         // String.fromCharCode + TextEncoder in the TS test: bytes >= 0x80 become two UTF-8 bytes.
-        let blob = blob.iter().map(|&b| b as char).collect::<String>().into_bytes();
+        let blob = blob
+            .iter()
+            .map(|&b| b as char)
+            .collect::<String>()
+            .into_bytes();
         mk(&[
-            ("/index.html", "<!doctype html><title>x</title><p>hello</p>".repeat(20).as_bytes(), 0o644),
-            ("/css/site.css", "body { color: red; }\n".repeat(50).as_bytes(), 0o644),
+            (
+                "/index.html",
+                "<!doctype html><title>x</title><p>hello</p>"
+                    .repeat(20)
+                    .as_bytes(),
+                0o644,
+            ),
+            (
+                "/css/site.css",
+                "body { color: red; }\n".repeat(50).as_bytes(),
+                0o644,
+            ),
             ("/bin/run.sh", b"#!/bin/sh\necho hi\n", 0o755),
             ("/img/blob.bin", &blob, 0o644),
             ("/empty.txt", b"", 0o644),
@@ -336,7 +446,9 @@ pub(crate) mod tests {
         let mut files: Vec<(String, Node)> = Vec::new();
         let mut off = 0;
         let mut next: Option<String> = None;
-        let cstr = |s: &[u8]| String::from_utf8(s.iter().take_while(|&&c| c != 0).copied().collect()).unwrap();
+        let cstr = |s: &[u8]| {
+            String::from_utf8(s.iter().take_while(|&&c| c != 0).copied().collect()).unwrap()
+        };
         while off + 512 <= b.len() {
             let h = &b[off..off + 512];
             if h.iter().all(|&x| x == 0) {
@@ -430,7 +542,11 @@ pub(crate) mod tests {
             assert_eq!(back.get("/bin/run.sh").unwrap().mode, 0o755);
             assert_eq!(back.get("/index.html").unwrap().mode, 0o644);
             assert_eq!(bytes, w(&sample(), &o).unwrap(), "{name} deterministic");
-            assert_eq!(bytes, w(&reversed(&t), &o).unwrap(), "{name} order independent");
+            assert_eq!(
+                bytes,
+                w(&reversed(&t), &o).unwrap(),
+                "{name} order independent"
+            );
             let empty = w(&Tree::empty(), &o).unwrap();
             assert!(!empty.is_empty());
         }
@@ -440,12 +556,18 @@ pub(crate) mod tests {
     #[test]
     fn epoch_changes_timestamps() {
         let t = sample();
-        let e = WriterOptions { epoch: Some(1_700_000_000), dirs: vec![] };
+        let e = WriterOptions {
+            epoch: Some(1_700_000_000),
+            dirs: vec![],
+        };
         let a = write_zip(&t, &e).unwrap();
         assert_eq!(a, write_zip(&t, &e).unwrap());
         assert_ne!(a, write_zip(&t, &WriterOptions::default()).unwrap());
         let tar = write_tar(&t, &e).unwrap();
-        assert_eq!(u64::from_str_radix(std::str::from_utf8(&tar[136..147]).unwrap(), 8).unwrap(), 1_700_000_000);
+        assert_eq!(
+            u64::from_str_radix(std::str::from_utf8(&tar[136..147]).unwrap(), 8).unwrap(),
+            1_700_000_000
+        );
         // 2023-11-14 22:13:20 UTC
         let (time, date) = dos_date_time(Some(1_700_000_000));
         assert_eq!(time, (22 << 11) | (13 << 5) | 10);
@@ -453,8 +575,16 @@ pub(crate) mod tests {
         assert_eq!(dos_date_time(Some(5)), (0, (1 << 5) | 1));
         assert_eq!(source_date_epoch_from(Some("12")).unwrap(), Some(12));
         assert_eq!(source_date_epoch_from(Some("")).unwrap(), None);
-        assert_eq!(source_date_epoch_from(Some("-1")).unwrap_err().code, E_USAGE);
-        assert_eq!(source_date_epoch_from(Some("1234567890123")).unwrap_err().code, E_USAGE);
+        assert_eq!(
+            source_date_epoch_from(Some("-1")).unwrap_err().code,
+            E_USAGE
+        );
+        assert_eq!(
+            source_date_epoch_from(Some("1234567890123"))
+                .unwrap_err()
+                .code,
+            E_USAGE
+        );
     }
 
     #[test]
@@ -484,7 +614,10 @@ pub(crate) mod tests {
         for _ in 0..count {
             let nlen = u16at(off + 28) as usize;
             let name = String::from_utf8(z[off + 46..off + 46 + nlen].to_vec()).unwrap();
-            seen.insert(name.clone(), (u16at(off + 10), u32at(off + 38) >> 16, u16at(off + 4)));
+            seen.insert(
+                name.clone(),
+                (u16at(off + 10), u32at(off + 38) >> 16, u16at(off + 4)),
+            );
             order.push(name);
             off += 46 + nlen;
         }
@@ -503,7 +636,10 @@ pub(crate) mod tests {
     fn zip_entry_limit() {
         let files = (0..65536).map(|i| (format!("/f{i}"), make_file(Vec::new(), "t", 0o644)));
         let t = Tree::from_files(files).unwrap();
-        assert_eq!(write_zip(&t, &WriterOptions::default()).unwrap_err().code, E_EXPORT);
+        assert_eq!(
+            write_zip(&t, &WriterOptions::default()).unwrap_err().code,
+            E_EXPORT
+        );
     }
 
     #[test]
@@ -525,14 +661,20 @@ pub(crate) mod tests {
         let medium = format!("/{seg}/{seg}/{seg}/file.txt");
         let long = format!("/{}/deep.txt", [&seg; 6].map(|s| s.as_str()).join("/"));
         let one_big = format!("/{}.txt", "x".repeat(130));
-        let t = mk(&[(&medium, b"m", 0o644), (&long, b"l", 0o644), (&one_big, b"o", 0o644), ("/short.txt", b"s", 0o644)]);
+        let t = mk(&[
+            (&medium, b"m", 0o644),
+            (&long, b"l", 0o644),
+            (&one_big, b"o", 0o644),
+            ("/short.txt", b"s", 0o644),
+        ]);
         let tar = write_tar(&t, &WriterOptions::default()).unwrap();
         let mut prefix_used = false;
         let mut pax = 0;
         let mut off = 0;
         while off + 512 <= tar.len() && tar[off..off + 512].iter().any(|&b| b != 0) {
             let h = &tar[off..off + 512];
-            let size = u64::from_str_radix(std::str::from_utf8(&h[124..135]).unwrap(), 8).unwrap() as usize;
+            let size = u64::from_str_radix(std::str::from_utf8(&h[124..135]).unwrap(), 8).unwrap()
+                as usize;
             if h[156] == b'x' {
                 pax += 1;
             }
@@ -546,7 +688,10 @@ pub(crate) mod tests {
         assert_eq!(read_tar(&tar).digest(), t.digest());
         let p = format!("/{}.txt", "é".repeat(120));
         let t2 = mk(&[(&p, b"x", 0o644)]);
-        assert_eq!(read_tar(&write_tar(&t2, &WriterOptions::default()).unwrap()).digest(), t2.digest());
+        assert_eq!(
+            read_tar(&write_tar(&t2, &WriterOptions::default()).unwrap()).digest(),
+            t2.digest()
+        );
         assert_eq!(pax_record("path", "abc"), b"12 path=abc\n");
         let r = pax_record("path", &"x".repeat(93)); // body 100 -> length 103
         assert_eq!(&r[..4], b"103 ");
@@ -559,7 +704,10 @@ pub(crate) mod tests {
         let gz = write_tgz(&t, &WriterOptions::default()).unwrap();
         assert_eq!(&gz[4..8], &[0, 0, 0, 0]);
         assert_eq!(gz[9], 3);
-        assert_eq!(gunzip(&gz), write_tar(&t, &WriterOptions::default()).unwrap());
+        assert_eq!(
+            gunzip(&gz),
+            write_tar(&t, &WriterOptions::default()).unwrap()
+        );
     }
 
     /// Byte-for-byte against the TypeScript writers (fixtures made with lib/src/archive-writers.js).
@@ -567,26 +715,60 @@ pub(crate) mod tests {
     fn identical_to_typescript_writers() {
         use crate::digest::sha256;
         let none = WriterOptions::default();
-        assert_eq!(sha256(&write_tar(&sample(), &none).unwrap()), "sha256:1bcf5913cc11c1ed8a41df3076c060bf47dc03fab0b5328056e758160536b366");
-        let e = WriterOptions { epoch: Some(1_700_000_000), dirs: vec![] };
-        assert_eq!(sha256(&write_tar(&sample(), &e).unwrap()), "sha256:c988f1cd0314d1f58b3d6b9bf2b807ad95cc5659fb55fb9f413a9600b1dc76d0");
+        assert_eq!(
+            sha256(&write_tar(&sample(), &none).unwrap()),
+            "sha256:1bcf5913cc11c1ed8a41df3076c060bf47dc03fab0b5328056e758160536b366"
+        );
+        let e = WriterOptions {
+            epoch: Some(1_700_000_000),
+            dirs: vec![],
+        };
+        assert_eq!(
+            sha256(&write_tar(&sample(), &e).unwrap()),
+            "sha256:c988f1cd0314d1f58b3d6b9bf2b807ad95cc5659fb55fb9f413a9600b1dc76d0"
+        );
         let seg = "a".repeat(50);
         let longs = mk(&[
             (&format!("/{seg}/{seg}/{seg}/file.txt"), b"m", 0o644),
-            (&format!("/{}/deep.txt", [&seg; 6].map(|s| s.as_str()).join("/")), b"l", 0o644),
+            (
+                &format!("/{}/deep.txt", [&seg; 6].map(|s| s.as_str()).join("/")),
+                b"l",
+                0o644,
+            ),
             (&format!("/{}.txt", "x".repeat(130)), b"o", 0o644),
             (&format!("/{}.txt", "\u{e9}".repeat(120)), b"e", 0o644),
         ]);
-        assert_eq!(sha256(&write_tar(&longs, &none).unwrap()), "sha256:7bb185b469e8790ee2a3864c98a91aaba891b1e418e1604aa05b3362f4174e57");
+        assert_eq!(
+            sha256(&write_tar(&longs, &none).unwrap()),
+            "sha256:7bb185b469e8790ee2a3864c98a91aaba891b1e418e1604aa05b3362f4174e57"
+        );
         // Entries that deflate cannot shrink are stored, so the whole zip is identical.
-        let stored = mk(&[("/a.txt", b"a", 0o644), ("/b/c.bin", b"xyz", 0o755), ("/empty", b"", 0o644)]);
-        assert_eq!(sha256(&write_zip(&stored, &none).unwrap()), "sha256:247ec13fd1565e2894ea61a9579047f5baaaa39ff1787c348d1159597db85bc5");
-        let e1 = WriterOptions { epoch: Some(1_700_000_001), dirs: vec![] };
-        assert_eq!(sha256(&write_zip(&stored, &e1).unwrap()), "sha256:6c780535188c6bea3bafc6499d49057f8e33a4140fa29d78d48805a0b6ae0738");
+        let stored = mk(&[
+            ("/a.txt", b"a", 0o644),
+            ("/b/c.bin", b"xyz", 0o755),
+            ("/empty", b"", 0o644),
+        ]);
+        assert_eq!(
+            sha256(&write_zip(&stored, &none).unwrap()),
+            "sha256:247ec13fd1565e2894ea61a9579047f5baaaa39ff1787c348d1159597db85bc5"
+        );
+        let e1 = WriterOptions {
+            epoch: Some(1_700_000_001),
+            dirs: vec![],
+        };
+        assert_eq!(
+            sha256(&write_zip(&stored, &e1).unwrap()),
+            "sha256:6c780535188c6bea3bafc6499d49057f8e33a4140fa29d78d48805a0b6ae0738"
+        );
     }
 
     fn has_tool(cmd: &str, arg: &str) -> bool {
-        std::process::Command::new(cmd).arg(arg).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok()
+        std::process::Command::new(cmd)
+            .arg(arg)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
     }
 
     #[test]
@@ -595,19 +777,38 @@ pub(crate) mod tests {
         if has_tool("unzip", "-v") {
             let f = dir.path().join("a.zip");
             std::fs::write(&f, write_zip(&sample(), &WriterOptions::default()).unwrap()).unwrap();
-            let out = std::process::Command::new("unzip").arg("-t").arg(&f).output().unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+            let out = std::process::Command::new("unzip")
+                .arg("-t")
+                .arg(&f)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
         }
         if has_tool("tar", "--version") {
             let seg = "a".repeat(50);
             let long = format!("/{}/deep.txt", [&seg; 6].map(|s| s.as_str()).join("/"));
-            let t = mk(&[("/index.html", b"hi", 0o644), ("/bin/x.sh", b"#!/bin/sh\n", 0o755), (&long, b"d", 0o644)]);
+            let t = mk(&[
+                ("/index.html", b"hi", 0o644),
+                ("/bin/x.sh", b"#!/bin/sh\n", 0o755),
+                (&long, b"d", 0o644),
+            ]);
             let gz = dir.path().join("a.tar.gz");
             std::fs::write(&gz, write_tgz(&t, &WriterOptions::default()).unwrap()).unwrap();
-            let out = std::process::Command::new("tar").arg("-tzf").arg(&gz).output().unwrap();
+            let out = std::process::Command::new("tar")
+                .arg("-tzf")
+                .arg(&gz)
+                .output()
+                .unwrap();
             assert!(out.status.success());
             let listing = String::from_utf8_lossy(&out.stdout);
-            assert!(listing.contains("index.html") && listing.contains("deep.txt"), "{listing}");
+            assert!(
+                listing.contains("index.html") && listing.contains("deep.txt"),
+                "{listing}"
+            );
         }
     }
 }

@@ -78,7 +78,11 @@ fn is_id(id: &str) -> bool {
 /// `^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`
 fn is_name(n: &str) -> bool {
     let b = n.as_bytes();
-    !b.is_empty() && b.len() <= 63 && b[0].is_ascii_alphanumeric() && b.iter().all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
+    !b.is_empty()
+        && b.len() <= 63
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
 }
 
 pub struct ServerRegistry {
@@ -97,13 +101,18 @@ impl ServerRegistry {
             .recursive(true)
             .mode(0o700)
             .create(&dir)
-            .map_err(|e| SitefileError::plain(E_SERVER, format!("cannot create '{}': {e}", dir.display())))?;
+            .map_err(|e| {
+                SitefileError::plain(E_SERVER, format!("cannot create '{}': {e}", dir.display()))
+            })?;
         Ok(ServerRegistry { dir, store })
     }
 
     pub fn state_path(&self, id: &str) -> Result<PathBuf> {
         if !is_id(id) {
-            return Err(SitefileError::plain(E_SERVER, format!("invalid server id '{id}'")));
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!("invalid server id '{id}'"),
+            ));
         }
         Ok(self.dir.join(format!("{id}.json")))
     }
@@ -117,7 +126,10 @@ impl ServerRegistry {
         match fs::read(self.state_path(id)?) {
             Ok(b) => Ok(serde_json::from_slice(&b).ok()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(SitefileError::plain(E_SERVER, format!("cannot read server '{id}': {e}"))),
+            Err(e) => Err(SitefileError::plain(
+                E_SERVER,
+                format!("cannot read server '{id}': {e}"),
+            )),
         }
     }
 
@@ -125,10 +137,16 @@ impl ServerRegistry {
     pub fn write(&self, state: &ServerState) -> Result<()> {
         let dest = self.state_path(&state.id)?;
         let tmp = PathBuf::from(format!("{}.{}.tmp", dest.display(), random_hex(4)));
-        let mut text = serde_json::to_string_pretty(state).map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
+        let mut text = serde_json::to_string_pretty(state)
+            .map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
         text.push('\n');
         let r = (|| -> io::Result<()> {
-            let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
             f.write_all(text.as_bytes())?;
             drop(f);
             fs::rename(&tmp, &dest)
@@ -139,8 +157,14 @@ impl ServerRegistry {
         })
     }
 
-    pub fn update(&self, id: &str, patch: impl FnOnce(&mut ServerState)) -> Result<Option<ServerState>> {
-        let Some(mut cur) = self.read(id)? else { return Ok(None) };
+    pub fn update(
+        &self,
+        id: &str,
+        patch: impl FnOnce(&mut ServerState),
+    ) -> Result<Option<ServerState>> {
+        let Some(mut cur) = self.read(id)? else {
+            return Ok(None);
+        };
         patch(&mut cur);
         self.write(&cur)?;
         Ok(Some(cur))
@@ -154,7 +178,12 @@ impl ServerRegistry {
 
     /// Every server, oldest first.
     pub fn all(&self) -> Result<Vec<ServerState>> {
-        let rd = fs::read_dir(&self.dir).map_err(|e| SitefileError::plain(E_SERVER, format!("cannot read '{}': {e}", self.dir.display())))?;
+        let rd = fs::read_dir(&self.dir).map_err(|e| {
+            SitefileError::plain(
+                E_SERVER,
+                format!("cannot read '{}': {e}", self.dir.display()),
+            )
+        })?;
         let mut out = Vec::new();
         for ent in rd.flatten() {
             let name = ent.file_name().to_string_lossy().into_owned();
@@ -171,14 +200,28 @@ impl ServerRegistry {
     /// Find by exact ID, exact name, or unique ID prefix (3+ characters).
     pub fn find(&self, key: &str) -> Result<ServerState> {
         let all = self.all()?;
-        if let Some(s) = all.iter().find(|s| s.id == key).or_else(|| all.iter().find(|s| s.name == key)) {
+        if let Some(s) = all
+            .iter()
+            .find(|s| s.id == key)
+            .or_else(|| all.iter().find(|s| s.name == key))
+        {
             return Ok(s.clone());
         }
-        let pre: Vec<&ServerState> = if key.len() >= 3 { all.iter().filter(|s| s.id.starts_with(key)).collect() } else { vec![] };
+        let pre: Vec<&ServerState> = if key.len() >= 3 {
+            all.iter().filter(|s| s.id.starts_with(key)).collect()
+        } else {
+            vec![]
+        };
         match pre.len() {
             1 => Ok(pre[0].clone()),
-            0 => Err(SitefileError::plain(E_NOT_FOUND, format!("no such server: {key}"))),
-            n => Err(SitefileError::plain(E_SERVER, format!("ambiguous server '{key}' matches {n} servers"))),
+            0 => Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("no such server: {key}"),
+            )),
+            n => Err(SitefileError::plain(
+                E_SERVER,
+                format!("ambiguous server '{key}' matches {n} servers"),
+            )),
         }
     }
 
@@ -187,20 +230,38 @@ impl ServerRegistry {
         let all = self.all()?;
         if let Some(n) = name {
             if !is_name(n) {
-                return Err(SitefileError::plain(E_USAGE, format!("invalid server name '{n}' (letters, digits, '_', '.', '-')")));
+                return Err(SitefileError::plain(
+                    E_USAGE,
+                    format!("invalid server name '{n}' (letters, digits, '_', '.', '-')"),
+                ));
             }
             if all.iter().any(|s| s.name == n) {
-                return Err(SitefileError::plain(E_SERVER, format!("a server named '{n}' already exists; remove it with \"sitefile rm {n}\"")));
+                return Err(SitefileError::plain(
+                    E_SERVER,
+                    format!(
+                        "a server named '{n}' already exists; remove it with \"sitefile rm {n}\""
+                    ),
+                ));
             }
         }
         let id = random_hex(6);
-        let name = name.map(str::to_string).unwrap_or_else(|| format!("site-{}", &id[..6]));
+        let name = name
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("site-{}", &id[..6]));
         Ok((id, name))
     }
 
     pub fn view(&self, s: &ServerState) -> ServerView {
         let running = is_running(s);
-        ServerView { state: s.clone(), status: if running { "running" } else { "exited" }, url: if s.ready { url_of(&s.host, s.port) } else { String::new() } }
+        ServerView {
+            state: s.clone(),
+            status: if running { "running" } else { "exited" },
+            url: if s.ready {
+                url_of(&s.host, s.port)
+            } else {
+                String::new()
+            },
+        }
     }
 }
 
@@ -214,7 +275,11 @@ fn probe_host(host: &str) -> &str {
 
 fn url_of(host: &str, port: u16) -> String {
     let shown = probe_host(host);
-    if shown.contains(':') { format!("http://[{shown}]:{port}/") } else { format!("http://{shown}:{port}/") }
+    if shown.contains(':') {
+        format!("http://[{shown}]:{port}/")
+    } else {
+        format!("http://{shown}:{port}/")
+    }
 }
 
 /// Whether a process exists (`kill -0`; EPERM counts as alive).
@@ -222,9 +287,16 @@ pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 || pid > i32::MAX as i64 {
         return false;
     }
-    match std::process::Command::new("kill").arg("-0").arg(pid.to_string()).stdout(std::process::Stdio::null()).output() {
+    match std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .output()
+    {
         Ok(o) if o.status.success() => true,
-        Ok(o) => String::from_utf8_lossy(&o.stderr).to_ascii_lowercase().contains("not permitted"),
+        Ok(o) => String::from_utf8_lossy(&o.stderr)
+            .to_ascii_lowercase()
+            .contains("not permitted"),
         Err(_) => false,
     }
 }
@@ -234,12 +306,24 @@ pub fn is_running(s: &ServerState) -> bool {
     if !s.ready || !pid_alive(s.pid) {
         return false;
     }
-    let Some(addr) = (probe_host(&s.host), s.port).to_socket_addrs().ok().and_then(|mut a| a.next()) else { return false };
+    let Some(addr) = (probe_host(&s.host), s.port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+    else {
+        return false;
+    };
     let t = Duration::from_millis(1500);
-    let Ok(mut c) = TcpStream::connect_timeout(&addr, t) else { return false };
+    let Ok(mut c) = TcpStream::connect_timeout(&addr, t) else {
+        return false;
+    };
     let _ = c.set_read_timeout(Some(t));
     let _ = c.set_write_timeout(Some(t));
-    let req = format!("HEAD / HTTP/1.1\r\nhost: {}\r\nx-sitefile-probe: {}\r\nconnection: close\r\n\r\n", probe_host(&s.host), s.id);
+    let req = format!(
+        "HEAD / HTTP/1.1\r\nhost: {}\r\nx-sitefile-probe: {}\r\nconnection: close\r\n\r\n",
+        probe_host(&s.host),
+        s.id
+    );
     if c.write_all(req.as_bytes()).is_err() {
         return false;
     }
@@ -257,11 +341,22 @@ pub fn is_running(s: &ServerState) -> bool {
 /// must stay inside, hard-linked and special files are refused, `.git` is
 /// skipped, `.sitefileignore` is not read); hidden files (except `.well-known`) are not served.
 pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
-    let ctx = LocalContext::open(dir, &LocalContextOptions { sitefileignore: false, ..Default::default() })?;
-    let Resource::Tree { tree, .. } = ctx.read_tree("", "serve", None)? else { unreachable!("read_tree returns a tree") };
+    let ctx = LocalContext::open(
+        dir,
+        &LocalContextOptions {
+            sitefileignore: false,
+            ..Default::default()
+        },
+    )?;
+    let Resource::Tree { tree, .. } = ctx.read_tree("", "serve", None)? else {
+        unreachable!("read_tree returns a tree")
+    };
     let visible = tree
         .entries()
-        .filter(|(p, _)| p.split('/').all(|seg| !seg.starts_with('.') || seg.is_empty() || seg == ".well-known"))
+        .filter(|(p, _)| {
+            p.split('/')
+                .all(|seg| !seg.starts_with('.') || seg.is_empty() || seg == ".well-known")
+        })
         .map(|(p, n)| (p.clone(), n.clone()))
         .collect::<Vec<_>>();
     Tree::from_files(visible)
@@ -280,17 +375,22 @@ mod tests {
     use super::*;
     use crate::export::exporter::tests::TmpDir;
     use crate::server::{listen, SiteServerOptions};
-    use std::sync::Arc;
     use crate::tree::make_file;
+    use std::sync::Arc;
 
     fn state(reg: &ServerRegistry, id: &str, name: &str, started: &str) -> ServerState {
         ServerState {
             id: id.into(),
             name: name.into(),
             image: "./site".into(),
-            source: ServerSource::Dir { path: "/tmp/site".into() },
+            source: ServerSource::Dir {
+                path: "/tmp/site".into(),
+            },
             spa: false,
-            bind: Bind { host: "127.0.0.1".into(), port: 0 },
+            bind: Bind {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
             host: "127.0.0.1".into(),
             port: 0,
             pid: 0,
@@ -306,7 +406,9 @@ mod tests {
         let d = TmpDir::new("servers");
         let reg = ServerRegistry::open(Some(Store::open(d.path()).unwrap())).unwrap();
         let mut s = state(&reg, "0123456789ab", "web", "2024-01-01T00:00:00.000Z");
-        s.source = ServerSource::Image { image_id: format!("sha256:{}", "a".repeat(64)) };
+        s.source = ServerSource::Image {
+            image_id: format!("sha256:{}", "a".repeat(64)),
+        };
         reg.write(&s).unwrap();
         let text = fs::read_to_string(reg.state_path(&s.id).unwrap()).unwrap();
         let expected = format!(
@@ -334,7 +436,14 @@ mod tests {
         let reg = ServerRegistry::open(Some(Store::open(d.path()).unwrap())).unwrap();
         reg.write(&state(&reg, "abc111111111", "one", "2")).unwrap();
         reg.write(&state(&reg, "abc222222222", "two", "1")).unwrap();
-        assert_eq!(reg.all().unwrap().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["two", "one"]);
+        assert_eq!(
+            reg.all()
+                .unwrap()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "one"]
+        );
         assert_eq!(reg.find("one").unwrap().id, "abc111111111");
         assert_eq!(reg.find("abc2").unwrap().name, "two");
         assert_eq!(reg.find("abc").unwrap_err().code, E_SERVER);
@@ -344,7 +453,10 @@ mod tests {
         let (id, name) = reg.allocate(None).unwrap();
         assert!(is_id(&id));
         assert_eq!(name, format!("site-{}", &id[..6]));
-        let up = reg.update("abc111111111", |s| s.error = Some("x".into())).unwrap().unwrap();
+        let up = reg
+            .update("abc111111111", |s| s.error = Some("x".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(up.error.as_deref(), Some("x"));
         assert_eq!(reg.update("fff111111111", |_| {}).unwrap(), None);
         reg.remove("abc111111111").unwrap();
@@ -356,8 +468,23 @@ mod tests {
         let d = TmpDir::new("servers");
         let reg = ServerRegistry::open(Some(Store::open(d.path()).unwrap())).unwrap();
         let id = "00000000aaaa";
-        let t = Arc::new(Tree::from_files([("/index.html".to_string(), make_file(b"hi".to_vec(), "t", 0o644))]).unwrap());
-        let srv = listen(t.clone(), SiteServerOptions { server_id: Some(id.into()), ..Default::default() }, "127.0.0.1", 0).unwrap();
+        let t = Arc::new(
+            Tree::from_files([(
+                "/index.html".to_string(),
+                make_file(b"hi".to_vec(), "t", 0o644),
+            )])
+            .unwrap(),
+        );
+        let srv = listen(
+            t.clone(),
+            SiteServerOptions {
+                server_id: Some(id.into()),
+                ..Default::default()
+            },
+            "127.0.0.1",
+            0,
+        )
+        .unwrap();
         let mut s = state(&reg, id, "live", "1");
         s.port = srv.port;
         s.ready = true;
@@ -367,7 +494,10 @@ mod tests {
         assert_eq!(reg.view(&s).url, format!("http://127.0.0.1:{}/", srv.port));
         let mut other = s.clone();
         other.id = "00000000bbbb".into();
-        assert!(!is_running(&other), "a reused port answering with another id is not ours");
+        assert!(
+            !is_running(&other),
+            "a reused port answering with another id is not ours"
+        );
         let mut dead = s.clone();
         dead.pid = 999_999_999;
         assert!(!is_running(&dead));
@@ -393,15 +523,38 @@ mod tests {
         std::os::unix::fs::symlink(&site, site.join("sub/loop")).unwrap();
         let t = load_directory_tree(&site).unwrap();
         let paths: Vec<&str> = t.entries().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(paths, ["/.well-known/security.txt", "/index.html", "/link.txt", "/sub/a.txt"]);
+        assert_eq!(
+            paths,
+            [
+                "/.well-known/security.txt",
+                "/index.html",
+                "/link.txt",
+                "/sub/a.txt"
+            ]
+        );
         fs::write(d.path().join("outside.txt"), "no").unwrap();
         std::os::unix::fs::symlink(d.path().join("outside.txt"), site.join("escape.txt")).unwrap();
         assert_eq!(load_directory_tree(&site).unwrap_err().code, E_PATH_ESCAPE);
         fs::remove_file(site.join("escape.txt")).unwrap();
         fs::hard_link(site.join("index.html"), site.join("hard.html")).unwrap();
         assert_eq!(load_directory_tree(&site).unwrap_err().code, E_HARDLINK);
-        assert_eq!(load_directory_tree(&d.path().join("nope")).unwrap_err().code, E_NOT_FOUND);
+        assert_eq!(
+            load_directory_tree(&d.path().join("nope"))
+                .unwrap_err()
+                .code,
+            E_NOT_FOUND
+        );
         let store = Store::open(d.path().join("home")).unwrap();
-        assert_eq!(load_served_tree(&store, &ServerSource::Image { image_id: format!("sha256:{}", "0".repeat(64)) }).unwrap_err().code, E_NOT_FOUND);
+        assert_eq!(
+            load_served_tree(
+                &store,
+                &ServerSource::Image {
+                    image_id: format!("sha256:{}", "0".repeat(64))
+                }
+            )
+            .unwrap_err()
+            .code,
+            E_NOT_FOUND
+        );
     }
 }

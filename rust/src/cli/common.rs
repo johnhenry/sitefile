@@ -32,13 +32,22 @@ pub fn command_help(c: &Command) -> String {
     let flags = if c.flags.is_empty() {
         String::new()
     } else {
-        format!("\nOptions:\n{}\n", c.flags.iter().map(|f| format!("  {f}")).collect::<Vec<_>>().join("\n"))
+        format!(
+            "\nOptions:\n{}\n",
+            c.flags
+                .iter()
+                .map(|f| format!("  {f}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     };
     format!("Usage: sitefile {}\n\n{}\n{flags}", c.usage, c.description)
 }
 
 pub fn usage_error(message: &str) -> i32 {
-    err(&format!("error: {message}\nRun 'sitefile --help' for usage.\n"));
+    err(&format!(
+        "error: {message}\nRun 'sitefile --help' for usage.\n"
+    ));
     2
 }
 
@@ -78,7 +87,10 @@ pub fn require_args(positionals: &[String], min: usize, max: usize, what: &str) 
         return usage(format!("expected {what}"));
     }
     if positionals.len() > max {
-        return usage(format!("unexpected arguments: {}", positionals[max..].join(" ")));
+        return usage(format!(
+            "unexpected arguments: {}",
+            positionals[max..].join(" ")
+        ));
     }
     Ok(())
 }
@@ -104,7 +116,13 @@ pub fn table(rows: &[Vec<String>]) -> String {
             let cells: Vec<String> = r
                 .iter()
                 .enumerate()
-                .map(|(i, c)| if i == r.len() - 1 { c.clone() } else { format!("{c}{}", " ".repeat(widths[i].saturating_sub(len(c)))) })
+                .map(|(i, c)| {
+                    if i == r.len() - 1 {
+                        c.clone()
+                    } else {
+                        format!("{c}{}", " ".repeat(widths[i].saturating_sub(len(c))))
+                    }
+                })
                 .collect();
             cells.join("  ").trim_end().to_string()
         })
@@ -154,7 +172,11 @@ pub fn human_size(bytes: u64) -> String {
         v /= 1000.0;
         i += 1;
     }
-    let n = if v >= 100.0 { format!("{}", v.round()) } else { strip_zeros(&to_precision3(v)) };
+    let n = if v >= 100.0 {
+        format!("{}", v.round())
+    } else {
+        strip_zeros(&to_precision3(v))
+    };
     format!("{n}{}", units[i])
 }
 
@@ -171,11 +193,29 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// `Date.parse` for ISO timestamps (`YYYY-MM-DDTHH:MM:SS[.sss]Z`), in ms.
 pub fn parse_iso(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || !s.ends_with('Z') {
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || !s.ends_with('Z')
+    {
         return None;
     }
-    let num = |r: std::ops::Range<usize>| s.get(r).filter(|t| t.bytes().all(|c| c.is_ascii_digit())).and_then(|t| t.parse::<i64>().ok());
-    let (y, mo, d, h, mi, se) = (num(0..4)?, num(5..7)?, num(8..10)?, num(11..13)?, num(14..16)?, num(17..19)?);
+    let num = |r: std::ops::Range<usize>| {
+        s.get(r)
+            .filter(|t| t.bytes().all(|c| c.is_ascii_digit()))
+            .and_then(|t| t.parse::<i64>().ok())
+    };
+    let (y, mo, d, h, mi, se) = (
+        num(0..4)?,
+        num(5..7)?,
+        num(8..10)?,
+        num(11..13)?,
+        num(14..16)?,
+        num(17..19)?,
+    );
     let mut ms = 0;
     let rest = &s[19..s.len() - 1];
     if !rest.is_empty() {
@@ -193,18 +233,30 @@ pub fn parse_iso(s: &str) -> Option<i64> {
 }
 
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub fn relative_time(iso: &str, now: i64) -> String {
-    let Some(t) = parse_iso(iso) else { return "unknown".into() };
+    let Some(t) = parse_iso(iso) else {
+        return "unknown".into();
+    };
     // Math.round: halves round up.
     let s = (((now - t) as f64 / 1000.0) + 0.5).floor().max(0.0) as i64;
     if s < 5 {
         return "Less than a second ago".into();
     }
-    let units: [(i64, &str); 7] =
-        [(31_536_000, "year"), (2_592_000, "month"), (604_800, "week"), (86_400, "day"), (3600, "hour"), (60, "minute"), (1, "second")];
+    let units: [(i64, &str); 7] = [
+        (31_536_000, "year"),
+        (2_592_000, "month"),
+        (604_800, "week"),
+        (86_400, "day"),
+        (3600, "hour"),
+        (60, "minute"),
+        (1, "second"),
+    ];
     for (n, name) in units {
         if s >= n {
             let k = s / n;
@@ -220,12 +272,21 @@ pub fn js_to_number(raw: &str) -> f64 {
     if t.is_empty() {
         return 0.0;
     }
-    for (prefix, radix) in [("0x", 16), ("0X", 16), ("0o", 8), ("0O", 8), ("0b", 2), ("0B", 2)] {
+    for (prefix, radix) in [
+        ("0x", 16),
+        ("0X", 16),
+        ("0o", 8),
+        ("0O", 8),
+        ("0b", 2),
+        ("0B", 2),
+    ] {
         if let Some(d) = t.strip_prefix(prefix) {
             if d.is_empty() || !d.chars().all(|c| c.is_digit(radix)) {
                 return f64::NAN;
             }
-            return d.chars().fold(0.0, |acc, c| acc * radix as f64 + c.to_digit(radix).unwrap_or(0) as f64);
+            return d.chars().fold(0.0, |acc, c| {
+                acc * radix as f64 + c.to_digit(radix).unwrap_or(0) as f64
+            });
         }
     }
     match t {
@@ -233,7 +294,10 @@ pub fn js_to_number(raw: &str) -> f64 {
         "-Infinity" => return f64::NEG_INFINITY,
         _ => {}
     }
-    if !t.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) {
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
+    {
         return f64::NAN;
     }
     t.parse::<f64>().unwrap_or(f64::NAN)
@@ -274,9 +338,18 @@ mod tests {
     fn times() {
         let t = parse_iso("2024-01-01T00:00:00.000Z").unwrap();
         assert_eq!(t, 1_704_067_200_000);
-        assert_eq!(relative_time("2024-01-01T00:00:00.000Z", t + 3_000), "Less than a second ago");
-        assert_eq!(relative_time("2024-01-01T00:00:00.000Z", t + 61_000), "1 minute ago");
-        assert_eq!(relative_time("2024-01-01T00:00:00.000Z", t + 3 * 86_400_000), "3 days ago");
+        assert_eq!(
+            relative_time("2024-01-01T00:00:00.000Z", t + 3_000),
+            "Less than a second ago"
+        );
+        assert_eq!(
+            relative_time("2024-01-01T00:00:00.000Z", t + 61_000),
+            "1 minute ago"
+        );
+        assert_eq!(
+            relative_time("2024-01-01T00:00:00.000Z", t + 3 * 86_400_000),
+            "3 days ago"
+        );
         assert_eq!(relative_time("garbage", t), "unknown");
     }
 
@@ -292,7 +365,10 @@ mod tests {
 
     #[test]
     fn tables() {
-        let t = table(&[vec!["A".into(), "BB".into()], vec!["CCC".into(), "D".into()]]);
+        let t = table(&[
+            vec!["A".into(), "BB".into()],
+            vec!["CCC".into(), "D".into()],
+        ]);
         assert_eq!(t, "A    BB\nCCC  D\n");
     }
 }

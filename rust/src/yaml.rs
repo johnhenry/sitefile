@@ -52,9 +52,18 @@ pub fn parse_yaml(text: &str, file: &str) -> Result<Value> {
 /// of `text` (for YAML embedded in another file). With `root_mapping` the
 /// document must be a mapping (or empty) and indented content at the top is
 /// rejected. Used by frontmatter.
-pub fn parse_yaml_document(text: &str, file: &str, first_line: u32, root_mapping: bool) -> Result<Value> {
+pub fn parse_yaml_document(
+    text: &str,
+    file: &str,
+    first_line: u32,
+    root_mapping: bool,
+) -> Result<Value> {
     let units = js::u16s(text);
-    let src: &[u16] = if units.first() == Some(&0xfeff) { &units[1..] } else { &units };
+    let src: &[u16] = if units.first() == Some(&0xfeff) {
+        &units[1..]
+    } else {
+        &units
+    };
     let base = first_line.saturating_sub(1);
     let mut lines: Vec<Line> = src
         .split(|&c| c == u(b'\n'))
@@ -62,11 +71,21 @@ pub fn parse_yaml_document(text: &str, file: &str, first_line: u32, root_mapping
         .map(|(i, r)| {
             let raw = r.strip_suffix(&[u(b'\r')]).unwrap_or(r).to_vec();
             let indent = raw.iter().take_while(|&&c| c == SP).count();
-            Line { no: i as u32 + 1, text: raw[indent..].to_vec(), raw, indent, parent: -1 }
+            Line {
+                no: i as u32 + 1,
+                text: raw[indent..].to_vec(),
+                raw,
+                indent,
+                parent: -1,
+            }
         })
         .collect();
     let fail_at = |line: &Line, detail: &str, column: usize| -> SitefileError {
-        SitefileError::new(E_DATA, detail, Some(SourceSpan::new(file, line.no + base, column as u32)))
+        SitefileError::new(
+            E_DATA,
+            detail,
+            Some(SourceSpan::new(file, line.no + base, column as u32)),
+        )
     };
 
     // Document markers.
@@ -80,10 +99,18 @@ pub fn parse_yaml_document(text: &str, file: &str, first_line: u32, root_mapping
             let dashes = [u(b'-'); 3];
             if t == dashes || lines[i].raw.starts_with(&[u(b'-'), u(b'-'), u(b'-'), SP]) {
                 if t != dashes {
-                    return Err(fail_at(&lines[i], "content on the document marker line is not supported", 5));
+                    return Err(fail_at(
+                        &lines[i],
+                        "content on the document marker line is not supported",
+                        5,
+                    ));
                 }
                 if started || saw_start {
-                    return Err(fail_at(&lines[i], "multiple documents are not supported", 1));
+                    return Err(fail_at(
+                        &lines[i],
+                        "multiple documents are not supported",
+                        1,
+                    ));
                 }
                 saw_start = true;
                 lines[i].text.clear();
@@ -109,8 +136,16 @@ pub fn parse_yaml_document(text: &str, file: &str, first_line: u32, root_mapping
     }
     lines.truncate(end);
 
-    let mut p = Parser { lines, pos: 0, depth: 0, base, file };
-    let Some(first) = p.peek()? else { return Ok(Value::Null) };
+    let mut p = Parser {
+        lines,
+        pos: 0,
+        depth: 0,
+        base,
+        file,
+    };
+    let Some(first) = p.peek()? else {
+        return Ok(Value::Null);
+    };
     let fi = p.lines[first].indent;
     if fi > 0 && root_mapping {
         return Err(p.fail(first, "unexpected indentation", fi + 1));
@@ -127,7 +162,11 @@ pub fn parse_yaml_document(text: &str, file: &str, first_line: u32, root_mapping
     if let Some(extra) = p.peek()? {
         // `first` may have been re-indented while parsing (a sequence item).
         let (ei, fi) = (p.lines[extra].indent, p.lines[first].indent);
-        let msg = if ei > fi { "unexpected indentation" } else { "unexpected content" };
+        let msg = if ei > fi {
+            "unexpected indentation"
+        } else {
+            "unexpected content"
+        };
         return Err(p.fail(extra, msg, ei + 1));
     }
     Ok(value)
@@ -156,7 +195,8 @@ fn starts_word(t: &[u16], c: u8) -> bool {
 
 /// Index of the first `:` followed by space, tab or end (`/:(?:[ \t]|$)/`).
 fn colon_index(t: &[u16]) -> Option<usize> {
-    (0..t.len()).find(|&p| t[p] == u(b':') && (p + 1 == t.len() || t[p + 1] == SP || t[p + 1] == TAB))
+    (0..t.len())
+        .find(|&p| t[p] == u(b':') && (p + 1 == t.len() || t[p + 1] == SP || t[p + 1] == TAB))
 }
 
 /// `/(^|[ \t])#/` match index.
@@ -239,7 +279,11 @@ struct Fail<'a> {
 
 impl Fail<'_> {
     fn at(&self, detail: impl Into<String>, column: usize) -> SitefileError {
-        SitefileError::new(E_DATA, detail, Some(SourceSpan::new(self.file, self.line, column as u32)))
+        SitefileError::new(
+            E_DATA,
+            detail,
+            Some(SourceSpan::new(self.file, self.line, column as u32)),
+        )
     }
 }
 
@@ -250,7 +294,10 @@ fn assert_trailing(rest: &[u16], col: usize, fail: &Fail) -> Result<()> {
         return Ok(());
     }
     let lead = rest.len() - js::trim_start(rest).len();
-    Err(fail.at(format!("unexpected text after value: '{}'", js::string(r)), col + lead))
+    Err(fail.at(
+        format!("unexpected text after value: '{}'", js::string(r)),
+        col + lead,
+    ))
 }
 
 /// Parse a quoted string at t[0]; returns the value and the index after it.
@@ -293,9 +340,18 @@ fn ws(c: Option<&u16>) -> bool {
 
 /// Parse a flow collection starting at t[start]. `col` is the column of t[0].
 /// Returns the value and the index just after it.
-fn parse_flow(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize) -> Result<(Value, usize)> {
+fn parse_flow(
+    t: &[u16],
+    start: usize,
+    col: usize,
+    fail: &Fail,
+    depth: usize,
+) -> Result<(Value, usize)> {
     if depth > MAX_DEPTH {
-        return Err(fail.at(format!("nesting is deeper than {MAX_DEPTH} levels"), col + start));
+        return Err(fail.at(
+            format!("nesting is deeper than {MAX_DEPTH} levels"),
+            col + start,
+        ));
     }
     match t.get(start) {
         Some(&c) if c == u(b'[') => parse_flow_seq(t, start, col, fail, depth),
@@ -304,7 +360,13 @@ fn parse_flow(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize) ->
     }
 }
 
-fn parse_flow_seq(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize) -> Result<(Value, usize)> {
+fn parse_flow_seq(
+    t: &[u16],
+    start: usize,
+    col: usize,
+    fail: &Fail,
+    depth: usize,
+) -> Result<(Value, usize)> {
     let open = col + start;
     let unterminated = "unterminated list: missing ']'";
     let mut items: Vec<Value> = Vec::new();
@@ -341,7 +403,13 @@ fn parse_flow_seq(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize
     Ok((Value::Array(items), i))
 }
 
-fn parse_flow_map(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize) -> Result<(Value, usize)> {
+fn parse_flow_map(
+    t: &[u16],
+    start: usize,
+    col: usize,
+    fail: &Fail,
+    depth: usize,
+) -> Result<(Value, usize)> {
     let open = col + start;
     let unterminated = "unterminated map: missing '}'";
     let mut map: Map<String, Value> = Map::new();
@@ -378,7 +446,9 @@ fn parse_flow_map(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize
         } else {
             let mut j = i;
             while j < t.len() && t[j] != u(b',') && t[j] != u(b'}') && t[j] != u(b']') {
-                if t[j] == u(b':') && (j + 1 >= t.len() || b" \t,}]".iter().any(|&b| t[j + 1] == u(b))) {
+                if t[j] == u(b':')
+                    && (j + 1 >= t.len() || b" \t,}]".iter().any(|&b| t[j + 1] == u(b)))
+                {
                     break;
                 }
                 j += 1;
@@ -394,7 +464,10 @@ fn parse_flow_map(t: &[u16], start: usize, col: usize, fail: &Fail, depth: usize
                 return Err(fail.at("empty key", key_col));
             }
             if starts_with_any(k, b"&*![{") {
-                return Err(fail.at("anchors, aliases, tags and complex keys are not supported", key_col));
+                return Err(fail.at(
+                    "anchors, aliases, tags and complex keys are not supported",
+                    key_col,
+                ));
             }
             key = js::string(k);
             if key == "<<" {
@@ -466,9 +539,14 @@ fn parse_flow_value(
         return Err(fail.at("anchors, aliases and tags are not supported", col + i));
     }
     // `/:(?:\s|$)/` (JavaScript whitespace) or `/^[|>]/`
-    let nested = (0..raw.len()).any(|p| raw[p] == u(b':') && (p + 1 == raw.len() || js::is_ws(raw[p + 1])));
+    let nested =
+        (0..raw.len()).any(|p| raw[p] == u(b':') && (p + 1 == raw.len() || js::is_ws(raw[p + 1])));
     if nested || starts_with_any(raw, b"|>") {
-        let msg = if in_map { "nested maps on one line are not supported" } else { "unsupported list item" };
+        let msg = if in_map {
+            "nested maps on one line are not supported"
+        } else {
+            "unsupported list item"
+        };
         return Err(fail.at(msg, col + i));
     }
     Ok((plain_scalar(raw), j))
@@ -488,7 +566,10 @@ impl<'f> Parser<'f> {
     }
 
     fn failer(&self, line: usize) -> Fail<'f> {
-        Fail { file: self.file, line: self.lines[line].no + self.base }
+        Fail {
+            file: self.file,
+            line: self.lines[line].no + self.base,
+        }
     }
 
     /// Next significant line (skipping blanks and comments); leaves pos on it.
@@ -501,7 +582,11 @@ impl<'f> Parser<'f> {
                 continue;
             }
             if l.text.first() == Some(&TAB) {
-                return Err(self.fail(self.pos, "tabs are not allowed for indentation", l.indent + 1));
+                return Err(self.fail(
+                    self.pos,
+                    "tabs are not allowed for indentation",
+                    l.indent + 1,
+                ));
             }
             return Ok(Some(self.pos));
         }
@@ -511,7 +596,11 @@ impl<'f> Parser<'f> {
     fn enter(&mut self, line: usize) -> Result<()> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(self.fail(line, format!("nesting is deeper than {MAX_DEPTH} levels"), self.lines[line].indent + 1));
+            return Err(self.fail(
+                line,
+                format!("nesting is deeper than {MAX_DEPTH} levels"),
+                self.lines[line].indent + 1,
+            ));
         }
         Ok(())
     }
@@ -593,7 +682,11 @@ impl<'f> Parser<'f> {
                 self.pos += 1;
                 match self.peek()? {
                     Some(next) if self.lines[next].indent > n => self.node_at(next)?,
-                    Some(next) if self.lines[next].indent == n && is_item(&self.lines[next].text) => self.parse_seq(n)?,
+                    Some(next)
+                        if self.lines[next].indent == n && is_item(&self.lines[next].text) =>
+                    {
+                        self.parse_seq(n)?
+                    }
                     _ => Value::Null,
                 }
             } else {
@@ -614,14 +707,17 @@ impl<'f> Parser<'f> {
         if t.first() == Some(&u(b'?')) && (t.len() == 1 || js::is_ws(t[1])) {
             return Err(fail.at("complex keys are not supported", col));
         }
-        let Some(&c0) = t.first() else { return Ok(None) };
+        let Some(&c0) = t.first() else {
+            return Ok(None);
+        };
         if c0 == u(b'"') || c0 == u(b'\'') {
             let (key, end) = parse_quoted(t, col, &fail)?;
             let mut i = end;
             while ws(t.get(i)) {
                 i += 1;
             }
-            if t.get(i) == Some(&u(b':')) && (i + 1 >= t.len() || t[i + 1] == SP || t[i + 1] == TAB) {
+            if t.get(i) == Some(&u(b':')) && (i + 1 >= t.len() || t[i + 1] == SP || t[i + 1] == TAB)
+            {
                 return Ok(Some((key, i + 1)));
             }
             return Ok(None);
@@ -630,7 +726,9 @@ impl<'f> Parser<'f> {
             return Ok(None);
         }
         let head = strip_comment(t);
-        let Some(m) = colon_index(head) else { return Ok(None) };
+        let Some(m) = colon_index(head) else {
+            return Ok(None);
+        };
         let key = js::trim(&head[..m]);
         if key.is_empty() {
             return Err(fail.at("empty key", col));
@@ -657,7 +755,9 @@ impl<'f> Parser<'f> {
         let first = s.first().copied();
 
         if first == Some(u(b'|')) || first == Some(u(b'>')) {
-            return self.block_scalar(line, &s, col, parent_indent).map(Value::String);
+            return self
+                .block_scalar(line, &s, col, parent_indent)
+                .map(Value::String);
         }
         if first == Some(u(b'[')) || first == Some(u(b'{')) {
             let (v, end) = parse_flow(&s, 0, col, &fail, self.depth + 1)?;
@@ -688,7 +788,13 @@ impl<'f> Parser<'f> {
         Ok(plain_scalar(plain))
     }
 
-    fn block_scalar(&mut self, line: usize, s: &[u16], col: usize, parent_indent: isize) -> Result<String> {
+    fn block_scalar(
+        &mut self,
+        line: usize,
+        s: &[u16],
+        col: usize,
+        parent_indent: isize,
+    ) -> Result<String> {
         let fail = self.failer(line);
         // /^([|>])([+-]?)([0-9]?)([ \t]+#.*|[ \t]*)$/
         let style = s[0];
@@ -709,7 +815,9 @@ impl<'f> Parser<'f> {
         let header_ok = wsn == rest.len()
             || (wsn > 0
                 && rest[wsn] == u(b'#')
-                && !rest[wsn..].iter().any(|&c| matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029)));
+                && !rest[wsn..]
+                    .iter()
+                    .any(|&c| matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029)));
         if !header_ok {
             return Err(fail.at("invalid block scalar header", col));
         }
@@ -737,7 +845,11 @@ impl<'f> Parser<'f> {
                 if ind <= parent_indent {
                     break;
                 }
-                return Err(self.fail(self.pos, "bad indentation in block scalar", ind as usize + 1));
+                return Err(self.fail(
+                    self.pos,
+                    "bad indentation in block scalar",
+                    ind as usize + 1,
+                ));
             }
             content.push(raw[block_indent as usize..].to_vec());
             self.pos += 1;
@@ -750,7 +862,11 @@ impl<'f> Parser<'f> {
         let trailing = content.len() - end;
         let body = &content[..end];
         if body.is_empty() {
-            return Ok(if chomp == u(b'+') { "\n".repeat(trailing) } else { String::new() });
+            return Ok(if chomp == u(b'+') {
+                "\n".repeat(trailing)
+            } else {
+                String::new()
+            });
         }
         let text = if style == u(b'|') {
             let mut w = Vec::new();
@@ -787,8 +903,16 @@ mod tests {
     fn fails_at(text: &str, line: u32, column: u32, needle: &str, first_line: u32) {
         let e = parse_yaml_document(text, "data.yml", first_line, false).unwrap_err();
         assert_eq!(e.code, E_DATA, "{text:?}");
-        assert_eq!(e.span, Some(SourceSpan::new("data.yml", line, column)), "{text:?}: {e}");
-        assert!(needle.split('|').any(|n| e.detail.contains(n)), "{text:?}: {}", e.detail);
+        assert_eq!(
+            e.span,
+            Some(SourceSpan::new("data.yml", line, column)),
+            "{text:?}: {e}"
+        );
+        assert!(
+            needle.split('|').any(|n| e.detail.contains(n)),
+            "{text:?}: {}",
+            e.detail
+        );
     }
     fn fails(text: &str, line: u32, column: u32, needle: &str) {
         fails_at(text, line, column, needle, 1);
@@ -808,7 +932,10 @@ mod tests {
             json!({ "s": "Hello World", "i": 3, "neg": -7, "d": -1.5, "t": true, "f": false, "n": null, "tilde": null, "empty": null, "str": "12abc", "date": "2026-01-02", "ver": "1.2.3", "q": "true", "q2": "42" })
         );
         // integral decimals are integers, as JS numbers are
-        assert_eq!(y("a: 1.0\nb: 007\nc: -0").to_string(), r#"{"a":1,"b":7,"c":0}"#);
+        assert_eq!(
+            y("a: 1.0\nb: 007\nc: -0").to_string(),
+            r#"{"a":1,"b":7,"c":0}"#
+        );
     }
 
     #[test]
@@ -817,7 +944,10 @@ mod tests {
             y("a: \"x \\\"y\\\" \\\\ \\n\\t z\"\nb: 'it''s'\ne: \"a # b\"\nf: 'a: b'\n"),
             json!({ "a": "x \"y\" \\ \n\t z", "b": "it's", "e": "a # b", "f": "a: b" })
         );
-        assert_eq!(y("\"quoted key\": 1\n'single': 2\n\"a: b\": 3\n"), json!({ "quoted key": 1, "single": 2, "a: b": 3 }));
+        assert_eq!(
+            y("\"quoted key\": 1\n'single': 2\n\"a: b\": 3\n"),
+            json!({ "quoted key": 1, "single": 2, "a: b": 3 })
+        );
     }
 
     #[test]
@@ -842,8 +972,14 @@ mod tests {
             y("site:\n  name: Demo\n  author:\n    first: A\n    last: B\n  tags: x\nother: 1\n"),
             json!({ "site": { "name": "Demo", "author": { "first": "A", "last": "B" }, "tags": "x" }, "other": 1 })
         );
-        assert_eq!(y("- a\n- 2\n- \"c d\"\n-\n- ~\n"), json!(["a", 2, "c d", null, null]));
-        assert_eq!(y("tags:\n  - one\n  # c\n  - two\nflat:\n- a\n- b\nnext: x\n"), json!({ "tags": ["one", "two"], "flat": ["a", "b"], "next": "x" }));
+        assert_eq!(
+            y("- a\n- 2\n- \"c d\"\n-\n- ~\n"),
+            json!(["a", 2, "c d", null, null])
+        );
+        assert_eq!(
+            y("tags:\n  - one\n  # c\n  - two\nflat:\n- a\n- b\nnext: x\n"),
+            json!({ "tags": ["one", "two"], "flat": ["a", "b"], "next": "x" })
+        );
         assert_eq!(y("- - 1\n  - 2\n- - 3\n"), json!([[1, 2], [3]]));
         assert_eq!(y("-\n  - 1\n  - 2\n"), json!([[1, 2]]));
         let doc = "nav:\n  - name: Home\n    url: /\n  - name: About\n    url: /about\n    sub:\n      - name: Team\n        url: /team\n  -\n    name: Last\n";
@@ -855,8 +991,14 @@ mod tests {
                 { "name": "Last" }
             ] })
         );
-        assert_eq!(y("- a: 1\n  b:\n    - x\n    - y\n- c: 2\n"), json!([{ "a": 1, "b": ["x", "y"] }, { "c": 2 }]));
-        assert_eq!(y("m:\n  - - a\n    - b\n  - - c\n"), json!({ "m": [["a", "b"], ["c"]] }));
+        assert_eq!(
+            y("- a: 1\n  b:\n    - x\n    - y\n- c: 2\n"),
+            json!([{ "a": 1, "b": ["x", "y"] }, { "c": 2 }])
+        );
+        assert_eq!(
+            y("m:\n  - - a\n    - b\n  - - c\n"),
+            json!({ "m": [["a", "b"], ["c"]] })
+        );
     }
 
     #[test]
@@ -869,24 +1011,54 @@ mod tests {
             y("a: {x: 1, y: [2, 3], z: {k: v}}\nb: [1, [2, [3]], {a: b}]\n"),
             json!({ "a": { "x": 1, "y": [2, 3], "z": { "k": "v" } }, "b": [1, [2, [3]], { "a": "b" }] })
         );
-        assert_eq!(y("a: {\"q k\": 1, 's': \"v,}\", e: , n: ~}  # c\n"), json!({ "a": { "q k": 1, "s": "v,}", "e": null, "n": null } }));
+        assert_eq!(
+            y("a: {\"q k\": 1, 's': \"v,}\", e: , n: ~}  # c\n"),
+            json!({ "a": { "q k": 1, "s": "v,}", "e": null, "n": null } })
+        );
         assert_eq!(y("- [1, 2]\n- {a: 1}\n"), json!([[1, 2], { "a": 1 }]));
-        assert_eq!(y("u: [http://x.com/a, 1]\n"), json!({ "u": ["http://x.com/a", 1] }));
+        assert_eq!(
+            y("u: [http://x.com/a, 1]\n"),
+            json!({ "u": ["http://x.com/a", 1] })
+        );
     }
 
     #[test]
     fn block_scalars() {
-        assert_eq!(y("a: |\n  line1\n  line2\n\n  line4\nb: next\n"), json!({ "a": "line1\nline2\n\nline4\n", "b": "next" }));
-        assert_eq!(y("a: |\n  x\n    indented\n  y\n"), json!({ "a": "x\n  indented\ny\n" }));
+        assert_eq!(
+            y("a: |\n  line1\n  line2\n\n  line4\nb: next\n"),
+            json!({ "a": "line1\nline2\n\nline4\n", "b": "next" })
+        );
+        assert_eq!(
+            y("a: |\n  x\n    indented\n  y\n"),
+            json!({ "a": "x\n  indented\ny\n" })
+        );
         assert_eq!(y("a: |   # note\n  hi\n"), json!({ "a": "hi\n" }));
-        assert_eq!(y("a: |-\n  x\n  y\n\n\nb: 1\n"), json!({ "a": "x\ny", "b": 1 }));
+        assert_eq!(
+            y("a: |-\n  x\n  y\n\n\nb: 1\n"),
+            json!({ "a": "x\ny", "b": 1 })
+        );
         assert_eq!(y("a: |\n  x\n\n\nb: 1\n"), json!({ "a": "x\n", "b": 1 }));
-        assert_eq!(y("a: |+\n  x\n\n\nb: 1\n"), json!({ "a": "x\n\n\n", "b": 1 }));
-        assert_eq!(y("a: >-\n  x\n  y\nb: >+\n  p\n\nc: 1\n"), json!({ "a": "x y", "b": "p\n\n", "c": 1 }));
-        assert_eq!(y("a: |\nb: >-\nc: 1\n"), json!({ "a": "", "b": "", "c": 1 }));
-        assert_eq!(y("a: >\n  one\n  two\n\n  three\n    more\n  four\n"), json!({ "a": "one two\nthree\n  more\nfour\n" }));
+        assert_eq!(
+            y("a: |+\n  x\n\n\nb: 1\n"),
+            json!({ "a": "x\n\n\n", "b": 1 })
+        );
+        assert_eq!(
+            y("a: >-\n  x\n  y\nb: >+\n  p\n\nc: 1\n"),
+            json!({ "a": "x y", "b": "p\n\n", "c": 1 })
+        );
+        assert_eq!(
+            y("a: |\nb: >-\nc: 1\n"),
+            json!({ "a": "", "b": "", "c": 1 })
+        );
+        assert_eq!(
+            y("a: >\n  one\n  two\n\n  three\n    more\n  four\n"),
+            json!({ "a": "one two\nthree\n  more\nfour\n" })
+        );
         assert_eq!(y("a: >\n  p\n\n\n  q\n"), json!({ "a": "p\n\nq\n" }));
-        assert_eq!(y("- |\n  a\n  b\n- >-\n  c\n  d\n- k: |\n    deep\n  j: 1\n"), json!(["a\nb\n", "c d", { "k": "deep\n", "j": 1 }]));
+        assert_eq!(
+            y("- |\n  a\n  b\n- >-\n  c\n  d\n- k: |\n    deep\n  j: 1\n"),
+            json!(["a\nb\n", "c d", { "k": "deep\n", "j": 1 }])
+        );
         assert_eq!(
             y("o:\n  body: |\n    # not a comment\n    key: not a key\n  after: 1\n"),
             json!({ "o": { "body": "# not a comment\nkey: not a key\n", "after": 1 } })
@@ -899,21 +1071,36 @@ mod tests {
         assert_eq!(y("---\na: 1\n"), json!({ "a": 1 }));
         assert_eq!(y("# c\n---\na: 1\n...\n"), json!({ "a": 1 }));
         assert_eq!(y("a: 1\n...\n# trailing comment\n\n"), json!({ "a": 1 }));
-        assert_eq!(y("---\r\na: 1\r\nb: [x]\r\n"), json!({ "a": 1, "b": ["x"] }));
+        assert_eq!(
+            y("---\r\na: 1\r\nb: [x]\r\n"),
+            json!({ "a": 1, "b": ["x"] })
+        );
         assert_eq!(y("\u{feff}a: 1"), json!({ "a": 1 }));
     }
 
     #[test]
     fn key_forms_and_js_key_order() {
         let v = y("url: http://x.com:80/p\n1: a\ntrue: b\n\"null\": c\n");
-        assert_eq!(v, json!({ "1": "a", "true": "b", "null": "c", "url": "http://x.com:80/p" }));
-        assert_eq!(v.as_object().unwrap().keys().collect::<Vec<_>>(), ["1", "url", "true", "null"]);
+        assert_eq!(
+            v,
+            json!({ "1": "a", "true": "b", "null": "c", "url": "http://x.com:80/p" })
+        );
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["1", "url", "true", "null"]
+        );
         assert_eq!(y("key with spaces: v\n"), json!({ "key with spaces": "v" }));
         let r = y("__proto__: x\nnested:\n  __proto__:\n    polluted: true\n");
-        assert_eq!(r.as_object().unwrap().keys().collect::<Vec<_>>(), ["__proto__", "nested"]);
+        assert_eq!(
+            r.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["__proto__", "nested"]
+        );
         assert_eq!(r["nested"]["__proto__"], json!({ "polluted": true }));
         let f = y("a: {__proto__: 1, b: 2}");
-        assert_eq!(f["a"].as_object().unwrap().keys().collect::<Vec<_>>(), ["__proto__", "b"]);
+        assert_eq!(
+            f["a"].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["__proto__", "b"]
+        );
     }
 
     #[test]
@@ -980,13 +1167,29 @@ mod tests {
     fn depth_cap() {
         let ok = "[".repeat(60) + &"]".repeat(60);
         assert!(y(&format!("a: {ok}"))["a"].is_array());
-        fails(&format!("a: {}{}\n", "[".repeat(70), "]".repeat(70)), 1, 4 + 63, "deeper than 64");
-        let deep = (0..70).map(|i| format!("{}k{i}:", "  ".repeat(i))).collect::<Vec<_>>().join("\n") + " 1\n";
+        fails(
+            &format!("a: {}{}\n", "[".repeat(70), "]".repeat(70)),
+            1,
+            4 + 63,
+            "deeper than 64",
+        );
+        let deep = (0..70)
+            .map(|i| format!("{}k{i}:", "  ".repeat(i)))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + " 1\n";
         let e = parse_yaml(&deep, "d").unwrap_err();
         assert!(e.code == E_DATA && e.detail.contains("deeper than 64"));
-        let shallow = (0..30).map(|i| format!("{}k{i}:", "  ".repeat(i))).collect::<Vec<_>>().join("\n") + " 1\n";
+        let shallow = (0..30)
+            .map(|i| format!("{}k{i}:", "  ".repeat(i)))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + " 1\n";
         assert!(parse_yaml(&shallow, "d").is_ok());
-        assert_eq!(parse_yaml(&("- ".repeat(70) + "x"), "d").unwrap_err().code, E_DATA);
+        assert_eq!(
+            parse_yaml(&("- ".repeat(70) + "x"), "d").unwrap_err().code,
+            E_DATA
+        );
     }
 
     #[test]
@@ -1012,9 +1215,18 @@ mod tests {
     #[test]
     fn root_mapping() {
         let e = parse_yaml_document("  x: 1\n", "f", 2, true).unwrap_err();
-        assert_eq!((e.span.unwrap().line, e.detail.as_str()), (2, "unexpected indentation"));
-        assert!(parse_yaml_document("- a\n", "f", 1, true).unwrap_err().detail.contains("without a preceding key"));
-        assert!(parse_yaml_document("text\n", "f", 1, true).unwrap_err().detail.contains("key: value"));
+        assert_eq!(
+            (e.span.unwrap().line, e.detail.as_str()),
+            (2, "unexpected indentation")
+        );
+        assert!(parse_yaml_document("- a\n", "f", 1, true)
+            .unwrap_err()
+            .detail
+            .contains("without a preceding key"));
+        assert!(parse_yaml_document("text\n", "f", 1, true)
+            .unwrap_err()
+            .detail
+            .contains("key: value"));
         assert_eq!(parse_yaml_document("", "f", 1, true).unwrap(), Value::Null);
     }
 }

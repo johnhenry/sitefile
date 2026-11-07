@@ -15,7 +15,11 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-links-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-links-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -45,14 +49,21 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 }
             }
             let mut parts = line.split_whitespace();
-            let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("/").to_string());
+            let (method, path) = (
+                parts.next().unwrap_or("").to_string(),
+                parts.next().unwrap_or("/").to_string(),
+            );
             l.lock().unwrap().push(format!("{method} {path}"));
             let (status, extra, body) = match path.as_str() {
                 "/ok" => ("200 OK", "", "fine"),
                 "/moved" => ("302 Found", "location: /ok\r\n", ""),
                 _ => ("404 Not Found", "", ""),
             };
-            let _ = write!(stream, "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     (base, log)
@@ -60,10 +71,24 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
 
 fn build(home: &Path, ctx: &Path, extra: &[&str]) -> (i32, String) {
     let out = ctx.join("dist");
-    let mut args = vec!["build", ctx.to_str().unwrap(), "-o", out.to_str().unwrap(), "--no-lockfile"];
+    let mut args = vec![
+        "build",
+        ctx.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--no-lockfile",
+    ];
     args.extend_from_slice(extra);
-    let o = Command::new(BIN).args(&args).current_dir(ctx).env("SITEFILE_HOME", home).output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stderr).into())
+    let o = Command::new(BIN)
+        .args(&args)
+        .current_dir(ctx)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }
 
 fn site(t: &Tmp, files: &[(&str, &str)]) -> PathBuf {
@@ -77,7 +102,11 @@ fn site(t: &Tmp, files: &[(&str, &str)]) -> PathBuf {
 }
 
 fn warnings(stderr: &str) -> Vec<String> {
-    stderr.lines().filter_map(|l| l.strip_prefix("warning: ")).map(str::to_string).collect()
+    stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("warning: "))
+        .map(str::to_string)
+        .collect()
 }
 
 const INDEX: &str = "<link rel=stylesheet href=\"css/site.css\">\n<a href=\"about\">About</a> <a href=\"docs/\">Docs</a> <a href=\"blog/\">Blog</a>\n<img src=\"/img/missing.png\"> <a href=\"#top\">t</a> <a href=\"mailto:a@b\">m</a>\n<a href=\"old/page\">old</a> <a href=\"https://example.com/\">ext</a> <a href=\"nope.html?x#y\">nope</a>\n";
@@ -86,9 +115,15 @@ fn files(sitefile: &str) -> Vec<(&str, &str)> {
     vec![
         ("public/index.html", INDEX),
         ("public/about.html", "about"),
-        ("public/docs/index.html", "<a href=\"../index.html\">home</a>"),
+        (
+            "public/docs/index.html",
+            "<a href=\"../index.html\">home</a>",
+        ),
         ("public/blog/post.html", ""),
-        ("public/css/site.css", "a { background: url(../img/bg.png) } @import \"gone.css\";"),
+        (
+            "public/css/site.css",
+            "a { background: url(../img/bg.png) } @import \"gone.css\";",
+        ),
         ("Sitefile", sitefile),
     ]
 }
@@ -96,7 +131,10 @@ fn files(sitefile: &str) -> Vec<(&str, &str)> {
 #[test]
 fn broken_internal_links_fail_the_build_with_file_and_line() {
     let t = Tmp::new();
-    let ctx = site(&t, &files("COPY ./public/ /\nCHECKLINKS\nREDIRECT /old/* /new/:splat\nEXPORT /\n"));
+    let ctx = site(
+        &t,
+        &files("COPY ./public/ /\nCHECKLINKS\nREDIRECT /old/* /new/:splat\nEXPORT /\n"),
+    );
     let (code, stderr) = build(&t.0, &ctx, &[]);
     assert_ne!(code, 0);
     assert!(
@@ -110,12 +148,18 @@ fn broken_internal_links_fail_the_build_with_file_and_line() {
 #[test]
 fn warn_prints_each_broken_link_and_keeps_building() {
     let t = Tmp::new();
-    let ctx = site(&t, &files("COPY ./public/ /\nCHECKLINKS --warn\nEXPORT /\n"));
+    let ctx = site(
+        &t,
+        &files("COPY ./public/ /\nCHECKLINKS --warn\nEXPORT /\n"),
+    );
     let (code, stderr) = build(&t.0, &ctx, &[]);
     assert_eq!(code, 0, "{stderr}");
     let w = warnings(&stderr);
     assert_eq!(w.len(), 6, "{w:?}");
-    assert_eq!(w[4], "Sitefile:2 CHECKLINKS: broken link /index.html:4: old/page (not found: /old/page)");
+    assert_eq!(
+        w[4],
+        "Sitefile:2 CHECKLINKS: broken link /index.html:4: old/page (not found: /old/page)"
+    );
 }
 
 #[test]
@@ -123,7 +167,16 @@ fn external_links_are_requested_once_under_the_network_policy() {
     let (base, log) = serve();
     let t = Tmp::new();
     let page = format!("<a href=\"{base}/ok\">a</a><a href=\"{base}/moved\">b</a><a href=\"{base}/gone\">c</a><a href=\"{base}/ok\">d</a>");
-    let ctx = site(&t, &[("index.html", page.as_str()), ("Sitefile", "COPY ./index.html /\nCHECKLINKS --warn --external\nEXPORT /\n")]);
+    let ctx = site(
+        &t,
+        &[
+            ("index.html", page.as_str()),
+            (
+                "Sitefile",
+                "COPY ./index.html /\nCHECKLINKS --warn --external\nEXPORT /\n",
+            ),
+        ],
+    );
     let (code, stderr) = build(&t.0, &ctx, &[]);
     assert_eq!(code, 0, "{stderr}");
     let blocked: Vec<String> = ["ok", "moved", "gone", "ok"]
@@ -134,6 +187,14 @@ fn external_links_are_requested_once_under_the_network_policy() {
     assert!(log.lock().unwrap().is_empty());
     let (code, stderr) = build(&t.0, &ctx, &["--allow-http", "--allow-private-network"]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(warnings(&stderr), [format!("Sitefile:2 CHECKLINKS: broken link /index.html:1: {base}/gone (HTTP 404)")]);
-    assert_eq!(*log.lock().unwrap(), ["GET /ok", "GET /moved", "GET /ok", "GET /gone"]);
+    assert_eq!(
+        warnings(&stderr),
+        [format!(
+            "Sitefile:2 CHECKLINKS: broken link /index.html:1: {base}/gone (HTTP 404)"
+        )]
+    );
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["GET /ok", "GET /moved", "GET /ok", "GET /gone"]
+    );
 }

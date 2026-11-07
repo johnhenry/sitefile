@@ -19,22 +19,52 @@ pub struct OptSpec {
 }
 
 pub const fn flag(name: &'static str) -> OptSpec {
-    OptSpec { name, short: None, kind: Kind::Bool, multiple: false }
+    OptSpec {
+        name,
+        short: None,
+        kind: Kind::Bool,
+        multiple: false,
+    }
 }
 pub const fn flag_s(name: &'static str, short: char) -> OptSpec {
-    OptSpec { name, short: Some(short), kind: Kind::Bool, multiple: false }
+    OptSpec {
+        name,
+        short: Some(short),
+        kind: Kind::Bool,
+        multiple: false,
+    }
 }
 pub const fn string(name: &'static str) -> OptSpec {
-    OptSpec { name, short: None, kind: Kind::Str, multiple: false }
+    OptSpec {
+        name,
+        short: None,
+        kind: Kind::Str,
+        multiple: false,
+    }
 }
 pub const fn string_s(name: &'static str, short: char) -> OptSpec {
-    OptSpec { name, short: Some(short), kind: Kind::Str, multiple: false }
+    OptSpec {
+        name,
+        short: Some(short),
+        kind: Kind::Str,
+        multiple: false,
+    }
 }
 pub const fn strings(name: &'static str) -> OptSpec {
-    OptSpec { name, short: None, kind: Kind::Str, multiple: true }
+    OptSpec {
+        name,
+        short: None,
+        kind: Kind::Str,
+        multiple: true,
+    }
 }
 pub const fn strings_s(name: &'static str, short: char) -> OptSpec {
-    OptSpec { name, short: Some(short), kind: Kind::Str, multiple: true }
+    OptSpec {
+        name,
+        short: Some(short),
+        kind: Kind::Str,
+        multiple: true,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -50,11 +80,17 @@ impl Parsed {
     }
     /// The (last) value of a string option.
     pub fn str(&self, name: &str) -> Option<&str> {
-        self.values.get(name).and_then(|v| v.last()).and_then(|v| v.as_deref())
+        self.values
+            .get(name)
+            .and_then(|v| v.last())
+            .and_then(|v| v.as_deref())
     }
     /// Every value of a (multiple) string option.
     pub fn strs(&self, name: &str) -> Vec<String> {
-        self.values.get(name).map(|v| v.iter().flatten().cloned().collect()).unwrap_or_default()
+        self.values
+            .get(name)
+            .map(|v| v.iter().flatten().cloned().collect())
+            .unwrap_or_default()
     }
     pub fn has(&self, name: &str) -> bool {
         self.values.contains_key(name)
@@ -103,7 +139,9 @@ pub fn parse(args: &[String], options: &[OptSpec]) -> Result<Parsed, String> {
                 Some((n, v)) => (n, Some(v.to_string())),
                 None => (body, None),
             };
-            let Some(o) = by_long(name) else { return Err(unknown(&format!("--{name}"))) };
+            let Some(o) = by_long(name) else {
+                return Err(unknown(&format!("--{name}")));
+            };
             match o.kind {
                 Kind::Bool => {
                     if inline.is_some() {
@@ -116,7 +154,10 @@ pub fn parse(args: &[String], options: &[OptSpec]) -> Result<Parsed, String> {
                         Some(v) => v,
                         None => {
                             let Some(next) = args.get(i) else {
-                                return Err(format!("Option '{} <value>' argument missing", short_and_long(o)));
+                                return Err(format!(
+                                    "Option '{} <value>' argument missing",
+                                    short_and_long(o)
+                                ));
                             };
                             if option_like(next) {
                                 return Err(format!(
@@ -138,7 +179,9 @@ pub fn parse(args: &[String], options: &[OptSpec]) -> Result<Parsed, String> {
             while k < chars.len() {
                 let c = chars[k];
                 k += 1;
-                let Some(o) = by_short(c) else { return Err(unknown(&format!("-{c}"))) };
+                let Some(o) = by_short(c) else {
+                    return Err(unknown(&format!("-{c}")));
+                };
                 match o.kind {
                     Kind::Bool => store(&mut p, o, None),
                     Kind::Str => {
@@ -148,7 +191,10 @@ pub fn parse(args: &[String], options: &[OptSpec]) -> Result<Parsed, String> {
                             break;
                         }
                         let Some(next) = args.get(i) else {
-                            return Err(format!("Option '{} <value>' argument missing", short_and_long(o)));
+                            return Err(format!(
+                                "Option '{} <value>' argument missing",
+                                short_and_long(o)
+                            ));
                         };
                         if option_like(next) {
                             return Err(format!(
@@ -172,7 +218,14 @@ pub fn parse(args: &[String], options: &[OptSpec]) -> Result<Parsed, String> {
 mod tests {
     use super::*;
 
-    const OPTS: &[OptSpec] = &[string_s("out", 'o'), flag("force"), strings_s("tag", 't'), flag_s("help", 'h'), flag_s("detach", 'd'), flag("no-cache")];
+    const OPTS: &[OptSpec] = &[
+        string_s("out", 'o'),
+        flag("force"),
+        strings_s("tag", 't'),
+        flag_s("help", 'h'),
+        flag_s("detach", 'd'),
+        flag("no-cache"),
+    ];
 
     fn run(a: &[&str]) -> Result<Parsed, String> {
         parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), OPTS)
@@ -180,17 +233,32 @@ mod tests {
 
     #[test]
     fn node_compatible() {
-        assert!(run(&["--bogus"]).unwrap_err().starts_with("Unknown option '--bogus'. To specify"));
-        assert_eq!(run(&["--out"]).unwrap_err(), "Option '-o, --out <value>' argument missing");
-        assert!(run(&["-o", "--force"]).unwrap_err().ends_with("use '--out=-XYZ' or '-o-XYZ'."));
-        assert_eq!(run(&["--force=1"]).unwrap_err(), "Option '--force' does not take an argument");
+        assert!(run(&["--bogus"])
+            .unwrap_err()
+            .starts_with("Unknown option '--bogus'. To specify"));
+        assert_eq!(
+            run(&["--out"]).unwrap_err(),
+            "Option '-o, --out <value>' argument missing"
+        );
+        assert!(run(&["-o", "--force"])
+            .unwrap_err()
+            .ends_with("use '--out=-XYZ' or '-o-XYZ'."));
+        assert_eq!(
+            run(&["--force=1"]).unwrap_err(),
+            "Option '--force' does not take an argument"
+        );
         let p = run(&["-dofoo"]).unwrap();
         assert!(p.flag("detach") && p.str("out") == Some("foo"));
         assert_eq!(run(&["-od"]).unwrap().str("out"), Some("d"));
-        assert_eq!(run(&["a", "--", "--force"]).unwrap().positionals, ["a", "--force"]);
+        assert_eq!(
+            run(&["a", "--", "--force"]).unwrap().positionals,
+            ["a", "--force"]
+        );
         assert_eq!(run(&["-o", "-"]).unwrap().str("out"), Some("-"));
         assert_eq!(run(&["--tag=a", "-tb"]).unwrap().strs("tag"), ["a", "b"]);
         assert_eq!(run(&["-o=x"]).unwrap().str("out"), Some("=x"));
-        assert!(run(&["-xd"]).unwrap_err().starts_with("Unknown option '-x'"));
+        assert!(run(&["-xd"])
+            .unwrap_err()
+            .starts_with("Unknown option '-x'"));
     }
 }

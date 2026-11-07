@@ -98,12 +98,24 @@ impl BuildMemo {
 
     pub fn set<T: Send + Sync + 'static>(&mut self, key: String, value: T, children: Vec<String>) {
         self.stats.misses += 1;
-        self.entries.insert(key, Entry { gen: self.gen, value: Arc::new(value), children });
+        self.entries.insert(
+            key,
+            Entry {
+                gen: self.gen,
+                value: Arc::new(value),
+                children,
+            },
+        );
     }
 }
 
 /// `get`, then `compute(children)` and `set` on a miss, without holding the lock while computing.
-pub fn memoize<T, E>(memo: &Mutex<BuildMemo>, key: &str, parent: Option<&Mutex<Vec<String>>>, compute: impl FnOnce(&Mutex<Vec<String>>) -> Result<T, E>) -> Result<T, E>
+pub fn memoize<T, E>(
+    memo: &Mutex<BuildMemo>,
+    key: &str,
+    parent: Option<&Mutex<Vec<String>>>,
+    compute: impl FnOnce(&Mutex<Vec<String>>) -> Result<T, E>,
+) -> Result<T, E>
 where
     T: Clone + Send + Sync + 'static,
 {
@@ -117,7 +129,11 @@ where
     }
     let children = Mutex::new(Vec::new());
     let v = compute(&children)?;
-    lock(memo).set(key.to_string(), v.clone(), children.into_inner().unwrap_or_default());
+    lock(memo).set(
+        key.to_string(),
+        v.clone(),
+        children.into_inner().unwrap_or_default(),
+    );
     Ok(v)
 }
 
@@ -148,7 +164,11 @@ pub fn watch_memo() -> Option<SharedMemo> {
 }
 
 /// Per-document memo for Markdown and data collections: `(key parts, compute)`.
-pub type DocMemo<'a> = &'a dyn Fn(&[&str], &mut dyn FnMut() -> crate::error::Result<serde_json::Map<String, serde_json::Value>>) -> crate::error::Result<serde_json::Map<String, serde_json::Value>>;
+pub type DocMemo<'a> =
+    &'a dyn Fn(
+        &[&str],
+        &mut dyn FnMut() -> crate::error::Result<serde_json::Map<String, serde_json::Value>>,
+    ) -> crate::error::Result<serde_json::Map<String, serde_json::Value>>;
 
 #[cfg(test)]
 mod tests {

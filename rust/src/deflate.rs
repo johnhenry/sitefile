@@ -28,20 +28,35 @@ const TOO_FAR: usize = 4096;
 const BLOCK_SYMBOLS: usize = 16384;
 const STORED_MAX: usize = 65535;
 
-const LENGTH_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
-const LENGTH_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+const LENGTH_BASE: [u16; 29] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
-const DIST_EXTRA: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
-const CL_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const LENGTH_EXTRA: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
+const DIST_BASE: [u16; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+];
+const DIST_EXTRA: [u8; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
+const CL_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 /// match length (3..=258) → length code index 0..28
 static LEN_CODE: [u8; MAX_MATCH + 1] = {
     let mut t = [0u8; MAX_MATCH + 1];
     let mut c = 0;
     while c < 29 {
-        let end = if c == 28 { 259 } else { LENGTH_BASE[c + 1] as usize };
+        let end = if c == 28 {
+            259
+        } else {
+            LENGTH_BASE[c + 1] as usize
+        };
         let mut l = LENGTH_BASE[c] as usize;
         while l < end {
             t[l] = c as u8;
@@ -57,7 +72,11 @@ static DIST_CODE: [u8; WSIZE] = {
     let mut t = [0u8; WSIZE];
     let mut c = 0;
     while c < 30 {
-        let end = if c == 29 { WSIZE + 1 } else { DIST_BASE[c + 1] as usize };
+        let end = if c == 29 {
+            WSIZE + 1
+        } else {
+            DIST_BASE[c + 1] as usize
+        };
         let mut d = DIST_BASE[c] as usize;
         while d < end {
             t[d - 1] = c as u8;
@@ -184,7 +203,8 @@ impl BitWriter {
         self.bits |= (value as u64) << self.nbits;
         self.nbits += n;
         if self.nbits >= 32 {
-            self.buf.extend_from_slice(&(self.bits as u32).to_le_bytes());
+            self.buf
+                .extend_from_slice(&(self.bits as u32).to_le_bytes());
             self.bits >>= 32;
             self.nbits -= 32;
         }
@@ -225,7 +245,11 @@ fn dynamic_header(lit_freq: &[u32; 286], dist_freq: &[u32; 30]) -> DynamicHeader
     while hdist > 1 && dist_lens[hdist - 1] == 0 {
         hdist -= 1;
     }
-    let seq: Vec<u8> = lit_lens[..hlit].iter().chain(&dist_lens[..hdist]).copied().collect();
+    let seq: Vec<u8> = lit_lens[..hlit]
+        .iter()
+        .chain(&dist_lens[..hdist])
+        .copied()
+        .collect();
     let mut rle = Vec::new();
     let mut cl_freq = [0u32; 19];
     let mut i = 0;
@@ -274,7 +298,16 @@ fn dynamic_header(lit_freq: &[u32; 286], dist_freq: &[u32; 30]) -> DynamicHeader
         bits += cl_freq[s] as u64 * cl_lens[s] as u64;
     }
     bits += cl_freq[16] as u64 * 2 + cl_freq[17] as u64 * 3 + cl_freq[18] as u64 * 7;
-    DynamicHeader { lit_lens, dist_lens, hlit, hdist, hclen, cl_lens, rle, bits }
+    DynamicHeader {
+        lit_lens,
+        dist_lens,
+        hlit,
+        hdist,
+        hclen,
+        cl_lens,
+        rle,
+        bits,
+    }
 }
 
 #[inline(always)]
@@ -317,7 +350,11 @@ impl<'a> Encoder<'a> {
             block_start: 0,
             lit_freq: [0; 286],
             dist_freq: [0; 30],
-            out: BitWriter { buf: Vec::with_capacity(d.len() / 2 + 1024), bits: 0, nbits: 0 },
+            out: BitWriter {
+                buf: Vec::with_capacity(d.len() / 2 + 1024),
+                bits: 0,
+                nbits: 0,
+            },
             fixed_lit_code: canonical_codes(&fixed_lit_len),
             fixed_lit_len,
             fixed_dist_code: canonical_codes(&fixed_dist_len),
@@ -422,7 +459,11 @@ impl<'a> Encoder<'a> {
                 continue;
             }
             while len < LAZY_LIMIT && p + 1 < n {
-                let chain = if len >= GOOD_LENGTH { MAX_CHAIN >> 2 } else { MAX_CHAIN };
+                let chain = if len >= GOOD_LENGTH {
+                    MAX_CHAIN >> 2
+                } else {
+                    MAX_CHAIN
+                };
                 let (l2, d2) = self.find_match(p + 1, len, chain);
                 if l2 > len {
                     self.literal(p);
@@ -466,7 +507,9 @@ impl<'a> Encoder<'a> {
             let s = span as u16;
             self.out.buf.extend_from_slice(&s.to_le_bytes());
             self.out.buf.extend_from_slice(&(!s).to_le_bytes());
-            self.out.buf.extend_from_slice(&self.d[self.block_start..end]);
+            self.out
+                .buf
+                .extend_from_slice(&self.d[self.block_start..end]);
         } else if fixed_bits <= dyn_bits {
             self.out.put(bfinal | (1 << 1), 3);
             let (lc, ll, dc, dl) = (
@@ -519,7 +562,13 @@ impl<'a> Encoder<'a> {
         self.dist_freq = [0; 30];
     }
 
-    fn write_symbols(&mut self, lit_code: &[u16], lit_len: &[u8], dist_code: &[u16], dist_len: &[u8]) {
+    fn write_symbols(
+        &mut self,
+        lit_code: &[u16],
+        lit_len: &[u8],
+        dist_code: &[u16],
+        dist_len: &[u8],
+    ) {
         let out = &mut self.out;
         for (&l, &dist) in self.s_len.iter().zip(&self.s_dist) {
             if dist == 0 {
@@ -529,11 +578,17 @@ impl<'a> Encoder<'a> {
                 let len = l as usize;
                 let lc = LEN_CODE[len] as usize;
                 out.put(lit_code[257 + lc] as u32, lit_len[257 + lc] as u32);
-                out.put((len - LENGTH_BASE[lc] as usize) as u32, LENGTH_EXTRA[lc] as u32);
+                out.put(
+                    (len - LENGTH_BASE[lc] as usize) as u32,
+                    LENGTH_EXTRA[lc] as u32,
+                );
                 let dist = dist as usize;
                 let dc = DIST_CODE[dist - 1] as usize;
                 out.put(dist_code[dc] as u32, dist_len[dc] as u32);
-                out.put((dist - DIST_BASE[dc] as usize) as u32, DIST_EXTRA[dc] as u32);
+                out.put(
+                    (dist - DIST_BASE[dc] as usize) as u32,
+                    DIST_EXTRA[dc] as u32,
+                );
             }
         }
         out.put(lit_code[256] as u32, lit_len[256] as u32);
@@ -542,7 +597,10 @@ impl<'a> Encoder<'a> {
 
 /// Total bits: sum of frequency x length over the shorter of the two tables.
 fn dot(freq: &[u32], lens: &[u8]) -> u64 {
-    freq.iter().zip(lens).map(|(&f, &l)| f as u64 * l as u64).sum()
+    freq.iter()
+        .zip(lens)
+        .map(|(&f, &l)| f as u64 * l as u64)
+        .sum()
 }
 
 /// Length of the common prefix of two equal-length slices, 8 bytes at a time.
@@ -577,7 +635,11 @@ const fn crc_table() -> [u32; 256] {
         let mut c = n as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         t[n] = c;
@@ -647,14 +709,23 @@ mod tests {
             random(70_000, 3),
             text.repeat(2000).into_bytes(),
             (0..200_000u32).map(|i| (i % 251) as u8).collect(),
-            (0..300_000u32).map(|i| ((i / 7) % 3) as u8 + b'a').collect(),
+            (0..300_000u32)
+                .map(|i| ((i / 7) % 3) as u8 + b'a')
+                .collect(),
         ];
         // >1 MB of mixed text and noise.
         let mut big = text.repeat(15_000).into_bytes();
         big.extend(random(200_000, 4));
         v.push(big);
         // Around block boundaries: all-literal inputs of BLOCK_SYMBOLS ± 1 and the stored limit.
-        for n in [BLOCK_SYMBOLS - 1, BLOCK_SYMBOLS, BLOCK_SYMBOLS + 1, STORED_MAX, STORED_MAX + 1, 2 * BLOCK_SYMBOLS + 1] {
+        for n in [
+            BLOCK_SYMBOLS - 1,
+            BLOCK_SYMBOLS,
+            BLOCK_SYMBOLS + 1,
+            STORED_MAX,
+            STORED_MAX + 1,
+            2 * BLOCK_SYMBOLS + 1,
+        ] {
             v.push(random(n, n as u32));
         }
         v
@@ -703,19 +774,42 @@ mod tests {
     /// Byte-for-byte against the TypeScript encoder (rust/tests/fixtures/deflate/generate.mjs).
     #[test]
     fn identical_to_typescript_encoder() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deflate/fixtures.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/deflate/fixtures.json"
+        );
         let text = std::fs::read_to_string(path).unwrap();
         let cases: serde_json::Value = serde_json::from_str(&text).unwrap();
         let mut n = 0;
         for c in cases["cases"].as_array().unwrap() {
             let name = c["name"].as_str().unwrap();
             let input = fixture_input(&c["input"]);
-            assert_eq!(input.len() as u64, c["length"].as_u64().unwrap(), "{name}: input length");
-            assert_eq!(crate::digest::sha256(&input), c["inputDigest"].as_str().unwrap(), "{name}: input");
+            assert_eq!(
+                input.len() as u64,
+                c["length"].as_u64().unwrap(),
+                "{name}: input length"
+            );
+            assert_eq!(
+                crate::digest::sha256(&input),
+                c["inputDigest"].as_str().unwrap(),
+                "{name}: input"
+            );
             let raw = deflate_raw(&input);
-            assert_eq!(raw.len() as u64, c["rawLength"].as_u64().unwrap(), "{name}: raw length");
-            assert_eq!(crate::digest::sha256(&raw), c["raw"].as_str().unwrap(), "{name}: raw bytes");
-            assert_eq!(crate::digest::sha256(&gzip(&input)), c["gzip"].as_str().unwrap(), "{name}: gzip bytes");
+            assert_eq!(
+                raw.len() as u64,
+                c["rawLength"].as_u64().unwrap(),
+                "{name}: raw length"
+            );
+            assert_eq!(
+                crate::digest::sha256(&raw),
+                c["raw"].as_str().unwrap(),
+                "{name}: raw bytes"
+            );
+            assert_eq!(
+                crate::digest::sha256(&gzip(&input)),
+                c["gzip"].as_str().unwrap(),
+                "{name}: gzip bytes"
+            );
             n += 1;
         }
         assert!(n >= 20, "{n} fixtures");
@@ -729,21 +823,38 @@ mod tests {
             match kind {
                 "hex" => {
                     let h = part[1].as_str().unwrap();
-                    out.extend((0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()));
+                    out.extend(
+                        (0..h.len())
+                            .step_by(2)
+                            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()),
+                    );
                 }
                 "text" => {
                     let s = part[1].as_str().unwrap();
                     let times = part[2].as_u64().unwrap() as usize;
                     out.extend(s.repeat(times).into_bytes());
                 }
-                "random" => out.extend(random(part[1].as_u64().unwrap() as usize, part[2].as_u64().unwrap() as u32)),
-                "fill" => out.extend(std::iter::repeat_n(part[1].as_u64().unwrap() as u8, part[2].as_u64().unwrap() as usize)),
+                "random" => out.extend(random(
+                    part[1].as_u64().unwrap() as usize,
+                    part[2].as_u64().unwrap() as u32,
+                )),
+                "fill" => out.extend(std::iter::repeat_n(
+                    part[1].as_u64().unwrap() as u8,
+                    part[2].as_u64().unwrap() as usize,
+                )),
                 "mod" => {
-                    let (n, m, div) = (part[1].as_u64().unwrap(), part[2].as_u64().unwrap(), part[3].as_u64().unwrap());
+                    let (n, m, div) = (
+                        part[1].as_u64().unwrap(),
+                        part[2].as_u64().unwrap(),
+                        part[3].as_u64().unwrap(),
+                    );
                     out.extend((0..n).map(|i| ((i / div) % m) as u8));
                 }
                 "words" => {
-                    let (n, seed) = (part[1].as_u64().unwrap() as usize, part[2].as_u64().unwrap() as u32);
+                    let (n, seed) = (
+                        part[1].as_u64().unwrap() as usize,
+                        part[2].as_u64().unwrap() as u32,
+                    );
                     out.extend(words(n, seed));
                 }
                 k => panic!("unknown fixture part {k}"),
@@ -755,7 +866,22 @@ mod tests {
     /// Pseudo-random words from a small vocabulary, joined by spaces/newlines (as in generate.mjs).
     fn words(n: usize, seed: u32) -> Vec<u8> {
         const VOCAB: [&str; 16] = [
-            "the", "site", "file", "build", "layer", "<div>", "</div>", "image", "static", "deflate", "class=\"x\"", "a", "of", "and", "to", "{}",
+            "the",
+            "site",
+            "file",
+            "build",
+            "layer",
+            "<div>",
+            "</div>",
+            "image",
+            "static",
+            "deflate",
+            "class=\"x\"",
+            "a",
+            "of",
+            "and",
+            "to",
+            "{}",
         ];
         let r = random(n * 2, seed);
         let mut out = Vec::new();

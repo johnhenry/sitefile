@@ -1,8 +1,12 @@
 //! `cache info` / `cache prune` (port of `src/cli/cache.ts`).
 
 use super::args::{flag, string, OptSpec, Parsed};
-use super::common::{err, human_size, js_to_number, out, pretty_json, require_args, table, usage, Command};
-use crate::cache_limit::{cache_limit_from_env, cache_usage, enforce_cache_limit, format_limit, parse_size, CACHE_MAX_ENV};
+use super::common::{
+    err, human_size, js_to_number, out, pretty_json, require_args, table, usage, Command,
+};
+use crate::cache_limit::{
+    cache_limit_from_env, cache_usage, enforce_cache_limit, format_limit, parse_size, CACHE_MAX_ENV,
+};
 use crate::error::Result;
 use crate::plugins::cache::TransformCache;
 use crate::store::resolve_store_home;
@@ -20,7 +24,8 @@ pub const INFO: Command = Command {
     name: "cache info",
     summary: "show the TRANSFORM result cache location and size",
     usage: "cache info [--json]",
-    description: "Print where plugin/tool results are cached, and how many entries and bytes it holds.",
+    description:
+        "Print where plugin/tool results are cached, and how many entries and bytes it holds.",
     flags: &["    --json   machine-readable output"],
     options: INFO_OPTS,
     run: run_info,
@@ -31,9 +36,16 @@ fn run_info(v: &Parsed) -> Result<i32> {
     let i = TransformCache::new(transform_cache_dir()).info();
     let dir = i.dir.display().to_string();
     if v.flag("json") {
-        out(&(pretty_json(&json!({ "dir": dir, "entries": i.entries, "blobs": i.blobs, "bytes": i.bytes })) + "\n"));
+        out(&(pretty_json(
+            &json!({ "dir": dir, "entries": i.entries, "blobs": i.blobs, "bytes": i.bytes }),
+        ) + "\n"));
     } else {
-        out(&format!("Cache:   {dir}\nEntries: {}\nBlobs:   {}\nSize:    {}\n", i.entries, i.blobs, human_size(i.bytes)));
+        out(&format!(
+            "Cache:   {dir}\nEntries: {}\nBlobs:   {}\nSize:    {}\n",
+            i.entries,
+            i.blobs,
+            human_size(i.bytes)
+        ));
     }
     Ok(0)
 }
@@ -59,7 +71,12 @@ fn run_prune(v: &Parsed) -> Result<i32> {
             return usage("--max-size expects a size greater than 0, such as 500M or 2G");
         };
         let r = enforce_cache_limit(&resolve_store_home(), n)?;
-        out(&format!("Evicted {} item{}\nTotal reclaimed space: {}\n", r.items, if r.items == 1 { "" } else { "s" }, human_size(r.bytes)));
+        out(&format!(
+            "Evicted {} item{}\nTotal reclaimed space: {}\n",
+            r.items,
+            if r.items == 1 { "" } else { "s" },
+            human_size(r.bytes)
+        ));
         return Ok(0);
     }
     let mut older = Duration::ZERO;
@@ -105,14 +122,34 @@ fn run_du(v: &Parsed) -> Result<i32> {
             .iter()
             .map(|c| json!({ "name": c.name, "path": c.path.display().to_string(), "items": c.items, "bytes": c.bytes, "evictable": c.evictable }))
             .collect();
-        out(&(pretty_json(&json!({ "home": home.display().to_string(), "limit": limit, "caches": list, "bytes": bytes, "evictable": evictable })) + "\n"));
+        out(&(pretty_json(
+            &json!({ "home": home.display().to_string(), "limit": limit, "caches": list, "bytes": bytes, "evictable": evictable }),
+        ) + "\n"));
         return Ok(0);
     }
-    let mut rows = vec![vec!["CACHE".to_string(), "ITEMS".into(), "SIZE".into(), "EVICTABLE".into(), "PATH".into()]];
+    let mut rows = vec![vec![
+        "CACHE".to_string(),
+        "ITEMS".into(),
+        "SIZE".into(),
+        "EVICTABLE".into(),
+        "PATH".into(),
+    ]];
     for c in &caches {
-        rows.push(vec![c.name.to_string(), c.items.to_string(), human_size(c.bytes), human_size(c.evictable), c.path.display().to_string()]);
+        rows.push(vec![
+            c.name.to_string(),
+            c.items.to_string(),
+            human_size(c.bytes),
+            human_size(c.evictable),
+            c.path.display().to_string(),
+        ]);
     }
-    rows.push(vec!["total".into(), String::new(), human_size(bytes), human_size(evictable), home.display().to_string()]);
+    rows.push(vec![
+        "total".into(),
+        String::new(),
+        human_size(bytes),
+        human_size(evictable),
+        home.display().to_string(),
+    ]);
     out(&table(&rows));
     out(&format!("Limit: {} ({CACHE_MAX_ENV}; evictable data over it is deleted after each build, least recently used first)\n", format_limit(limit)));
     Ok(0)

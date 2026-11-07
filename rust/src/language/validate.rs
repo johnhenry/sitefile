@@ -1,13 +1,16 @@
 //! Semantic rules (src/language/validate.ts; docs/LANGUAGE.md, "v0.1 implementation decisions").
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{
-    imported_stage, is_ident, literal_text, stage_names, FromBase, FEED_ITEM, ImportKind, Instruction, Operand, Program, Source, StageRef,
-    TemplatePart,
-};
 use crate::language::ast::FragmentBody;
+use crate::language::ast::{
+    imported_stage, is_ident, literal_text, stage_names, FromBase, ImportKind, Instruction,
+    Operand, Program, Source, StageRef, TemplatePart, FEED_ITEM,
+};
 use crate::language::parser::parse_sitefile;
-use crate::render::{fragment_not_value, free_refs, parse_render_template, parse_render_template_at, RefUse, TemplateNode};
+use crate::render::{
+    fragment_not_value, free_refs, parse_render_template, parse_render_template_at, RefUse,
+    TemplateNode,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A fragment's template: a heredoc body or partial file without its final newline (it is inserted inline).
@@ -23,7 +26,9 @@ pub fn fragment_text(text: &str) -> &str {
 /// Parse the template of an html LET (errors point into the Sitefile).
 pub fn parse_fragment_body(body: &FragmentBody, file: &str) -> Result<Vec<TemplateNode>> {
     match body {
-        FragmentBody::Line { text, span } => parse_render_template_at(text, file, span.line, span.column),
+        FragmentBody::Line { text, span } => {
+            parse_render_template_at(text, file, span.line, span.column)
+        }
         FragmentBody::Inline(b) => parse_render_template(fragment_text(&b.text), file, b.body_line),
     }
 }
@@ -35,18 +40,47 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         s.as_operand()
     }
     match ins {
-        Instruction::From { base: FromBase::Operand(o), .. } => vec![(o, false)],
-        Instruction::From { base: FromBase::Image { reference, at }, .. } => std::iter::once(reference).chain(at).map(|o| (o, false)).collect(),
+        Instruction::From {
+            base: FromBase::Operand(o),
+            ..
+        } => vec![(o, false)],
+        Instruction::From {
+            base: FromBase::Image { reference, at },
+            ..
+        } => std::iter::once(reference)
+            .chain(at)
+            .map(|o| (o, false))
+            .collect(),
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
-        Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
+        Instruction::Arg { default_value, .. } => {
+            default_value.iter().map(|o| (o, false)).collect()
+        }
         Instruction::Let { value, .. } => vec![(value, false)],
         Instruction::Fragment { .. } => vec![],
-        Instruction::Import { uri, schema, drafts, args, .. } => {
-            std::iter::once(uri).chain(schema.as_ref().map(|s| &s.path)).chain(drafts.as_ref().map(|d| &d.value)).chain(args.iter().map(|a| &a.value)).map(|o| (o, false)).collect()
-        }
+        Instruction::Import {
+            uri,
+            schema,
+            drafts,
+            args,
+            ..
+        } => std::iter::once(uri)
+            .chain(schema.as_ref().map(|s| &s.path))
+            .chain(drafts.as_ref().map(|d| &d.value))
+            .chain(args.iter().map(|a| &a.value))
+            .map(|o| (o, false))
+            .collect(),
         Instruction::Plugin { uri, .. } => vec![(uri, false)],
-        Instruction::Copy { source, dest, .. } => src(source).map(|o| (o, false)).into_iter().chain([(dest, false)]).collect(),
-        Instruction::Render { template, dest, each, .. } => {
+        Instruction::Copy { source, dest, .. } => src(source)
+            .map(|o| (o, false))
+            .into_iter()
+            .chain([(dest, false)])
+            .collect(),
+        Instruction::Render {
+            template,
+            dest,
+            each,
+            ..
+        } => {
             let page = each.as_ref().and_then(|e| e.page.as_ref());
             src(template)
                 .map(|o| (o, false))
@@ -56,7 +90,13 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
                 .chain(page.and_then(|p| p.first.as_ref()).map(|f| (f, true)))
                 .collect()
         }
-        Instruction::Transform { source, dest, options, args, .. } => source
+        Instruction::Transform {
+            source,
+            dest,
+            options,
+            args,
+            ..
+        } => source
             .as_ref()
             .and_then(src)
             .map(|o| (o, false))
@@ -65,15 +105,37 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(options.iter().map(|o| (&o.value, true)))
             .chain(args.iter().flatten().map(|a| (a, true)))
             .collect(),
-        Instruction::Sitemap { base, dest, .. } => std::iter::once(base).chain(dest).map(|o| (o, false)).collect(),
-        Instruction::Feed { base, link, dest, title, .. } => {
-            [(base, false), (link, true)].into_iter().chain(dest.iter().chain(title).map(|o| (o, false))).collect()
-        }
+        Instruction::Sitemap { base, dest, .. } => std::iter::once(base)
+            .chain(dest)
+            .map(|o| (o, false))
+            .collect(),
+        Instruction::Feed {
+            base,
+            link,
+            dest,
+            title,
+            ..
+        } => [(base, false), (link, true)]
+            .into_iter()
+            .chain(dest.iter().chain(title).map(|o| (o, false)))
+            .collect(),
         Instruction::Redirect { from, to, .. } => vec![(from, false), (to, false)],
-        Instruction::Header { pattern, name, value, .. } => {
-            [(pattern, false), (name, false)].into_iter().chain(value.iter().map(|o| (o, false))).collect()
-        }
-        Instruction::Fingerprint { patterns, manifest, .. } => patterns.iter().chain(manifest).map(|o| (o, false)).collect(),
+        Instruction::Header {
+            pattern,
+            name,
+            value,
+            ..
+        } => [(pattern, false), (name, false)]
+            .into_iter()
+            .chain(value.iter().map(|o| (o, false)))
+            .collect(),
+        Instruction::Fingerprint {
+            patterns, manifest, ..
+        } => patterns
+            .iter()
+            .chain(manifest)
+            .map(|o| (o, false))
+            .collect(),
         Instruction::CheckLinks { .. } => Vec::new(),
         Instruction::Export { path, .. } => vec![(path, false)],
     }
@@ -95,8 +157,13 @@ pub fn tool_placeholders(text: &str) -> Vec<(usize, usize, &str)> {
                 Some(6)
             } else if let Some(key) = rest.strip_prefix("option.") {
                 let kb = key.as_bytes();
-                let ok_start = kb.first().is_some_and(|c| *c == b'_' || c.is_ascii_alphabetic());
-                let n = kb.iter().take_while(|c| **c == b'_' || **c == b'-' || c.is_ascii_alphanumeric()).count();
+                let ok_start = kb
+                    .first()
+                    .is_some_and(|c| *c == b'_' || c.is_ascii_alphabetic());
+                let n = kb
+                    .iter()
+                    .take_while(|c| **c == b'_' || **c == b'-' || c.is_ascii_alphanumeric())
+                    .count();
                 (ok_start && kb.get(n) == Some(&b'}')).then_some(7 + n)
             } else {
                 None
@@ -113,7 +180,17 @@ pub fn tool_placeholders(text: &str) -> Vec<(usize, usize, &str)> {
 }
 
 fn check_tool_args(ins: &Instruction) -> Result<()> {
-    let Instruction::Transform { span, source, plugin, options, args, .. } = ins else { return Ok(()) };
+    let Instruction::Transform {
+        span,
+        source,
+        plugin,
+        options,
+        args,
+        ..
+    } = ins
+    else {
+        return Ok(());
+    };
     let args = match args {
         Some(a) if !a.is_empty() => a,
         _ => {
@@ -127,13 +204,19 @@ fn check_tool_args(ins: &Instruction) -> Result<()> {
     let mut uses_output = false;
     for arg in args {
         for part in &arg.parts {
-            let TemplatePart::Text(value) = part else { continue };
+            let TemplatePart::Text(value) = part else {
+                continue;
+            };
             for (_, _, name) in tool_placeholders(value) {
                 if name == "output" {
                     uses_output = true;
                 } else if name == "input" {
                     if source.is_none() {
-                        return Err(SitefileError::at(E_VALIDATION, "{input} needs a TRANSFORM source file", &arg.span));
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "{input} needs a TRANSFORM source file",
+                            &arg.span,
+                        ));
                     }
                 } else if !options.iter().any(|o| format!("option.{}", o.key) == name) {
                     return Err(SitefileError::at(
@@ -148,7 +231,9 @@ fn check_tool_args(ins: &Instruction) -> Result<()> {
     if !uses_output {
         return Err(SitefileError::at(
             E_VALIDATION,
-            format!("TRANSFORM … WITH {plugin}: ARGS must contain {{output}}, the file the tool writes"),
+            format!(
+                "TRANSFORM … WITH {plugin}: ARGS must contain {{output}}, the file the tool writes"
+            ),
             span,
         ));
     }
@@ -157,7 +242,10 @@ fn check_tool_args(ins: &Instruction) -> Result<()> {
 
 /// Import kinds that can produce a list (and so can be sorted).
 fn sortable(kind: Option<ImportKind>) -> bool {
-    matches!(kind, Some(ImportKind::Markdown | ImportKind::Json | ImportKind::Yaml | ImportKind::Csv))
+    matches!(
+        kind,
+        Some(ImportKind::Markdown | ImportKind::Json | ImportKind::Yaml | ImportKind::Csv)
+    )
 }
 
 fn duplicate(name: &str, span: &SourceSpan) -> SitefileError {
@@ -190,22 +278,38 @@ impl Scope<'_> {
     }
     /// Not a value a template can read.
     fn not_value(&self, name: &str) -> bool {
-        self.declared_stages.contains(name) || self.plugins.contains(name) || self.tools.contains(name)
+        self.declared_stages.contains(name)
+            || self.plugins.contains(name)
+            || self.tools.contains(name)
     }
 }
 
 fn not_a_list(as_name: &str, list: &str, span: &SourceSpan) -> SitefileError {
-    SitefileError::at(E_TYPE, format!("FOR {as_name} IN {list}: '{list}' is an html fragment, not a list"), span)
+    SitefileError::at(
+        E_TYPE,
+        format!("FOR {as_name} IN {list}: '{list}' is an html fragment, not a list"),
+        span,
+    )
 }
 
 /// An html LET is checked where it is declared: its template syntax, and every name it reads that
 /// is declared before it. A name declared later is an error (define before use); a name declared
 /// nowhere is left to the place it is used (a `RENDER … FOR` loop variable, say).
-fn check_fragment(name: &str, body: &FragmentBody, file: &str, scope: &Scope, declared_at: &HashMap<&str, u32>) -> Result<()> {
+fn check_fragment(
+    name: &str,
+    body: &FragmentBody,
+    file: &str,
+    scope: &Scope,
+    declared_at: &HashMap<&str, u32>,
+) -> Result<()> {
     for r in free_refs(&parse_fragment_body(body, file)?) {
         let n = r.name.as_str();
         if n == name {
-            return Err(SitefileError::at(E_TEMPLATE, format!("html fragment '{name}' uses itself"), &r.span));
+            return Err(SitefileError::at(
+                E_TEMPLATE,
+                format!("html fragment '{name}' uses itself"),
+                &r.span,
+            ));
         }
         if scope.fragments.contains(n) {
             if r.usage != RefUse::Var || !r.path.is_empty() {
@@ -213,12 +317,20 @@ fn check_fragment(name: &str, body: &FragmentBody, file: &str, scope: &Scope, de
             }
         } else if scope.vars.contains(n) {
             if matches!(r.usage, RefUse::Var | RefUse::Text) && !r.path.is_empty() {
-                return Err(SitefileError::at(E_TYPE, format!("'{n}' is an ARG/LET value; dotted access only works on JSON imports"), &r.span));
+                return Err(SitefileError::at(
+                    E_TYPE,
+                    format!("'{n}' is an ARG/LET value; dotted access only works on JSON imports"),
+                    &r.span,
+                ));
             }
         } else if scope.imports.contains(n) {
             // Its kind (and so whether a template can read it) is known once it is resolved.
         } else if scope.not_value(n) {
-            return Err(SitefileError::at(E_UNDEFINED, format!("'{n}' is not an ARG, LET or IMPORT"), &r.span));
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!("'{n}' is not an ARG, LET or IMPORT"),
+                &r.span,
+            ));
         } else if let Some(line) = declared_at.get(n) {
             return Err(SitefileError::at(
                 E_UNDEFINED,
@@ -233,7 +345,10 @@ fn check_fragment(name: &str, body: &FragmentBody, file: &str, scope: &Scope, de
 /// Check semantic rules and wrap the instructions in a [`Program`].
 pub fn validate(instructions: Vec<Instruction>, file: &str) -> Result<Program> {
     let instructions = check(instructions, file)?;
-    Ok(Program { file: file.to_string(), instructions })
+    Ok(Program {
+        file: file.to_string(),
+        instructions,
+    })
 }
 
 /// How an undefined-base error names the instruction: `FROM` or `STAGE <name> FROM`.
@@ -247,16 +362,38 @@ pub fn from_lead(stage_kw: bool, alias: Option<&str>) -> String {
 /// Returns the instructions with the implicit `FROM scratch` inserted when the file has no FROM before its first non-ARG instruction.
 fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
     // An IMPORT … AS sitefile may come first too, so a file can start FROM one of its stages.
-    let implicit_at = input.iter().position(|i| !matches!(i, Instruction::Arg { .. } | Instruction::Import { as_kind: Some(ImportKind::Sitefile), .. }));
-    let implicit = implicit_at.filter(|_| !matches!(input[implicit_at.unwrap_or(0)], Instruction::From { .. }));
+    let implicit_at = input.iter().position(|i| {
+        !matches!(
+            i,
+            Instruction::Arg { .. }
+                | Instruction::Import {
+                    as_kind: Some(ImportKind::Sitefile),
+                    ..
+                }
+        )
+    });
+    let implicit = implicit_at
+        .filter(|_| !matches!(input[implicit_at.unwrap_or(0)], Instruction::From { .. }));
     let mut instructions = input;
     if let Some(at) = implicit {
         let span = instructions[at].span().clone();
-        instructions.insert(at, Instruction::From { span, base: FromBase::Scratch, alias: None, stage_kw: false });
+        instructions.insert(
+            at,
+            Instruction::From {
+                span,
+                base: FromBase::Scratch,
+                alias: None,
+                stage_kw: false,
+            },
+        );
     }
     let instructions = &instructions[..];
     let Some(last) = instructions.last() else {
-        return Err(SitefileError::at(E_VALIDATION, "Sitefile has no instructions", &SourceSpan::new(file, 1, 1)));
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            "Sitefile has no instructions",
+            &SourceSpan::new(file, 1, 1),
+        ));
     };
     let all_stages = stage_names(instructions);
     let mut scope = Scope::default();
@@ -276,24 +413,35 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
 
     for ins in instructions {
         if saw_export {
-            return Err(SitefileError::at(E_VALIDATION, "EXPORT must be the last instruction", ins.span()));
+            return Err(SitefileError::at(
+                E_VALIDATION,
+                "EXPORT must be the last instruction",
+                ins.span(),
+            ));
         }
 
         // RENDER/TRANSFORM … FOR item IN list: the destination (and TRANSFORM options/args) may use ${item.key}.
         // FEED … LINK <path>: the link may use ${item.key} for the current element.
         let loop_var = match ins {
-            Instruction::Render { each, .. } | Instruction::Transform { each, .. } => each.as_ref().map(|e| e.as_name.as_str()),
+            Instruction::Render { each, .. } | Instruction::Transform { each, .. } => {
+                each.as_ref().map(|e| e.as_name.as_str())
+            }
             Instruction::Feed { .. } => Some(FEED_ITEM),
             _ => None,
         };
         for (op, is_dest) in operands_of(ins) {
             for part in &op.parts {
-                let TemplatePart::Var { name, path, span } = part else { continue };
+                let TemplatePart::Var { name, path, span } = part else {
+                    continue;
+                };
                 if is_dest && Some(name.as_str()) == loop_var {
                     continue;
                 }
                 if !path.is_empty() {
-                    let dotted = std::iter::once(name.as_str()).chain(path.iter().map(String::as_str)).collect::<Vec<_>>().join(".");
+                    let dotted = std::iter::once(name.as_str())
+                        .chain(path.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(".");
                     return Err(SitefileError::at(
                         E_SYNTAX,
                         format!("dotted access ${{{dotted}}} is only allowed in RENDER templates and for a RENDER … FOR loop variable"),
@@ -319,14 +467,23 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             }
         }
 
-        if let Instruction::From { span, base, alias, stage_kw } = ins {
+        if let Instruction::From {
+            span,
+            base,
+            alias,
+            stage_kw,
+        } = ins
+        {
             if let Some(cur) = current_stage {
                 scope.finished_stages.insert(cur);
             }
             if let FromBase::Operand(op) = base {
                 // A bare word naming a stage must name an earlier one; './name' always means a directory.
                 if let Some(text) = literal_text(op) {
-                    if is_ident(&text) && all_stages.contains(&text) && !scope.finished_stages.contains(text.as_str()) {
+                    if is_ident(&text)
+                        && all_stages.contains(&text)
+                        && !scope.finished_stages.contains(text.as_str())
+                    {
                         return Err(SitefileError::at(
                             E_UNDEFINED,
                             format!("{} {text}: stage '{text}' is not defined before this line (write ./{text} for a local directory)", from_lead(*stage_kw, alias.as_deref())),
@@ -358,7 +515,17 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 check_fragment(name, body, file, &scope, &declared_at)?;
                 scope.fragments.insert(name);
             }
-            Instruction::Import { name, span, as_kind, sort, schema, drafts, args, integrity, .. } => {
+            Instruction::Import {
+                name,
+                span,
+                as_kind,
+                sort,
+                schema,
+                drafts,
+                args,
+                integrity,
+                ..
+            } => {
                 if scope.taken(name) {
                     return Err(duplicate(name, span));
                 }
@@ -413,8 +580,15 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.imports.insert(name);
             }
-            Instruction::Copy { source, from, .. } => check_source(source, &scope, from.as_ref(), &all_stages)?,
-            Instruction::Render { template, from, each, .. } => {
+            Instruction::Copy { source, from, .. } => {
+                check_source(source, &scope, from.as_ref(), &all_stages)?
+            }
+            Instruction::Render {
+                template,
+                from,
+                each,
+                ..
+            } => {
                 check_source(template, &scope, from.as_ref(), &all_stages)?;
                 if let Some(e) = each {
                     if scope.fragments.contains(e.list.as_str()) {
@@ -438,7 +612,16 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.tools.insert(name);
             }
-            Instruction::Transform { span, source, from, plugin, plugin_span, each, args, .. } => {
+            Instruction::Transform {
+                span,
+                source,
+                from,
+                plugin,
+                plugin_span,
+                each,
+                args,
+                ..
+            } => {
                 if scope.tools.contains(plugin.as_str()) {
                     check_tool_args(ins)?;
                 } else if !scope.plugins.contains(plugin.as_str()) {
@@ -465,27 +648,43 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                     check_each(&e.as_name, &e.list, &e.span, &scope)?;
                 }
             }
-            Instruction::Feed { list, list_span, .. } => {
+            Instruction::Feed {
+                list, list_span, ..
+            } => {
                 if scope.fragments.contains(list.as_str()) {
-                    return Err(SitefileError::at(E_TYPE, format!("FEED {list}: '{list}' is an html fragment, not a list"), list_span));
+                    return Err(SitefileError::at(
+                        E_TYPE,
+                        format!("FEED {list}: '{list}' is an html fragment, not a list"),
+                        list_span,
+                    ));
                 }
                 if !scope.imports.contains(list.as_str()) {
                     return Err(SitefileError::at(
                         E_UNDEFINED,
-                        format!("FEED {list}: '{list}' is not an IMPORT declared on an earlier line"),
+                        format!(
+                            "FEED {list}: '{list}' is not an IMPORT declared on an earlier line"
+                        ),
                         list_span,
                     ));
                 }
                 not_sitefile(list, &format!("FEED {list}"), list_span, &scope)?;
             }
-            Instruction::Sitemap { .. } | Instruction::Redirect { .. } | Instruction::Header { .. } | Instruction::Fingerprint { .. } | Instruction::CheckLinks { .. } => {}
+            Instruction::Sitemap { .. }
+            | Instruction::Redirect { .. }
+            | Instruction::Header { .. }
+            | Instruction::Fingerprint { .. }
+            | Instruction::CheckLinks { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}
         }
     }
 
     if !saw_export {
-        return Err(SitefileError::at(E_VALIDATION, "missing EXPORT: the last instruction must be EXPORT", last.span()));
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            "missing EXPORT: the last instruction must be EXPORT",
+            last.span(),
+        ));
     }
     Ok(instructions.to_vec())
 }
@@ -502,7 +701,9 @@ fn check_each(as_name: &str, list: &str, span: &SourceSpan, scope: &Scope) -> Re
     if !scope.imports.contains(list) {
         return Err(SitefileError::at(
             E_UNDEFINED,
-            format!("FOR {as_name} IN {list}: '{list}' is not an IMPORT declared on an earlier line"),
+            format!(
+                "FOR {as_name} IN {list}: '{list}' is not an IMPORT declared on an earlier line"
+            ),
             span,
         ));
     }
@@ -516,7 +717,11 @@ fn check_each(as_name: &str, list: &str, span: &SourceSpan, scope: &Scope) -> Re
 /// A FOR or FEED list must be a value import, not a Sitefile imported AS sitefile.
 fn not_sitefile(name: &str, what: &str, span: &SourceSpan, scope: &Scope) -> Result<()> {
     if scope.sitefiles.contains(name) {
-        return Err(SitefileError::at(E_TYPE, format!("{what}: '{name}' is a Sitefile import, not a list"), span));
+        return Err(SitefileError::at(
+            E_TYPE,
+            format!("{what}: '{name}' is a Sitefile import, not a list"),
+            span,
+        ));
     }
     Ok(())
 }
@@ -527,8 +732,15 @@ fn import_ref_name(text: &str) -> Option<&str> {
     is_ident(name).then_some(name)
 }
 
-fn check_source(source: &Source, scope: &Scope, from: Option<&StageRef>, all: &BTreeSet<String>) -> Result<()> {
-    let Source::Operand(op) = source else { return Ok(()) }; // content is in the Sitefile itself
+fn check_source(
+    source: &Source,
+    scope: &Scope,
+    from: Option<&StageRef>,
+    all: &BTreeSet<String>,
+) -> Result<()> {
+    let Source::Operand(op) = source else {
+        return Ok(());
+    }; // content is in the Sitefile itself
     if let Some((import, _)) = from.and_then(|f| imported_stage(&f.name)) {
         // `--from=<import>+<stage>`: a stage of an imported Sitefile (whether it exists is checked when that Sitefile is read).
         if !scope.sitefiles.contains(import) {
@@ -557,9 +769,15 @@ fn check_source(source: &Source, scope: &Scope, from: Option<&StageRef>, all: &B
         }
         return Ok(());
     }
-    let Some(text) = literal_text(op) else { return Ok(()) };
+    let Some(text) = literal_text(op) else {
+        return Ok(());
+    };
     if text.contains("://") {
-        return Err(SitefileError::at(E_VALIDATION, "URL sources are not allowed here: use IMPORT then COPY", &op.span));
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            "URL sources are not allowed here: use IMPORT then COPY",
+            &op.span,
+        ));
     }
     if let Some(name) = import_ref_name(&text) {
         if !scope.imports.contains(name) {
@@ -608,7 +826,11 @@ mod tests {
     /// Code and line only (the TS tests of blog/plugins/exec check just these).
     fn fails(src: &str, code: ErrorCode, line: u32) {
         let e = parse_program(src, "Sitefile").expect_err(src);
-        assert_eq!((e.code, e.span.as_ref().map(|s| s.line)), (code, Some(line)), "{src}: {e}");
+        assert_eq!(
+            (e.code, e.span.as_ref().map(|s| s.line)),
+            (code, Some(line)),
+            "{src}: {e}"
+        );
     }
 
     fn kinds(p: &Program) -> Vec<&'static str> {
@@ -617,11 +839,26 @@ mod tests {
 
     #[test]
     fn site_instructions_validate() {
-        prog_err("FEED posts BASE https://x LINK /a\nEXPORT /", E_UNDEFINED, 1, 6, "'posts' is not an IMPORT");
+        prog_err(
+            "FEED posts BASE https://x LINK /a\nEXPORT /",
+            E_UNDEFINED,
+            1,
+            6,
+            "'posts' is not an IMPORT",
+        );
         prog("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x LINK /p/${item.slug}.html\nEXPORT /");
         prog_err("IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x/${item.a} LINK /a\nEXPORT /", E_SYNTAX, 2, 27, "dotted access");
-        prog_err("SITEMAP BASE ${URL}\nEXPORT /", E_UNDEFINED, 1, 14, "undefined variable ${URL}");
-        assert_eq!(kinds(&prog("REDIRECT /a /b\nEXPORT /")), ["FROM", "REDIRECT", "EXPORT"]);
+        prog_err(
+            "SITEMAP BASE ${URL}\nEXPORT /",
+            E_UNDEFINED,
+            1,
+            14,
+            "undefined variable ${URL}",
+        );
+        assert_eq!(
+            kinds(&prog("REDIRECT /a /b\nEXPORT /")),
+            ["FROM", "REDIRECT", "EXPORT"]
+        );
     }
 
     #[test]
@@ -630,7 +867,10 @@ mod tests {
         let src = std::fs::read_to_string(path).unwrap();
         let p = parse_program(&src, path).unwrap();
         assert_eq!(p.file, path);
-        assert_eq!(kinds(&p), ["ARG", "FROM", "LET", "COPY", "RENDER", "EXPORT"]);
+        assert_eq!(
+            kinds(&p),
+            ["ARG", "FROM", "LET", "COPY", "RENDER", "EXPORT"]
+        );
     }
 
     #[test]
@@ -654,7 +894,11 @@ mod tests {
 
     #[test]
     fn validate_accepts_parsed_instructions() {
-        let p = validate(parse_sitefile(&format!("{HEAD}COPY a /b{TAIL}"), "F").unwrap(), "F").unwrap();
+        let p = validate(
+            parse_sitefile(&format!("{HEAD}COPY a /b{TAIL}"), "F").unwrap(),
+            "F",
+        )
+        .unwrap();
         assert_eq!(p.file, "F");
         assert_eq!(p.instructions.len(), 3);
     }
@@ -674,20 +918,40 @@ mod tests {
 
     #[test]
     fn implicit_from_scratch() {
-        let kinds = |src: &str| prog(src).instructions.iter().map(|i| i.keyword()).collect::<Vec<_>>();
+        let kinds = |src: &str| {
+            prog(src)
+                .instructions
+                .iter()
+                .map(|i| i.keyword())
+                .collect::<Vec<_>>()
+        };
         // No FROM at all: an implicit stage starts at the first instruction, with that instruction's span.
         let p = prog("# c\nCOPY a /b\nEXPORT /");
         assert_eq!(kinds("COPY a /b\nEXPORT /"), ["FROM", "COPY", "EXPORT"]);
         match &p.instructions[0] {
-            Instruction::From { span, base: FromBase::Scratch, alias: None, .. } => assert_eq!((span.line, span.column), (2, 1)),
+            Instruction::From {
+                span,
+                base: FromBase::Scratch,
+                alias: None,
+                ..
+            } => assert_eq!((span.line, span.column), (2, 1)),
             _ => panic!("expected implicit FROM scratch"),
         }
         assert_eq!(kinds("EXPORT /"), ["FROM", "EXPORT"]);
         // ARG may precede the implicit stage; it stays before it.
-        assert_eq!(kinds("ARG X = 1\nARG Y = 2\nLET Z = 3\nCOPY a /b\nEXPORT /"), ["ARG", "ARG", "FROM", "LET", "COPY", "EXPORT"]);
+        assert_eq!(
+            kinds("ARG X = 1\nARG Y = 2\nLET Z = 3\nCOPY a /b\nEXPORT /"),
+            ["ARG", "ARG", "FROM", "LET", "COPY", "EXPORT"]
+        );
         // Followed by named stages, and an explicit FROM scratch is unchanged.
-        assert_eq!(kinds("COPY a /b\nFROM scratch AS two\nEXPORT /"), ["FROM", "COPY", "FROM", "EXPORT"]);
-        assert_eq!(kinds("ARG X = 1\nFROM scratch\nEXPORT /"), ["ARG", "FROM", "EXPORT"]);
+        assert_eq!(
+            kinds("COPY a /b\nFROM scratch AS two\nEXPORT /"),
+            ["FROM", "COPY", "FROM", "EXPORT"]
+        );
+        assert_eq!(
+            kinds("ARG X = 1\nFROM scratch\nEXPORT /"),
+            ["ARG", "FROM", "EXPORT"]
+        );
         // Still errors: nothing but ARGs, or no EXPORT.
         prog_err("ARG X", E_VALIDATION, 1, 1, "missing EXPORT");
         prog_err("COPY a /b", E_VALIDATION, 1, 1, "missing EXPORT");
@@ -696,110 +960,397 @@ mod tests {
 
     #[test]
     fn stage_keyword() {
-        let kinds = |src: &str| prog(src).instructions.iter().map(|i| i.keyword()).collect::<Vec<_>>();
+        let kinds = |src: &str| {
+            prog(src)
+                .instructions
+                .iter()
+                .map(|i| i.keyword())
+                .collect::<Vec<_>>()
+        };
         // STAGE starts a stage: no implicit stage is added (also after ARG), and it mixes with FROM.
-        assert_eq!(kinds("STAGE s\nCOPY a /b\nEXPORT /"), ["FROM", "COPY", "EXPORT"]);
-        assert_eq!(kinds("ARG X = 1\nSTAGE s\nCOPY a /b\nEXPORT /"), ["ARG", "FROM", "COPY", "EXPORT"]);
-        assert_eq!(kinds("FROM scratch AS a\nSTAGE b FROM a\nFROM b AS c\nSTAGE d\nEXPORT /"), ["FROM", "FROM", "FROM", "FROM", "EXPORT"]);
+        assert_eq!(
+            kinds("STAGE s\nCOPY a /b\nEXPORT /"),
+            ["FROM", "COPY", "EXPORT"]
+        );
+        assert_eq!(
+            kinds("ARG X = 1\nSTAGE s\nCOPY a /b\nEXPORT /"),
+            ["ARG", "FROM", "COPY", "EXPORT"]
+        );
+        assert_eq!(
+            kinds("FROM scratch AS a\nSTAGE b FROM a\nFROM b AS c\nSTAGE d\nEXPORT /"),
+            ["FROM", "FROM", "FROM", "FROM", "EXPORT"]
+        );
         // COPY --from a STAGE, and STAGE based on an earlier stage or a local directory.
         prog(&format!("STAGE a\nCOPY x /x\nSTAGE b FROM a\nSTAGE c FROM ./dir\nSTAGE d\nCOPY --from=a /x /y{TAIL}"));
-        prog_err(&format!("STAGE a\nCOPY --from=a /x /y{TAIL}"), E_UNDEFINED, 2, 6, "not complete");
+        prog_err(
+            &format!("STAGE a\nCOPY --from=a /x /y{TAIL}"),
+            E_UNDEFINED,
+            2,
+            6,
+            "not complete",
+        );
         // Same name rules and errors as FROM … AS.
-        prog_err(&format!("STAGE a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "'a' is already defined");
-        prog_err(&format!("FROM scratch AS a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "");
+        prog_err(
+            &format!("STAGE a\nSTAGE a{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "'a' is already defined",
+        );
+        prog_err(
+            &format!("FROM scratch AS a\nSTAGE a{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
         prog_err(&format!("ARG a\nSTAGE a{TAIL}"), E_DUPLICATE, 2, 1, "");
-        prog_err(&format!("STAGE a\nFROM scratch AS a{TAIL}"), E_DUPLICATE, 2, 1, "");
-        prog_err(&format!("STAGE a FROM a{TAIL}"), E_UNDEFINED, 1, 14, "STAGE a FROM a: stage 'a' is not defined before this line");
-        prog_err(&format!("STAGE a FROM b\nSTAGE b{TAIL}"), E_UNDEFINED, 1, 14, "STAGE a FROM b: stage 'b'");
-        prog_err(&format!("FROM b\nSTAGE b{TAIL}"), E_UNDEFINED, 1, 6, "FROM b: stage 'b'");
+        prog_err(
+            &format!("STAGE a\nFROM scratch AS a{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("STAGE a FROM a{TAIL}"),
+            E_UNDEFINED,
+            1,
+            14,
+            "STAGE a FROM a: stage 'a' is not defined before this line",
+        );
+        prog_err(
+            &format!("STAGE a FROM b\nSTAGE b{TAIL}"),
+            E_UNDEFINED,
+            1,
+            14,
+            "STAGE a FROM b: stage 'b'",
+        );
+        prog_err(
+            &format!("FROM b\nSTAGE b{TAIL}"),
+            E_UNDEFINED,
+            1,
+            6,
+            "FROM b: stage 'b'",
+        );
         // a bare word naming no stage is a local directory
         prog(&format!("STAGE a FROM dir\nSTAGE b FROM ./b{TAIL}"));
     }
 
     #[test]
     fn export_rules() {
-        prog_err("FROM scratch\nCOPY a /b", E_VALIDATION, 2, 1, "missing EXPORT: the last instruction must be EXPORT");
-        prog_err("FROM scratch\nEXPORT /\nCOPY a /b", E_VALIDATION, 3, 1, "EXPORT must be the last instruction");
+        prog_err(
+            "FROM scratch\nCOPY a /b",
+            E_VALIDATION,
+            2,
+            1,
+            "missing EXPORT: the last instruction must be EXPORT",
+        );
+        prog_err(
+            "FROM scratch\nEXPORT /\nCOPY a /b",
+            E_VALIDATION,
+            3,
+            1,
+            "EXPORT must be the last instruction",
+        );
         prog_err("FROM scratch\nEXPORT /\nEXPORT /", E_VALIDATION, 3, 1, "");
     }
 
     #[test]
     fn variables_must_be_defined_earlier() {
-        prog_err(&format!("{HEAD}COPY ./${{X}} /{TAIL}"), E_UNDEFINED, 2, 8, "undefined variable ${X}: declare it with ARG or LET on an earlier line");
-        prog_err(&format!("{HEAD}LET X = ${{X}}{TAIL}"), E_UNDEFINED, 2, 9, "");
-        prog_err(&format!("{HEAD}LET A = 1\nRENDER t TO \"/a/${{A}}/${{B}}\"{TAIL}"), E_UNDEFINED, 3, 22, "");
-        prog_err(&format!("{HEAD}IMPORT d FROM ./${{U}}{TAIL}"), E_UNDEFINED, 2, 17, "");
+        prog_err(
+            &format!("{HEAD}COPY ./${{X}} /{TAIL}"),
+            E_UNDEFINED,
+            2,
+            8,
+            "undefined variable ${X}: declare it with ARG or LET on an earlier line",
+        );
+        prog_err(
+            &format!("{HEAD}LET X = ${{X}}{TAIL}"),
+            E_UNDEFINED,
+            2,
+            9,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}LET A = 1\nRENDER t TO \"/a/${{A}}/${{B}}\"{TAIL}"),
+            E_UNDEFINED,
+            3,
+            22,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}IMPORT d FROM ./${{U}}{TAIL}"),
+            E_UNDEFINED,
+            2,
+            17,
+            "",
+        );
         prog_err(&format!("{HEAD}EXPORT /${{OUT}}"), E_UNDEFINED, 2, 9, "");
-        prog_err(&format!("{HEAD}COPY a /${{late}}\nLET late = x{TAIL}"), E_UNDEFINED, 2, 9, "");
-        prog_err(&format!("{HEAD}IMPORT n FROM ./x\nCOPY a /${{n}}{TAIL}"), E_UNDEFINED, 3, 9, "('n' is an import; use it in a RENDER template)");
-        prog_err(&format!("ARG A = ${{B}}\nFROM scratch{TAIL}"), E_UNDEFINED, 1, 9, "");
-        prog_err(&format!("{HEAD}LET x = 1\nCOPY a /${{X}}{TAIL}"), E_UNDEFINED, 3, 9, "");
-        prog_err("FROM scratch\nCOPY \\\n  ./${NOPE} \\\n  /b\nEXPORT /", E_UNDEFINED, 3, 5, "");
+        prog_err(
+            &format!("{HEAD}COPY a /${{late}}\nLET late = x{TAIL}"),
+            E_UNDEFINED,
+            2,
+            9,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}IMPORT n FROM ./x\nCOPY a /${{n}}{TAIL}"),
+            E_UNDEFINED,
+            3,
+            9,
+            "('n' is an import; use it in a RENDER template)",
+        );
+        prog_err(
+            &format!("ARG A = ${{B}}\nFROM scratch{TAIL}"),
+            E_UNDEFINED,
+            1,
+            9,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}LET x = 1\nCOPY a /${{X}}{TAIL}"),
+            E_UNDEFINED,
+            3,
+            9,
+            "",
+        );
+        prog_err(
+            "FROM scratch\nCOPY \\\n  ./${NOPE} \\\n  /b\nEXPORT /",
+            E_UNDEFINED,
+            3,
+            5,
+            "",
+        );
     }
 
     #[test]
     fn dotted_access() {
-        prog_err("FROM scratch\nARG a = x\nCOPY ${a.b} /x\nEXPORT /", E_SYNTAX, 3, 6, "dotted access ${a.b} is only allowed in RENDER templates");
+        prog_err(
+            "FROM scratch\nARG a = x\nCOPY ${a.b} /x\nEXPORT /",
+            E_SYNTAX,
+            3,
+            6,
+            "dotted access ${a.b} is only allowed in RENDER templates",
+        );
     }
 
     #[test]
     fn duplicate_names() {
-        prog_err(&format!("{HEAD}ARG X\nARG X{TAIL}"), E_DUPLICATE, 3, 1, "'X' is already defined");
-        prog_err(&format!("ARG X\n{HEAD}LET X = 1{TAIL}"), E_DUPLICATE, 3, 1, "");
-        prog_err(&format!("{HEAD}LET X = 1\nIMPORT X FROM ./x{TAIL}"), E_DUPLICATE, 3, 1, "");
-        prog_err(&format!("{HEAD}IMPORT a FROM ./x\nIMPORT a FROM ./y{TAIL}"), E_DUPLICATE, 3, 1, "");
-        prog_err(&format!("{HEAD}IMPORT a FROM ./x\nLET a = 1{TAIL}"), E_DUPLICATE, 3, 1, "");
+        prog_err(
+            &format!("{HEAD}ARG X\nARG X{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "'X' is already defined",
+        );
+        prog_err(
+            &format!("ARG X\n{HEAD}LET X = 1{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}LET X = 1\nIMPORT X FROM ./x{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}IMPORT a FROM ./x\nIMPORT a FROM ./y{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("{HEAD}IMPORT a FROM ./x\nLET a = 1{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "",
+        );
     }
 
     #[test]
     fn import_references() {
         prog_err(&format!("{HEAD}COPY site: /{TAIL}"), E_UNDEFINED, 2, 6, "unknown import 'site' (declare it with IMPORT on an earlier line, or write ./site: for a local path)");
-        prog_err(&format!("{HEAD}RENDER tpl:/x.html TO /x{TAIL}"), E_UNDEFINED, 2, 8, "tpl");
-        prog_err(&format!("{HEAD}COPY site:/a /\nIMPORT site FROM ./s{TAIL}"), E_UNDEFINED, 2, 6, "");
-        prog(&format!("ARG P = x\n{HEAD}COPY ${{P}}: /\nCOPY ./a:b /\nCOPY a/b:c /{TAIL}"));
+        prog_err(
+            &format!("{HEAD}RENDER tpl:/x.html TO /x{TAIL}"),
+            E_UNDEFINED,
+            2,
+            8,
+            "tpl",
+        );
+        prog_err(
+            &format!("{HEAD}COPY site:/a /\nIMPORT site FROM ./s{TAIL}"),
+            E_UNDEFINED,
+            2,
+            6,
+            "",
+        );
+        prog(&format!(
+            "ARG P = x\n{HEAD}COPY ${{P}}: /\nCOPY ./a:b /\nCOPY a/b:c /{TAIL}"
+        ));
     }
 
     #[test]
     fn url_sources_rejected() {
-        prog_err(&format!("{HEAD}COPY https://example.com/a.css /{TAIL}"), E_VALIDATION, 2, 6, "IMPORT then COPY");
-        prog_err(&format!("{HEAD}RENDER \"http://x/t.html\" TO /t{TAIL}"), E_VALIDATION, 2, 8, "IMPORT");
+        prog_err(
+            &format!("{HEAD}COPY https://example.com/a.css /{TAIL}"),
+            E_VALIDATION,
+            2,
+            6,
+            "IMPORT then COPY",
+        );
+        prog_err(
+            &format!("{HEAD}RENDER \"http://x/t.html\" TO /t{TAIL}"),
+            E_VALIDATION,
+            2,
+            8,
+            "IMPORT",
+        );
     }
 
     #[test]
     fn stages() {
         let p = prog("ARG A = 1\nFROM scratch AS one\nLET B = 2\nFROM ./dir AS two\nIMPORT i FROM ./x\nCOPY --from=one /a /b\nFROM two\nCOPY ${A}${B} /c\nEXPORT /");
-        assert_eq!(p.instructions.iter().filter(|i| matches!(i, Instruction::From { .. })).count(), 3);
-        prog_err(&format!("FROM scratch AS a\nFROM scratch AS a{TAIL}"), E_DUPLICATE, 2, 1, "");
-        prog_err(&format!("ARG a\nFROM scratch AS a{TAIL}"), E_DUPLICATE, 2, 1, "");
-        prog_err(&format!("FROM scratch\nIMPORT a FROM ./x\nFROM scratch AS a{TAIL}"), E_DUPLICATE, 3, 1, "");
-        prog_err(&format!("FROM scratch AS a\nLET a = 1{TAIL}"), E_DUPLICATE, 2, 1, "");
-        prog_err(&format!("FROM scratch AS a\nIMPORT a FROM ./x{TAIL}"), E_DUPLICATE, 2, 1, "");
+        assert_eq!(
+            p.instructions
+                .iter()
+                .filter(|i| matches!(i, Instruction::From { .. }))
+                .count(),
+            3
+        );
+        prog_err(
+            &format!("FROM scratch AS a\nFROM scratch AS a{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("ARG a\nFROM scratch AS a{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("FROM scratch\nIMPORT a FROM ./x\nFROM scratch AS a{TAIL}"),
+            E_DUPLICATE,
+            3,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("FROM scratch AS a\nLET a = 1{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
+        prog_err(
+            &format!("FROM scratch AS a\nIMPORT a FROM ./x{TAIL}"),
+            E_DUPLICATE,
+            2,
+            1,
+            "",
+        );
     }
 
     #[test]
     fn forward_and_self_stage_references() {
-        prog_err(&format!("FROM scratch AS a\nCOPY --from=a /x /y{TAIL}"), E_UNDEFINED, 2, 6, "--from=a: stage 'a' is not complete before this line");
-        prog_err(&format!("FROM scratch AS a\nCOPY --from=b /x /y\nFROM scratch AS b{TAIL}"), E_UNDEFINED, 2, 6, "not complete");
-        prog_err(&format!("FROM scratch\nRENDER --from=nope /t TO /x{TAIL}"), E_UNDEFINED, 2, 8, "--from=nope: stage 'nope' is not defined");
-        prog_err(&format!("FROM a AS a{TAIL}"), E_UNDEFINED, 1, 6, "FROM a: stage 'a' is not defined before this line (write ./a for a local directory)");
-        prog_err(&format!("FROM b\nFROM scratch AS b{TAIL}"), E_UNDEFINED, 1, 6, "");
+        prog_err(
+            &format!("FROM scratch AS a\nCOPY --from=a /x /y{TAIL}"),
+            E_UNDEFINED,
+            2,
+            6,
+            "--from=a: stage 'a' is not complete before this line",
+        );
+        prog_err(
+            &format!("FROM scratch AS a\nCOPY --from=b /x /y\nFROM scratch AS b{TAIL}"),
+            E_UNDEFINED,
+            2,
+            6,
+            "not complete",
+        );
+        prog_err(
+            &format!("FROM scratch\nRENDER --from=nope /t TO /x{TAIL}"),
+            E_UNDEFINED,
+            2,
+            8,
+            "--from=nope: stage 'nope' is not defined",
+        );
+        prog_err(
+            &format!("FROM a AS a{TAIL}"),
+            E_UNDEFINED,
+            1,
+            6,
+            "FROM a: stage 'a' is not defined before this line (write ./a for a local directory)",
+        );
+        prog_err(
+            &format!("FROM b\nFROM scratch AS b{TAIL}"),
+            E_UNDEFINED,
+            1,
+            6,
+            "",
+        );
         prog(&format!("FROM dir\nFROM ./a AS a\nFROM ./a{TAIL}"));
-        prog_err("FROM scratch AS a\nEXPORT /\nFROM scratch", E_VALIDATION, 3, 1, "EXPORT must be the last");
-        prog_err("FROM scratch AS a\nFROM scratch", E_VALIDATION, 2, 1, "missing EXPORT");
+        prog_err(
+            "FROM scratch AS a\nEXPORT /\nFROM scratch",
+            E_VALIDATION,
+            3,
+            1,
+            "EXPORT must be the last",
+        );
+        prog_err(
+            "FROM scratch AS a\nFROM scratch",
+            E_VALIDATION,
+            2,
+            1,
+            "missing EXPORT",
+        );
     }
 
     #[test]
     fn sort_by_and_for() {
         let p = prog("FROM scratch\nIMPORT posts FROM ./p AS markdown SORT BY date DESC\nRENDER ./t TO /p/${post.slug}.html FOR post IN posts\nEXPORT /");
-        assert!(matches!(&p.instructions[1], Instruction::Import { as_kind: Some(ImportKind::Markdown), sort: Some(s), .. } if s.key == "date" && s.descending));
-        assert!(matches!(&p.instructions[2], Instruction::Render { each: Some(e), .. } if e.as_name == "post" && e.list == "posts"));
-        prog_err("FROM scratch\nIMPORT d FROM ./d.txt AS text SORT BY x\nEXPORT /", E_VALIDATION, 2, 31, "IMPORT d: SORT BY applies to lists: AS markdown, json, yaml or csv");
-        fails("FROM scratch\nIMPORT d FROM ./d SORT BY x\nEXPORT /", E_VALIDATION, 2);
-        prog_err("FROM scratch\nRENDER ./t TO /a FOR p IN nothing\nEXPORT /", E_UNDEFINED, 2, 18, "FOR p IN nothing: 'nothing' is not an IMPORT declared on an earlier line");
+        assert!(
+            matches!(&p.instructions[1], Instruction::Import { as_kind: Some(ImportKind::Markdown), sort: Some(s), .. } if s.key == "date" && s.descending)
+        );
+        assert!(
+            matches!(&p.instructions[2], Instruction::Render { each: Some(e), .. } if e.as_name == "post" && e.list == "posts")
+        );
+        prog_err(
+            "FROM scratch\nIMPORT d FROM ./d.txt AS text SORT BY x\nEXPORT /",
+            E_VALIDATION,
+            2,
+            31,
+            "IMPORT d: SORT BY applies to lists: AS markdown, json, yaml or csv",
+        );
+        fails(
+            "FROM scratch\nIMPORT d FROM ./d SORT BY x\nEXPORT /",
+            E_VALIDATION,
+            2,
+        );
+        prog_err(
+            "FROM scratch\nRENDER ./t TO /a FOR p IN nothing\nEXPORT /",
+            E_UNDEFINED,
+            2,
+            18,
+            "FOR p IN nothing: 'nothing' is not an IMPORT declared on an earlier line",
+        );
         prog_err("FROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./t TO /a FOR posts IN posts\nEXPORT /", E_DUPLICATE, 3, 18, "FOR posts: 'posts' is already defined; pick another loop variable name");
         fails("FROM scratch AS s\nFROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./t TO /a FOR s IN posts\nEXPORT /", E_DUPLICATE, 4);
         fails("FROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./t TO /${post.slug} \nEXPORT /", E_SYNTAX, 3);
-        fails("FROM scratch\nARG A = x\nCOPY ./a /${A.b}\nEXPORT /", E_SYNTAX, 3);
+        fails(
+            "FROM scratch\nARG A = x\nCOPY ./a /${A.b}\nEXPORT /",
+            E_SYNTAX,
+            3,
+        );
         // the template operand is not the destination
         fails("FROM scratch\nIMPORT posts FROM ./p AS markdown\nRENDER ./${post} TO /a FOR post IN posts\nEXPORT /", E_UNDEFINED, 3);
     }
@@ -807,15 +1358,33 @@ mod tests {
     #[test]
     fn plugin_and_transform() {
         let p = prog("FROM scratch\nPLUGIN up FROM ./plugins/up.mjs\nIMPORT posts FROM ./p AS markdown\nTRANSFORM ./a.txt WITH up TO /a.txt OPTIONS x=1 y=\"two words\"\nTRANSFORM WITH up TO /c/${post.slug}.svg OPTIONS t=${post.title} FOR post IN posts\nEXPORT /");
-        assert!(matches!(&p.instructions[3], Instruction::Transform { plugin, options, source: Some(_), .. } if plugin == "up" && options.len() == 2));
-        assert!(matches!(&p.instructions[4], Instruction::Transform { source: None, each: Some(e), .. } if e.as_name == "post"));
-        prog_err("FROM scratch\nTRANSFORM ./a WITH nope TO /a\nEXPORT /", E_UNDEFINED, 2, 20, "TRANSFORM … WITH nope: no PLUGIN or TOOL nope is declared on an earlier line");
-        fails("FROM scratch\nARG p = x\nPLUGIN p FROM ./plugins/p.mjs\nEXPORT /", E_DUPLICATE, 3);
+        assert!(
+            matches!(&p.instructions[3], Instruction::Transform { plugin, options, source: Some(_), .. } if plugin == "up" && options.len() == 2)
+        );
+        assert!(
+            matches!(&p.instructions[4], Instruction::Transform { source: None, each: Some(e), .. } if e.as_name == "post")
+        );
+        prog_err(
+            "FROM scratch\nTRANSFORM ./a WITH nope TO /a\nEXPORT /",
+            E_UNDEFINED,
+            2,
+            20,
+            "TRANSFORM … WITH nope: no PLUGIN or TOOL nope is declared on an earlier line",
+        );
+        fails(
+            "FROM scratch\nARG p = x\nPLUGIN p FROM ./plugins/p.mjs\nEXPORT /",
+            E_DUPLICATE,
+            3,
+        );
         fails("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /a OPTIONS a=1 OPTIONS b=2\nEXPORT /", E_SYNTAX, 3);
         fails("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /a OPTIONS a=1 a=2\nEXPORT /", E_SYNTAX, 3);
         fails("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /${x.y}\nEXPORT /", E_SYNTAX, 3);
         fails("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM WITH p TO /a FOR x IN nope\nEXPORT /", E_UNDEFINED, 3);
-        fails("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM site: WITH p TO /a\nEXPORT /", E_UNDEFINED, 3);
+        fails(
+            "FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM site: WITH p TO /a\nEXPORT /",
+            E_UNDEFINED,
+            3,
+        );
         prog("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM WITH p TO /badge.svg OPTIONS label=hi\nEXPORT /");
     }
 
@@ -823,9 +1392,18 @@ mod tests {
     fn tool_args() {
         let tool = |t: &str| format!("FROM scratch\nTOOL fake\n{t}\nEXPORT /");
         let p = prog(&tool("IMPORT xs FROM ./x.json AS json\nTRANSFORM ./a.txt WITH fake TO /a.out OPTIONS w=3 ARGS -f \"lavfi x\" --w={option.w} {input} {output}"));
-        assert!(p.instructions.iter().any(|i| matches!(i, Instruction::Transform { args: Some(a), .. } if a.len() == 5)));
+        assert!(p
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Transform { args: Some(a), .. } if a.len() == 5)));
         prog_err("FROM scratch\nTOOL t\nTRANSFORM ./a WITH t TO /a\nEXPORT /", E_VALIDATION, 3, 1, "TRANSFORM … WITH t: a TOOL needs ARGS (the argument list, e.g. ARGS -i {input} {output})");
-        prog_err("FROM scratch\nTOOL t\nTRANSFORM ./a WITH t TO /a ARGS -i {input}\nEXPORT /", E_VALIDATION, 3, 1, "TRANSFORM … WITH t: ARGS must contain {output}, the file the tool writes");
+        prog_err(
+            "FROM scratch\nTOOL t\nTRANSFORM ./a WITH t TO /a ARGS -i {input}\nEXPORT /",
+            E_VALIDATION,
+            3,
+            1,
+            "TRANSFORM … WITH t: ARGS must contain {output}, the file the tool writes",
+        );
         prog_err("FROM scratch\nTOOL t\nIMPORT xs FROM ./x.json AS json\nTRANSFORM WITH t TO /a ARGS {input} {output} FOR x IN xs\nEXPORT /", E_VALIDATION, 4, 29, "{input} needs a TRANSFORM source file");
         prog_err("FROM scratch\nTOOL t\nTRANSFORM ./a WITH t TO /a ARGS {option.nope} {output}\nEXPORT /", E_UNDEFINED, 3, 33, "{option.nope}: no OPTIONS nope=… on this TRANSFORM");
         prog_err("FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a WITH p TO /a ARGS x\nEXPORT /", E_VALIDATION, 3, 1, "ARGS applies to a TOOL; p is a PLUGIN (pass values with OPTIONS)");
@@ -836,9 +1414,17 @@ mod tests {
 
     #[test]
     fn placeholders() {
-        let names = |s: &str| tool_placeholders(s).into_iter().map(|(_, _, n)| n.to_string()).collect::<Vec<_>>();
+        let names = |s: &str| {
+            tool_placeholders(s)
+                .into_iter()
+                .map(|(_, _, n)| n.to_string())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names("{input}{output}"), ["input", "output"]);
-        assert_eq!(names("--w={option.w-1}x{option.}{option.9}{inputs}{{output}}"), ["option.w-1", "output"]);
+        assert_eq!(
+            names("--w={option.w-1}x{option.}{option.9}{inputs}{{output}}"),
+            ["option.w-1", "output"]
+        );
         assert_eq!(tool_placeholders("a{output}"), [(1, 9, "output")]);
         assert!(names("%{pts}{x}").is_empty());
     }
@@ -847,7 +1433,12 @@ mod tests {
     fn heredocs_validate() {
         let p = prog("FROM scratch\nRENDER \\\n  <<T \\\n  TO /i.html\nhello\nT\nCOPY <<C /c\nc\nC\nEXPORT /\n");
         assert_eq!(kinds(&p), ["FROM", "RENDER", "COPY", "EXPORT"]);
-        assert_eq!(prog("FROM scratch\nCOPY \"<<EOF\" /a\nCOPY ./x<<y /b\nEXPORT /").instructions.len(), 4);
+        assert_eq!(
+            prog("FROM scratch\nCOPY \"<<EOF\" /a\nCOPY ./x<<y /b\nEXPORT /")
+                .instructions
+                .len(),
+            4
+        );
         // inline bodies are not checked for variables
         prog("FROM scratch\nRENDER <<T TO /a\n${MISSING}\nT\nEXPORT /");
     }

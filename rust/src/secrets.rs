@@ -21,7 +21,10 @@ impl Secrets {
         Secrets(pairs)
     }
     pub fn get(&self, id: &str) -> Option<&str> {
-        self.0.iter().find(|(k, _)| k == id).map(|(_, v)| v.as_str())
+        self.0
+            .iter()
+            .find(|(k, _)| k == id)
+            .map(|(_, v)| v.as_str())
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -53,7 +56,11 @@ pub fn load_secrets(flags: &[String], env: &dyn Fn(&str) -> Option<String>) -> R
             let (key, value) = match part.split_once('=') {
                 Some((k, v)) if k == "id" || k == "env" || k == "src" => (k, v),
                 // never echo the flag: it might be the secret itself
-                _ => return Err(usage("--secret expects id=<id>,env=<VAR> or id=<id>,src=<file>")),
+                _ => {
+                    return Err(usage(
+                        "--secret expects id=<id>,env=<VAR> or id=<id>,src=<file>",
+                    ))
+                }
             };
             if fields.iter().any(|(k, _)| *k == key) {
                 return Err(usage(format!("--secret: '{key}' given twice")));
@@ -63,16 +70,26 @@ pub fn load_secrets(flags: &[String], env: &dyn Fn(&str) -> Option<String>) -> R
         let field = |k: &str| fields.iter().find(|(f, _)| *f == k).map(|(_, v)| *v);
         let id = match field("id") {
             Some(id) if is_ident(id) => id.to_string(),
-            _ => return Err(usage("--secret needs id=<id> (letters, digits and _, not starting with a digit)")),
+            _ => {
+                return Err(usage(
+                    "--secret needs id=<id> (letters, digits and _, not starting with a digit)",
+                ))
+            }
         };
         if out.iter().any(|(k, _)| *k == id) {
             return Err(usage(format!("--secret id={id} given twice")));
         }
         let value = match (field("env"), field("src")) {
-            (Some(name), None) => env(name)
-                .ok_or_else(|| SitefileError::plain(E_SECRET, format!("--secret id={id}: environment variable {name} is not set")))?,
+            (Some(name), None) => env(name).ok_or_else(|| {
+                SitefileError::plain(
+                    E_SECRET,
+                    format!("--secret id={id}: environment variable {name} is not set"),
+                )
+            })?,
             (None, Some(src)) => {
-                let bytes = std::fs::read(src).map_err(|_| SitefileError::plain(E_SECRET, format!("--secret id={id}: cannot read '{src}'")))?;
+                let bytes = std::fs::read(src).map_err(|_| {
+                    SitefileError::plain(E_SECRET, format!("--secret id={id}: cannot read '{src}'"))
+                })?;
                 // latin1, like Buffer.toString('latin1'): one char per byte.
                 let mut s: String = bytes.iter().map(|&b| b as char).collect();
                 if s.ends_with("\r\n") {
@@ -82,10 +99,17 @@ pub fn load_secrets(flags: &[String], env: &dyn Fn(&str) -> Option<String>) -> R
                 }
                 s
             }
-            _ => return Err(usage(format!("--secret id={id}: give exactly one of env=<VAR> or src=<file>"))),
+            _ => {
+                return Err(usage(format!(
+                    "--secret id={id}: give exactly one of env=<VAR> or src=<file>"
+                )))
+            }
         };
         if value.is_empty() {
-            return Err(SitefileError::plain(E_SECRET, format!("--secret id={id} is empty")));
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("--secret id={id} is empty"),
+            ));
         }
         if !header_value_ok(&value) {
             return Err(SitefileError::plain(
@@ -124,11 +148,19 @@ pub fn redact_error(e: SitefileError, secrets: &Secrets) -> SitefileError {
     if secrets.is_empty() {
         return e;
     }
-    SitefileError { detail: redact_secrets(&e.detail, secrets), ..e }
+    SitefileError {
+        detail: redact_secrets(&e.detail, secrets),
+        ..e
+    }
 }
 
 /// The request headers of an import's SECRET clauses (lowercase names); a secret that was not given is E_SECRET.
-pub fn secret_headers(name: &str, refs: &[SecretRef], span: &SourceSpan, secrets: &Secrets) -> Result<Vec<(String, String)>> {
+pub fn secret_headers(
+    name: &str,
+    refs: &[SecretRef],
+    span: &SourceSpan,
+    secrets: &Secrets,
+) -> Result<Vec<(String, String)>> {
     let mut headers: Vec<(String, String)> = Vec::new();
     for s in refs {
         let Some(v) = secrets.get(&s.id) else {
@@ -141,7 +173,11 @@ pub fn secret_headers(name: &str, refs: &[SecretRef], span: &SourceSpan, secrets
                 span,
             ));
         };
-        let value = if s.bearer { format!("Bearer {v}") } else { v.to_string() };
+        let value = if s.bearer {
+            format!("Bearer {v}")
+        } else {
+            v.to_string()
+        };
         let key = s.header.to_lowercase();
         match headers.iter_mut().find(|(k, _)| *k == key) {
             Some(h) => h.1 = value,
@@ -181,7 +217,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("tok");
         std::fs::write(&file, "tok-secret-value\r\n").unwrap();
-        let s = load_secrets(&["id=a,env=API_TOKEN".into(), format!("id=b,src={}", file.display())], &env).unwrap();
+        let s = load_secrets(
+            &[
+                "id=a,env=API_TOKEN".into(),
+                format!("id=b,src={}", file.display()),
+            ],
+            &env,
+        )
+        .unwrap();
         assert_eq!(s.get("a"), Some("tok-secret-value"));
         assert_eq!(s.get("b"), Some("tok-secret-value"));
         assert_eq!(s.ids().collect::<Vec<_>>(), ["a", "b"]);
@@ -196,7 +239,10 @@ mod tests {
         assert_eq!(code(&["id=1a,env=API_TOKEN"]), "E_USAGE");
         assert_eq!(code(&["id=a,env=X,src=y"]), "E_USAGE");
         assert_eq!(code(&["id=a,id=b,env=API_TOKEN"]), "E_USAGE");
-        assert_eq!(code(&["id=a,env=API_TOKEN", "id=a,env=API_TOKEN"]), "E_USAGE");
+        assert_eq!(
+            code(&["id=a,env=API_TOKEN", "id=a,env=API_TOKEN"]),
+            "E_USAGE"
+        );
         assert_eq!(code(&["id=a,env=NOPE"]), "E_SECRET");
         assert_eq!(code(&["id=a,src=/nonexistent/secret/file"]), "E_SECRET");
         assert_eq!(code(&["id=a,env=EMPTY"]), "E_SECRET");
@@ -205,15 +251,36 @@ mod tests {
 
     #[test]
     fn redaction_and_headers() {
-        let s = Secrets::new(vec![("k".into(), "abc".into()), ("t".into(), "abcdef".into())]);
+        let s = Secrets::new(vec![
+            ("k".into(), "abc".into()),
+            ("t".into(), "abcdef".into()),
+        ]);
         assert_eq!(redact_secrets("x abcdef y abc", &s), "x *** y ***");
         let e = redact_error(SitefileError::plain(E_FETCH, "GET /x?k=abc failed"), &s);
         assert_eq!(e.detail, "GET /x?k=*** failed");
-        let span = SourceSpan { file: "Sitefile".into(), line: 1, column: 1 };
-        let refs = [SecretRef { id: "k".into(), header: "X-Api-Key".into(), bearer: false }, SecretRef { id: "t".into(), header: "Authorization".into(), bearer: true }];
+        let span = SourceSpan {
+            file: "Sitefile".into(),
+            line: 1,
+            column: 1,
+        };
+        let refs = [
+            SecretRef {
+                id: "k".into(),
+                header: "X-Api-Key".into(),
+                bearer: false,
+            },
+            SecretRef {
+                id: "t".into(),
+                header: "Authorization".into(),
+                bearer: true,
+            },
+        ];
         assert_eq!(
             secret_headers("d", &refs, &span, &s).unwrap(),
-            [("x-api-key".to_string(), "abc".to_string()), ("authorization".to_string(), "Bearer abcdef".to_string())]
+            [
+                ("x-api-key".to_string(), "abc".to_string()),
+                ("authorization".to_string(), "Bearer abcdef".to_string())
+            ]
         );
         let e = secret_headers("d", &refs, &span, &Secrets::default()).unwrap_err();
         assert_eq!(e.code, E_SECRET);

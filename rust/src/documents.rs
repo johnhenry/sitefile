@@ -16,8 +16,8 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::frontmatter::parse_frontmatter;
-use crate::memo::DocMemo;
 use crate::markdown::render_markdown;
+use crate::memo::DocMemo;
 use crate::render::{decode_utf8, js};
 use crate::tree::Tree;
 use crate::values::js_number;
@@ -45,7 +45,10 @@ fn basename(p: &str) -> &str {
 /// Remove a case-insensitive ASCII suffix (one of `exts`, each with its dot).
 fn strip_ext<'a>(name: &'a str, exts: &[&str]) -> Option<&'a str> {
     for e in exts {
-        if name.len() >= e.len() && name.is_char_boundary(name.len() - e.len()) && name[name.len() - e.len()..].eq_ignore_ascii_case(e) {
+        if name.len() >= e.len()
+            && name.is_char_boundary(name.len() - e.len())
+            && name[name.len() - e.len()..].eq_ignore_ascii_case(e)
+        {
             return Some(&name[..name.len() - e.len()]);
         }
     }
@@ -60,13 +63,22 @@ fn dated(stem: &str) -> Option<(&str, &str)> {
     if b.len() < 12 {
         return None;
     }
-    let shape = b[..10].iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() });
+    let shape = b[..10].iter().enumerate().all(|(i, c)| {
+        if i == 4 || i == 7 {
+            *c == b'-'
+        } else {
+            c.is_ascii_digit()
+        }
+    });
     if !shape || b[10] != b'-' {
         return None;
     }
     // bytes 0..=10 are ASCII, so 11 is a char boundary
     let rest = &stem[11..];
-    if rest.chars().any(|c| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')) {
+    if rest
+        .chars()
+        .any(|c| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
+    {
         return None;
     }
     Some((&stem[..10], rest))
@@ -75,7 +87,10 @@ fn dated(stem: &str) -> Option<(&str, &str)> {
 /// `^[A-Za-z0-9][A-Za-z0-9._~-]*$`
 fn is_safe_slug(s: &str) -> bool {
     let b = s.as_bytes();
-    !b.is_empty() && b[0].is_ascii_alphanumeric() && b.iter().all(|c| c.is_ascii_alphanumeric() || b"._~-".contains(c))
+    !b.is_empty()
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"._~-".contains(c))
 }
 
 /// `JSON.stringify(v)` for an error message (`undefined` when missing).
@@ -100,11 +115,21 @@ fn base_fields(stem: &str) -> MarkdownDocument {
 
 /// Parse one Markdown file into a document (a JSON object). `label` names it
 /// in errors.
-pub fn markdown_document(bytes: &[u8], path: &str, label: &str, span: Option<&SourceSpan>) -> Result<Value> {
+pub fn markdown_document(
+    bytes: &[u8],
+    path: &str,
+    label: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value> {
     markdown_map(bytes, path, label, span).map(Value::Object)
 }
 
-fn markdown_map(bytes: &[u8], path: &str, label: &str, span: Option<&SourceSpan>) -> Result<MarkdownDocument> {
+fn markdown_map(
+    bytes: &[u8],
+    path: &str,
+    label: &str,
+    span: Option<&SourceSpan>,
+) -> Result<MarkdownDocument> {
     let text = decode_utf8(bytes, &format!("'{label}'"), span)?;
     let fm = parse_frontmatter(&text, label)?;
     let md = render_markdown(&fm.body);
@@ -133,7 +158,12 @@ fn markdown_map(bytes: &[u8], path: &str, label: &str, span: Option<&SourceSpan>
 
 /// Every `.md` / `.markdown` file in a tree, as documents, ordered by path.
 /// `memo` (incremental rebuilds) reuses a document whose bytes, path and label are unchanged.
-pub fn markdown_collection(tree: &Tree, label_prefix: &str, span: Option<&SourceSpan>, memo: Option<DocMemo>) -> Result<Vec<MarkdownDocument>> {
+pub fn markdown_collection(
+    tree: &Tree,
+    label_prefix: &str,
+    span: Option<&SourceSpan>,
+    memo: Option<DocMemo>,
+) -> Result<Vec<MarkdownDocument>> {
     let mut docs = Vec::new();
     for (p, node) in tree.entries() {
         if strip_ext(p, &MD_EXTS).is_none() {
@@ -154,7 +184,13 @@ pub fn markdown_collection(tree: &Tree, label_prefix: &str, span: Option<&Source
 /// `{ slug, date?, path, ...fields }` (slug and date from the file name as for
 /// Markdown, overridable by the data); any other value becomes
 /// `{ slug, path, value }`.
-pub fn data_collection(tree: &Tree, kind: DataKind, label_prefix: &str, span: Option<&SourceSpan>, memo: Option<DocMemo>) -> Result<Vec<MarkdownDocument>> {
+pub fn data_collection(
+    tree: &Tree,
+    kind: DataKind,
+    label_prefix: &str,
+    span: Option<&SourceSpan>,
+    memo: Option<DocMemo>,
+) -> Result<Vec<MarkdownDocument>> {
     let exts: &[&str] = match kind {
         DataKind::Json => &[".json"],
         DataKind::Yaml => &[".yaml", ".yml"],
@@ -178,14 +214,27 @@ pub fn data_collection(tree: &Tree, kind: DataKind, label_prefix: &str, span: Op
     Ok(docs)
 }
 
-fn data_document(bytes: &[u8], kind: DataKind, exts: &[&str], p: &String, label: &str, span: Option<&SourceSpan>) -> Result<MarkdownDocument> {
+fn data_document(
+    bytes: &[u8],
+    kind: DataKind,
+    exts: &[&str],
+    p: &String,
+    label: &str,
+    span: Option<&SourceSpan>,
+) -> Result<MarkdownDocument> {
     let text = decode_utf8(bytes, &format!("'{label}'"), span)?;
     let value = match kind {
         DataKind::Yaml => parse_yaml(&text, &label)?,
         // The detail after the colon is serde_json's message, not V8's.
         DataKind::Json => match serde_json::from_str::<Value>(&text) {
             Ok(v) => js::from_json_parse(v),
-            Err(e) => return Err(SitefileError::new(E_TYPE, format!("{label} is not valid JSON: {e}"), span.cloned())),
+            Err(e) => {
+                return Err(SitefileError::new(
+                    E_TYPE,
+                    format!("{label} is not valid JSON: {e}"),
+                    span.cloned(),
+                ))
+            }
         },
     };
     let name = basename(p);
@@ -208,7 +257,10 @@ fn data_document(bytes: &[u8], kind: DataKind, exts: &[&str], p: &String, label:
         slug => {
             return Err(SitefileError::new(
                 E_VALIDATION,
-                format!("'{label}': slug {} must be letters, digits, '.', '_', '~' or '-'", json_stringify(slug)),
+                format!(
+                    "'{label}': slug {} must be letters, digits, '.', '_', '~' or '-'",
+                    json_stringify(slug)
+                ),
                 span.cloned(),
             ))
         }
@@ -258,7 +310,13 @@ fn js_string(v: Option<&Value>) -> String {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Array(a)) => a
             .iter()
-            .map(|x| if x.is_null() { String::new() } else { js_string(Some(x)) })
+            .map(|x| {
+                if x.is_null() {
+                    String::new()
+                } else {
+                    js_string(Some(x))
+                }
+            })
             .collect::<Vec<_>>()
             .join(","),
         Some(Value::Object(_)) => "[object Object]".into(),
@@ -350,7 +408,12 @@ mod tests {
     use serde_json::json;
 
     fn tree(files: &[(&str, &str)]) -> Tree {
-        Tree::from_files(files.iter().map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644)))).unwrap()
+        Tree::from_files(
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap()
     }
     fn paths(docs: &[Value]) -> Vec<&str> {
         docs.iter().map(|d| d["path"].as_str().unwrap()).collect()
@@ -364,12 +427,25 @@ mod tests {
             json!({ "path": "/b", "date": "2026-03-01" }),
             json!({ "path": "/d", "date": "2026-01-02" }),
         ];
-        assert_eq!(paths(&sort_documents(docs.clone(), "date", true)), ["/b", "/c", "/d", "/a"]);
-        assert_eq!(paths(&sort_documents(docs, "date", false)), ["/c", "/d", "/b", "/a"]);
-        let n = vec![json!({ "path": "/x", "n": 10 }), json!({ "path": "/y", "n": 9 })];
+        assert_eq!(
+            paths(&sort_documents(docs.clone(), "date", true)),
+            ["/b", "/c", "/d", "/a"]
+        );
+        assert_eq!(
+            paths(&sort_documents(docs, "date", false)),
+            ["/c", "/d", "/b", "/a"]
+        );
+        let n = vec![
+            json!({ "path": "/x", "n": 10 }),
+            json!({ "path": "/y", "n": 9 }),
+        ];
         assert_eq!(paths(&sort_documents(n, "n", false)), ["/y", "/x"]);
         // CSV cells: numeric strings sort numerically
-        let csv = vec![json!({ "path": "/b", "age": "9" }), json!({ "path": "/a", "age": "10" }), json!({ "path": "/c", "age": "100" })];
+        let csv = vec![
+            json!({ "path": "/b", "age": "9" }),
+            json!({ "path": "/a", "age": "10" }),
+            json!({ "path": "/c", "age": "100" }),
+        ];
         assert_eq!(paths(&sort_documents(csv, "age", true)), ["/c", "/a", "/b"]);
         // null counts as missing; mixed types never panic
         let mixed = vec![
@@ -387,79 +463,156 @@ mod tests {
     #[test]
     fn markdown_documents_from_a_tree() {
         let t = tree(&[
-            ("/2026-01-05-hello.md", "---\ntitle: Hello\ntags: [a, b]\n---\n\nFirst **post**.\n"),
-            ("/2026-02-01-second.md", "---\ntitle: Second & more\nslug: two\n---\nBody <b>two</b>.\n"),
+            (
+                "/2026-01-05-hello.md",
+                "---\ntitle: Hello\ntags: [a, b]\n---\n\nFirst **post**.\n",
+            ),
+            (
+                "/2026-02-01-second.md",
+                "---\ntitle: Second & more\nslug: two\n---\nBody <b>two</b>.\n",
+            ),
             ("/notes.txt", "not markdown"),
             ("/sub/About.MARKDOWN", "Hi."),
         ]);
-        let docs: Vec<Value> = markdown_collection(&t, "./posts", None, None).unwrap().into_iter().map(Value::Object).collect();
+        let docs: Vec<Value> = markdown_collection(&t, "./posts", None, None)
+            .unwrap()
+            .into_iter()
+            .map(Value::Object)
+            .collect();
         assert_eq!(docs.len(), 3);
         assert_eq!(
             docs[0],
             json!({ "slug": "hello", "date": "2026-01-05", "title": "Hello", "tags": ["a", "b"], "path": "/2026-01-05-hello.md",
                     "content": "<p>First <strong>post</strong>.</p>\n", "excerpt": "First post." })
         );
-        assert_eq!(docs[0].as_object().unwrap().keys().collect::<Vec<_>>(), ["slug", "date", "title", "tags", "path", "content", "excerpt"]);
+        assert_eq!(
+            docs[0].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["slug", "date", "title", "tags", "path", "content", "excerpt"]
+        );
         assert_eq!(docs[1]["slug"], "two");
         assert_eq!(docs[1]["content"], "<p>Body &lt;b&gt;two&lt;/b&gt;.</p>\n");
         assert_eq!(docs[1]["excerpt"], "Body <b>two</b>.");
         assert_eq!(docs[2]["slug"], "About");
         assert!(docs[2].get("date").is_none());
         let sorted = sort_documents(docs, "date", true);
-        assert_eq!(paths(&sorted), ["/2026-02-01-second.md", "/2026-01-05-hello.md", "/sub/About.MARKDOWN"]);
+        assert_eq!(
+            paths(&sorted),
+            [
+                "/2026-02-01-second.md",
+                "/2026-01-05-hello.md",
+                "/sub/About.MARKDOWN"
+            ]
+        );
     }
 
     #[test]
     fn computed_fields_win_and_frontmatter_date_wins() {
-        let doc = markdown_document(b"---\npath: /x\ncontent: c\ndate: 2020-01-01\n2: n\n---\nHi", "/2026-01-01-a.md", "p:/a", None).unwrap();
+        let doc = markdown_document(
+            b"---\npath: /x\ncontent: c\ndate: 2020-01-01\n2: n\n---\nHi",
+            "/2026-01-01-a.md",
+            "p:/a",
+            None,
+        )
+        .unwrap();
         assert_eq!(doc["path"], "/2026-01-01-a.md");
         assert_eq!(doc["content"], "<p>Hi</p>\n");
         assert_eq!(doc["date"], "2020-01-01");
-        assert_eq!(doc.as_object().unwrap().keys().collect::<Vec<_>>(), ["2", "slug", "date", "path", "content", "excerpt"]);
+        assert_eq!(
+            doc.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["2", "slug", "date", "path", "content", "excerpt"]
+        );
     }
 
     #[test]
     fn markdown_errors() {
         let span = SourceSpan::new("Sitefile", 2, 1);
-        let e = markdown_document(b"---\nslug: ../evil\n---\n", "/a.md", "./p/a.md", Some(&span)).unwrap_err();
+        let e = markdown_document(
+            b"---\nslug: ../evil\n---\n",
+            "/a.md",
+            "./p/a.md",
+            Some(&span),
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_VALIDATION);
         assert_eq!(e.detail, "'./p/a.md': slug \"../evil\" must be letters, digits, '.', '_', '~' or '-' (it becomes part of a URL)");
         assert_eq!(e.span, Some(span));
         let e = markdown_document(b"---\nslug: 3\n---\n", "/a.md", "a", None).unwrap_err();
         assert!(e.detail.contains("slug 3 must"));
-        let e = markdown_document(b"---\ntitle: ok\nalias: &anchor value\n---\n", "/a.md", "./p/a.md", None).unwrap_err();
+        let e = markdown_document(
+            b"---\ntitle: ok\nalias: &anchor value\n---\n",
+            "/a.md",
+            "./p/a.md",
+            None,
+        )
+        .unwrap_err();
         assert_eq!(e.code, E_FRONTMATTER);
         assert_eq!(e.span, Some(SourceSpan::new("./p/a.md", 3, 8)));
-        assert_eq!(markdown_document(&[0xff], "/a.md", "a", None).unwrap_err().code, E_ENCODING);
+        assert_eq!(
+            markdown_document(&[0xff], "/a.md", "a", None)
+                .unwrap_err()
+                .code,
+            E_ENCODING
+        );
     }
 
     #[test]
     fn data_collections() {
         let t = tree(&[
             ("/2026-01-02-alpha.json", "{\"title\":\"Alpha\",\"rank\":2}"),
-            ("/beta.json", "{\"title\":\"Beta\",\"rank\":1,\"slug\":\"b\"}"),
+            (
+                "/beta.json",
+                "{\"title\":\"Beta\",\"rank\":1,\"slug\":\"b\"}",
+            ),
             ("/readme.txt", "ignored"),
             ("/a.yaml", "title: A\n"),
             ("/b.yml", "- 1\n- 2\n"),
         ]);
-        let items: Vec<Value> = data_collection(&t, DataKind::Json, "./items", None, None).unwrap().into_iter().map(Value::Object).collect();
-        assert_eq!(items[0], json!({ "slug": "alpha", "date": "2026-01-02", "title": "Alpha", "rank": 2, "path": "/2026-01-02-alpha.json" }));
+        let items: Vec<Value> = data_collection(&t, DataKind::Json, "./items", None, None)
+            .unwrap()
+            .into_iter()
+            .map(Value::Object)
+            .collect();
+        assert_eq!(
+            items[0],
+            json!({ "slug": "alpha", "date": "2026-01-02", "title": "Alpha", "rank": 2, "path": "/2026-01-02-alpha.json" })
+        );
         let items = sort_documents(items, "rank", false);
         assert_eq!(paths(&items), ["/beta.json", "/2026-01-02-alpha.json"]);
         assert_eq!(items[0]["slug"], "b");
-        let cfg: Vec<Value> = data_collection(&t, DataKind::Yaml, "./cfg", None, None).unwrap().into_iter().map(Value::Object).collect();
-        assert_eq!(cfg, vec![json!({ "slug": "a", "title": "A", "path": "/a.yaml" }), json!({ "slug": "b", "value": [1, 2], "path": "/b.yml" })]);
-        assert_eq!(cfg[1].as_object().unwrap().keys().collect::<Vec<_>>(), ["slug", "value", "path"]);
+        let cfg: Vec<Value> = data_collection(&t, DataKind::Yaml, "./cfg", None, None)
+            .unwrap()
+            .into_iter()
+            .map(Value::Object)
+            .collect();
+        assert_eq!(
+            cfg,
+            vec![
+                json!({ "slug": "a", "title": "A", "path": "/a.yaml" }),
+                json!({ "slug": "b", "value": [1, 2], "path": "/b.yml" })
+            ]
+        );
+        assert_eq!(
+            cfg[1].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["slug", "value", "path"]
+        );
 
         let bad = tree(&[("/x.json", "{nope")]);
         let e = data_collection(&bad, DataKind::Json, "./d", None, None).unwrap_err();
         assert_eq!(e.code, E_TYPE);
         assert!(e.detail.starts_with("./d/x.json is not valid JSON: "));
         let bad = tree(&[("/x.yaml", "a: &x 1\nb: *x\n")]);
-        assert_eq!(data_collection(&bad, DataKind::Yaml, "./d", None, None).unwrap_err().code, E_DATA);
+        assert_eq!(
+            data_collection(&bad, DataKind::Yaml, "./d", None, None)
+                .unwrap_err()
+                .code,
+            E_DATA
+        );
         let bad = tree(&[("/x.json", "{\"slug\": \"a b\"}")]);
         let e = data_collection(&bad, DataKind::Json, "./d", None, None).unwrap_err();
-        assert_eq!(e.detail, "'./d/x.json': slug \"a b\" must be letters, digits, '.', '_', '~' or '-'");
+        assert_eq!(
+            e.detail,
+            "'./d/x.json': slug \"a b\" must be letters, digits, '.', '_', '~' or '-'"
+        );
     }
 
     #[test]

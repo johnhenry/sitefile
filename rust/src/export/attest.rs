@@ -33,7 +33,8 @@ pub const PREDICATE_ANNOTATION: &str = "in-toto.io/predicate-type";
 pub const STATEMENT: &str = "https://in-toto.io/Statement/v1";
 pub const SLSA: &str = "https://slsa.dev/provenance/v1";
 pub const CYCLONEDX: &str = "https://cyclonedx.org/bom";
-pub const BUILD_TYPE: &str = "https://github.com/johnhenry/sitefile/blob/main/docs/CLI.md#attestations";
+pub const BUILD_TYPE: &str =
+    "https://github.com/johnhenry/sitefile/blob/main/docs/CLI.md#attestations";
 pub const BUILDER_ID: &str = "https://github.com/johnhenry/sitefile";
 
 /// The OCI empty descriptor's blob (`{}`).
@@ -75,13 +76,23 @@ impl ReferrerDescriptor {
             m.insert("artifactType".into(), Value::String(t.clone()));
         }
         if let Some(a) = &self.annotations {
-            m.insert("annotations".into(), Value::Object(a.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()));
+            m.insert(
+                "annotations".into(),
+                Value::Object(
+                    a.iter()
+                        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                        .collect(),
+                ),
+            );
         }
         Value::Object(m)
     }
 
     pub fn predicate_type(&self) -> Option<&str> {
-        self.annotations.as_ref().and_then(|a| a.get(PREDICATE_ANNOTATION)).map(String::as_str)
+        self.annotations
+            .as_ref()
+            .and_then(|a| a.get(PREDICATE_ANNOTATION))
+            .map(String::as_str)
     }
 }
 
@@ -133,11 +144,24 @@ pub struct AttestSubject<'a> {
     pub title: Option<&'a str>,
 }
 
-const SECRET_WORDS: &[&str] = &["apikey", "auth", "credential", "credentials", "key", "passwd", "password", "pword", "secret", "token"];
+const SECRET_WORDS: &[&str] = &[
+    "apikey",
+    "auth",
+    "credential",
+    "credentials",
+    "key",
+    "passwd",
+    "password",
+    "pword",
+    "secret",
+    "token",
+];
 
 /// Whether a build-arg name looks like it holds a secret (any `_`-separated word is key, token, password, ...).
 pub fn is_secret_arg_name(name: &str) -> bool {
-    name.to_lowercase().split('_').any(|w| SECRET_WORDS.contains(&w))
+    name.to_lowercase()
+        .split('_')
+        .any(|w| SECRET_WORDS.contains(&w))
 }
 
 /// The Sitefile path the build used, as `build` resolves it.
@@ -159,8 +183,16 @@ pub fn build_facts(
     platform: Option<&str>,
 ) -> Result<BuildFacts> {
     let file = sitefile_path_of(context_dir, sitefile);
-    let bytes = std::fs::read(&file).map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("cannot read Sitefile '{}'", file.display())))?;
-    let base_name = file.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let bytes = std::fs::read(&file).map_err(|_| {
+        SitefileError::plain(
+            E_NOT_FOUND,
+            format!("cannot read Sitefile '{}'", file.display()),
+        )
+    })?;
+    let base_name = file
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let rel = relative_path(&resolve_path(Path::new(context_dir)), &file);
     let inside = !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/');
     let sitefile = if inside { rel } else { base_name.clone() };
@@ -179,7 +211,13 @@ pub fn build_facts(
         .iter()
         .map(|(name, r)| {
             let p = r.provenance();
-            ImportFact { name: name.clone(), uri: p.uri.clone(), resolved: p.resolved_url.clone(), digest: p.digest.clone(), git_commit: p.git_commit.clone() }
+            ImportFact {
+                name: name.clone(),
+                uri: p.uri.clone(),
+                resolved: p.resolved_url.clone(),
+                digest: p.digest.clone(),
+                git_commit: p.git_commit.clone(),
+            }
         })
         .collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
@@ -191,8 +229,15 @@ pub fn build_facts(
         redacted_args,
         platform: platform.unwrap_or("linux/amd64").to_string(),
         imports,
-        base: result.base.as_ref().map(|b| (b.name.clone(), b.manifest_digest.clone())),
-        images: result.images.iter().map(|i| (i.line, i.name.clone(), i.digest.clone(), i.import.clone())).collect(),
+        base: result
+            .base
+            .as_ref()
+            .map(|b| (b.name.clone(), b.manifest_digest.clone())),
+        images: result
+            .images
+            .iter()
+            .map(|i| (i.line, i.name.clone(), i.digest.clone(), i.import.clone()))
+            .collect(),
         pins: result.pins.clone(),
         label: match label {
             Some(l) => l.to_string(),
@@ -208,7 +253,11 @@ fn hex(digest: &str) -> &str {
 
 /// SLSA provenance v1 predicate.
 pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
-    let args: Map<String, Value> = facts.args.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+    let args: Map<String, Value> = facts
+        .args
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
     let mut external = Map::new();
     external.insert("sitefile".into(), Value::String(facts.sitefile.clone()));
     external.insert("args".into(), Value::Object(args));
@@ -220,7 +269,9 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
     if facts.pins.is_some() {
         external.insert("strictPins".into(), Value::Bool(true));
     }
-    let mut deps = vec![json!({ "name": "sitefile", "uri": facts.sitefile, "digest": { "sha256": hex(&facts.sitefile_digest) } })];
+    let mut deps = vec![
+        json!({ "name": "sitefile", "uri": facts.sitefile, "digest": { "sha256": hex(&facts.sitefile_digest) } }),
+    ];
     for i in &facts.imports {
         let digest = match &i.git_commit {
             Some(c) => json!({ "gitCommit": c, "sha256": hex(&i.digest) }),
@@ -242,7 +293,14 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
             None => format!("from:{line}"),
         };
         let mut d = json!({ "name": dep, "uri": name, "digest": { "sha256": hex(digest) } });
-        let pin = if import.is_some() { None } else { facts.pins.as_ref().and_then(|p| p.images.iter().find(|(l, _)| l == line).map(|(_, b)| *b)) };
+        let pin = if import.is_some() {
+            None
+        } else {
+            facts
+                .pins
+                .as_ref()
+                .and_then(|p| p.images.iter().find(|(l, _)| l == line).map(|(_, b)| *b))
+        };
         if let Some(pin) = pin {
             d["annotations"] = json!({ "dev.sitefile.pin": pin });
         }
@@ -255,7 +313,8 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
         }
         deps.push(d);
     }
-    let mut run = json!({ "builder": { "id": BUILDER_ID, "version": { "sitefile": SITEFILE_VERSION } } });
+    let mut run =
+        json!({ "builder": { "id": BUILDER_ID, "version": { "sitefile": SITEFILE_VERSION } } });
     if let Some(e) = epoch {
         run["metadata"] = json!({ "startedOn": iso_of(Some(e)), "finishedOn": iso_of(Some(e)) });
     }
@@ -263,7 +322,11 @@ pub fn provenance_predicate(facts: &BuildFacts, epoch: Option<u64>) -> Value {
 }
 
 /// CycloneDX 1.6 SBOM: the image, its BASE and every file of the site layer.
-pub fn sbom_predicate(subject: &AttestSubject<'_>, facts: &BuildFacts, epoch: Option<u64>) -> Value {
+pub fn sbom_predicate(
+    subject: &AttestSubject<'_>,
+    facts: &BuildFacts,
+    epoch: Option<u64>,
+) -> Value {
     let mut metadata = json!({
         "tools": { "components": [{ "type": "application", "name": "sitefile", "version": SITEFILE_VERSION }] },
         "component": { "type": "container", "bom-ref": "image", "name": subject.title.unwrap_or("site"), "version": subject.digest },
@@ -273,11 +336,17 @@ pub fn sbom_predicate(subject: &AttestSubject<'_>, facts: &BuildFacts, epoch: Op
     }
     let mut components = Vec::new();
     if let Some((name, digest)) = &facts.base {
-        components.push(json!({ "type": "container", "bom-ref": "base", "name": name, "version": digest }));
+        components.push(
+            json!({ "type": "container", "bom-ref": "base", "name": name, "version": digest }),
+        );
     }
     let prefix = format!("{}:", facts.label);
     for (p, n) in subject.files.entries() {
-        let name = if subject.root == "/" { p.clone() } else { format!("{}{p}", subject.root) };
+        let name = if subject.root == "/" {
+            p.clone()
+        } else {
+            format!("{}{p}", subject.root)
+        };
         let origin = match n.origin.strip_prefix(&prefix) {
             Some(rest) => format!("{}:{rest}", facts.sitefile),
             None => n.origin.clone(),
@@ -297,7 +366,12 @@ pub fn sbom_predicate(subject: &AttestSubject<'_>, facts: &BuildFacts, epoch: Op
 }
 
 /// Wrap a predicate in an in-toto statement about `subject` and an OCI artifact manifest.
-pub fn attestation_referrer(subject_digest: &str, subject_size: u64, predicate_type: &str, predicate: Value) -> Referrer {
+pub fn attestation_referrer(
+    subject_digest: &str,
+    subject_size: u64,
+    predicate_type: &str,
+    predicate: Value,
+) -> Referrer {
     let statement = canonical_json(&json!({
         "_type": STATEMENT,
         "subject": [{ "name": "_", "digest": { "sha256": hex(subject_digest) } }],
@@ -308,7 +382,10 @@ pub fn attestation_referrer(subject_digest: &str, subject_size: u64, predicate_t
     let layer_digest = sha256(&statement);
     let empty = empty_digest();
     let mut annotations = Map::new();
-    annotations.insert(PREDICATE_ANNOTATION.into(), Value::String(predicate_type.into()));
+    annotations.insert(
+        PREDICATE_ANNOTATION.into(),
+        Value::String(predicate_type.into()),
+    );
     let annotations = Value::Object(annotations);
     let manifest = canonical_json(&json!({
         "schemaVersion": 2,
@@ -324,46 +401,105 @@ pub fn attestation_referrer(subject_digest: &str, subject_size: u64, predicate_t
     let mut ann = BTreeMap::new();
     ann.insert(PREDICATE_ANNOTATION.to_string(), predicate_type.to_string());
     Referrer {
-        descriptor: ReferrerDescriptor { media_type: media::MANIFEST.into(), digest: digest.clone(), size: manifest.len() as u64, artifact_type: Some(IN_TOTO.into()), annotations: Some(ann) },
-        blobs: vec![(digest, manifest), (empty, EMPTY_JSON.to_vec()), (layer_digest, statement)],
+        descriptor: ReferrerDescriptor {
+            media_type: media::MANIFEST.into(),
+            digest: digest.clone(),
+            size: manifest.len() as u64,
+            artifact_type: Some(IN_TOTO.into()),
+            annotations: Some(ann),
+        },
+        blobs: vec![
+            (digest, manifest),
+            (empty, EMPTY_JSON.to_vec()),
+            (layer_digest, statement),
+        ],
     }
 }
 
 /// The requested attestations for an image, provenance first.
-pub fn make_attestations(subject: &AttestSubject<'_>, facts: &BuildFacts, request: AttestRequest, epoch: Option<u64>) -> Vec<Referrer> {
+pub fn make_attestations(
+    subject: &AttestSubject<'_>,
+    facts: &BuildFacts,
+    request: AttestRequest,
+    epoch: Option<u64>,
+) -> Vec<Referrer> {
     let mut out = Vec::new();
     if request.provenance {
-        out.push(attestation_referrer(subject.digest, subject.size, SLSA, provenance_predicate(facts, epoch)));
+        out.push(attestation_referrer(
+            subject.digest,
+            subject.size,
+            SLSA,
+            provenance_predicate(facts, epoch),
+        ));
     }
     if request.sbom {
-        out.push(attestation_referrer(subject.digest, subject.size, CYCLONEDX, sbom_predicate(subject, facts, epoch)));
+        out.push(attestation_referrer(
+            subject.digest,
+            subject.size,
+            CYCLONEDX,
+            sbom_predicate(subject, facts, epoch),
+        ));
     }
     out
 }
 
 /// An OCI image index listing referrers (the store's referrers file and the registry fallback tag).
 pub fn encode_referrers_index(descriptors: &[ReferrerDescriptor]) -> Vec<u8> {
-    let manifests: Vec<Value> = descriptors.iter().map(ReferrerDescriptor::to_json).collect();
-    canonical_json(&json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": manifests })).into_bytes()
+    let manifests: Vec<Value> = descriptors
+        .iter()
+        .map(ReferrerDescriptor::to_json)
+        .collect();
+    canonical_json(
+        &json!({ "schemaVersion": 2, "mediaType": media::INDEX, "manifests": manifests }),
+    )
+    .into_bytes()
 }
 
 /// Parse a referrers index; entries that are not well-formed descriptors are dropped.
-pub fn decode_referrers_index(bytes: &[u8]) -> std::result::Result<Vec<ReferrerDescriptor>, String> {
+pub fn decode_referrers_index(
+    bytes: &[u8],
+) -> std::result::Result<Vec<ReferrerDescriptor>, String> {
     let j: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    let list = match (j.get("schemaVersion").and_then(Value::as_u64), j.get("manifests").and_then(Value::as_array)) {
+    let list = match (
+        j.get("schemaVersion").and_then(Value::as_u64),
+        j.get("manifests").and_then(Value::as_array),
+    ) {
         (Some(2), Some(m)) => m,
         _ => return Err("not an OCI image index".into()),
     };
     let mut out = Vec::new();
     for m in list {
-        let Some(digest) = m.get("digest").and_then(Value::as_str).filter(|d| crate::digest::is_integrity(d)) else { continue };
-        let Some(size) = m.get("size").and_then(Value::as_u64).filter(|s| *s <= 9_007_199_254_740_991) else { continue };
-        let annotations = m.get("annotations").and_then(Value::as_object).map(|a| a.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect());
+        let Some(digest) = m
+            .get("digest")
+            .and_then(Value::as_str)
+            .filter(|d| crate::digest::is_integrity(d))
+        else {
+            continue;
+        };
+        let Some(size) = m
+            .get("size")
+            .and_then(Value::as_u64)
+            .filter(|s| *s <= 9_007_199_254_740_991)
+        else {
+            continue;
+        };
+        let annotations = m.get("annotations").and_then(Value::as_object).map(|a| {
+            a.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        });
         out.push(ReferrerDescriptor {
-            media_type: m.get("mediaType").and_then(Value::as_str).unwrap_or(media::MANIFEST).to_string(),
+            media_type: m
+                .get("mediaType")
+                .and_then(Value::as_str)
+                .unwrap_or(media::MANIFEST)
+                .to_string(),
             digest: digest.to_string(),
             size,
-            artifact_type: m.get("artifactType").and_then(Value::as_str).map(str::to_string),
+            artifact_type: m
+                .get("artifactType")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             annotations,
         });
     }
@@ -387,7 +523,13 @@ mod tests {
             args: vec![("TITLE".into(), "Docs".into())],
             redacted_args: vec!["API_TOKEN".into()],
             platform: "linux/amd64".into(),
-            imports: vec![ImportFact { name: "data".into(), uri: "https://x.example/d.json".into(), resolved: Some("https://cdn.example/d.json".into()), digest: sha256(b"{}"), git_commit: None }],
+            imports: vec![ImportFact {
+                name: "data".into(),
+                uri: "https://x.example/d.json".into(),
+                resolved: Some("https://cdn.example/d.json".into()),
+                digest: sha256(b"{}"),
+                git_commit: None,
+            }],
             base: None,
             images: Vec::new(),
             pins: None,
@@ -398,26 +540,65 @@ mod tests {
     #[test]
     fn strict_pins_are_recorded_in_the_provenance() {
         let plain = provenance_predicate(&facts(), None);
-        assert!(plain["buildDefinition"]["externalParameters"].get("strictPins").is_none());
-        assert!(plain["buildDefinition"]["resolvedDependencies"][1].get("annotations").is_none());
-        let pins = crate::executor::Pins { imports: vec![("data".into(), "integrity")], base: Some("digest"), images: Vec::new() };
-        let f = BuildFacts { pins: Some(pins), base: Some(("r.example/base:1".into(), sha256(b"m"))), ..facts() };
+        assert!(plain["buildDefinition"]["externalParameters"]
+            .get("strictPins")
+            .is_none());
+        assert!(plain["buildDefinition"]["resolvedDependencies"][1]
+            .get("annotations")
+            .is_none());
+        let pins = crate::executor::Pins {
+            imports: vec![("data".into(), "integrity")],
+            base: Some("digest"),
+            images: Vec::new(),
+        };
+        let f = BuildFacts {
+            pins: Some(pins),
+            base: Some(("r.example/base:1".into(), sha256(b"m"))),
+            ..facts()
+        };
         let p = provenance_predicate(&f, None);
-        assert_eq!(p["buildDefinition"]["externalParameters"]["strictPins"], json!(true));
+        assert_eq!(
+            p["buildDefinition"]["externalParameters"]["strictPins"],
+            json!(true)
+        );
         let deps = &p["buildDefinition"]["resolvedDependencies"];
-        assert_eq!(deps[1]["annotations"], json!({ "dev.sitefile.pin": "integrity" }));
-        assert_eq!(deps[2]["annotations"], json!({ "dev.sitefile.pin": "digest" }));
+        assert_eq!(
+            deps[1]["annotations"],
+            json!({ "dev.sitefile.pin": "integrity" })
+        );
+        assert_eq!(
+            deps[2]["annotations"],
+            json!({ "dev.sitefile.pin": "digest" })
+        );
     }
 
     #[test]
     fn secret_names() {
-        for n in ["API_TOKEN", "token", "DB_PASSWORD", "AWS_SECRET_ACCESS_KEY", "NPM_AUTH", "GITHUB_APIKEY", "my_credentials"] {
+        for n in [
+            "API_TOKEN",
+            "token",
+            "DB_PASSWORD",
+            "AWS_SECRET_ACCESS_KEY",
+            "NPM_AUTH",
+            "GITHUB_APIKEY",
+            "my_credentials",
+        ] {
             assert!(is_secret_arg_name(n), "{n}");
         }
-        for n in ["TITLE", "TOKENIZER", "KEYBOARD", "MONKEY", "AUTHOR", "SITE_URL"] {
+        for n in [
+            "TITLE",
+            "TOKENIZER",
+            "KEYBOARD",
+            "MONKEY",
+            "AUTHOR",
+            "SITE_URL",
+        ] {
             assert!(!is_secret_arg_name(n), "{n}");
         }
-        assert_eq!(referrers_tag(&format!("sha256:{}", "a".repeat(64))), format!("sha256-{}", "a".repeat(64)));
+        assert_eq!(
+            referrers_tag(&format!("sha256:{}", "a".repeat(64))),
+            format!("sha256-{}", "a".repeat(64))
+        );
     }
 
     #[test]
@@ -428,16 +609,32 @@ mod tests {
         assert!(s.contains(r#""downloadLocation":"https://cdn.example/d.json""#));
         assert!(!s.contains("startedOn"));
         let p = provenance_predicate(&facts(), Some(1_700_000_000));
-        assert_eq!(p["runDetails"]["metadata"]["startedOn"], "2023-11-14T22:13:20Z");
+        assert_eq!(
+            p["runDetails"]["metadata"]["startedOn"],
+            "2023-11-14T22:13:20Z"
+        );
     }
 
     #[test]
     fn sbom_rewrites_origins_and_roots_paths() {
-        let tree = Tree::from_files(vec![("/a.html".to_string(), make_file(b"a".to_vec(), "ctx/Sitefile:3 COPY", 0o644))]).unwrap();
-        let subject = AttestSubject { digest: "sha256:00", size: 1, files: &tree, root: "/srv/www", title: Some("ctx") };
+        let tree = Tree::from_files(vec![(
+            "/a.html".to_string(),
+            make_file(b"a".to_vec(), "ctx/Sitefile:3 COPY", 0o644),
+        )])
+        .unwrap();
+        let subject = AttestSubject {
+            digest: "sha256:00",
+            size: 1,
+            files: &tree,
+            root: "/srv/www",
+            title: Some("ctx"),
+        };
         let b = sbom_predicate(&subject, &facts(), None);
         assert_eq!(b["components"][0]["name"], "/srv/www/a.html");
-        assert_eq!(b["components"][0]["properties"][1]["value"], "Sitefile:3 COPY");
+        assert_eq!(
+            b["components"][0]["properties"][1]["value"],
+            "Sitefile:3 COPY"
+        );
         assert!(b["metadata"].get("timestamp").is_none());
     }
 
@@ -448,7 +645,10 @@ mod tests {
         assert_eq!(m["subject"]["size"], 509);
         assert_eq!(m["artifactType"], IN_TOTO);
         assert_eq!(m["config"]["digest"], empty_digest());
-        assert_eq!(empty_digest(), "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+        assert_eq!(
+            empty_digest(),
+            "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        );
         let idx = encode_referrers_index(&[r.descriptor.clone()]);
         assert_eq!(decode_referrers_index(&idx).unwrap(), vec![r.descriptor]);
     }

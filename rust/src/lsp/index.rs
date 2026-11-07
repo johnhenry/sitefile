@@ -68,11 +68,18 @@ pub struct Instr {
 impl Instr {
     /// The instruction's text with continuations joined (no body).
     pub fn text(&self) -> String {
-        self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+        self.words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
     /// Last line covered, heredoc body included.
     pub fn last_line(&self) -> u32 {
-        self.body.as_ref().map(|b| b.end_line).unwrap_or(self.end_line)
+        self.body
+            .as_ref()
+            .map(|b| b.end_line)
+            .unwrap_or(self.end_line)
     }
     /// Index of the first word after the leading `--flags`.
     pub fn first_operand(&self) -> usize {
@@ -203,7 +210,12 @@ fn words_of(text: &str, line: u32, base: u32, out: &mut Vec<Word>) {
             col += chars[i].len_utf16() as u32;
             i += 1;
         }
-        out.push(Word { text: chars[start_i..i].iter().collect(), line, start: start_col, end: col });
+        out.push(Word {
+            text: chars[start_i..i].iter().collect(),
+            line,
+            start: start_col,
+            end: col,
+        });
     }
 }
 
@@ -247,8 +259,12 @@ pub fn instructions(lines: &Lines) -> Vec<Instr> {
         }
         let mut instr = cur.take().unwrap_or_else(|| unreachable!());
         instr.keyword = instr.words.first().map(Word::upper).unwrap_or_default();
-        if matches!(instr.keyword.as_str(), "COPY" | "RENDER" | "TRANSFORM") || instr.is_html_let() {
-            let marker = instr.words.iter().position(|w| heredoc_marker(&w.text).is_some());
+        if matches!(instr.keyword.as_str(), "COPY" | "RENDER" | "TRANSFORM") || instr.is_html_let()
+        {
+            let marker = instr
+                .words
+                .iter()
+                .position(|w| heredoc_marker(&w.text).is_some());
             if let Some(m) = marker {
                 let (strip, delimiter) = heredoc_marker(&instr.words[m].text).unwrap_or_default();
                 let start_line = ln;
@@ -262,10 +278,23 @@ pub fn instructions(lines: &Lines) -> Vec<Instr> {
                     }
                     ln += 1;
                 }
-                let end_line = if closed { ln } else { n.saturating_sub(1).max(start_line) };
+                let end_line = if closed {
+                    ln
+                } else {
+                    n.saturating_sub(1).max(start_line)
+                };
                 let last = if closed { end_line } else { n };
-                let text: String = (start_line..last).map(|l| format!("{}\n", lines.get(l))).collect();
-                instr.body = Some(Body { delimiter, start_line, end_line, closed, marker: m, text });
+                let text: String = (start_line..last)
+                    .map(|l| format!("{}\n", lines.get(l)))
+                    .collect();
+                instr.body = Some(Body {
+                    delimiter,
+                    start_line,
+                    end_line,
+                    closed,
+                    marker: m,
+                    text,
+                });
                 ln = end_line + 1;
             }
         }
@@ -331,7 +360,10 @@ pub fn interpolations(text: &str) -> Vec<Interp> {
         }
         let mut each = false;
         if chars.get(j) == Some(&'#') {
-            let word: String = chars[j + 1..].iter().take_while(|c| c.is_ascii_alphabetic()).collect();
+            let word: String = chars[j + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
             each = word == "each";
             j += 1 + word.len();
             while chars.get(j).is_some_and(|c| *c == ' ') {
@@ -349,7 +381,8 @@ pub fn interpolations(text: &str) -> Vec<Interp> {
                 if each {
                     // `as item`: skip the dotted path, then ` as `.
                     let mut k = b;
-                    while matches!(chars.get(k), Some(c) if *c == '.' || *c == '-' || *c == '_' || c.is_ascii_alphanumeric()) {
+                    while matches!(chars.get(k), Some(c) if *c == '.' || *c == '-' || *c == '_' || c.is_ascii_alphanumeric())
+                    {
                         k += 1;
                     }
                     let rest: String = chars[k..].iter().take(4).collect();
@@ -359,7 +392,12 @@ pub fn interpolations(text: &str) -> Vec<Interp> {
                         }
                     }
                 }
-                out.push(Interp { name, start: cols[a], end: cols[b], each_var });
+                out.push(Interp {
+                    name,
+                    start: cols[a],
+                    end: cols[b],
+                    each_var,
+                });
             }
             i = b;
         } else {
@@ -371,7 +409,10 @@ pub fn interpolations(text: &str) -> Vec<Interp> {
 
 /// Leading identifier of a word (`NAME` of `NAME:number=1`): its char length.
 fn leading_ident(s: &str) -> Option<&str> {
-    let n = s.chars().take_while(|c| *c == '_' || c.is_ascii_alphanumeric()).count();
+    let n = s
+        .chars()
+        .take_while(|c| *c == '_' || c.is_ascii_alphanumeric())
+        .count();
     let name = &s[..n];
     is_ident(name).then_some(name)
 }
@@ -391,11 +432,23 @@ pub fn build(lines: &Lines) -> Index {
     let mut uses: Vec<(String, u32, u32, u32, Pending)> = Vec::new();
     let mut imported: Vec<ImportedRef> = Vec::new();
     // `<import>+<stage>` at `start` of `line`: a use of the import, then the stage of the imported Sitefile.
-    let mut imported_ref = |text: &str, line: u32, start: u32, uses: &mut Vec<(String, u32, u32, u32, Pending)>| -> bool {
-        let Some((import, stage)) = imported_stage(text) else { return false };
+    let mut imported_ref = |text: &str,
+                            line: u32,
+                            start: u32,
+                            uses: &mut Vec<(String, u32, u32, u32, Pending)>|
+     -> bool {
+        let Some((import, stage)) = imported_stage(text) else {
+            return false;
+        };
         let mid = start + utf16_len(import);
         uses.push((import.to_string(), line, start, mid, Pending::Global));
-        imported.push(ImportedRef { import: import.to_string(), stage: stage.to_string(), line, start: mid + 1, end: mid + 1 + utf16_len(stage) });
+        imported.push(ImportedRef {
+            import: import.to_string(),
+            stage: stage.to_string(),
+            line,
+            start: mid + 1,
+            end: mid + 1 + utf16_len(stage),
+        });
         true
     };
 
@@ -406,7 +459,14 @@ pub fn build(lines: &Lines) -> Index {
             if let Some(word) = w.get(i) {
                 if let Some(name) = leading_ident(&word.text) {
                     let end = word.start + utf16_len(name);
-                    defs.push(Def { name: name.to_string(), kind, line: word.line, start: word.start, end, instr: ix });
+                    defs.push(Def {
+                        name: name.to_string(),
+                        kind,
+                        line: word.line,
+                        start: word.start,
+                        end,
+                        instr: ix,
+                    });
                 }
             }
         };
@@ -451,7 +511,13 @@ pub fn build(lines: &Lines) -> Index {
                         if imported_ref(v, fw.line, fw.start + 7, &mut uses) {
                         } else if is_ident(v) {
                             let start = fw.start + 7;
-                            uses.push((v.to_string(), fw.line, start, start + utf16_len(v), Pending::Global));
+                            uses.push((
+                                v.to_string(),
+                                fw.line,
+                                start,
+                                start + utf16_len(v),
+                                Pending::Global,
+                            ));
                         }
                     }
                 }
@@ -459,16 +525,32 @@ pub fn build(lines: &Lines) -> Index {
                 if let Some(s) = word(src) {
                     if let Some((name, _)) = s.text.split_once(':') {
                         if is_ident(name) && !s.text.contains("://") {
-                            uses.push((name.to_string(), s.line, s.start, s.start + utf16_len(name), Pending::Global));
+                            uses.push((
+                                name.to_string(),
+                                s.line,
+                                s.start,
+                                s.start + utf16_len(name),
+                                Pending::Global,
+                            ));
                         }
                     }
                 }
                 if let Some(f) = ins.find_kw("FOR", src) {
                     name_def(&mut defs, f + 1, SymKind::LoopVar);
-                    if ins.words.get(f + 2).is_some_and(|w| w.text.eq_ignore_ascii_case("IN")) {
+                    if ins
+                        .words
+                        .get(f + 2)
+                        .is_some_and(|w| w.text.eq_ignore_ascii_case("IN"))
+                    {
                         if let Some(l) = word(f + 3) {
                             if is_ident(&l.text) {
-                                uses.push((l.text.clone(), l.line, l.start, l.end, Pending::Global));
+                                uses.push((
+                                    l.text.clone(),
+                                    l.line,
+                                    l.start,
+                                    l.end,
+                                    Pending::Global,
+                                ));
                             }
                         }
                     }
@@ -477,7 +559,13 @@ pub fn build(lines: &Lines) -> Index {
                     if let Some(k) = ins.find_kw("WITH", 1) {
                         if let Some(p) = word(k + 1) {
                             if is_ident(&p.text) {
-                                uses.push((p.text.clone(), p.line, p.start, p.end, Pending::Global));
+                                uses.push((
+                                    p.text.clone(),
+                                    p.line,
+                                    p.start,
+                                    p.end,
+                                    Pending::Global,
+                                ));
                             }
                         }
                     }
@@ -491,7 +579,13 @@ pub fn build(lines: &Lines) -> Index {
                 continue;
             }
             for it in interpolations(&word.text) {
-                uses.push((it.name, word.line, word.start + it.start, word.start + it.end, Pending::Scoped(ix)));
+                uses.push((
+                    it.name,
+                    word.line,
+                    word.start + it.start,
+                    word.start + it.end,
+                    Pending::Scoped(ix),
+                ));
             }
         }
         // RENDER and html LET heredoc bodies are templates.
@@ -502,7 +596,14 @@ pub fn build(lines: &Lines) -> Index {
                 }
                 for it in interpolations(lines.get(l)) {
                     if let Some((v, s, e)) = &it.each_var {
-                        defs.push(Def { name: v.clone(), kind: SymKind::LoopVar, line: l, start: *s, end: *e, instr: ix });
+                        defs.push(Def {
+                            name: v.clone(),
+                            kind: SymKind::LoopVar,
+                            line: l,
+                            start: *s,
+                            end: *e,
+                            instr: ix,
+                        });
                     }
                     uses.push((it.name, l, it.start, it.end, Pending::Scoped(ix)));
                 }
@@ -520,12 +621,22 @@ pub fn build(lines: &Lines) -> Index {
     let mut occs: Vec<Occ> = defs
         .iter()
         .enumerate()
-        .map(|(i, d)| Occ { name: d.name.clone(), line: d.line, start: d.start, end: d.end, def: Some(i), is_def: true })
+        .map(|(i, d)| Occ {
+            name: d.name.clone(),
+            line: d.line,
+            start: d.start,
+            end: d.end,
+            def: Some(i),
+            is_def: true,
+        })
         .collect();
     for (name, line, start, end, how) in uses {
         let def = match how {
             Pending::Global => global.get(name.as_str()).copied(),
-            Pending::StageOnly => global.get(name.as_str()).copied().filter(|&i| defs[i].kind == SymKind::Stage),
+            Pending::StageOnly => global
+                .get(name.as_str())
+                .copied()
+                .filter(|&i| defs[i].kind == SymKind::Stage),
             Pending::Scoped(ix) => defs
                 .iter()
                 .position(|d| d.kind == SymKind::LoopVar && d.instr == ix && d.name == name)
@@ -534,15 +645,29 @@ pub fn build(lines: &Lines) -> Index {
         if matches!(how, Pending::StageOnly) && def.is_none() {
             continue; // a context directory, not a name
         }
-        occs.push(Occ { name, line, start, end, def, is_def: false });
+        occs.push(Occ {
+            name,
+            line,
+            start,
+            end,
+            def,
+            is_def: false,
+        });
     }
-    Index { instrs, defs, occs, imported }
+    Index {
+        instrs,
+        defs,
+        occs,
+        imported,
+    }
 }
 
 impl Index {
     /// The occurrence under the cursor.
     pub fn occ_at(&self, line: u32, col: u32) -> Option<&Occ> {
-        self.occs.iter().find(|o| o.line == line && o.start <= col && col <= o.end)
+        self.occs
+            .iter()
+            .find(|o| o.line == line && o.start <= col && col <= o.end)
     }
     /// Every occurrence of definition `def` (its definition first).
     pub fn occs_of(&self, def: usize) -> Vec<&Occ> {
@@ -552,11 +677,15 @@ impl Index {
     }
     /// The `<stage>` of an `<import>+<stage>` under the cursor.
     pub fn imported_at(&self, line: u32, col: u32) -> Option<&ImportedRef> {
-        self.imported.iter().find(|r| r.line == line && r.start <= col && col <= r.end)
+        self.imported
+            .iter()
+            .find(|r| r.line == line && r.start <= col && col <= r.end)
     }
     /// The instruction whose lines (body included) contain `line`.
     pub fn instr_at(&self, line: u32) -> Option<usize> {
-        self.instrs.iter().position(|i| i.start_line <= line && line <= i.last_line())
+        self.instrs
+            .iter()
+            .position(|i| i.start_line <= line && line <= i.last_line())
     }
     /// Global definitions of the given kinds that appear before `line`.
     pub fn defs_before(&self, line: u32, kinds: &[SymKind]) -> Vec<&Def> {
@@ -583,7 +712,15 @@ mod tests {
         let kws: Vec<&str> = ix.instrs.iter().map(|i| i.keyword.as_str()).collect();
         assert_eq!(kws, ["FROM", "COPY", "RENDER", "EXPORT"]);
         assert_eq!((ix.instrs[1].start_line, ix.instrs[1].end_line), (2, 4));
-        assert_eq!(ix.instrs[1].words[2], Word { text: "/y".into(), line: 4, start: 2, end: 4 });
+        assert_eq!(
+            ix.instrs[1].words[2],
+            Word {
+                text: "/y".into(),
+                line: 4,
+                start: 2,
+                end: 4
+            }
+        );
         let b = ix.instrs[2].body.as_ref().unwrap();
         assert_eq!((b.start_line, b.end_line, b.closed), (6, 7, true));
         assert!(b.contains_line(6) && !b.contains_line(7));
@@ -608,7 +745,9 @@ mod tests {
 
     #[test]
     fn interpolation_scan() {
-        let v = interpolations("a ${X} $${no} \\${no} ${post.title} ${#each posts as p}${else}${/each} ${#if !y}");
+        let v = interpolations(
+            "a ${X} $${no} \\${no} ${post.title} ${#each posts as p}${else}${/each} ${#if !y}",
+        );
         let names: Vec<&str> = v.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["X", "post", "posts", "y"]);
         assert_eq!((v[0].start, v[0].end), (4, 5));
@@ -619,10 +758,16 @@ mod tests {
     fn definitions_and_references() {
         let src = "ARG TITLE: string = Hi\nIMPORT posts FROM ./posts AS markdown\nSTAGE site\nRENDER --from=site ./t TO /${TITLE}/${p.slug}.html FOR p IN posts\nFROM site\nCOPY --from=site / /\nEXPORT /";
         let ix = idx(src);
-        let names: Vec<(&str, SymKind)> = ix.defs.iter().map(|d| (d.name.as_str(), d.kind)).collect();
+        let names: Vec<(&str, SymKind)> =
+            ix.defs.iter().map(|d| (d.name.as_str(), d.kind)).collect();
         assert_eq!(
             names,
-            [("TITLE", SymKind::Arg), ("posts", SymKind::Import), ("site", SymKind::Stage), ("p", SymKind::LoopVar)]
+            [
+                ("TITLE", SymKind::Arg),
+                ("posts", SymKind::Import),
+                ("site", SymKind::Stage),
+                ("p", SymKind::LoopVar)
+            ]
         );
         let site = ix.defs.iter().position(|d| d.name == "site").unwrap();
         let refs: Vec<(u32, u32)> = ix.occs_of(site).iter().map(|o| (o.line, o.start)).collect();

@@ -4,7 +4,9 @@
 
 use super::args::{flag, string, string_s, strings, OptSpec, Parsed};
 use super::common::{err, is_safe_integer, js_to_number, out, pretty_json, usage, Command};
-use crate::bake::{bake_plan, bake_plan_json, bake_plan_text, build_argv, find_bake_file, BakeTarget};
+use crate::bake::{
+    bake_plan, bake_plan_json, bake_plan_text, build_argv, find_bake_file, BakeTarget,
+};
 use crate::cache_limit::CACHE_MAX_ENV;
 use crate::error::Result;
 use crate::executor::join_path;
@@ -15,9 +17,32 @@ use std::sync::{Condvar, Mutex};
 const DEFAULT_JOBS: u64 = 4;
 
 /// Flags passed unchanged to every target's build.
-const PASS_BOOLEANS: &[&str] = &["allow-plugins", "no-cache", "strict-pins", "frozen-lockfile", "update-lock", "no-lockfile", "allow-http", "allow-private-network", "allow-hardlinks", "force"];
-const PASS_STRINGS: &[&str] = &["vendor-dir", "max-download-bytes", "timeout", "plugin-timeout"];
-const PASS_LISTS: &[&str] = &["allow-exec", "allow-plugin", "cache-from", "insecure-registry", "build-arg-file", "build-arg"];
+const PASS_BOOLEANS: &[&str] = &[
+    "allow-plugins",
+    "no-cache",
+    "strict-pins",
+    "frozen-lockfile",
+    "update-lock",
+    "no-lockfile",
+    "allow-http",
+    "allow-private-network",
+    "allow-hardlinks",
+    "force",
+];
+const PASS_STRINGS: &[&str] = &[
+    "vendor-dir",
+    "max-download-bytes",
+    "timeout",
+    "plugin-timeout",
+];
+const PASS_LISTS: &[&str] = &[
+    "allow-exec",
+    "allow-plugin",
+    "cache-from",
+    "insecure-registry",
+    "build-arg-file",
+    "build-arg",
+];
 
 const FLAGS: &[&str] = &[
     "-f, --file <path>             bake file (default: sitefile.bake.yaml, .yml or .json)",
@@ -110,12 +135,31 @@ struct Outcome {
 fn run_build(argv: &[String]) -> Outcome {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
-        Err(e) => return Outcome { code: 1, stdout: String::new(), stderr: format!("error: cannot run the build: {e}\n") },
+        Err(e) => {
+            return Outcome {
+                code: 1,
+                stdout: String::new(),
+                stderr: format!("error: cannot run the build: {e}\n"),
+            }
+        }
     };
     // Each target evicts nothing; bake applies the cache size limit once, at the end.
-    match std::process::Command::new(exe).args(argv).env(CACHE_MAX_ENV, "0").stdin(Stdio::null()).output() {
-        Ok(o) => Outcome { code: o.status.code().unwrap_or(1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() },
-        Err(e) => Outcome { code: 1, stdout: String::new(), stderr: format!("error: cannot run the build: {e}\n") },
+    match std::process::Command::new(exe)
+        .args(argv)
+        .env(CACHE_MAX_ENV, "0")
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(o) => Outcome {
+            code: o.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        },
+        Err(e) => Outcome {
+            code: 1,
+            stdout: String::new(),
+            stderr: format!("error: cannot run the build: {e}\n"),
+        },
     }
 }
 
@@ -136,7 +180,16 @@ fn lock_key(t: &BakeTarget, v: &Parsed) -> Option<String> {
     if v.flag("no-lockfile") || v.flag("frozen-lockfile") {
         return None;
     }
-    let file = if t.file.starts_with('/') { t.file.clone() } else { join_path(&std::env::current_dir().unwrap_or_default().to_string_lossy(), &t.file) };
+    let file = if t.file.starts_with('/') {
+        t.file.clone()
+    } else {
+        join_path(
+            &std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            &t.file,
+        )
+    };
     Some(join_path(&file, "../Sitefile.lock"))
 }
 
@@ -169,7 +222,11 @@ fn run_bake(v: &Parsed) -> Result<i32> {
     }
     let plan = bake_plan(&find_bake_file(v.str("file"))?, &v.positionals)?;
     if v.flag("print") {
-        out(&if v.flag("json") { pretty_json(&bake_plan_json(&plan)) + "\n" } else { bake_plan_text(&plan) });
+        out(&if v.flag("json") {
+            pretty_json(&bake_plan_json(&plan)) + "\n"
+        } else {
+            bake_plan_text(&plan)
+        });
         return Ok(0);
     }
     if let Some(dir) = &profile {
@@ -178,7 +235,11 @@ fn run_bake(v: &Parsed) -> Result<i32> {
     let extra = pass_through(v);
     let targets = &plan.targets;
     let keys: Vec<Option<String>> = targets.iter().map(|t| lock_key(t, v)).collect();
-    let state = Mutex::new(State { pending: (0..targets.len()).collect(), busy: HashSet::new(), results: targets.iter().map(|_| None).collect() });
+    let state = Mutex::new(State {
+        pending: (0..targets.len()).collect(),
+        busy: HashSet::new(),
+        results: targets.iter().map(|_| None).collect(),
+    });
     let changed = Condvar::new();
     std::thread::scope(|scope| {
         for _ in 0..jobs.min(targets.len()) {
@@ -189,7 +250,10 @@ fn run_bake(v: &Parsed) -> Result<i32> {
                         return;
                     }
                     // The first pending target whose Sitefile.lock no running build may write.
-                    let ready = st.pending.iter().position(|&i| keys[i].as_ref().is_none_or(|k| !st.busy.contains(k)));
+                    let ready = st
+                        .pending
+                        .iter()
+                        .position(|&i| keys[i].as_ref().is_none_or(|k| !st.busy.contains(k)));
                     match ready {
                         Some(k) => break st.pending.remove(k),
                         None => st = changed.wait(st).unwrap(),
@@ -203,7 +267,10 @@ fn run_bake(v: &Parsed) -> Result<i32> {
                 let mut argv = build_argv(t);
                 argv.extend(extra.iter().cloned());
                 if let Some(dir) = &profile {
-                    argv.extend(["--profile".to_string(), join_path(dir, &format!("{}.json", t.name))]);
+                    argv.extend([
+                        "--profile".to_string(),
+                        join_path(dir, &format!("{}.json", t.name)),
+                    ]);
                 }
                 let r = run_build(&argv);
                 let mut st = state.lock().unwrap();
@@ -232,10 +299,23 @@ fn run_bake(v: &Parsed) -> Result<i32> {
     });
     super::cache::evict_after_build();
     let st = state.into_inner().unwrap();
-    let failed: Vec<&str> = targets.iter().zip(&st.results).filter(|(_, r)| r.as_ref().is_none_or(|r| r.code != 0)).map(|(t, _)| t.name.as_str()).collect();
-    let n = format!("{} target{}", targets.len(), if targets.len() == 1 { "" } else { "s" });
+    let failed: Vec<&str> = targets
+        .iter()
+        .zip(&st.results)
+        .filter(|(_, r)| r.as_ref().is_none_or(|r| r.code != 0))
+        .map(|(t, _)| t.name.as_str())
+        .collect();
+    let n = format!(
+        "{} target{}",
+        targets.len(),
+        if targets.len() == 1 { "" } else { "s" }
+    );
     if !failed.is_empty() {
-        err(&format!("error[E_BAKE]: {} of {n} failed: {}\n", failed.len(), failed.join(", ")));
+        err(&format!(
+            "error[E_BAKE]: {} of {n} failed: {}\n",
+            failed.len(),
+            failed.join(", ")
+        ));
         return Ok(1);
     }
     out(&format!("Baked {n}\n"));

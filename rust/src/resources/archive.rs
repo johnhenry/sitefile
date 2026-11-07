@@ -37,20 +37,38 @@ impl Collector<'_> {
             return Ok(());
         }
         if self.file_paths.contains(&path) || (kind == Kind::File && self.dirs.contains(&path)) {
-            return Err(SitefileError::new(E_CONFLICT, format!("{}: duplicate archive entry '{name}'", self.origin), self.span.cloned()));
+            return Err(SitefileError::new(
+                E_CONFLICT,
+                format!("{}: duplicate archive entry '{name}'", self.origin),
+                self.span.cloned(),
+            ));
         }
         if kind == Kind::Dir {
             self.dirs.insert(path);
             return Ok(());
         }
         if self.files.len() as u64 + 1 > self.limits.max_entries {
-            return Err(limit(self.origin, format!("archive has more than {} entries", self.limits.max_entries), self.span));
+            return Err(limit(
+                self.origin,
+                format!("archive has more than {} entries", self.limits.max_entries),
+                self.span,
+            ));
         }
         self.total = self.total.saturating_add(data.len() as u64);
         if self.total > self.limits.max_total_bytes {
-            return Err(limit(self.origin, format!("archive expands beyond {} bytes", self.limits.max_total_bytes), self.span));
+            return Err(limit(
+                self.origin,
+                format!(
+                    "archive expands beyond {} bytes",
+                    self.limits.max_total_bytes
+                ),
+                self.span,
+            ));
         }
-        self.files.push((path.clone(), make_file(data.to_vec(), format!("{}:{name}", self.origin), mode)));
+        self.files.push((
+            path.clone(),
+            make_file(data.to_vec(), format!("{}:{name}", self.origin), mode),
+        ));
         self.file_paths.insert(path);
         Ok(())
     }
@@ -61,7 +79,11 @@ fn limit(origin: &str, why: String, span: Option<&SourceSpan>) -> SitefileError 
 }
 
 fn corrupt(origin: &str, why: impl AsRef<str>, span: Option<&SourceSpan>) -> SitefileError {
-    SitefileError::new(E_ARCHIVE, format!("{origin}: {}", why.as_ref()), span.cloned())
+    SitefileError::new(
+        E_ARCHIVE,
+        format!("{origin}: {}", why.as_ref()),
+        span.cloned(),
+    )
 }
 
 /// Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2) archive into a Tree. The format is detected
@@ -69,15 +91,32 @@ fn corrupt(origin: &str, why: impl AsRef<str>, span: Option<&SourceSpan>) -> Sit
 /// and unsafe entries (absolute or `..` paths, backslashes, NUL, symlinks, hard
 /// links, devices) are rejected, not skipped. A single top-level directory is
 /// kept as-is.
-pub fn extract_archive(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> Result<Tree> {
+pub fn extract_archive(
+    bytes: &[u8],
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Tree> {
     if is_web_bundle(bytes) {
         return web_bundle_to_tree(&read_web_bundle(bytes, origin, limits, span)?, origin, span);
     }
-    let mut c = Collector { origin, limits, span, files: Vec::new(), file_paths: HashSet::new(), dirs: HashSet::new(), total: 0 };
+    let mut c = Collector {
+        origin,
+        limits,
+        span,
+        files: Vec::new(),
+        file_paths: HashSet::new(),
+        dirs: HashSet::new(),
+        total: 0,
+    };
     if is_gzip(bytes) {
         let tar = gunzip(bytes, origin, limits, span)?;
         if !is_tar(&tar) {
-            return Err(SitefileError::new(E_TYPE, format!("{origin}: gzip content is not a tar archive"), span.cloned()));
+            return Err(SitefileError::new(
+                E_TYPE,
+                format!("{origin}: gzip content is not a tar archive"),
+                span.cloned(),
+            ));
         }
         read_tar(&tar, &mut c)?;
     } else if is_zip(bytes) {
@@ -98,7 +137,10 @@ fn is_gzip(b: &[u8]) -> bool {
     b.len() > 2 && b[0] == 0x1f && b[1] == 0x8b
 }
 fn is_zip(b: &[u8]) -> bool {
-    b.len() >= 4 && b[0] == 0x50 && b[1] == 0x4b && ((b[2] == 3 && b[3] == 4) || (b[2] == 5 && b[3] == 6))
+    b.len() >= 4
+        && b[0] == 0x50
+        && b[1] == 0x4b
+        && ((b[2] == 3 && b[3] == 4) || (b[2] == 5 && b[3] == 6))
 }
 fn is_tar(b: &[u8]) -> bool {
     b.len() >= 512
@@ -115,7 +157,14 @@ fn starts_with_drive(name: &str) -> bool {
 /// Validate an entry name and return its normalized virtual path.
 fn archive_path(name: &str, span: Option<&SourceSpan>) -> Result<String> {
     let bad = |why: &str| {
-        SitefileError::new(E_ARCHIVE_UNSAFE, format!("unsafe archive entry '{}': {why}", name.replace('\0', "\\0")), span.cloned())
+        SitefileError::new(
+            E_ARCHIVE_UNSAFE,
+            format!(
+                "unsafe archive entry '{}': {why}",
+                name.replace('\0', "\\0")
+            ),
+            span.cloned(),
+        )
     };
     if name.contains('\0') {
         return Err(bad("NUL byte"));
@@ -134,12 +183,22 @@ fn archive_path(name: &str, span: Option<&SourceSpan>) -> Result<String> {
 
 // ------------------------------------------------------------------ gzip
 
-fn gunzip(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
-    let by_ratio = (bytes.len() as u64).saturating_mul(limits.max_ratio).max(RATIO_FLOOR);
+fn gunzip(
+    bytes: &[u8],
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Vec<u8>> {
+    let by_ratio = (bytes.len() as u64)
+        .saturating_mul(limits.max_ratio)
+        .max(RATIO_FLOOR);
     // The inflated stream is tar: file data plus headers and padding for every entry.
-    let by_total = limits
-        .max_total_bytes
-        .saturating_add(limits.max_entries.saturating_add(2).saturating_mul(TAR_OVERHEAD_PER_ENTRY));
+    let by_total = limits.max_total_bytes.saturating_add(
+        limits
+            .max_entries
+            .saturating_add(2)
+            .saturating_mul(TAR_OVERHEAD_PER_ENTRY),
+    );
     match inflate_like_node(bytes, true, by_ratio.min(by_total)) {
         Inflated::Done(out) => Ok(out),
         Inflated::TooLarge => Err(too_large(origin, by_ratio <= by_total, limits, span)),
@@ -167,7 +226,13 @@ enum Inflated {
 /// padding is ignored); a raw deflate stream ignores anything after its end.
 /// Never inflates more than `cap` + 16 KiB.
 fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
-    let fresh = || if gzip { Decompress::new_gzip(15) } else { Decompress::new(false) };
+    let fresh = || {
+        if gzip {
+            Decompress::new_gzip(15)
+        } else {
+            Decompress::new(false)
+        }
+    };
     let mut d = fresh();
     let mut out: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; NODE_CHUNK];
@@ -176,8 +241,13 @@ fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
     loop {
         let (in0, out0) = (d.total_in(), d.total_out());
         let status = d.decompress(&input[pos..], &mut buf[fill..], FlushDecompress::None);
-        let (consumed, produced) = ((d.total_in() - in0) as usize, (d.total_out() - out0) as usize);
-        let Ok(status) = status else { return Inflated::Corrupt };
+        let (consumed, produced) = (
+            (d.total_in() - in0) as usize,
+            (d.total_out() - out0) as usize,
+        );
+        let Ok(status) = status else {
+            return Inflated::Corrupt;
+        };
         pos += consumed;
         out.extend_from_slice(&buf[fill..fill + produced]);
         fill += produced;
@@ -186,7 +256,11 @@ fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
                 d = fresh(); // the next member, in the same buffer
                 continue;
             }
-            return if out.len() as u64 > cap { Inflated::TooLarge } else { Inflated::Done(out) };
+            return if out.len() as u64 > cap {
+                Inflated::TooLarge
+            } else {
+                Inflated::Done(out)
+            };
         }
         if fill == NODE_CHUNK {
             if out.len() as u64 > cap {
@@ -195,16 +269,33 @@ fn inflate_like_node(input: &[u8], gzip: bool, cap: u64) -> Inflated {
             fill = 0;
         } else if pos == input.len() || (consumed == 0 && produced == 0) {
             // Truncated: what was inflated is handed on, then "unexpected end of file".
-            return if out.len() as u64 > cap { Inflated::TooLarge } else { Inflated::Corrupt };
+            return if out.len() as u64 > cap {
+                Inflated::TooLarge
+            } else {
+                Inflated::Corrupt
+            };
         }
     }
 }
 
-fn too_large(origin: &str, ratio: bool, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> SitefileError {
+fn too_large(
+    origin: &str,
+    ratio: bool,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> SitefileError {
     if ratio {
-        limit(origin, format!("compression ratio exceeds {}:1", limits.max_ratio), span)
+        limit(
+            origin,
+            format!("compression ratio exceeds {}:1", limits.max_ratio),
+            span,
+        )
     } else {
-        limit(origin, format!("archive expands beyond {} bytes", limits.max_total_bytes), span)
+        limit(
+            origin,
+            format!("archive expands beyond {} bytes", limits.max_total_bytes),
+            span,
+        )
     }
 }
 
@@ -212,7 +303,11 @@ fn too_large(origin: &str, ratio: bool, limits: &ArchiveLimits, span: Option<&So
 
 /// `parseInt(field.replace(/[\0 ]/g, ''), radix)` on a Latin-1 header field.
 fn js_parse_int(field: &[u8], radix: u32) -> f64 {
-    let s: Vec<u8> = field.iter().copied().filter(|&c| c != 0 && c != b' ').collect();
+    let s: Vec<u8> = field
+        .iter()
+        .copied()
+        .filter(|&c| c != 0 && c != b' ')
+        .collect();
     js_parse_int_raw(&s, radix)
 }
 
@@ -220,7 +315,10 @@ fn js_parse_int(field: &[u8], radix: u32) -> f64 {
 /// Latin-1 has tab to CR, space and NBSP), an optional sign, then the longest
 /// run of digits. NaN if there are none.
 fn js_parse_int_raw(s: &[u8], radix: u32) -> f64 {
-    let mut i = s.iter().take_while(|&&c| matches!(c, 0x09..=0x0d | b' ' | 0xa0)).count();
+    let mut i = s
+        .iter()
+        .take_while(|&&c| matches!(c, 0x09..=0x0d | b' ' | 0xa0))
+        .count();
     let neg = match s.get(i) {
         Some(b'-') => {
             i += 1;
@@ -271,7 +369,11 @@ fn tar_checksum_ok(b: &[u8], off: usize) -> bool {
     }
     let mut sum: u64 = 0;
     for i in 0..512 {
-        sum += if (148..156).contains(&i) { 32 } else { b[off + i] as u64 };
+        sum += if (148..156).contains(&i) {
+            32
+        } else {
+            b[off + i] as u64
+        };
     }
     js_parse_int(&b[off + 148..off + 156], 8) == sum as f64
 }
@@ -314,9 +416,15 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
             return Err(corrupt(origin, "invalid tar header checksum", span));
         }
         let ty = b[h + 156];
-        let size = next_size.map(|s| s as f64).unwrap_or_else(|| tar_number(b, h + 124, h + 136));
+        let size = next_size
+            .map(|s| s as f64)
+            .unwrap_or_else(|| tar_number(b, h + 124, h + 136));
         if !is_safe_integer(size) || size < 0.0 || size > limits.max_total_bytes as f64 {
-            return Err(limit(origin, format!("archive entry larger than {} bytes", limits.max_total_bytes), span));
+            return Err(limit(
+                origin,
+                format!("archive entry larger than {} bytes", limits.max_total_bytes),
+                span,
+            ));
         }
         let size = size as usize; // -0 is 0
         if h + 512 + size > b.len() {
@@ -341,7 +449,11 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
         }
         entries += 1;
         if entries > limits.max_entries {
-            return Err(limit(origin, format!("archive has more than {} entries", limits.max_entries), span));
+            return Err(limit(
+                origin,
+                format!("archive has more than {} entries", limits.max_entries),
+                span,
+            ));
         }
         let name = match next_name.take() {
             Some(n) => n,
@@ -361,7 +473,11 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
         match ty {
             b'0' | 0 | b'7' => {
                 // makeFile's `mode & 0o111` on the JavaScript number (NaN is 0: 0o644).
-                let mode = if to_int32(tar_number(b, h + 100, h + 108)) & 0o111 != 0 { 0o755 } else { 0o644 };
+                let mode = if to_int32(tar_number(b, h + 100, h + 108)) & 0o111 != 0 {
+                    0o755
+                } else {
+                    0o644
+                };
                 c.add(&name, Kind::File, data, mode)?
             }
             b'5' => c.add(&name, Kind::Dir, data, 0o755)?,
@@ -382,7 +498,11 @@ fn read_tar(b: &[u8], c: &mut Collector) -> Result<()> {
     Ok(())
 }
 
-fn parse_pax(data: &[u8], origin: &str, span: Option<&SourceSpan>) -> Result<(Option<String>, Option<u64>)> {
+fn parse_pax(
+    data: &[u8],
+    origin: &str,
+    span: Option<&SourceSpan>,
+) -> Result<(Option<String>, Option<u64>)> {
     let mut path: Option<String> = None;
     let mut size: Option<u64> = None;
     let mut pos = 0usize;
@@ -396,7 +516,11 @@ fn parse_pax(data: &[u8], origin: &str, span: Option<&SourceSpan>) -> Result<(Op
         }
         let len = len as usize;
         let (start, end) = (sp + 1, pos + len - 1); // drop trailing newline
-        let kv = if end > start { String::from_utf8_lossy(&data[start..end]).into_owned() } else { String::new() };
+        let kv = if end > start {
+            String::from_utf8_lossy(&data[start..end]).into_owned()
+        } else {
+            String::new()
+        };
         let eq = kv.find('=');
         let eq = match eq {
             Some(e) if e > 0 => e,
@@ -408,7 +532,11 @@ fn parse_pax(data: &[u8], origin: &str, span: Option<&SourceSpan>) -> Result<(Op
         }
         if key == "size" {
             if value.is_empty() || !value.bytes().all(|x| x.is_ascii_digit()) {
-                return Err(corrupt(origin, format!("malformed pax size '{value}'"), span));
+                return Err(corrupt(
+                    origin,
+                    format!("malformed pax size '{value}'"),
+                    span,
+                ));
             }
             size = Some(value.parse::<u64>().unwrap_or(u64::MAX));
         }
@@ -457,7 +585,11 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         return Err(bad("zip64 archives are not supported".into()));
     }
     if count as u64 > limits.max_entries {
-        return Err(limit(origin, format!("archive has more than {} entries", limits.max_entries), span));
+        return Err(limit(
+            origin,
+            format!("archive has more than {} entries", limits.max_entries),
+            span,
+        ));
     }
 
     let mut list: Vec<ZipEntry> = Vec::new();
@@ -486,7 +618,10 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
             name,
         };
         if u16le(b, p + 8) & 1 != 0 {
-            return Err(bad(format!("encrypted zip entry '{}' is not supported", e.name)));
+            return Err(bad(format!(
+                "encrypted zip entry '{}' is not supported",
+                e.name
+            )));
         }
         if e.csize == 0xffff_ffff || e.usize_ == 0xffff_ffff {
             return Err(bad("zip64 archives are not supported".into()));
@@ -494,7 +629,10 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         if unix && file_type != 0 && file_type != 0o100000 && file_type != 0o040000 {
             return Err(SitefileError::new(
                 E_ARCHIVE_UNSAFE,
-                format!("unsafe archive entry '{}': symlink or special file entries are not allowed", e.name),
+                format!(
+                    "unsafe archive entry '{}': symlink or special file entries are not allowed",
+                    e.name
+                ),
                 span.cloned(),
             ));
         }
@@ -503,10 +641,22 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         p += advance;
     }
     if declared > limits.max_total_bytes {
-        return Err(limit(origin, format!("archive expands beyond {} bytes", limits.max_total_bytes), span));
+        return Err(limit(
+            origin,
+            format!("archive expands beyond {} bytes", limits.max_total_bytes),
+            span,
+        ));
     }
-    if declared > (b.len() as u64).saturating_mul(limits.max_ratio).max(RATIO_FLOOR) {
-        return Err(limit(origin, format!("compression ratio exceeds {}:1", limits.max_ratio), span));
+    if declared
+        > (b.len() as u64)
+            .saturating_mul(limits.max_ratio)
+            .max(RATIO_FLOOR)
+    {
+        return Err(limit(
+            origin,
+            format!("compression ratio exceeds {}:1", limits.max_ratio),
+            span,
+        ));
     }
 
     for e in &list {
@@ -533,10 +683,18 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                     Inflated::Corrupt => return Err(bad("corrupt compressed data".into())),
                 }
             }
-            m => return Err(bad(format!("zip entry '{}' uses unsupported compression method {m}", e.name))),
+            m => {
+                return Err(bad(format!(
+                    "zip entry '{}' uses unsupported compression method {m}",
+                    e.name
+                )))
+            }
         };
         if data.len() as u64 != e.usize_ as u64 {
-            return Err(bad(format!("zip entry '{}' size does not match its header", e.name)));
+            return Err(bad(format!(
+                "zip entry '{}' size does not match its header",
+                e.name
+            )));
         }
         c.add(&e.name, Kind::File, &data, e.mode)?;
     }
@@ -564,10 +722,18 @@ pub(crate) mod tests {
         pub linkname: Option<String>,
     }
     pub(crate) fn te(name: &str, data: &str) -> TarEntry {
-        TarEntry { name: name.into(), data: data.as_bytes().to_vec(), ..Default::default() }
+        TarEntry {
+            name: name.into(),
+            data: data.as_bytes().to_vec(),
+            ..Default::default()
+        }
     }
     fn tt(name: &str, ty: u8) -> TarEntry {
-        TarEntry { name: name.into(), ty: Some(ty), ..Default::default() }
+        TarEntry {
+            name: name.into(),
+            ty: Some(ty),
+            ..Default::default()
+        }
     }
 
     fn octal(n: u64, width: usize) -> String {
@@ -587,7 +753,12 @@ pub(crate) mod tests {
     pub(crate) fn tar_header(e: &TarEntry, size: u64) -> Vec<u8> {
         let mut h = vec![0u8; 512];
         put(&mut h, 0, e.name.as_bytes(), 100);
-        put(&mut h, 100, octal(e.mode.unwrap_or(0o644) as u64, 8).as_bytes(), 8);
+        put(
+            &mut h,
+            100,
+            octal(e.mode.unwrap_or(0o644) as u64, 8).as_bytes(),
+            8,
+        );
         put(&mut h, 108, octal(0, 8).as_bytes(), 8);
         put(&mut h, 116, octal(0, 8).as_bytes(), 8);
         put(&mut h, 124, octal(size, 12).as_bytes(), 12);
@@ -634,7 +805,11 @@ pub(crate) mod tests {
         pub fake_size: Option<u32>,
     }
     fn ze(name: &str, data: &str) -> ZipIn {
-        ZipIn { name: name.into(), data: data.as_bytes().to_vec(), ..Default::default() }
+        ZipIn {
+            name: name.into(),
+            data: data.as_bytes().to_vec(),
+            ..Default::default()
+        }
     }
 
     pub(crate) fn zip(entries: &[ZipIn]) -> Vec<u8> {
@@ -642,7 +817,11 @@ pub(crate) mod tests {
         let mut central = Vec::new();
         let mut offset: u32 = 0;
         for e in entries {
-            let body = if e.deflate { deflate_raw(&e.data) } else { e.data.clone() };
+            let body = if e.deflate {
+                deflate_raw(&e.data)
+            } else {
+                e.data.clone()
+            };
             let name = e.name.as_bytes();
             let usize_ = e.fake_size.unwrap_or(e.data.len() as u32);
             let mut l = vec![0u8; 30];
@@ -660,7 +839,11 @@ pub(crate) mod tests {
             c[20..24].copy_from_slice(&(body.len() as u32).to_le_bytes());
             c[24..28].copy_from_slice(&usize_.to_le_bytes());
             c[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
-            let mode = e.mode.unwrap_or(if e.name.ends_with('/') { 0o040755 } else { 0o100644 });
+            let mode = e.mode.unwrap_or(if e.name.ends_with('/') {
+                0o040755
+            } else {
+                0o100644
+            });
             c[38..42].copy_from_slice(&(mode << 16).to_le_bytes());
             c[42..46].copy_from_slice(&offset.to_le_bytes());
             offset += (l.len() + name.len() + body.len()) as u32;
@@ -693,15 +876,25 @@ pub(crate) mod tests {
     fn rejects(b: &[u8], code: ErrorCode, needle: &str, limits: ArchiveLimits) {
         let e = extract_archive(b, "test", &limits, None).unwrap_err();
         assert_eq!(e.code, code, "{}", e.message());
-        assert!(e.message().contains(needle), "{:?} does not contain {needle:?}", e.message());
+        assert!(
+            e.message().contains(needle),
+            "{:?} does not contain {needle:?}",
+            e.message()
+        );
     }
 
     fn sample() -> Vec<TarEntry> {
         vec![
             tt("site/", b'5'),
             te("site/index.html", "<h1>hi</h1>"),
-            TarEntry { mode: Some(0o700), ..te("site/bin/run", "#!/bin/sh") },
-            TarEntry { mode: Some(0o600), ..te("site/css/a.css", "a{}") },
+            TarEntry {
+                mode: Some(0o700),
+                ..te("site/bin/run", "#!/bin/sh")
+            },
+            TarEntry {
+                mode: Some(0o600),
+                ..te("site/css/a.css", "a{}")
+            },
         ]
     }
 
@@ -710,18 +903,42 @@ pub(crate) mod tests {
     #[test]
     fn tar_tgz_and_zip_extract_to_the_same_tree() {
         let zip_entries = vec![
-            ZipIn { name: "site/".into(), mode: Some(0o040755), ..Default::default() },
-            ZipIn { deflate: true, ..ze("site/index.html", "<h1>hi</h1>") },
-            ZipIn { mode: Some(0o100700), ..ze("site/bin/run", "#!/bin/sh") },
-            ZipIn { deflate: true, mode: Some(0o100600), ..ze("site/css/a.css", "a{}") },
+            ZipIn {
+                name: "site/".into(),
+                mode: Some(0o040755),
+                ..Default::default()
+            },
+            ZipIn {
+                deflate: true,
+                ..ze("site/index.html", "<h1>hi</h1>")
+            },
+            ZipIn {
+                mode: Some(0o100700),
+                ..ze("site/bin/run", "#!/bin/sh")
+            },
+            ZipIn {
+                deflate: true,
+                mode: Some(0o100600),
+                ..ze("site/css/a.css", "a{}")
+            },
         ];
-        let trees = [x(&tar(&sample())).unwrap(), x(&gzip(&tar(&sample()))).unwrap(), x(&zip(&zip_entries)).unwrap()];
+        let trees = [
+            x(&tar(&sample())).unwrap(),
+            x(&gzip(&tar(&sample()))).unwrap(),
+            x(&zip(&zip_entries)).unwrap(),
+        ];
         for t in &trees {
-            assert_eq!(paths(t), vec!["/site/bin/run", "/site/css/a.css", "/site/index.html"]);
+            assert_eq!(
+                paths(t),
+                vec!["/site/bin/run", "/site/css/a.css", "/site/index.html"]
+            );
             assert_eq!(&*t.get("/site/index.html").unwrap().bytes, b"<h1>hi</h1>");
             assert_eq!(t.get("/site/bin/run").unwrap().mode, 0o755);
             assert_eq!(t.get("/site/css/a.css").unwrap().mode, 0o644);
-            assert_eq!(t.get("/site/index.html").unwrap().origin, "t:site/index.html");
+            assert_eq!(
+                t.get("/site/index.html").unwrap().origin,
+                "t:site/index.html"
+            );
         }
         assert_eq!(trees[0].digest(), trees[1].digest());
         assert_eq!(trees[0].digest(), trees[2].digest());
@@ -731,7 +948,10 @@ pub(crate) mod tests {
     fn empty_archives_and_dot_slash_prefixes() {
         assert_eq!(x(&zip(&[])).unwrap().len(), 0);
         assert_eq!(x(&tar(&[])).unwrap().len(), 0);
-        assert_eq!(paths(&x(&tar(&[te("./a/b.txt", "x")])).unwrap()), vec!["/a/b.txt"]);
+        assert_eq!(
+            paths(&x(&tar(&[te("./a/b.txt", "x")])).unwrap()),
+            vec!["/a/b.txt"]
+        );
     }
 
     fn pax_record(body: &str) -> String {
@@ -745,16 +965,31 @@ pub(crate) mod tests {
     #[test]
     fn pax_and_gnu_long_names_are_supported() {
         let long = format!("deep/{}/file.txt", "d".repeat(150));
-        let via_pax = tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", &pax_record(&format!(" path={long}\n"))) }, te("short", "p")]);
+        let via_pax = tar(&[
+            TarEntry {
+                ty: Some(b'x'),
+                ..te("PaxHeader", &pax_record(&format!(" path={long}\n")))
+            },
+            te("short", "p"),
+        ]);
         assert_eq!(paths(&x(&via_pax).unwrap()), vec![format!("/{long}")]);
-        let via_gnu = tar(&[TarEntry { ty: Some(b'L'), ..te("././@LongLink", &format!("{long}\0")) }, te("short", "g")]);
+        let via_gnu = tar(&[
+            TarEntry {
+                ty: Some(b'L'),
+                ..te("././@LongLink", &format!("{long}\0"))
+            },
+            te("short", "g"),
+        ]);
         assert_eq!(paths(&x(&via_gnu).unwrap()), vec![format!("/{long}")]);
     }
 
     #[test]
     fn pax_size_overrides_the_header_size() {
         let data = "0123456789";
-        let mut b = tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", &pax_record(" size=10\n")) }]);
+        let mut b = tar(&[TarEntry {
+            ty: Some(b'x'),
+            ..te("PaxHeader", &pax_record(" size=10\n"))
+        }]);
         b.truncate(b.len() - 1024);
         let mut h = tar_header(&te("f", ""), 0); // header says 0 bytes
         with_checksum(&mut h);
@@ -767,78 +1002,228 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_format_and_non_tar_gzip_are_e_type() {
-        rejects(b"just some text, not an archive", E_TYPE, "not a recognized archive", L);
+        rejects(
+            b"just some text, not an archive",
+            E_TYPE,
+            "not a recognized archive",
+            L,
+        );
         rejects(b"", E_TYPE, "not a recognized archive", L);
         rejects(&gzip(b"hello"), E_TYPE, "not a tar archive", L);
     }
 
     #[test]
     fn unsafe_tar_paths_are_rejected() {
-        for name in ["../evil", "a/../../evil", "/etc/passwd", "a\\b", "C:/x", "a/.."] {
-            rejects(&tar(&[te(name, "x")]), E_ARCHIVE_UNSAFE, "unsafe archive entry", L);
+        for name in [
+            "../evil",
+            "a/../../evil",
+            "/etc/passwd",
+            "a\\b",
+            "C:/x",
+            "a/..",
+        ] {
+            rejects(
+                &tar(&[te(name, "x")]),
+                E_ARCHIVE_UNSAFE,
+                "unsafe archive entry",
+                L,
+            );
         }
         // A NUL cannot appear in a plain tar name (it terminates it) but can in a pax path.
         let rec = "path=a\0b\n";
         let len = rec.len() + 3;
-        rejects(&tar(&[TarEntry { ty: Some(b'x'), ..te("p", &format!("{len} {rec}")) }, te("x", "x")]), E_ARCHIVE_UNSAFE, "NUL", L);
+        rejects(
+            &tar(&[
+                TarEntry {
+                    ty: Some(b'x'),
+                    ..te("p", &format!("{len} {rec}"))
+                },
+                te("x", "x"),
+            ]),
+            E_ARCHIVE_UNSAFE,
+            "NUL",
+            L,
+        );
     }
 
     #[test]
     fn unsafe_zip_paths_are_rejected() {
         for name in ["../evil", "/abs", "a\\b", "x/../../y", "a\0b"] {
-            rejects(&zip(&[ze(name, "x")]), E_ARCHIVE_UNSAFE, "unsafe archive entry", L);
+            rejects(
+                &zip(&[ze(name, "x")]),
+                E_ARCHIVE_UNSAFE,
+                "unsafe archive entry",
+                L,
+            );
         }
     }
 
     #[test]
     fn symlink_hard_link_and_device_entries_are_rejected() {
-        rejects(&tar(&[TarEntry { linkname: Some("/etc/passwd".into()), ..tt("l", b'2') }]), E_ARCHIVE_UNSAFE, "symlink", L);
-        rejects(&tar(&[TarEntry { linkname: Some("x".into()), ..tt("h", b'1') }]), E_ARCHIVE_UNSAFE, "hard link", L);
+        rejects(
+            &tar(&[TarEntry {
+                linkname: Some("/etc/passwd".into()),
+                ..tt("l", b'2')
+            }]),
+            E_ARCHIVE_UNSAFE,
+            "symlink",
+            L,
+        );
+        rejects(
+            &tar(&[TarEntry {
+                linkname: Some("x".into()),
+                ..tt("h", b'1')
+            }]),
+            E_ARCHIVE_UNSAFE,
+            "hard link",
+            L,
+        );
         rejects(&tar(&[tt("d", b'3')]), E_ARCHIVE_UNSAFE, "special file", L);
-        rejects(&zip(&[ZipIn { mode: Some(0o120777), ..ze("l", "/etc/passwd") }]), E_ARCHIVE_UNSAFE, "symlink", L);
+        rejects(
+            &zip(&[ZipIn {
+                mode: Some(0o120777),
+                ..ze("l", "/etc/passwd")
+            }]),
+            E_ARCHIVE_UNSAFE,
+            "symlink",
+            L,
+        );
     }
 
     #[test]
     fn too_many_entries() {
         let entries: Vec<TarEntry> = (0..6).map(|i| te(&format!("f{i}"), "x")).collect();
         let zentries: Vec<ZipIn> = (0..6).map(|i| ze(&format!("f{i}"), "x")).collect();
-        let five = ArchiveLimits { max_entries: 5, ..L };
+        let five = ArchiveLimits {
+            max_entries: 5,
+            ..L
+        };
         rejects(&tar(&entries), E_ARCHIVE_LIMIT, "more than 5 entries", five);
-        rejects(&gzip(&tar(&entries)), E_ARCHIVE_LIMIT, "more than 5 entries", five);
-        rejects(&zip(&zentries), E_ARCHIVE_LIMIT, "more than 5 entries", five);
-        assert_eq!(extract_archive(&tar(&entries), "t", &ArchiveLimits { max_entries: 6, ..L }, None).unwrap().len(), 6);
+        rejects(
+            &gzip(&tar(&entries)),
+            E_ARCHIVE_LIMIT,
+            "more than 5 entries",
+            five,
+        );
+        rejects(
+            &zip(&zentries),
+            E_ARCHIVE_LIMIT,
+            "more than 5 entries",
+            five,
+        );
+        assert_eq!(
+            extract_archive(
+                &tar(&entries),
+                "t",
+                &ArchiveLimits {
+                    max_entries: 6,
+                    ..L
+                },
+                None
+            )
+            .unwrap()
+            .len(),
+            6
+        );
     }
 
     #[test]
     fn oversize_total() {
-        let k = ArchiveLimits { max_total_bytes: 1000, ..L };
+        let k = ArchiveLimits {
+            max_total_bytes: 1000,
+            ..L
+        };
         let a = "x".repeat(600);
         let b = "y".repeat(600);
-        rejects(&tar(&[te("a", &a), te("b", &b)]), E_ARCHIVE_LIMIT, "expands beyond 1000 bytes", k);
-        rejects(&zip(&[ze("a", &a), ze("b", &b)]), E_ARCHIVE_LIMIT, "expands beyond 1000 bytes", k);
-        rejects(&tar(&[te("a", &"x".repeat(5000))]), E_ARCHIVE_LIMIT, "larger than 1000 bytes", k);
+        rejects(
+            &tar(&[te("a", &a), te("b", &b)]),
+            E_ARCHIVE_LIMIT,
+            "expands beyond 1000 bytes",
+            k,
+        );
+        rejects(
+            &zip(&[ze("a", &a), ze("b", &b)]),
+            E_ARCHIVE_LIMIT,
+            "expands beyond 1000 bytes",
+            k,
+        );
+        rejects(
+            &tar(&[te("a", &"x".repeat(5000))]),
+            E_ARCHIVE_LIMIT,
+            "larger than 1000 bytes",
+            k,
+        );
     }
 
     #[test]
     fn compression_ratio_bombs_stop_early() {
         // 50 MB of zeros gzips to ~50 KB (ratio ~1000:1): rejected at the default 100:1 without inflating it all.
-        let zeros = TarEntry { name: "zeros".into(), data: vec![0u8; 50 * 1024 * 1024], ..Default::default() };
+        let zeros = TarEntry {
+            name: "zeros".into(),
+            data: vec![0u8; 50 * 1024 * 1024],
+            ..Default::default()
+        };
         let bomb = gzip(&tar(&[zeros]));
         rejects(&bomb, E_ARCHIVE_LIMIT, "compression ratio exceeds 100:1", L);
         // A low total-size limit also stops it.
-        rejects(&bomb, E_ARCHIVE_LIMIT, "expands beyond 1048576 bytes", ArchiveLimits { max_total_bytes: 1024 * 1024, max_ratio: 100_000, ..L });
+        rejects(
+            &bomb,
+            E_ARCHIVE_LIMIT,
+            "expands beyond 1048576 bytes",
+            ArchiveLimits {
+                max_total_bytes: 1024 * 1024,
+                max_ratio: 100_000,
+                ..L
+            },
+        );
         // Zip: honest headers over the ratio, and headers that lie about the size.
         let big = vec![0u8; 5 * 1024 * 1024];
-        rejects(&zip(&[ZipIn { name: "z".into(), data: big.clone(), deflate: true, ..Default::default() }]), E_ARCHIVE_LIMIT, "ratio", L);
-        rejects(&zip(&[ZipIn { name: "z".into(), data: big, deflate: true, fake_size: Some(10), ..Default::default() }]), E_ARCHIVE_LIMIT, "expands", L);
+        rejects(
+            &zip(&[ZipIn {
+                name: "z".into(),
+                data: big.clone(),
+                deflate: true,
+                ..Default::default()
+            }]),
+            E_ARCHIVE_LIMIT,
+            "ratio",
+            L,
+        );
+        rejects(
+            &zip(&[ZipIn {
+                name: "z".into(),
+                data: big,
+                deflate: true,
+                fake_size: Some(10),
+                ..Default::default()
+            }]),
+            E_ARCHIVE_LIMIT,
+            "expands",
+            L,
+        );
     }
 
     #[test]
     fn duplicate_paths_are_e_conflict() {
-        rejects(&tar(&[te("a", "1"), te("./a", "1")]), E_CONFLICT, "duplicate", L);
-        rejects(&zip(&[ze("a", "1"), ze("a", "2")]), E_CONFLICT, "duplicate", L);
+        rejects(
+            &tar(&[te("a", "1"), te("./a", "1")]),
+            E_CONFLICT,
+            "duplicate",
+            L,
+        );
+        rejects(
+            &zip(&[ze("a", "1"), ze("a", "2")]),
+            E_CONFLICT,
+            "duplicate",
+            L,
+        );
         rejects(&tar(&[te("a", "1"), te("a/b", "2")]), E_CONFLICT, "", L);
-        rejects(&tar(&[tt("a", b'5'), te("a", "2")]), E_CONFLICT, "duplicate", L);
+        rejects(
+            &tar(&[tt("a", b'5'), te("a", "2")]),
+            E_CONFLICT,
+            "duplicate",
+            L,
+        );
     }
 
     #[test]
@@ -849,7 +1234,12 @@ pub(crate) mod tests {
         let mut trunc = tar_header(&te("big", ""), 4096);
         trunc.extend(vec![0u8; 100]);
         rejects(&trunc, E_ARCHIVE, "truncated", L);
-        rejects(&zip(&[ze("a", "x")])[..30], E_ARCHIVE, "end-of-central-directory", L);
+        rejects(
+            &zip(&[ze("a", "x")])[..30],
+            E_ARCHIVE,
+            "end-of-central-directory",
+            L,
+        );
         let mut gz = gzip(&tar(&[te("a", "x")]));
         let n = gz.len();
         gz[n / 2] ^= 0xff;
@@ -879,28 +1269,77 @@ pub(crate) mod tests {
     fn gzip_size_cap_leaves_room_for_tar_framing() {
         // 2000 one-byte files: 2000 bytes of data but ~2 MB of tar framing.
         let entries: Vec<TarEntry> = (0..2000).map(|i| te(&format!("f{i}"), "x")).collect();
-        let t = extract_archive(&gzip(&tar(&entries)), "t", &ArchiveLimits { max_total_bytes: 4000, max_entries: 2000, max_ratio: 1_000_000 }, None).unwrap();
+        let t = extract_archive(
+            &gzip(&tar(&entries)),
+            "t",
+            &ArchiveLimits {
+                max_total_bytes: 4000,
+                max_entries: 2000,
+                max_ratio: 1_000_000,
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(t.len(), 2000);
     }
 
     #[test]
     fn zip_directories_marked_only_by_mode_are_directories() {
-        let z = zip(&[ZipIn { name: "assets".into(), mode: Some(0o040755), ..Default::default() }, ze("assets/app.css", "a{}")]);
+        let z = zip(&[
+            ZipIn {
+                name: "assets".into(),
+                mode: Some(0o040755),
+                ..Default::default()
+            },
+            ze("assets/app.css", "a{}"),
+        ]);
         assert_eq!(paths(&x(&z).unwrap()), vec!["/assets/app.css"]);
     }
 
     #[test]
     fn malformed_pax_records_are_e_archive() {
-        let pax = |body: &str| tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", &pax_record(body)) }, te("a", "x")]);
-        rejects(&pax(" size=abc\n"), E_ARCHIVE, "malformed pax size 'abc'", L);
-        rejects(&pax(" novalue\n"), E_ARCHIVE, "malformed pax header record", L);
+        let pax = |body: &str| {
+            tar(&[
+                TarEntry {
+                    ty: Some(b'x'),
+                    ..te("PaxHeader", &pax_record(body))
+                },
+                te("a", "x"),
+            ])
+        };
+        rejects(
+            &pax(" size=abc\n"),
+            E_ARCHIVE,
+            "malformed pax size 'abc'",
+            L,
+        );
+        rejects(
+            &pax(" novalue\n"),
+            E_ARCHIVE,
+            "malformed pax header record",
+            L,
+        );
     }
 
     #[test]
     fn a_pax_record_without_a_space_ends_the_header() {
-        let t = x(&tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", "10 path=p\ntail") }, te("a", "x")])).unwrap();
+        let t = x(&tar(&[
+            TarEntry {
+                ty: Some(b'x'),
+                ..te("PaxHeader", "10 path=p\ntail")
+            },
+            te("a", "x"),
+        ]))
+        .unwrap();
         assert_eq!(paths(&t), ["/p"]);
-        let t = x(&tar(&[TarEntry { ty: Some(b'x'), ..te("PaxHeader", "nospace") }, te("a", "x")])).unwrap();
+        let t = x(&tar(&[
+            TarEntry {
+                ty: Some(b'x'),
+                ..te("PaxHeader", "nospace")
+            },
+            te("a", "x"),
+        ]))
+        .unwrap();
         assert_eq!(paths(&t), ["/a"]);
     }
 
@@ -921,7 +1360,12 @@ pub(crate) mod tests {
         let f = t.get("/f").unwrap();
         assert_eq!(&*f.bytes, b"abc");
         assert_eq!(f.mode, 0o755); // -5 & 0o111 is non-zero
-        rejects(&entry(b"-3", b"644"), E_ARCHIVE_LIMIT, "archive entry larger than", L);
+        rejects(
+            &entry(b"-3", b"644"),
+            E_ARCHIVE_LIMIT,
+            "archive entry larger than",
+            L,
+        );
     }
 
     #[test]
@@ -943,12 +1387,24 @@ pub(crate) mod tests {
         let mut gz = gzip(&data);
         let n = gz.len();
         gz[n - 6] ^= 1;
-        assert!(matches!(inflate_like_node(&gz, true, 16_384), Inflated::Corrupt));
-        assert!(matches!(inflate_like_node(&gz, true, 16_383), Inflated::TooLarge));
+        assert!(matches!(
+            inflate_like_node(&gz, true, 16_384),
+            Inflated::Corrupt
+        ));
+        assert!(matches!(
+            inflate_like_node(&gz, true, 16_383),
+            Inflated::TooLarge
+        ));
         // Truncated: everything inflated so far counts.
         let gz = gzip(&data);
-        assert!(matches!(inflate_like_node(&gz[..gz.len() - 4], true, 19_999), Inflated::TooLarge));
-        assert!(matches!(inflate_like_node(&gz[..gz.len() - 4], true, 20_000), Inflated::Corrupt));
+        assert!(matches!(
+            inflate_like_node(&gz[..gz.len() - 4], true, 19_999),
+            Inflated::TooLarge
+        ));
+        assert!(matches!(
+            inflate_like_node(&gz[..gz.len() - 4], true, 20_000),
+            Inflated::Corrupt
+        ));
     }
 
     #[test]

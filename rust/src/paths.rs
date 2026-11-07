@@ -55,7 +55,11 @@ pub fn normalize_virtual(raw: &str, span: Option<&SourceSpan>, what: &str) -> Re
         return err(E_PATH, format!("{what} contains a NUL byte"), span);
     }
     if !raw.starts_with('/') {
-        return err(E_PATH, format!("{what} '{raw}' must be an absolute artifact path (start with '/')"), span);
+        return err(
+            E_PATH,
+            format!("{what} '{raw}' must be an absolute artifact path (start with '/')"),
+            span,
+        );
     }
     let mut segs: Vec<&str> = Vec::new();
     for seg in raw.split('/') {
@@ -63,13 +67,20 @@ pub fn normalize_virtual(raw: &str, span: Option<&SourceSpan>, what: &str) -> Re
             continue;
         }
         if seg == ".." {
-            return err(E_PATH, format!("{what} '{raw}' must not contain '..'"), span);
+            return err(
+                E_PATH,
+                format!("{what} '{raw}' must not contain '..'"),
+                span,
+            );
         }
         segs.push(seg);
     }
     let path = format!("/{}", segs.join("/"));
     let trailing_slash = raw.ends_with('/') || path == "/";
-    Ok(VirtualPath { path, trailing_slash })
+    Ok(VirtualPath {
+        path,
+        trailing_slash,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,9 +99,16 @@ pub fn normalize_local(raw: &str, span: Option<&SourceSpan>) -> Result<LocalPath
         return err(E_PATH, "path contains a NUL byte", span);
     }
     let b = raw.as_bytes();
-    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\');
+    let drive = b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'/' || b[2] == b'\\');
     if raw.starts_with('/') || raw.starts_with('\\') || drive {
-        return err(E_PATH_ESCAPE, format!("local path '{raw}' must be relative to the build context"), span);
+        return err(
+            E_PATH_ESCAPE,
+            format!("local path '{raw}' must be relative to the build context"),
+            span,
+        );
     }
     // posix.normalize semantics
     let mut out: Vec<&str> = Vec::new();
@@ -107,14 +125,25 @@ pub fn normalize_local(raw: &str, span: Option<&SourceSpan>) -> Result<LocalPath
         }
     }
     if ups > 0 {
-        return err(E_PATH_ESCAPE, format!("local path '{raw}' escapes the build context"), span);
+        return err(
+            E_PATH_ESCAPE,
+            format!("local path '{raw}' escapes the build context"),
+            span,
+        );
     }
-    Ok(LocalPath { path: out.join("/"), trailing_slash: raw.ends_with('/') })
+    Ok(LocalPath {
+        path: out.join("/"),
+        trailing_slash: raw.ends_with('/'),
+    })
 }
 
 pub fn join_virtual(dir: &str, name: &str) -> String {
     let name = nfc(name);
-    if dir == "/" { format!("/{name}") } else { format!("{dir}/{name}") }
+    if dir == "/" {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
 }
 
 pub fn basename_virtual(p: &str) -> &str {
@@ -138,23 +167,47 @@ mod tests {
     use super::*;
     #[test]
     fn virtual_paths() {
-        assert_eq!(normalize_virtual("/a//./b/", None, "p").unwrap(), VirtualPath { path: "/a/b".into(), trailing_slash: true });
+        assert_eq!(
+            normalize_virtual("/a//./b/", None, "p").unwrap(),
+            VirtualPath {
+                path: "/a/b".into(),
+                trailing_slash: true
+            }
+        );
         assert_eq!(normalize_virtual("/", None, "p").unwrap().path, "/");
         assert!(normalize_virtual("a", None, "p").is_err());
         assert!(normalize_virtual("/a/../b", None, "p").is_err());
     }
     #[test]
     fn local_paths() {
-        assert_eq!(normalize_local("./a/../b/", None).unwrap(), LocalPath { path: "b".into(), trailing_slash: true });
+        assert_eq!(
+            normalize_local("./a/../b/", None).unwrap(),
+            LocalPath {
+                path: "b".into(),
+                trailing_slash: true
+            }
+        );
         assert_eq!(normalize_local(".", None).unwrap().path, "");
-        assert_eq!(normalize_local("../x", None).unwrap_err().code, crate::error::ErrorCode::E_PATH_ESCAPE);
-        assert_eq!(normalize_local("/etc", None).unwrap_err().code, crate::error::ErrorCode::E_PATH_ESCAPE);
+        assert_eq!(
+            normalize_local("../x", None).unwrap_err().code,
+            crate::error::ErrorCode::E_PATH_ESCAPE
+        );
+        assert_eq!(
+            normalize_local("/etc", None).unwrap_err().code,
+            crate::error::ErrorCode::E_PATH_ESCAPE
+        );
     }
     #[test]
     fn unicode() {
         assert_eq!(nfc("cafe\u{301}"), "caf\u{e9}");
-        assert_eq!(normalize_virtual("/cafe\u{301}/x", None, "p").unwrap().path, "/caf\u{e9}/x");
-        assert_eq!(normalize_local("./cafe\u{301}.txt", None).unwrap().path, "caf\u{e9}.txt");
+        assert_eq!(
+            normalize_virtual("/cafe\u{301}/x", None, "p").unwrap().path,
+            "/caf\u{e9}/x"
+        );
+        assert_eq!(
+            normalize_local("./cafe\u{301}.txt", None).unwrap().path,
+            "caf\u{e9}.txt"
+        );
         assert_eq!(join_virtual("/", "cafe\u{301}"), "/caf\u{e9}");
         assert_eq!(fold_case("/Docs/A.HTML"), "/docs/a.html");
         assert_eq!(fold_case("Σ"), fold_case("ς"));
@@ -175,7 +228,8 @@ mod tests {
     // with String.prototype.normalize and src/paths.ts foldCase. A change in
     // either (a Unicode version bump in Node's ICU or in icu_normalizer_data, a
     // regenerated case folding table) shows up as a mismatch in both suites.
-    pub(crate) const NFC_DIGEST: &str = "sha256:fe17995393e0d09199fd78c8aedca5d57273bdde642335534485565355b364a1";
+    pub(crate) const NFC_DIGEST: &str =
+        "sha256:fe17995393e0d09199fd78c8aedca5d57273bdde642335534485565355b364a1";
 
     /// Combining marks that icu_normalizer_data 2.4 assigns a combining class
     /// and Node's ICU (78, in Node 26) still treats as unassigned: NFC differs for
@@ -183,7 +237,8 @@ mod tests {
     pub(crate) fn nfc_unsettled(c: u32) -> bool {
         (0x5c8..=0x5c9).contains(&c) || (0x1ade..=0x1af0).contains(&c)
     }
-    pub(crate) const FOLD_DIGEST: &str = "sha256:e6e9bc02adedd2b908bbc65d7996e3a36e68294e4dde23c0f04f7aa240e69659";
+    pub(crate) const FOLD_DIGEST: &str =
+        "sha256:e6e9bc02adedd2b908bbc65d7996e3a36e68294e4dde23c0f04f7aa240e69659";
 
     fn scalars() -> impl Iterator<Item = char> {
         (0..=0x10ffffu32).filter_map(char::from_u32)
@@ -201,7 +256,9 @@ mod tests {
         }
         for b in (0..0x2000u32).filter(|&b| !nfc_unsettled(b)) {
             for m in 0x300..=0x36fu32 {
-                add([char::from_u32(b).unwrap(), char::from_u32(m).unwrap()].iter().collect());
+                add([char::from_u32(b).unwrap(), char::from_u32(m).unwrap()]
+                    .iter()
+                    .collect());
             }
         }
         for l in 0x1100..0x1113u32 {

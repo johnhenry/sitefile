@@ -40,7 +40,11 @@ pub fn js_number(n: f64) -> String {
         return "NaN".into();
     }
     if n.is_infinite() {
-        return if n > 0.0 { "Infinity".into() } else { "-Infinity".into() };
+        return if n > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        };
     }
     if n == 0.0 {
         return "0".into();
@@ -132,14 +136,22 @@ pub fn coerce(raw: &str, ty: ValueType, span: Option<&SourceSpan>, what: &str) -
         ValueType::String => Ok(Scalar::Str(raw.to_string())),
         ValueType::Number => {
             if !is_number_literal(raw.trim()) {
-                return err(E_TYPE, format!("{what} expects a number, got '{raw}'"), span);
+                return err(
+                    E_TYPE,
+                    format!("{what} expects a number, got '{raw}'"),
+                    span,
+                );
             }
             Ok(Scalar::Num(raw.trim().parse::<f64>().unwrap_or(f64::NAN)))
         }
         ValueType::Boolean => match raw {
             "true" => Ok(Scalar::Bool(true)),
             "false" => Ok(Scalar::Bool(false)),
-            _ => err(E_TYPE, format!("{what} expects true or false, got '{raw}'"), span),
+            _ => err(
+                E_TYPE,
+                format!("{what} expects true or false, got '{raw}'"),
+                span,
+            ),
         },
     }
 }
@@ -154,7 +166,13 @@ pub fn evaluate_operand(op: &Operand, env: &Env) -> Result<String> {
             TemplatePart::Text(t) => out.push_str(t),
             TemplatePart::Var { name, span, .. } => match env.get(name) {
                 Some(v) => out.push_str(&v.to_js_string()),
-                None => return err(E_UNDEFINED, format!("undefined variable '{name}'"), Some(span)),
+                None => {
+                    return err(
+                        E_UNDEFINED,
+                        format!("undefined variable '{name}'"),
+                        Some(span),
+                    )
+                }
             },
         }
     }
@@ -167,7 +185,9 @@ pub fn js_number_json(n: f64) -> Value {
     if n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0 {
         Value::Number(serde_json::Number::from(n as i64))
     } else {
-        serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
+        serde_json::Number::from_f64(n)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -249,13 +269,16 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool, indent: Option<usize>,
     }
 }
 
-
 /// A canonical array index ("0", "9", "10" … "4294967294"), as ECMAScript defines one.
 fn array_index(k: &str) -> Option<u32> {
-    if k.is_empty() || (k.len() > 1 && k.starts_with('0')) || !k.bytes().all(|b| b.is_ascii_digit()) {
+    if k.is_empty() || (k.len() > 1 && k.starts_with('0')) || !k.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
     }
-    k.parse::<u64>().ok().filter(|&n| n < 4_294_967_295).map(|n| n as u32)
+    k.parse::<u64>()
+        .ok()
+        .filter(|&n| n < 4_294_967_295)
+        .map(|n| n as u32)
 }
 
 /// JSON string escaping exactly as JSON.stringify does (including lone
@@ -296,15 +319,32 @@ mod tests {
     #[test]
     fn json_stringify_like_js() {
         let v: Value = serde_json::json!({"b": [1, 2.5, 1e21, true, null], "a": "q\"\n\u{1}"});
-        assert_eq!(js_json_stringify(&v, false), r#"{"b":[1,2.5,1e+21,true,null],"a":"q\"\n\u0001"}"#);
-        assert_eq!(js_json_stringify(&v, true), r#"{"a":"q\"\n\u0001","b":[1,2.5,1e+21,true,null]}"#);
+        assert_eq!(
+            js_json_stringify(&v, false),
+            r#"{"b":[1,2.5,1e+21,true,null],"a":"q\"\n\u0001"}"#
+        );
+        assert_eq!(
+            js_json_stringify(&v, true),
+            r#"{"a":"q\"\n\u0001","b":[1,2.5,1e+21,true,null]}"#
+        );
         assert_eq!(js_json_stringify(&js_number_json(3.0), false), "3");
         // Reference values from node: String(n) and JSON.stringify key order.
-        for (n, js) in [(1.5e-7, "1.5e-7"), (1e-6, "0.000001"), (1e-7, "1e-7"), (123e-20, "1.23e-18"), (1e21, "1e+21"), (-0.000001, "-0.000001")] {
+        for (n, js) in [
+            (1.5e-7, "1.5e-7"),
+            (1e-6, "0.000001"),
+            (1e-7, "1e-7"),
+            (123e-20, "1.23e-18"),
+            (1e21, "1e+21"),
+            (-0.000001, "-0.000001"),
+        ] {
             assert_eq!(js_number(n), js, "{n}");
         }
-        let o: Value = serde_json::from_str(r#"{"b":1,"10":2,"9":3,"a":4,"4294967295":5,"01":6}"#).unwrap();
-        assert_eq!(js_json_stringify(&o, false), r#"{"9":3,"10":2,"b":1,"a":4,"4294967295":5,"01":6}"#);
+        let o: Value =
+            serde_json::from_str(r#"{"b":1,"10":2,"9":3,"a":4,"4294967295":5,"01":6}"#).unwrap();
+        assert_eq!(
+            js_json_stringify(&o, false),
+            r#"{"9":3,"10":2,"b":1,"a":4,"4294967295":5,"01":6}"#
+        );
     }
     #[test]
     fn json_pretty_like_js() {
@@ -318,7 +358,10 @@ mod tests {
     }
     #[test]
     fn coercion() {
-        assert_eq!(coerce("42", ValueType::Number, None, "x").unwrap(), Scalar::Num(42.0));
+        assert_eq!(
+            coerce("42", ValueType::Number, None, "x").unwrap(),
+            Scalar::Num(42.0)
+        );
         assert!(coerce("4x", ValueType::Number, None, "x").is_err());
         assert!(coerce("yes", ValueType::Boolean, None, "x").is_err());
     }

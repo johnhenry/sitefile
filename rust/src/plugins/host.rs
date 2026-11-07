@@ -46,7 +46,10 @@ pub struct PluginPolicy {
     pub max_output_bytes: usize,
 }
 
-pub const DEFAULT_PLUGIN_POLICY: PluginPolicy = PluginPolicy { timeout_ms: 60_000, max_output_bytes: 64 * 1024 * 1024 };
+pub const DEFAULT_PLUGIN_POLICY: PluginPolicy = PluginPolicy {
+    timeout_ms: 60_000,
+    max_output_bytes: 64 * 1024 * 1024,
+};
 
 impl Default for PluginPolicy {
     fn default() -> Self {
@@ -68,8 +71,15 @@ impl PluginInput {
     /// `text` is filled like the TypeScript executor does: a strict UTF-8 decode
     /// (TextDecoder, which drops a leading BOM), or nothing.
     pub fn new(path: impl Into<String>, name: impl Into<String>, bytes: Vec<u8>) -> Self {
-        let text = std::str::from_utf8(&bytes).ok().map(|t| t.strip_prefix('\u{feff}').unwrap_or(t).to_string());
-        PluginInput { path: path.into(), name: name.into(), bytes, text }
+        let text = std::str::from_utf8(&bytes)
+            .ok()
+            .map(|t| t.strip_prefix('\u{feff}').unwrap_or(t).to_string());
+        PluginInput {
+            path: path.into(),
+            name: name.into(),
+            bytes,
+            text,
+        }
     }
 }
 
@@ -101,7 +111,10 @@ impl PluginRequest {
             let mut im = Map::new();
             im.insert("path".into(), Value::String(i.path.clone()));
             im.insert("name".into(), Value::String(i.name.clone()));
-            im.insert("bytes".into(), Value::String(base64::engine::general_purpose::STANDARD.encode(&i.bytes)));
+            im.insert(
+                "bytes".into(),
+                Value::String(base64::engine::general_purpose::STANDARD.encode(&i.bytes)),
+            );
             if let Some(t) = &i.text {
                 im.insert("text".into(), Value::String(t.clone()));
             }
@@ -131,13 +144,20 @@ pub enum PluginResult {
 
 /// A directory TRANSFORM runs at most this many wasm or tool calls at a time (a JS plugin, one).
 pub fn transform_jobs() -> usize {
-    thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4)
+    thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 4)
 }
 
 /// Run `f(0..n)` at most `limit` at a time, starting them in index order. After a failure no
 /// later index starts, so the lowest failing index is always among the results (and every
 /// index below it has run): callers report that one, whatever order the calls finished in.
-pub fn run_bounded<R: Send>(n: usize, limit: usize, f: impl Fn(usize) -> Result<R> + Sync) -> Vec<Option<Result<R>>> {
+pub fn run_bounded<R: Send>(
+    n: usize,
+    limit: usize,
+    f: impl Fn(usize) -> Result<R> + Sync,
+) -> Vec<Option<Result<R>>> {
     let out: Vec<Mutex<Option<Result<R>>>> = (0..n).map(|_| Mutex::new(None)).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failed_at = std::sync::atomic::AtomicUsize::new(usize::MAX);
@@ -162,7 +182,9 @@ pub fn run_bounded<R: Send>(n: usize, limit: usize, f: impl Fn(usize) -> Result<
             }
         });
     }
-    out.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).collect()
+    out.into_iter()
+        .map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()))
+        .collect()
 }
 
 /// Counters a build reports (BuildResult.transformStats).
@@ -320,7 +342,9 @@ fn file_url(file: &Path) -> String {
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 #[cfg(unix)]
@@ -360,7 +384,14 @@ pub(crate) fn exit_reason(status: std::process::ExitStatus) -> String {
 }
 
 impl PluginProcess {
-    fn start(name: &str, file: &Path, node: Option<&Path>, policy: PluginPolicy, log: Log, span: Option<SourceSpan>) -> PluginProcess {
+    fn start(
+        name: &str,
+        file: &Path,
+        node: Option<&Path>,
+        policy: PluginPolicy,
+        log: Log,
+        span: Option<SourceSpan>,
+    ) -> PluginProcess {
         let (tx, rx) = mpsc::channel::<Msg>();
         let mut p = PluginProcess {
             name: name.into(),
@@ -384,7 +415,12 @@ impl PluginProcess {
         let spawned = Command::new(&node)
             .arg("--permission")
             .arg(format!("--allow-fs-read={}", dir.display()))
-            .args(["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", RUNNER])
+            .args([
+                "--disable-warning=ExperimentalWarning",
+                "--input-type=module",
+                "-e",
+                RUNNER,
+            ])
             .current_dir(&dir)
             .env_clear()
             .stdin(Stdio::piped())
@@ -433,7 +469,8 @@ impl PluginProcess {
                     let line = &buf[start..end];
                     if line.starts_with(MARK.as_bytes()) {
                         if line.len() > limit {
-                            let _ = tx.send(Msg::Fail(format!("a result is larger than {max} bytes")));
+                            let _ =
+                                tx.send(Msg::Fail(format!("a result is larger than {max} bytes")));
                             return;
                         }
                         match serde_json::from_slice::<Value>(&line[MARK.len()..]) {
@@ -443,7 +480,9 @@ impl PluginProcess {
                                 }
                             }
                             Err(e) => {
-                                let _ = tx.send(Msg::Fail(format!("sent a malformed protocol message ({e})")));
+                                let _ = tx.send(Msg::Fail(format!(
+                                    "sent a malformed protocol message ({e})"
+                                )));
                                 return;
                             }
                         }
@@ -551,7 +590,10 @@ impl PluginProcess {
         };
         let message = format!("{reason}{tail}");
         if matches!(self.load, LoadState::Pending) {
-            self.load = LoadState::Failed(self.err(format!("PLUGIN {}: {message}", self.name), self.span.as_ref()));
+            self.load = LoadState::Failed(self.err(
+                format!("PLUGIN {}: {message}", self.name),
+                self.span.as_ref(),
+            ));
         }
         message
     }
@@ -597,7 +639,9 @@ impl PluginProcess {
             Ok(Msg::Proto(v)) => Ok(v),
             Ok(Msg::Fail(r)) => Err(self.fail(&r)),
             Ok(Msg::Eof) | Err(RecvTimeoutError::Disconnected) => Err(self.on_eof()),
-            Err(RecvTimeoutError::Timeout) => Err(self.fail(&format!("timed out after {} ms", self.policy.timeout_ms))),
+            Err(RecvTimeoutError::Timeout) => {
+                Err(self.fail(&format!("timed out after {} ms", self.policy.timeout_ms)))
+            }
         }
     }
 
@@ -618,7 +662,9 @@ impl PluginProcess {
                     }
                     Some("load-error") => {
                         let m = message_of(&msg);
-                        self.load = LoadState::Failed(self.err(format!("PLUGIN {}: {m}", self.name), self.span.as_ref()));
+                        self.load = LoadState::Failed(
+                            self.err(format!("PLUGIN {}: {m}", self.name), self.span.as_ref()),
+                        );
                     }
                     Some("fatal") => {
                         let m = message_of(&msg);
@@ -640,7 +686,13 @@ impl PluginProcess {
         self.write(&json!({ "type": "transform", "id": id, "request": request.to_json() }));
         let deadline = Instant::now() + Duration::from_millis(self.policy.timeout_ms);
         let name = self.name.clone();
-        let reject = |m: String| SitefileError::new(ErrorCode::E_PLUGIN, format!("PLUGIN {name}: {m}"), span.cloned());
+        let reject = |m: String| {
+            SitefileError::new(
+                ErrorCode::E_PLUGIN,
+                format!("PLUGIN {name}: {m}"),
+                span.cloned(),
+            )
+        };
         loop {
             let msg = self.next(deadline).map_err(reject)?;
             match msg.get("type").and_then(Value::as_str) {
@@ -648,7 +700,9 @@ impl PluginProcess {
                     let m = message_of(&msg);
                     return Err(reject(self.fail(&m)));
                 }
-                Some("error") | Some("result") if msg.get("id").and_then(Value::as_u64) == Some(id) => {
+                Some("error") | Some("result")
+                    if msg.get("id").and_then(Value::as_u64) == Some(id) =>
+                {
                     if msg["type"] == "error" {
                         return Err(reject(message_of(&msg)));
                     }
@@ -751,7 +805,14 @@ pub struct PluginHost {
 impl PluginHost {
     /// `log` receives plugin console output as `[plugin name] line`.
     pub fn new(policy: PluginPolicy, log: impl Fn(&str) + Send + Sync + 'static) -> Self {
-        PluginHost { policy, log: Arc::new(log), node: None, registered: HashMap::new(), procs: HashMap::new(), stats: HostStats::default() }
+        PluginHost {
+            policy,
+            log: Arc::new(log),
+            node: None,
+            registered: HashMap::new(),
+            procs: HashMap::new(),
+            stats: HostStats::default(),
+        }
     }
 
     /// The Node binary for JS plugins (default: `node` on PATH, looked up at first use).
@@ -762,8 +823,20 @@ impl PluginHost {
     /// `file` is the plugin's absolute real path (already sandbox- and integrity-checked).
     /// For a `.wasm` plugin, pass the checked module bytes. Runners start lazily.
     /// A second registration of the same name is ignored.
-    pub fn register(&mut self, name: &str, file: impl Into<PathBuf>, span: Option<SourceSpan>, wasm: Option<Vec<u8>>) {
-        self.registered.entry(name.to_string()).or_insert_with(|| Registered { file: file.into(), span, wasm });
+    pub fn register(
+        &mut self,
+        name: &str,
+        file: impl Into<PathBuf>,
+        span: Option<SourceSpan>,
+        wasm: Option<Vec<u8>>,
+    ) {
+        self.registered
+            .entry(name.to_string())
+            .or_insert_with(|| Registered {
+                file: file.into(),
+                span,
+                wasm,
+            });
     }
 
     /// Whether a registered plugin is a WebAssembly module.
@@ -778,7 +851,9 @@ impl PluginHost {
 
     /// The folder a registered plugin lives in.
     pub fn folder_of(&self, name: &str) -> Option<PathBuf> {
-        self.registered.get(name).map(|r| r.file.parent().map(Path::to_path_buf).unwrap_or_default())
+        self.registered
+            .get(name)
+            .map(|r| r.file.parent().map(Path::to_path_buf).unwrap_or_default())
     }
 
     /// Whether results of this plugin may be cached (false after it exported `cache = false`).
@@ -786,15 +861,27 @@ impl PluginHost {
         self.procs.get(name).map(Runner::cacheable).unwrap_or(true)
     }
 
-    pub fn call(&mut self, name: &str, request: &PluginRequest, span: Option<&SourceSpan>) -> Result<PluginResult> {
+    pub fn call(
+        &mut self,
+        name: &str,
+        request: &PluginRequest,
+        span: Option<&SourceSpan>,
+    ) -> Result<PluginResult> {
         self.start(name, span)?;
         self.stats.calls += 1;
-        self.procs.get_mut(name).expect("started above").call(request, span)
+        self.procs
+            .get_mut(name)
+            .expect("started above")
+            .call(request, span)
     }
 
     /// A wasm plugin, compiled, whose calls may run on several threads at once (`WasmPlugin::call_prepared`;
     /// add them to `stats.calls`). None for a JavaScript plugin: its one process takes one call at a time.
-    pub fn shared_wasm(&mut self, name: &str, span: Option<&SourceSpan>) -> Result<Option<&WasmPlugin>> {
+    pub fn shared_wasm(
+        &mut self,
+        name: &str,
+        span: Option<&SourceSpan>,
+    ) -> Result<Option<&WasmPlugin>> {
         if !self.is_wasm(name) {
             return Ok(None);
         }
@@ -812,7 +899,11 @@ impl PluginHost {
     fn start(&mut self, name: &str, span: Option<&SourceSpan>) -> Result<()> {
         if !self.procs.contains_key(name) {
             let Some(reg) = self.registered.get(name) else {
-                return Err(SitefileError::new(ErrorCode::E_UNDEFINED, format!("unknown plugin '{name}'"), span.cloned()));
+                return Err(SitefileError::new(
+                    ErrorCode::E_UNDEFINED,
+                    format!("unknown plugin '{name}'"),
+                    span.cloned(),
+                ));
             };
             let runner = match &reg.wasm {
                 Some(bytes) => Runner::Wasm(WasmPlugin::new(name, bytes.clone(), self.policy)),
@@ -820,7 +911,14 @@ impl PluginHost {
                     let log = self.log.clone();
                     let prefix = format!("[plugin {name}] ");
                     let log: Log = Arc::new(move |l: &str| log(&format!("{prefix}{l}")));
-                    Runner::Js(PluginProcess::start(name, &reg.file, self.node.as_deref(), self.policy, log, reg.span.clone()))
+                    Runner::Js(PluginProcess::start(
+                        name,
+                        &reg.file,
+                        self.node.as_deref(),
+                        self.policy,
+                        log,
+                        reg.span.clone(),
+                    ))
                 }
             };
             self.procs.insert(name.to_string(), runner);
@@ -857,7 +955,11 @@ mod tests {
     fn tmp(prefix: &str) -> PathBuf {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("{prefix}{}-{n}-{}", std::process::id(), Instant::now().elapsed().as_nanos()));
+        let d = std::env::temp_dir().join(format!(
+            "{prefix}{}-{n}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
         fs::create_dir_all(&d).unwrap();
         fs::canonicalize(d).unwrap()
     }
@@ -885,7 +987,10 @@ mod tests {
     }
 
     fn req(dest: &str) -> PluginRequest {
-        PluginRequest { dest: dest.into(), ..Default::default() }
+        PluginRequest {
+            dest: dest.into(),
+            ..Default::default()
+        }
     }
 
     fn text(r: &PluginResult) -> String {
@@ -901,8 +1006,12 @@ mod tests {
 
     #[test]
     fn runner_is_the_typescript_runner_verbatim() {
-        let ts = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/plugins/host.ts")).unwrap();
-        let start = ts.find("const RUNNER = String.raw`").unwrap() + "const RUNNER = String.raw`".len();
+        let ts = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/plugins/host.ts"),
+        )
+        .unwrap();
+        let start =
+            ts.find("const RUNNER = String.raw`").unwrap() + "const RUNNER = String.raw`".len();
         let end = start + ts[start..].find("\n`;").unwrap() + 1;
         assert_eq!(RUNNER, &ts[start..end]);
         assert!(ts.contains("const MARK = '\\u0000SITEFILE:';"));
@@ -915,18 +1024,30 @@ mod tests {
             options: vec![("n".into(), "3".into()), ("label".into(), "a b".into())],
             ..Default::default()
         };
-        r.input = Some(PluginInput::new("./notes.txt", "notes.txt", b"hello".to_vec()));
+        r.input = Some(PluginInput::new(
+            "./notes.txt",
+            "notes.txt",
+            b"hello".to_vec(),
+        ));
         r.item = Some(json!({ "slug": "ada" }));
         assert_eq!(
             r.to_wire_string(),
             r#"{"apiVersion":1,"dest":"/out.json","options":{"n":"3","label":"a b"},"input":{"path":"./notes.txt","name":"notes.txt","bytes":"aGVsbG8=","text":"hello"},"item":{"slug":"ada"}}"#
         );
         assert_eq!(PluginInput::new("a", "a", vec![0xff]).text, None);
-        assert_eq!(PluginInput::new("a", "a", b"\xef\xbb\xbfhi".to_vec()).text.as_deref(), Some("hi"));
+        assert_eq!(
+            PluginInput::new("a", "a", b"\xef\xbb\xbfhi".to_vec())
+                .text
+                .as_deref(),
+            Some("hi")
+        );
         assert_eq!(b64_decode_lenient("aGVsbG8="), b"hello");
         assert_eq!(b64_decode_lenient("aGVsbG8"), b"hello");
         assert_eq!(b64_decode_lenient("aG Vs\nbG8=junk"), b"hello");
-        assert_eq!(file_url(Path::new("/a b/c#d.mjs")), "file:///a%20b/c%23d.mjs");
+        assert_eq!(
+            file_url(Path::new("/a b/c#d.mjs")),
+            "file:///a%20b/c%23d.mjs"
+        );
     }
 
     #[test]
@@ -942,7 +1063,11 @@ mod tests {
             options: vec![("n".into(), "3".into()), ("label".into(), "a b".into())],
             ..Default::default()
         };
-        r.input = Some(PluginInput::new("./notes.txt", "notes.txt", b"hello".to_vec()));
+        r.input = Some(PluginInput::new(
+            "./notes.txt",
+            "notes.txt",
+            b"hello".to_vec(),
+        ));
         let got: Value = serde_json::from_str(&text(&h.call("p", &r, None).unwrap())).unwrap();
         assert_eq!(
             got,
@@ -954,7 +1079,11 @@ mod tests {
         let got: Value = serde_json::from_str(&text(&h.call("p", &r2, None).unwrap())).unwrap();
         assert_eq!(got["data"], json!({ "k": 1 }));
         assert_eq!(got["item"], json!({ "slug": "ada", "name": "Ada" }));
-        assert_eq!((h.stats.spawned, h.stats.calls), (1, 2), "one process serves every call");
+        assert_eq!(
+            (h.stats.spawned, h.stats.calls),
+            (1, 2),
+            "one process serves every call"
+        );
         assert!(h.cacheable("p"));
         h.close();
         fs::remove_dir_all(root).unwrap();
@@ -973,7 +1102,11 @@ mod tests {
         let r = h.call("p", &req("/out/"), None).unwrap();
         assert_eq!(
             r,
-            PluginResult::Files(vec![("7".into(), vec![]), ("a.txt".into(), b"A".to_vec()), ("sub/b.bin".into(), vec![1, 2, 3])])
+            PluginResult::Files(vec![
+                ("7".into(), vec![]),
+                ("a.txt".into(), b"A".to_vec()),
+                ("sub/b.bin".into(), vec![1, 2, 3])
+            ])
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -997,9 +1130,13 @@ mod tests {
     return JSON.stringify(out);
   }"#;
         std::env::set_var("SITEFILE_SECRET_PROBE", "hunter2");
-        let (root, file) = plugin(probe, &[("plugins/helper.txt", "ok"), ("secret.txt", "TOP SECRET")]);
+        let (root, file) = plugin(
+            probe,
+            &[("plugins/helper.txt", "ok"), ("secret.txt", "TOP SECRET")],
+        );
         let (mut h, _) = host_with(&file, PluginPolicy::default());
-        let got: Value = serde_json::from_str(&text(&h.call("p", &req("/r.json"), None).unwrap())).unwrap();
+        let got: Value =
+            serde_json::from_str(&text(&h.call("p", &req("/r.json"), None).unwrap())).unwrap();
         assert_eq!(
             got,
             json!({ "readOwn": "allowed", "readContext": "denied", "readEtc": "denied", "write": "denied", "spawn": "denied", "net": "denied", "env": [] })
@@ -1013,7 +1150,11 @@ mod tests {
         let (mut h, _) = host_with(&file, policy);
         let e = h.call("p", &req("/a.out"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_PLUGIN, "{}", e.message());
-        assert!(e.message().contains(needle), "{:?} does not contain {needle:?}", e.message());
+        assert!(
+            e.message().contains(needle),
+            "{:?} does not contain {needle:?}",
+            e.message()
+        );
         h.close();
         fs::remove_dir_all(root).unwrap();
         e
@@ -1025,17 +1166,47 @@ mod tests {
             return;
         }
         let p = PluginPolicy::default();
-        let e = rejects("export function transform() { throw new Error('boom: bad input'); }", p, "boom: bad input");
+        let e = rejects(
+            "export function transform() { throw new Error('boom: bad input'); }",
+            p,
+            "boom: bad input",
+        );
         assert_eq!(e.message(), "PLUGIN p: boom: bad input");
-        rejects("export function transform() { return 42; }", p, "must return");
+        rejects(
+            "export function transform() { return 42; }",
+            p,
+            "must return",
+        );
         let e = rejects("export const x = 1;", p, "must export transform");
-        assert_eq!(e.span, Some(SourceSpan::new("Sitefile", 2, 1)), "load errors point at the PLUGIN line");
-        rejects("export const apiVersion = 2; export function transform() { return ''; }", p, "apiVersion");
+        assert_eq!(
+            e.span,
+            Some(SourceSpan::new("Sitefile", 2, 1)),
+            "load errors point at the PLUGIN line"
+        );
+        rejects(
+            "export const apiVersion = 2; export function transform() { return ''; }",
+            p,
+            "apiVersion",
+        );
         rejects("export const = ;", p, "PLUGIN p: ");
         let t0 = Instant::now();
-        rejects("export function transform() { return new Promise(() => {}); }", PluginPolicy { timeout_ms: 300, ..p }, "timed out after 300 ms");
+        rejects(
+            "export function transform() { return new Promise(() => {}); }",
+            PluginPolicy {
+                timeout_ms: 300,
+                ..p
+            },
+            "timed out after 300 ms",
+        );
         assert!(t0.elapsed() < Duration::from_secs(5));
-        rejects("export function transform() { return 'x'.repeat(1000); }", PluginPolicy { max_output_bytes: 10, ..p }, "larger than 10 bytes");
+        rejects(
+            "export function transform() { return 'x'.repeat(1000); }",
+            PluginPolicy {
+                max_output_bytes: 10,
+                ..p
+            },
+            "larger than 10 bytes",
+        );
         rejects(
             "export function transform() { console.error('dying'); process.exit(3); }",
             p,
@@ -1048,11 +1219,18 @@ mod tests {
         if !node_available() {
             return;
         }
-        let (root, file) = plugin("let n = 0; export function transform() { if (n++) process.exit(4); return 'first'; }", &[]);
+        let (root, file) = plugin(
+            "let n = 0; export function transform() { if (n++) process.exit(4); return 'first'; }",
+            &[],
+        );
         let (mut h, _) = host_with(&file, PluginPolicy::default());
         assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "first");
         let e = h.call("p", &req("/a"), None).unwrap_err();
-        assert!(e.message().contains("PLUGIN p: exited with code 4"), "{}", e.message());
+        assert!(
+            e.message().contains("PLUGIN p: exited with code 4"),
+            "{}",
+            e.message()
+        );
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.message(), "PLUGIN p exited with code 4");
         fs::remove_dir_all(root).unwrap();
@@ -1070,13 +1248,29 @@ mod tests {
         assert!(!h.cacheable("p"));
         // the stderr reader may lag the result slightly
         let until = Instant::now() + Duration::from_secs(2);
-        while !logs.lock().unwrap().iter().any(|l| l == "[plugin p] working…") && Instant::now() < until {
+        while !logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l == "[plugin p] working…")
+            && Instant::now() < until
+        {
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(logs.lock().unwrap().iter().any(|l| l == "[plugin p] working…"), "{:?}", logs.lock().unwrap());
+        assert!(
+            logs.lock()
+                .unwrap()
+                .iter()
+                .any(|l| l == "[plugin p] working…"),
+            "{:?}",
+            logs.lock().unwrap()
+        );
         fs::remove_dir_all(root).unwrap();
 
-        let (root, file) = plugin("export default { apiVersion: 1, cache: false, transform: () => 'x' };", &[]);
+        let (root, file) = plugin(
+            "export default { apiVersion: 1, cache: false, transform: () => 'x' };",
+            &[],
+        );
         let (mut h, _) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(!h.cacheable("p"));
@@ -1090,7 +1284,11 @@ mod tests {
         h.set_node("/nonexistent/node");
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_PLUGIN);
-        assert!(e.message().contains("PLUGIN p: could not start:"), "{}", e.message());
+        assert!(
+            e.message().contains("PLUGIN p: could not start:"),
+            "{}",
+            e.message()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

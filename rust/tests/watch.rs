@@ -22,7 +22,11 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-watch-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-watch-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -38,7 +42,10 @@ impl Drop for Tmp {
 fn make_site(t: &Tmp, extra: &[(&str, &str)], sitefile: &str) -> PathBuf {
     let dir = t.0.join("site");
     let mut files = vec![
-        ("public/index.html", "<!doctype html><title>Home</title><link rel=stylesheet href=style.css>"),
+        (
+            "public/index.html",
+            "<!doctype html><title>Home</title><link rel=stylesheet href=style.css>",
+        ),
         ("public/style.css", "body{margin:0}"),
         ("public/about/index.html", "<h1>About</h1>"),
     ];
@@ -65,7 +72,14 @@ struct Proc {
 
 impl Proc {
     fn start(home: &Path, args: &[&str]) -> Proc {
-        let mut child = Command::new(BIN).args(args).env("SITEFILE_HOME", home).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(BIN)
+            .args(args)
+            .env("SITEFILE_HOME", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         let pump = |mut r: Box<dyn Read + Send>| {
             let buf = Arc::new(Mutex::new(String::new()));
             let b2 = buf.clone();
@@ -75,7 +89,9 @@ impl Proc {
                     if n == 0 {
                         break;
                     }
-                    b2.lock().unwrap().push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    b2.lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&chunk[..n]));
                 }
             });
             buf
@@ -98,12 +114,20 @@ impl Proc {
             if all.lines().filter(|l| l.starts_with(prefix)).count() >= count {
                 return;
             }
-            assert!(Instant::now() < end, "timed out waiting for {count} x '{prefix}'\n--- stdout\n{}\n--- stderr\n{}", self.stdout(), self.stderr());
+            assert!(
+                Instant::now() < end,
+                "timed out waiting for {count} x '{prefix}'\n--- stdout\n{}\n--- stderr\n{}",
+                self.stdout(),
+                self.stderr()
+            );
             std::thread::sleep(Duration::from_millis(25));
         }
     }
     fn count(&self, prefix: &str) -> usize {
-        self.stdout().lines().filter(|l| l.starts_with(prefix)).count()
+        self.stdout()
+            .lines()
+            .filter(|l| l.starts_with(prefix))
+            .count()
     }
     fn stop(mut self) -> i32 {
         unsafe {
@@ -124,8 +148,16 @@ impl Proc {
 }
 
 fn run(home: &Path, args: &[&str]) -> (i32, String, String) {
-    let o = Command::new(BIN).args(args).env("SITEFILE_HOME", home).output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into())
+    let o = Command::new(BIN)
+        .args(args)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into(),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }
 
 fn s(p: &Path) -> &str {
@@ -144,16 +176,36 @@ fn build_watch_rebuilds_and_keeps_the_last_good_output() {
     let site = make_site(&t, &[("templates/index.html", "<title>${TITLE}</title>")], "ARG TITLE = \"Home\"\nCOPY ./public/ /\nRENDER ./templates/index.html TO /title.html\nEXPORT /\n");
     let args = site.join("args.env");
     write(&args, "TITLE=One\n");
-    let w = Proc::start(&home, &["build", "--watch", s(&site), "--build-arg-file", s(&args), "--no-cache"]);
+    let w = Proc::start(
+        &home,
+        &[
+            "build",
+            "--watch",
+            s(&site),
+            "--build-arg-file",
+            s(&args),
+            "--no-cache",
+        ],
+    );
     w.wait_lines("Watching ", 1);
-    assert!(w.stdout().starts_with("Exported 4 files to "), "{}", w.stdout());
-    assert!(w.stdout().contains(&format!("Watching {} for changes (Ctrl-C to stop)\n", s(&site))));
+    assert!(
+        w.stdout().starts_with("Exported 4 files to "),
+        "{}",
+        w.stdout()
+    );
+    assert!(w.stdout().contains(&format!(
+        "Watching {} for changes (Ctrl-C to stop)\n",
+        s(&site)
+    )));
     let title = || fs::read_to_string(site.join("dist/title.html")).unwrap();
     assert_eq!(title(), "<title>One</title>");
 
     write(site.join("public/style.css"), "body{margin:1px}");
     w.wait_lines("Exported ", 2);
-    assert_eq!(fs::read_to_string(site.join("dist/style.css")).unwrap(), "body{margin:1px}");
+    assert_eq!(
+        fs::read_to_string(site.join("dist/style.css")).unwrap(),
+        "body{margin:1px}"
+    );
 
     write(&args, "TITLE=Two\n");
     w.wait_lines("Exported ", 3);
@@ -163,9 +215,19 @@ fn build_watch_rebuilds_and_keeps_the_last_good_output() {
     let good = fs::read_to_string(&sitefile).unwrap();
     write(&sitefile, &(good.clone() + "BOGUS instruction\n"));
     w.wait_lines("Build failed; keeping the last good output", 1);
-    assert!(w.stderr().lines().any(|l| l.starts_with("error[E_") && l.contains("Sitefile:5:1")), "{}", w.stderr());
+    assert!(
+        w.stderr()
+            .lines()
+            .any(|l| l.starts_with("error[E_") && l.contains("Sitefile:5:1")),
+        "{}",
+        w.stderr()
+    );
     assert_eq!(title(), "<title>Two</title>");
-    let temps: Vec<_> = fs::read_dir(&site).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("sitefile-")).collect();
+    let temps: Vec<_> = fs::read_dir(&site)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("sitefile-"))
+        .collect();
     assert!(temps.is_empty(), "no temp siblings left");
 
     write(&sitefile, &good.replace("COPY", "# changed\nCOPY"));
@@ -205,17 +267,29 @@ fn watch_usage_errors() {
     let site = make_site(&t, &[], DEFAULT_SITEFILE);
     let (code, _, err) = run(&home, &["validate", "--watch", s(&site)]);
     assert_eq!(code, 2);
-    assert!(err.starts_with("error: --watch is only for build (and serve --watch), not validate\n"), "{err}");
+    assert!(
+        err.starts_with("error: --watch is only for build (and serve --watch), not validate\n"),
+        "{err}"
+    );
     let (code, _, err) = run(&home, &["build", "--watch", "-t", "x", s(&site)]);
     assert_eq!(code, 2);
-    assert!(err.starts_with("error: --watch cannot be combined with -t\n"), "{err}");
+    assert!(
+        err.starts_with("error: --watch cannot be combined with -t\n"),
+        "{err}"
+    );
     let missing = site.join("nope");
     let (code, _, err) = run(&home, &["build", "--watch", s(&missing)]);
     assert_eq!(code, 1);
-    assert_eq!(err, format!("error[E_NOT_FOUND]: '{}' is not a directory\n", s(&missing)));
+    assert_eq!(
+        err,
+        format!("error[E_NOT_FOUND]: '{}' is not a directory\n", s(&missing))
+    );
     let (code, _, err) = run(&home, &["build", "--watch", s(&site), "--build-arg", "=x"]);
     assert_eq!(code, 2, "a usage error in the first build ends the watch");
-    assert!(err.starts_with("error: --build-arg expects NAME=value, got '=x'\n"), "{err}");
+    assert!(
+        err.starts_with("error: --build-arg expects NAME=value, got '=x'\n"),
+        "{err}"
+    );
     let (code, _, err) = run(&home, &["serve", "--watch", "-d", s(&site)]);
     assert_eq!(code, 2);
     assert!(err.contains("--watch cannot be combined with -d"), "{err}");
@@ -227,7 +301,11 @@ fn watch_usage_errors() {
 /// GET `path`; returns (status, headers lowercased, body).
 fn get(port: u16, path: &str) -> (u16, String, String) {
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    write!(c, "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").unwrap();
+    write!(
+        c,
+        "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut buf = String::new();
     c.read_to_string(&mut buf).unwrap();
     let (head, body) = buf.split_once("\r\n\r\n").unwrap();
@@ -244,7 +322,11 @@ impl Events {
         c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let mut e = Events(c, String::new());
         let head = e.until("\r\n\r\n");
-        assert!(head.to_ascii_lowercase().contains("content-type: text/event-stream"), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: text/event-stream"),
+            "{head}"
+        );
         e
     }
     fn until(&mut self, sep: &str) -> String {
@@ -269,21 +351,39 @@ impl Events {
 fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     let t = Tmp::new();
     let home = t.0.join("home");
-    let site = make_site(&t, &[("public/index.html", "<html><body><h1>v1</h1></body></html>")], DEFAULT_SITEFILE);
+    let site = make_site(
+        &t,
+        &[("public/index.html", "<html><body><h1>v1</h1></body></html>")],
+        DEFAULT_SITEFILE,
+    );
     let w = Proc::start(&home, &["serve", "--watch", s(&site)]);
     w.wait_lines("Watching ", 1);
     let stdout = w.stdout();
     let mut lines = stdout.lines();
     let built = lines.next().unwrap();
-    assert!(built.starts_with("Built 3 files (sha256:") && built.ends_with(')'), "{stdout}");
+    assert!(
+        built.starts_with("Built 3 files (sha256:") && built.ends_with(')'),
+        "{stdout}"
+    );
     let serving = lines.next().unwrap();
     let prefix = format!("Serving {} (3 files) at http://127.0.0.1:", s(&site));
-    assert!(serving.starts_with(&prefix) && serving.ends_with("/  (Ctrl-C to stop)"), "{stdout}");
-    let port: u16 = serving[prefix.len()..].split('/').next().unwrap().parse().unwrap();
+    assert!(
+        serving.starts_with(&prefix) && serving.ends_with("/  (Ctrl-C to stop)"),
+        "{stdout}"
+    );
+    let port: u16 = serving[prefix.len()..]
+        .split('/')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
 
     let (status, head, body) = get(port, "/");
     assert_eq!(status, 200);
-    assert_eq!(body, format!("<html><body><h1>v1</h1>{RELOAD_SCRIPT}</body></html>"));
+    assert_eq!(
+        body,
+        format!("<html><body><h1>v1</h1>{RELOAD_SCRIPT}</body></html>")
+    );
     assert!(head.contains(&format!("content-length: {}", body.len())));
     assert!(head.contains("-live\""), "{head}");
     assert_eq!(get(port, "/style.css").2, "body{margin:0}");
@@ -294,12 +394,21 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     assert_eq!(ev.next(), "data: reload");
     assert_eq!(get(port, "/").2, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
 
-    write(site.join("Sitefile"), "FROM scratch\nCOPY ./missing/ /\nEXPORT /\n");
+    write(
+        site.join("Sitefile"),
+        "FROM scratch\nCOPY ./missing/ /\nEXPORT /\n",
+    );
     w.wait_lines("Build failed; keeping the last good output", 1);
     assert!(w.stderr().contains("error[E_"), "{}", w.stderr());
     assert_eq!(get(port, "/").2, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
-    assert!(!site.join("dist").exists(), "serve --watch writes no export");
-    assert!(!w.stdout().contains("/__sitefile/reload"), "the event stream is not access-logged");
+    assert!(
+        !site.join("dist").exists(),
+        "serve --watch writes no export"
+    );
+    assert!(
+        !w.stdout().contains("/__sitefile/reload"),
+        "the event stream is not access-logged"
+    );
     drop(ev);
     assert_eq!(w.stop(), 0);
 }
@@ -322,14 +431,31 @@ fn build_watch_rebuilds_incrementally() {
     let t = Tmp::new();
     let home = t.0.join("home");
     fs::create_dir_all(&home).unwrap();
-    let site = make_site(&t, &[("templates/t.html", "<p>${TITLE}</p>")], "ARG TITLE = \"T\"\nCOPY ./public/ /\nRENDER ./templates/t.html TO /t.html\nEXPORT /\n");
+    let site = make_site(
+        &t,
+        &[("templates/t.html", "<p>${TITLE}</p>")],
+        "ARG TITLE = \"T\"\nCOPY ./public/ /\nRENDER ./templates/t.html TO /t.html\nEXPORT /\n",
+    );
     let trace = home.join("trace.json");
     let memo = || -> Vec<String> {
-        let Ok(text) = fs::read_to_string(&trace) else { return Vec::new() };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
-        v["traceEvents"].as_array().unwrap().iter().filter(|e| e["cat"] == "operation").map(|e| e["args"]["memo"].as_str().unwrap_or("-").to_string()).collect()
+        let Ok(text) = fs::read_to_string(&trace) else {
+            return Vec::new();
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Vec::new();
+        };
+        v["traceEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["cat"] == "operation")
+            .map(|e| e["args"]["memo"].as_str().unwrap_or("-").to_string())
+            .collect()
     };
-    let w = Proc::start(&home, &["build", "--watch", s(&site), "--profile", s(&trace)]);
+    let w = Proc::start(
+        &home,
+        &["build", "--watch", s(&site), "--profile", s(&trace)],
+    );
     w.wait_lines("Watching ", 1);
     assert_eq!(memo(), ["miss", "miss"]);
     write(site.join("public/style.css"), "body{margin:2px}");
@@ -341,7 +467,13 @@ fn build_watch_rebuilds_incrementally() {
         std::thread::sleep(Duration::from_millis(25));
     }
     assert_eq!(memo(), ["miss", "files"]);
-    assert_eq!(fs::read_to_string(site.join("dist/t.html")).unwrap(), "<p>T</p>");
-    assert_eq!(fs::read_to_string(site.join("dist/style.css")).unwrap(), "body{margin:2px}");
+    assert_eq!(
+        fs::read_to_string(site.join("dist/t.html")).unwrap(),
+        "<p>T</p>"
+    );
+    assert_eq!(
+        fs::read_to_string(site.join("dist/style.css")).unwrap(),
+        "body{margin:2px}"
+    );
     assert_eq!(w.stop(), 0);
 }

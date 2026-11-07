@@ -26,7 +26,10 @@ pub struct ToolPolicy {
     pub max_output_bytes: u64,
 }
 
-pub const DEFAULT_TOOL_POLICY: ToolPolicy = ToolPolicy { timeout_ms: 60_000, max_output_bytes: 64 * 1024 * 1024 };
+pub const DEFAULT_TOOL_POLICY: ToolPolicy = ToolPolicy {
+    timeout_ms: 60_000,
+    max_output_bytes: 64 * 1024 * 1024,
+};
 
 impl Default for ToolPolicy {
     fn default() -> Self {
@@ -60,12 +63,21 @@ fn is_executable(_: &fs::Metadata) -> bool {
 /// Resolve `--allow-exec name[=path]`. A bare name is looked up on `search_path`
 /// (the build's PATH); an explicit path must be absolute. The result is the real
 /// path (symlinks followed), so what is printed, keyed and run is one file.
-pub fn resolve_tool(name: &str, explicit: Option<&str>, search_path: Option<&str>, span: Option<&SourceSpan>) -> Result<ResolvedTool> {
+pub fn resolve_tool(
+    name: &str,
+    explicit: Option<&str>,
+    search_path: Option<&str>,
+    span: Option<&SourceSpan>,
+) -> Result<ResolvedTool> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     match explicit {
         Some(p) => {
             if !Path::new(p).is_absolute() {
-                return Err(SitefileError::new(ErrorCode::E_USAGE, format!("--allow-exec {name}={p}: the path must be absolute"), span.cloned()));
+                return Err(SitefileError::new(
+                    ErrorCode::E_USAGE,
+                    format!("--allow-exec {name}={p}: the path must be absolute"),
+                    span.cloned(),
+                ));
             }
             candidates.push(PathBuf::from(p));
         }
@@ -78,18 +90,31 @@ pub fn resolve_tool(name: &str, explicit: Option<&str>, search_path: Option<&str
         }
     }
     for c in candidates {
-        let Ok(real) = fs::canonicalize(&c) else { continue };
-        let Ok(st) = fs::metadata(&real) else { continue };
+        let Ok(real) = fs::canonicalize(&c) else {
+            continue;
+        };
+        let Ok(st) = fs::metadata(&real) else {
+            continue;
+        };
         if !st.is_file() || !is_executable(&st) {
             continue;
         }
-        return Ok(ResolvedTool { name: name.into(), path: real, size: st.len(), mtime_ms: mtime_ms(&st) });
+        return Ok(ResolvedTool {
+            name: name.into(),
+            path: real,
+            size: st.len(),
+            mtime_ms: mtime_ms(&st),
+        });
     }
     let detail = match explicit {
         Some(p) => format!("TOOL {name}: {p} is not an executable file"),
         None => format!("TOOL {name}: no executable '{name}' found on PATH (or pass --allow-exec {name}=/absolute/path)"),
     };
-    Err(SitefileError::new(ErrorCode::E_NOT_FOUND, detail, span.cloned()))
+    Err(SitefileError::new(
+        ErrorCode::E_NOT_FOUND,
+        detail,
+        span.cloned(),
+    ))
 }
 
 /// The input file given to a tool.
@@ -121,7 +146,8 @@ fn safe_ext(name: &str) -> &str {
     match base.rfind('.') {
         Some(i) if i > 0 => {
             let ext = &base[i..];
-            if (2..=13).contains(&ext.len()) && ext[1..].bytes().all(|b| b.is_ascii_alphanumeric()) {
+            if (2..=13).contains(&ext.len()) && ext[1..].bytes().all(|b| b.is_ascii_alphanumeric())
+            {
                 ext
             } else {
                 ""
@@ -163,7 +189,12 @@ pub fn tool_placeholders(s: &str) -> Vec<(usize, usize, &str)> {
 /// The argv after placeholder substitution. `{input}` and `{output}` become
 /// *relative* names inside the call's temp dir (the tool's cwd). Values are
 /// inserted verbatim into one argv entry; they are never re-scanned, and never split.
-pub fn substitute_args(args: &[String], input_file: Option<&str>, output_file: &str, options: &[(String, String)]) -> Vec<String> {
+pub fn substitute_args(
+    args: &[String],
+    input_file: Option<&str>,
+    output_file: &str,
+    options: &[(String, String)],
+) -> Vec<String> {
     args.iter()
         .map(|a| {
             let mut out = String::with_capacity(a.len());
@@ -198,13 +229,21 @@ impl TempDir {
         let base = std::env::temp_dir();
         let mut last_err = None;
         for _ in 0..100 {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64;
-            let mut x = nanos ^ (std::process::id() as u64).rotate_left(32) ^ N.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0) as u64;
+            let mut x = nanos
+                ^ (std::process::id() as u64).rotate_left(32)
+                ^ N.fetch_add(1, Ordering::Relaxed)
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut suffix = String::new();
             for _ in 0..6 {
                 suffix.push(ALPHA[(x % ALPHA.len() as u64) as usize] as char);
                 x /= ALPHA.len() as u64;
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
             }
             let dir = base.join(format!("{prefix}{suffix}"));
             let mut b = fs::DirBuilder::new();
@@ -219,7 +258,8 @@ impl TempDir {
                 Err(e) => return Err(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| std::io::Error::other("could not create a temporary directory")))
+        Err(last_err
+            .unwrap_or_else(|| std::io::Error::other("could not create a temporary directory")))
     }
 }
 
@@ -254,15 +294,29 @@ fn tail(s: &str) -> Vec<String> {
         .split('\n')
         .map(|l| l.trim_end().to_string())
         .filter(|l| !l.is_empty())
-        .map(|l| if l.chars().count() > MAX_LINE { format!("{}…", l.chars().take(MAX_LINE).collect::<String>()) } else { l })
+        .map(|l| {
+            if l.chars().count() > MAX_LINE {
+                format!("{}…", l.chars().take(MAX_LINE).collect::<String>())
+            } else {
+                l
+            }
+        })
         .collect();
     lines[lines.len().saturating_sub(MAX_LOG_LINES)..].to_vec()
 }
 
 /// Run one TOOL call. Log lines (`[tool name] …`) are the tool's stdout, then its stderr.
-pub fn run_tool(tool: &ResolvedTool, call: &ToolCall, policy: &ToolPolicy, log: &dyn Fn(&str), span: Option<&SourceSpan>) -> Result<PluginResult> {
+pub fn run_tool(
+    tool: &ResolvedTool,
+    call: &ToolCall,
+    policy: &ToolPolicy,
+    log: &dyn Fn(&str),
+    span: Option<&SourceSpan>,
+) -> Result<PluginResult> {
     let label = format!("TOOL {}", tool.name);
-    let io_err = |e: std::io::Error| SitefileError::new(ErrorCode::E_PLUGIN, format!("{label}: {e}"), span.cloned());
+    let io_err = |e: std::io::Error| {
+        SitefileError::new(ErrorCode::E_PLUGIN, format!("{label}: {e}"), span.cloned())
+    };
     let dir = TempDir::new("sitefile-tool-").map_err(io_err)?;
 
     let mut input_file: Option<String> = None;
@@ -276,15 +330,27 @@ pub fn run_tool(tool: &ResolvedTool, call: &ToolCall, policy: &ToolPolicy, log: 
             o.mode(0o600);
         }
         use std::io::Write;
-        o.open(dir.0.join(&name)).and_then(|mut f| f.write_all(&input.bytes)).map_err(io_err)?;
+        o.open(dir.0.join(&name))
+            .and_then(|mut f| f.write_all(&input.bytes))
+            .map_err(io_err)?;
         input_file = Some(name);
     }
     let output_file = format!("output{}", safe_ext(&call.dest));
-    let argv = substitute_args(&call.args, input_file.as_deref(), &output_file, &call.options);
+    let argv = substitute_args(
+        &call.args,
+        input_file.as_deref(),
+        &output_file,
+        &call.options,
+    );
     let out_path = dir.0.join(&output_file);
 
     let mut cmd = Command::new(&tool.path);
-    cmd.args(&argv).current_dir(&dir.0).env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&argv)
+        .current_dir(&dir.0)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (k, v) in TOOL_ENV {
         cmd.env(k, v);
     }
@@ -343,17 +409,31 @@ pub fn run_tool(tool: &ResolvedTool, call: &ToolCall, policy: &ToolPolicy, log: 
     let fail = |why: String| -> SitefileError {
         let lines = tail(if stderr.is_empty() { &stdout } else { &stderr });
         let lines = &lines[lines.len().saturating_sub(8)..];
-        let extra = if lines.is_empty() { String::new() } else { format!("\n{}", lines.join("\n")) };
-        SitefileError::new(ErrorCode::E_PLUGIN, format!("{label}: {why}{extra}"), span.cloned())
+        let extra = if lines.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", lines.join("\n"))
+        };
+        SitefileError::new(
+            ErrorCode::E_PLUGIN,
+            format!("{label}: {why}{extra}"),
+            span.cloned(),
+        )
     };
     if let Some(e) = spawn_error {
-        return Err(fail(format!("could not start {}: {e}", tool.path.display())));
+        return Err(fail(format!(
+            "could not start {}: {e}",
+            tool.path.display()
+        )));
     }
     if timed_out {
         return Err(fail(format!("timed out after {} ms", policy.timeout_ms)));
     }
     if oversized {
-        return Err(fail(format!("output is larger than {} bytes", policy.max_output_bytes)));
+        return Err(fail(format!(
+            "output is larger than {} bytes",
+            policy.max_output_bytes
+        )));
     }
     match status {
         Some(st) if st.success() => {}
@@ -375,7 +455,10 @@ pub fn run_tool(tool: &ResolvedTool, call: &ToolCall, policy: &ToolPolicy, log: 
         return Err(fail("{output} is not a regular file".into()));
     }
     if st.len() > policy.max_output_bytes {
-        return Err(fail(format!("output is larger than {} bytes", policy.max_output_bytes)));
+        return Err(fail(format!(
+            "output is larger than {} bytes",
+            policy.max_output_bytes
+        )));
     }
     let bytes = fs::read(&out_path).map_err(|e| fail(e.to_string()))?;
     Ok(PluginResult::File(bytes))
@@ -395,7 +478,9 @@ mod tests {
 
     fn node() -> Option<PathBuf> {
         let path = std::env::var_os("PATH")?;
-        std::env::split_paths(&path).map(|d| d.join("node")).find(|p| p.is_file())
+        std::env::split_paths(&path)
+            .map(|d| d.join("node"))
+            .find(|p| p.is_file())
     }
 
     /// The fake tool from test/exec-tool.test.ts (a node script).
@@ -455,7 +540,10 @@ switch (mode) {{
             args: args.iter().map(|s| s.to_string()).collect(),
             dest: "/o.json".into(),
             options: vec![],
-            input: Some(ToolInput { name: "in.txt".into(), bytes: b"hello".to_vec() }),
+            input: Some(ToolInput {
+                name: "in.txt".into(),
+                bytes: b"hello".to_vec(),
+            }),
         }
     }
 
@@ -468,17 +556,48 @@ switch (mode) {{
     fn rejects(t: &ResolvedTool, c: &ToolCall, p: ToolPolicy, needle: &str) {
         let e = run(t, c, p).0.unwrap_err();
         assert_eq!(e.code, ErrorCode::E_PLUGIN, "{}", e.message());
-        assert!(e.message().contains(needle), "{:?} does not contain {needle:?}", e.message());
+        assert!(
+            e.message().contains(needle),
+            "{:?} does not contain {needle:?}",
+            e.message()
+        );
     }
 
     #[test]
     fn substitute_args_replaces_only_known_placeholders_once() {
-        let args: Vec<String> = ["{input}", "x={output}", "{option.a}", "{option.missing}|", "{other}", "%{pts}{x}", "{{input}}"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = [
+            "{input}",
+            "x={output}",
+            "{option.a}",
+            "{option.missing}|",
+            "{other}",
+            "%{pts}{x}",
+            "{{input}}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         assert_eq!(
-            substitute_args(&args, Some("input.txt"), "output.mp4", &[("a".into(), "{output}".into())]),
-            vec!["input.txt", "x=output.mp4", "{output}", "|", "{other}", "%{pts}{x}", "{input.txt}"]
+            substitute_args(
+                &args,
+                Some("input.txt"),
+                "output.mp4",
+                &[("a".into(), "{output}".into())]
+            ),
+            vec![
+                "input.txt",
+                "x=output.mp4",
+                "{output}",
+                "|",
+                "{other}",
+                "%{pts}{x}",
+                "{input.txt}"
+            ]
         );
-        assert_eq!(substitute_args(&["{input}".to_string()], None, "o", &[]), vec![""]);
+        assert_eq!(
+            substitute_args(&["{input}".to_string()], None, "o", &[]),
+            vec![""]
+        );
     }
 
     #[test]
@@ -494,17 +613,31 @@ switch (mode) {{
 
     #[test]
     fn resolve_by_path_name_explicit_and_errors() {
-        let cat = resolve_tool("cat", None, Some("relative/dir:/nonexistent:/bin:/usr/bin"), None).unwrap();
+        let cat = resolve_tool(
+            "cat",
+            None,
+            Some("relative/dir:/nonexistent:/bin:/usr/bin"),
+            None,
+        )
+        .unwrap();
         assert_eq!(cat.path, fs::canonicalize("/bin/cat").unwrap());
         assert!(cat.size > 0 && cat.mtime_ms > 0.0);
         let e = resolve_tool("fake", None, Some("/nonexistent"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_NOT_FOUND);
-        assert!(e.message().contains("no executable 'fake' found on PATH (or pass --allow-exec fake=/absolute/path)"));
+        assert!(e.message().contains(
+            "no executable 'fake' found on PATH (or pass --allow-exec fake=/absolute/path)"
+        ));
         let e = resolve_tool("fake", Some("bin/fake"), None, None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_USAGE);
         assert!(e.message().contains("must be absolute"));
         let e = resolve_tool("fake", Some("/nonexistent/fake"), None, None).unwrap_err();
-        assert_eq!((e.code, e.detail.as_str()), (ErrorCode::E_NOT_FOUND, "TOOL fake: /nonexistent/fake is not an executable file"));
+        assert_eq!(
+            (e.code, e.detail.as_str()),
+            (
+                ErrorCode::E_NOT_FOUND,
+                "TOOL fake: /nonexistent/fake is not an executable file"
+            )
+        );
         // not executable
         let d = tmp("sitefile-noexec-");
         fs::write(d.join("x"), "x").unwrap();
@@ -513,7 +646,12 @@ switch (mode) {{
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/bin/cat", d.join("kat")).unwrap();
-            assert_eq!(resolve_tool("kat", Some(d.join("kat").to_str().unwrap()), None, None).unwrap().path, fs::canonicalize("/bin/cat").unwrap());
+            assert_eq!(
+                resolve_tool("kat", Some(d.join("kat").to_str().unwrap()), None, None)
+                    .unwrap()
+                    .path,
+                fs::canonicalize("/bin/cat").unwrap()
+            );
         }
         fs::remove_dir_all(d).unwrap();
     }
@@ -523,22 +661,41 @@ switch (mode) {{
         let Some(node) = node() else { return };
         let t = resolve_tool("cat", Some("/bin/cat"), None, None).unwrap();
         let out = Command::new(node).args(["-e", "process.stdout.write(JSON.stringify(require('fs').statSync(process.argv[1]).mtimeMs))", t.path.to_str().unwrap()]).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), crate::plugins::cache::js_number(t.mtime_ms));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            crate::plugins::cache::js_number(t.mtime_ms)
+        );
     }
 
     #[test]
     fn system_tools_copy_and_translate() {
         let cp = resolve_tool("cp", None, Some("/bin"), None).unwrap();
-        let (r, _) = run(&cp, &ToolCall { args: vec!["{input}".into(), "{output}".into()], dest: "/b.txt".into(), ..call(&[]) }, ToolPolicy::default());
+        let (r, _) = run(
+            &cp,
+            &ToolCall {
+                args: vec!["{input}".into(), "{output}".into()],
+                dest: "/b.txt".into(),
+                ..call(&[])
+            },
+            ToolPolicy::default(),
+        );
         assert_eq!(r.unwrap(), PluginResult::File(b"hello".to_vec()));
         // cat writes to stdout only: its output is logged, and the missing {output} is an error
         let cat = resolve_tool("cat", None, Some("/bin"), None).unwrap();
         let (r, logs) = run(&cat, &call(&["{input}"]), ToolPolicy::default());
-        assert!(r.unwrap_err().message().contains("TOOL cat: did not write {output} (output.json)"));
+        assert!(r
+            .unwrap_err()
+            .message()
+            .contains("TOOL cat: did not write {output} (output.json)"));
         assert_eq!(logs, vec!["[tool cat] hello"]);
         // a usage error: the exit code and the tool's stderr are in the message
         let tr = resolve_tool("tr", None, Some("/usr/bin"), None).unwrap();
-        rejects(&tr, &call(&["a-z", "A-Z", "{output}"]), ToolPolicy::default(), "TOOL tr: exited with code 1\n");
+        rejects(
+            &tr,
+            &call(&["a-z", "A-Z", "{output}"]),
+            ToolPolicy::default(),
+            "TOOL tr: exited with code 1\n",
+        );
     }
 
     #[test]
@@ -547,25 +704,71 @@ switch (mode) {{
         std::env::set_var("SITEFILE_SECRET_PROBE", "hunter2");
         let hostile = "; echo pwned > /tmp/pwned-by-sitefile $(id) `id` | cat && *";
         let c = ToolCall {
-            args: ["dump", "-i", "{input}", "--size={option.size}", "--note={option.note}", hostile, "$(whoami)", ";", "%{pts}", "{unknown}", "{output}"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            args: [
+                "dump",
+                "-i",
+                "{input}",
+                "--size={option.size}",
+                "--note={option.note}",
+                hostile,
+                "$(whoami)",
+                ";",
+                "%{pts}",
+                "{unknown}",
+                "{output}",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             dest: "/out.json".into(),
-            options: vec![("size".into(), "640x480".into()), ("note".into(), "a b".into())],
-            input: Some(ToolInput { name: "in.txt".into(), bytes: b"hello".to_vec() }),
+            options: vec![
+                ("size".into(), "640x480".into()),
+                ("note".into(), "a b".into()),
+            ],
+            input: Some(ToolInput {
+                name: "in.txt".into(),
+                bytes: b"hello".to_vec(),
+            }),
         };
-        let PluginResult::File(bytes) = run(&tool, &c, ToolPolicy::default()).0.unwrap() else { panic!() };
+        let PluginResult::File(bytes) = run(&tool, &c, ToolPolicy::default()).0.unwrap() else {
+            panic!()
+        };
         let got: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(got["argv"], serde_json::json!(["-i", "input.txt", "--size=640x480", "--note=a b", hostile, "$(whoami)", ";", "%{pts}", "{unknown}"]));
-        let env: Vec<&String> = got["env"].as_object().unwrap().keys().filter(|k| *k != "__CF_USER_TEXT_ENCODING").collect();
+        assert_eq!(
+            got["argv"],
+            serde_json::json!([
+                "-i",
+                "input.txt",
+                "--size=640x480",
+                "--note=a b",
+                hostile,
+                "$(whoami)",
+                ";",
+                "%{pts}",
+                "{unknown}"
+            ])
+        );
+        let env: Vec<&String> = got["env"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|k| *k != "__CF_USER_TEXT_ENCODING")
+            .collect();
         assert_eq!(env, vec!["PATH"]);
         assert_eq!(got["env"]["PATH"], "/usr/bin:/bin");
         let cwd = got["cwd"].as_str().unwrap();
-        assert!(Path::new(cwd).file_name().unwrap().to_str().unwrap().starts_with("sitefile-tool-"));
+        assert!(Path::new(cwd)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("sitefile-tool-"));
         assert_eq!(got["files"], serde_json::json!(["input.txt"]));
         assert_eq!(got["stdinIsNull"], true);
-        assert!(!Path::new(cwd).exists(), "the temp dir is removed afterwards");
+        assert!(
+            !Path::new(cwd).exists(),
+            "the temp dir is removed afterwards"
+        );
         assert!(!Path::new("/tmp/pwned-by-sitefile").exists());
         fs::remove_dir_all(d).unwrap();
     }
@@ -574,13 +777,47 @@ switch (mode) {{
     fn failures_timeouts_bad_outputs_and_logs() {
         let Some((d, tool)) = fake_tool() else { return };
         let p = ToolPolicy::default();
-        rejects(&tool, &call(&["fail", "{output}"]), p, "TOOL fake: exited with code 3\nfirst line\nboom: bad input");
+        rejects(
+            &tool,
+            &call(&["fail", "{output}"]),
+            p,
+            "TOOL fake: exited with code 3\nfirst line\nboom: bad input",
+        );
         let t0 = Instant::now();
-        rejects(&tool, &call(&["sleep", "{output}"]), ToolPolicy { timeout_ms: 300, ..p }, "timed out after 300 ms");
+        rejects(
+            &tool,
+            &call(&["sleep", "{output}"]),
+            ToolPolicy {
+                timeout_ms: 300,
+                ..p
+            },
+            "timed out after 300 ms",
+        );
         assert!(t0.elapsed() < Duration::from_secs(4));
-        rejects(&tool, &ToolCall { dest: "/o.bin".into(), ..call(&["nowrite", "{output}"]) }, p, "did not write {output} (output.bin)");
-        rejects(&tool, &call(&["big", "{output}"]), ToolPolicy { max_output_bytes: 1000, ..p }, "output is larger than 1000 bytes");
-        rejects(&tool, &call(&["symlink", "{output}"]), p, "not a regular file");
+        rejects(
+            &tool,
+            &ToolCall {
+                dest: "/o.bin".into(),
+                ..call(&["nowrite", "{output}"])
+            },
+            p,
+            "did not write {output} (output.bin)",
+        );
+        rejects(
+            &tool,
+            &call(&["big", "{output}"]),
+            ToolPolicy {
+                max_output_bytes: 1000,
+                ..p
+            },
+            "output is larger than 1000 bytes",
+        );
+        rejects(
+            &tool,
+            &call(&["symlink", "{output}"]),
+            p,
+            "not a regular file",
+        );
         let (r, logs) = run(&tool, &call(&["noisy", "{output}"]), p);
         assert_eq!(r.unwrap(), PluginResult::File(b"ok".to_vec()));
         assert_eq!(logs, vec!["[tool fake] to stdout", "[tool fake] to stderr"]);
@@ -591,7 +828,17 @@ switch (mode) {{
 
     #[test]
     fn a_tool_that_vanished_is_an_error_not_a_panic() {
-        let t = ResolvedTool { name: "gone".into(), path: "/nonexistent/gone".into(), size: 0, mtime_ms: 0.0 };
-        rejects(&t, &call(&["{output}"]), ToolPolicy::default(), "TOOL gone: could not start /nonexistent/gone:");
+        let t = ResolvedTool {
+            name: "gone".into(),
+            path: "/nonexistent/gone".into(),
+            size: 0,
+            mtime_ms: 0.0,
+        };
+        rejects(
+            &t,
+            &call(&["{output}"]),
+            ToolPolicy::default(),
+            "TOOL gone: could not start /nonexistent/gone:",
+        );
     }
 }

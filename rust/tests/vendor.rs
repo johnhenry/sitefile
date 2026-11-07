@@ -15,7 +15,11 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new() -> Tmp {
         static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!("sitefile-vendor-rs-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let p = std::env::temp_dir().join(format!(
+            "sitefile-vendor-rs-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         Tmp(fs::canonicalize(&p).unwrap())
@@ -52,7 +56,11 @@ fn serve() -> (String, Arc<AtomicUsize>) {
                 "/other.txt" => ("200 OK", String::new(), "other"),
                 _ => ("404 Not Found", String::new(), ""),
             };
-            let _ = write!(stream, "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     (base, count)
@@ -65,8 +73,16 @@ struct Out {
 }
 
 fn sitefile(home: &Path, args: &[&str]) -> Out {
-    let o = Command::new(BIN).args(args).env("SITEFILE_HOME", home).output().unwrap();
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }
+    let o = Command::new(BIN)
+        .args(args)
+        .env("SITEFILE_HOME", home)
+        .output()
+        .unwrap();
+    Out {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into(),
+        stderr: String::from_utf8_lossy(&o.stderr).into(),
+    }
 }
 
 fn project(t: &Tmp, sitefile: &str) -> PathBuf {
@@ -91,29 +107,61 @@ fn vendor_then_build_offline_without_network_flags() {
     let ctx = project(&t, &format!("FROM scratch\nCOPY ./public/ /\nCOPY ./ /src/\nIMPORT lib FROM {base}/moved\nCOPY lib: /lib.js\nEXPORT /\n"));
     let v = sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1]]);
     assert_eq!(v.code, 0, "{}", v.stderr);
-    assert!(v.stdout.starts_with("Vendored 1 resource and 0 images (1 blob, 14 bytes) to "), "{}", v.stdout);
-    assert!(v.stdout.ends_with("vendor/sitefile\nUpdated Sitefile.lock\n"), "{}", v.stdout);
+    assert!(
+        v.stdout
+            .starts_with("Vendored 1 resource and 0 images (1 blob, 14 bytes) to "),
+        "{}",
+        v.stdout
+    );
+    assert!(
+        v.stdout
+            .ends_with("vendor/sitefile\nUpdated Sitefile.lock\n"),
+        "{}",
+        v.stdout
+    );
     let manifest = fs::read_to_string(ctx.join("vendor/sitefile/manifest.json")).unwrap();
-    assert!(manifest.contains(&format!("\"resolved\": \"{base}/lib.js\"")), "{manifest}");
+    assert!(
+        manifest.contains(&format!("\"resolved\": \"{base}/lib.js\"")),
+        "{manifest}"
+    );
     let digest = sitefile::digest::sha256(b"console.log(1)");
     let blob = ctx.join("vendor/sitefile/blobs/sha256").join(&digest[7..]);
     assert_eq!(fs::read_to_string(&blob).unwrap(), "console.log(1)");
 
     let n = count.load(Ordering::SeqCst);
     let out = ctx.join("dist");
-    let b = sitefile(&home, &["build", s(&ctx), "-o", s(&out), "--frozen-lockfile"]);
+    let b = sitefile(
+        &home,
+        &["build", s(&ctx), "-o", s(&out), "--frozen-lockfile"],
+    );
     assert_eq!(b.code, 0, "{}", b.stderr);
     assert_eq!(b.stderr, "");
-    assert_eq!(count.load(Ordering::SeqCst), n, "the build did not fetch anything");
-    assert_eq!(fs::read_to_string(out.join("lib.js")).unwrap(), "console.log(1)");
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        n,
+        "the build did not fetch anything"
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("lib.js")).unwrap(),
+        "console.log(1)"
+    );
     assert!(out.join("src/Sitefile").exists());
-    assert!(!out.join("src/vendor").exists(), "the vendor directory is never copied");
+    assert!(
+        !out.join("src/vendor").exists(),
+        "the vendor directory is never copied"
+    );
 
     // a corrupt blob fails the build
     fs::write(&blob, "tampered").unwrap();
     let c = sitefile(&home, &["build", s(&ctx), "-o", s(&out), "--force"]);
     assert_eq!(c.code, 1);
-    assert!(c.stderr.contains("error[E_INTEGRITY]: ") && c.stderr.contains("Sitefile:4:1: vendored copy of '") && c.stderr.contains("is corrupt"), "{}", c.stderr);
+    assert!(
+        c.stderr.contains("error[E_INTEGRITY]: ")
+            && c.stderr.contains("Sitefile:4:1: vendored copy of '")
+            && c.stderr.contains("is corrupt"),
+        "{}",
+        c.stderr
+    );
 }
 
 #[test]
@@ -121,11 +169,20 @@ fn unvendored_urls_are_fetched_with_a_warning() {
     let (base, count) = serve();
     let t = Tmp::new();
     let home = t.0.join("home");
-    let ctx = project(&t, &format!("FROM scratch\nIMPORT lib FROM {base}/lib.js\nCOPY lib: /lib.js\nEXPORT /\n"));
-    assert_eq!(sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1]]).code, 0);
+    let ctx = project(
+        &t,
+        &format!("FROM scratch\nIMPORT lib FROM {base}/lib.js\nCOPY lib: /lib.js\nEXPORT /\n"),
+    );
+    assert_eq!(
+        sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1]]).code,
+        0
+    );
     fs::write(ctx.join("Sitefile"), format!("FROM scratch\nIMPORT lib FROM {base}/lib.js\nIMPORT other FROM {base}/other.txt\nCOPY lib: /lib.js\nEXPORT /\n")).unwrap();
     let n = count.load(Ordering::SeqCst);
-    let b = sitefile(&home, &["build", s(&ctx), "-o", s(&ctx.join("dist")), NET[0], NET[1]]);
+    let b = sitefile(
+        &home,
+        &["build", s(&ctx), "-o", s(&ctx.join("dist")), NET[0], NET[1]],
+    );
     assert_eq!(b.code, 0, "{}", b.stderr);
     assert_eq!(count.load(Ordering::SeqCst), n + 1);
     assert!(
@@ -140,30 +197,101 @@ fn vendor_dir_validation_and_refusals() {
     let (base, _) = serve();
     let t = Tmp::new();
     let home = t.0.join("home");
-    let ctx = project(&t, &format!("FROM scratch\nIMPORT lib FROM {base}/lib.js\nCOPY lib: /lib.js\nEXPORT /\n"));
+    let ctx = project(
+        &t,
+        &format!("FROM scratch\nIMPORT lib FROM {base}/lib.js\nCOPY lib: /lib.js\nEXPORT /\n"),
+    );
     fs::create_dir_all(ctx.join("third_party")).unwrap();
     fs::write(ctx.join("third_party/README"), "not ours").unwrap();
     for bad in ["../x", "/abs", ".", ""] {
         let r = sitefile(&home, &["vendor", s(&ctx), "--vendor-dir", bad]);
         assert_eq!(r.code, 2, "{bad}");
-        assert!(r.stderr.contains("--vendor-dir expects a relative path inside the build context"), "{}", r.stderr);
+        assert!(
+            r.stderr
+                .contains("--vendor-dir expects a relative path inside the build context"),
+            "{}",
+            r.stderr
+        );
     }
-    let missing = sitefile(&home, &["build", s(&ctx), "-o", s(&ctx.join("dist")), "--vendor-dir", "nope"]);
+    let missing = sitefile(
+        &home,
+        &[
+            "build",
+            s(&ctx),
+            "-o",
+            s(&ctx.join("dist")),
+            "--vendor-dir",
+            "nope",
+        ],
+    );
     assert_eq!(missing.code, 1);
     assert!(missing.stderr.contains("error[E_NOT_FOUND]: vendor directory 'nope' has no manifest.json; run 'sitefile vendor --vendor-dir nope' first"), "{}", missing.stderr);
-    let other = sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1], "--vendor-dir", "third_party"]);
+    let other = sitefile(
+        &home,
+        &[
+            "vendor",
+            s(&ctx),
+            NET[0],
+            NET[1],
+            "--vendor-dir",
+            "third_party",
+        ],
+    );
     assert_eq!(other.code, 1);
-    assert!(other.stderr.contains("error[E_EXPORT_UNSAFE]: 'third_party' exists and is not a sitefile vendor directory"), "{}", other.stderr);
-    assert_eq!(fs::read_to_string(ctx.join("third_party/README")).unwrap(), "not ours");
+    assert!(
+        other.stderr.contains(
+            "error[E_EXPORT_UNSAFE]: 'third_party' exists and is not a sitefile vendor directory"
+        ),
+        "{}",
+        other.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(ctx.join("third_party/README")).unwrap(),
+        "not ours"
+    );
     let outside = t.0.join("outside");
     fs::create_dir_all(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, ctx.join("escape")).unwrap();
-    let esc = sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1], "--vendor-dir", "escape/v"]);
+    let esc = sitefile(
+        &home,
+        &[
+            "vendor",
+            s(&ctx),
+            NET[0],
+            NET[1],
+            "--vendor-dir",
+            "escape/v",
+        ],
+    );
     assert_eq!(esc.code, 1);
     assert!(esc.stderr.contains("E_PATH_ESCAPE"), "{}", esc.stderr);
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
     // a custom directory is used when named
-    assert_eq!(sitefile(&home, &["vendor", s(&ctx), NET[0], NET[1], "--vendor-dir", "deps/offline"]).code, 0);
-    let b = sitefile(&home, &["build", s(&ctx), "-o", s(&ctx.join("dist")), "--vendor-dir", "deps/offline"]);
+    assert_eq!(
+        sitefile(
+            &home,
+            &[
+                "vendor",
+                s(&ctx),
+                NET[0],
+                NET[1],
+                "--vendor-dir",
+                "deps/offline"
+            ]
+        )
+        .code,
+        0
+    );
+    let b = sitefile(
+        &home,
+        &[
+            "build",
+            s(&ctx),
+            "-o",
+            s(&ctx.join("dist")),
+            "--vendor-dir",
+            "deps/offline",
+        ],
+    );
     assert_eq!(b.code, 0, "{}", b.stderr);
 }

@@ -9,17 +9,26 @@
 //! `--lint-disable <id>[,<id>…]` for one run; `all` names every rule.
 
 use crate::executor::template_names;
-use crate::language::ast::{EscapeMode, Instruction, Operand, Program, Source, TemplatePart};
-use crate::language::scanner::{is_js_space, js_trim, logical_lines_with_comments, CommentLine, LogicalLine};
-use crate::language::validate::{operands_of, parse_fragment_body};
 use crate::language::ast::ExportFormat;
+use crate::language::ast::{EscapeMode, Instruction, Operand, Program, Source, TemplatePart};
+use crate::language::scanner::{
+    is_js_space, js_trim, logical_lines_with_comments, CommentLine, LogicalLine,
+};
+use crate::language::validate::{operands_of, parse_fragment_body};
 use crate::planner::{imported_stage_refs, ImportLocation, Operation, Plan, SourceRef, StageBase};
 use crate::refs::parse_ref;
 use crate::render::parse_render_template;
 use std::collections::{HashMap, HashSet};
 
 /// Every rule, in the order warnings of one line are reported.
-pub const LINT_RULES: [&str; 6] = ["unused-name", "unpinned-import", "unpinned-image", "render-escape", "sitemap-order", "shadowed-write"];
+pub const LINT_RULES: [&str; 6] = [
+    "unused-name",
+    "unpinned-import",
+    "unpinned-image",
+    "render-escape",
+    "sitemap-order",
+    "shadowed-write",
+];
 
 /// Import kinds a RENDER template can read (so a template file may use them).
 const VALUE_KINDS: [&str; 7] = ["text", "json", "yaml", "csv", "markdown", "wbn", "html"];
@@ -86,11 +95,17 @@ fn lint_body(body: &str) -> Option<(&'static str, &str)> {
 type Directives = (HashSet<String>, HashMap<u32, HashSet<String>>);
 
 /// Parse `# sitefile-lint:` comments: rules off for the file, rules off per line, and problems.
-fn directives(comments: &[CommentLine], lines: &[LogicalLine], found: &mut Vec<Found>) -> Directives {
+fn directives(
+    comments: &[CommentLine],
+    lines: &[LogicalLine],
+    found: &mut Vec<Found>,
+) -> Directives {
     let mut file = HashSet::new();
     let mut per_line: HashMap<u32, HashSet<String>> = HashMap::new();
     for c in comments {
-        let Some(rest) = lint_comment(&c.text) else { continue };
+        let Some(rest) = lint_comment(&c.text) else {
+            continue;
+        };
         let Some((verb, ids)) = lint_body(js_trim(rest)) else {
             found.push(Found {
                 line: c.line,
@@ -107,14 +122,23 @@ fn directives(comments: &[CommentLine], lines: &[LogicalLine], found: &mut Vec<F
                 found.push(Found {
                     line: c.line,
                     rule: "lint-comment",
-                    message: format!("unknown lint rule '{id}' (rules: {}, or all)", LINT_RULES.join(", ")),
+                    message: format!(
+                        "unknown lint rule '{id}' (rules: {}, or all)",
+                        LINT_RULES.join(", ")
+                    ),
                 });
             }
         }
         if verb == "disable" {
             file.extend(known);
-        } else if let Some(next) = lines.iter().find(|l| l.positions.first().is_some_and(|p| p.line > c.line)) {
-            per_line.entry(next.positions[0].line).or_default().extend(known);
+        } else if let Some(next) = lines
+            .iter()
+            .find(|l| l.positions.first().is_some_and(|p| p.line > c.line))
+        {
+            per_line
+                .entry(next.positions[0].line)
+                .or_default()
+                .extend(known);
         }
     }
     (file, per_line)
@@ -140,7 +164,11 @@ fn written_path(op: &Operation) -> Option<String> {
     match op {
         Operation::Render { each: Some(e), .. } => Some(written(&e.dest)),
         Operation::Render { dest, .. } => Some(dest.clone()),
-        Operation::Copy { dest, dest_is_dir: false, .. } => Some(dest.clone()),
+        Operation::Copy {
+            dest,
+            dest_is_dir: false,
+            ..
+        } => Some(dest.clone()),
         Operation::Transform { dest, .. } => Some(written(dest)),
         _ => None,
     }
@@ -157,12 +185,23 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
     let file = program.file.as_str();
     let mut comments = Vec::new();
     let lines = logical_lines_with_comments(source, file, &mut comments).unwrap_or_default();
-    let by_start: HashMap<(u32, u32), &LogicalLine> =
-        lines.iter().filter_map(|l| l.positions.first().map(|p| ((p.line, p.column), l))).collect();
+    let by_start: HashMap<(u32, u32), &LogicalLine> = lines
+        .iter()
+        .filter_map(|l| l.positions.first().map(|p| ((p.line, p.column), l)))
+        .collect();
     let mut found = Vec::new();
     let (off_in_file, off_per_line) = directives(&comments, &lines, &mut found);
-    let off: HashSet<String> = off_in_file.into_iter().chain(disabled.iter().cloned()).collect();
-    let mut report = |line: u32, rule: &'static str, message: String| found.push(Found { line, rule, message });
+    let off: HashSet<String> = off_in_file
+        .into_iter()
+        .chain(disabled.iter().cloned())
+        .collect();
+    let mut report = |line: u32, rule: &'static str, message: String| {
+        found.push(Found {
+            line,
+            rule,
+            message,
+        })
+    };
 
     // ---- unused-name: a declaration nothing refers to.
     let mut used: HashSet<String> = HashSet::new();
@@ -179,10 +218,12 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         match ins {
             Instruction::Render { template, each, .. } => {
                 match template {
-                    Source::Inline(body) => match parse_render_template(&body.text, file, body.body_line) {
-                        Ok(nodes) => used.extend(template_names(&nodes)),
-                        Err(_) => opaque_templates = true,
-                    },
+                    Source::Inline(body) => {
+                        match parse_render_template(&body.text, file, body.body_line) {
+                            Ok(nodes) => used.extend(template_names(&nodes)),
+                            Err(_) => opaque_templates = true,
+                        }
+                    }
                     Source::Operand(_) => opaque_templates = true,
                 }
                 if let Some(e) = each {
@@ -227,7 +268,11 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
     for ins in &program.instructions {
         let decl = match ins {
             Instruction::Arg { name, .. } if !opaque_templates => Some(("ARG", name)),
-            Instruction::Let { name, .. } | Instruction::Fragment { name, .. } if !opaque_templates => Some(("LET", name)),
+            Instruction::Let { name, .. } | Instruction::Fragment { name, .. }
+                if !opaque_templates =>
+            {
+                Some(("LET", name))
+            }
             Instruction::Import { name, as_kind, .. } => {
                 let value = as_kind.is_some_and(|k| VALUE_KINDS.contains(&k.as_str()));
                 (!opaque_templates || !value).then_some(("IMPORT", name))
@@ -238,7 +283,11 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         };
         if let Some((what, name)) = decl {
             if !used.contains(name) {
-                report(ins.span().line, "unused-name", format!("{what} {name} is never used"));
+                report(
+                    ins.span().line,
+                    "unused-name",
+                    format!("{what} {name} is never used"),
+                );
             }
         }
     }
@@ -260,16 +309,34 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         format!("{what} {r} has no @sha256: digest, so the tag is trusted on first use (pin it as {r}@sha256:…)")
     };
     for stage in &plan.stages {
-        if let StageBase::Image { reference, local: false, lead, .. } = &stage.base {
+        if let StageBase::Image {
+            reference,
+            local: false,
+            lead,
+            ..
+        } = &stage.base
+        {
             if pinned(reference) == Some(false) {
-                report(stage.span.line, "unpinned-image", unpinned_image(&format!("{lead} image"), reference));
+                report(
+                    stage.span.line,
+                    "unpinned-image",
+                    unpinned_image(&format!("{lead} image"), reference),
+                );
             }
         }
     }
-    let exp = program.instructions.iter().find(|i| matches!(i, Instruction::Export { .. }));
-    if let (Some(exp), ExportFormat::Oci, Some(base)) = (exp, plan.export_format, &plan.export_base) {
+    let exp = program
+        .instructions
+        .iter()
+        .find(|i| matches!(i, Instruction::Export { .. }));
+    if let (Some(exp), ExportFormat::Oci, Some(base)) = (exp, plan.export_format, &plan.export_base)
+    {
         if pinned(base) == Some(false) {
-            report(exp.span().line, "unpinned-image", unpinned_image("EXPORT … AS oci BASE", base));
+            report(
+                exp.span().line,
+                "unpinned-image",
+                unpinned_image("EXPORT … AS oci BASE", base),
+            );
         }
     }
 
@@ -277,9 +344,18 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         let ops = &stage.operations;
         // ---- render-escape: an HTML page rendered without escaping.
         for op in ops {
-            let Operation::Render { escape: EscapeMode::None, span, .. } = op else { continue };
+            let Operation::Render {
+                escape: EscapeMode::None,
+                span,
+                ..
+            } = op
+            else {
+                continue;
+            };
             let dest = written_path(op).unwrap_or_default();
-            if !is_html_page(&dest) || explicit_escape(by_start.get(&(span.line, span.column)).copied()) {
+            if !is_html_page(&dest)
+                || explicit_escape(by_start.get(&(span.line, span.column)).copied())
+            {
                 continue;
             }
             report(
@@ -290,8 +366,13 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         }
         // ---- sitemap-order: a page written after the SITEMAP that should list it.
         for (i, op) in ops.iter().enumerate() {
-            let Operation::Sitemap { span, .. } = op else { continue };
-            if let Some(later) = ops[i + 1..].iter().find(|o| written_path(o).is_some_and(|p| p.ends_with(".html"))) {
+            let Operation::Sitemap { span, .. } = op else {
+                continue;
+            };
+            if let Some(later) = ops[i + 1..]
+                .iter()
+                .find(|o| written_path(o).is_some_and(|p| p.ends_with(".html")))
+            {
                 report(
                     span.line,
                     "sitemap-order",
@@ -307,8 +388,18 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         let mut last: HashMap<String, u32> = HashMap::new();
         for op in ops {
             let (path, overwrite) = match op {
-                Operation::Render { each: None, dest, overwrite, .. } => (dest, *overwrite),
-                Operation::Copy { source: SourceRef::Inline { .. }, dest, overwrite, .. } => (dest, *overwrite),
+                Operation::Render {
+                    each: None,
+                    dest,
+                    overwrite,
+                    ..
+                } => (dest, *overwrite),
+                Operation::Copy {
+                    source: SourceRef::Inline { .. },
+                    dest,
+                    overwrite,
+                    ..
+                } => (dest, *overwrite),
                 _ => continue,
             };
             if let Some(&before) = last.get(path) {
@@ -326,12 +417,19 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
 
     let is_off = |f: &Found| {
         let line = off_per_line.get(&f.line);
-        off.contains("all") || off.contains(f.rule) || line.is_some_and(|s| s.contains("all") || s.contains(f.rule))
+        off.contains("all")
+            || off.contains(f.rule)
+            || line.is_some_and(|s| s.contains("all") || s.contains(f.rule))
     };
-    let mut kept: Vec<Found> = found.into_iter().filter(|f| f.rule == "lint-comment" || !is_off(f)).collect();
+    let mut kept: Vec<Found> = found
+        .into_iter()
+        .filter(|f| f.rule == "lint-comment" || !is_off(f))
+        .collect();
     // Stable: by line, then in the order the rules ran.
     kept.sort_by_key(|f| f.line);
-    kept.into_iter().map(|f| format!("{file}:{}: [{}] {}", f.line, f.rule, f.message)).collect()
+    kept.into_iter()
+        .map(|f| format!("{file}:{}: [{}] {}", f.line, f.rule, f.message))
+        .collect()
 }
 
 #[cfg(test)]
@@ -344,7 +442,12 @@ mod tests {
     fn check(src: &str, disabled: &[&str]) -> Vec<String> {
         let program = parse_program(src, "Sitefile").unwrap();
         let p = plan(&program, &BuildArgs::new()).unwrap();
-        lint(&program, &p, src, &disabled.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        lint(
+            &program,
+            &p,
+            src,
+            &disabled.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
     }
 
     // Every rule's text is checked against TypeScript by the differential fixtures; these cover each rule once.
@@ -352,8 +455,30 @@ mod tests {
     fn each_rule() {
         let src = "ARG A = 1\nIMPORT r FROM https://e.x/a.json AS json\nFROM image ghcr.io/a/b:1 AS i\nFROM scratch\nCOPY --from=i / /\nSITEMAP BASE https://e.x\nRENDER <<H TO /a.html\n${r.x}\nH\nRENDER --escape=html --overwrite <<H TO /a.html\nx\nH\nEXPORT /";
         let ws = check(src, &[]);
-        let ids: Vec<String> = ws.iter().map(|w| w.split('[').nth(1).unwrap().split(']').next().unwrap().to_string()).collect();
-        assert_eq!(ids, ["unused-name", "unpinned-import", "unpinned-image", "sitemap-order", "render-escape", "shadowed-write"], "{ws:#?}");
+        let ids: Vec<String> = ws
+            .iter()
+            .map(|w| {
+                w.split('[')
+                    .nth(1)
+                    .unwrap()
+                    .split(']')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "unused-name",
+                "unpinned-import",
+                "unpinned-image",
+                "sitemap-order",
+                "render-escape",
+                "shadowed-write"
+            ],
+            "{ws:#?}"
+        );
         assert_eq!(ws[0], "Sitefile:1: [unused-name] ARG A is never used");
         assert!(check(src, &["all"]).is_empty());
     }
