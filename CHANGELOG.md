@@ -28,6 +28,20 @@ trees in JSX) and `@johnhenry/packfile` (the Web Bundle reader and server).
   and its `fromArchive()` reads the same bundle once gzipped. The other
   direction, importing gzip-wrapped bundles from fileable or packfile with
   `AS tree`, is johnhenry/sitefile#141.
+- **Fixed: a replaced archive destination went unnoticed on Linux.** Before
+  renaming the new archive into place, `exportFile` (and the Rust
+  `export_file`) checked that the existing destination was still the file
+  they inspected by device and inode number only. Linux often gives a file
+  created right after an unlink the same inode number, so a destination
+  swapped mid-export passed the check and was replaced. The check now also
+  compares size and nanosecond `ctime`. Found by the new CI's first Linux
+  run; the existing test only ever passed on macOS. Fixed in 0e0a1a1 (#142).
+- **Fixed: a case-only collision inside one directory had no source line.**
+  Two names that differ only in case in a directory read by `COPY` (possible
+  on a case-sensitive file system) failed with `E_PATH_COLLISION` but without
+  the instruction's line; both implementations now report it. Its test only
+  runs on case-sensitive file systems, so it had never run. Fixed in 0e0a1a1
+  (#142).
 - **Docs:** README badges, `## Contents`, `## Install`, `## Adding a new
   plugin`, `## Security model` (the former "Safety defaults", with what stays
   the user's responsibility), `## Family`; `examples/README.md`;
