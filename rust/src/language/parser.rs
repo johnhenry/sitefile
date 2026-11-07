@@ -3,7 +3,7 @@
 
 use crate::digest::is_integrity;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::language::ast::{ImportSecret, 
+use crate::language::ast::{ImportArg, ImportSecret, imported_stage,
     is_ident, literal_text, TemplatePart, EscapeMode, REDIRECT_STATUSES, ExportFormat, ForEach, FromBase, ImportKind, Instruction, OciCompression, Operand,
     SchemaClause, DraftsClause, GroupBy, PageClause, SortBy, Source, StageRef, TransformOption, ValueType,
 };
@@ -21,8 +21,9 @@ pub const INSTRUCTIONS: [&str; 17] = [
     "FINGERPRINT", "CHECKLINKS", "EXPORT",
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
-/// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
-pub const IMPORT_CLAUSES: [&str; 6] = ["AS", "INTEGRITY", "SORT", "SCHEMA", "DRAFTS", "SECRET"];
+/// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat; `ARG` by `NAME=value`,
+/// for `AS sitefile`, and may repeat).
+pub const IMPORT_CLAUSES: [&str; 7] = ["AS", "INTEGRITY", "SORT", "SCHEMA", "DRAFTS", "SECRET", "ARG"];
 /// Clauses after a RENDER's `FOR item IN list`, in this order (`FIRST` only after `PAGE n`).
 pub const RENDER_LOOP_CLAUSES: [&str; 3] = ["BY", "PAGE", "FIRST"];
 /// What follows `SECRET <id> AS`.
@@ -206,6 +207,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let mut schema: Option<SchemaClause> = None;
     let mut drafts: Option<DraftsClause> = None;
     let mut secrets: Vec<ImportSecret> = Vec::new();
+    let mut args: Vec<ImportArg> = Vec::new();
     while !c.at_end() {
         let at = c.span();
         if c.keyword("AS") {
@@ -217,7 +219,7 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             as_kind = Some(ImportKind::parse(&k).ok_or_else(|| {
                 SitefileError::at(
                     E_SYNTAX,
-                    format!("unknown import kind '{k}' (expected file, text, json, yaml, csv, markdown, wbn or tree)"),
+                    format!("unknown import kind '{k}' (expected file, text, json, yaml, csv, markdown, wbn, tree or sitefile)"),
                     &kind_at,
                 )
             })?);
@@ -255,12 +257,23 @@ fn parse_import(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
                 return Err(SitefileError::at(E_SYNTAX, format!("header '{}' is set by two SECRET clauses", s.header), &at));
             }
             secrets.push(s);
+        } else if c.keyword("ARG") {
+            // `ARG NAME=value`: a build arg of the Sitefile imported AS sitefile.
+            let arg_name = c.ident("ARG name", "=")?;
+            if !c.eat('=') {
+                return Err(c.error(E_SYNTAX, format!("expected = after ARG {arg_name} (ARG {arg_name}=<value>)")));
+            }
+            if args.iter().any(|a| a.name == arg_name) {
+                return Err(SitefileError::at(E_SYNTAX, format!("ARG {arg_name} given twice"), &at));
+            }
+            let value = c.operand("ARG value")?;
+            args.push(ImportArg { name: arg_name, value, span: at });
         } else {
             let w = c.word();
-            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)"), &at));
+            return Err(SitefileError::at(E_SYNTAX, format!("unexpected '{w}' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS, SECRET or ARG)"), &at));
         }
     }
-    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, drafts, secrets })
+    Ok(Instruction::Import { span, name, uri, as_kind, integrity, sort, schema, drafts, secrets, args })
 }
 
 /// Headers the HTTP client sets itself (or that frame the request): a secret cannot replace them.
@@ -352,7 +365,8 @@ fn parse_flags(c: &mut Cursor, allowed: &[(&'static str, Shape)]) -> Result<Flag
 
 fn stage_ref(flags: &Flags) -> Result<Option<StageRef>> {
     let Some(f) = flags.get("from") else { return Ok(None) };
-    if !is_ident(&f.value) {
+    // A stage of this Sitefile, or `<import>+<stage>` for a stage of a Sitefile imported AS sitefile.
+    if !is_ident(&f.value) && imported_stage(&f.value).is_none() {
         return Err(SitefileError::at(E_SYNTAX, format!("--from needs a stage name, got '{}'", f.value), &f.span));
     }
     Ok(Some(StageRef { name: f.value.clone(), span: f.span.clone() }))
@@ -1045,7 +1059,7 @@ mod tests {
         parse_err("IMPORT d FROM ./x INTEGRITY sha256:abc", E_SYNTAX, 1, 29, "sha256");
         parse_err(&format!("IMPORT d FROM ./x INTEGRITY {}", digest.to_uppercase()), E_SYNTAX, 1, 29, "");
         parse_err("IMPORT d FROM ./x INTEGRITY ${X}", E_SYNTAX, 1, 29, "");
-        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)");
+        parse_err("IMPORT d FROM ./x EXTRA", E_SYNTAX, 1, 19, "unexpected 'EXTRA' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS, SECRET or ARG)");
         let Instruction::Import { sort, .. } = one("IMPORT p FROM ./p AS markdown SORT BY date DESC") else { panic!() };
         let s = sort.unwrap();
         assert!(s.key == "date" && s.descending && s.span.column == 31);
@@ -1309,7 +1323,7 @@ mod tests {
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER X:y"), "invalid header name 'X:y'");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET k AS HEADER Host"), "header 'Host' is set by sitefile and cannot carry a secret");
         assert_eq!(err("IMPORT d FROM https://e.x/d SECRET a AS BEARER SECRET b AS HEADER authorization"), "header 'authorization' is set by two SECRET clauses");
-        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS or SECRET)");
+        assert_eq!(err("IMPORT d FROM https://e.x/d BOGUS"), "unexpected 'BOGUS' (expected AS, INTEGRITY, SORT BY, SCHEMA, DRAFTS, SECRET or ARG)");
     }
 
     #[test]

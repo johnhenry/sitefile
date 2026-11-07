@@ -136,7 +136,7 @@ export default grammar({
 
     _type_annotation: ($) => seq(':', field('type', alias($.identifier, $.type))),
 
-    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET id AS HEADER <Name> | AS BEARER]…
+    // IMPORT name FROM <uri> [AS kind] [INTEGRITY sha256:…] [SORT BY key [ASC|DESC]] [SCHEMA <file>] [DRAFTS true|false] [SECRET id AS HEADER <Name> | AS BEARER]… [ARG NAME=value]…
     import_instruction: ($) =>
       seq(
         kw($, 'IMPORT'),
@@ -151,9 +151,13 @@ export default grammar({
             seq(kw($, 'SCHEMA'), field('schema', $._operand)),
             seq(kw($, 'DRAFTS'), field('drafts', $._operand)),
             field('secret', $.secret_clause),
+            field('arg', $.import_arg),
           ),
         ),
       ),
+
+    // ARG NAME=value: a build arg of the Sitefile imported AS sitefile (issue #97)
+    import_arg: ($) => seq(kw($, 'ARG'), field('name', $.identifier), '=', field('value', $._value)),
 
     // SECRET <id> AS HEADER <Name> | SECRET <id> AS BEARER (build secrets, issue #85)
     secret_clause: ($) =>

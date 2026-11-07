@@ -1,0 +1,4 @@
+# An imported Sitefile is sandboxed to its own directory, even inside this context.
+IMPORT theme FROM ./theme AS sitefile
+FROM theme+assets
+EXPORT /

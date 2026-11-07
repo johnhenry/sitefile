@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "resources": {},
+  "git": {
+    "git+${HTTPS}/stages.git#main:theme": {
+      "commit": "${STAGES_V1}"
+    }
+  }
+}

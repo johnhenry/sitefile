@@ -1,0 +1,44 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist",
+      "--allow-private-network"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/dist2",
+      "--frozen-lockfile",
+      "--strict-pins",
+      "--allow-private-network"
+    ],
+    [
+      "inspect",
+      "${CTX}",
+      "--allow-private-network"
+    ],
+    [
+      "why",
+      "/theme.css",
+      "${CTX}",
+      "--allow-private-network"
+    ]
+  ],
+  "outputs": [
+    [
+      "dist",
+      "tree"
+    ],
+    [
+      "dist2",
+      "tree"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

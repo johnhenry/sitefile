@@ -2,7 +2,7 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::language::ast::{
-    is_ident, literal_text, stage_names, FromBase, FEED_ITEM, ImportKind, Instruction, Operand, Program, Source, StageRef,
+    imported_stage, is_ident, literal_text, stage_names, FromBase, FEED_ITEM, ImportKind, Instruction, Operand, Program, Source, StageRef,
     TemplatePart,
 };
 use crate::language::parser::parse_sitefile;
@@ -20,8 +20,8 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
         Instruction::From { .. } | Instruction::Tool { .. } => vec![],
         Instruction::Arg { default_value, .. } => default_value.iter().map(|o| (o, false)).collect(),
         Instruction::Let { value, .. } => vec![(value, false)],
-        Instruction::Import { uri, schema, drafts, .. } => {
-            std::iter::once(uri).chain(schema.as_ref().map(|s| &s.path)).chain(drafts.as_ref().map(|d| &d.value)).map(|o| (o, false)).collect()
+        Instruction::Import { uri, schema, drafts, args, .. } => {
+            std::iter::once(uri).chain(schema.as_ref().map(|s| &s.path)).chain(drafts.as_ref().map(|d| &d.value)).chain(args.iter().map(|a| &a.value)).map(|o| (o, false)).collect()
         }
         Instruction::Plugin { uri, .. } => vec![(uri, false)],
         Instruction::Copy { source, dest, .. } => src(source).map(|o| (o, false)).into_iter().chain([(dest, false)]).collect(),
@@ -152,6 +152,8 @@ struct Scope<'a> {
     finished_stages: HashSet<&'a str>,
     plugins: HashSet<&'a str>,
     tools: HashSet<&'a str>,
+    /// IMPORTs `AS sitefile`: `<name>+<stage>` names a stage of the imported Sitefile.
+    sitefiles: HashSet<&'a str>,
 }
 
 impl Scope<'_> {
@@ -180,7 +182,8 @@ pub fn from_lead(stage_kw: bool, alias: Option<&str>) -> String {
 
 /// Returns the instructions with the implicit `FROM scratch` inserted when the file has no FROM before its first non-ARG instruction.
 fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
-    let implicit_at = input.iter().position(|i| !matches!(i, Instruction::Arg { .. }));
+    // An IMPORT … AS sitefile may come first too, so a file can start FROM one of its stages.
+    let implicit_at = input.iter().position(|i| !matches!(i, Instruction::Arg { .. } | Instruction::Import { as_kind: Some(ImportKind::Sitefile), .. }));
     let implicit = implicit_at.filter(|_| !matches!(input[implicit_at.unwrap_or(0)], Instruction::From { .. }));
     let mut instructions = input;
     if let Some(at) = implicit {
@@ -270,7 +273,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                 }
                 scope.vars.insert(name);
             }
-            Instruction::Import { name, span, as_kind, sort, schema, drafts, .. } => {
+            Instruction::Import { name, span, as_kind, sort, schema, drafts, args, integrity, .. } => {
                 if scope.taken(name) {
                     return Err(duplicate(name, span));
                 }
@@ -300,6 +303,24 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                             &schema.span,
                         ));
                     }
+                }
+                let sitefile = *as_kind == Some(ImportKind::Sitefile);
+                if let (Some(a), false) = (args.first(), sitefile) {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("IMPORT {name}: ARG sets a build arg of an imported Sitefile, so it needs AS sitefile"),
+                        &a.span,
+                    ));
+                }
+                if sitefile {
+                    if integrity.is_some() {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!("IMPORT {name}: INTEGRITY does not apply to AS sitefile (pin a Git import by its commit, #<40 hex>[:path])"),
+                            span,
+                        ));
+                    }
+                    scope.sitefiles.insert(name);
                 }
                 scope.imports.insert(name);
             }
@@ -357,6 +378,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
                         list_span,
                     ));
                 }
+                not_sitefile(list, &format!("FEED {list}"), list_span, &scope)?;
             }
             Instruction::Sitemap { .. } | Instruction::Redirect { .. } | Instruction::Header { .. } | Instruction::Fingerprint { .. } | Instruction::CheckLinks { .. } => {}
             Instruction::Export { .. } => saw_export = true,
@@ -386,8 +408,17 @@ fn check_each(as_name: &str, list: &str, span: &SourceSpan, scope: &Scope) -> Re
             span,
         ));
     }
+    not_sitefile(list, &format!("FOR {as_name} IN {list}"), span, scope)?;
     if scope.taken(as_name) {
         return Err(loop_var_taken(as_name, span));
+    }
+    Ok(())
+}
+
+/// A FOR or FEED list must be a value import, not a Sitefile imported AS sitefile.
+fn not_sitefile(name: &str, what: &str, span: &SourceSpan, scope: &Scope) -> Result<()> {
+    if scope.sitefiles.contains(name) {
+        return Err(SitefileError::at(E_TYPE, format!("{what}: '{name}' is a Sitefile import, not a list"), span));
     }
     Ok(())
 }
@@ -400,6 +431,18 @@ fn import_ref_name(text: &str) -> Option<&str> {
 
 fn check_source(source: &Source, scope: &Scope, from: Option<&StageRef>, all: &BTreeSet<String>) -> Result<()> {
     let Source::Operand(op) = source else { return Ok(()) }; // content is in the Sitefile itself
+    if let Some((import, _)) = from.and_then(|f| imported_stage(&f.name)) {
+        // `--from=<import>+<stage>`: a stage of an imported Sitefile (whether it exists is checked when that Sitefile is read).
+        if !scope.sitefiles.contains(import) {
+            let from = from.expect("checked");
+            return Err(SitefileError::at(
+                E_UNDEFINED,
+                format!("--from={}: '{import}' is not an IMPORT … AS sitefile declared on an earlier line", from.name),
+                &from.span,
+            ));
+        }
+        return Ok(());
+    }
     if let Some(from) = from {
         // The source is a path inside the stage, not an import ref or local path.
         if !scope.finished_stages.contains(from.name.as_str()) {
@@ -425,6 +468,13 @@ fn check_source(source: &Source, scope: &Scope, from: Option<&StageRef>, all: &B
             return Err(SitefileError::at(
                 E_UNDEFINED,
                 format!("unknown import '{name}' (declare it with IMPORT on an earlier line, or write ./{text} for a local path)"),
+                &op.span,
+            ));
+        }
+        if scope.sitefiles.contains(name) {
+            return Err(SitefileError::at(
+                E_TYPE,
+                format!("'{name}' is a Sitefile import; read one of its stages with --from={name}+<stage>"),
                 &op.span,
             ));
         }

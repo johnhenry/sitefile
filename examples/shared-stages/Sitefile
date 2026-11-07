@@ -1,0 +1,20 @@
+# A site built from the stages of another Sitefile (issue #97), like Earthly targets.
+#
+#   sitefile build examples/shared-stages
+#
+# IMPORT … AS sitefile reads ./theme/Sitefile with the ARGs given here (its other ARGs keep their
+# defaults; this file's --build-args never reach it). Its stages are then named theme+<stage>; its
+# paths resolve inside ./theme. A theme in another repository works the same way:
+#
+#   IMPORT theme FROM git+https://github.com/me/theme.git#v1 AS sitefile ARG ACCENT=${ACCENT}
+#
+# and Sitefile.lock records the commit.
+ARG ACCENT = "rebeccapurple"
+# Like ARG, an IMPORT … AS sitefile may come before the first stage, so the first stage can start from one of its stages.
+IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT}
+
+# Start from the theme's stylesheets, then render every page with its layout.
+STAGE site FROM theme+assets
+IMPORT pages FROM ./pages AS markdown
+RENDER --escape=html --from=theme+layout /page.html TO /${page.slug}.html FOR page IN pages
+EXPORT /

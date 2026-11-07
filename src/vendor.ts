@@ -3,11 +3,12 @@ import path from 'node:path';
 import { resolveBase } from './base-image.js';
 import { sha256 } from './digest.js';
 import { SitefileError, type SourceSpan } from './errors.js';
-import { fetchGitImport, fetchRemoteImport, gitSelectionBytes, loadProgram, warnUnusedSecrets, type BuildOptions, type RemoteEnv } from './executor.js';
+import { fetchGitImport, fetchRemoteImport, gitSelectionBytes, loadProgram, readImportedSitefile, rootSitefileSource, warnUnusedSecrets, type BuildOptions, type RemoteEnv, type SitefileSource } from './executor.js';
+import type { GitLocation, GitSelection } from './resources/git.js';
 import { redactError, redactSecrets } from './secrets.js';
 import { parseManifest } from './oci.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
-import { plan } from './planner.js';
+import { importedStageRefs, plan, type ImportSpec, type Plan, type Stage } from './planner.js';
 import { Lockfile } from './resources/lockfile.js';
 import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 import { DEFAULT_VENDOR_DIR, serializeVendorManifest, vendorDirRel, writeVendorDir, type VendoredGit, type VendoredImage, type VendoredResource } from './resources/vendor.js';
@@ -68,22 +69,41 @@ async function vendorUnredacted(options: BuildOptions): Promise<VendorResult> {
   const blobs = new Map<string, Uint8Array>();
   const resources: Record<string, VendoredResource> = {};
   const git: Record<string, VendoredGit> = {};
-  for (const spec of p.imports) {
-    if (spec.location.kind === 'git') {
-      const { commit, selection } = await fetchGitImport(spec, spec.location, env);
-      const bytes = gitSelectionBytes(selection);
-      const digest = sha256(bytes);
-      blobs.set(digest, bytes);
-      git[spec.location.url] = { commit, kind: selection.kind, integrity: digest, size: bytes.byteLength, ...(selection.kind === 'file' ? { mode: selection.mode === 0o755 ? '755' : '644' } : {}) };
-      continue;
-    }
-    if (spec.location.kind !== 'remote') continue;
-    const url = spec.location.url;
-    const { bytes, finalUrl } = await fetchRemoteImport(spec, url, env);
+  /** A Git import's content, vendored (a Sitefile imported from Git is read from it too). */
+  const vendorGit = async (spec: ImportSpec, loc: GitLocation, e: RemoteEnv): Promise<{ commit: string; selection: GitSelection }> => {
+    const got = await fetchGitImport(spec, loc, e);
+    const bytes = gitSelectionBytes(got.selection);
     const digest = sha256(bytes);
     blobs.set(digest, bytes);
-    resources[url] = { integrity: digest, size: bytes.byteLength, resolved: finalUrl };
-  }
+    git[loc.url] = { commit: got.commit, kind: got.selection.kind, integrity: digest, size: bytes.byteLength, ...(got.selection.kind === 'file' ? { mode: got.selection.mode === 0o755 ? '755' : '644' } : {}) };
+    return got;
+  };
+  /** Every remote input of `sp` (a Sitefile read from `source`), then those of the Sitefiles it imports AS sitefile. */
+  const vendorImports = async (sp: Plan, source: SitefileSource): Promise<void> => {
+    const e: RemoteEnv = { ...env, label: source.label };
+    for (const spec of sp.imports) {
+      if (spec.as === 'sitefile') {
+        const sub = await readImportedSitefile(spec, source, importedStageRefs(sp.stages), (s, loc) => vendorGit(s, loc, e));
+        sub.plan.warnings.forEach(warn);
+        await vendorImports(sub.plan, sub.source);
+        nestedImages.push(...sub.plan.stages);
+        continue;
+      }
+      if (spec.location.kind === 'git') {
+        await vendorGit(spec, spec.location, e);
+        continue;
+      }
+      if (spec.location.kind !== 'remote') continue;
+      const url = spec.location.url;
+      const { bytes, finalUrl } = await fetchRemoteImport(spec, url, e);
+      const digest = sha256(bytes);
+      blobs.set(digest, bytes);
+      resources[url] = { integrity: digest, size: bytes.byteLength, resolved: finalUrl };
+    }
+  };
+  /** The stages of imported Sitefiles: their registry FROM images are vendored after this Sitefile's. */
+  const nestedImages: Stage[] = [];
+  await vendorImports(p, await rootSitefileSource(options, label, sitefilePath));
 
   const images: Record<string, VendoredImage> = {};
   const platform = options.platform ?? 'linux/amd64';
@@ -121,7 +141,7 @@ async function vendorUnredacted(options: BuildOptions): Promise<VendorResult> {
     images[key] = { digest: root, platform, manifest: base.manifestDigest };
   };
   // FROM image stage bases with a registry (local-store images are not vendored), then the BASE.
-  for (const st of p.stages) if (st.base.kind === 'image' && !st.base.local) await vendorImage(st.base.ref, `${st.base.lead} image`, false, st.base.span);
+  for (const st of [...p.stages, ...nestedImages]) if (st.base.kind === 'image' && !st.base.local) await vendorImage(st.base.ref, `${st.base.lead} image`, false, st.base.span);
   const baseInput = options.baseImage ?? (p.exportFormat === 'oci' ? p.exportBase : undefined);
   if (baseInput !== undefined) await vendorImage(baseInput, 'BASE', true);
 

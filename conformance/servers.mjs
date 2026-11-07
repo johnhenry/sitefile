@@ -123,6 +123,42 @@ export async function startServers(root, dir) {
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     base = `https://127.0.0.1:${server.address().port}`;
+    // A repository of shared stages for the net-sitefile-import-* cases (IMPORT … AS sitefile, issue #97). Its
+    // Sitefile reads a file of its own checkout, an https URL and another Git import, so it is made once the
+    // server's URL is known.
+    const stages = new gitServer.MemRepo();
+    const stagesSitefile = [
+      'ARG ACCENT = "teal"',
+      'IMPORT data FROM ./data.json AS json',
+      `IMPORT version FROM ${base}/version.txt AS text`,
+      `IMPORT docs FROM git+${base}/repo.git#v1:docs AS markdown SORT BY title`,
+      'STAGE assets',
+      'RENDER <<CSS TO /theme.css',
+      ':root { --accent: ${ACCENT}; } /* ${data.name}: ${version} */',
+      'CSS',
+      'STAGE layout',
+      'COPY ./layout/ /layout/',
+      'RENDER <<HTML TO /docs.html',
+      '${#each docs as d}<li>${d.title}</li>${/each}',
+      'HTML',
+      'FROM scratch',
+      'EXPORT /',
+      '',
+    ].join('\n');
+    const stagesV1 = stages.commit({
+      'theme/Sitefile': stagesSitefile,
+      'theme/data.json': '{"name": "stages v1"}\n',
+      'theme/layout/page.html': '<main>${page}</main>\n',
+      'README.md': 'shared stages\n',
+    });
+    stages.tag('v1', stagesV1);
+    const stagesV2 = stages.commit({
+      'theme/Sitefile': stagesSitefile,
+      'theme/data.json': '{"name": "stages v2"}\n',
+      'theme/layout/page.html': '<main>${page}</main>\n',
+      'README.md': 'shared stages\n',
+    });
+    gitRepos.set('/stages.git', stages);
     // The other origin reports whether any credential arrived.
     other = https.createServer({ cert, key }, (req, res) => {
       const got = req.headers['x-api-key'] !== undefined || req.headers.authorization !== undefined;
@@ -148,7 +184,7 @@ export async function startServers(root, dir) {
     registry.seedImage('conf/theme', '2', { layers: [{ '/srv/www/theme.css': 'body { font: 18px serif; }\n' }], config: theme });
 
     return {
-      vars: { HTTPS: base, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2 },
+      vars: { HTTPS: base, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2, STAGES_V1: stagesV1, STAGES_V2: stagesV2 },
       env: { NODE_EXTRA_CA_CERTS: caFile },
       info: { tarIntegrity: sha(tar), baseDigest: seeded.manifestDigest },
       /** sha256 of the manifest the mock registry holds under `repo:tag` (or `repo@digest`), or null. */

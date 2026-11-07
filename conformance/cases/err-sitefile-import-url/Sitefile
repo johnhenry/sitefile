@@ -1,0 +1,4 @@
+# A plain https:// URL is not a Sitefile import (use git+https:// or FROM image).
+IMPORT theme FROM https://example.com/theme AS sitefile
+FROM theme+assets
+EXPORT /

@@ -1,0 +1,4 @@
+# An imported Sitefile cannot run plugins or tools.
+IMPORT theme FROM ./theme AS sitefile
+FROM theme+assets
+EXPORT /

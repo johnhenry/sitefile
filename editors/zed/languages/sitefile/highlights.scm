@@ -36,16 +36,17 @@
 (scratch) @constant.builtin
 (from_instruction alias: (identifier) @label)
 (stage_instruction name: (identifier) @label)
-; A bare identifier base names an earlier stage.
+; A bare identifier base names an earlier stage; `<import>+<stage>` a stage of a Sitefile imported AS sitefile.
 ((from_instruction base: (word) @label)
-  (#match? @label "^[A-Za-z_][A-Za-z0-9_]*$"))
+  (#match? @label "^[A-Za-z_][A-Za-z0-9_]*([+][A-Za-z_][A-Za-z0-9_]*)?$"))
 ((stage_instruction base: (word) @label)
-  (#match? @label "^[A-Za-z_][A-Za-z0-9_]*$"))
+  (#match? @label "^[A-Za-z_][A-Za-z0-9_]*([+][A-Za-z_][A-Za-z0-9_]*)?$"))
 
 ; Names
 (arg_instruction name: (identifier) @variable)
 (let_instruction name: (identifier) @variable)
 (import_instruction name: (identifier) @variable.special)
+(import_arg name: (identifier) @variable)
 (resource_ref import: (identifier) @variable.special)
 (plugin_instruction name: (identifier) @function)
 (tool_instruction name: (identifier) @function)
@@ -66,8 +67,8 @@
   (#any-of? @type.builtin "string" "number" "boolean" "STRING" "NUMBER" "BOOLEAN"))
 ((import_kind) @type.builtin
   (#any-of? @type.builtin
-    "file" "text" "json" "tree" "markdown" "yaml" "csv" "wbn"
-    "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN"))
+    "file" "text" "json" "tree" "markdown" "yaml" "csv" "wbn" "sitefile"
+    "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "SITEFILE"))
 ((export_format) @type.builtin
   (#any-of? @type.builtin
     "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci"

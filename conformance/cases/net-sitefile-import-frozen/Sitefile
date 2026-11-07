@@ -1,0 +1,5 @@
+# --frozen-lockfile: the Git Sitefile import must be locked.
+IMPORT theme FROM git+${HTTPS}/stages.git#main:theme AS sitefile ARG ACCENT=red
+STAGE site FROM theme+assets
+COPY --from=theme+layout / /
+EXPORT /

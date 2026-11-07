@@ -135,3 +135,14 @@ test('groupBy and paginate directly', () => {
   assert.deepEqual(groupBy(docs, 't', 'FOR', span).map((g) => [g['key'], g['count']]), [['9', 1], ['10', 1], ['a', 2], ['b', 1]]);
   assert.deepEqual(paginate([{ items: [1, 2, 3] }], 2), [[{ count: 3, items: [1, 2], number: 1, total: 2 }, { count: 3, items: [3], number: 2, total: 2 }]]);
 });
+
+test('DRAFTS and BY in an imported Sitefile (AS sitefile)', async () => {
+  const r = await run({
+    'blog/posts/a.md': post('A', 'x'),
+    'blog/posts/b.md': post('B', 'x', 'draft: true\n'),
+    'blog/Sitefile': 'ARG D = "false"\nSTAGE pages\nIMPORT posts FROM ./posts AS markdown DRAFTS ${D}\nRENDER <<T TO /t/${t.key}.html FOR t IN posts BY tags\n${#each t.items as p}${p.title}${/each}\nT\nEXPORT /',
+    Sitefile: 'IMPORT blog FROM ./blog AS sitefile\nIMPORT all FROM ./blog AS sitefile ARG D=true\nFROM scratch\nCOPY --from=blog+pages / /\nCOPY --from=all+pages /t/ /all/\nEXPORT /',
+  });
+  assert.deepEqual(outputs(r), { '/all/x.html': 'AB\n', '/t/x.html': 'A\n' });
+  assert.throws(() => parseProgram('IMPORT t FROM ./t AS sitefile DRAFTS false\nEXPORT /'), (e: unknown) => isSitefileError(e, 'E_VALIDATION'));
+});

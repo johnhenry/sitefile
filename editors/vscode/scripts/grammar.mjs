@@ -16,10 +16,10 @@
 export const KEYWORDS = {
   instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
-  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn'],
+  importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'sitefile'],
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
@@ -96,13 +96,16 @@ function flags(instr) {
   }
   if (known.includes('from')) {
     pats.push({
-      match: `${W}(--)(from)(=)(?:(${IDENT})${WE}|(\\S*))`,
+      // --from=<stage>, or --from=<import>+<stage> (a stage of a Sitefile imported AS sitefile)
+      match: `${W}(--)(from)(=)(?:(?:(${IDENT})(\\+))?(${IDENT})${WE}|(\\S*))`,
       captures: {
         1: { name: S('punctuation.definition.flag') },
         2: { name: S('variable.parameter.flag') },
         3: { name: S('keyword.operator.assignment') },
-        4: { name: S('entity.name.section.stage') },
-        5: { name: S('invalid.illegal.stage-name') },
+        4: { name: S('variable.other.readwrite.import') },
+        5: { name: S('punctuation.separator.imported-stage') },
+        6: { name: S('entity.name.section.stage') },
+        7: { name: S('invalid.illegal.stage-name') },
       },
     });
   }
@@ -200,9 +203,15 @@ const valueAfter = (word, values, okName, badName) => ({
 });
 const head = (name) => ({ match: `\\G\\s+(${IDENT})${WE}`, captures: { 1: { name: S(name) } } });
 /** A bare identifier base (not `scratch`) names an earlier stage. */
+/** A stage name, or `<import>+<stage>`: a stage of a Sitefile imported AS sitefile (issue #97). */
 const stageBase = (prefix) => ({
-  match: `${prefix}\\s+(?!${KEYWORDS.scratch}${WE})(${IDENT})${WE}`,
-  captures: { 1: { name: S('keyword.other.clause') }, 2: { name: S('entity.name.section.stage') } },
+  match: `${prefix}\\s+(?!${KEYWORDS.scratch}${WE})(?:(${IDENT})(\\+))?(${IDENT})${WE}`,
+  captures: {
+    1: { name: S('keyword.other.clause') },
+    2: { name: S('variable.other.readwrite.import') },
+    3: { name: S('punctuation.separator.imported-stage') },
+    4: { name: S('entity.name.section.stage') },
+  },
 });
 const scratch = { match: `${W}(${KEYWORDS.scratch})${WE}`, captures: { 1: { name: S('constant.language.scratch') } } };
 /** `image <ref>`: `image` is the keyword only when a word other than AS follows it (else a stage or directory). */
@@ -313,6 +322,17 @@ export function buildGrammar() {
               },
             },
             kw(['SECRET', 'HEADER', 'BEARER']),
+            {
+              // ARG NAME=value: a build arg of the Sitefile imported AS sitefile (issue #97)
+              match: `${W}(${ci(['ARG'])})\\s+(${IDENT})\\s*(=)`,
+              captures: {
+                1: { name: S('keyword.other.clause') },
+                2: { name: S('variable.other.arg') },
+                3: { name: S('keyword.operator.assignment') },
+              },
+            },
+            kw(['ARG']),
+            { include: '#scalar' },
             { include: '#operands' },
           ]),
           instruction('COPY', [...flags('COPY'), { include: '#heredoc-copy' }, { include: '#operands' }]),

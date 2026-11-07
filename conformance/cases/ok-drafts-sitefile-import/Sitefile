@@ -1,0 +1,7 @@
+# DRAFTS and BY inside an imported Sitefile, with its ARG set from here (issues #97, #101).
+IMPORT blog FROM ./blog AS sitefile
+IMPORT preview FROM ./blog AS sitefile ARG DRAFTS=true
+FROM scratch
+COPY --from=blog+pages / /
+COPY --from=preview+pages /tags/ /preview/
+EXPORT /
