@@ -17,10 +17,10 @@ use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{
     build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path,
-    BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting,
+    sitefile_compression, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting,
 };
 use crate::export::attest::AttestRequest;
-use crate::export::formats::{default_out_name, format_from_extension};
+use crate::export::formats::{compression_from_extension, default_out_name, format_from_extension};
 use crate::export::oci::parse_labels;
 use crate::language::ast::{ExportFormat, OciCompression};
 use crate::profile::Profiler;
@@ -103,16 +103,19 @@ Options:
       --target <stage>         stop after the named stage and export its whole tree instead of
                                the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
-                               a file for zip, tar, tgz, wbn
+                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle)
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
       --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
-      --oci-compression <c>    oci site layer: gzip (default) or none (plain tar; overrides EXPORT ... COMPRESSION)
+      --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
+                               (default gzip; none: plain tar), or the whole wbn (default none; gzip:
+                               gzip(application/webbundle), also chosen by -o *.wbn.gz)
+      --oci-compression <c>    the same as --compression, for oci only
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -180,6 +183,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("base-url"),
     string("oci-root"),
     string("oci-compression"),
+    string("compression"),
     strings("label"),
     flag("git-labels"),
     flag("provenance"),
@@ -702,6 +706,20 @@ fn run_build_command(
             )));
         }
     }
+    let mut compression = None;
+    if let Some(c) = o.str("compression") {
+        compression = OciCompression::parse(c);
+        if compression.is_none() {
+            return Ok(usage_error(&format!(
+                "--compression expects gzip or none, got '{c}'"
+            )));
+        }
+        if oci_compression.is_some() {
+            return Ok(usage_error(
+                "--compression and --oci-compression set the same thing; give one",
+            ));
+        }
+    }
     // No --format: an archive extension on --out picks the format.
     let out_flag = o.str("out").filter(|s| !s.is_empty());
     if format_override.is_none() {
@@ -728,28 +746,37 @@ fn run_build_command(
         options.label = Some(o.str("file").unwrap_or("Sitefile").to_string());
     }
     // The default destination depends on the format, which the Sitefile may set.
-    let sitefile_format = if command == "build" && out_flag.is_none() && format_override.is_none() {
-        Some(plan_build(&options)?.export_format)
+    // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)
+    let sitefile_plan = if command == "build"
+        && out_flag.is_none()
+        && format_override.is_none_or(|f| f == ExportFormat::Wbn)
+    {
+        Some(plan_build(&options)?)
     } else {
         None
     };
+    let sitefile_format = match format_override {
+        Some(_) => None,
+        None => sitefile_plan.as_ref().map(|p| p.export_format),
+    };
+    let default_format = format_override
+        .or(sitefile_format)
+        .unwrap_or(ExportFormat::Directory);
+    let default_compression = if default_format == ExportFormat::Wbn {
+        compression.or_else(|| {
+            sitefile_plan
+                .as_ref()
+                .and_then(|p| sitefile_compression(p, ExportFormat::Wbn))
+        })
+    } else {
+        None
+    };
+    let default_name = default_out_name(default_format, default_compression);
     let out_dir = match out_flag {
         Some(o) => o.to_string(),
         // A Git context's default destination is in the current directory, not the temporary checkout.
-        None if fetched.is_some() => default_out_name(
-            format_override
-                .or(sitefile_format)
-                .unwrap_or(ExportFormat::Directory),
-        )
-        .to_string(),
-        None => join_path(
-            context,
-            default_out_name(
-                format_override
-                    .or(sitefile_format)
-                    .unwrap_or(ExportFormat::Directory),
-            ),
-        ),
+        None if fetched.is_some() => default_name.to_string(),
+        None => join_path(context, default_name),
     };
     options.out_dir = Some(out_dir.clone());
     wrote.push(out_dir.clone());
@@ -796,6 +823,37 @@ fn run_build_command(
     if let Some(p) = profiler {
         options.also_writes = o.str("profile").map(str::to_string).into_iter().collect();
         options.profiler = Some(p);
+    }
+    // --compression belongs to the export's own format, oci or wbn (-t without -o stores an oci image);
+    // a *.wbn.gz destination means a gzipped bundle.
+    let mut wbn_compression = None;
+    if command == "build" {
+        if let Some(c) = compression {
+            let format = if !tags.is_empty() && out_flag.is_none() {
+                ExportFormat::Oci
+            } else {
+                match format_override.or(sitefile_format) {
+                    Some(f) => f,
+                    None => plan_build(&options)?.export_format,
+                }
+            };
+            match format {
+                ExportFormat::Oci => oci_compression = Some(c),
+                ExportFormat::Wbn => wbn_compression = Some(c),
+                f => {
+                    return Ok(usage_error(&format!(
+                        "--compression applies only to oci and wbn exports, not {}",
+                        f.as_str()
+                    )))
+                }
+            }
+        }
+    }
+    if format_override == Some(ExportFormat::Wbn) {
+        if let Some(out) = out_flag {
+            wbn_compression =
+                wbn_compression.or(compression_from_extension(out, ExportFormat::Wbn));
+        }
     }
 
     match command {
@@ -845,6 +903,7 @@ fn run_build_command(
                 base_url: o.str("base-url").map(str::to_string),
                 oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
+                wbn_compression,
                 image_labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
                 oci_ref_name: match tags.first() {

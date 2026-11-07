@@ -1,0 +1,3 @@
+# COMPRESSION applies only to AS oci and AS wbn.
+FROM scratch
+EXPORT / AS tgz COMPRESSION gzip

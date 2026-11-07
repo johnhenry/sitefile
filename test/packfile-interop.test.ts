@@ -4,10 +4,11 @@
 // and once as `.wbn`, and require packfile to read the bundle back into exactly
 // the directory's files and to serve them.
 //
-// Sitefile writes a plain (uncompressed) b2 Web Bundle. packfile's own archive
-// format (`toArchive`/`fromArchive`) is gzip around the same bundle, under the
-// fixed base URL https://packfile.invalid/. The last test pins that difference
-// down, so a change on either side shows up here.
+// Sitefile writes a plain (uncompressed) b2 Web Bundle by default. packfile's own
+// archive format (`toArchive`/`fromArchive`) is gzip around the same bundle, under
+// the fixed base URL https://packfile.invalid/; `EXPORT ... AS wbn COMPRESSION gzip`
+// (or `-o *.wbn.gz`, `--compression gzip`) writes exactly that. The last tests pin
+// both down, so a change on either side shows up here.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -15,7 +16,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { createRouter, fromArchive } from '@johnhenry/packfile';
 import { fromWebBundle } from '@johnhenry/packfile/web-bundle';
 
@@ -118,4 +119,22 @@ test("packfile's archive format is gzip(Sitefile's .wbn) under https://packfile.
   // ...and gzip is the only layer between it and packfile's default archive format.
   sameFiles(await fromArchive(gzipSync(bundle)), files);
   await assert.rejects(fromArchive(bundle));
+});
+
+test('packfile fromArchive(buffer), with no options, reads a Sitefile EXPORT ... AS wbn COMPRESSION gzip', async () => {
+  const ctx = await context();
+  await sitefile(['build', ctx, '-o', path.join(ctx, 'out')], ctx);
+  const files = await readTree(path.join(ctx, 'out'));
+  await fs.writeFile(
+    path.join(ctx, 'Sitefile'),
+    (await fs.readFile(path.join(ctx, 'Sitefile'), 'utf8')).replace('EXPORT / AS directory', 'EXPORT / AS wbn BASE https://packfile.invalid/ COMPRESSION gzip'),
+  );
+  await sitefile(['build', ctx], ctx);
+  const archive = await fs.readFile(path.join(ctx, 'dist.wbn.gz'));
+  sameFiles(await fromArchive(archive), files);
+  // The CLI spellings write the same bytes: -o *.wbn.gz and --compression gzip on a plain export.
+  await sitefile(['build', ctx, '--compression', 'none', '-o', path.join(ctx, 'plain.wbn')], ctx);
+  const plain = await fs.readFile(path.join(ctx, 'plain.wbn'));
+  sameFiles(await fromArchive(plain, { compressed: false }), files);
+  assert.ok(gunzipSync(archive).equals(plain));
 });

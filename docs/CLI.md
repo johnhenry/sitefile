@@ -22,7 +22,9 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--base <image>` | build the oci image on `<image>` (runnable; overrides `EXPORT ... AS oci BASE`); a bare name means Docker Hub. Pin it: `nginx:alpine@sha256:...` |
 | `--insecure-registry host[:port]` | allow plain http to that registry (repeatable) |
 | `--oci-root /path` | directory of the files inside the image layer (default `/srv/www`; overrides `EXPORT ... AT`) |
-| `--oci-compression gzip\|none` | site layer encoding: `gzip` (default, `tar+gzip`) or `none` (plain `tar`, digest = diff_id); overrides `EXPORT ... COMPRESSION` |
+| `--compression gzip\|none` | overrides `EXPORT ... COMPRESSION` for the export's format. **oci**: the site layer encoding, `gzip` (default, `tar+gzip`) or `none` (plain `tar`, digest = diff_id); also the layer of `-t` images when the export is oci (or with `-t` and no `-o`). **wbn**: `gzip` wraps the whole bundle in gzip (`gzip(application/webbundle)`, what `@johnhenry/packfile`'s `fromArchive()` and `@johnhenry/fileable`'s `encode="wbn"` use), `none` (default) writes the plain bundle. Any other export format is a usage error. |
+| `--oci-compression gzip\|none` | the same as `--compression`, for oci only (kept for existing scripts); giving both is a usage error |
+| `-o x.wbn.gz` | selects `wbn` like `-o x.wbn` and gzips it (unless `--compression none`); with `EXPORT ... AS wbn COMPRESSION gzip` and no `-o`, the default destination is `dist.wbn.gz` |
 | `--platform os/arch` | image platform metadata (default `linux/amd64`) |
 | `--label key=value` | add an OCI image config label (repeatable; overrides defaults such as `org.opencontainers.image.title`) |
 | `--git-labels` | add `org.opencontainers.image.source`/`.revision` from the git checkout. Off by default: they change the image ID on every commit, and finding the checkout reads outside the context. Credentials in remote URLs are dropped. |
@@ -727,7 +729,7 @@ Docker warns about the mismatch. Use `--platform linux/arm64` to label them for 
 | `tag <src> <dst>` | add or move the local tag `<dst>` to image `<src>`. |
 | `rmi [-f] <ref\|id>...` | remove tags. The image leaves the index when no tag is left. An ID with several tags needs `-f`. Alias: `image rm`. |
 | `image prune` | drop untagged images, delete unreferenced blobs, print the space reclaimed. |
-| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`; **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store, attestations included). A non-empty destination needs `--force`. |
+| `save <ref\|id> -o out [--format fmt] [--base-url url] [--force]` | export an image. Formats as in `build -o`: a directory, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz` (gzipped); **`.oci.tar` (or `--format oci` with a `.tar` destination) writes the stored image itself as an OCI archive, and `--format oci` with any other destination as an OCI layout directory** (same digests as the store, attestations included). A non-empty destination needs `--force`. |
 | `image diff <a> <b>` | `A`/`D`/`C` lines for added, removed and changed paths. |
 
 ## Language server

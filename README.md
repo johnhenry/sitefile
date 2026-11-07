@@ -87,7 +87,7 @@ no runtime dependencies.
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest |
-| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`) |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -163,7 +163,7 @@ build used, `--cache-from <ref>` reuses them (see [docs/CLI.md](docs/CLI.md#regi
 ## CLI
 
 ```
-sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL]
+sitefile build [context] [-o dist] [--format directory|zip|tar|tgz|wbn] [--base-url URL] [--compression gzip|none]
                [--build-arg K=V | --build-arg K] [--build-arg-file vars.json|.yaml|.env] [--force]
                [--frozen-lockfile | --update-lock] [--strict-pins] [--allow-http] [--allow-private-network]
                [--allow-hardlinks] [--allow-exec name[=/abs/path]]... [--allow-plugin name]... [--allow-plugins]
@@ -273,6 +273,7 @@ CycloneDX file list to the image as OCI 1.1 referrers (deterministic, pushed wit
 sitefile build examples/hello --format zip     # examples/hello/dist.zip
 sitefile build examples/hello -o hello.tar.gz      # format from the extension
 sitefile build examples/hello --format wbn --base-url https://example.com/
+sitefile build examples/hello -o hello.wbn.gz --base-url https://example.com/   # gzip(Web Bundle)
 ```
 
 Archives are reproducible: sorted entries, fixed timestamps (or `SOURCE_DATE_EPOCH`),
@@ -467,9 +468,10 @@ Web Bundle.
   reads back into exactly the exported files, and `createRouter()` serves as a
   `(Request) => Response` handler. packfile's own archive format
   (`fromArchive()`) is gzip around the same bundle under
-  `https://packfile.invalid/`: gzip a Sitefile bundle exported with that BASE and
-  `fromArchive()` reads it as is. `test/packfile-interop.test.ts` checks all
-  three; `@johnhenry/packfile` is a devDependency for that test only.
+  `https://packfile.invalid/`, which `EXPORT / AS wbn BASE https://packfile.invalid/
+  COMPRESSION gzip` (or `-o site.wbn.gz`) writes, so `fromArchive(buffer)` reads it
+  with no options. `test/packfile-interop.test.ts` checks all of these;
+  `@johnhenry/packfile` is a devDependency for that test only.
 
 ## License
 

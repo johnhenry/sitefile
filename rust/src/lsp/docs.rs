@@ -153,7 +153,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
-    ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci only): how the site layer is stored."),
+    ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci and wbn only): how the oci site layer is stored, or whether the wbn is gzipped."),
 ];
 
 const FLAGS: &[(&str, &str)] = &[
@@ -229,13 +229,19 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("zip", "A zip archive (deterministic: fixed timestamps and modes)."),
     ("tar", "A tar archive."),
     ("tgz", "A gzip-compressed tar archive (alias `tar.gz`)."),
-    ("wbn", "A Web Bundle; needs `BASE <https url>` or `--base-url`."),
+    ("wbn", "A Web Bundle; needs `BASE <https url>` or `--base-url`; `COMPRESSION gzip` gzips it."),
     ("oci", "An OCI image (archive for `-o *.tar`, else a layout directory); `BASE`, `AT` and `COMPRESSION` apply."),
 ];
 
 const COMPRESSIONS: &[(&str, &str)] = &[
-    ("gzip", "A tar+gzip site layer (the default)."),
-    ("none", "A plain tar site layer (digest = diff_id)."),
+    (
+        "gzip",
+        "oci: a tar+gzip site layer (the default); wbn: the bundle gzipped (`.wbn.gz`).",
+    ),
+    (
+        "none",
+        "oci: a plain tar site layer (digest = diff_id); wbn: the plain bundle (the default).",
+    ),
 ];
 
 const ESCAPES: &[(&str, &str)] = &[
