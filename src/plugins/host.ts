@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { WasmPlugin } from './wasm.js';
@@ -25,6 +26,9 @@ export interface PluginPolicy {
 }
 
 export const DEFAULT_PLUGIN_POLICY: PluginPolicy = { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 * 1024 };
+
+/** A directory TRANSFORM runs at most this many wasm or tool calls at a time (a JS plugin, one). */
+export const TRANSFORM_JOBS = Math.max(1, Math.min(4, os.availableParallelism()));
 
 /** What a plugin receives (see docs/PLUGINS.md). */
 export interface PluginRequest {
@@ -309,7 +313,7 @@ export class PluginHost {
       const reg = this.registered.get(name);
       if (!reg) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
       p = reg.wasm
-        ? new WasmPlugin(name, reg.wasm, this.policy)
+        ? new WasmPlugin(name, reg.wasm, this.policy, TRANSFORM_JOBS)
         : new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
       this.procs.set(name, p);
       this.stats.spawned++;

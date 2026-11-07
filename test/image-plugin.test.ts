@@ -17,7 +17,7 @@ const wasm = (): Promise<Buffer> => readFile(path.join(root, 'plugins', 'image',
 const testdata = (name: string): Promise<Buffer> => readFile(path.join(root, 'plugins', 'image', 'testdata', name));
 
 /** Tree digest of examples/image (pinned here and in the Rust tests). */
-const EXAMPLE_DIGEST = 'sha256:bfdec3ec231a04bad5cb5a6a67013587065650b49f2f7de5bbda67d78daacfaf';
+const EXAMPLE_DIGEST = 'sha256:baf0163569eb7e57b5f260b39966ff413ae702e37b761d7a5a77da12c0dc4f47';
 /** tiny.jpg at widths 16,24 as jpeg, png and webp (directory mode). */
 const TINY_DIGEST = 'sha256:ab43d0d4f76f6f28cf1ce0876b71822985342702ae1568817401ca7239f8dfc0';
 
@@ -63,7 +63,7 @@ test('the example builds without --allow-plugin, and its copy of the plugin is t
   const r = await build({ contextDir: path.join(root, 'examples', 'image'), lockfile: false });
   assert.deepEqual(
     r.output.entries().map(([p]) => p),
-    ['/img/badge-128.png', '/img/badge-128.webp', '/img/badge-64.png', '/img/badge-64.webp', '/img/badge.json', '/img/sky-1200.jpg', '/img/sky-400.jpg', '/img/sky-800.jpg', '/img/sky-thumb.png', '/img/sky.json', '/index.html'],
+    ['/img/badge-128.png', '/img/badge-128.webp', '/img/badge-64.png', '/img/badge-64.webp', '/img/badge.json', '/img/sky-1200.jpg', '/img/sky-400.jpg', '/img/sky-800.jpg', '/img/sky.json', '/img/thumbs/badge.png', '/img/thumbs/sky.png', '/index.html'],
   );
   const meta = JSON.parse(new TextDecoder().decode(r.output.get('/img/sky.json')!.bytes)) as Record<string, unknown>;
   assert.equal(meta['version'], 1);

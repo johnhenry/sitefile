@@ -112,7 +112,8 @@ const INSTRUCTIONS = {
   RENDER: () =>
     `RENDER ${flags(['--escape=html', '--escape=none', '--escape=HTML', '--escape=js', '--escape', '--overwrite', '--from=' + pick(NAMES), '--inline-svg', '--inline-svg=1'])}${source()} TO ${pick(PATHS)}${maybe(() => ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`, 0.3)}`,
   TRANSFORM: () => {
-    let s = `TRANSFORM ${flags(['--overwrite', '--from=' + pick(NAMES)])}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick(PATHS)}`;
+    const fl = flags(['--overwrite', '--from=' + pick(NAMES), '--include=' + pick(EXCLUDES), '--exclude=' + pick(EXCLUDES), '--include', '--exclude=']);
+    let s = `TRANSFORM ${fl}${maybe(() => source() + ' ', 0.8)}WITH ${pick(NAMES)} TO ${pick([...PATHS, '/img/*.png', '/out/*', '/a/*.'])}`;
     if (chance(0.4)) s += ` OPTIONS ${Array.from({ length: 1 + int(3) }, () => `${pick(['w', 'q', 'title', 'x'])}=${pick(VALUES)}`).join(' ')}`;
     if (chance(0.3)) s += ` FOR ${pick(NAMES)} IN ${pick(NAMES)}`;
     if (chance(0.3)) s += ` ARGS ${pick(['-i {input} {output}', '{output}', '{input}', '{option.w} {output}', '"%{pts}" {output}', 'x'])}`;
@@ -134,6 +135,9 @@ const INSTRUCTIONS = {
   },
   REDIRECT: () => `REDIRECT ${flags(['--overwrite'])}${pick(['/old', '/a/*', '/${x}', 'old', '/a b', ...PATHS])} ${pick(['/new', 'https://e.x/:splat', '/b', '', '/c\\n'])}${maybe(() => ` STATUS ${pick(['301', '302', '303', '307', '308', '200', '418', 'x', '301!'])}`, 0.4)}`,
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
+  FINGERPRINT: () =>
+    `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}`,
+  CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
   // Lint comments (`# sitefile-lint: …`), valid or not.
@@ -148,7 +152,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -271,10 +275,13 @@ function validProgram() {
     () => (stages.length > 1 ? `COPY --from=${stages[0]} /out /from-${stages[0]}` : 'COPY ./y /y'),
     () => (plugin ? `TRANSFORM ${maybe('./a.png ')}WITH og TO /og.png${maybe(` OPTIONS w=1 title="${v()}"`)}` : 'COPY ./z /z'),
     () => (tool ? `TRANSFORM ./a.css WITH cp TO /b.css ARGS ${pick(['{input} {output}', '-v {input} {output}'])}` : 'COPY ./w /w'),
+    () => (plugin ? `TRANSFORM ${maybe('--include=*.jpg ')}${maybe('--exclude=drafts/ ')}${pick(['./photos/', './photos', 'site:/img'])} WITH og TO ${pick(['/img/', '/img/*.png', '/t/*'])}` : 'COPY ./v /v'),
     () => `SITEMAP ${maybe('--overwrite ')}BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' TO /map.xml')}`,
     () => (lists.includes('posts') ? `FEED posts BASE https://e.x LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html'])}${maybe(' TO /atom.xml')}${maybe(` TITLE "${v()} & notes"`)}` : 'COPY ./f /f'),
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
+    () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
+    () => `FINGERPRINT ${maybe('--overwrite ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}`,
     stage,
   ];
   if (chance(0.5)) lines.push(stage());
@@ -374,6 +381,11 @@ const EDGE = [
   'IMPORT p FROM ./x AS text SORT BY a\nEXPORT /', 'IMPORT p FROM ./x INTEGRITY sha256:' + 'a'.repeat(64) + '\nEXPORT /',
   'PLUGIN p FROM ./p.mjs\nTRANSFORM a WITH p TO /b OPTIONS w=1 w=2\nEXPORT /', 'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input}\nEXPORT /',
   'TOOL cp\nTRANSFORM a WITH cp TO /b ARGS {input} {output} {option.q}\nEXPORT /', 'TRANSFORM --from=a WITH p TO /b\nEXPORT /',
+  // TRANSFORM over a directory (issue #127): --include/--exclude and where they are refused.
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=*.jpg --exclude=x/ --include=*.png ./a WITH p TO /b/*.webp\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=#x ./a WITH p TO /b\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=x WITH p TO /b FOR i IN l\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include=x <<EOF WITH p TO /b\nx\nEOF\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=x ./a WITH p TO /b FOR i IN l\nEXPORT /',
+  'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --include ./a WITH p TO /b\nEXPORT /', 'PLUGIN p FROM ./p/p.mjs\nTRANSFORM --exclude=/ --from=bad! ./a WITH p TO /b\nEXPORT /',
   'EXPORT / AS oci COMPRESSION', 'EXPORT / AS oci COMPRESSION zstd', 'EXPORT / AS', 'EXPORT / AS rar', 'EXPORT /\nEXPORT /', 'EXPORT /../x',
   'COPY 😀 /😀\nEXPORT /x 😀', 'ARG 😀\nEXPORT /', 'ARG a😀\nEXPORT /', 'COPY a /b\u00a0c\nEXPORT /', 'COPY\u3000a /b\nEXPORT /',
   'COPY a /b\u2028EXPORT /', 'RUN echo', 'REMOVE /x', 'WORKDIR /x', 'FROM\nEXPORT /', 'COPY ' + 'x'.repeat(5000) + ' /y\nEXPORT /',

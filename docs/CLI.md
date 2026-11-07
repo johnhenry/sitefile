@@ -165,7 +165,7 @@ directory holds or which variables a template uses.
   `FROM image` base, labelled `image ghcr.io/me/theme:1`), `local:./<path>` (a context
   path an operation or `FROM` reads), `op:<line>` (an operation, labelled `COPY ./src /out/`,
   `RENDER ./t.html TO /index.html`, `RENDER ./t.html FOR post IN posts`, `TRANSFORM motion ./title.txt`,
-  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`; FOR destinations are not evaluated), `stage:<name>` or
+  `SITEMAP /sitemap.xml`, `FEED posts /feed.xml`, `FINGERPRINT /assets/**`, `CHECKLINKS --warn`; FOR destinations are not evaluated), `stage:<name>` or
   `stage:#<n>` for an unnamed stage (the stage's final tree, labelled `FROM ./theme AS theme`),
   `site:_redirects`/`site:_headers` (the files EXPORT writes from REDIRECT/HEADER lines) and `export`
   (`EXPORT / AS directory`, with ` (--target <name>)` under `--target`).
@@ -218,7 +218,9 @@ tracking of the build: it compares each path before and after every operation of
 - **Inputs** of an entry: `./src/index.html` (a context file, also inside a copied directory or a `FROM ./dir`
   base), `stage build:/out/index.html`, `import theme:/style.css` (or `import data` for a whole import), `<<EOF`
   (an inline body), the template of a RENDER, `plugin <name>`/`tool <name>` and the source of a TRANSFORM,
-  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, and for `/_redirects`/`/_headers`
+  `list posts` for `FOR`/`FEED`, `the .html files in the tree` for SITEMAP, `<old path> (renamed)` for a file FINGERPRINT
+  renamed (preceded by the history of the old path), `references to renamed files` for a file whose references it
+  rewrote and `the files it renamed` for its MANIFEST, and for `/_redirects`/`/_headers`
   every REDIRECT/HEADER line (`Sitefile:19 REDIRECT`). Variables a template reads are not listed.
 - **Text**: `<path>  <mode>  <size> bytes  <digest>`, then one numbered line per entry,
   `  1. Sitefile:6 COPY ./src /out/  [stage build]  wrote /out/index.html`, each followed by `       from <input>` lines.
@@ -379,7 +381,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 - **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
-  and `RENDER … FOR` / `TRANSFORM … FOR` re-run only the elements that changed (unless the template reads the whole
+  and `RENDER … FOR` / `TRANSFORM … FOR` (and a directory TRANSFORM, per file) re-run only the elements that changed (unless the template reads the whole
   list). A directory export writes only the files that changed and removes the ones (and the directories) that are
   gone, after checking that the output is still exactly what the previous build wrote; otherwise, and for archive
   formats, it is written in full (see [ARCHITECTURE.md](ARCHITECTURE.md#incremental-export)). Every input is still
@@ -447,7 +449,7 @@ TypeScript and Rust CLIs write the same events, names, categories and args (conf
 | `plugin` | `PLUGIN <name>`: check and register a plugin | `path` |
 | `stage` | `stage <name>` (`stage #N` for an unnamed stage) | `from` (`scratch`, a stage name or `./dir`), `files` (tree size at the end) |
 | `operation` | `<Sitefile>:<line> <INSTRUCTION>`, e.g. `Sitefile:5 RENDER` | `line`, `files` (tree size after it); under `--watch` also `memo`: `hit` (result reused), `files` (its files reused, added to a changed tree) or `miss` (it ran) |
-| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable) |
+| `transform` | `TRANSFORM <plugin or tool> <dest>`: one plugin call or tool run (one per `FOR` element or per file of a directory source, in path order; none for what a `--watch` rebuild reuses) | `plugin`, `tool` (true for a `TOOL`), `dest`, `input` (directory sources: the file, e.g. `./photos/a.jpg`), `cache`: `hit`, `miss` or `off` (`--no-cache`, or not cacheable). Calls of a directory source may overlap in time (up to 4 at once) |
 | `import` | `BASE <image>`: resolve or pull the `oci` BASE | |
 | `export` | `export`: encode and write the output (`build` only) | `format` |
 

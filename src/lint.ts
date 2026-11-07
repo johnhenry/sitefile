@@ -205,7 +205,7 @@ export function lint(program: Program, plan: Plan, source: string, disabled: rea
       const path = op.kind === 'RENDER' && !op.each ? op.dest : op.kind === 'COPY' && op.source.kind === 'inline' ? op.dest : undefined;
       if (path === undefined) continue;
       const before = last.get(path);
-      if (before !== undefined && op.overwrite) {
+      if (before !== undefined && 'overwrite' in op && op.overwrite) {
         report(before, 'shadowed-write', `${path} written here is replaced by line ${op.span.line} (--overwrite), so this write has no effect`);
       }
       last.set(path, op.span.line);

@@ -7,7 +7,7 @@ import { fragmentText, parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
-import { DEFAULT_PLUGIN_POLICY, PluginHost, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
+import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
@@ -36,9 +36,11 @@ import { baseRef as parseBaseRef, readLayerBlobs, resolveBase, resolveFromImage,
 import type { Credentials } from './registry-auth.js';
 import type { RegistryOptions } from './registry.js';
 import { Store } from './store.js';
-import { begin, type Profiler } from './profile.js';
+import { begin, reserve, type Profiler, type ProfileSpan } from './profile.js';
 import { BuildMemo, memoKey, valueKey, type DocumentMemo, type MemoStats } from './memo.js';
 import type { TemplateNode } from './render.js';
+import { brokenLinks, reportBrokenLinks } from './checklinks.js';
+import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
 
 export interface BuildOptions {
@@ -155,6 +157,8 @@ export interface BuildResult {
   readonly steps?: readonly (readonly Tree[])[];
   /** `--strict-pins`: how each remote input was pinned (recorded in the provenance). */
   readonly pins?: Pins;
+  /** What each FINGERPRINT renamed (old path, new path), by its line. */
+  readonly renames?: ReadonlyMap<number, ReadonlyArray<readonly [string, string]>>;
 }
 
 /** A `FROM image` base a build used. */
@@ -392,9 +396,14 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     envKey,
     stageKeys: new Map(),
     fromImage,
+    fetchPolicy: policy,
   };
   let tree = Tree.empty;
   const steps: Tree[][] | undefined = options.recordSteps ? [] : undefined;
+  // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
+  const renames = new Map<number, ReadonlyArray<readonly [string, string]>>();
+  const stageRenames = new Map<string, ReadonlyMap<string, string>>();
+  let currentRenames: ReadonlyMap<string, string> = new Map();
   try {
     for (const spec of p.plugins) {
       const s = begin(prof, `PLUGIN ${spec.name}`, 'plugin', { path: './' + spec.path });
@@ -406,6 +415,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
       const start = await startStage(stage, execEnv);
       tree = start.tree;
       let key = start.key;
+      currentRenames = stage.base.kind === 'stage' ? (stageRenames.get(stage.base.name) ?? new Map()) : new Map();
       const record = steps ? [tree] : undefined;
       steps?.push(record!);
       for (const op of stage.operations) {
@@ -413,10 +423,15 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
         const r = await executeOp(op, tree, key, execEnv);
         tree = r.tree;
         key = r.key;
+        if (r.renames) {
+          renames.set(op.span.line, r.renames);
+          currentRenames = composeRenames(currentRenames, r.renames);
+        }
         record?.push(tree);
         o.end({ files: tree.size, ...(r.memo ? { memo: r.memo } : {}) });
       }
       if (stage.name !== undefined) {
+        stageRenames.set(stage.name, currentRenames);
         stageTrees.set(stage.name, tree);
         execEnv.stageKeys.set(stage.name, key);
       }
@@ -432,7 +447,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label);
+  tree = withSiteRules(tree, p, label, currentRenames);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
@@ -470,6 +485,7 @@ async function buildOnce(options: BuildOptions): Promise<BuildResult> {
     ...(images.length ? { images } : {}),
     ...(steps ? { steps } : {}),
     ...(pins ? { pins } : {}),
+    ...(renames.size ? { renames } : {}),
   };
 }
 
@@ -892,6 +908,8 @@ interface ExecEnv {
   readonly stageKeys: Map<string, string>;
   /** The current element of a RENDER … FOR loop. */
   readonly loop?: { readonly name: string; readonly value: unknown };
+  /** The network policy (CHECKLINKS --external). */
+  readonly fetchPolicy: FetchPolicy;
   /** Resolve a `FROM image` stage base (registry pull or local store). */
   readonly fromImage: (base: ImageStageBase) => Promise<FromImage>;
 }
@@ -1103,14 +1121,50 @@ export function templateNames(nodes: readonly TemplateNode[], out = new Set<stri
  * input tree is also unchanged reuses the resulting tree. The key of the result chains the
  * input tree's key with the step's, like image layers.
  */
-async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEnv): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss' }> {
-  const policy = op.overwrite ? 'overwrite' : 'error';
+async function executeOp(
+  op: Operation,
+  tree: Tree,
+  prevKey: string,
+  env: ExecEnv,
+): Promise<{ tree: Tree; key: string; memo?: 'hit' | 'files' | 'miss'; renames?: ReadonlyArray<readonly [string, string]> }> {
+  const policy = 'overwrite' in op && op.overwrite ? 'overwrite' : 'error';
   const memo = env.memo;
-  if (!memo) return { tree: op.kind === 'SITEMAP' ? sitemap(op, tree, env) : tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
+  if (!memo) {
+    if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
+    if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    if (op.kind === 'CHECKLINKS') {
+      await checkLinks(op, tree, env, env.warn);
+      return { tree, key: '' };
+    }
+    return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
+  }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
+    if (op.kind === 'CHECKLINKS') {
+      // The tree is unchanged; a hit skips the check (and its requests) and prints its warnings again.
+      const hit = memo.get<{ warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      await checkLinks(op, tree, env, (m) => (warnings.push(m), env.warn(m)));
+      memo.set(key, { warnings });
+      return { tree, key, memo: 'miss' };
+    }
+    if (op.kind === 'FINGERPRINT') {
+      const hit = memo.get<{ tree: Tree; renames: ReadonlyArray<readonly [string, string]>; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, renames: hit.renames, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = fingerprintOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { ...out, warnings });
+      return { ...out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1126,6 +1180,15 @@ async function executeOp(op: Operation, tree: Tree, prevKey: string, env: ExecEn
   const out = tree.withFiles(p.files, policy, op.span);
   memo.set(key, out);
   return { tree: out, key, memo: p.hit ? 'files' : 'miss' };
+}
+
+async function checkLinks(op: Extract<Operation, { kind: 'CHECKLINKS' }>, tree: Tree, env: ExecEnv, warn: (m: string) => void): Promise<void> {
+  const broken = await brokenLinks(tree, op, env.fetchPolicy);
+  reportBrokenLinks(broken, op, `${env.label}:${op.span.line} CHECKLINKS`, warn);
+}
+
+function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Fingerprinted {
+  return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -1235,30 +1298,33 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
   let input: PluginRequest['input'];
   let data: unknown;
   let srcKey = '';
+  // A directory source: the plugin runs once per file (--include/--exclude pick them).
+  let dir: { readonly tree: Tree; readonly label: string } | undefined;
+  const filtered = op.include !== undefined || op.exclude !== undefined;
   if (op.source) {
     const ref = op.source;
     const res = ref.kind === 'import' ? env.resources.get(ref.name) : undefined;
     if (ref.kind === 'import' && res?.kind === 'value') {
       if (ref.path !== '/') throw new SitefileError('E_PATH', `import '${ref.name}' is a value; use '${ref.name}:'`, ref.span);
+      if (filtered) throw new SitefileError('E_TYPE', `--include and --exclude filter a directory, but '${ref.name}:' is a value import`, ref.span);
       data = res.value;
     } else {
-      const src = await readSource(op.source, origin, env);
+      const src = await readSource(op.source, origin, env, op.exclude ? IgnoreRules.fromPatterns(op.exclude) : undefined);
       if (src.kind !== 'file') {
-        throw new SitefileError('E_TYPE', `TRANSFORM source '${src.label}' is a directory; plugins take one file`, op.source.span);
+        if (op.each) {
+          throw new SitefileError('E_TYPE', `TRANSFORM source '${src.label}' is a directory, which runs the plugin once per file and cannot be combined with FOR`, op.source.span);
+        }
+        dir = { tree: including(src.tree, op.include), label: src.label };
+      } else {
+        if (filtered) throw new SitefileError('E_TYPE', `--include and --exclude filter a directory, but '${src.label}' is a file`, op.source.span);
+        input = { path: src.label, name: src.basename || src.label, bytes: src.bytes, ...textOf(src.bytes) };
       }
-      let text: string | undefined;
-      try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(src.bytes);
-      } catch {
-        text = undefined;
-      }
-      input = { path: src.label, name: src.basename || src.label, bytes: src.bytes, ...(text !== undefined ? { text } : {}) };
       if (env.memo) srcKey = sourceKey(ref, src, env);
     }
   }
 
   const tool = env.tools.get(op.plugin);
-  if (tool && !input && op.source) {
+  if (tool && !input && !dir && op.source) {
     throw new SitefileError('E_TYPE', `TRANSFORM … WITH ${op.plugin}: a TOOL needs a file source, not a value import`, op.source.span);
   }
   const inputDigest = input ? sha256(input.bytes) : undefined;
@@ -1280,9 +1346,13 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
   const memo = env.memo && code !== undefined ? env.memo : undefined;
   const operandRefs = operandNames([op.dest, ...op.options.map((o) => o.value), ...(op.args ?? [])], new Set(data !== undefined && op.source?.kind === 'import' ? [op.source.name] : []));
   const key = memo ? memoKey('transform', opId, srcKey, code!, namesKey(env, op.each ? new Set([...operandRefs, op.each.list]) : operandRefs)) : undefined;
+  const storable = (): boolean => tool !== undefined || env.plugins.cacheable(op.plugin);
+  if (dir) {
+    const files = { tree: dir.tree, label: dir.label, fileBase: memo ? memoKey('transform-file', opId, code!, namesKey(env, operandRefs)) : undefined };
+    return memoFiles(env, key, (children) => transformFiles(op, env, files, { tool, pluginDigest, memo, children }), storable);
+  }
   // One FOR element's files: the same request gives the same result (the list itself is not read).
   const itemBase = memo && op.each ? memoKey('transform-item', opId, srcKey, code!, namesKey(env, operandRefs, op.each.as)) : undefined;
-  const storable = (): boolean => tool !== undefined || env.plugins.cacheable(op.plugin);
   return memoFiles(
     env,
     key,
@@ -1298,6 +1368,9 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
         const itemFiles: Files = [];
         const itemEnv: ExecEnv = op.each ? { ...env, loop: { name: op.each.as, value: item } } : env;
         const rawDest = interpolate(op.dest, itemEnv);
+        if (starName(rawDest) !== undefined) {
+          throw new SitefileError('E_TYPE', `TRANSFORM destination '${rawDest}': a '*' name stands for each file of a directory source, and this TRANSFORM's source is not a directory`, op.dest.span);
+        }
         const dest = normalizeVirtual(rawDest, op.dest.span, 'TRANSFORM destination');
         const options: Record<string, string> = Object.create(null) as Record<string, string>;
         for (const o of op.options) options[o.key] = interpolate(o.value, itemEnv);
@@ -1373,11 +1446,273 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
   );
 }
 
+/** Decoded UTF-8 text for a plugin input, when the bytes are valid UTF-8. */
+function textOf(bytes: Uint8Array): { text?: string } {
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) };
+  } catch {
+    return {};
+  }
+}
+
+/** A directory source with only the files an `--include` pattern matches (relative to its root). */
+function including(tree: Tree, include: readonly string[] | undefined): Tree {
+  if (!include) return tree;
+  const rules = IgnoreRules.fromPatterns(include);
+  return Tree.fromFiles(tree.entries().filter(([p]) => rules.excludes(p.slice(1))));
+}
+
+/**
+ * The last segment of a TRANSFORM destination when it names each file of a directory source:
+ * `*` (the file's own name) or `*.ext` (its name with the extension replaced). Undefined otherwise.
+ */
+export function starName(dest: string): string | undefined {
+  const last = dest.slice(dest.lastIndexOf('/') + 1);
+  return last === '*' || /^\*\.[^*]+$/.test(last) ? last : undefined;
+}
+
+/**
+ * Where one file of a directory TRANSFORM goes: `rel` is its path inside the source directory.
+ * `TO /out/*` keeps its relative path, `TO /out/*.ext` replaces its extension, and any other
+ * destination is the directory `<dest>/<relative dir>/` (the plugin names the files).
+ */
+export function fileDest(dest: string, rel: string): string {
+  const base = dest.slice(0, dest.lastIndexOf('/') + 1);
+  const star = starName(dest);
+  const cut = rel.lastIndexOf('/');
+  const relDir = rel.slice(0, cut + 1);
+  const name = rel.slice(cut + 1);
+  if (star === '*') return base + rel;
+  if (star !== undefined) {
+    const dot = name.lastIndexOf('.');
+    return base + relDir + (dot > 0 ? name.slice(0, dot) : name) + star.slice(1);
+  }
+  return (dest.endsWith('/') ? dest : dest + '/') + relDir;
+}
+
+type Settled<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+
+/**
+ * Run `fn(0..n)` at most `limit` at a time, starting them in index order. After a failure no
+ * later index starts, so the lowest failing index is always among the results (and every index
+ * below it has run): callers report that one, whatever order the calls finished in.
+ */
+export async function runBounded<T>(n: number, limit: number, fn: (i: number) => Promise<T>): Promise<Array<Settled<T> | undefined>> {
+  const out = new Array<Settled<T> | undefined>(n).fill(undefined);
+  let next = 0;
+  let failedAt = Infinity;
+  const lane = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= n || i > failedAt) return;
+      try {
+        out[i] = { ok: true, value: await fn(i) };
+      } catch (error) {
+        out[i] = { ok: false, error };
+        failedAt = Math.min(failedAt, i);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), n) }, lane));
+  return out;
+}
+
+/** A failure for one file of a directory TRANSFORM: the same error, naming the file. */
+function namingFile(e: unknown, file: string): unknown {
+  return e instanceof SitefileError ? new SitefileError(e.code, `${file}: ${e.detail}`, e.span) : e;
+}
+
+/**
+ * TRANSFORM over a directory: one plugin (or tool) call per file, in path order. Each call gets
+ * its own `input` and destination (see `fileDest`), is cached and memoized per file, and calls
+ * run up to TRANSFORM_JOBS at a time (a JavaScript plugin, one process, takes one at a time).
+ * Files, tool output, profile events and errors come in path order whatever order calls finish in.
+ */
+async function transformFiles(
+  op: Extract<Operation, { kind: 'TRANSFORM' }>,
+  env: RecEnv,
+  dir: { readonly tree: Tree; readonly label: string; readonly fileBase?: string },
+  ctx: { readonly tool?: ResolvedTool; readonly pluginDigest?: string; readonly memo?: BuildMemo; readonly children: string[] },
+): Promise<Files> {
+  const { tool, pluginDigest, memo, children } = ctx;
+  const line = `${env.label}:${op.span.line} TRANSFORM`;
+  const entries = dir.tree.entries();
+  if (entries.length === 0) {
+    env.warn(
+      op.include || op.exclude
+        ? `${line}: --include/--exclude leave no files of '${dir.label}' to transform`
+        : `${line}: '${dir.label}' contains no files`,
+    );
+  }
+  const rawDest = interpolate(op.dest, env);
+  normalizeVirtual(rawDest, op.dest.span, 'TRANSFORM destination');
+  const dirDest = rawDest.endsWith('/') ? rawDest : rawDest + '/';
+  if (tool && starName(rawDest) === undefined) {
+    throw new SitefileError(
+      'E_PLUGIN',
+      `TOOL ${op.plugin} writes one file per input, but '${rawDest}' is a directory destination: use '${dirDest}*' to keep each file's name, or '${dirDest}*.ext' to change its extension`,
+      op.dest.span,
+    );
+  }
+  const options: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const o of op.options) options[o.key] = interpolate(o.value, env);
+  const args = tool ? (op.args ?? []).map((a) => interpolate(a, env)) : undefined;
+  const store = (): boolean => tool !== undefined || env.plugins.cacheable(op.plugin);
+
+  interface Job {
+    readonly index: number;
+    readonly label: string;
+    readonly origin: string;
+    readonly rawDest: string;
+    readonly dest: { readonly path: string; readonly trailingSlash: boolean };
+    readonly input: NonNullable<PluginRequest['input']>;
+    readonly cached?: string;
+    readonly memoKey?: string;
+    readonly span: ProfileSpan;
+    readonly logs: string[];
+    result?: PluginResult;
+    error?: { readonly error: unknown };
+    cache: 'off' | 'hit' | 'miss';
+  }
+  const done: Array<Files | undefined> = [];
+  const jobs: Job[] = [];
+  for (const [index, [p, node]] of entries.entries()) {
+    const rel = p.slice(1);
+    const label = (dir.label.endsWith('/') ? dir.label : dir.label + '/') + rel;
+    const fileKey = dir.fileBase !== undefined ? memoKey(dir.fileBase, rel, node.digest) : undefined;
+    const reused = fileKey !== undefined ? memo!.get<Files>(fileKey, children) : undefined;
+    if (reused) {
+      done[index] = reused;
+      continue;
+    }
+    const perFile = fileDest(rawDest, rel);
+    const dest = normalizeVirtual(perFile, op.dest.span, 'TRANSFORM destination');
+    const input = { path: label, name: basenameVirtual(p), bytes: node.bytes, ...textOf(node.bytes) };
+    const cached =
+      env.cache !== undefined && (tool !== undefined || pluginDigest !== undefined)
+        ? cacheKey({
+            code: tool ? { tool: { path: tool.path, size: tool.size, mtimeMs: tool.mtimeMs }, args } : { plugin: pluginDigest },
+            request: { dest: dest.path, options, input: { path: input.path, name: input.name, digest: sha256(input.bytes) }, data: undefined, item: undefined },
+          })
+        : undefined;
+    const span = reserve(env.profiler, `TRANSFORM ${op.plugin} ${dest.path}`, 'transform', { plugin: op.plugin, tool: tool !== undefined, dest: dest.path, input: label });
+    const job: Job = {
+      index,
+      label,
+      origin: `${line} ${label}`,
+      rawDest: perFile,
+      dest,
+      input,
+      ...(cached !== undefined ? { cached } : {}),
+      ...(fileKey !== undefined ? { memoKey: fileKey } : {}),
+      span,
+      logs: [],
+      cache: cached !== undefined ? 'miss' : 'off',
+    };
+    if (cached !== undefined) {
+      const hit = await env.cache!.get(cached);
+      if (hit) {
+        span.start();
+        span.end({ cache: 'hit' });
+        job.result = hit;
+        job.cache = 'hit';
+      }
+    }
+    jobs.push(job);
+  }
+
+  // The misses, a few at a time (a JavaScript plugin's one process takes one call at a time).
+  const misses = jobs.filter((j) => !j.result);
+  const limit = tool || env.plugins.isWasm(op.plugin) ? TRANSFORM_JOBS : 1;
+  const settled = await runBounded(misses.length, limit, async (i) => {
+    const job = misses[i]!;
+    job.span.start();
+    let result: PluginResult;
+    if (tool) {
+      env.stats.toolRuns++;
+      const call = { args: args!, dest: job.dest.path, options, input: { name: job.input.name, bytes: job.input.bytes } };
+      result = await runTool(tool, call, env.toolPolicy, (l) => job.logs.push(l), op.span);
+    } else {
+      result = await env.plugins.call(op.plugin, { apiVersion: 1, dest: job.dest.path, options, input: job.input }, op.span);
+    }
+    job.span.end({ cache: job.cache });
+    return result;
+  });
+  misses.forEach((job, i) => {
+    const r = settled[i];
+    if (r?.ok) job.result = r.value;
+    else if (r) job.error = { error: r.error };
+  });
+
+  // In path order: tool output, the first failure, cache writes and the files.
+  for (const job of jobs) {
+    // The tool's stderr, like a TRANSFORM cache hit, is not replayed by a memo hit.
+    for (const l of job.logs) env.unrecorded(l);
+    if (job.error) throw namingFile(job.error.error, job.label);
+    const result = job.result!;
+    if (job.cache === 'miss' && store()) await env.cache!.put(job.cached!, result);
+    const files: Files = [];
+    if (result.kind === 'file') {
+      if (job.dest.trailingSlash) {
+        throw new SitefileError(
+          'E_PLUGIN',
+          `${job.label}: PLUGIN ${op.plugin} returned one file, but '${job.rawDest}' is a directory destination (use '${dirDest}*' or '${dirDest}*.ext' for one file per input)`,
+          op.dest.span,
+        );
+      }
+      files.push([job.dest.path, makeFile(result.bytes, job.origin)]);
+    } else {
+      for (const [rel, bytes] of result.files) {
+        const p = normalizeVirtual(`${job.dest.path === '/' ? '' : job.dest.path}/${rel}`, op.dest.span, `file '${rel}' returned by PLUGIN ${op.plugin}`).path;
+        if (rel.includes('..') || rel.startsWith('/')) {
+          throw new SitefileError('E_PLUGIN', `${job.label}: PLUGIN ${op.plugin} returned an unsafe path '${rel}'`, op.span);
+        }
+        files.push([p, makeFile(bytes, job.origin)]);
+      }
+    }
+    if (job.memoKey !== undefined && store()) memo!.set(job.memoKey, files);
+    done[job.index] = files;
+  }
+
+  // Two inputs may write the same path only with the same content.
+  const out: Files = [];
+  const owner = new Map<string, FileNode>();
+  for (const files of done) {
+    for (const [p, node] of files ?? []) {
+      const prior = owner.get(p);
+      if (prior) {
+        if (prior.digest === node.digest) continue;
+        throw new SitefileError(
+          'E_CONFLICT',
+          `'${p}' is written for two inputs with different content (${prior.origin} and ${node.origin}); rename one, or leave one out with --include/--exclude`,
+          op.span,
+        );
+      }
+      owner.set(p, node);
+      out.push([p, node]);
+    }
+  }
+  return out;
+}
+
 /** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
-function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
+/**
+ * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
+ * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
+ * names its new URL.
+ */
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>): Tree {
+  const url = new Map<string, string>();
+  for (const [from, to] of renames) {
+    const a = urlBelow(p.exportPath, from);
+    const b = urlBelow(p.exportPath, to);
+    if (a !== undefined && b !== undefined) url.set(a, b);
+  }
+  const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
+  const headers = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
-    { name: '_redirects', text: redirectsFile(p.redirects), rules: p.redirects, kind: 'REDIRECT' },
-    { name: '_headers', text: headersFile(p.headers), rules: p.headers, kind: 'HEADER' },
+    { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
+    { name: '_headers', text: headersFile(headers), rules: headers, kind: 'HEADER' },
   ];
   for (const f of files) {
     const first = f.rules[0];
@@ -1387,6 +1722,12 @@ function withSiteRules(tree: Tree, p: Plan, label: string): Tree {
     tree = tree.withFiles([[joinVirtual(p.exportPath, f.name), node]], policy, first.span);
   }
   return tree;
+}
+
+/** The URL path of a tree path below the exported directory, or undefined outside it. */
+function urlBelow(dir: string, path: string): string | undefined {
+  if (dir === '/') return path;
+  return path.startsWith(dir + '/') ? path.slice(dir.length) : undefined;
 }
 
 function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): Files {
@@ -1439,10 +1780,10 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
 }
 
 /**
- * The files an operation (other than SITEMAP) adds; `opId` is its memo identity ('' without a memo),
- * `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
+ * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
+ * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
  */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {

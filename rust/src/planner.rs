@@ -7,6 +7,7 @@ use crate::language::ast::{
     stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction, OciCompression, Operand, Program, Source, StageRef,
     TemplatePart, ValueType,
 };
+use crate::fingerprint::check_pattern;
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path};
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
@@ -134,6 +135,13 @@ pub struct HeaderSpec {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
+    /// Rename the files matching `patterns` (checked, NFC; a trailing `/` became `/**`) to `name.<hash>.ext`
+    /// and rewrite the HTML and CSS that reference them; `manifest` is where the JSON map of renames goes.
+    /// `root` is the EXPORT path: absolute references (`/img/a.png`) in HTML and CSS name files below it.
+    Fingerprint { patterns: Vec<String>, manifest: Option<String>, root: String, overwrite: bool, span: SourceSpan },
+    /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
+    /// `redirects` every REDIRECT source in the Sitefile.
+    CheckLinks { warn: bool, external: bool, root: String, redirects: Vec<String>, span: SourceSpan },
     /// sitemaps.org XML of the `.html` files in the tree at this point (`base` is checked, without trailing slashes).
     Sitemap { base: String, dest: String, overwrite: bool, span: SourceSpan },
     /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
@@ -147,6 +155,9 @@ pub enum Operation {
         each: Option<TransformEach>,
         /// argv template when `plugin` names a TOOL.
         args: Option<Vec<Operand>>,
+        /// A directory source's files to keep / leave out (`.sitefileignore` patterns, relative to it).
+        include: Vec<String>,
+        exclude: Vec<String>,
         overwrite: bool,
         span: SourceSpan,
     },
@@ -181,6 +192,8 @@ impl Operation {
             | Operation::Copy { span, .. }
             | Operation::Render { span, .. }
             | Operation::Sitemap { span, .. }
+            | Operation::Fingerprint { span, .. }
+            | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
     }
@@ -190,6 +203,8 @@ impl Operation {
             Operation::Copy { .. } => "COPY",
             Operation::Render { .. } => "RENDER",
             Operation::Sitemap { .. } => "SITEMAP",
+            Operation::Fingerprint { .. } => "FINGERPRINT",
+            Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
     }
@@ -482,7 +497,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 plugins.push(PluginSpec { name: name.clone(), path: rel, integrity: integrity.clone(), span: span.clone() });
             }
             Instruction::Tool { span, name } => tools.push(ToolSpec { name: name.clone(), span: span.clone() }),
-            Instruction::Transform { span, source, from, plugin, dest, options, each, args, overwrite, .. } => {
+            Instruction::Transform { span, source, from, plugin, dest, options, each, args, include, exclude, overwrite, .. } => {
                 let source = match source {
                     Some(s) => Some(source_ref(s, &vars, &imports, from.as_ref())?),
                     None => None,
@@ -494,6 +509,8 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                     options: options.iter().map(|o| PlanOption { key: o.key.clone(), value: o.value.clone() }).collect(),
                     each: each.as_ref().map(|e| TransformEach { as_name: e.as_name.clone(), list: e.list.clone() }),
                     args: args.clone(),
+                    include: include.clone(),
+                    exclude: exclude.clone(),
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
@@ -502,6 +519,25 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
                 let base = check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/sitemap.xml", "SITEMAP")?;
                 operations(&mut stages, span)?.push(Operation::Sitemap { base, dest, overwrite: *overwrite, span: span.clone() });
+            }
+            Instruction::Fingerprint { span, patterns, manifest, overwrite } => {
+                let patterns = patterns.iter().map(|o| check_pattern(&evaluate_operand(o, &vars)?, &o.span)).collect::<Result<Vec<_>>>()?;
+                let manifest = match manifest {
+                    Some(m) => Some(file_dest(Some(m), &vars, "", "FINGERPRINT MANIFEST")?),
+                    None => None,
+                };
+                // `root` is the EXPORT path, filled in below (EXPORT is the last instruction).
+                operations(&mut stages, span)?.push(Operation::Fingerprint { patterns, manifest, root: "/".into(), overwrite: *overwrite, span: span.clone() });
+            }
+            Instruction::CheckLinks { span, warn, external } => {
+                // `root` and `redirects` are filled in below, once every line is planned.
+                operations(&mut stages, span)?.push(Operation::CheckLinks {
+                    warn: *warn,
+                    external: *external,
+                    root: "/".into(),
+                    redirects: Vec::new(),
+                    span: span.clone(),
+                });
             }
             Instruction::Feed { span, list, base, link, dest, title, overwrite, .. } => {
                 let base = check_base_url(&evaluate_operand(base, &vars)?, "FEED BASE", &base.span)?;
@@ -564,6 +600,19 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
         }
     }
 
+    let root = export_path.clone().unwrap_or_else(|| "/".into());
+    for st in &mut stages {
+        for op in &mut st.operations {
+            match op {
+                Operation::Fingerprint { root: r, .. } => *r = root.clone(),
+                Operation::CheckLinks { root: r, redirects: rs, .. } => {
+                    *r = root.clone();
+                    *rs = redirects.iter().map(|x| x.from.clone()).collect();
+                }
+                _ => {}
+            }
+        }
+    }
     // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
     if let Some((_, earlier)) = stages.split_last() {
         for st in earlier.iter().filter(|st| st.name.is_none()) {
@@ -603,7 +652,7 @@ pub fn plan(program: &Program, build_args: &BuildArgs) -> Result<Plan> {
     })
 }
 
-/// `TO <dest>` of SITEMAP/FEED (a file path), or the default.
+/// `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default.
 fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Result<String> {
     let Some(op) = op else { return Ok(fallback.to_string()) };
     let raw = evaluate_operand(op, vars)?;
@@ -812,6 +861,22 @@ impl Operation {
         let mut m = Map::new();
         m.insert("kind".into(), json!(self.keyword()));
         match self {
+            Operation::CheckLinks { warn, external, root, redirects, span } => {
+                m.insert("warn".into(), json!(warn));
+                m.insert("external".into(), json!(external));
+                m.insert("root".into(), json!(root));
+                m.insert("redirects".into(), json!(redirects));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Fingerprint { patterns, manifest, root, overwrite, span } => {
+                m.insert("patterns".into(), json!(patterns));
+                if let Some(d) = manifest {
+                    m.insert("manifest".into(), json!(d));
+                }
+                m.insert("root".into(), json!(root));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
             Operation::Sitemap { base, dest, overwrite, span } => {
                 m.insert("base".into(), json!(base));
                 m.insert("dest".into(), json!(dest));
@@ -827,7 +892,7 @@ impl Operation {
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }
-            Operation::Transform { source, plugin, dest, options, each, args, overwrite, span } => {
+            Operation::Transform { source, plugin, dest, options, each, args, include, exclude, overwrite, span } => {
                 if let Some(s) = source {
                     m.insert("source".into(), s.to_json());
                 }
@@ -840,6 +905,12 @@ impl Operation {
                 }
                 if let Some(a) = args {
                     m.insert("args".into(), Value::Array(a.iter().map(operand_json).collect()));
+                }
+                if !include.is_empty() {
+                    m.insert("include".into(), json!(include));
+                }
+                if !exclude.is_empty() {
+                    m.insert("exclude".into(), json!(exclude));
                 }
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));

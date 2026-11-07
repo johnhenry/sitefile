@@ -52,6 +52,10 @@ pub fn operation_label(op: &Operation) -> String {
         ),
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
         Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
+        Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
+        Operation::CheckLinks { warn, external, .. } => {
+            format!("CHECKLINKS{}{}", if *warn { " --warn" } else { "" }, if *external { " --external" } else { "" })
+        }
     }
 }
 
@@ -224,7 +228,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
                     inputs.push(each.as_ref().and_then(|e| list(&e.list)));
                 }
                 Operation::Feed { list: l, .. } => inputs.push(list(l)),
-                Operation::Sitemap { .. } => {}
+                Operation::Sitemap { .. } | Operation::Fingerprint { .. } | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
                 edges.add(&from, op_id, "input");
@@ -459,13 +463,44 @@ impl Why<'_> {
         }
     }
 
+    /// The path `file` had before operation `up_to` of stage `si` when a FINGERPRINT there renamed it, and where.
+    fn renamed_at(&self, si: usize, file: &str, up_to: usize) -> Option<(usize, String)> {
+        let ops = &self.result.plan.stages[si].operations;
+        (0..up_to).rev().find_map(|i| {
+            let Operation::Fingerprint { span, .. } = &ops[i] else { return None };
+            let (_, list) = self.result.renames.iter().find(|(line, _)| *line == span.line)?;
+            list.iter().find(|(_, to)| to == file).map(|(from, _)| (i, from.clone()))
+        })
+    }
+
     fn history(&self, si: usize, file: &str) -> Vec<WhyEvent> {
+        self.history_to(si, file, self.result.plan.stages[si].operations.len())
+    }
+
+    fn history_to(&self, si: usize, file: &str, up_to: usize) -> Vec<WhyEvent> {
         let p = &self.result.plan;
         let stage = &p.stages[si];
         let trees = &self.steps[si];
         let display = stage_display(stage, si);
+        // A renamed file: the history of its old path up to the FINGERPRINT, then the rename.
+        if let Some((index, from)) = self.renamed_at(si, file, up_to) {
+            let op = &stage.operations[index];
+            let node = trees[index + 1].get(file).expect("a renamed file is in the tree after its FINGERPRINT");
+            let mut events = self.history_to(si, &from, index);
+            events.push(WhyEvent {
+                location: self.at(op.span().line),
+                instruction: operation_label(op),
+                stage: display.clone(),
+                path: file.to_string(),
+                action: "write",
+                digest: node.digest.clone(),
+                inputs: vec![format!("{from} (renamed)")],
+            });
+            events.extend(self.later(si, file, index + 1, up_to, Some(&**node)));
+            return events;
+        }
         let mut events = Vec::new();
-        let mut prev = trees[0].get(file).map(|n| &**n);
+        let prev = trees[0].get(file).map(|n| &**n);
         if let Some(start) = prev {
             match &stage.base {
                 StageBase::Stage { name } => events.extend(self.history(self.stage_index[name.as_str()], file)),
@@ -494,7 +529,17 @@ impl Why<'_> {
                 StageBase::Scratch => {}
             }
         }
-        for (i, op) in stage.operations.iter().enumerate() {
+        events.extend(self.later(si, file, 0, up_to, prev));
+        events
+    }
+
+    /// The events of operations `from` to `up_to` (exclusive) of stage `si` that changed `file` (`prev`: before them).
+    fn later<'s>(&'s self, si: usize, file: &str, from: usize, up_to: usize, mut prev: Option<&'s FileNode>) -> Vec<WhyEvent> {
+        let stage = &self.result.plan.stages[si];
+        let trees = &self.steps[si];
+        let display = stage_display(stage, si);
+        let mut events = Vec::new();
+        for (i, op) in stage.operations.iter().enumerate().take(up_to).skip(from) {
             let next = trees[i + 1].get(file).map(|n| &**n);
             let Some(written) = next.filter(|_| !same(prev, next)) else {
                 prev = next;
@@ -515,9 +560,14 @@ impl Why<'_> {
                         inputs.push(format!("list {}", e.list));
                     }
                 }
-                Operation::Transform { source, plugin, each, .. } => {
+                Operation::Transform { source, plugin, each, span, .. } => {
+                    // A directory TRANSFORM names the input file in each output's origin.
+                    let per_file = format!("{} TRANSFORM ", self.at(span.line));
                     if let Some(s) = source {
-                        inputs.push(read_label(s));
+                        inputs.push(match written.origin.strip_prefix(&per_file) {
+                            Some(file) => file.to_string(),
+                            None => read_label(s),
+                        });
                     }
                     inputs.push(format!("{} {plugin}", if self.tools.contains(plugin.as_str()) { "tool" } else { "plugin" }));
                     if let Some(e) = each {
@@ -525,6 +575,11 @@ impl Why<'_> {
                     }
                 }
                 Operation::Sitemap { .. } => inputs.push("the .html files in the tree".into()),
+                // Writes nothing, so never reached.
+                Operation::CheckLinks { .. } => {}
+                Operation::Fingerprint { manifest, .. } => inputs.push(
+                    if manifest.as_deref() == Some(file) { "the files it renamed" } else { "references to renamed files" }.into(),
+                ),
                 Operation::Feed { list, .. } => inputs.push(format!("list {list}")),
             }
             events.push(WhyEvent {

@@ -16,9 +16,9 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 15] = [
+pub const INSTRUCTIONS: [&str; 17] = [
     "FROM", "STAGE", "ARG", "LET", "IMPORT", "COPY", "RENDER", "TRANSFORM", "PLUGIN", "TOOL", "SITEMAP", "FEED", "REDIRECT", "HEADER",
-    "EXPORT",
+    "FINGERPRINT", "CHECKLINKS", "EXPORT",
 ];
 /// Clauses after `IMPORT name FROM <uri>`, in any order (`SORT` is followed by `BY key [ASC|DESC]`,
 /// `SECRET` by `<id> AS HEADER <Name>` or `<id> AS BEARER`, and may repeat).
@@ -35,10 +35,14 @@ pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 /// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required).
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
+/// Clauses after `FINGERPRINT <pattern>…`.
+pub const FINGERPRINT_CLAUSES: [&str; 1] = ["MANIFEST"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
-/// Leading flags of SITEMAP, FEED, REDIRECT and HEADER.
+/// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
 pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
+/// Leading flags of CHECKLINKS.
+pub const CHECKLINKS_FLAGS: &[(&str, Shape)] = &[("warn", Shape::Bare), ("external", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
 pub const COPY_FLAGS: &[(&str, Shape)] = &[
     ("overwrite", Shape::Bare),
@@ -48,7 +52,8 @@ pub const COPY_FLAGS: &[(&str, Shape)] = &[
     ("parents", Shape::Bare),
 ];
 pub const RENDER_FLAGS: &[(&str, Shape)] = &[("escape", Shape::Value), ("overwrite", Shape::Bare), ("from", Shape::Value), ("inline-svg", Shape::Bare)];
-pub const TRANSFORM_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare), ("from", Shape::Value)];
+pub const TRANSFORM_FLAGS: &[(&str, Shape)] =
+    &[("overwrite", Shape::Bare), ("from", Shape::Value), ("include", Shape::Repeat), ("exclude", Shape::Repeat)];
 
 /// The leading flags `keyword` accepts (empty for instructions without flags).
 pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
@@ -56,7 +61,8 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "FINGERPRINT" => SITE_FLAGS,
+        "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
     }
 }
@@ -107,6 +113,8 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "FEED" => parse_feed(c, span),
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
+        "FINGERPRINT" => parse_fingerprint(c, span),
+        "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(E_UNSUPPORTED, "RUN is not supported: Sitefile never runs shell commands", &span)),
         k if NOT_YET.contains(&k) => Err(SitefileError::at(E_UNSUPPORTED, format!("{k} is not supported yet"), &span)),
         _ => Err(SitefileError::at(E_UNKNOWN_INSTRUCTION, format!("unknown instruction '{word}'"), &span)),
@@ -400,17 +408,23 @@ fn chmod_mode(value: &str) -> Option<u32> {
     }
 }
 
-fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, COPY_FLAGS)?;
-    for e in flags.all("exclude") {
+/// Repeatable pattern flags (`--exclude`, `--include`), in the order given: each value must be a `.sitefileignore` rule.
+fn check_patterns<'a>(patterns: impl Iterator<Item = &'a ParsedFlag>) -> Result<()> {
+    for e in patterns {
         if !is_ignore_pattern(&e.value) {
             return Err(SitefileError::at(
                 E_SYNTAX,
-                format!("--exclude={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.value),
+                format!("--{}={} is not a pattern (it is blank or a # comment in .sitefileignore syntax)", e.name, e.value),
                 &e.span,
             ));
         }
     }
+    Ok(())
+}
+
+fn parse_copy(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, COPY_FLAGS)?;
+    check_patterns(flags.all("exclude"))?;
     let chmod = match flags.get("chmod") {
         None => None,
         Some(f) => Some(chmod_mode(&f.value).ok_or_else(|| {
@@ -503,6 +517,8 @@ fn parse_args(c: &mut Cursor) -> Result<Vec<Operand>> {
 
 fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, TRANSFORM_FLAGS)?;
+    let patterns: Vec<&ParsedFlag> = flags.0.iter().filter(|f| f.name == "include" || f.name == "exclude").collect();
+    check_patterns(patterns.iter().copied())?;
     // The source is optional (only with FOR): `TRANSFORM WITH og TO … FOR post IN posts`.
     let source = if c.keyword("WITH") { None } else { Some(inline_or_operand(c, "source")?) };
     if source.is_some() {
@@ -570,6 +586,22 @@ fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             return Err(SitefileError::at(E_SYNTAX, "--from needs a source path", &f.span));
         }
     }
+    // --include/--exclude pick the files of a directory source, which runs the plugin once per file.
+    if let Some(first) = patterns.first() {
+        let name = first.name;
+        match &source {
+            None => return Err(SitefileError::at(E_SYNTAX, format!("--{name} needs a source directory"), &first.span)),
+            Some(Source::Inline(_)) => {
+                return Err(SitefileError::at(E_SYNTAX, format!("--{name} cannot be combined with an inline (<<) body"), &first.span))
+            }
+            Some(_) if each.is_some() => {
+                return Err(SitefileError::at(E_SYNTAX, format!("--{name} filters a directory source, which cannot be combined with FOR"), &first.span))
+            }
+            Some(_) => {}
+        }
+    }
+    let include: Vec<String> = flags.all("include").map(|f| f.value.clone()).collect();
+    let exclude: Vec<String> = flags.all("exclude").map(|f| f.value.clone()).collect();
     let from = stage_ref(&flags)?;
     Ok(Instruction::Transform {
         span,
@@ -581,6 +613,8 @@ fn parse_transform(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         options,
         each,
         args,
+        include,
+        exclude,
         overwrite: flags.has("overwrite"),
     })
 }
@@ -666,6 +700,28 @@ fn parse_header(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         return Err(SitefileError::at(E_SYNTAX, "expected header value", &at));
     }
     Ok(Instruction::Header { span, pattern, name: Operand { parts, span: raw.span }, value, overwrite: flags.has("overwrite") })
+}
+
+/// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`
+fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut patterns = Vec::new();
+    while !c.at_end() && !c.peek_keyword("MANIFEST") {
+        patterns.push(c.operand("path pattern")?);
+    }
+    if patterns.is_empty() {
+        return Err(c.error(E_SYNTAX, "expected a path pattern (FINGERPRINT /assets/ or FINGERPRINT /**/*.css)"));
+    }
+    let manifest = if c.keyword("MANIFEST") { Some(c.operand("manifest destination")?) } else { None };
+    c.expect_end()?;
+    Ok(Instruction::Fingerprint { span, patterns, manifest, overwrite: flags.has("overwrite") })
+}
+
+/// `CHECKLINKS [--warn] [--external]`
+fn parse_check_links(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, CHECKLINKS_FLAGS)?;
+    c.expect_end()?;
+    Ok(Instruction::CheckLinks { span, warn: flags.has("warn"), external: flags.has("external") })
 }
 
 fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
@@ -1231,12 +1287,16 @@ mod tests {
             ("FEED", SITE_FLAGS),
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
+            ("FINGERPRINT", SITE_FLAGS),
+            ("CHECKLINKS", CHECKLINKS_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);
             for (name, shape) in flags {
                 let flag = if *shape == Shape::Bare { format!("--{name}") } else { format!("--{name}=x") };
-                let e = parse_sitefile(&format!("{kw} {flag}"), "Sitefile").unwrap_err();
-                assert!(!e.detail.contains("unknown flag"), "{kw} {flag}: {e}");
+                // The flag is accepted (the line may still fail later, for a missing operand).
+                if let Err(e) = parse_sitefile(&format!("{kw} {flag}"), "Sitefile") {
+                    assert!(!e.detail.contains("unknown flag"), "{kw} {flag}: {e}");
+                }
             }
         }
         for clause in IMPORT_CLAUSES {

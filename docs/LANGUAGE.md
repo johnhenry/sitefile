@@ -13,6 +13,8 @@ Instructions:
 - `EXPORT <tree-path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <https-url>] [AT </srv/www>] [COMPRESSION gzip|none]` (CLI specifies destination)
 - `PLUGIN`, `TOOL` and `TRANSFORM` (custom renderers and allow-listed external programs): see Plugins below.
 - `SITEMAP`, `FEED`, `REDIRECT` and `HEADER` (sitemap.xml, an Atom feed, `_redirects`, `_headers`): see Site files below.
+- `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` (content-hashed asset names, with the HTML and CSS that reference them rewritten): see Fingerprinting below.
+- `CHECKLINKS [--warn] [--external]` (fail, or warn, on links to files that do not exist): see Link checking below.
 - Future: REMOVE, GENERATE, ASSERT, META, EXEC.
 
 Path rules: absolute destinations are virtual artifact paths; relative local sources resolve from project context. No implicit archive extraction. No implicit remote COPY in MVP (use IMPORT then COPY). Distinguish file and directory copying; specify trailing slash semantics with tests.
@@ -512,6 +514,13 @@ HTML
   A reference that is an html fragment is `E_TYPE`.
 - **Incremental rebuilds**: a RENDER whose template (or a fragment it uses) has
   a `${file …}` is keyed by its input tree too, so a changed file is seen.
+- **With FINGERPRINT**: helpers write the path the file has at the RENDER; a
+  FINGERPRINT after it rewrites those references (`src`, `href`, `srcset`) like
+  any other. `integrity` is of the bytes at the RENDER, so it stays right for
+  scripts and for stylesheets FINGERPRINT does not change; a stylesheet whose
+  own `url(…)` references FINGERPRINT rewrites gets new bytes, and its earlier
+  `integrity` no longer matches: leave such a stylesheet out of the FINGERPRINT
+  patterns, or write its `<link>` by hand.
 
 ### Data files: YAML, CSV and Web Bundles (see `examples/data/`)
 All of these are **values**: templates read them, `FOR` iterates over them,
@@ -548,12 +557,53 @@ line and column.
   a local `.mjs` module in its own folder (not the context root), or a
   WebAssembly module with no imports (anywhere; see docs/PLUGINS.md). URLs fail
   with `E_PROTOCOL`. Plugin names share the ARG/LET/IMPORT/stage namespace.
-- `TRANSFORM [--overwrite] [--from=stage] [<source>] WITH name TO <dest>
-  [OPTIONS key=value …] [FOR item IN list]` sends the source (a file, an
-  inline body, or a value import) and the options to the plugin and writes
-  what it returns: one file at `<dest>`, or several under `<dest>/`. Without a
-  source, the plugin gets the `FOR` element, or only its options. `<dest>` and
-  option values may use `${item.key}`.
+- `TRANSFORM [--overwrite] [--from=stage] [--include=<pattern>…] [--exclude=<pattern>…]
+  [<source>] WITH name TO <dest> [OPTIONS key=value …] [FOR item IN list]` sends
+  the source (a file, an inline body, or a value import) and the options to the
+  plugin and writes what it returns: one file at `<dest>`, or several under
+  `<dest>/`. Without a source, the plugin gets the `FOR` element, or only its
+  options. `<dest>` and option values may use `${item.key}`.
+- **A directory source** (a context directory, `name:` / `name:/dir` of a tree
+  import, or `--from=stage /dir`) calls the plugin **once per file**, in path
+  order (UTF-8 bytes), each call with its own `input` (`input.path` is the
+  source label plus the file's relative path, e.g. `./photos/trip/a.jpg`):
+  `TRANSFORM ./photos/ WITH image TO /img/ OPTIONS widths=400,800`. Local
+  directories honour `.sitefileignore`, like COPY.
+  - **Destinations.** By default each file gets the directory
+    `<dest>/<relative dir>/` (`./photos/trip/a.jpg` with `TO /img/` gets
+    `/img/trip`; a trailing `/` on `<dest>` is optional) and the plugin names
+    the files, as for one file with a directory destination. A last segment
+    `*` writes one file per input under its own relative path (`TO /css/*`);
+    `*.ext` replaces its extension (`TO /thumbs/*.png` writes
+    `/thumbs/trip/a.png`; `a.tar.gz` becomes `a.tar.png`, a name without an
+    extension gets one), so the plugin sees a file destination and picks the
+    format from it. A `*` destination with a source that is not a directory is
+    `E_TYPE`.
+  - **`--include=<pattern>`** keeps only the files some pattern matches and
+    **`--exclude=<pattern>`** leaves files out (both repeatable,
+    `.sitefileignore` lines relative to the source directory, as for COPY's
+    `--exclude`): `TRANSFORM --include=*.jpg --exclude=drafts/ ./photos/ …`.
+    With a file source or a value import they are `E_TYPE`; without a source,
+    with an inline body or with `FOR` they are `E_SYNTAX`. A directory with no
+    files left is a warning.
+  - A directory source with `FOR` is `E_TYPE` (each file is already one call).
+    A `TOOL` writes one file per input, so it needs `TO <dir>/*` or
+    `TO <dir>/*.ext` (`E_PLUGIN` otherwise).
+  - Calls run up to 4 at a time (wasm plugins and tools; a JavaScript plugin's
+    one process takes one call at a time); the files, warnings, `--profile`
+    events (one per file, with an `input` arg) and errors come in path order
+    either way. A failing file fails the build with its error prefixed by the
+    file (`./photos/notes.txt: PLUGIN image: not a PNG, JPEG, GIF or WebP
+    image`); the first failing file in path order is the one reported.
+  - Each file is cached and memoized on its own: the cache key is the one a
+    single-file TRANSFORM of that file to the same destination has (so they
+    share results), and a `--watch` rebuild re-runs only the files that
+    changed. Each output's origin names its input (`Sitefile:9 TRANSFORM
+    ./photos/a.jpg`), which `sitefile why` shows.
+  - Two files may write the same path only with identical content
+    (`./photos/a.jpg` and `./photos/a.png` both writing `/img/a.json` is
+    `E_CONFLICT` naming both, `--overwrite` or not); conflicts with files
+    already in the tree follow the usual rules.
 - Plugins run in a separate Node process with `--permission`: read access to
   their own folder only; no writes, processes, workers, network or
   environment; a per-call time limit (`--plugin-timeout`). Failures are
@@ -653,6 +703,151 @@ use `${NAME}`.
     the normal conflict rules apply: identical bytes are fine, different
     content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
     HEADER) lines has `--overwrite`, which replaces the file.
+
+### Fingerprinting: FINGERPRINT (see `examples/blog/`)
+`FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` renames assets to
+content-hashed names (`/style.css` becomes `/style.3f2a9c1b0d.css`) and rewrites
+the references to them, so a host can serve them with
+`Cache-Control: public, max-age=31536000, immutable`. Like SITEMAP it runs
+**at its place in the stage** and reads the stage's tree at that point, so put
+it after the pages and assets are written. It is an instruction rather than an
+EXPORT clause because the result is an ordinary tree: later instructions (a
+SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
+`why` can show the rename.
+
+- **Patterns** (operands, so `${VAR}` works; at least one) are absolute paths
+  matched against the tree's paths segment by segment: `*` matches any run of
+  characters within a segment, `?` one character, and a `**` segment any number
+  of segments (also none); everything else is literal and case-sensitive. A
+  trailing `/` means everything below: `/assets/` is `/assets/**`. A pattern
+  that does not start with `/` is `E_VALIDATION`. `FINGERPRINT /assets/ /**/*.css`.
+- **Never renamed**: HTML pages (`.html`, `.htm`), files named `_redirects` or
+  `_headers`, and the MANIFEST file. Patterns that match nothing else print a
+  warning (`Sitefile:9 FINGERPRINT: no files match /assets/**`).
+- **Names**: `name.<hash>.ext`, with the hash before the last extension
+  (`app.min.js` → `app.min.<hash>.js`), or after the name when there is none
+  (`LICENSE` → `LICENSE.<hash>`, `.env` → `.env.<hash>`). The hash is the first
+  **10** lowercase hex digits of the SHA-256 of the file's final content, so the
+  same content always gets the same name, in both implementations.
+- **CSS first**: a matching CSS file has its own references to other matching
+  files rewritten *before* it is hashed, so its name changes when an image or
+  font it uses changes. Files are therefore hashed in dependency order; a cycle
+  of such references (`a.css` imports `b.css`, which imports `a.css`) is
+  `E_VALIDATION` naming the cycle, since no name could include the hash of the
+  others. Other files are hashed as they are (JavaScript is not scanned).
+- **References**: every `.html`, `.htm` and `.css` file of the tree (renamed or
+  not, valid UTF-8) has each reference to a renamed file rewritten. The
+  scanner (`src/links.ts`, ported as `rust/src/links.rs`, identical results;
+  a differential fixture checks it) finds:
+  - in HTML: `href` (every element but `<base>`), `src`, `srcset` and
+    `imagesrcset` (each candidate URL), `poster`, `xlink:href` and `data` on
+    `<object>`; the CSS of `<style>` elements and `style` attributes. Comments,
+    `<!…>`/`<?…>`, end tags and the contents of `<script>`, `<textarea>`,
+    `<title>` and `<xmp>` are skipped. Attribute values have `&amp;` `&lt;`
+    `&gt;` `&quot;` `&apos;` and numeric character references decoded (others
+    stay as written) and are trimmed of ASCII whitespace. `<base href>` is not
+    honoured.
+  - in CSS: `url(…)` (quoted or not) and the string after `@import`; comments
+    and other strings are skipped, CSS escapes are decoded.
+  - Ignored: empty URLs, `#fragment`s and `?query`s of the same document,
+    `http(s):` and `//host` URLs, and every other scheme (`mailto:`, `data:`,
+    `tel:`, `javascript:`).
+  - A URL resolves against the file that contains it (percent-decoded, NFC,
+    `.`/`..` collapsed); an absolute path (`/img/a.png`) is a URL path of the
+    exported site, so it resolves under the **EXPORT path** (`EXPORT /www`:
+    `/www/img/a.png`), whatever the stage, and `..` never climbs above it
+    (as in a browser). A URL ending in `/` names a directory and is never
+    rewritten. Matching is exact: `IMG/LOGO.PNG` does not name `/img/logo.png`.
+  - **Rewriting** inserts `.<hash>` into the name *as written*, before its
+    extension's dot, and keeps everything else (directories, `?query`,
+    `#fragment`, quotes, escapes, `&#…;` references, percent-encoding):
+    `href="css/site.css?v=1"` → `href="css/site.3f2a9c1b0d.css?v=1"`,
+    `srcset="img/logo%402x.png 2x"` → `img/logo%402x.<hash>.png 2x`. A name
+    whose extension's dot is percent-encoded (`a%2Ecss`) becomes a relative
+    URL to the new file instead.
+- **Moves and conflicts**: each renamed file leaves its old path and keeps its
+  mode; renamed and rewritten files get the origin `Sitefile:<line> FINGERPRINT`.
+  A new name that already holds different content is `E_CONFLICT` unless
+  `--overwrite` (identical content is fine).
+- **`MANIFEST <dest>`** (a file path) writes a JSON object from each old path
+  to its new path, sorted by path (UTF-8 bytes), two-space indented, with a
+  final newline (`{}` when nothing was renamed), under the same conflict rules:
+
+  ```json
+  {
+    "/css/site.css": "/css/site.3f2a9c1b0d.css"
+  }
+  ```
+
+  It is the hook for later steps that need the names (and for subresource
+  integrity, issue #105).
+- **Site files**: a `HEADER` pattern or a `REDIRECT` target that is exactly the
+  URL of a file renamed in the exported stage (or the stages it is built
+  `FROM`) is written to `/_headers` / `/_redirects` with the new URL
+  (`HEADER /css/site.css Cache-Control: …` → `/css/site.<hash>.css`); patterns
+  with wildcards are left as written, and a file renamed twice gets its last
+  name. A `/_redirects` or `/_headers` COPY'd into the tree is not rewritten.
+  A SITEMAP lists only HTML pages, which are never renamed, so it stays valid
+  wherever it runs.
+- **Elsewhere**: `graph` labels the operation `FINGERPRINT /assets/** …` (it
+  reads the stage's tree, so it has no input edges); `why` on a renamed file
+  shows the history of its old path, then `FINGERPRINT …  wrote <new path>`
+  from `<old path> (renamed)`; a page whose references were rewritten shows
+  `overwrote` from `references to renamed files`. In watch mode an unchanged
+  FINGERPRINT step is reused only when the whole tree before it is unchanged
+  (like SITEMAP), and its warnings are printed again. `--target` stops before
+  a later stage's FINGERPRINT like any other operation.
+
+### Link checking: CHECKLINKS (see `examples/blog/`)
+`CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
+files of the stage's tree **at its place in the stage** (like SITEMAP and
+FINGERPRINT; put it last, or after a FINGERPRINT to check the rewritten
+names) and fails the build if one points at nothing. It is an instruction,
+not a `build`/`validate` flag, so the check is part of the Sitefile (the same
+in `build`, `serve --watch` and CI) and can be placed per stage; `validate`
+only plans and never sees the files.
+
+- **What is checked**: the references the FINGERPRINT scanner finds (see
+  Fingerprinting: `href`, `src`, `srcset`, `poster`, … in HTML, `<style>` and
+  `style=` CSS, `url()` and `@import` in CSS) in every `.html`, `.htm` and
+  `.css` file (valid UTF-8), files in path order (UTF-8 bytes) and references
+  in file order. Fragments, queries of the same page, `mailto:`, `data:` and
+  other non-http schemes are skipped; `#fragment` targets are not checked.
+- **Found** means served the way `sitefile serve` and static hosts serve it:
+  the file itself, `<path>.html` (clean URLs: `/about` finds `/about.html`), or
+  `<path>/index.html`; a URL ending in `/` needs its `index.html`. Absolute
+  paths resolve under the EXPORT path, as for FINGERPRINT. A link a `REDIRECT`
+  of the Sitefile covers (its source exactly, or a `/*` prefix: `/blog/*`) is
+  not broken, wherever the REDIRECT line is.
+- **Broken links** fail the build with `E_BROKEN_LINK`, listing up to 20 (then
+  `… and N more`) as `<file>:<line>: <url> (<reason>)`:
+
+  ```
+  error[E_BROKEN_LINK]: Sitefile:12:1: CHECKLINKS: 2 broken links:
+    /index.html:4: css/site.css (not found: /css/site.css)
+    /docs/index.html:2: guide/ (not found: /docs/guide/)
+  ```
+
+  `<file>` is the tree path, `<line>` the line of the reference, `<url>` the
+  URL as written (character references and escapes decoded).
+- **`--warn`** prints one warning per broken link instead
+  (`warning: Sitefile:12 CHECKLINKS: broken link /index.html:4: css/site.css (not found: /css/site.css)`)
+  and the build goes on.
+- **`--external`** also requests every `http(s)://` and `//host` link
+  (`https:` is assumed), each URL once, in order of first use, one at a time,
+  through the same client and **network policy** as a remote IMPORT: https
+  only unless `--allow-http`, public addresses only unless
+  `--allow-private-network`, every redirect hop checked, the fetch timeout.
+  A link is broken when the request fails (`could not connect`, `no answer
+  within 30000 ms`, `too many or invalid redirects`) or answers 400 or more
+  (`HTTP 404`); a URL the policy refuses is reported as broken with the flag
+  that would allow it (`plain http is checked only with --allow-http`). The
+  response body is not read. Without `--external` nothing is requested, so a
+  build stays offline and reproducible.
+- **Elsewhere**: the step writes nothing (`why` never lists it); `graph`
+  labels it `CHECKLINKS [--warn] [--external]`. In watch mode an unchanged step
+  (the same tree before it) is not run again (no requests), and its warnings
+  are printed again.
 
 ### Lint rules (`sitefile validate`)
 Like `docker build --check`, `validate` (and the language server) warns about likely mistakes in a Sitefile that is

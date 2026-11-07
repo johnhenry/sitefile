@@ -1,0 +1,6 @@
+# A TOOL over a directory: one run per file, '*' keeps each name, '*.txt'
+# replaces the extension; --exclude leaves the Markdown out.
+TOOL cp
+TRANSFORM --exclude=*.md ./src/ WITH cp TO /copy/* ARGS {input} {output}
+TRANSFORM --include=css/** ./src WITH cp TO /txt/*.txt ARGS {input} {output}
+EXPORT /

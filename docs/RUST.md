@@ -50,6 +50,7 @@ to find in the other:
 | `resources::*` | `resources/*` |
 | `export::{exporter, archive_writers, wbn, oci, attest, formats}`, `store`, `refs`, `server`, `servers` | `exporter.ts`, `archive-writers.ts`, `wbn.ts`, `oci.ts`, `attest.ts`, `export-formats.ts`, `store.ts`, `ref.ts`, `server.ts`, `servers.ts` |
 | `site` (SITEMAP, FEED, `_redirects`/`_headers` writers); the rules section of `server` | `site.ts`; `serve-rules.ts` |
+| `links` (the HTML/CSS reference scanner), `fingerprint` (FINGERPRINT), `checklinks` (CHECKLINKS) | `links.ts`, `fingerprint.ts`, `checklinks.ts` |
 | `plugins::{host, wasm, exec, cache}`, `registry`, `registry_cache`, `base_image` | `plugins/*`, `registry*.ts` (`registry-cache.ts`), `base-image.ts` |
 | `executor`, `cli` | `executor.ts`, `cli.ts`, `cli/*` |
 | `explain` (`sitefile graph`, `sitefile why`) | `explain.ts` |
