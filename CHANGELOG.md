@@ -34,6 +34,24 @@
   conformance (both CLIs). docs/PLUGINS.md, "Example: rendering a fileable
   tree". Added in 0b5c4b3 (#147).
 
+- **`EXPORT … AS wbn` bakes HEADER and exact REDIRECT rules into the bundle's
+  responses** (johnhenry/sitefile#144, #150). Each response gets the headers of the
+  `/_headers` blocks matching its URL, with `sitefile serve`'s matching
+  (`serve-rules.ts`; a directory URL like `<base>docs/` matches with its
+  slash and gets its own response when its headers differ). Exact-path
+  `/_redirects` rules with a 3xx status become responses with that status, a
+  `location` and an empty body, in `serve`'s order (a forced `301!` replaces
+  the file; other rules apply only where `serve` would find nothing). Splats,
+  `200` rewrites and `404` rules stay in `/_redirects`, which, like
+  `/_headers`, is still in the bundle. Bundles of trees without those files
+  are byte-identical to before. packfile's `createWebBundleRouter()` now
+  answers with the HEADER values and redirects (`test/packfile-interop.test.ts`);
+  conformance cases `ok-wbn-rules` and `ok-wbn-rules-files` compare both
+  implementations' bytes. The TypeScript `headersFor` no longer drops a
+  header named `__proto__` (the Rust port never did); this also
+  changes the TypeScript `sitefile serve`, which now sends such a header as
+  the Rust binary does. Added in 429ab24 (#150).
+
 ## 0.0.0 — first npm release (2026-11-06)
 
 `@johnhenry/sitefile` is a new package: Sitefile was never published to npm

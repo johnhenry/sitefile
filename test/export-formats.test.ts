@@ -413,6 +413,114 @@ test('wbn: many responses use a multi-byte array head and still have correct off
   assert.equal(((r.v as Cbor[])[1] as Buffer).toString(), 'file 299');
 });
 
+/** A site with `/_headers` and `/_redirects` (the same tree as the Rust writer's `rules_tree`). */
+function rulesSite(): Tree {
+  return mk({
+    '/index.html': 'home',
+    '/about/index.html': 'about',
+    '/css/site.css': 'p{}',
+    '/old.html': 'old page',
+    '/kept.txt': 'kept',
+    '/_headers': [
+      '/*',
+      '  X-Frame-Options: DENY',
+      '/*.css',
+      '  Cache-Control: public, max-age=3600',
+      '  Content-Type: text/x-custom',
+      '/about/',
+      '  X-Dir: yes',
+      '/*',
+      '  X-Frame-Options: SAMEORIGIN',
+      '/kept.txt',
+      '  __proto__: inert',
+      '',
+    ].join('\n'),
+    '/_redirects': [
+      '/gone /new.html 301',
+      '/old.html /new.html 302!',
+      '/kept.txt /nope 301',
+      '/temp https://other.example/x 307',
+      '/gone /second 302',
+      '/splat/* /x/:splat 301',
+      '/shadow/* /y 302!',
+      '/shadow/exact /z 301',
+      '/rewrite /index.html 200',
+      '/about /about-us 308',
+      '/also-old /new.html 302',
+      '/ünï /u 301',
+      '',
+    ].join('\n'),
+  });
+}
+
+function bundleExchanges(bytes: Uint8Array, base: string) {
+  const w = decodeBundle(bytes);
+  const out = new Map<string, { status: number; headers: Array<[string, string]>; body: string; offset: number; names?: string[] }>();
+  for (const [url, loc] of w.index) {
+    const [offset] = loc as [number, number];
+    const [headerBytes, payload] = cborItem(w.respBytes, offset).v as [Buffer, Buffer];
+    const map = cborItem(headerBytes, 0).v as Map<string, Cbor>;
+    const headers = [...map].map(([k, v]): [string, string] => [k, (v as Buffer).toString()]);
+    const status = Number(headers.find(([k]) => k === ':status')![1]);
+    const e = { status, headers: headers.filter(([k]) => k !== ':status'), body: payload.toString(), offset };
+    // The names in encoded order (not enumerable, so deepEqual ignores it).
+    Object.defineProperty(e, 'names', { value: headers.map(([k]) => k), enumerable: false });
+    out.set(url.slice(base.length), e);
+  }
+  return { w, out };
+}
+
+test('wbn: /_headers become response headers and exact 3xx /_redirects become redirect responses', () => {
+  const base = 'https://example.com/';
+  const { w, out } = bundleExchanges(writeWebBundle(rulesSite(), base), base);
+  const html = 'text/html; charset=utf-8';
+  const xfo: [string, string] = ['x-frame-options', 'DENY, SAMEORIGIN'];
+  assert.deepEqual([...out.keys()].sort(), [
+    '', '_headers', '_redirects', 'about/', 'about/index.html', 'also-old', 'css/site.css', 'gone', 'index.html', 'kept.txt', 'old.html', 'temp', '%C3%BCn%C3%AF',
+  ].sort());
+  // Headers: every matching block, joined in order; a Content-Type there replaces the inferred one.
+  assert.deepEqual(out.get('index.html'), { status: 200, headers: [['content-type', html], xfo], body: 'home', offset: out.get('index.html')!.offset });
+  assert.deepEqual(out.get('css/site.css')!.headers, [['content-type', 'text/x-custom'], ['cache-control', 'public, max-age=3600'], xfo]);
+  assert.deepEqual(out.get('kept.txt')!.headers, [['__proto__', 'inert'], ['content-type', 'text/plain; charset=utf-8'], xfo]);
+  assert.equal(out.get('kept.txt')!.status, 200, 'a non-forced rule does not shadow a file');
+  // The directory URL matches /about/ (with its slash); /about/index.html does not, so they differ.
+  assert.deepEqual(out.get('about/')!.headers, [['x-dir', 'yes'], ['content-type', html], xfo]);
+  assert.deepEqual(out.get('about/index.html')!.headers, [['content-type', html], xfo]);
+  assert.notEqual(out.get('about/')!.offset, out.get('about/index.html')!.offset);
+  assert.equal(out.get('')!.offset, out.get('index.html')!.offset, 'same headers: one shared response');
+  // The rule files stay in the bundle as files.
+  assert.equal(out.get('_redirects')!.status, 200);
+  assert.match(out.get('_headers')!.body, /X-Dir/);
+  // Redirects: status and location only, empty body; the first matching rule wins; forced replaces a file.
+  assert.deepEqual(out.get('gone'), { status: 301, headers: [['location', '/new.html']], body: '', offset: out.get('gone')!.offset });
+  assert.deepEqual(out.get('old.html')!.headers, [['location', '/new.html']]);
+  assert.equal(out.get('old.html')!.status, 302);
+  assert.equal(out.get('also-old')!.offset, out.get('old.html')!.offset, 'identical redirects share one response');
+  assert.deepEqual([out.get('temp')!.status, out.get('temp')!.headers], [307, [['location', 'https://other.example/x']]]);
+  assert.equal(out.get('%C3%BCn%C3%AF')!.status, 301);
+  // Not baked in: splats, a path a forced splat matches first, rewrites, a directory (serve answers 301 to /about/).
+  for (const p of ['splat/a', 'shadow/exact', 'rewrite', 'about']) assert.equal(out.has(p), false, p);
+  // Every response is referenced: 'old page' is replaced by its forced redirect.
+  assert.equal(w.responses.length, new Set([...out.values()].map((e) => e.offset)).size);
+  assert.ok(![...out.values()].some((e) => e.body === 'old page'));
+});
+
+test('wbn: header names are written in CBOR map order and the output does not depend on rule order in the tree', () => {
+  const base = 'https://example.com/';
+  const bytes = writeWebBundle(rulesSite(), base);
+  const { out } = bundleExchanges(bytes, base);
+  for (const [url, e] of out) {
+    const keys = e.names!.map((k) => enc(k));
+    // Deterministic CBOR: shorter keys first, then bytewise.
+    const sorted = [...keys].sort((a, b) => a.length - b.length || Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    assert.deepEqual(keys, sorted, url);
+  }
+  assert.deepEqual(Buffer.from(bytes), Buffer.from(writeWebBundle(Tree.fromFiles([...rulesSite().entries()].reverse()), base)));
+  // A tree without rule files is unchanged: one response per file, only :status and content-type.
+  const plain = bundleExchanges(writeWebBundle(mk({ '/index.html': 'x', '/a.css': 'a' }), base), base).out;
+  assert.deepEqual(plain.get('a.css')!.headers, [['content-type', 'text/css; charset=utf-8']]);
+});
+
 test('wbn: base URL validation', () => {
   for (const bad of [undefined, '', 'example.com/', 'http://example.com/', 'https://example.com', 'https://u:p@example.com/', 'https://example.com/?q=1', 'https://example.com/#x']) {
     assert.throws(() => writeWebBundle(Tree.empty, bad), isCode('E_VALIDATION'), String(bad));
