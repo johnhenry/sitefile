@@ -101,11 +101,13 @@ pub enum ImportKind {
     Wbn,
     /// A file-based html fragment (`IMPORT header FROM ./header.html AS html`).
     Html,
+    /// `AS sitefile`: another Sitefile, whose stages this one reads as `<import>+<stage>`.
+    Sitefile,
 }
 
 impl ImportKind {
     /// Every kind, in the order docs/LANGUAGE.md lists them.
-    pub const ALL: [ImportKind; 9] = [
+    pub const ALL: [ImportKind; 10] = [
         ImportKind::File,
         ImportKind::Text,
         ImportKind::Json,
@@ -115,6 +117,7 @@ impl ImportKind {
         ImportKind::Wbn,
         ImportKind::Html,
         ImportKind::Tree,
+        ImportKind::Sitefile,
     ];
     /// Case-insensitive (ASCII).
     pub fn parse(s: &str) -> Option<ImportKind> {
@@ -132,6 +135,7 @@ impl ImportKind {
             ImportKind::Csv => "csv",
             ImportKind::Wbn => "wbn",
             ImportKind::Html => "html",
+            ImportKind::Sitefile => "sitefile",
         }
     }
 }
@@ -241,6 +245,14 @@ pub struct ImportSecret {
     pub span: SourceSpan,
 }
 
+/// `ARG NAME=value` on an `IMPORT … AS sitefile`: sets an ARG of the imported Sitefile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportArg {
+    pub name: String,
+    pub value: Operand,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SortBy {
     pub key: String,
@@ -281,6 +293,8 @@ pub enum Instruction {
         sort: Option<SortBy>,
         /// `SECRET <id> AS HEADER <Name>` / `SECRET <id> AS BEARER` (build secrets).
         secrets: Vec<ImportSecret>,
+        /// `ARG NAME=value` (repeatable): build args of a Sitefile imported `AS sitefile`.
+        args: Vec<ImportArg>,
     },
     /// `exclude`: `--exclude` patterns (`.sitefileignore` syntax, relative to the source directory);
     /// `chmod`: `--chmod=644|755`; `parents`: `--parents` (keep the source's path under `dest`).
@@ -422,6 +436,12 @@ pub fn literal_text(op: &Operand) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// `theme+assets` -> `("theme", "assets")`: a stage of a Sitefile imported AS sitefile.
+pub fn imported_stage(name: &str) -> Option<(&str, &str)> {
+    let (a, b) = name.split_once('+')?;
+    (is_ident(a) && is_ident(b)).then_some((a, b))
 }
 
 pub fn is_ident(s: &str) -> bool {

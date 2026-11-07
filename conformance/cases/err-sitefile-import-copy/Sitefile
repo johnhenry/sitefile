@@ -1,0 +1,5 @@
+# A Sitefile import is not a tree: read one of its stages with --from.
+IMPORT theme FROM ./theme AS sitefile
+FROM scratch
+COPY theme: /
+EXPORT /

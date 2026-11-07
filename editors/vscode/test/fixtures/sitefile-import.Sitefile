@@ -1,0 +1,13 @@
+# IMPORT … AS sitefile (issue #97): stages of another Sitefile, named <import>+<stage>.
+ARG ACCENT = "rebeccapurple"
+# Like ARG, an IMPORT … AS sitefile may come before the first stage.
+IMPORT theme FROM ./theme AS sitefile ARG ACCENT=${ACCENT}
+IMPORT remote FROM git+https://example.com/theme.git#v1:theme AS sitefile ARG ACCENT="teal" ARG N=2 SECRET tok AS BEARER
+
+STAGE site FROM theme+assets
+IMPORT pages FROM ./pages AS markdown
+RENDER --escape=html --from=theme+layout /page.html TO /${page.slug}.html FOR page IN pages
+COPY --from=remote+assets / /remote/
+
+FROM site
+EXPORT /

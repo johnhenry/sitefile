@@ -2,6 +2,7 @@ import { INTEGRITY_RE } from '../digest.js';
 import type { SourceSpan } from '../errors.js';
 import {
   IDENT_RE,
+  IMPORTED_STAGE_RE,
   isInline,
   type FromBase,
   type InlineBody,
@@ -13,6 +14,7 @@ import {
   parseOciCompression,
   REDIRECT_STATUSES,
   type RedirectStatus,
+  type ImportArg,
   type ImportKind,
   type ImportSecret,
   type Instruction,
@@ -24,7 +26,7 @@ import { isIgnorePattern } from '../resources/ignore.js';
 import { Cursor, logicalLines } from './scanner.js';
 
 const VALUE_TYPES: readonly string[] = ['string', 'number', 'boolean'];
-const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html'];
+const IMPORT_KINDS: readonly string[] = ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'];
 const NOT_YET = new Set(['REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC']);
 
 /** Parse Sitefile source into instructions (syntax only; see validate.ts for semantics). */
@@ -162,13 +164,14 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
   let integrity: string | undefined;
   let sort: { key: string; descending: boolean; span: SourceSpan } | undefined;
   const secrets: ImportSecret[] = [];
+  const args: ImportArg[] = [];
   while (!c.atEnd()) {
     const at = c.span;
     if (c.keyword('AS')) {
       if (as !== undefined) throw c.error('E_SYNTAX', 'AS given twice', at);
       const kindAt = c.span;
       const k = c.ident('import kind').toLowerCase();
-      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, yaml, csv, markdown, wbn, html or tree)`, kindAt);
+      if (!IMPORT_KINDS.includes(k)) throw c.error('E_SYNTAX', `unknown import kind '${k}' (expected file, text, json, yaml, csv, markdown, wbn, html, tree or sitefile)`, kindAt);
       as = k as ImportKind;
     } else if (c.keyword('INTEGRITY')) {
       if (integrity !== undefined) throw c.error('E_SYNTAX', 'INTEGRITY given twice', at);
@@ -189,8 +192,14 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
       const prior = secrets.find((p) => p.header.toLowerCase() === s.header.toLowerCase());
       if (prior) throw c.error('E_SYNTAX', `header '${s.header}' is set by two SECRET clauses`, at);
       secrets.push(s);
+    } else if (c.keyword('ARG')) {
+      // `ARG NAME=value`: a build arg of the Sitefile imported AS sitefile.
+      const argName = c.ident('ARG name', '=');
+      if (!c.eat('=')) throw c.error('E_SYNTAX', `expected = after ARG ${argName} (ARG ${argName}=<value>)`);
+      if (args.some((a) => a.name === argName)) throw c.error('E_SYNTAX', `ARG ${argName} given twice`, at);
+      args.push({ name: argName, value: c.operand('ARG value'), span: at });
     } else {
-      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY or SECRET)`, at);
+      throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected AS, INTEGRITY, SORT BY, SECRET or ARG)`, at);
     }
   }
   return {
@@ -202,6 +211,7 @@ function parseImport(c: Cursor, span: SourceSpan): Instruction {
     ...(integrity !== undefined && { integrity }),
     ...(sort !== undefined && { sort }),
     ...(secrets.length > 0 && { secrets }),
+    ...(args.length > 0 && { args }),
   };
 }
 
@@ -259,7 +269,8 @@ function parseFlags(c: Cursor, allowed: Record<string, 'bare' | 'value' | 'repea
 function stageRef(c: Cursor, flags: Map<string, Flag>): { from?: StageRef } {
   const f = flags.get('from');
   if (!f) return {};
-  if (!IDENT_RE.test(f.value)) throw c.error('E_SYNTAX', `--from needs a stage name, got '${f.value}'`, f.span);
+  // A stage of this Sitefile, or `<import>+<stage>` for a stage of a Sitefile imported AS sitefile.
+  if (!IDENT_RE.test(f.value) && !IMPORTED_STAGE_RE.test(f.value)) throw c.error('E_SYNTAX', `--from needs a stage name, got '${f.value}'`, f.span);
   return { from: { name: f.value, span: f.span } };
 }
 

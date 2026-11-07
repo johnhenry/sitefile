@@ -1,0 +1,9 @@
+ARG WHO
+STAGE css
+COPY <<C /base.css
+body { margin: 0 }
+C
+RENDER <<T TO /who.txt
+built for ${WHO}
+T
+EXPORT /

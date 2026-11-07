@@ -1,0 +1,18 @@
+{
+  "network": true,
+  "steps": [
+    [
+      "outdated",
+      "${CTX}",
+      "--allow-private-network"
+    ],
+    [
+      "outdated",
+      "${CTX}",
+      "--allow-private-network",
+      "--json"
+    ]
+  ],
+  "stdout": true,
+  "lock": true
+}

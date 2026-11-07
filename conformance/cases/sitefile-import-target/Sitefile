@@ -1,0 +1,6 @@
+# --target builds only the imported stages the stages up to the target read: other+broken is never built.
+IMPORT theme FROM ./theme AS sitefile
+IMPORT other FROM ./other AS sitefile
+STAGE a FROM theme+assets
+STAGE b FROM other+broken
+EXPORT /

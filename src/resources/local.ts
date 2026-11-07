@@ -199,6 +199,11 @@ export class LocalContext {
     return LocalContext.kindOf(st, rel, span);
   }
 
+  /** The real path of a context-relative path, with the sandbox checks of every read (an imported Sitefile's context). */
+  async realPath(rel: string, span?: SourceSpan): Promise<string> {
+    return (await this.resolve(rel, span)).real;
+  }
+
   async readFile(rel: string, span?: SourceSpan): Promise<FileResource> {
     const { real, st } = await this.resolve(rel, span);
     if (LocalContext.kindOf(st, rel, span) !== 'file') {

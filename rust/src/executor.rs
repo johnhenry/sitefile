@@ -16,10 +16,10 @@ use crate::export::archive_writers::{source_date_epoch, WriterOptions};
 use crate::export::exporter::{export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions};
 use crate::export::formats::{encode_tree, is_archive_format, EncodeOptions};
 use crate::export::oci::{build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions};
-use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, OciCompression, Operand, Program, TemplatePart};
+use crate::language::ast::{ExportFormat, FEED_ITEM, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart};
 use crate::language::validate::parse_program;
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
-use crate::planner::{plan, target_plan, FragmentSpec, ImportLocation, ImportSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
+use crate::planner::{imported_stage_refs, plan, plan_with, target_plan, ImportLocation, FragmentSpec, ImportSpec, ImportedStageRef, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase};
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{resolve_tool, run_tool, ResolvedTool, ToolCall, ToolInput, ToolPolicy, DEFAULT_TOOL_POLICY};
 use crate::plugins::host::{run_bounded, transform_jobs, PluginHost, PluginInput, PluginPolicy, PluginRequest, PluginResult, DEFAULT_PLUGIN_POLICY};
@@ -207,6 +207,8 @@ pub struct BuildResult {
     pub pins: Option<Pins>,
     /// The `FROM image` stage bases this build read, in stage order.
     pub images: Vec<FromImageUse>,
+    /// The Sitefiles imported AS sitefile, by import name (each with its own imports, plan and, with `record_steps`, steps).
+    pub imported: Vec<(String, ImportedSitefile)>,
     /// What each FINGERPRINT renamed (old path, new path), by its line.
     pub renames: Vec<(u32, Vec<(String, String)>)>,
 }
@@ -220,6 +222,8 @@ pub struct FromImageUse {
     /// The FROM line.
     pub line: u32,
     pub local: bool,
+    /// Set for a stage of an imported Sitefile: the import's qualified name (`theme`).
+    pub import: Option<String>,
 }
 
 pub struct Loaded {
@@ -525,6 +529,16 @@ fn build_unredacted(options: &BuildOptions) -> Result<BuildResult> {
 }
 
 fn build_once(options: &BuildOptions) -> Result<BuildResult> {
+    // Git imports AS sitefile are checked out into temporary directories, removed when the build ends.
+    let temp_dirs: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    let r = build_with(options, &temp_dirs);
+    for d in temp_dirs.into_inner().unwrap_or_default() {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    r
+}
+
+fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result<BuildResult> {
     let prof = options.profiler.as_deref();
     let parse_span = begin(prof, || "parse".into(), "build", Vec::new);
     let Loaded { program, sitefile_path, label, .. } = load_program(&options.context_dir, options.sitefile.as_deref(), options.label.as_deref())?;
@@ -562,11 +576,14 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let context_real = std::fs::canonicalize(&options.context_dir)
         .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
     let mut ignore = vec![".git".to_string()];
+    // The same paths, absolute: an imported Sitefile's context inside this one skips them too.
+    let mut skip: Vec<PathBuf> = Vec::new();
     if let Some(out) = &options.out_dir {
         let out_real = realpath_loose(&resolve_path(Path::new(out)));
         let rel = relative_path(&context_real, &out_real);
         if !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/') {
             ignore.push(rel);
+            skip.push(out_real.clone());
             // Also skip temp/old siblings an interrupted export may have left behind.
             if let (Some(parent), Some(base)) = (out_real.parent(), out_real.file_name()) {
                 let base = base.to_string_lossy().into_owned();
@@ -575,6 +592,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
                         let name = e.file_name().to_string_lossy().into_owned();
                         if is_exporter_temp_name(&name, &base) {
                             ignore.push(relative_path(&context_real, &parent.join(&name)));
+                            skip.push(parent.join(&name));
                         }
                     }
                 }
@@ -584,11 +602,18 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     let vendor_dir = find_vendor_dir(&context_real, options.vendor_dir.as_deref())?;
     if let Some(d) = &vendor_dir {
         ignore.push(d.clone());
+        let mut abs = context_real.clone();
+        for seg in d.split('/') {
+            abs.push(seg);
+        }
+        skip.push(abs);
     }
     for w in &options.also_writes {
-        let rel = relative_path(&context_real, &realpath_loose(&resolve_path(Path::new(w))));
+        let real = realpath_loose(&resolve_path(Path::new(w)));
+        let rel = relative_path(&context_real, &real);
         if !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/') {
             ignore.push(rel);
+            skip.push(real);
         }
     }
     let local = LocalContext::open(
@@ -605,7 +630,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
     };
     // BASE: the image to build on (resolved after the files, below).
     let base_ref = base_ref_of(options, &p);
-    let pins = if options.strict_pins { Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?) } else { None };
+    let mut pins = if options.strict_pins { Some(check_pins(&p, lock.as_ref(), base_ref.as_deref())?) } else { None };
     let mut lock = lock;
     // A --target build skips later stages; their FROM image lockfile entries are kept all the same.
     for st in &all_stages[p.stages.len()..] {
@@ -645,7 +670,8 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             })
         })
         .collect();
-    let indexed: Vec<(usize, &ImportSpec)> = p.imports.iter().enumerate().collect();
+    // Sitefile imports (AS sitefile) load after the others, one after the other, in Sitefile order.
+    let indexed: Vec<(usize, &ImportSpec)> = p.imports.iter().enumerate().filter(|(_, s)| s.as_kind != Some(ImportKind::Sitefile)).collect();
     let resolved = map_limit(&indexed, options.concurrency.max(1), |(i, spec)| {
         if let Some(s) = &import_spans[*i] {
             s.start();
@@ -656,28 +682,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         }
         Ok(r)
     })?;
-    let mut resources: HashMap<String, Resource> = HashMap::new();
-    let mut resource_list: Vec<(String, Resource)> = Vec::new();
-    // Incremental rebuilds: what each import is (its spec and the digest of what it read).
-    let mut resource_keys: HashMap<String, String> = HashMap::new();
-    for (spec, (res, key)) in p.imports.iter().zip(resolved) {
-        let res = sorted(spec, res)?;
-        resources.insert(spec.name.clone(), res.clone());
-        resource_list.push((spec.name.clone(), res));
-        resource_keys.insert(spec.name.clone(), key);
-    }
-    let memo = options.memo.as_deref();
-    // The Sitefile label and its ARG/LET values (sorted: Env is a HashMap).
-    let env_key = match memo {
-        Some(_) => {
-            let mut vars: Vec<_> = p.vars.iter().collect();
-            vars.sort_by(|a, b| a.0.cmp(b.0));
-            // html LETs are part of it: they are not values, but a template that uses one renders their text.
-            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
-            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
-        }
-        None => String::new(),
-    };
+    let mut by_name: HashMap<String, (Resource, String)> = indexed.iter().map(|(_, s)| s.name.clone()).zip(resolved).collect();
 
     // FROM image stage bases: resolved when their stage starts (registry pull or local store).
     let image_store: std::cell::OnceCell<Store> = std::cell::OnceCell::new();
@@ -686,7 +691,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         let w = warn.clone();
         move |m: &str| w(m)
     };
-    let from_image = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan| -> Result<FromImage> {
+    let from_image_in = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan, unit: Option<&str>| -> Result<FromImage> {
         let store = match image_store.get() {
             Some(s) => s,
             None => {
@@ -716,8 +721,71 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             digest: r.digest.clone(),
             line: span.line,
             local: is_local,
+            import: unit.map(str::to_string),
         });
         Ok(r)
+    };
+    let from_image = |reference: &str, at: Option<&str>, is_local: bool, lead: &str, span: &SourceSpan| from_image_in(reference, at, is_local, lead, span, None);
+
+    let units_env = UnitsEnv {
+        remote: env.remote,
+        memo: options.memo.as_deref(),
+        concurrency: options.concurrency,
+        allow_hardlinks: options.allow_hardlinks,
+        strict_pins: options.strict_pins,
+        skip,
+        temp_dirs,
+        record_steps: options.record_steps,
+        pins: Mutex::new(Vec::new()),
+        plugin_policy: options.plugin_policy,
+        tool_policy: options.tool_policy,
+        from_image: &from_image_in,
+    };
+    let root_id = if options.sitefile.is_none() { context_real.to_string_lossy().into_owned() } else { realpath_loose(&sitefile_path).to_string_lossy().into_owned() };
+    let root_chain = vec![(root_id, label.clone())];
+    let scope = root_scope(options, &label);
+    let root = Importer { name: None, label: &label, local: &local, scope: &scope, chain: &root_chain };
+    let full_refs = imported_stage_refs(&all_stages);
+    let mut resources: HashMap<String, Resource> = HashMap::new();
+    let mut resource_list: Vec<(String, Resource)> = Vec::new();
+    // Incremental rebuilds: what each import is (its spec and the digest of what it read).
+    let mut resource_keys: HashMap<String, String> = HashMap::new();
+    let mut units: Vec<(String, ImportedSitefile)> = Vec::new();
+    for (i, spec) in p.imports.iter().enumerate() {
+        let (res, key) = match by_name.remove(&spec.name) {
+            Some((res, key)) => (sorted(spec, res)?, key),
+            None => {
+                if let Some(s) = &import_spans[i] {
+                    s.start();
+                }
+                let unit = load_sitefile_import(spec, &root, &full_refs, &units_env)?;
+                if let Some(s) = &import_spans[i] {
+                    s.end(vec![("kind", json!("tree"))]);
+                }
+                let key = if options.memo.is_some() { memo_key(&["sitefile", &label, &format!("{spec:?}"), &unit.digest]) } else { String::new() };
+                let res = unit.resource();
+                units.push((spec.name.clone(), unit));
+                (res, key)
+            }
+        };
+        resources.insert(spec.name.clone(), res.clone());
+        resource_list.push((spec.name.clone(), res));
+        resource_keys.insert(spec.name.clone(), key);
+    }
+    if let Some(pins) = pins.as_mut() {
+        pins.imports.extend(units_env.pins.lock().map(|p| p.clone()).unwrap_or_default());
+    }
+    let memo = options.memo.as_deref();
+    // The Sitefile label and its ARG/LET values (sorted: Env is a HashMap).
+    let env_key = match memo {
+        Some(_) => {
+            let mut vars: Vec<_> = p.vars.iter().collect();
+            vars.sort_by(|a, b| a.0.cmp(b.0));
+            // html LETs are part of it: they are not values, but a template that uses one renders their text.
+            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
+            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
+        }
+        None => String::new(),
     };
 
     let plugin_warn = warn.clone();
@@ -759,6 +827,8 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
             register_plugin(spec, &local, &mut exec.plugins, &plugin_permission)?;
             s.end(Vec::new());
         }
+        // The stages of imported Sitefiles this build reads (`FROM theme+assets`, `--from=theme+assets`).
+        provide_imported_stages(&mut units, &imported_stage_refs(&p.stages), &mut exec.stages, &mut exec.stage_keys, &mut stage_renames, &units_env)?;
         let mut tree = Tree::empty();
         for (i, stage) in p.stages.iter().enumerate() {
             let name = stage.name.clone().unwrap_or_else(|| format!("#{}", i + 1));
@@ -853,6 +923,9 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         None => None,
     };
     base_span.end(Vec::new());
+    // Imported Sitefiles' own imports follow, by qualified name (`theme+data`), for the provenance.
+    let mut resource_list = resource_list;
+    nested_resources(&units, &mut resource_list);
 
     let lockfile_written = match lock.as_mut() {
         Some(l) if !options.frozen_lockfile => l.save()?,
@@ -873,6 +946,7 @@ fn build_once(options: &BuildOptions) -> Result<BuildResult> {
         pins,
         memo_stats: None,
         images,
+        imported: units,
         renames,
     })
 }
@@ -1073,6 +1147,7 @@ struct ImportEnv<'a> {
 
 /// What fetching a remote IMPORT needs: the network policy and the lockfile rules (and, for builds,
 /// the vendor directory with the context reader for its blobs).
+#[derive(Clone, Copy)]
 pub struct RemoteEnv<'a> {
     pub policy: &'a FetchPolicy,
     pub lock: &'a Mutex<Option<Lockfile>>,
@@ -1439,6 +1514,656 @@ fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
         return Err(SitefileError::at(E_TYPE, format!("IMPORT {}: SORT BY needs a list of objects with a '{}' field", spec.name, sort.key), &spec.span));
     }
     Ok(Resource::Value { format, value: Value::Array(sort_documents(items, &sort.key, sort.descending)), provenance })
+}
+
+// ---------------------------------------------------------------- Sitefile imports (IMPORT … AS sitefile)
+
+/// How deep Sitefile imports may nest (an imported Sitefile importing another counts one more level).
+pub const MAX_SITEFILE_IMPORT_DEPTH: usize = 8;
+
+/// Where a Sitefile lives, for the labels of the Sitefiles it imports: `<prefix><dir>/Sitefile`. Local
+/// Sitefiles have no prefix and `dir` relative to the working directory; a Git checkout has
+/// `git+https://host/repo.git#<commit>:` and the directory inside the repository.
+#[derive(Debug, Clone)]
+pub struct LabelScope {
+    pub prefix: String,
+    pub dir: String,
+}
+
+/// The label an imported Sitefile's messages and file origins use.
+pub fn sitefile_label(scope: &LabelScope) -> String {
+    format!("{}{}", scope.prefix, join_path(&scope.dir, "Sitefile"))
+}
+
+/// `path.posix.dirname`.
+fn posix_dirname(p: &str) -> String {
+    match p.rfind('/') {
+        Some(0) => "/".into(),
+        Some(i) => p[..i].to_string(),
+        None => ".".into(),
+    }
+}
+
+/// The label scope of the build's own Sitefile.
+fn root_scope(options: &BuildOptions, label: &str) -> LabelScope {
+    if options.sitefile.is_none() {
+        return LabelScope { prefix: String::new(), dir: posix_dirname(label) };
+    }
+    let rel = relative_path(&cwd(), &resolve_path(Path::new(&options.context_dir)));
+    LabelScope { prefix: String::new(), dir: if rel.is_empty() { ".".into() } else { rel } }
+}
+
+/// The ARG values an `IMPORT … AS sitefile` passes, checked against the imported Sitefile's ARGs.
+pub fn imported_args(spec: &ImportSpec, program: &Program) -> Result<BuildArgs> {
+    let declared: Vec<(&str, bool)> = program
+        .instructions
+        .iter()
+        .filter_map(|i| match i {
+            Instruction::Arg { name, default_value, .. } => Some((name.as_str(), default_value.is_some())),
+            _ => None,
+        })
+        .collect();
+    let mut args = BuildArgs::new();
+    for a in &spec.args {
+        if !declared.iter().any(|(n, _)| *n == a.name) {
+            return Err(SitefileError::at(E_UNDEFINED, format!("IMPORT {}: {} has no ARG {}", spec.name, program.file, a.name), &a.span));
+        }
+        args.set(a.name.clone(), a.value.clone());
+    }
+    for (name, has_default) in &declared {
+        if !has_default && args.get(name).is_none() {
+            return Err(SitefileError::at(
+                E_MISSING_ARG,
+                format!("IMPORT {}: ARG {name} of {} has no default; set it with ARG {name}=<value>", spec.name, program.file),
+                &spec.span,
+            ));
+        }
+    }
+    Ok(args)
+}
+
+/// Parse, check and plan an imported Sitefile: no PLUGIN or TOOL, the IMPORT's ARG clauses, and the
+/// stages `refs` (references from the importing Sitefile) must exist.
+pub fn plan_imported_sitefile(spec: &ImportSpec, source: &str, label: &str, refs: &[ImportedStageRef]) -> Result<Plan> {
+    let program = parse_program(source, label)?;
+    for ins in &program.instructions {
+        if let Instruction::Plugin { name, span, .. } | Instruction::Tool { name, span } = ins {
+            return Err(SitefileError::at(
+                E_UNSUPPORTED,
+                format!("{} {name}: a Sitefile imported AS sitefile cannot run plugins or tools", ins.keyword()),
+                span,
+            ));
+        }
+    }
+    let args = imported_args(spec, &program)?;
+    let import = spec.name.clone();
+    let p = plan_with(&program, &args, &|n| format!("IMPORT {import} ARG {n}"))?;
+    let names: Vec<&str> = p.stages.iter().filter_map(|s| s.name.as_deref()).collect();
+    for r in refs {
+        if r.import != spec.name || names.contains(&r.stage.as_str()) {
+            continue;
+        }
+        let which = if names.is_empty() { "it has no named stages".to_string() } else { format!("stages: {}", names.join(", ")) };
+        return Err(SitefileError::at(E_UNDEFINED, format!("{}: {label} has no stage '{}' ({which})", r.name, r.stage), &r.span));
+    }
+    Ok(p)
+}
+
+/// What an imported Sitefile's context is for `why`: a host directory, or a Git checkout's tree.
+#[derive(Debug, Clone)]
+pub enum UnitContext {
+    Host(PathBuf),
+    Tree(Tree),
+}
+
+/// A Sitefile imported AS sitefile: loaded, its imports resolved; its stages are built when first needed.
+pub struct ImportedSitefile {
+    /// The import's name as the build's own Sitefile sees it: `theme`, or `theme+inner` for one imported by `theme`.
+    pub name: String,
+    pub label: String,
+    /// Its whole plan (every stage).
+    pub plan: Plan,
+    /// The sha256 of its Sitefile (a local directory) or the digest of the checked-out tree (Git).
+    pub digest: String,
+    pub context: UnitContext,
+    /// Its imports by name, in IMPORT order (an `AS sitefile` one as its Sitefile).
+    pub resources: Vec<(String, Resource)>,
+    /// The Sitefiles it imports, in IMPORT order.
+    pub imported: Vec<(String, ImportedSitefile)>,
+    /// With `record_steps`: like [`BuildResult::steps`], for the stages built (a prefix of `plan.stages`).
+    pub steps: Option<Vec<Vec<Tree>>>,
+    /// What each of its FINGERPRINTs renamed (old path, new path), by its line.
+    pub renames: Vec<(u32, Vec<(String, String)>)>,
+    /// Each built named stage's FINGERPRINT renames, composed (inherited by `FROM <stage>`, also from the importer).
+    stage_renames: HashMap<String, BTreeMap<String, String>>,
+    local: LocalContext,
+    resource_map: HashMap<String, Resource>,
+    resource_keys: HashMap<String, String>,
+    env_key: String,
+    stage_trees: HashMap<String, Tree>,
+    stage_keys: HashMap<String, String>,
+    provenance: crate::resources::types::Provenance,
+    sitefile_bytes: Vec<u8>,
+    /// How many of its stages are built.
+    built: usize,
+}
+
+impl ImportedSitefile {
+    /// Whether a path of its context is a directory (`why` lists the file a directory COPY placed).
+    pub fn is_directory(&self, rel: &str) -> bool {
+        match &self.context {
+            UnitContext::Host(dir) => {
+                let mut p = dir.clone();
+                for seg in rel.split('/').filter(|s| !s.is_empty()) {
+                    p.push(seg);
+                }
+                p.is_dir()
+            }
+            UnitContext::Tree(t) => rel.is_empty() || t.is_directory(&format!("/{rel}")),
+        }
+    }
+
+    /// The resource the import stands for (provenance): its Sitefile, with the unit's digest.
+    fn resource(&self) -> Resource {
+        Resource::File {
+            bytes: self.sitefile_bytes.clone(),
+            mode: 0o644,
+            basename: "Sitefile".into(),
+            provenance: crate::resources::types::Provenance { digest: self.digest.clone(), ..self.provenance.clone() },
+        }
+    }
+}
+
+/// The resources of the Sitefiles a build imports, by qualified name (`theme+data`), depth first in IMPORT order.
+fn nested_resources(units: &[(String, ImportedSitefile)], out: &mut Vec<(String, Resource)>) {
+    for (_, unit) in units {
+        for (name, res) in &unit.resources {
+            out.push((format!("{}+{name}", unit.name), res.clone()));
+        }
+        nested_resources(&unit.imported, out);
+    }
+}
+
+/// What every Sitefile import of one build shares.
+struct UnitsEnv<'a> {
+    remote: RemoteEnv<'a>,
+    memo: Option<&'a Mutex<BuildMemo>>,
+    concurrency: usize,
+    allow_hardlinks: bool,
+    strict_pins: bool,
+    /// Real paths the build writes or skips (export, vendor, --profile): left out of an imported context inside the build context.
+    skip: Vec<PathBuf>,
+    /// Temporary checkouts of Git imports, removed when the build ends.
+    temp_dirs: &'a Mutex<Vec<PathBuf>>,
+    record_steps: bool,
+    /// Every remote input's pin under --strict-pins, by qualified import name.
+    pins: Mutex<Vec<(String, &'static str)>>,
+    plugin_policy: PluginPolicy,
+    tool_policy: ToolPolicy,
+    /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span, the imported Sitefile's qualified name).
+    from_image: &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan, Option<&str>) -> Result<FromImage>,
+}
+
+/// Who imports a Sitefile: the build's own Sitefile or another imported one.
+struct Importer<'a> {
+    name: Option<&'a str>,
+    label: &'a str,
+    local: &'a LocalContext,
+    scope: &'a LabelScope,
+    /// (identity, label) of the Sitefiles importing this one, outermost first (the importer last).
+    chain: &'a [(String, String)],
+}
+
+/// A new temporary directory (a Git import's checkout).
+fn import_temp_dir() -> Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+        let p = base.join(format!("sitefile-import-{}", crate::export::exporter::random_hex(6)));
+        match std::fs::create_dir(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(SitefileError::plain(E_EXPORT, format!("cannot write a Git checkout to a temporary directory: {e}"))),
+        }
+    }
+    Err(SitefileError::plain(E_EXPORT, "cannot write a Git checkout to a temporary directory: no unique name"))
+}
+
+/// Write a tree to a new temporary directory (a Git import's checkout).
+fn materialize_tree(tree: &Tree, env: &UnitsEnv<'_>) -> Result<PathBuf> {
+    let dir = import_temp_dir()?;
+    if let Ok(mut d) = env.temp_dirs.lock() {
+        d.push(dir.clone());
+    }
+    let write = || -> std::io::Result<()> {
+        for (p, n) in tree.entries() {
+            let mut dest = dir.clone();
+            for seg in p[1..].split('/') {
+                dest.push(seg);
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&dest, &n.bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(n.mode))?;
+            }
+        }
+        Ok(())
+    };
+    write().map_err(|e| SitefileError::plain(E_EXPORT, format!("cannot write a Git checkout to a temporary directory: {e}")))?;
+    Ok(dir)
+}
+
+fn not_a_sitefile_dir(spec: &ImportSpec, display: &str) -> SitefileError {
+    SitefileError::at(E_TYPE, format!("IMPORT {}: {display} is a file; AS sitefile needs the directory that holds the Sitefile", spec.name), &spec.span)
+}
+
+fn not_a_sitefile_url(spec: &ImportSpec) -> SitefileError {
+    SitefileError::at(
+        E_PROTOCOL,
+        format!("IMPORT {}: AS sitefile reads a context directory or a git+https:// repository, not a URL", spec.name),
+        &spec.span,
+    )
+}
+
+/// The cycle and depth checks of a Sitefile import (`id` is the imported Sitefile's identity).
+fn check_import_chain(spec: &ImportSpec, chain: &[(String, String)], id: &str, label: &str) -> Result<()> {
+    if let Some(seen) = chain.iter().position(|(c, _)| c == id) {
+        let cycle: Vec<&str> = chain[seen..].iter().map(|(_, l)| l.as_str()).chain([label]).collect();
+        return Err(SitefileError::at(E_VALIDATION, format!("IMPORT {}: Sitefile import cycle: {}", spec.name, cycle.join(" -> ")), &spec.span));
+    }
+    if chain.len() > MAX_SITEFILE_IMPORT_DEPTH {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("IMPORT {}: Sitefile imports nest more than {MAX_SITEFILE_IMPORT_DEPTH} levels deep", spec.name),
+            &spec.span,
+        ));
+    }
+    Ok(())
+}
+
+/// Load an `IMPORT name FROM <dir|git+https://…> AS sitefile`: find its context (a directory of the
+/// importer's context, or a Git tree written to a temporary directory), read and plan its Sitefile with the
+/// IMPORT's ARGs, check the stages `refs` name, and resolve its imports exactly as a build would.
+fn load_sitefile_import(spec: &ImportSpec, importer: &Importer<'_>, refs: &[ImportedStageRef], env: &UnitsEnv<'_>) -> Result<ImportedSitefile> {
+    let qualified = match importer.name {
+        Some(n) => format!("{n}+{}", spec.name),
+        None => spec.name.clone(),
+    };
+    let origin = format!("{}:{} IMPORT {}", importer.label, spec.span.line, spec.name);
+    let span = Some(&spec.span);
+    let (host_dir, scope, id, display, provenance, git_tree) = match &spec.location {
+        ImportLocation::Git(loc) => {
+            let remote = RemoteEnv { label: importer.label, ..env.remote };
+            let (commit, selection) = fetch_git_import(spec, loc, &remote)?;
+            let display = format!("'{}'", loc.url);
+            let GitSelection::Tree(files) = selection else { return Err(not_a_sitefile_dir(spec, &display)) };
+            let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, origin.clone(), m))))?;
+            let scope = LabelScope { prefix: format!("git+{}#{commit}:", loc.repo), dir: loc.path.clone() };
+            let id = format!("{}{}", scope.prefix, loc.path);
+            let provenance = crate::resources::types::Provenance {
+                uri: spec.uri.clone(),
+                resolved_url: Some(pinned_git_url(loc, &commit)),
+                digest: String::new(),
+                git_commit: Some(commit.clone()),
+            };
+            let dir = materialize_tree(&tree, env)?;
+            (dir, scope, id, display, provenance, Some(tree))
+        }
+        ImportLocation::Local { path: rel } => {
+            let display = if rel.is_empty() { "'./'".to_string() } else { format!("'./{rel}'") };
+            if importer.local.stat(rel, span)? != EntryKind::Directory {
+                return Err(not_a_sitefile_dir(spec, &display));
+            }
+            let dir = importer.local.real_path(rel, span)?;
+            let scope = LabelScope { prefix: importer.scope.prefix.clone(), dir: join_path(&importer.scope.dir, rel) };
+            let id = dir.to_string_lossy().into_owned();
+            let provenance = crate::resources::types::Provenance { uri: spec.uri.clone(), resolved_url: None, digest: String::new(), git_commit: None };
+            (dir, scope, id, display, provenance, None)
+        }
+        ImportLocation::Remote { .. } => return Err(not_a_sitefile_url(spec)),
+    };
+    let label = sitefile_label(&scope);
+    check_import_chain(spec, importer.chain, &id, &label)?;
+
+    // Its context: the directory, sandboxed (its own .sitefileignore applies; what the build writes is skipped).
+    let mut ignore = vec![".git".to_string()];
+    for s in &env.skip {
+        let rel = relative_path(&host_dir, s);
+        if !rel.is_empty() && !rel.starts_with("..") && !rel.starts_with('/') {
+            ignore.push(rel);
+        }
+    }
+    let local = LocalContext::open(&host_dir, &LocalContextOptions { ignore: Some(ignore), sitefileignore: true, allow_hardlinks: env.allow_hardlinks })?;
+    let sitefile_bytes = match local.read_file("Sitefile", span) {
+        Ok(Resource::File { bytes, .. }) => bytes,
+        Ok(_) => unreachable!("read_file returns a file"),
+        Err(e) if e.code == E_NOT_FOUND => {
+            return Err(SitefileError::at(E_NOT_FOUND, format!("IMPORT {}: {display} has no Sitefile", spec.name), &spec.span));
+        }
+        Err(e) => return Err(e),
+    };
+    let p = plan_imported_sitefile(spec, &String::from_utf8_lossy(&sitefile_bytes), &label, refs)?;
+    for w in &p.warnings {
+        (env.remote.warn)(w);
+    }
+    if env.strict_pins {
+        let pins = {
+            let guard = env.remote.lock.lock().unwrap_or_else(|e| e.into_inner());
+            check_pins(&p, guard.as_ref(), None)?
+        };
+        if let Ok(mut all) = env.pins.lock() {
+            for (n, how) in pins.imports {
+                all.push((format!("{qualified}+{n}"), how));
+            }
+        }
+    }
+    // Its FROM image lockfile entries are kept even when its stages are not built.
+    for st in &p.stages {
+        if let StageBase::Image { reference, local: false, lead, span, .. } = &st.base {
+            let key = image_lock_key(reference, lead, span)?;
+            if let Some(l) = env.remote.lock.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                l.mark_image_used(&key);
+            }
+        }
+    }
+
+    // Its imports, as a build of it would resolve them (every one, as for a --target build).
+    let ienv = ImportEnv { local: &local, archive_limits: &env.remote.archive_limits, remote: RemoteEnv { label: &label, ..env.remote }, memo: env.memo };
+    let plain: Vec<&ImportSpec> = p.imports.iter().filter(|s| s.as_kind != Some(ImportKind::Sitefile)).collect();
+    let resolved = map_limit(&plain, env.concurrency.max(1), |s| resolve_import(s, &ienv))?;
+    let mut by_name: HashMap<String, (Resource, String)> = plain.iter().map(|s| s.name.clone()).zip(resolved).collect();
+    let mut resources: Vec<(String, Resource)> = Vec::new();
+    let mut resource_keys: HashMap<String, String> = HashMap::new();
+    let mut imported: Vec<(String, ImportedSitefile)> = Vec::new();
+    let nested_refs = imported_stage_refs(&p.stages);
+    let mut chain = importer.chain.to_vec();
+    chain.push((id, label.clone()));
+    let me = Importer { name: Some(&qualified), label: &label, local: &local, scope: &scope, chain: &chain };
+    for s in &p.imports {
+        if let Some((res, key)) = by_name.remove(&s.name) {
+            resources.push((s.name.clone(), sorted(s, res)?));
+            resource_keys.insert(s.name.clone(), key);
+            continue;
+        }
+        let unit = load_sitefile_import(s, &me, &nested_refs, env)?;
+        resources.push((s.name.clone(), unit.resource()));
+        let key = if env.memo.is_some() { memo_key(&["sitefile", &label, &format!("{s:?}"), &unit.digest]) } else { String::new() };
+        resource_keys.insert(s.name.clone(), key);
+        imported.push((s.name.clone(), unit));
+    }
+    let env_key = match env.memo {
+        Some(_) => {
+            let mut vars: Vec<_> = p.vars.iter().collect();
+            vars.sort_by(|a, b| a.0.cmp(b.0));
+            // html LETs are part of it: they are not values, but a template that uses one renders their text.
+            let fragments: Vec<(&str, &str)> = p.fragments.iter().map(|f| (f.name.as_str(), f.text.as_str())).collect();
+            memo_key(&["env", &label, &format!("{vars:?}"), &format!("{fragments:?}")])
+        }
+        None => String::new(),
+    };
+    let digest = match &git_tree {
+        Some(t) => t.digest(),
+        None => sha256(&sitefile_bytes),
+    };
+    let context = match git_tree {
+        Some(t) => UnitContext::Tree(t),
+        None => UnitContext::Host(host_dir),
+    };
+    Ok(ImportedSitefile {
+        name: qualified,
+        label,
+        plan: p,
+        digest,
+        context,
+        resource_map: resources.iter().cloned().collect(),
+        resources,
+        imported,
+        steps: env.record_steps.then(Vec::new),
+        renames: Vec::new(),
+        stage_renames: HashMap::new(),
+        local,
+        resource_keys,
+        env_key,
+        stage_trees: HashMap::new(),
+        stage_keys: HashMap::new(),
+        provenance,
+        sitefile_bytes,
+        built: 0,
+    })
+}
+
+/// Make the imported stages `refs` names available in `stages`/`keys` as `<import>+<stage>`: each imported
+/// Sitefile builds its stages up to the last one referenced (like a --target build).
+fn provide_imported_stages(
+    units: &mut [(String, ImportedSitefile)],
+    refs: &[ImportedStageRef],
+    stages: &mut HashMap<String, Tree>,
+    keys: &mut HashMap<String, String>,
+    renames: &mut HashMap<String, BTreeMap<String, String>>,
+    env: &UnitsEnv<'_>,
+) -> Result<()> {
+    for (name, unit) in units.iter_mut() {
+        let upto = refs.iter().filter(|r| r.import == *name).filter_map(|r| unit.plan.stages.iter().position(|s| s.name.as_deref() == Some(r.stage.as_str()))).max();
+        let Some(upto) = upto else { continue };
+        build_unit_stages(unit, upto, env)?;
+        for st in &unit.plan.stages[..unit.built] {
+            let Some(n) = &st.name else { continue };
+            if let Some(t) = unit.stage_trees.get(n) {
+                stages.insert(format!("{name}+{n}"), t.clone());
+            }
+            keys.insert(format!("{name}+{n}"), unit.stage_keys.get(n).cloned().unwrap_or_default());
+            renames.insert(format!("{name}+{n}"), unit.stage_renames.get(n).cloned().unwrap_or_default());
+        }
+    }
+    Ok(())
+}
+
+/// Build an imported Sitefile's stages up to index `upto` (those already built are kept).
+fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_>) -> Result<()> {
+    if upto < unit.built {
+        return Ok(());
+    }
+    let mut stages = std::mem::take(&mut unit.stage_trees);
+    let mut keys = std::mem::take(&mut unit.stage_keys);
+    let refs = imported_stage_refs(&unit.plan.stages[..=upto]);
+    let mut stage_renames = std::mem::take(&mut unit.stage_renames);
+    let provided = provide_imported_stages(&mut unit.imported, &refs, &mut stages, &mut keys, &mut stage_renames, env);
+    if let Err(e) = provided {
+        unit.stage_trees = stages;
+        unit.stage_keys = keys;
+        unit.stage_renames = stage_renames;
+        return Err(e);
+    }
+    let warn = env.remote.warn.clone();
+    let unit_name = unit.name.clone();
+    let partials: Partials = Mutex::new(HashMap::new());
+    let from_image = |r: &str, a: Option<&str>, l: bool, le: &str, s: &SourceSpan| (env.from_image)(r, a, l, le, s, Some(&unit_name));
+    let mut exec = Exec {
+        local: &unit.local,
+        resources: &unit.resource_map,
+        stages,
+        vars: &unit.plan.vars,
+        fragments: &unit.plan.fragments,
+        partials: &partials,
+        label: &unit.label,
+        warn: warn.clone(),
+        plugins: PluginHost::new(env.plugin_policy, move |m: &str| warn(m)),
+        tools: HashMap::new(),
+        tool_policy: env.tool_policy,
+        cache: None,
+        plugin_digests: HashMap::new(),
+        stats: TransformStats::default(),
+        profiler: None,
+        memo: env.memo,
+        resource_keys: unit.resource_keys.clone(),
+        env_key: unit.env_key.clone(),
+        stage_keys: keys,
+        recorded: None,
+        unrecorded: env.remote.warn.clone(),
+        from_image: &from_image,
+        last_renames: None,
+        fetch_policy: env.remote.policy.clone(),
+    };
+    let mut steps: Vec<Vec<Tree>> = Vec::new();
+    let mut built = unit.built;
+    let mut renames: Vec<(u32, Vec<(String, String)>)> = Vec::new();
+    let run = (|| -> Result<()> {
+        for stage in &unit.plan.stages[unit.built..=upto] {
+            let (start, mut key) = exec.start_stage(stage)?;
+            let mut tree = start;
+            let mut current = match &stage.base {
+                StageBase::Stage { name } => stage_renames.get(name).cloned().unwrap_or_default(),
+                _ => BTreeMap::new(),
+            };
+            let mut record = unit.steps.as_ref().map(|_| vec![tree.clone()]);
+            for op in &stage.operations {
+                let (out, k, _) = exec.execute_op(op, tree, &key)?;
+                tree = out;
+                key = k;
+                if let Some(r) = exec.last_renames.take() {
+                    current = compose_renames(&current, &r);
+                    renames.push((op.span().line, r));
+                }
+                if let Some(r) = record.as_mut() {
+                    r.push(tree.clone());
+                }
+            }
+            if let Some(r) = record {
+                steps.push(r);
+            }
+            if let Some(name) = &stage.name {
+                stage_renames.insert(name.clone(), current);
+                exec.stages.insert(name.clone(), tree);
+                exec.stage_keys.insert(name.clone(), key);
+            }
+            built += 1;
+        }
+        Ok(())
+    })();
+    exec.plugins.close();
+    let Exec { stages, stage_keys, .. } = exec;
+    unit.stage_trees = stages;
+    unit.stage_keys = stage_keys;
+    unit.stage_renames = stage_renames;
+    unit.renames.extend(renames);
+    unit.built = built;
+    if let Some(all) = unit.steps.as_mut() {
+        all.extend(steps);
+    }
+    run
+}
+
+/// Where an imported Sitefile is read from by `vendor` and `outdated`, which never build it: a directory of
+/// a local context, or a directory of a Git tree held in memory.
+pub enum SitefileSource {
+    Local { local: LocalContext, scope: LabelScope, label: String, chain: Vec<(String, String)> },
+    Tree { tree: Tree, dir: String, scope: LabelScope, label: String, chain: Vec<(String, String)> },
+}
+
+impl SitefileSource {
+    pub fn label(&self) -> &str {
+        match self {
+            SitefileSource::Local { label, .. } | SitefileSource::Tree { label, .. } => label,
+        }
+    }
+    fn parts(&self) -> (&LabelScope, &[(String, String)]) {
+        match self {
+            SitefileSource::Local { scope, chain, .. } | SitefileSource::Tree { scope, chain, .. } => (scope, chain),
+        }
+    }
+}
+
+/// The source of the build's own Sitefile, for [`read_imported_sitefile`].
+pub fn root_sitefile_source(options: &BuildOptions, label: &str, sitefile_path: &Path) -> Result<SitefileSource> {
+    let context_real = std::fs::canonicalize(&options.context_dir)
+        .map_err(|_| SitefileError::plain(E_NOT_FOUND, format!("build context '{}' does not exist", options.context_dir)))?;
+    let local = LocalContext::open(
+        &context_real,
+        &LocalContextOptions { ignore: Some(vec![".git".into()]), sitefileignore: true, allow_hardlinks: options.allow_hardlinks },
+    )?;
+    let id = if options.sitefile.is_none() { context_real.to_string_lossy().into_owned() } else { realpath_loose(sitefile_path).to_string_lossy().into_owned() };
+    Ok(SitefileSource::Local { local, scope: root_scope(options, label), label: label.to_string(), chain: vec![(id, label.to_string())] })
+}
+
+/// Read and plan the Sitefile an `IMPORT … AS sitefile` of `from` names, without building it (for `vendor`
+/// and `outdated`): the same location, cycle, depth and ARG rules as a build. A Git one is fetched with
+/// `fetch_git` (the commit a build would use). Returns its plan and the source its own imports read from.
+pub fn read_imported_sitefile(
+    spec: &ImportSpec,
+    from: &SitefileSource,
+    refs: &[ImportedStageRef],
+    fetch_git: &mut dyn FnMut(&ImportSpec, &GitLocation) -> Result<(String, GitSelection)>,
+) -> Result<(Plan, SitefileSource)> {
+    let span = Some(&spec.span);
+    let (from_scope, chain) = from.parts();
+    enum Made {
+        Local(LocalContext),
+        Tree(Tree, String),
+    }
+    let (scope, id, display, bytes, made) = match &spec.location {
+        ImportLocation::Git(loc) => {
+            let (commit, selection) = fetch_git(spec, loc)?;
+            let display = format!("'{}'", loc.url);
+            let GitSelection::Tree(files) = selection else { return Err(not_a_sitefile_dir(spec, &display)) };
+            let tree = Tree::from_files(files.into_iter().map(|(p, b, m)| (p, make_file(b, "git", m))))?;
+            let scope = LabelScope { prefix: format!("git+{}#{commit}:", loc.repo), dir: loc.path.clone() };
+            let id = format!("{}{}", scope.prefix, loc.path);
+            let bytes = tree.get("/Sitefile").map(|n| n.bytes.to_vec());
+            (scope, id, display, bytes, Made::Tree(tree, String::new()))
+        }
+        ImportLocation::Local { path: rel } => {
+            let display = if rel.is_empty() { "'./'".to_string() } else { format!("'./{rel}'") };
+            let scope = LabelScope { prefix: from_scope.prefix.clone(), dir: join_path(&from_scope.dir, rel) };
+            match from {
+                SitefileSource::Local { local: parent, .. } => {
+                    if parent.stat(rel, span)? != EntryKind::Directory {
+                        return Err(not_a_sitefile_dir(spec, &display));
+                    }
+                    let real = parent.real_path(rel, span)?;
+                    let local = LocalContext::open(&real, &LocalContextOptions { ignore: Some(vec![".git".into()]), sitefileignore: true, allow_hardlinks: false })?;
+                    let bytes = match local.read_file("Sitefile", span) {
+                        Ok(Resource::File { bytes, .. }) => Some(bytes),
+                        Ok(_) => None,
+                        Err(e) if e.code == E_NOT_FOUND => None,
+                        Err(e) => return Err(e),
+                    };
+                    (scope, real.to_string_lossy().into_owned(), display, bytes, Made::Local(local))
+                }
+                SitefileSource::Tree { tree, dir, .. } => {
+                    let joined = join_path(dir, rel);
+                    let sub = if joined == "." { String::new() } else { joined };
+                    let at = if sub.is_empty() { "/".to_string() } else { format!("/{sub}") };
+                    if tree.is_file(&at) {
+                        return Err(not_a_sitefile_dir(spec, &display));
+                    }
+                    if !tree.is_directory(&at) {
+                        return Err(SitefileError::at(E_NOT_FOUND, format!("{} does not exist in the build context", display), &spec.span));
+                    }
+                    let id = format!("{}{}", from_scope.prefix, scope.dir);
+                    let file = if at == "/" { "/Sitefile".to_string() } else { format!("{at}/Sitefile") };
+                    let bytes = tree.get(&file).map(|n| n.bytes.to_vec());
+                    (scope, id, display, bytes, Made::Tree(tree.clone(), sub))
+                }
+            }
+        }
+        ImportLocation::Remote { .. } => return Err(not_a_sitefile_url(spec)),
+    };
+    let label = sitefile_label(&scope);
+    check_import_chain(spec, chain, &id, &label)?;
+    let Some(bytes) = bytes else {
+        return Err(SitefileError::at(E_NOT_FOUND, format!("IMPORT {}: {display} has no Sitefile", spec.name), &spec.span));
+    };
+    let p = plan_imported_sitefile(spec, &String::from_utf8_lossy(&bytes), &label, refs)?;
+    let mut chain = chain.to_vec();
+    chain.push((id, label.clone()));
+    let source = match made {
+        Made::Local(local) => SitefileSource::Local { local, scope, label, chain },
+        Made::Tree(tree, dir) => SitefileSource::Tree { tree, dir, scope, label, chain },
+    };
+    Ok((p, source))
 }
 
 // ---------------------------------------------------------------- plugins and tools
