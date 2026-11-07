@@ -330,7 +330,7 @@ function validProgram() {
     pendingBody = '';
   }
   if (stages.length && chance(0.6)) lines.push('FROM scratch');
-  lines.push(`EXPORT ${pick(['/', '/', '/sub'])}${maybe(() => pick([' AS zip', ' AS tgz', ' AS oci COMPRESSION none', ' AS oci AT /srv/www', ' AS wbn BASE https://e.x/']), 0.3)}`);
+  lines.push(`EXPORT ${pick(['/', '/', '/sub'])}${maybe(() => pick([' AS zip', ' AS tgz', ' AS oci COMPRESSION none', ' AS oci AT /srv/www', ' AS wbn BASE https://e.x/', ' AS wbn BASE https://e.x/ COMPRESSION gzip']), 0.3)}`);
   return lines;
 }
 

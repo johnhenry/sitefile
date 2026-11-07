@@ -2,9 +2,9 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { SitefileError, isSitefileError } from './errors.js';
-import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, type BuildOptions } from './executor.js';
+import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, sitefileCompression, type BuildOptions } from './executor.js';
 import { LINT_RULES } from './lint.js';
-import { defaultOutName, formatFromExtension } from './export-formats.js';
+import { compressionFromExtension, defaultOutName, formatFromExtension } from './export-formats.js';
 import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
 import { cacheLimitFromEnv } from './cache-limit.js';
@@ -45,16 +45,19 @@ Options:
       --target <stage>         stop after the named stage and export its whole tree instead of
                                the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
-                               a file for zip, tar, tgz, wbn
+                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle)
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
       --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .oci.tar),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
-      --oci-compression <c>    oci site layer: gzip (default) or none (plain tar; overrides EXPORT ... COMPRESSION)
+      --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
+                               (default gzip; none: plain tar), or the whole wbn (default none; gzip:
+                               gzip(application/webbundle), also chosen by -o *.wbn.gz)
+      --oci-compression <c>    the same as --compression, for oci only
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -134,6 +137,7 @@ export async function main(
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
         'oci-compression': { type: 'string' },
+        compression: { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
         provenance: { type: 'boolean' },
@@ -279,13 +283,24 @@ export async function main(
       ociCompression = parseOciCompression(o['oci-compression']);
       if (!ociCompression) return usageError(`--oci-compression expects gzip or none, got '${o['oci-compression']}'`);
     }
+    let compression: OciCompression | undefined;
+    if (o.compression !== undefined) {
+      compression = parseOciCompression(o.compression);
+      if (!compression) return usageError(`--compression expects gzip or none, got '${o.compression}'`);
+      if (ociCompression !== undefined) return usageError('--compression and --oci-compression set the same thing; give one');
+    }
     // No --format: an archive extension on --out picks the format, so `-o site.zip`
     // writes a zip instead of a directory named site.zip.
     if (!formatOverride && o.out) formatOverride = formatFromExtension(o.out);
     // The default destination depends on the format, which the Sitefile may set.
-    const sitefileFormat = command === 'build' && !o.out && !formatOverride ? (await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs })).exportFormat : undefined;
+    // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)
+    const sitefilePlan =
+      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
+    const sitefileFormat = formatOverride ? undefined : sitefilePlan?.exportFormat;
+    const defaultFormat = formatOverride ?? sitefileFormat ?? 'directory';
+    const defaultCompression = defaultFormat === 'wbn' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, 'wbn') : undefined)) : undefined;
     // A Git context's default destination is in the current directory, not the temporary checkout.
-    const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(formatOverride ?? sitefileFormat ?? 'directory'));
+    const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(defaultFormat, defaultCompression));
     run.wrote?.push(out);
     const options: BuildOptions = {
       contextDir: context,
@@ -320,6 +335,16 @@ export async function main(
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
       ...(run.memo ? { memo: run.memo } : {}),
     };
+    // --compression belongs to the export's own format, oci or wbn (-t without -o stores an oci image);
+    // a *.wbn.gz destination means a gzipped bundle.
+    let wbnCompression: OciCompression | undefined;
+    if (command === 'build' && compression !== undefined) {
+      const fmt = (o.tag ?? []).length && !o.out ? 'oci' : (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat);
+      if (fmt === 'oci') ociCompression = compression;
+      else if (fmt === 'wbn') wbnCompression = compression;
+      else return usageError(`--compression applies only to oci and wbn exports, not ${fmt}`);
+    }
+    if (formatOverride === 'wbn' && o.out) wbnCompression ??= compressionFromExtension(o.out, 'wbn');
 
     switch (command) {
       case 'build': {
@@ -355,6 +380,7 @@ export async function main(
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
           ...(ociCompression !== undefined ? { ociCompression } : {}),
+          ...(wbnCompression !== undefined ? { wbnCompression } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
           imageLabels: labels,
           gitLabels: !!o['git-labels'],

@@ -2,8 +2,9 @@
 
 use super::archive_writers::{write_tar, write_tgz, write_zip, WriterOptions};
 use super::wbn::write_web_bundle;
+use crate::deflate::gzip;
 use crate::error::Result;
-use crate::language::ast::ExportFormat;
+use crate::language::ast::{ExportFormat, OciCompression};
 use crate::tree::Tree;
 
 /// Single-file formats encoded by [`encode_tree`]. `oci` is handled separately
@@ -12,13 +13,14 @@ pub fn is_archive_format(f: ExportFormat) -> bool {
     !matches!(f, ExportFormat::Directory | ExportFormat::Oci)
 }
 
-/// Default output path relative to the context.
-pub fn default_out_name(format: ExportFormat) -> &'static str {
+/// Default output path relative to the context (`dist.wbn.gz` for a gzipped bundle).
+pub fn default_out_name(format: ExportFormat, compression: Option<OciCompression>) -> &'static str {
     match format {
         ExportFormat::Directory => "dist",
         ExportFormat::Zip => "dist.zip",
         ExportFormat::Tar => "dist.tar",
         ExportFormat::Tgz => "dist.tar.gz",
+        ExportFormat::Wbn if compression == Some(OciCompression::Gzip) => "dist.wbn.gz",
         ExportFormat::Wbn => "dist.wbn",
         ExportFormat::Oci => "dist.oci.tar",
     }
@@ -29,6 +31,8 @@ pub struct EncodeOptions {
     pub writer: WriterOptions,
     /// Required for `wbn`: absolute https URL ending in `/`.
     pub base_url: Option<String>,
+    /// `wbn`: `gzip` wraps the finished bundle in gzip (the shared deterministic encoder); default none.
+    pub compression: Option<OciCompression>,
 }
 
 /// Serialize a tree in an archive format. `directory` and `oci` are not
@@ -38,7 +42,15 @@ pub fn encode_tree(tree: &Tree, format: ExportFormat, options: &EncodeOptions) -
         ExportFormat::Zip => write_zip(tree, &options.writer),
         ExportFormat::Tar => write_tar(tree, &options.writer),
         ExportFormat::Tgz => write_tgz(tree, &options.writer),
-        ExportFormat::Wbn => write_web_bundle(tree, options.base_url.as_deref()),
+        ExportFormat::Wbn => {
+            // The bundle is written first, unchanged; gzip only wraps its bytes (header mtime 0, see deflate.rs).
+            let bundle = write_web_bundle(tree, options.base_url.as_deref())?;
+            Ok(if options.compression == Some(OciCompression::Gzip) {
+                gzip(&bundle)
+            } else {
+                bundle
+            })
+        }
         ExportFormat::Directory | ExportFormat::Oci => Err(crate::error::SitefileError::plain(
             crate::error::ErrorCode::E_EXPORT,
             format!("'{}' is not an archive format", format.as_str()),
@@ -57,11 +69,17 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
         Some(ExportFormat::Tar)
     } else if name.ends_with(".zip") {
         Some(ExportFormat::Zip)
-    } else if name.ends_with(".wbn") {
+    } else if name.ends_with(".wbn") || name.ends_with(".wbn.gz") {
         Some(ExportFormat::Wbn)
     } else {
         None
     }
+}
+
+/// The compression implied by an output file name for `format`: `gzip` for a wbn written to `*.wbn.gz`.
+pub fn compression_from_extension(out: &str, format: ExportFormat) -> Option<OciCompression> {
+    (format == ExportFormat::Wbn && out.to_lowercase().ends_with(".wbn.gz"))
+        .then_some(OciCompression::Gzip)
 }
 
 #[cfg(test)]
@@ -88,7 +106,20 @@ mod tests {
             &encode_tree(&t, ExportFormat::Tgz, &o).unwrap()[..2],
             &[0x1f, 0x8b]
         );
-        assert_eq!(encode_tree(&t, ExportFormat::Wbn, &o).unwrap()[0], 0x85);
+        let plain = encode_tree(&t, ExportFormat::Wbn, &o).unwrap();
+        assert_eq!(plain[0], 0x85);
+        let gz = EncodeOptions {
+            compression: Some(OciCompression::Gzip),
+            ..o.clone()
+        };
+        let packed = encode_tree(&t, ExportFormat::Wbn, &gz).unwrap();
+        assert_eq!(packed, gzip(&plain));
+        assert_eq!(&packed[..4], &[0x1f, 0x8b, 8, 0]);
+        let none = EncodeOptions {
+            compression: Some(OciCompression::None),
+            ..o.clone()
+        };
+        assert_eq!(encode_tree(&t, ExportFormat::Wbn, &none).unwrap(), plain);
         assert!(encode_tree(&t, ExportFormat::Oci, &o).is_err());
         assert!(
             is_archive_format(ExportFormat::Tgz)
@@ -105,8 +136,28 @@ mod tests {
         assert_eq!(format_from_extension("x.tar"), Some(ExportFormat::Tar));
         assert_eq!(format_from_extension("x.Zip"), Some(ExportFormat::Zip));
         assert_eq!(format_from_extension("x.wbn"), Some(ExportFormat::Wbn));
+        assert_eq!(format_from_extension("x.WBN.gz"), Some(ExportFormat::Wbn));
+        assert_eq!(format_from_extension("x.gz"), None);
         assert_eq!(format_from_extension("dist"), None);
-        assert_eq!(default_out_name(ExportFormat::Tgz), "dist.tar.gz");
-        assert_eq!(default_out_name(ExportFormat::Oci), "dist.oci.tar");
+        assert_eq!(
+            compression_from_extension("x.wbn.GZ", ExportFormat::Wbn),
+            Some(OciCompression::Gzip)
+        );
+        assert_eq!(compression_from_extension("x.wbn", ExportFormat::Wbn), None);
+        assert_eq!(
+            compression_from_extension("x.wbn.gz", ExportFormat::Zip),
+            None
+        );
+        assert_eq!(default_out_name(ExportFormat::Tgz, None), "dist.tar.gz");
+        assert_eq!(default_out_name(ExportFormat::Oci, None), "dist.oci.tar");
+        assert_eq!(default_out_name(ExportFormat::Wbn, None), "dist.wbn");
+        assert_eq!(
+            default_out_name(ExportFormat::Wbn, Some(OciCompression::Gzip)),
+            "dist.wbn.gz"
+        );
+        assert_eq!(
+            default_out_name(ExportFormat::Wbn, Some(OciCompression::None)),
+            "dist.wbn"
+        );
     }
 }

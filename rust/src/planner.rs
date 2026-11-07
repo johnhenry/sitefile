@@ -350,7 +350,7 @@ pub struct Plan {
     pub export_base: Option<String>,
     /// Evaluated `AT` clause of `EXPORT … AS oci`: the root directory inside the image layer.
     pub export_root: Option<String>,
-    /// `COMPRESSION` clause of EXPORT ... AS oci (None: gzip).
+    /// `COMPRESSION` clause of EXPORT ... AS oci or wbn (None: gzip for oci, none for wbn).
     pub export_compression: Option<OciCompression>,
     /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
     pub redirects: Vec<RedirectSpec>,
@@ -967,10 +967,10 @@ pub fn plan_with(
                     export_root = None;
                 }
                 if let Some((v, cspan)) = compression {
-                    if *format != ExportFormat::Oci {
+                    if !matches!(format, ExportFormat::Oci | ExportFormat::Wbn) {
                         return Err(SitefileError::at(
                             E_VALIDATION,
-                            "EXPORT ... COMPRESSION applies only to AS oci",
+                            "EXPORT ... COMPRESSION applies only to AS oci and AS wbn",
                             cspan,
                         ));
                     }
@@ -1944,8 +1944,14 @@ mod tests {
             &[],
             E_VALIDATION,
             2,
-            "EXPORT ... COMPRESSION applies only to AS oci",
+            "EXPORT ... COMPRESSION applies only to AS oci and AS wbn",
         );
+        let p = plan_of(
+            "FROM scratch\nEXPORT / AS wbn BASE https://x.test/ COMPRESSION gzip",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(p.export_compression, Some(OciCompression::Gzip));
         let p = plan_of("FROM scratch\nEXPORT / AS oci COMPRESSION none", &[]).unwrap();
         assert_eq!(p.export_compression, Some(OciCompression::None));
         assert_eq!(

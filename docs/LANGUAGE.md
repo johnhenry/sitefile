@@ -318,11 +318,17 @@ These pin down what the draft above leaves open. Tests cover each rule.
   `AT` (an operand) is the directory the files occupy inside an `oci` image
   (default `/srv/www`; `--oci-root` overrides it); with any other format it is
   an error (`E_VALIDATION`).
-  `COMPRESSION gzip|none` (a word, case-insensitive; `oci` only, otherwise
-  `E_VALIDATION`) chooses how the site layer is stored: `gzip` (the default,
-  `tar+gzip`) or `none` (a plain `tar` layer). Any other value is `E_SYNTAX`.
-  `--oci-compression` overrides it. The clauses come in this order:
-  `AS`, `BASE`, `AT`, `COMPRESSION`.
+  `COMPRESSION gzip|none` (a word, case-insensitive; `oci` and `wbn` only,
+  otherwise `E_VALIDATION`). With `AS oci` it chooses how the site layer is
+  stored: `gzip` (the default, `tar+gzip`) or `none` (a plain `tar` layer).
+  With `AS wbn`, `gzip` wraps the finished bundle in gzip, the
+  `gzip(application/webbundle)` archive that `@johnhenry/packfile`'s
+  `fromArchive()` and `@johnhenry/fileable`'s `encode="wbn"` use, and `none`
+  (the default, so existing exports do not change) writes the plain bundle.
+  Any other value is `E_SYNTAX`. `--compression` overrides it (and
+  `--oci-compression`, for oci); it belongs to the EXPORT's own format, so
+  `--format wbn` on an `AS oci COMPRESSION …` Sitefile does not inherit it.
+  The clauses come in this order: `AS`, `BASE`, `AT`, `COMPRESSION`.
   The CLI's `--out` picks the host destination and `--format` / `--base-url`
   override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
@@ -1493,9 +1499,10 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn`. The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
+A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
 All archive writers are deterministic: the same tree gives byte-identical
 output, whatever the order files were added, and the TypeScript and Rust
@@ -1607,6 +1614,12 @@ and tar timestamps instead.
   - Not signed, no integrity block, no variants. Layout follows the b2 draft as
     understood when written; validate with a Web Bundle tool before relying on
     it in a browser.
+  - `COMPRESSION gzip` (or `--compression gzip`, or `-o *.wbn.gz`): the same
+    bundle bytes inside one gzip member written by the shared deterministic
+    encoder (header mtime 0, no file name, OS byte 3; see `src/deflate.ts`), so
+    both implementations write identical `.wbn.gz` files. With
+    `BASE https://packfile.invalid/` it is exactly what packfile's
+    `fromArchive(buffer)` reads with no options.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is
