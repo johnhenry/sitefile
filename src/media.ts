@@ -9,7 +9,7 @@ import { escapeHtml } from './render.js';
 import { normalizeVirtual } from './paths.js';
 
 /** Helpers that produce a value (escaped like any substituted value). */
-export const VALUE_HELPERS = ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri'] as const;
+export const VALUE_HELPERS = ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset'] as const;
 /** Helpers that write a tag (trusted markup: inserted as-is; every attribute value is escaped). */
 export const TAG_HELPERS = ['img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'] as const;
 export const FILE_HELPERS: readonly string[] = [...VALUE_HELPERS, ...TAG_HELPERS];
@@ -417,6 +417,11 @@ export function resolveFile(raw: string, tree: TemplateTree, span: SourceSpan): 
  * escaped by the caller like any substituted value; markup is inserted as it is.
  */
 export function renderFile(raw: string, helper: string | undefined, attrs: readonly HelperAttr[], tree: TemplateTree, opts: HelperOptions, span: SourceSpan): HelperOutput {
+  // The image plugin's metadata, when there is some, is what the image helpers read (#128).
+  if (helper === undefined || METADATA_HELPERS.has(helper)) {
+    const meta = findMetadata(normalizeVirtual(raw, span, '${file} path').path, helper, tree, span);
+    if (meta) return renderMetadata(helper, meta, attrs);
+  }
   return renderFileHelper(helper, resolveFile(raw, tree, span), attrs, opts, span);
 }
 
@@ -451,6 +456,8 @@ export function renderFileHelper(helper: string | undefined, f: TreeFile, attrs:
       if (!size) throw new SitefileError('E_TYPE', `'${f.path}' is an SVG image; its ${helper} is in its markup, not in a header`, span);
       return { value: String(helper === 'width' ? size.width : size.height) };
     }
+    case 'srcset':
+      throw new SitefileError('E_TYPE', `'${f.path}' has no image metadata: srcset reads the <name>.json the image plugin writes (TRANSFORM … WITH image TO /dir/)`, span);
     case 'datauri':
       if (f.bytes.length > DATAURI_MAX) {
         throw new SitefileError('E_TOO_LARGE', `'${f.path}' is ${f.bytes.length} bytes; datauri inlines files of at most ${DATAURI_MAX} bytes (link to it instead)`, span);
@@ -508,4 +515,126 @@ function stripSvgProlog(s: string): string {
     t = t.slice(end).replace(SVG_WS, '');
   }
   return t.replace(/[\t\n\f\r ]+$/, '');
+}
+// ---------------------------------------------------------------- image plugin metadata (#128)
+
+/** The image plugin's `<name>.json` (docs/PLUGINS.md, "The metadata file"), version 1: what the helpers read. */
+export interface ImageMetadata {
+  /** The metadata file's tree path (for messages). */
+  readonly path: string;
+  readonly src: string;
+  readonly type: string;
+  readonly width: number;
+  readonly height: number;
+  readonly srcset: string;
+  readonly sources: ReadonlyArray<{ readonly type: string; readonly srcset: string }>;
+}
+
+/** The metadata version this sitefile reads. */
+export const IMAGE_METADATA_VERSION = 1;
+
+/** Helpers that read image metadata when there is some: the URL, type, size, srcset and img. */
+const METADATA_HELPERS = new Set(['url', 'type', 'width', 'height', 'srcset', 'img']);
+
+/** Looks like the plugin's metadata (an object with a number `version` and a `variants` list): otherwise it is some other JSON. */
+function looksLikeMetadata(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) && typeof (v as Record<string, unknown>)['version'] === 'number' && Array.isArray((v as Record<string, unknown>)['variants']);
+}
+
+function parseJson(bytes: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Check version 1 metadata; E_DATA naming the first field that is missing or of the wrong kind. */
+function readMetadata(v: Record<string, unknown>, path: string, span: SourceSpan): ImageMetadata {
+  if (v['version'] !== IMAGE_METADATA_VERSION) {
+    throw new SitefileError('E_DATA', `'${path}' is image metadata version ${String(v['version'])}; this sitefile reads version ${IMAGE_METADATA_VERSION} (upgrade sitefile)`, span);
+  }
+  const bad = (field: string, what: string): SitefileError => new SitefileError('E_DATA', `'${path}' is not valid image metadata: '${field}' must be ${what}`, span);
+  const str = (o: Record<string, unknown>, k: string, field: string): string => {
+    const x = o[k];
+    if (typeof x !== 'string') throw bad(field, 'a string');
+    return x;
+  };
+  const dim = (k: string): number => {
+    const x = v[k];
+    if (typeof x !== 'number' || !Number.isInteger(x) || x <= 0) throw bad(k, 'a positive whole number');
+    return x;
+  };
+  const src = str(v, 'src', 'src');
+  const type = str(v, 'type', 'type');
+  const width = dim('width');
+  const height = dim('height');
+  const srcset = str(v, 'srcset', 'srcset');
+  const list = v['sources'];
+  if (!Array.isArray(list)) throw bad('sources', 'a list');
+  const sources = list.map((s, i) => {
+    if (s === null || typeof s !== 'object' || Array.isArray(s)) throw bad(`sources.${i}`, 'an object');
+    return { type: str(s as Record<string, unknown>, 'type', `sources.${i}.type`), srcset: str(s as Record<string, unknown>, 'srcset', `sources.${i}.srcset`) };
+  });
+  return { path, src, type, width, height, srcset, sources };
+}
+
+/** `/dir/name.ext` -> `/dir/name.json` ('' for a path without an extension). */
+export function metadataPathOf(path: string): string {
+  const slash = path.lastIndexOf('/');
+  const dot = path.lastIndexOf('.');
+  return dot > slash + 1 ? path.slice(0, dot) + '.json' : '';
+}
+
+/**
+ * The image metadata a helper reads for `path`, if any. A `.json` path given to width, height,
+ * srcset or img must be metadata (E_DATA otherwise). An image path reads `<dir>/<name>.json` when
+ * that file is in the tree and is the plugin's metadata (another JSON file there is ignored).
+ */
+function findMetadata(path: string, helper: string | undefined, tree: TemplateTree, span: SourceSpan): ImageMetadata | undefined {
+  const ext = extensionOf(path);
+  if (ext === 'json') {
+    if (helper === undefined || !['width', 'height', 'srcset', 'img'].includes(helper)) return undefined;
+    const bytes = tree.get(path);
+    if (!bytes) return undefined; // resolveFile reports it
+    const v = parseJson(bytes);
+    if (!looksLikeMetadata(v)) throw new SitefileError('E_DATA', `'${path}' is not image metadata (the <name>.json the image plugin writes next to the files it makes)`, span);
+    return readMetadata(v, path, span);
+  }
+  if (!IMAGE_EXTENSIONS.has(ext)) return undefined;
+  const m = metadataPathOf(path);
+  const bytes = tree.get(m);
+  if (!bytes) return undefined;
+  const v = parseJson(bytes);
+  return looksLikeMetadata(v) ? readMetadata(v, m, span) : undefined;
+}
+
+/** What a helper writes from image metadata: the largest fallback variant, its srcset, and `<picture>` for several formats. */
+function renderMetadata(helper: string | undefined, m: ImageMetadata, attrs: readonly HelperAttr[]): HelperOutput {
+  switch (helper) {
+    case undefined:
+    case 'url':
+      return { value: m.src };
+    case 'type':
+      return { value: m.type };
+    case 'width':
+      return { value: String(m.width) };
+    case 'height':
+      return { value: String(m.height) };
+    case 'srcset':
+      return { value: m.srcset };
+    default: {
+      // img
+      const img =
+        tag('img', [['src', m.src], ['srcset', m.srcset], ['width', String(m.width)], ['height', String(m.height)]], attrs, [['loading', 'lazy'], ['decoding', 'async']]) + '>';
+      if (m.sources.length <= 1) return { markup: img };
+      // `sizes` applies to every <source> of the picture too.
+      const sizes = attrs.find((a) => a.name.toLowerCase() === 'sizes');
+      const sources = m.sources
+        .slice(0, -1)
+        .map((s) => tag('source', [['type', s.type], ['srcset', s.srcset], ...(sizes ? [['sizes', sizes.value] as const] : [])], []) + '>')
+        .join('');
+      return { markup: `<picture>${sources}${img}</picture>` };
+    }
+  }
 }

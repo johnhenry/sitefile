@@ -17,5 +17,12 @@ TRANSFORM --include=*.png ./photos/ WITH image TO /img/ OPTIONS widths=64,128 fo
 # (/img/thumbs/sky.png, /img/thumbs/badge.png); the extension picks the format.
 TRANSFORM ./photos/ WITH image TO /img/thumbs/*.png OPTIONS widths=160
 
+# Templates read the plugin's metadata: ${file "/img/sky.jpg" | img alt="…"} writes
+# <img src srcset width height> (or <picture> for several formats) from /img/sky.json.
 RENDER --escape=html ./templates/index.html TO /index.html
+
+# A gallery of every photo in gallery.json, each card an html fragment.
+IMPORT gallery FROM ./gallery.json AS json
+LET photo_card: html = <figure><a href="${file "/img/${photo.file}"}">${file "/img/${photo.file}" | img alt="${photo.caption}" sizes="(min-width: 64rem) 20rem, 100vw"}</a><figcaption>${photo.caption}</figcaption></figure>
+RENDER --escape=html ./templates/gallery.html TO /gallery.html
 EXPORT /

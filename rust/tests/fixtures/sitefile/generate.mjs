@@ -56,7 +56,7 @@ const FRAGMENTS = [
   '${a}${b}', '${frag}', '${TITLE.x}', '${#each}', '${x y}', '<p>', '', '$${literal}', '${posts|raw}', 'a <<EOF b', '${x', '<i>${n}</i>',
   // `${file …}` helpers (issue #105).
   '${file "/img/${item.slug}.png" | img alt="${TITLE}"}', '${file /a.css | stylesheet}', '${file x | bogus}', '${file "/a" | img alt="${frag}"}',
-  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
+  '${file "/a" | img alt="${TITLE.x}"}', '${file "/a" | width x}', '${file "/img/${item.slug}.json" | srcset}', '${file /a | srcset x}', '${file "/a}', "${file '/a' | svg class=a}", '${file }', '${file "/a" | img alt=${B}}',
 ];
 const FORMATS = ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'OCI', 'rar', 'Tar.GZ', 'ZİP', 'DİRECTORY'];
 const DIGEST = 'sha256:' + 'ab'.repeat(32);
