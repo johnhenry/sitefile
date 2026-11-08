@@ -102,6 +102,8 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --strict-paths           fail (E_PATH_PORTABLE) instead of warning when an exported path cannot be
+                               written on Windows, or starts with '_' and there is no /.nojekyll
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
@@ -171,6 +173,7 @@ export async function main(
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'strict-pins': { type: 'boolean' },
+        'strict-paths': { type: 'boolean' },
         'lint-disable': { type: 'string', multiple: true },
         'no-lockfile': { type: 'boolean' },
         'vendor-dir': { type: 'string' },
@@ -355,6 +358,7 @@ export async function main(
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       strictPins: !!o['strict-pins'],
+      strictPaths: !!o['strict-paths'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
       ...(run.memo ? { memo: run.memo } : {}),

@@ -12,6 +12,7 @@ pub mod deflate;
 pub mod digest;
 pub mod error;
 pub mod paths;
+pub mod portable;
 pub mod sha1;
 pub mod tree;
 pub mod values;

@@ -6,6 +6,7 @@ use crate::links::{resolve_reference, scan_file, Target};
 use crate::resources::https::fetch_remote;
 use crate::resources::types::FetchPolicy;
 use crate::tree::Tree;
+use crate::paths::fold_case;
 use std::collections::HashMap;
 
 pub struct CheckLinksOp<'a> {
@@ -104,6 +105,7 @@ fn external_reason(e: &SitefileError, url: &str, policy: &FetchPolicy) -> Option
 pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec<BrokenLink> {
     let mut out = Vec::new();
     let mut external: HashMap<String, Option<String>> = HashMap::new();
+    let mut folded: Option<HashMap<String, String>> = None;
     for (file, node) in tree.entries() {
         let Some((_, refs)) = scan_file(file, &node.bytes) else {
             continue;
@@ -146,7 +148,18 @@ pub fn broken_links(tree: &Tree, op: &CheckLinksOp, policy: &FetchPolicy) -> Vec
                             let u = if dir && u != "/" { format!("{u}/") } else { u };
                             redirected(op.redirects, &u)
                         });
-                        (!covered).then(|| format!("not found: {display}"))
+                        (!covered).then(|| {
+                            // A case-insensitive file system (macOS, Windows) finds a file whose name differs only in case.
+                            let folded = folded.get_or_insert_with(|| {
+                                tree.entries()
+                                    .map(|(f, _)| (fold_case(f), f.clone()))
+                                    .collect::<HashMap<String, String>>()
+                            });
+                            match (!dir).then(|| folded.get(&fold_case(&path))).flatten() {
+                                Some(near) => format!("not found: {display}; '{near}' differs only in case, which works on macOS and Windows but not on Linux hosts"),
+                                None => format!("not found: {display}"),
+                            }
+                        })
                     }
                 }
             };

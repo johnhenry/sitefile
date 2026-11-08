@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Portable paths** (johnhenry/sitefile#222): EXPORT warns about exported
+  paths Windows cannot hold (reserved names such as `aux.html`, `:` and other
+  forbidden characters, a trailing dot or space) and about `_` files and
+  folders without `/.nojekyll` (GitHub Pages); `build --strict-paths` makes
+  them one `E_PATH_PORTABLE` error. A CHECKLINKS broken link whose target
+  differs from a file only in case names that file. Both implementations, with
+  conformance cases.
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with

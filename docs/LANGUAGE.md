@@ -1102,6 +1102,28 @@ IMPORT data FROM https://example.com/data.json AS json
 RENDER ./templates/trusted.html TO /index.html
 ```
 
+### Portable paths
+Names that work where you build but break elsewhere are reported when the
+build exports, as warnings (`EXPORT /: …`), or with `build --strict-paths` as
+one `E_PATH_PORTABLE` error that lists them all. The exported files are checked
+(paths below the EXPORT path), in path order:
+
+- **Windows**: a path segment with `<`, `>`, `:`, `"`, `|`, `?`, `*`, `\` or a
+  control character, one that ends with a dot or a space, or a reserved device
+  name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, also with
+  `¹²³`, in any case and with any extension: `aux.html`, `NUL.txt`). Such files
+  cannot be extracted from a zip or written by a Windows checkout:
+  `'/a:b.txt' cannot be extracted on Windows: ':' is not allowed in a Windows file name`.
+- **GitHub Pages**: when a file or folder name starts with `_` (other than
+  `/_headers` and `/_redirects`, which other hosts read) and there is no
+  `/.nojekyll`, one message names up to three of them: Jekyll, which GitHub
+  Pages runs by default, does not publish them.
+- **Case**: two paths that differ only in case are already `E_PATH_COLLISION`
+  (see below). A link whose target differs from a file only in case is a
+  broken link for CHECKLINKS (matching is exact, as on a Linux host), and its
+  message names the file: `not found: /Images/Logo.png; '/images/logo.png'
+  differs only in case, which works on macOS and Windows but not on Linux hosts`.
+
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that
   keeps the first writer as the owner.
