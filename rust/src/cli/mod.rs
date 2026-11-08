@@ -31,7 +31,8 @@ use crate::secrets::{load_secrets, process_env};
 use crate::store::short_id;
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
 use common::{
-    err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command,
+    err, is_safe_integer, js_to_number, out, pretty_json, report, report_json, run_command,
+    usage_error, Command,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -162,7 +163,8 @@ Options:
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
 {network}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
@@ -224,6 +226,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("no-proxy"),
     strings("allow-hosts"),
     strings("deny-hosts"),
+    string("network"),
+    strings("allow-secret-host"),
     string("connect-timeout"),
     string("read-timeout"),
     flag("json"),
@@ -530,7 +534,8 @@ fn run_profiled(
         Ok(code) => code,
         Err(e) => {
             failed = true;
-            report(&e)
+            // With --json, the failure is also machine-readable on stdout (code, span, needs).
+            report_json(&e, o.flag("json"))
         }
     };
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).

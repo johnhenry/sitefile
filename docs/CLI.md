@@ -87,6 +87,8 @@ reroutes a build.
 | `--no-proxy <hosts>` | `SITEFILE_NO_PROXY` | hosts reached directly instead of through the proxy (patterns below). Loopback is **not** bypassed by default; for a local registry, add `localhost,127.0.0.1`. |
 | `--allow-hosts <hosts>` | `SITEFILE_ALLOW_HOSTS` | when set, only hosts that match a pattern may be contacted |
 | `--deny-hosts <hosts>` | `SITEFILE_DENY_HOSTS` | hosts that are never contacted. **A deny rule beats an allow rule.** |
+| `--network <mode>` | `SITEFILE_NETWORK` | `open` (the default) or `strict`: every host must match an `--allow-hosts` pattern, also when none is given (then nothing is contacted), and `IMPORT … SECRET` needs `--allow-secret-host` (see [Strict network mode](#strict-network-mode)). The flag replaces the variable, so `--network open` turns an inherited `SITEFILE_NETWORK=strict` off. |
+| `--allow-secret-host <id=host>` | | in strict mode, let `IMPORT … SECRET <id>` send that secret to hosts matching the pattern (repeatable, comma-separated). Ignored in open mode. |
 | `--connect-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | time limit for opening each TCP connection (to the target, or to the proxy) |
 | `--read-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | longest wait for data on an open connection (idle time). For registries it replaces the per-request `--timeout`. |
 
@@ -116,8 +118,68 @@ download redirected to a CDN, the registry's own host included. A refused host f
 
 ```
 error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches deny-hosts rule 'example.com' (https://cdn.example.com/a.css)
-error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css)
+error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css); add --allow-hosts cdn.example.com
 ```
+
+A host that matches no allow rule also carries a `needs` (as a `PLUGIN` or `TOOL` that was not allowed
+does): `{ kind: 'host', name: 'cdn.example.com', flag: '--allow-hosts' }` on the TypeScript
+`SitefileError`, `SitefileError::needs` (`NeedsKind::Host`) in Rust, and in the `--json` error output
+below, so a tool can offer "allow cdn.example.com and rebuild" without parsing the message. A deny-hosts
+match has no `needs`: no flag overrides it.
+
+### Strict network mode
+
+`--network strict` (or `SITEFILE_NETWORK=strict`) turns the allow list into the only way to reach a host:
+
+```bash
+SITEFILE_NETWORK=strict sitefile build                         # fails at the first host, naming it
+sitefile build --network strict --allow-hosts cdn.example.com  # contacts cdn.example.com (and its subdomains) only
+```
+
+- An empty allow list allows nothing; the error says `(strict network mode)` and carries the `needs` of
+  the host to add. Hosts behind an imported Sitefile (`IMPORT … AS sitefile`) are only known once it has
+  been fetched, so they come up one at a time, each with its own `needs`.
+- Every hop is checked as in open mode: redirects, a registry's token realm and a blob CDN must each be
+  allowed. Git contexts, `vendor`, `outdated`, `pull`/`push`, the registry cache and `CHECKLINKS EXTERNAL`
+  follow the same rules (a refused `CHECKLINKS` URL is reported as broken, not fetched).
+- **Secrets need their own rule.** An `IMPORT … SECRET <id>` is refused before anything is sent unless an
+  `--allow-secret-host <id>=<pattern>` matches the import's host (the only origin its secrets are sent to):
+
+  ```
+  error[E_HOST_BLOCKED]: Sitefile:2:1: IMPORT data: refusing to send secret 'tok' to api.example.com (strict network mode); add --allow-secret-host tok=api.example.com
+  ```
+
+  with `needs` `{ kind: 'secret-host', name: 'tok=api.example.com', flag: '--allow-secret-host' }`. The
+  host itself must be allowed too (that error comes first). There is no environment variable for it.
+- **What counts as contact.** Strict mode checks a host only when sitefile is about to connect to it. A
+  build whose remote inputs are all read from `sitefile vendor` (`vendor/sitefile` or `--vendor-dir`), and
+  whose `FROM image`/`BASE` images are pinned (`@sha256:` or `Sitefile.lock`) and already in the local
+  store, connects to nothing and needs no host. An https `IMPORT` that is not vendored is fetched on every
+  build, pinned or not (there is no download cache), so it needs its host; so does a Git `IMPORT` that is
+  not vendored at its commit. `validate` and `graph` of a local context never connect.
+
+The default stays `open`, so existing scripts and CI are unchanged.
+
+### `--json` errors
+
+With `--json`, a command that fails also prints the error on stdout (the `error[CODE]: …` line still goes
+to stderr, and the exit code is unchanged). This works for `build`, `validate`, `inspect`, `graph`, `why`
+and every other command that has `--json` (`outdated`, `images`, …); usage errors (exit 2) stay text only.
+
+```json
+{
+  "error": {
+    "code": "E_HOST_BLOCKED",
+    "message": "Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (strict network mode) (https://cdn.example.com/a.css); add --allow-hosts cdn.example.com",
+    "span": { "file": "Sitefile", "line": 2, "column": 1 },
+    "needs": { "kind": "host", "name": "cdn.example.com", "flag": "--allow-hosts" }
+  }
+}
+```
+
+`span` and `needs` are `null` when the error has none. `needs.kind` is `plugin`, `tool`, `host` or
+`secret-host`; `[flag, name]` are the arguments to add. In `outdated --json`, an `error` row's object has
+a `needs` key too when the error carries one.
 
 Timeouts fail with `E_FETCH_TIMEOUT` and say which limit was hit (`…: connecting timed out after 500 ms
 (connect timeout)`, `…: no data for 2000 ms (read timeout)`, or `… timed out after 30000 ms` for the total).

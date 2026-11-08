@@ -1830,7 +1830,13 @@ pub fn fetch_git_import(
                 env.label, spec.span.line, spec.name, v.dir
             ));
         }
-        let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+        let origin_headers = secret_headers(
+            &spec.name,
+            &spec.secrets,
+            &spec.span,
+            env.secrets,
+            Some((&loc.repo, &env.policy.network)),
+        )?;
         let transport = GitTransport {
             origin_headers: &origin_headers,
             ..GitTransport::new(env.policy, span)
@@ -1901,8 +1907,13 @@ pub fn fetch_remote_import(
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let origin_headers =
-                secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let origin_headers = secret_headers(
+                &spec.name,
+                &spec.secrets,
+                &spec.span,
+                env.secrets,
+                Some((url, &env.policy.network)),
+            )?;
             let f = fetch_remote_with(
                 url,
                 env.policy,

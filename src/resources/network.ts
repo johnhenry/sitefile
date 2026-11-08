@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { SitefileError, type SourceSpan } from '../errors.js';
+import { needsHost, needsSecretHost, SitefileError, type SourceSpan } from '../errors.js';
 
 /**
  * Explicit network settings for everything sitefile fetches (IMPORT over http(s), Git, registries).
@@ -16,6 +16,14 @@ export interface NetworkSettings {
   readonly allowHosts?: readonly string[] | undefined;
   /** Hosts never contacted; a deny rule beats an allow rule. */
   readonly denyHosts?: readonly string[] | undefined;
+  /**
+   * Strict network mode (`--network strict`, `SITEFILE_NETWORK=strict`): every host must match an
+   * allow-hosts rule, also when there is none (so nothing is contacted), and an `IMPORT … SECRET` needs
+   * a {@link secretHosts} rule for its host.
+   */
+  readonly strict?: boolean | undefined;
+  /** `<secret id>=<host pattern>` (`--allow-secret-host`): where, in strict mode, that secret may be sent. */
+  readonly secretHosts?: readonly string[] | undefined;
   /** Time limit for establishing the TCP connection (to the target, or to the proxy), ms. */
   readonly connectTimeoutMs?: number | undefined;
   /** Longest wait for data once connected (idle time), ms. */
@@ -223,8 +231,57 @@ export function checkHostRules(url: URL, network: NetworkSettings | undefined, s
   if (denied !== undefined) {
     throw new SitefileError('E_HOST_BLOCKED', `refusing to connect to ${host}: it matches deny-hosts rule '${denied}' (${shown})`, span);
   }
-  if ((network.allowHosts ?? []).length > 0 && firstMatch(host, port, network.allowHosts) === undefined) {
-    throw new SitefileError('E_HOST_BLOCKED', `refusing to connect to ${host}: it matches no allow-hosts rule (${shown})`, span);
+  if ((network.strict || (network.allowHosts ?? []).length > 0) && firstMatch(host, port, network.allowHosts) === undefined) {
+    throw new SitefileError('E_HOST_BLOCKED', `refusing to connect to ${host}: it matches no allow-hosts rule${network.strict ? ' (strict network mode)' : ''} (${shown}); add --allow-hosts ${host}`, span, {
+      needs: needsHost(host),
+    });
+  }
+}
+
+/** True when `host:port` may be contacted under `network`'s host rules (see {@link checkHostRules}). */
+export function hostAllowed(host: string, port: number, network: NetworkSettings | undefined): boolean {
+  if (!network) return true;
+  const h = normalizeHost(host);
+  if (firstMatch(h, port, network.denyHosts) !== undefined) return false;
+  return !(network.strict || (network.allowHosts ?? []).length > 0) || firstMatch(h, port, network.allowHosts) !== undefined;
+}
+
+/** Split `<id>=<pattern>`; undefined when malformed. */
+function secretHostRule(raw: string): { id: string; pattern: string } | undefined {
+  const eq = raw.indexOf('=');
+  if (eq <= 0) return undefined;
+  const id = raw.slice(0, eq).trim();
+  const pattern = raw.slice(eq + 1).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id) || !parsePattern(pattern)) return undefined;
+  return { id, pattern };
+}
+
+/**
+ * Before an `IMPORT … SECRET` request to `target` (the import's own origin, the only one its secrets are
+ * sent to): in strict network mode each secret needs an `--allow-secret-host <id>=<pattern>` that matches
+ * the host. Throws E_HOST_BLOCKED with a `needs`. Nothing is checked outside strict mode, and a host the
+ * host rules refuse is left to the request itself (its E_HOST_BLOCKED asks for `--allow-hosts` first).
+ */
+export function checkSecretHosts(importName: string, secretIds: readonly string[], target: string, network: NetworkSettings | undefined, span?: SourceSpan): void {
+  if (!network?.strict || secretIds.length === 0) return;
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return; // the request itself reports the bad URL
+  }
+  const host = normalizeHost(url.hostname);
+  const port = urlPort(url);
+  if (!hostAllowed(host, port, network)) return;
+  const rules = (network.secretHosts ?? []).map(secretHostRule).filter((r) => r !== undefined);
+  for (const id of secretIds) {
+    if (rules.some((r) => r.id === id && hostMatches(host, port, r.pattern))) continue;
+    throw new SitefileError(
+      'E_HOST_BLOCKED',
+      `IMPORT ${importName}: refusing to send secret '${id}' to ${host} (strict network mode); add --allow-secret-host ${id}=${host}`,
+      span,
+      { needs: needsSecretHost(id, host) },
+    );
   }
 }
 
@@ -254,6 +311,9 @@ export function networkProblem(network: NetworkSettings): string | undefined {
     for (const p of list ?? []) {
       if (!parsePattern(p)) return `invalid ${name} pattern '${p}': expected *, a host name (example.com, .example.com, *.example.com), an IP address or a CIDR network, optionally with :port`;
     }
+  }
+  for (const r of network.secretHosts ?? []) {
+    if (!secretHostRule(r)) return `invalid --allow-secret-host '${r}': expected <secret id>=<host pattern> (a pattern as for --allow-hosts)`;
   }
   for (const [name, v] of [
     ['connect timeout', network.connectTimeoutMs],
@@ -290,15 +350,26 @@ export function parseFetchTimeout(raw: string): { connectTimeoutMs?: number; rea
   return out;
 }
 
+/** Parse a network mode (`open` or `strict`; empty: unset); `what` names the source in the E_USAGE message. */
+export function parseNetworkMode(raw: string, what: string): boolean | undefined {
+  const s = raw.trim();
+  if (s === '') return undefined;
+  if (s === 'open') return false;
+  if (s === 'strict') return true;
+  throw new SitefileError('E_USAGE', `${what} expects open or strict, got '${raw}'`);
+}
+
 /**
  * Network settings from `SITEFILE_PROXY`, `SITEFILE_NO_PROXY`, `SITEFILE_ALLOW_HOSTS`,
- * `SITEFILE_DENY_HOSTS` (comma- or space-separated) and `SITEFILE_FETCH_TIMEOUT`. Empty values are unset.
- * `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are never read.
+ * `SITEFILE_DENY_HOSTS` (comma- or space-separated), `SITEFILE_FETCH_TIMEOUT` and `SITEFILE_NETWORK`
+ * (`open` or `strict`). Empty values are unset. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are never read.
  */
 export function networkFromEnv(env: NodeJS.ProcessEnv = process.env): NetworkSettings {
   const proxy = (env.SITEFILE_PROXY ?? '').trim();
+  const strict = parseNetworkMode(env.SITEFILE_NETWORK ?? '', 'SITEFILE_NETWORK');
   return {
     ...(proxy !== '' ? { proxy } : {}),
+    ...(strict ? { strict } : {}),
     ...(splitList(env.SITEFILE_NO_PROXY).length ? { noProxy: splitList(env.SITEFILE_NO_PROXY) } : {}),
     ...(splitList(env.SITEFILE_ALLOW_HOSTS).length ? { allowHosts: splitList(env.SITEFILE_ALLOW_HOSTS) } : {}),
     ...(splitList(env.SITEFILE_DENY_HOSTS).length ? { denyHosts: splitList(env.SITEFILE_DENY_HOSTS) } : {}),
@@ -306,7 +377,10 @@ export function networkFromEnv(env: NodeJS.ProcessEnv = process.env): NetworkSet
   };
 }
 
-/** `over` on top of `base`: the proxy and timeouts are replaced, the host lists are joined (duplicates dropped). */
+/**
+ * `over` on top of `base`: the proxy and timeouts are replaced, the host lists are joined (duplicates
+ * dropped), and strict mode is on when either is strict.
+ */
 export function mergeNetwork(base: NetworkSettings, over: NetworkSettings): NetworkSettings {
   const join = (a: readonly string[] | undefined, b: readonly string[] | undefined) => {
     const all = [...new Set([...(a ?? []), ...(b ?? [])])];
@@ -317,6 +391,8 @@ export function mergeNetwork(base: NetworkSettings, over: NetworkSettings): Netw
     noProxy: join(base.noProxy, over.noProxy),
     allowHosts: join(base.allowHosts, over.allowHosts),
     denyHosts: join(base.denyHosts, over.denyHosts),
+    strict: base.strict || over.strict ? true : undefined,
+    secretHosts: join(base.secretHosts, over.secretHosts),
     connectTimeoutMs: over.connectTimeoutMs ?? base.connectTimeoutMs,
     readTimeoutMs: over.readTimeoutMs ?? base.readTimeoutMs,
   };

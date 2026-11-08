@@ -906,7 +906,7 @@ export async function fetchRemoteImport(spec: ImportSpec, url: string, env: Remo
     env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}; fetching it (run 'sitefile vendor' to add it)`);
   }
   const fetchIt = (): Promise<{ bytes: Uint8Array; finalUrl: string }> => {
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url, network: env.policy.network });
     return fetchRemote(url, env.policy, spec.span, originHeaders ? { originHeaders } : {});
   };
   const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchIt();
@@ -961,7 +961,7 @@ export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: Re
       env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}${vendored ? ` at commit ${want ?? 'the latest'}` : ''}; fetching it (run 'sitefile vendor' to add it)`);
     }
     const limits = env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS;
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url: loc.repo, network: env.policy.network });
     const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
     want = objs.commit;
     selection = selectGitPath(objs, loc, limits, spec.span);

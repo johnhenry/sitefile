@@ -395,6 +395,13 @@ tools are code, and run only when you name them on the command line.
   checks the target itself before handing it to the proxy. `--allow-hosts` and
   `--deny-hosts` narrow it further, on every hop
   ([docs/CLI.md](docs/CLI.md#network-proxy-host-rules-and-timeouts)).
+- **Strict network mode is opt-in.** With `--network strict` (or
+  `SITEFILE_NETWORK=strict`) a build contacts only hosts you list with
+  `--allow-hosts`, none when you list none. A refused host fails with
+  `E_HOST_BLOCKED` naming the flag to add, also as `needs` in the library
+  error and in `--json` output, so a tool can ask before allowing it. A
+  vendored build with pinned, stored images contacts nothing
+  ([docs/CLI.md](docs/CLI.md#strict-network-mode)).
 - **Pins are enforced.** Unpinned URLs are recorded in `Sitefile.lock` and must
   match on later builds; `--strict-pins` refuses any remote import or BASE image
   that is not pinned (`INTEGRITY`, `@sha256:` or a lockfile entry).
@@ -405,7 +412,8 @@ tools are code, and run only when you name them on the command line.
 - **Secrets go only where they are sent.** `--secret id=token,env=API_TOKEN` with
   `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`) sends the secret
   only to that import's own origin, and never into the output, caches,
-  `Sitefile.lock`, vendor files, provenance, traces or messages.
+  `Sitefile.lock`, vendor files, provenance, traces or messages. In strict mode a
+  secret is sent only to a host that `--allow-secret-host <id>=<host>` names.
 - **Nothing executes unless you allow it by name.** A JavaScript `PLUGIN` runs
   only with `--allow-plugin <name>`, in its own Node process under Node's
   permission model (read access to its own folder only, no writes, network,
@@ -448,6 +456,13 @@ tools are code, and run only when you name them on the command line.
   reproducible.
 - **Web Bundles are unsigned.** `EXPORT … AS wbn` writes an unsigned b2 bundle;
   signing (for example for an Isolated Web App) happens outside sitefile.
+- **Which hosts an open build contacts.** The default network mode is `open`:
+  a Sitefile you did not write may make the build contact any public HTTPS
+  host its author chose (telling it your IP address and when you build),
+  clone Git repositories and pull registry images, and send a `--secret` you
+  supplied to the host its `IMPORT … SECRET` names. Use `--network strict`
+  with `--allow-hosts` (and `--allow-secret-host`) for builds you did not
+  write.
 - **Widening flags are yours to justify.** `--allow-http`,
   `--allow-private-network`, `--allow-hardlinks`, `--force` and `serve -p
   0.0.0.0:…` each turn off one of the guarantees above for that build.

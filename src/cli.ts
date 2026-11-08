@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import path from 'node:path';
-import { SitefileError, isSitefileError } from './errors.js';
+import { errorJson, SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, sitefileCompression, type BuildOptions } from './executor.js';
 import { LINT_RULES } from './lint.js';
 import { compressionFromExtension, defaultOutName, formatFromExtension } from './export-formats.js';
@@ -105,7 +105,8 @@ Options:
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
 ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
@@ -464,6 +465,8 @@ export async function main(
     failed = true;
     if (isSitefileError(e)) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
+      // With --json, the failure is also machine-readable on stdout (code, span, needs).
+      if (o.json) process.stdout.write(errorJson(e));
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
       return 1;
     }
