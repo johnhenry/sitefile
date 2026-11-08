@@ -298,7 +298,10 @@ fn watch_usage_errors() {
     assert!(err.contains("--build-arg needs --watch"), "{err}");
     let (code, _, err) = run(&home, &["serve", "--keep-service-workers", "./x/"]);
     assert_eq!(code, 2);
-    assert!(err.contains("--keep-service-workers needs --watch"), "{err}");
+    assert!(
+        err.contains("--keep-service-workers needs --watch"),
+        "{err}"
+    );
 }
 
 /// GET `path` as a page navigation; returns (status, headers lowercased, body).
@@ -447,7 +450,8 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
 
 /// The port from a `Serving ... at http://127.0.0.1:PORT/` line.
 fn port_of(stdout: &str) -> u16 {
-    let at = stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
+    let at =
+        stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
     stdout[at..].split('/').next().unwrap().parse().unwrap()
 }
 
@@ -527,7 +531,10 @@ fn serve_watch_navigate_to_changed_names_the_edited_post() {
         ],
         "FROM scratch\nIMPORT posts FROM ./posts AS markdown\nRENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts\nEXPORT /\n",
     );
-    let w = Proc::start(&home, &["serve", "--watch", "--navigate-to-changed", s(&site)]);
+    let w = Proc::start(
+        &home,
+        &["serve", "--watch", "--navigate-to-changed", s(&site)],
+    );
     w.wait_lines("Watching ", 1);
     let port = port_of(&w.stdout());
     assert!(get(port, "/__sitefile/reload.js")
@@ -535,7 +542,10 @@ fn serve_watch_navigate_to_changed_names_the_edited_post() {
         .ends_with("\"navigateToChanged\":true,\"reload\":\"morph\"});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
-    write(site.join("posts/2026-01-02-second.md"), "# Second\n\nTwo, edited.\n");
+    write(
+        site.join("posts/2026-01-02-second.md"),
+        "# Second\n\nTwo, edited.\n",
+    );
     assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(
         ev.next(),
@@ -563,7 +573,10 @@ fn build_watch_poll_interval_sees_changes_and_poll_needs_watch() {
     let t = Tmp::new();
     let home = t.0.join("home");
     let site = make_site(&t, &[], DEFAULT_SITEFILE);
-    let w = Proc::start(&home, &["build", "--watch", "--poll-interval", "50", s(&site)]);
+    let w = Proc::start(
+        &home,
+        &["build", "--watch", "--poll-interval", "50", s(&site)],
+    );
     w.wait_lines("Watching ", 1);
     write(site.join("public/style.css"), "body{margin:2px}");
     w.wait_lines("Exported ", 2);
