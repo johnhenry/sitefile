@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`--poll` for watch mode** (johnhenry/sitefile#225): `build --watch` and
+  `serve --watch` take `--poll` (stat polling every 1000 ms instead of file
+  system events, for network shares, Docker bind mounts and WSL) and
+  `--poll-interval <ms>` (implies `--poll`).
 - **Live reload through tunnels and proxies** (johnhenry/sitefile#226): the
   `/__sitefile/reload` stream is sent with `X-Accel-Buffering: no` and
   `Cache-Control: no-cache, no-transform`, and the TypeScript server now sends

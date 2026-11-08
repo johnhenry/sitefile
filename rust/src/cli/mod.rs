@@ -179,6 +179,9 @@ Options:
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -245,6 +248,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("json"),
     flag("dot"),
     flag("watch"),
+    flag("poll"),
+    string("poll-interval"),
     string("profile"),
     string("manifest"),
     flag_s("help", 'h'),
@@ -481,6 +486,16 @@ fn run_main(argv: &[String]) -> i32 {
             return usage_error("--cache-to can be given only once");
         }
     }
+    if !o.flag("watch") && (o.flag("poll") || o.has("poll-interval")) {
+        return usage_error(&format!(
+            "--{} needs --watch",
+            if o.has("poll-interval") {
+                "poll-interval"
+            } else {
+                "poll"
+            }
+        ));
+    }
     if o.flag("watch") {
         if command != "build" {
             return usage_error(&format!(
@@ -492,10 +507,15 @@ fn run_main(argv: &[String]) -> i32 {
         }
         servers::catch_signals();
         let arg_files = o.strs("build-arg-file");
+        let poll = match crate::watch::poll_option(o.flag("poll"), o.str("poll-interval")) {
+            Ok(p) => p,
+            Err(e) => return report(&e),
+        };
         let opts = crate::watch::WatchOptions {
             context: &context,
             sitefile: o.str("file").filter(|s| !s.is_empty()),
             arg_files: &arg_files,
+            poll,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");

@@ -454,6 +454,39 @@ fn build_watch_a_failing_first_build_keeps_watching() {
 }
 
 #[test]
+fn build_watch_poll_interval_sees_changes_and_poll_needs_watch() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[], DEFAULT_SITEFILE);
+    let w = Proc::start(&home, &["build", "--watch", "--poll-interval", "50", s(&site)]);
+    w.wait_lines("Watching ", 1);
+    write(site.join("public/style.css"), "body{margin:2px}");
+    w.wait_lines("Exported ", 2);
+    assert_eq!(
+        fs::read_to_string(site.join("dist/style.css")).unwrap(),
+        "body{margin:2px}"
+    );
+    assert_eq!(w.stop(), 0);
+    let (code, _, err) = run(&home, &["build", "--poll", s(&site)]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--poll needs --watch"), "{err}");
+    let (code, _, err) = run(
+        &home,
+        &["build", "--watch", "--poll-interval", "soon", s(&site)],
+    );
+    assert_eq!(code, 2);
+    assert!(
+        err.contains(
+            "--poll-interval expects a whole number of milliseconds (10 or more), got 'soon'"
+        ),
+        "{err}"
+    );
+    let (code, _, err) = run(&home, &["serve", "--poll", "./x/"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--poll needs --watch"), "{err}");
+}
+
+#[test]
 fn build_watch_rebuilds_incrementally() {
     let t = Tmp::new();
     let home = t.0.join("home");
