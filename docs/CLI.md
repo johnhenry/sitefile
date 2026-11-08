@@ -865,7 +865,9 @@ to `image` (`imageId`) and `dir` (`path`).
   `oauth-authorization-server` and `nodeinfo` under `/.well-known/` are `application/json`, `/.well-known/webfinger`
   is `application/jrd+json`, `/.well-known/host-meta` is `application/xrd+xml` (`_headers` can still override);
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
-  `x-content-type-options: nosniff`. Paths are percent-decoded per segment; `..`, an encoded `/`, NUL, control
+  `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
+  it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
+  percent-decoded per segment; `..`, an encoded `/`, NUL, control
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
   file extension (a missing `/app.js` stays `404`).
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and

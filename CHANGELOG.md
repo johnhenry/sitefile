@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` accepts absolute-form request targets** (johnhenry/sitefile#189):
+  `GET http://host/path?q HTTP/1.1` is answered like `GET /path?q` (the
+  authority is ignored) instead of `400`, in both servers, as RFC 9112
+  requires.
 - **Extensionless well-known files get their type** (johnhenry/sitefile#180):
   `serve` and Web Bundle export send `/.well-known/apple-app-site-association`
   (and `/apple-app-site-association`), `openid-configuration`,
