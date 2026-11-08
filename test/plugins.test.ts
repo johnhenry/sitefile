@@ -1,12 +1,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { build, type BuildOptions } from '../src/executor.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { parseProgram } from '../src/language/validate.js';
 import { sha256 } from '../src/digest.js';
+import { digestFolder, pluginFolderIntegrity } from '../src/plugins/cache.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -165,9 +166,9 @@ test('plugin errors, bad results, timeouts and placement rules', async () => {
     'E_PROTOCOL',
   );
   await rejects({ 'plugins/p.js': '', Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.js\nEXPORT /' }, 'E_VALIDATION', /\.mjs/);
-  // Pinned and correct: fine.
+  // Pinned and correct (INTEGRITY on a JS plugin pins its folder, here just the module): fine.
   const good = 'export function transform() { return "ok"; }';
-  const r = await run(site(good, ` INTEGRITY ${sha256(good)}`));
+  const r = await run(site(good, ` INTEGRITY sha256:${sha256(`p.mjs\0${sha256(good)}\n`).slice(7)}`));
   assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
 });
 
@@ -192,6 +193,44 @@ test('a JS plugin that passes --plugin-memory fails with E_PLUGIN, without the V
   // A plugin within the limit is unaffected.
   const r = await run(site('export function transform() { return "x".repeat(4 << 20).length + ""; }'), { pluginPolicy: { maxMemoryMiB: 64 } });
   assert.equal(text(r.output.get('/a.out')?.bytes), String(4 << 20));
+});
+
+test('INTEGRITY on a JS plugin pins every file in its folder (#158)', async () => {
+  const files = {
+    'plugins/p.mjs': "import { word } from './helper.mjs'; export function transform() { return word; }",
+    'plugins/helper.mjs': "export const word = 'pinned';",
+    'plugins/data/words.txt': 'a\nb\n',
+    'a.txt': 'a',
+  };
+  const dir = await project(files);
+  const folder = path.join(await realpath(dir), 'plugins');
+  const pin = await pluginFolderIntegrity(folder);
+  assert.ok('digest' in pin);
+  assert.equal(pin.digest, `sha256:${await digestFolder(folder)}`);
+  const sitefile = (integrity: string): string => `FROM scratch\nPLUGIN p FROM ./plugins/p.mjs INTEGRITY ${integrity}\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /`;
+  const r = await run({ ...files, Sitefile: sitefile(pin.digest) });
+  assert.equal(text(r.output.get('/a.out')?.bytes), 'pinned');
+  // The module's own digest no longer pins it, and the error gives the folder's.
+  await rejects({ ...files, Sitefile: sitefile(sha256(files['plugins/p.mjs'])) }, 'E_INTEGRITY', new RegExp(`integrity mismatch for \\./plugins/ \\(PLUGIN p's folder: INTEGRITY covers every file in it\\): expected sha256:[0-9a-f]{64}, got ${pin.digest}$`));
+  // A changed helper or data file breaks the pin (the module itself is unchanged).
+  await rejects({ ...files, 'plugins/helper.mjs': "export const word = 'swapped';", Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch for \.\/plugins\//);
+  await rejects({ ...files, 'plugins/data/words.txt': 'c\n', Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch/);
+  await rejects({ ...files, 'plugins/extra.txt': '', Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch/);
+  // A symlink could change what an import resolves to without changing any file: a pinned folder can't hold one.
+  const linked = await project({ ...files, Sitefile: sitefile(pin.digest) });
+  await symlink('helper.mjs', path.join(linked, 'plugins', 'alias.mjs'));
+  await assert.rejects(build({ contextDir: linked, lockfile: false, allowAllPlugins: true }), (e: unknown) => {
+    assert.ok(isSitefileError(e));
+    assert.equal(e.code, 'E_INTEGRITY');
+    assert.match(e.message, /PLUGIN p: INTEGRITY pins the plugin's folder \.\/plugins\/, which contains alias\.mjs, which is not a regular file or directory/);
+    return true;
+  });
+  // Unpinned, the folder may hold anything it did before.
+  const free = await project({ ...files, Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /' });
+  await symlink('helper.mjs', path.join(free, 'plugins', 'alias.mjs'));
+  assert.equal(text((await build({ contextDir: free, lockfile: false, allowAllPlugins: true })).output.get('/a.out')?.bytes), 'pinned');
+  // Not allowed: refused before the folder is read.
+  await rejects({ ...files, Sitefile: sitefile(sha256('x')) }, 'E_UNSUPPORTED', /--allow-plugin p/, { allowAllPlugins: false });
 });
 
 test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before anything starts', async () => {

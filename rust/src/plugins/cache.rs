@@ -690,6 +690,50 @@ pub const DIGEST_FOLDER_MAX_BYTES: u64 = 128 * 1024 * 1024;
 /// Digest of every regular file under `dir` (a plugin can read all of them, so
 /// any may change its output). `Ok(None)` when the folder is over the limits.
 /// Same value as `digestFolder` in cache.ts.
+/// What INTEGRITY on a JavaScript plugin pins: `sha256:` + `digest_folder` of the plugin's folder.
+/// `Err(problem)` when the folder holds anything but regular files and directories (a symlink
+/// could change what an import resolves to without changing any file) or is over
+/// `digest_folder`'s limits. Port of `pluginFolderIntegrity` (src/plugins/cache.ts).
+pub fn plugin_folder_integrity(dir: &Path) -> io::Result<std::result::Result<String, String>> {
+    fn other(dir: &Path, rel: &str) -> io::Result<Option<String>> {
+        let here = if rel.is_empty() {
+            dir.to_path_buf()
+        } else {
+            dir.join(rel)
+        };
+        let mut entries: Vec<(String, fs::FileType)> = Vec::new();
+        for e in fs::read_dir(&here)? {
+            let e = e?;
+            entries.push((e.file_name().to_string_lossy().into_owned(), e.file_type()?));
+        }
+        entries.sort_by(|a, b| utf16_cmp(&a.0, &b.0));
+        for (name, ft) in entries {
+            let r = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if ft.is_dir() {
+                if let Some(found) = other(dir, &r)? {
+                    return Ok(Some(found));
+                }
+            } else if !ft.is_file() {
+                return Ok(Some(r));
+            }
+        }
+        Ok(None)
+    }
+    if let Some(odd) = other(dir, "")? {
+        return Ok(Err(format!(
+            "contains {odd}, which is not a regular file or directory (a pinned folder can hold only those)"
+        )));
+    }
+    Ok(match digest_folder(dir)? {
+        Some(hex) => Ok(format!("sha256:{hex}")),
+        None => Err("is too large to pin (more than 2000 files or 128 MiB)".into()),
+    })
+}
+
 pub fn digest_folder(dir: &Path) -> io::Result<Option<String>> {
     digest_folder_with_limits(dir, DIGEST_FOLDER_MAX_FILES, DIGEST_FOLDER_MAX_BYTES)
 }
@@ -1108,6 +1152,28 @@ mod tests {
                 blobs: 0,
                 bytes: 0
             }
+        );
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_folder_integrity_pins_the_folder_and_refuses_symlinks() {
+        let d = tmp("sitefile-folder-integrity-");
+        fs::create_dir_all(d.join("lib")).unwrap();
+        fs::write(d.join("p.mjs"), "import './lib/h.mjs';").unwrap();
+        fs::write(d.join("lib/h.mjs"), "export const h = 1;").unwrap();
+        let pin = plugin_folder_integrity(&d).unwrap().unwrap();
+        assert_eq!(
+            pin,
+            format!("sha256:{}", digest_folder(&d).unwrap().unwrap())
+        );
+        fs::write(d.join("lib/h.mjs"), "export const h = 2;").unwrap();
+        assert_ne!(plugin_folder_integrity(&d).unwrap().unwrap(), pin);
+        std::os::unix::fs::symlink("h.mjs", d.join("lib/alias.mjs")).unwrap();
+        assert_eq!(
+            plugin_folder_integrity(&d).unwrap().unwrap_err(),
+            "contains lib/alias.mjs, which is not a regular file or directory (a pinned folder can hold only those)"
         );
         fs::remove_dir_all(&d).unwrap();
     }

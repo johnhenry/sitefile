@@ -51,6 +51,15 @@
   default stays `open`. With `--json`, a failed command also prints
   `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
   error rows include `needs`. Both implementations, with conformance cases.
+- **`INTEGRITY` on a JavaScript plugin pins its folder** (johnhenry/sitefile#158):
+  a JS plugin can read and import every file in its folder, so its
+  `INTEGRITY` is now the folder digest (`sha256:` + the digest the TRANSFORM
+  cache already uses) instead of the module file's. A changed helper, data
+  file or vendored dependency fails with `E_INTEGRITY`, the error gives the
+  folder's current digest, and a pinned folder may not contain symlinks.
+  **Breaking:** an existing pin on a JS plugin (the module file's digest)
+  fails until replaced with the digest from the error. Wasm pins are
+  unchanged.
 
 ## 0.0.2 (2026-11-08)
 

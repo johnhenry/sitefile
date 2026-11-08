@@ -3450,11 +3450,11 @@ fn register_plugin(
 ) -> Result<()> {
     let span = Some(&spec.span);
     let (real, bytes) = local.real_file(&spec.path, span)?;
-    if let Some(i) = &spec.integrity {
-        verify_integrity(&bytes, i, &format!("./{}", spec.path), span)?;
-    }
     if real.to_string_lossy().ends_with(".wasm") {
-        // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+        // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed, and INTEGRITY pins the module.
+        if let Some(i) = &spec.integrity {
+            verify_integrity(&bytes, i, &format!("./{}", spec.path), span)?;
+        }
         check_wasm_plugin_in(host.store_home(), &spec.name, &bytes, span)?;
         host.register(&spec.name, real, Some(spec.span.clone()), Some(bytes));
         return Ok(());
@@ -3472,6 +3472,46 @@ fn register_plugin(
             format!("PLUGIN {}: put the plugin in its own folder (e.g. ./plugins/{base}); a plugin can read every file next to it", spec.name),
             &spec.span,
         ));
+    }
+    // It can read and import everything in its folder, so INTEGRITY pins the whole folder (#158).
+    if let Some(expected) = &spec.integrity {
+        let dir = real.parent().unwrap_or(local.root());
+        let rel = dir.strip_prefix(local.root()).unwrap_or(dir);
+        let rel: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let shown = format!("./{}/", rel.join("/"));
+        let r = crate::plugins::cache::plugin_folder_integrity(dir).map_err(|e| {
+            SitefileError::at(
+                E_INTEGRITY,
+                format!(
+                    "PLUGIN {}: could not read the plugin's folder {shown}: {e}",
+                    spec.name
+                ),
+                &spec.span,
+            )
+        })?;
+        match r {
+            Err(problem) => {
+                return Err(SitefileError::at(
+                    E_INTEGRITY,
+                    format!(
+                        "PLUGIN {}: INTEGRITY pins the plugin's folder {shown}, which {problem}",
+                        spec.name
+                    ),
+                    &spec.span,
+                ))
+            }
+            Ok(digest) if digest != expected.to_ascii_lowercase() => {
+                return Err(SitefileError::at(
+                    E_INTEGRITY,
+                    format!("integrity mismatch for {shown} (PLUGIN {}'s folder: INTEGRITY covers every file in it): expected {expected}, got {digest}", spec.name),
+                    &spec.span,
+                ))
+            }
+            Ok(_) => {}
+        }
     }
     host.register(&spec.name, real, Some(spec.span.clone()), None);
     Ok(())

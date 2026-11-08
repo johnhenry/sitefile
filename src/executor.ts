@@ -10,7 +10,7 @@ import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { importedStageRefs, plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportedStageRef, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
-import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
+import { cacheKey, digestFolder, pluginFolderIntegrity, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, fileRefs, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
@@ -1769,9 +1769,9 @@ function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: E
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
 async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost, allowed: (spec: PluginSpec) => void): Promise<void> {
   const { real, bytes } = await local.realFile(spec.path, spec.span);
-  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
   if (real.endsWith('.wasm')) {
-    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed, and INTEGRITY pins the module.
+    if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
     checkWasmPlugin(spec.name, bytes, spec.span);
     host.register(spec.name, real, spec.span, bytes);
     return;
@@ -1785,6 +1785,16 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
       `PLUGIN ${spec.name}: put the plugin in its own folder (e.g. ./plugins/${path.basename(real)}); a plugin can read every file next to it`,
       spec.span,
     );
+  }
+  // It can read and import everything in its folder, so INTEGRITY pins the whole folder (#158).
+  if (spec.integrity) {
+    const dir = path.dirname(real);
+    const shown = `./${path.relative(local.root, dir).split(path.sep).join('/')}/`;
+    const r = await pluginFolderIntegrity(dir);
+    if ('problem' in r) throw new SitefileError('E_INTEGRITY', `PLUGIN ${spec.name}: INTEGRITY pins the plugin's folder ${shown}, which ${r.problem}`, spec.span);
+    if (r.digest !== spec.integrity.toLowerCase()) {
+      throw new SitefileError('E_INTEGRITY', `integrity mismatch for ${shown} (PLUGIN ${spec.name}'s folder: INTEGRITY covers every file in it): expected ${spec.integrity}, got ${r.digest}`, spec.span);
+    }
   }
   host.register(spec.name, real, spec.span);
 }

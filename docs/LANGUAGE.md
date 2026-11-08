@@ -787,7 +787,9 @@ properties:
   their own folder only; no writes, processes, workers, network or
   environment; a per-call time limit (`--plugin-timeout`). Failures are
   `E_PLUGIN`. This protects against accidents, not deliberately malicious code:
-  pin plugins with `INTEGRITY`.
+  pin plugins with `INTEGRITY` (for a `.mjs` plugin, the digest of its whole
+  folder, which it can read; for a `.wasm` plugin, of the module; see
+  docs/PLUGINS.md, "What `INTEGRITY` pins").
 - A JavaScript plugin runs only if the CLI allows it with `--allow-plugin name`
   (or `--allow-plugins`); otherwise the build fails with `E_UNSUPPORTED` at the
   `PLUGIN` line, naming the flag. A WebAssembly plugin needs no flag.
