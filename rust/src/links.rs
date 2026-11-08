@@ -472,7 +472,13 @@ fn html_attribute(col: &mut Collector, tag: &str, name: &str, start: usize, end:
     }
     if name == "srcset" || name == "imagesrcset" {
         for (a, b) in srcset_urls(value.as_bytes()) {
-            col.push_attr(start + a, start + b, decode_html_text(&value[a..b]), tag, name);
+            col.push_attr(
+                start + a,
+                start + b,
+                decode_html_text(&value[a..b]),
+                tag,
+                name,
+            );
         }
         return;
     }

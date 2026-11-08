@@ -54,7 +54,11 @@ fn asset_of(r: &Reference, from: &str) -> Result<Option<(String, String)>> {
     if is_html(&path) {
         return Ok(None);
     }
-    let fragment = r.url.find('#').map(|i| r.url[i..].to_string()).unwrap_or_default();
+    let fragment = r
+        .url
+        .find('#')
+        .map(|i| r.url[i..].to_string())
+        .unwrap_or_default();
     Ok(Some((path, fragment)))
 }
 
@@ -95,7 +99,13 @@ impl Inliner<'_> {
         Ok(uri)
     }
 
-    fn rewrite(&mut self, src: &str, refs: &[Reference], from: &str, stack: &[String]) -> Result<String> {
+    fn rewrite(
+        &mut self,
+        src: &str,
+        refs: &[Reference],
+        from: &str,
+        stack: &[String],
+    ) -> Result<String> {
         let mut out = String::new();
         let mut at = 0;
         for r in refs {
@@ -214,7 +224,10 @@ mod tests {
     #[test]
     fn inlines_and_keeps() {
         let t = tree(&[
-            ("/index.html", "<link rel=stylesheet href=a.css><a href=b.png>x</a><img src=b.png>"),
+            (
+                "/index.html",
+                "<link rel=stylesheet href=a.css><a href=b.png>x</a><img src=b.png>",
+            ),
             ("/a.css", "p{background:url(b.png)}"),
             ("/b.png", "B"),
         ]);
