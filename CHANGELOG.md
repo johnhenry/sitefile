@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.0.1 (2026-11-08)
 
 - **`serve` serves archive files** (johnhenry/sitefile#155): `sitefile serve
   site.zip` (and `serve -d`) serves a zip, tar, tar.gz/tgz, Web Bundle or OCI
