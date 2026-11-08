@@ -41,6 +41,16 @@
   `integrity="sha384-…"` to the `<script src>` and
   `<link rel=stylesheet|modulepreload>` tags that load a renamed file. Both
   implementations, with conformance cases.
+- **Network gating** (johnhenry/sitefile#176): a host refused because it
+  matches no `--allow-hosts` rule now says which flag to add (`; add
+  --allow-hosts <host>`) and carries `needs` (`kind: 'host'`,
+  `NeedsKind::Host`), like a plugin that was not allowed. Opt-in strict mode,
+  `--network strict` or `SITEFILE_NETWORK=strict`, allows only listed hosts
+  (none when none are listed) and sends an `IMPORT … SECRET` only to a host
+  that `--allow-secret-host <id>=<host>` names (`kind: 'secret-host'`). The
+  default stays `open`. With `--json`, a failed command also prints
+  `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
+  error rows include `needs`. Both implementations, with conformance cases.
 
 ## 0.0.2 (2026-11-08)
 

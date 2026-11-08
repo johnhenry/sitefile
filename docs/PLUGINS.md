@@ -137,7 +137,9 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
   call the library, that error (and a `TOOL`'s) also carries `needs`:
   `{ kind: 'plugin' | 'tool', name, flag: '--allow-plugin' | '--allow-exec' }`
   in TypeScript, `SitefileError::needs` (`Needs`) in Rust, so nothing has to
-  parse the message.
+  parse the message. Refused hosts carry one too (`kind: 'host'` and
+  `'secret-host'`, see [CLI.md](CLI.md#strict-network-mode)), and `--json`
+  prints it on stdout ([CLI.md](CLI.md#--json-errors)).
 - An `--allow-plugin` name that matches no `PLUGIN` is a warning.
 - `validate` never runs plugins and needs no flag. `inspect` builds in memory,
   so it needs the flag like `build`. The language server never runs plugins.

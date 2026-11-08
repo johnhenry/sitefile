@@ -1,4 +1,4 @@
-export { SitefileError, isSitefileError, formatSpan, needsPlugin, needsTool, type ErrorCode, type Needs, type SourceSpan } from './errors.js';
+export { SitefileError, isSitefileError, formatSpan, needsPlugin, needsTool, needsHost, needsSecretHost, errorJson, type ErrorCode, type Needs, type SourceSpan } from './errors.js';
 export type * from './language/ast.js';
 export { parseSitefile } from './language/parser.js';
 export { validate, parseProgram } from './language/validate.js';
