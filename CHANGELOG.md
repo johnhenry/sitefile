@@ -18,7 +18,7 @@
   (`NetworkSettings`, additive in both implementations). docs/CLI.md,
   "Network"; `test/network.test.ts`, `rust/src/resources/network.rs`, and the
   `net-proxy*`, `net-no-proxy`, `net-allow-hosts` and `net-deny-hosts`
-  conformance cases.
+  conformance cases. Added in c131eb3 (#162).
 
 - **Library API for embedders** (johnhenry/sitefile#153), found by embedding
   the crate in sitefile Desktop. Rust: `servers::serve_detached`,
