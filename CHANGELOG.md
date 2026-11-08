@@ -21,7 +21,7 @@
   `E_UNSUPPORTED` error of a PLUGIN or TOOL that is not allowed carries
   `needs` (kind, name, flag), with the message unchanged. CLI output is
   otherwise unchanged. docs/RUST.md, "Embedding the crate";
-  `rust/tests/embed.rs`. Added in PR_COMMIT (#PR_NUMBER).
+  `rust/tests/embed.rs`. Added in e0c555d (#154).
 
 - **`EXPORT … AS wbn COMPRESSION gzip`** (johnhenry/sitefile#143): a Web Bundle
   export can now be gzip(`application/webbundle`), the `.wbn` archive format of
