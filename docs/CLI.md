@@ -860,7 +860,10 @@ to `image` (`imageId`) and `dir` (`path`).
   from nginx's `mime.types`, else the IANA registrations: HTML, CSS, JavaScript including `.cjs`, JSON and
   source maps, XML/XSLT, feeds, WebVTT, CSV, Markdown, YAML, TOML, fonts, images, audio, video, HLS/DASH,
   glTF, Web Bundles and common archives); text types get `; charset=utf-8`; any other extension is
-  `application/octet-stream`;
+  `application/octet-stream`. A few well-known files without an extension are typed by their exact path first:
+  `/.well-known/apple-app-site-association` and `/apple-app-site-association`, `openid-configuration`,
+  `oauth-authorization-server` and `nodeinfo` under `/.well-known/` are `application/json`, `/.well-known/webfinger`
+  is `application/jrd+json`, `/.well-known/host-meta` is `application/xrd+xml` (`_headers` can still override);
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
   `x-content-type-options: nosniff`. Paths are percent-decoded per segment; `..`, an encoded `/`, NUL, control
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
