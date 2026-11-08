@@ -1,3 +1,4 @@
+import { NETWORK_OPTIONS, networkHelp, networkOption } from './network.js';
 import { insecureRegistriesFromEnv } from '../base-image.js';
 import { collectBuildArgs } from '../build-args.js';
 import { outdated, type OutdatedReport, type OutdatedStatus } from '../outdated.js';
@@ -46,10 +47,12 @@ const outdatedCommand: Command = {
     '--allow-private-network       permit loopback/private network addresses',
     `--max-download-bytes <n>      per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})`,
     `--timeout <ms>                per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})`,
+    ...networkHelp(30),
     '--base <image>                check this BASE image (overrides EXPORT ... AS oci BASE)',
     '--insecure-registry <h>       allow plain http to registry host[:port] (repeatable)',
   ],
   options: {
+    ...NETWORK_OPTIONS,
     file: { type: 'string', short: 'f' },
     json: { type: 'boolean' },
     'build-arg': { type: 'string', multiple: true },
@@ -67,6 +70,7 @@ const outdatedCommand: Command = {
     requireArgs(pos, 0, 1, 'a context directory');
     const maxBytes = positive(str(v['max-download-bytes']), '--max-download-bytes');
     const timeoutMs = positive(str(v.timeout), '--timeout');
+    const network = networkOption(v);
     const file = str(v.file);
     const base = str(v.base);
     const r = await outdated({
@@ -79,6 +83,7 @@ const outdatedCommand: Command = {
         allowPrivateNetwork: !!v['allow-private-network'],
         ...(maxBytes ? { maxBytes } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
+        ...(network ? { network } : {}),
       },
       ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(base !== undefined ? { baseImage: base } : {}),

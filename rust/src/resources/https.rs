@@ -12,6 +12,7 @@
 
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::resources::netpolicy::{is_public_address, is_public_ip};
+use crate::resources::network::{check_host_rules, proxy_for, NetworkSettings, ProxyConfig};
 use crate::resources::types::FetchPolicy;
 use crate::resources::wbn_reader::split_scheme;
 use std::io::{self, Read};
@@ -43,6 +44,8 @@ struct Hop {
     has_credentials: bool,
     /// scheme://host[:port] (WHATWG origin serialization).
     origin: String,
+    /// The port, or the scheme's default.
+    port: u16,
 }
 
 /// What to send. `headers` go to every hop; `origin_headers` (credentials) only to hops on the
@@ -73,6 +76,7 @@ fn parse_hop(url: &str) -> Option<Hop> {
         host: strip_brackets(host).to_string(),
         has_credentials: !u.username().is_empty() || u.password().is_some_and(|p| !p.is_empty()),
         origin: u.origin().ascii_serialization(),
+        port: u.port_or_known_default().unwrap_or(0),
     })
 }
 
@@ -181,6 +185,7 @@ fn validate(url: &Hop, policy: &FetchPolicy, span: Option<&SourceSpan>) -> Resul
             span.cloned(),
         ));
     }
+    check_host_rules(&url.host, url.port, &policy.network, &url.redacted, span)?;
     if url.host.parse::<IpAddr>().is_ok()
         && !policy.allow_private_network
         && !is_public_address(&url.host)
@@ -477,17 +482,8 @@ pub fn fetch_remote_with(
     let origin = current.origin.clone();
     let resolver =
         GuardedResolver::new(policy, span).with_deadline(deadline, timeout_error().detail);
-    let mut builder = ureq::AgentBuilder::new()
-        .redirects(0)
-        .max_idle_connections(0)
-        .max_idle_connections_per_host(0)
-        .try_proxy_from_env(false)
-        .user_agent(USER_AGENT)
-        .resolver(resolver.clone());
-    if let Some(config) = tls_config(policy.ca.as_deref(), span)? {
-        builder = builder.tls_config(config);
-    }
-    let agent = builder.build();
+    let tls = tls_config(policy.ca.as_deref(), span)?;
+    let net = &policy.network;
 
     let mut redirects: u32 = 0;
     loop {
@@ -496,12 +492,47 @@ pub fn fetch_remote_with(
         if now >= deadline {
             return Err(timeout_error());
         }
+        let remaining = deadline - now;
+        let proxy = proxy_for(&current.host, current.port, net).map_err(|e| e.with_span(span))?;
+        if proxy.is_some() {
+            check_before_proxy(&current, policy, &resolver, span)?;
+        }
+        let limits = HopTimeouts::new(net, remaining);
+        // Through a proxy the resolver is only asked for the proxy's address, which the
+        // user named (it may be private); the target was checked above.
+        let hop_resolver = match &proxy {
+            Some(_) => GuardedResolver::new(
+                &FetchPolicy {
+                    allow_private_network: true,
+                    ..FetchPolicy::default()
+                },
+                span,
+            )
+            .with_deadline(deadline, timeout_error().detail),
+            None => resolver.clone(),
+        };
+        let agent = build_agent(
+            tls.clone(),
+            hop_resolver.clone(),
+            proxy.as_ref(),
+            &limits,
+            span,
+        )?;
         let mut req = agent
             .request(method, &current.href)
-            .timeout(deadline - now)
             .set("accept-encoding", "identity")
             .set("user-agent", USER_AGENT)
             .set("accept", "*/*");
+        if !limits.custom_read {
+            req = req.timeout(remaining);
+        }
+        if let Some(auth) = proxy
+            .as_ref()
+            .filter(|_| current.scheme == "http")
+            .and_then(ProxyConfig::authorization)
+        {
+            req = req.set("proxy-authorization", &auth);
+        }
         for (k, v) in &request.headers {
             req = req.set(k, v);
         }
@@ -519,11 +550,18 @@ pub fn fetch_remote_with(
             Ok(r) => r,
             Err(ureq::Error::Status(_, r)) => r,
             Err(ureq::Error::Transport(t)) => {
-                if let Some(e) = resolver.take_error() {
+                if let Some(e) = hop_resolver.take_error() {
                     return Err(e);
                 }
+                if let Some(p) = &proxy {
+                    if let Some(e) = proxy_error(&t, p, &current, span) {
+                        return Err(e);
+                    }
+                }
                 if Instant::now() >= deadline || source_is_timeout(&t) {
-                    return Err(timeout_error());
+                    return Err(limits
+                        .timeout_error(&t, deadline, &current.redacted, net, span)
+                        .unwrap_or_else(timeout_error));
                 }
                 return Err(SitefileError::new(
                     E_FETCH,
@@ -639,6 +677,9 @@ pub fn fetch_remote_with(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if limits.custom_read && Instant::now() > deadline {
+                        return Err(timeout_error());
+                    }
                     if (bytes.len() + n) as u64 > policy.max_bytes {
                         return Err(SitefileError::new(
                             E_TOO_LARGE,
@@ -654,6 +695,9 @@ pub fn fetch_remote_with(
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     if Instant::now() >= deadline || source_is_timeout(&e) {
+                        if limits.read_user && Instant::now() < deadline {
+                            return Err(hop_timeout(false, &current.redacted, net, span));
+                        }
                         return Err(timeout_error());
                     }
                     return Err(SitefileError::new(
@@ -676,6 +720,188 @@ pub fn fetch_remote_with(
             media_type,
         });
     }
+}
+
+// ------------------------------------------------------------------ proxy and connect/read timeouts
+
+/// E_FETCH_TIMEOUT for a connect (`connect`) or read (idle) timeout.
+pub(crate) fn hop_timeout(
+    connect: bool,
+    shown: &str,
+    network: &NetworkSettings,
+    span: Option<&SourceSpan>,
+) -> SitefileError {
+    let detail = if connect {
+        format!(
+            "fetching {shown}: connecting timed out after {} ms (connect timeout)",
+            network.connect_timeout_ms.unwrap_or(0)
+        )
+    } else {
+        format!(
+            "fetching {shown}: no data for {} ms (read timeout)",
+            network.read_timeout_ms.unwrap_or(0)
+        )
+    };
+    SitefileError::new(E_FETCH_TIMEOUT, detail, span.cloned())
+}
+
+/// The connect and read limits of one hop: the configured ones when they are
+/// tighter than what is left of the fetch's total budget.
+struct HopTimeouts {
+    connect: Duration,
+    read: Duration,
+    connect_user: bool,
+    read_user: bool,
+    /// A read timeout is configured: reads are bounded by it, not by the deadline.
+    custom_read: bool,
+}
+
+impl HopTimeouts {
+    fn new(net: &NetworkSettings, remaining: Duration) -> HopTimeouts {
+        let pick = |v: Option<u64>| match v.map(Duration::from_millis) {
+            Some(d) if d < remaining => (d, true),
+            _ => (remaining, false),
+        };
+        let (connect, connect_user) = pick(net.connect_timeout_ms);
+        let (read, read_user) = pick(net.read_timeout_ms);
+        HopTimeouts {
+            connect,
+            read,
+            connect_user,
+            read_user,
+            custom_read: net.read_timeout_ms.is_some(),
+        }
+    }
+
+    /// The connect/read timeout a timed-out transport error stands for, if it is one of those.
+    fn timeout_error(
+        &self,
+        t: &ureq::Transport,
+        deadline: Instant,
+        shown: &str,
+        net: &NetworkSettings,
+        span: Option<&SourceSpan>,
+    ) -> Option<SitefileError> {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        if t.kind() == ureq::ErrorKind::ConnectionFailed {
+            return self
+                .connect_user
+                .then(|| hop_timeout(true, shown, net, span));
+        }
+        self.read_user.then(|| hop_timeout(false, shown, net, span))
+    }
+}
+
+/// One agent for one hop: no pooling, no redirects, the environment's proxy
+/// variables ignored; `proxy` is the configured one (or none).
+fn build_agent(
+    tls: Option<Arc<ureq::rustls::ClientConfig>>,
+    resolver: GuardedResolver,
+    proxy: Option<&ProxyConfig>,
+    limits: &HopTimeouts,
+    span: Option<&SourceSpan>,
+) -> Result<ureq::Agent> {
+    let mut builder = ureq::AgentBuilder::new()
+        .redirects(0)
+        .max_idle_connections(0)
+        .max_idle_connections_per_host(0)
+        .try_proxy_from_env(false)
+        .user_agent(USER_AGENT)
+        .resolver(resolver);
+    if limits.connect_user || limits.custom_read {
+        builder = builder.timeout_connect(limits.connect);
+    }
+    if limits.custom_read {
+        builder = builder.timeout_read(limits.read).timeout_write(limits.read);
+    }
+    if let Some(p) = proxy {
+        builder = builder.proxy(p.ureq().map_err(|e| e.with_span(span))?);
+    }
+    if let Some(config) = tls {
+        builder = builder.tls_config(config);
+    }
+    Ok(builder.build())
+}
+
+/// `host:port` as in a CONNECT request (IPv6 in brackets).
+fn authority(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// Before a request goes to the proxy: resolve the target here and refuse it when
+/// it is non-public (unless `allow_private_network`), as a direct connection
+/// would at connect time, so a proxy never widens the policy.
+fn check_before_proxy(
+    hop: &Hop,
+    policy: &FetchPolicy,
+    resolver: &GuardedResolver,
+    span: Option<&SourceSpan>,
+) -> Result<()> {
+    if policy.allow_private_network || hop.host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    check_target_resolves(&hop.host, hop.port, resolver, span)
+}
+
+pub(crate) fn check_target_resolves(
+    host: &str,
+    port: u16,
+    resolver: &GuardedResolver,
+    span: Option<&SourceSpan>,
+) -> Result<()> {
+    match resolver.resolve_checked(&authority(host, port)) {
+        Ok(_) => Ok(()),
+        Err(e) if e.code == E_FETCH => {
+            let why = e
+                .detail
+                .strip_prefix(&format!("cannot resolve {host}: "))
+                .unwrap_or(&e.detail)
+                .to_string();
+            Err(SitefileError::new(
+                E_FETCH,
+                format!("cannot resolve {host} to check it against the private-network rule before using the proxy: {why}"),
+                span.cloned(),
+            ))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The message for a proxy that refused the tunnel, if `t` is that.
+pub(crate) fn proxy_error_for(
+    t: &ureq::Transport,
+    proxy: &ProxyConfig,
+    host: &str,
+    port: u16,
+    span: Option<&SourceSpan>,
+) -> Option<SitefileError> {
+    let detail = match t.kind() {
+        ureq::ErrorKind::ProxyUnauthorized => {
+            format!("proxy {} requires authentication (HTTP 407)", proxy.shown)
+        }
+        ureq::ErrorKind::ProxyConnect => format!(
+            "proxy {} refused to connect to {}",
+            proxy.shown,
+            authority(host, port)
+        ),
+        _ => return None,
+    };
+    Some(SitefileError::new(E_FETCH, detail, span.cloned()))
+}
+
+fn proxy_error(
+    t: &ureq::Transport,
+    proxy: &ProxyConfig,
+    hop: &Hop,
+    span: Option<&SourceSpan>,
+) -> Option<SitefileError> {
+    proxy_error_for(t, proxy, &hop.host, hop.port, span)
 }
 
 #[cfg(test)]
@@ -1229,6 +1455,269 @@ mod tests {
                 .map(|e| e.code),
             Some(E_FETCH)
         );
+    }
+
+    // ------------------------------------------------------------ network settings
+
+    fn net(n: NetworkSettings) -> FetchPolicy {
+        FetchPolicy {
+            network: n,
+            ..local()
+        }
+    }
+
+    /// Request lines and proxy-authorization headers a test proxy received.
+    type Seen = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// A proxy that answers absolute-form requests itself and refuses CONNECT
+    /// (403, or 407 for `auth.test`), recording every request line and its
+    /// proxy-authorization header.
+    fn fake_proxy() -> (String, Seen) {
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let base = serve(move |r, s, _| {
+            let auth = r
+                .headers
+                .get("proxy-authorization")
+                .cloned()
+                .unwrap_or_default();
+            log.lock().unwrap().push((r.path.clone(), auth));
+            if r.path.starts_with("auth.test:") {
+                respond(s, 407, &[("proxy-authenticate", "Basic")], "");
+            } else if !r.path.starts_with("http://") {
+                respond(s, 403, &[], "");
+            } else {
+                respond(s, 200, &[], "via proxy");
+            }
+        });
+        (base, seen)
+    }
+
+    #[test]
+    fn http_through_the_proxy_is_absolute_form_with_credentials() {
+        let (proxy, seen) = fake_proxy();
+        let p = net(NetworkSettings {
+            proxy: Some(proxy.replace("http://", "http://u:p%40ss@")),
+            ..NetworkSettings::NONE
+        });
+        let r = fetch_remote("http://example.test/x?q=1", &p, None).unwrap();
+        assert_eq!(r.bytes, b"via proxy");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].0, "http://example.test/x?q=1");
+        assert!(
+            seen[0].1.eq_ignore_ascii_case("basic dTpwQHNz"),
+            "{}",
+            seen[0].1
+        );
+    }
+
+    #[test]
+    fn a_refused_tunnel_names_the_proxy_without_credentials() {
+        let (proxy, seen) = fake_proxy();
+        let p = net(NetworkSettings {
+            proxy: Some(proxy.replace("http://", "http://u:secret@")),
+            ..NetworkSettings::NONE
+        });
+        let e = fetch_remote("https://example.test/a.css", &p, None).unwrap_err();
+        assert_eq!(e.code, E_FETCH);
+        assert_eq!(
+            e.detail,
+            format!("proxy {proxy} refused to connect to example.test:443")
+        );
+        let e = fetch_remote("https://auth.test:8443/", &p, None).unwrap_err();
+        assert_eq!(
+            e.detail,
+            format!("proxy {proxy} requires authentication (HTTP 407)")
+        );
+        assert!(!e.message().contains("secret"));
+        assert_eq!(seen.lock().unwrap()[0].0, "example.test:443");
+    }
+
+    #[test]
+    fn no_proxy_hosts_are_reached_directly() {
+        let base = serve(|_, s, _| respond(s, 200, &[], "direct"));
+        // Nothing listens on the proxy port: using it would fail.
+        let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+        for bypass in [
+            "127.0.0.1",
+            "127.0.0.0/8",
+            &format!("127.0.0.1:{}", port_of(&base)),
+            "*",
+        ] {
+            let p = net(NetworkSettings {
+                proxy: Some(format!("http://127.0.0.1:{dead_port}")),
+                no_proxy: vec!["other.test".into(), bypass.to_string()],
+                ..NetworkSettings::NONE
+            });
+            assert_eq!(
+                fetch_remote(&format!("{base}/"), &p, None).unwrap().bytes,
+                b"direct",
+                "{bypass}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proxy_does_not_widen_the_private_network_rule() {
+        let (proxy, seen) = fake_proxy();
+        let target = serve(|_, s, _| respond(s, 200, &[], "x"));
+        let p = FetchPolicy {
+            allow_private_network: false,
+            ..net(NetworkSettings {
+                proxy: Some(proxy),
+                ..NetworkSettings::NONE
+            })
+        };
+        // An IP literal is refused before anything is sent; a name is resolved here first.
+        assert_eq!(
+            code(fetch_remote(&format!("{target}/"), &p, None)),
+            E_SSRF_BLOCKED
+        );
+        let by_name = format!("http://localhost:{}/", port_of(&target));
+        let e = fetch_remote(&by_name, &p, None).unwrap_err();
+        assert_eq!(e.code, E_SSRF_BLOCKED, "{}", e.message());
+        assert!(
+            e.detail.contains("resolves to non-public address"),
+            "{}",
+            e.detail
+        );
+        assert!(seen.lock().unwrap().is_empty(), "the proxy was contacted");
+    }
+
+    #[test]
+    fn host_rules_apply_to_every_hop_and_deny_beats_allow() {
+        let base = serve(|r, s, b| match r.path.as_str() {
+            "/start" => redirect(s, 302, &format!("http://localhost:{}/end", port_of(b))),
+            _ => respond(s, 200, &[], "end"),
+        });
+        let start = format!("{base}/start");
+        let allow_both = NetworkSettings {
+            allow_hosts: vec!["127.0.0.1".into(), "localhost".into()],
+            ..NetworkSettings::NONE
+        };
+        assert_eq!(
+            fetch_remote(&start, &net(allow_both.clone()), None)
+                .unwrap()
+                .bytes,
+            b"end"
+        );
+        let e = fetch_remote(
+            &start,
+            &net(NetworkSettings {
+                deny_hosts: vec!["localhost".into()],
+                ..allow_both.clone()
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED);
+        assert_eq!(
+            e.detail,
+            format!(
+                "refusing to connect to localhost: it matches deny-hosts rule 'localhost' (http://localhost:{}/end)",
+                port_of(&base)
+            )
+        );
+        let e = fetch_remote(
+            &start,
+            &net(NetworkSettings {
+                allow_hosts: vec!["127.0.0.1".into()],
+                ..NetworkSettings::NONE
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED);
+        assert!(
+            e.detail.ends_with(
+                "it matches no allow-hosts rule (http://localhost:"
+                    .to_string()
+                    .as_str()
+            ) || e.detail.contains("it matches no allow-hosts rule"),
+            "{}",
+            e.detail
+        );
+        // Host rules beat a proxy: nothing is sent to it for a denied host.
+        let (proxy, seen) = fake_proxy();
+        let e = fetch_remote(
+            "http://denied.test/",
+            &net(NetworkSettings {
+                proxy: Some(proxy),
+                deny_hosts: vec!["*.denied.test".into()],
+                ..NetworkSettings::NONE
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_timeout_fires_before_the_total_timeout() {
+        let silent = serve(|_, _, _| thread::sleep(Duration::from_secs(3)));
+        let stalled = serve(|_, s, _| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc");
+            thread::sleep(Duration::from_secs(3));
+        });
+        for base in [silent, stalled] {
+            let p = FetchPolicy {
+                timeout_ms: 20_000,
+                ..net(NetworkSettings {
+                    read_timeout_ms: Some(200),
+                    ..NetworkSettings::NONE
+                })
+            };
+            let t0 = Instant::now();
+            let e = fetch_remote(&format!("{base}/"), &p, None).unwrap_err();
+            assert_eq!(e.code, E_FETCH_TIMEOUT);
+            assert_eq!(
+                e.detail,
+                format!("fetching {base}/: no data for 200 ms (read timeout)")
+            );
+            assert!(t0.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn the_total_timeout_still_applies_with_a_longer_read_timeout() {
+        let base = serve(|_, _, _| thread::sleep(Duration::from_secs(3)));
+        let p = FetchPolicy {
+            timeout_ms: 200,
+            ..net(NetworkSettings {
+                read_timeout_ms: Some(60_000),
+                connect_timeout_ms: Some(60_000),
+                ..NetworkSettings::NONE
+            })
+        };
+        let e = fetch_remote(&format!("{base}/"), &p, None).unwrap_err();
+        assert_eq!(e.detail, format!("fetching {base}/ timed out after 200 ms"));
+    }
+
+    #[test]
+    fn connect_timeout_bounds_an_unanswered_connection() {
+        // 10.255.255.1 is unrouted: packets are dropped (a connect timeout) on most
+        // networks, or refused at once. Either way it must not wait for the 20 s total.
+        let p = FetchPolicy {
+            timeout_ms: 20_000,
+            ..net(NetworkSettings {
+                connect_timeout_ms: Some(300),
+                ..NetworkSettings::NONE
+            })
+        };
+        let t0 = Instant::now();
+        let e = fetch_remote("http://10.255.255.1:81/", &p, None).unwrap_err();
+        assert!(t0.elapsed() < Duration::from_secs(5), "{}", e.message());
+        if e.code == E_FETCH_TIMEOUT {
+            assert_eq!(
+                e.detail,
+                "fetching http://10.255.255.1:81/: connecting timed out after 300 ms (connect timeout)"
+            );
+        } else {
+            assert_eq!(e.code, E_FETCH, "{}", e.message());
+        }
     }
 
     #[test]

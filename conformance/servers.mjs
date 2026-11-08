@@ -13,7 +13,9 @@
 
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -49,9 +51,10 @@ export async function startServers(root, dir) {
   let server;
   let other; // a second HTTPS origin (another port): cross-origin redirects must not carry secrets
   let registry;
+  let proxy; // an HTTP proxy (net-proxy-*): tunnels CONNECT, forwards absolute-form requests
   try {
     await fs.writeFile(caFile, pki.caCert);
-    const { cert, key } = pki.issue('IP:127.0.0.1,DNS:localhost');
+    const { cert, key } = pki.issue('IP:127.0.0.1,DNS:localhost,DNS:proxied.test');
 
     const enc = (s) => new TextEncoder().encode(s);
     const tar = Buffer.from(
@@ -183,8 +186,39 @@ export async function startServers(root, dir) {
     });
     registry.seedImage('conf/theme', '2', { layers: [{ '/srv/www/theme.css': 'body { font: 18px serif; }\n' }], config: theme });
 
+    // `*.test` names exist only for the proxy (it sends them to 127.0.0.1), so a fetch of
+    // ${PROXIED} succeeds only through it; CONNECT to refused.test is answered 403.
+    const toLoopback = (host) => (host.endsWith('.test') ? '127.0.0.1' : host);
+    proxy = http.createServer((req, res) => {
+      const target = new URL(req.url ?? '');
+      const up = http.request({ host: toLoopback(target.hostname), port: target.port || 80, path: target.pathname + target.search, method: req.method, headers: req.headers }, (r) => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      });
+      up.on('error', () => res.destroy());
+      req.pipe(up);
+    });
+    const tunnels = new Set();
+    proxy.on('connect', (req, client, head) => {
+      tunnels.add(client);
+      client.on('close', () => tunnels.delete(client));
+      const m = /^(.*):(\d+)$/.exec(req.url ?? '');
+      const host = (m?.[1] ?? '').replace(/^\[|\]$/g, '');
+      if (!m || host === 'refused.test') return void client.end('HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n');
+      const upstream = net.connect(Number(m[2]), toLoopback(host), () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.length) upstream.write(head);
+        upstream.pipe(client);
+        client.pipe(upstream);
+      });
+      upstream.on('error', () => client.destroy());
+      client.on('error', () => upstream.destroy());
+    });
+    await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
+
     return {
-      vars: { HTTPS: base, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2, STAGES_V1: stagesV1, STAGES_V2: stagesV2 },
+      vars: { HTTPS: base, PROXIED: base.replace('127.0.0.1', 'proxied.test'), PROXY: proxyUrl, REGISTRY: registry.host, GIT_V1: v1, GIT_V2: v2, STAGES_V1: stagesV1, STAGES_V2: stagesV2 },
       env: { NODE_EXTRA_CA_CERTS: caFile },
       info: { tarIntegrity: sha(tar), baseDigest: seeded.manifestDigest },
       /** sha256 of the manifest the mock registry holds under `repo:tag` (or `repo@digest`), or null. */
@@ -193,6 +227,9 @@ export async function startServers(root, dir) {
         return b ? sha(b) : null;
       },
       async close() {
+        for (const t of tunnels) t.destroy();
+        proxy.closeAllConnections?.();
+        await new Promise((r) => proxy.close(() => r()));
         server.closeAllConnections?.();
         await new Promise((r) => server.close(() => r()));
         other.closeAllConnections?.();
@@ -204,6 +241,7 @@ export async function startServers(root, dir) {
   } catch (e) {
     server?.close();
     other?.close();
+    proxy?.close();
     await registry?.close();
     pki.dispose();
     throw e;

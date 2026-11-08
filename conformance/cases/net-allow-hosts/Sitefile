@@ -1,0 +1,5 @@
+# With an allow list, a host that matches none of it is refused.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

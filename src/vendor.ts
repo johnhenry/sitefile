@@ -118,7 +118,7 @@ async function vendorUnredacted(options: BuildOptions): Promise<VendorResult> {
       lock,
       frozen,
       update,
-      registry: { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork },
+      registry: { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork, network: options.registry?.network ?? policy.network },
       warn,
       lead,
       enforcePlatform,

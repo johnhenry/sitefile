@@ -20,6 +20,16 @@ const FLAGS: &[&str] = &[
     "--allow-private-network       permit loopback/private network addresses",
     "--max-download-bytes <n>      per-resource size limit (default 52428800)",
     "--timeout <ms>                per-resource fetch timeout (default 30000)",
+    "--proxy <url>                 send requests through this HTTP proxy: http://[user:password@]host[:port]",
+    "                              (also $SITEFILE_PROXY; HTTP(S)_PROXY are never read)",
+    "--no-proxy <hosts>            hosts reached directly, not through the proxy (NO_PROXY syntax; repeatable,",
+    "                              comma-separated; also $SITEFILE_NO_PROXY)",
+    "--allow-hosts <hosts>         contact only hosts matching these patterns (repeatable, comma-separated;",
+    "                              also $SITEFILE_ALLOW_HOSTS)",
+    "--deny-hosts <hosts>          never contact hosts matching these patterns; beats --allow-hosts",
+    "                              (repeatable, comma-separated; also $SITEFILE_DENY_HOSTS)",
+    "--connect-timeout <ms>        time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)",
+    "--read-timeout <ms>           longest wait for data on a connection (also $SITEFILE_FETCH_TIMEOUT)",
     "--base <image>                vendor this BASE image (overrides EXPORT ... AS oci BASE)",
     "--platform <os/arch>          BASE platform to vendor (default linux/amd64)",
     "--insecure-registry <h>       allow plain http to registry host[:port] (repeatable)",
@@ -37,6 +47,12 @@ const OPTS: &[OptSpec] = &[
     flag("allow-private-network"),
     string("max-download-bytes"),
     string("timeout"),
+    string("proxy"),
+    strings("no-proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    string("connect-timeout"),
+    string("read-timeout"),
     string("base"),
     string("platform"),
     strings("insecure-registry"),
@@ -73,6 +89,7 @@ fn run_vendor(v: &Parsed) -> Result<i32> {
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let max_bytes = positive(v.str("max-download-bytes"), "--max-download-bytes")?;
     let timeout = positive(v.str("timeout"), "--timeout")?;
+    let network = super::network::network_option(v)?;
     let mut o = BuildOptions {
         context_dir: context,
         sitefile: v.str("file").filter(|s| !s.is_empty()).map(str::to_string),
@@ -90,6 +107,7 @@ fn run_vendor(v: &Parsed) -> Result<i32> {
     };
     o.fetch_policy.allow_http = v.flag("allow-http");
     o.fetch_policy.allow_private_network = v.flag("allow-private-network");
+    o.fetch_policy.network = network;
     if let Some(m) = max_bytes {
         o.fetch_policy.max_bytes = m;
     }

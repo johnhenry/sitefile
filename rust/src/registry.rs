@@ -53,8 +53,13 @@ use crate::export::oci::{
 use crate::refs::{
     canonical_ref, is_component, is_tag, parse_ref, ref_key, with_default_registry, ImageRef,
 };
-use crate::resources::https::{redact_url, tls_config, GuardedResolver};
+use crate::resources::https::{
+    check_target_resolves, proxy_error_for, redact_url, tls_config, GuardedResolver,
+};
 use crate::resources::netpolicy::is_public_address;
+use crate::resources::network::{
+    check_host_rules, parse_proxy, proxy_for, NetworkSettings, ProxyConfig,
+};
 use crate::resources::types::{FetchPolicy, DEFAULT_FETCH_POLICY};
 use crate::store::{short_id, Store};
 use base64::Engine;
@@ -458,6 +463,10 @@ pub struct RegistryOptions {
     /// Credentials source; `None` means anonymous unless built by [`make_client`].
     pub credentials: Option<CredentialProvider>,
     pub limits: RegistryLimits,
+    /// Proxy, host rules and timeouts (see [`NetworkSettings`]); the host rules
+    /// apply to every request, the registry's own included. `read_timeout_ms`
+    /// replaces `limits.timeout_ms`.
+    pub network: NetworkSettings,
 }
 
 impl fmt::Debug for RegistryOptions {
@@ -470,6 +479,7 @@ impl fmt::Debug for RegistryOptions {
                 &self.credentials.as_ref().map(|_| "<provider>"),
             )
             .field("limits", &self.limits)
+            .field("network", &self.network)
             .finish()
     }
 }
@@ -505,6 +515,21 @@ struct Url {
     /// Without IPv6 brackets.
     hostname: String,
     has_userinfo: bool,
+}
+
+/// The port of `u`, or its scheme's default.
+fn url_port(u: &Url) -> u16 {
+    let after = match u.host.rfind(']') {
+        Some(i) => &u.host[i + 1..],
+        None => &u.host[..],
+    };
+    match after.rsplit_once(':') {
+        Some((_, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
+            p.parse().unwrap_or(0)
+        }
+        _ if u.scheme == "http" => 80,
+        _ => 443,
+    }
 }
 
 fn url_agent() -> &'static ureq::Agent {
@@ -748,37 +773,60 @@ impl ureq::Resolver for Guard {
 
 struct Transport {
     agent: ureq::Agent,
+    /// The agent for hosts that go through the configured proxy.
+    proxied: Option<(ureq::Agent, ProxyConfig)>,
+    allow_private: bool,
     last: Arc<Mutex<Option<SitefileError>>>,
 }
 
 impl Transport {
-    fn new(allow_private: bool, timeout: Duration) -> Transport {
-        let policy = FetchPolicy {
-            allow_private_network: allow_private,
-            ..DEFAULT_FETCH_POLICY
-        };
+    fn new(allow_private: bool, timeout: Duration, network: &NetworkSettings) -> Transport {
         let last = Arc::new(Mutex::new(None));
-        let guard = Guard {
-            inner: GuardedResolver::new(&policy, None),
-            last: last.clone(),
+        let connect = network
+            .connect_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(timeout);
+        let agent_with = |allow: bool, proxy: Option<&ProxyConfig>| {
+            let policy = FetchPolicy {
+                allow_private_network: allow,
+                ..DEFAULT_FETCH_POLICY
+            };
+            let guard = Guard {
+                inner: GuardedResolver::new(&policy, None),
+                last: last.clone(),
+            };
+            let mut builder = ureq::AgentBuilder::new()
+                .redirects(0)
+                .max_idle_connections(0)
+                .max_idle_connections_per_host(0)
+                .try_proxy_from_env(false)
+                .user_agent(USER_AGENT)
+                .timeout_connect(connect)
+                .timeout_read(timeout)
+                .timeout_write(timeout)
+                .resolver(guard);
+            if let Some(p) = proxy.and_then(|p| p.ureq().ok()) {
+                builder = builder.proxy(p);
+            }
+            // Trust NODE_EXTRA_CA_CERTS as Node's https (the TypeScript registry client)
+            // does. Without a `ca` argument this cannot fail.
+            if let Ok(Some(config)) = tls_config(None, None) {
+                builder = builder.tls_config(config);
+            }
+            builder.build()
         };
-        let mut builder = ureq::AgentBuilder::new()
-            .redirects(0)
-            .max_idle_connections(0)
-            .max_idle_connections_per_host(0)
-            .try_proxy_from_env(false)
-            .user_agent(USER_AGENT)
-            .timeout_connect(timeout)
-            .timeout_read(timeout)
-            .timeout_write(timeout)
-            .resolver(guard);
-        // Trust NODE_EXTRA_CA_CERTS as Node's https (the TypeScript registry client)
-        // does. Without a `ca` argument this cannot fail.
-        if let Ok(Some(config)) = tls_config(None, None) {
-            builder = builder.tls_config(config);
-        }
+        // An invalid proxy URL surfaces when a request is sent (see `send_once`).
+        let proxied = network
+            .proxy
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .and_then(|p| parse_proxy(p).ok())
+            // The proxied agent's resolver is only asked for the proxy (named by the user).
+            .map(|p| (agent_with(true, Some(&p)), p));
         Transport {
-            agent: builder.build(),
+            agent: agent_with(allow_private, None),
+            proxied,
+            allow_private,
             last,
         }
     }
@@ -878,12 +926,16 @@ impl RegistryClient {
                 .insecure_registries
                 .iter()
                 .any(|h| h.eq_ignore_ascii_case(&host) || h.eq_ignore_ascii_case(registry));
-        let timeout = Duration::from_millis(options.limits.timeout_ms.max(1));
+        let mut limits = options.limits;
+        if let Some(read) = options.network.read_timeout_ms {
+            limits.timeout_ms = read;
+        }
+        let timeout = Duration::from_millis(limits.timeout_ms.max(1));
         RegistryClient {
             registry: registry.to_string(),
-            limits: options.limits,
-            private: Transport::new(true, timeout),
-            public: Transport::new(options.allow_private_network, timeout),
+            limits,
+            private: Transport::new(true, timeout, &options.network),
+            public: Transport::new(options.allow_private_network, timeout, &options.network),
             options,
             host,
             insecure,
@@ -948,20 +1000,56 @@ impl RegistryClient {
         body: Option<&Body<'_>>,
         timeout: Option<Duration>,
     ) -> Result<ureq::Response> {
+        let shown = redact_url(&url.href);
+        let network = &self.options.network;
+        let port = url_port(url);
+        check_host_rules(&url.hostname, port, network, &shown, None)?;
         let loopback_pair = self.loopback && is_loopback_host(&url.hostname);
         let t = if self.same_origin(url) || loopback_pair {
             &self.private
         } else {
             &self.public
         };
-        let shown = redact_url(&url.href);
-        let mut req = t
-            .agent
+        let proxy = proxy_for(&url.hostname, port, network)
+            .map_err(|e| SitefileError::plain(e.code, e.detail))?;
+        let agent = match (&proxy, &t.proxied) {
+            (Some(_), Some((agent, _))) => {
+                if !t.allow_private && url.hostname.parse::<IpAddr>().is_err() {
+                    let policy = FetchPolicy {
+                        allow_private_network: false,
+                        ..DEFAULT_FETCH_POLICY
+                    };
+                    check_target_resolves(
+                        &url.hostname,
+                        port,
+                        &GuardedResolver::new(&policy, None),
+                        None,
+                    )
+                    .map_err(|e| {
+                        if e.code == E_FETCH {
+                            SitefileError::plain(E_REGISTRY, e.detail)
+                        } else {
+                            e
+                        }
+                    })?;
+                }
+                agent
+            }
+            _ => &t.agent,
+        };
+        let mut req = agent
             .request(method, &url.href)
             .set("accept-encoding", "identity")
             .set("user-agent", USER_AGENT);
         for (k, v) in headers {
             req = req.set(k, v);
+        }
+        if let Some(auth) = proxy
+            .as_ref()
+            .filter(|_| url.scheme == "http" && t.proxied.is_some())
+            .and_then(ProxyConfig::authorization)
+        {
+            req = req.set("proxy-authorization", &auth);
         }
         if let Some(d) = timeout {
             req = req.timeout(d);
@@ -992,6 +1080,19 @@ impl RegistryClient {
                         E_REGISTRY,
                         format!("{method} {shown} failed: {}", e.detail),
                     ));
+                }
+                if let Some(p) = &proxy {
+                    if let Some(e) = proxy_error_for(&tr, p, &url.hostname, port, None) {
+                        return Err(SitefileError::plain(E_REGISTRY, e.detail));
+                    }
+                }
+                if is_timeout(&tr) && tr.kind() == ureq::ErrorKind::ConnectionFailed {
+                    if let Some(c) = network.connect_timeout_ms {
+                        return Err(SitefileError::plain(
+                            E_FETCH_TIMEOUT,
+                            format!("{method} {shown}: connecting timed out after {c} ms (connect timeout)"),
+                        ));
+                    }
                 }
                 if is_timeout(&tr) {
                     return Err(SitefileError::plain(
@@ -4143,6 +4244,28 @@ mod tests {
                 .unwrap_err()
                 .code,
             E_USAGE
+        );
+    }
+
+    #[test]
+    fn host_rules_cover_the_registry_itself_and_read_timeout_wins() {
+        let options = RegistryOptions {
+            network: NetworkSettings {
+                deny_hosts: vec!["127.0.0.1".into()],
+                read_timeout_ms: Some(1234),
+                ..NetworkSettings::NONE
+            },
+            ..Default::default()
+        };
+        // Nothing listens there: the rule refuses before any connection is tried.
+        let client = RegistryClient::new("127.0.0.1:9", options);
+        assert_eq!(client.limits.timeout_ms, 1234);
+        let e = client.get_manifest("a/b", "latest").unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED, "{}", e.message());
+        assert!(
+            e.detail.starts_with("refusing to connect to 127.0.0.1: it matches deny-hosts rule '127.0.0.1' (https://127.0.0.1:9/v2/"),
+            "{}",
+            e.detail
         );
     }
 }

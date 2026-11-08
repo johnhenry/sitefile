@@ -94,6 +94,7 @@ fn external_reason(e: &SitefileError, url: &str, policy: &FetchPolicy) -> Option
         E_SSRF_BLOCKED => {
             Some("a non-public address (checked only with --allow-private-network)".into())
         }
+        E_HOST_BLOCKED => Some("refused by the allow-hosts/deny-hosts rules".into()),
         E_REDIRECT => Some("too many or invalid redirects".into()),
         _ => Some("could not connect".into()),
     }

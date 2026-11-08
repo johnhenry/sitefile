@@ -1,0 +1,6 @@
+{
+  "network": true,
+  "steps": [
+    { "args": ["build", "${CTX}", "-o", "${OUT}/dist", "--allow-private-network"], "env": { "SITEFILE_ALLOW_HOSTS": "example.com" } }
+  ]
+}

@@ -1,3 +1,4 @@
+import { NETWORK_OPTIONS, networkHelp, networkOption } from './network.js';
 import path from 'node:path';
 import { insecureRegistriesFromEnv } from '../base-image.js';
 import { collectBuildArgs } from '../build-args.js';
@@ -33,11 +34,13 @@ const vendorCommand: Command = {
     '--allow-private-network       permit loopback/private network addresses',
     `--max-download-bytes <n>      per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})`,
     `--timeout <ms>                per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})`,
+    ...networkHelp(30),
     '--base <image>                vendor this BASE image (overrides EXPORT ... AS oci BASE)',
     '--platform <os/arch>          BASE platform to vendor (default linux/amd64)',
     '--insecure-registry <h>       allow plain http to registry host[:port] (repeatable)',
   ],
   options: {
+    ...NETWORK_OPTIONS,
     file: { type: 'string', short: 'f' },
     'vendor-dir': { type: 'string' },
     'build-arg': { type: 'string', multiple: true },
@@ -59,6 +62,7 @@ const vendorCommand: Command = {
     const context = pos[0] ?? '.';
     const maxBytes = positive(str(v['max-download-bytes']), '--max-download-bytes');
     const timeoutMs = positive(str(v.timeout), '--timeout');
+    const network = networkOption(v);
     const file = str(v.file);
     const vendorDir = str(v['vendor-dir']);
     const base = str(v.base);
@@ -73,6 +77,7 @@ const vendorCommand: Command = {
         allowPrivateNetwork: !!v['allow-private-network'],
         ...(maxBytes ? { maxBytes } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
+        ...(network ? { network } : {}),
       },
       ...(vendorDir !== undefined ? { vendorDir } : {}),
       ...(base !== undefined ? { baseImage: base } : {}),

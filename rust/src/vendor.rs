@@ -280,6 +280,7 @@ fn vendor_unredacted(options: &BuildOptions) -> Result<VendorResult> {
             registry: RegistryOptions {
                 insecure_registries: options.insecure_registries.clone(),
                 allow_private_network: options.fetch_policy.allow_private_network,
+                network: options.fetch_policy.network.clone(),
                 ..Default::default()
             },
             warn: Some(&warn_fn),

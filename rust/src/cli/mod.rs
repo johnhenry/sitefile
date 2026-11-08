@@ -8,6 +8,7 @@ pub mod cache;
 pub mod common;
 pub mod git_context;
 pub mod images;
+pub mod network;
 pub mod outdated;
 pub mod registry;
 pub mod servers;
@@ -160,6 +161,7 @@ Options:
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
+{network}
       --json                   machine-readable output (validate, inspect, graph, why)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
@@ -169,7 +171,13 @@ Options:
   -h, --help                   show this help
   -v, --version                show the version
 {EXTRA_HELP}",
-        d.max_bytes, d.timeout_ms
+        d.max_bytes,
+        d.timeout_ms,
+        network = network::network_help(25)
+            .iter()
+            .map(|l| format!("      {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
     )
 }
 
@@ -212,6 +220,12 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("allow-hardlinks"),
     string("max-download-bytes"),
     string("timeout"),
+    string("proxy"),
+    strings("no-proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    string("connect-timeout"),
+    string("read-timeout"),
     flag("json"),
     flag("dot"),
     flag("watch"),
@@ -580,6 +594,7 @@ fn registry_cache(o: &args::Parsed) -> Result<Option<Arc<crate::registry_cache::
             &env,
         ),
         allow_private_network: o.flag("allow-private-network"),
+        network: network::network_option(o)?,
         ..Default::default()
     };
     let client: crate::registry_cache::ClientFactory = Arc::new(move |registry: &str| {
@@ -610,7 +625,9 @@ fn run_build_command(
     profiler: Option<Arc<Profiler>>,
     memo: Option<crate::memo::SharedMemo>,
 ) -> Result<i32> {
+    let network = network::network_option(o)?;
     let mut fetch_policy = crate::resources::types::DEFAULT_FETCH_POLICY;
+    fetch_policy.network = network;
     fetch_policy.allow_http = o.flag("allow-http");
     fetch_policy.allow_private_network = o.flag("allow-private-network");
     if let Some(m) = o.str("max-download-bytes").filter(|s| !s.is_empty()) {

@@ -9,7 +9,8 @@ import { SitefileError, isSitefileError } from './errors.js';
 import { MEDIA, type Descriptor } from './oci.js';
 import { registryApiHost } from './ref.js';
 import type { Credentials } from './registry-auth.js';
-import { createGuardedLookup, redactUrl } from './resources/https.js';
+import { armTimeouts, createGuardedLookup, redactUrl, routeRequest } from './resources/https.js';
+import { checkHostRules, type NetworkSettings } from './resources/network.js';
 import { isPublicAddress } from './resources/netpolicy.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 
@@ -60,6 +61,11 @@ export interface RegistryOptions {
   readonly limits?: Partial<RegistryLimits> | undefined;
   /** Extra PEM CA certificate(s) (tests / private CAs). */
   readonly ca?: string | Buffer | undefined;
+  /**
+   * Proxy, host rules and timeouts (see {@link NetworkSettings}); the host rules apply to every
+   * request, the registry's own included. `readTimeoutMs` replaces `limits.timeoutMs`.
+   */
+  readonly network?: NetworkSettings | undefined;
 }
 
 export interface Body {
@@ -151,7 +157,8 @@ export class RegistryClient {
     private readonly options: RegistryOptions = {},
   ) {
     this.host = registryApiHost(registry);
-    this.limits = { ...DEFAULT_REGISTRY_LIMITS, ...options.limits };
+    const read = options.network?.readTimeoutMs;
+    this.limits = { ...DEFAULT_REGISTRY_LIMITS, ...options.limits, ...(read ? { timeoutMs: read } : {}) };
     this.loopback = isLoopbackHost(hostnameOf(this.host));
     this.insecure = this.loopback || (options.insecureRegistries ?? []).some((h) => h.toLowerCase() === this.host.toLowerCase() || h.toLowerCase() === registry.toLowerCase());
   }
@@ -176,29 +183,45 @@ export class RegistryClient {
     }
   }
 
-  private sendOnce(method: string, url: URL, headers: Record<string, string>, body: Body | undefined, timeoutMs: number): Promise<IncomingMessage> {
+  private async sendOnce(method: string, url: URL, headers: Record<string, string>, body: Body | undefined, timeoutMs: number): Promise<IncomingMessage> {
+    const shown = redactUrl(url);
+    const network = this.options.network;
+    checkHostRules(url, network, shown);
+    const same = this.sameOrigin(url);
+    const host = url.hostname.replace(/^\[|\]$/g, '');
+    const loopbackPair = this.loopback && isLoopbackHost(host);
+    const policy = { ...DEFAULT_FETCH_POLICY, allowPrivateNetwork: same || loopbackPair || !!this.options.allowPrivateNetwork, network };
+    const h: Record<string, string> = { 'accept-encoding': 'identity', 'user-agent': 'sitefile/0.1', ...headers };
+    if (body) h['content-length'] = String(body.length);
+    const o: RequestOptions = { method, headers: h, lookup: createGuardedLookup(policy), agent: false, timeout: timeoutMs };
+    if (url.protocol === 'https:' && this.options.ca !== undefined) {
+      const get = (tls as { getCACertificates?: (t?: string) => string[] }).getCACertificates;
+      (o as HttpsRequestOptions).ca = [...(get ? get('default') : tls.rootCertificates), this.options.ca as string];
+    }
+    // The idle timeout is the request's own (`timeout`); only the connect timeout comes from `network`.
+    const connectOnly = network?.connectTimeoutMs ? { connectTimeoutMs: network.connectTimeoutMs } : undefined;
+    const connectTimeout = () => new SitefileError('E_FETCH_TIMEOUT', `${method} ${shown}: connecting timed out after ${network?.connectTimeoutMs} ms (connect timeout)`);
+    const idleTimeout = () => new SitefileError('E_FETCH_TIMEOUT', `${method} ${shown} timed out after ${timeoutMs} ms`);
+    const route = await routeRequest(url, o, policy, {
+      shown,
+      fail: (e) => (e.detail.endsWith('(connect timeout)') ? connectTimeout() : idleTimeout()),
+    }).catch((e: unknown) => {
+      // Proxy failures are registry transport failures (an insecure registry then falls back to http).
+      if (isSitefileError(e)) throw e.code === 'E_FETCH' ? new SitefileError('E_REGISTRY', e.detail, undefined, { cause: e }) : e;
+      throw new SitefileError('E_REGISTRY', `${method} ${shown} failed: ${(e as Error).message}`, undefined, { cause: e });
+    });
     return new Promise((resolve, reject) => {
-      const same = this.sameOrigin(url);
-      const host = url.hostname.replace(/^\[|\]$/g, '');
-      const loopbackPair = this.loopback && isLoopbackHost(host);
-      const policy = { ...DEFAULT_FETCH_POLICY, allowPrivateNetwork: same || loopbackPair || !!this.options.allowPrivateNetwork };
-      const h: Record<string, string> = { 'accept-encoding': 'identity', 'user-agent': 'sitefile/0.1', ...headers };
-      if (body) h['content-length'] = String(body.length);
-      const o: RequestOptions = { method, headers: h, lookup: createGuardedLookup(policy), agent: false, timeout: timeoutMs };
-      if (url.protocol === 'https:' && this.options.ca !== undefined) {
-        const get = (tls as { getCACertificates?: (t?: string) => string[] }).getCACertificates;
-        (o as HttpsRequestOptions).ca = [...(get ? get('default') : tls.rootCertificates), this.options.ca as string];
-      }
       let req: ClientRequest;
       try {
-        req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, o);
+        req = route.url ? route.fn(route.url, route.options) : route.fn(route.options);
       } catch (e) {
-        reject(new SitefileError('E_REGISTRY', `cannot request ${redactUrl(url)}: ${(e as Error).message}`, undefined, { cause: e }));
+        reject(new SitefileError('E_REGISTRY', `cannot request ${shown}: ${(e as Error).message}`, undefined, { cause: e }));
         return;
       }
-      req.on('timeout', () => req.destroy(new SitefileError('E_FETCH_TIMEOUT', `${method} ${redactUrl(url)} timed out after ${timeoutMs} ms`)));
+      armTimeouts(req, connectOnly, route.proxied, () => req.destroy(connectTimeout()));
+      req.on('timeout', () => req.destroy(idleTimeout()));
       req.on('response', resolve);
-      req.on('error', (e) => reject(unwrap(e) ?? new SitefileError('E_REGISTRY', `${method} ${redactUrl(url)} failed: ${e.message}`, undefined, { cause: e })));
+      req.on('error', (e) => reject(unwrap(e) ?? new SitefileError('E_REGISTRY', `${method} ${shown} failed: ${e.message}`, undefined, { cause: e })));
       if (!body) {
         req.end();
         return;

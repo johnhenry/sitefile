@@ -1,0 +1,5 @@
+# A deny-hosts rule beats an allow-hosts rule, and the error names it.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

@@ -61,6 +61,7 @@ codes!(
     E_CONFLICT,
     E_PROTOCOL,
     E_SSRF_BLOCKED,
+    E_HOST_BLOCKED,
     E_FETCH,
     E_FETCH_STATUS,
     E_FETCH_TIMEOUT,
@@ -184,6 +185,13 @@ impl SitefileError {
             span: Some(span.clone()),
             needs: None,
         }
+    }
+    /// The same error at `span` when it has no location yet.
+    pub fn with_span(mut self, span: Option<&SourceSpan>) -> Self {
+        if self.span.is_none() {
+            self.span = span.cloned();
+        }
+        self
     }
     pub fn plain(code: ErrorCode, detail: impl Into<String>) -> Self {
         SitefileError {

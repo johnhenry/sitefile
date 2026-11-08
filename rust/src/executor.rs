@@ -942,6 +942,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             registry: RegistryOptions {
                 insecure_registries: options.insecure_registries.clone(),
                 allow_private_network: options.fetch_policy.allow_private_network,
+                network: options.fetch_policy.network.clone(),
                 ..Default::default()
             },
             warn: Some(&image_warn),
@@ -1222,6 +1223,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
                 registry: RegistryOptions {
                     insecure_registries: options.insecure_registries.clone(),
                     allow_private_network: options.fetch_policy.allow_private_network,
+                    network: options.fetch_policy.network.clone(),
                     ..Default::default()
                 },
                 warn: Some(&warn_fn),

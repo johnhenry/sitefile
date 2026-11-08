@@ -1,0 +1,5 @@
+# Fetched through the proxy: proxied.test resolves only there (the proxy maps it to 127.0.0.1).
+FROM scratch
+IMPORT css FROM ${PROXIED}/style.css
+COPY css: /style.css
+EXPORT /
