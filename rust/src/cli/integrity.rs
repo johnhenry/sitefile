@@ -123,5 +123,9 @@ fn run_diff(v: &Parsed) -> Result<i32> {
     } else {
         r.text()
     });
-    Ok(if v.flag("exit-code") && !r.is_empty() { 1 } else { 0 })
+    Ok(if v.flag("exit-code") && !r.is_empty() {
+        1
+    } else {
+        0
+    })
 }

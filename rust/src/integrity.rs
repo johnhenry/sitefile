@@ -401,10 +401,7 @@ pub fn rule_lines(file: &str, bytes: Option<&[u8]>) -> Vec<String> {
         } else if !raw.starts_with([' ', '\t']) {
             current = Some(t.to_string());
         } else {
-            out.push(format!(
-                "{} {t}",
-                current.as_deref().unwrap_or("(no path)")
-            ));
+            out.push(format!("{} {t}", current.as_deref().unwrap_or("(no path)")));
         }
     }
     out
@@ -470,7 +467,10 @@ pub fn diff_trees(a: &Tree, b: &Tree) -> DiffReport {
 
 impl DiffReport {
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty() && self.rules.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && self.rules.is_empty()
     }
 
     pub fn to_json(&self) -> Value {
@@ -501,7 +501,10 @@ impl DiffReport {
             } else {
                 String::new()
             };
-            lines.push((&x.path, format!("C  {}  ({} B -> {} B{mode})", x.path, x.size, y.size)));
+            lines.push((
+                &x.path,
+                format!("C  {}  ({} B -> {} B{mode})", x.path, x.size, y.size),
+            ));
         }
         lines.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
         let mut out: Vec<String> = lines.into_iter().map(|(_, l)| l).collect();
@@ -538,7 +541,10 @@ mod tests {
     #[test]
     fn rule_lines_flatten_headers() {
         let h = b"# c\n/a\n  X-A: 1\n\n/b\n\tX-B:  2 \n";
-        assert_eq!(rule_lines("/_headers", Some(h)), vec!["/a X-A: 1", "/b X-B:  2"]);
+        assert_eq!(
+            rule_lines("/_headers", Some(h)),
+            vec!["/a X-A: 1", "/b X-B:  2"]
+        );
         let r = b"/x   /y  301\r\n# no\n";
         assert_eq!(rule_lines("/_redirects", Some(r)), vec!["/x /y 301"]);
     }
