@@ -8,6 +8,7 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
+    PRECACHE_CLAUSES,
     INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
@@ -412,6 +413,27 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             } else {
                 let from = last.map_or(0, |l| l + 1);
                 kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "PRECACHE" => {
+            // Patterns, then [TO <dest>] [INTO <service-worker>], in this order.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            let last = ops
+                .iter()
+                .filter_map(|w| PRECACHE_CLAUSES.iter().position(|c| w == c))
+                .max();
+            if ops.is_empty() || PRECACHE_CLAUSES.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                kw_items(
+                    PRECACHE_CLAUSES[last.map_or(0, |l| l + 1)..].iter().copied(),
+                    CIK_KEYWORD,
+                )
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1264,6 +1286,12 @@ mod tests {
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
         assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
+        // PRECACHE: patterns, then TO, then INTO
+        assert!(labels("PRECACHE ").is_empty());
+        assert_eq!(labels("PRECACHE /assets/ "), ["TO", "INTO"]);
+        assert!(labels("PRECACHE /a/ TO ").is_empty());
+        assert_eq!(labels("PRECACHE /a/ TO /m.json "), ["INTO"]);
+        assert!(labels("PRECACHE /a/ INTO /sw.js ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);

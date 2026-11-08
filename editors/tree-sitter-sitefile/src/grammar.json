@@ -132,6 +132,13 @@
         "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
       }
     },
+    "_kw_precache": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Pp][Rr][Ee][Cc][Aa][Cc][Hh][Ee]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -328,6 +335,13 @@
         "value": "[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt]"
       }
     },
+    "_kw_into": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ii][Nn][Tt][Oo]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -517,6 +531,10 @@
         {
           "type": "SYMBOL",
           "name": "fingerprint_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "precache_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2359,6 +2377,102 @@
               },
               "named": false,
               "value": "INTEGRITY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "precache_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_precache"
+          },
+          "named": false,
+          "value": "PRECACHE"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "FIELD",
+            "name": "flag",
+            "content": {
+              "type": "SYMBOL",
+              "name": "flag"
+            }
+          }
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "FIELD",
+            "name": "pattern",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_operand"
+            }
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_to"
+                  },
+                  "named": false,
+                  "value": "TO"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "dest",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_into"
+                  },
+                  "named": false,
+                  "value": "INTO"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "into",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
             },
             {
               "type": "BLANK"

@@ -48,6 +48,10 @@
         "named": true
       },
       {
+        "type": "precache_instruction",
+        "named": true
+      },
+      {
         "type": "redirect_instruction",
         "named": true
       },
@@ -1527,6 +1531,100 @@
     }
   },
   {
+    "type": "precache_instruction",
+    "named": true,
+    "fields": {
+      "dest": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "into": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "redirect_instruction",
     "named": true,
     "fields": {
@@ -2588,6 +2686,10 @@
     "named": false
   },
   {
+    "type": "INTO",
+    "named": false
+  },
+  {
     "type": "LET",
     "named": false
   },
@@ -2613,6 +2715,10 @@
   },
   {
     "type": "PLUGIN",
+    "named": false
+  },
+  {
+    "type": "PRECACHE",
     "named": false
   },
   {

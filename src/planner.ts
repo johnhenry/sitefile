@@ -110,6 +110,17 @@ export type Operation =
       readonly span: SourceSpan;
     }
   | {
+      /** A precache manifest of the files matching `patterns` (checked, NFC), written to `dest` and/or injected into `into`. */
+      readonly kind: 'PRECACHE';
+      readonly patterns: readonly string[];
+      readonly dest?: string;
+      readonly into?: string;
+      /** The EXPORT path: URLs are paths below it. */
+      readonly root: string;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
+  | {
       /** sitemaps.org XML of the `.html` files in the tree at this point. */
       readonly kind: 'SITEMAP';
       /** Checked base URL without trailing slashes. */
@@ -449,6 +460,14 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         fingerprints.push({ span: ins.span, headers: !ins.noCacheHeaders });
         break;
       }
+      case 'PRECACHE': {
+        const patterns = ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span, 'PRECACHE'));
+        const into = ins.into ? fileDest(ins.into, vars, '', 'PRECACHE INTO') : undefined;
+        const dest = ins.dest || !into ? fileDest(ins.dest, vars, '/sw-manifest.json', 'PRECACHE') : undefined;
+        // `root` is the EXPORT path, filled in below.
+        operations().push({ kind: 'PRECACHE', patterns, ...(dest !== undefined ? { dest } : {}), ...(into !== undefined ? { into } : {}), root: '/', overwrite: ins.overwrite, span: ins.span });
+        break;
+      }
       case 'CHECKLINKS':
         // `root` and `redirects` are filled in below, once every line is planned.
         operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
@@ -501,7 +520,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
 
   for (const st of stages) {
     st.operations.forEach((op, i) => {
-      if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'FINGERPRINT' || op.kind === 'PRECACHE') st.operations[i] = { ...op, root: exportPath ?? '/' };
       if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
   }

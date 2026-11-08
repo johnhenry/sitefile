@@ -44,6 +44,7 @@ pub mod checklinks;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;
+pub mod precache;
 pub mod links;
 pub mod mime_data;
 pub mod refs;

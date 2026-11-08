@@ -111,6 +111,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.precache_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -317,6 +318,16 @@ export default grammar({
         repeat1(field('pattern', $._operand)),
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
         optional(kw($, 'INTEGRITY')),
+      ),
+
+    // PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]
+    precache_instruction: ($) =>
+      seq(
+        kw($, 'PRECACHE'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'TO'), field('dest', $._operand))),
+        optional(seq(kw($, 'INTO'), field('into', $._operand))),
       ),
 
     // CHECKLINKS [--warn] [--external]

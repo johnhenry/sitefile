@@ -47,6 +47,7 @@ import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
+import { precache } from './precache.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -1702,6 +1703,7 @@ async function executeOp(
   if (!memo) {
     if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
     if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
+    if (op.kind === 'PRECACHE') return { tree: precacheOp(op, tree, env), key: '' };
     if (op.kind === 'CHECKLINKS') {
       await checkLinks(op, tree, env, env.warn);
       return { tree, key: '' };
@@ -1709,7 +1711,7 @@ async function executeOp(
     return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CHECKLINKS') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'PRECACHE' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
     if (op.kind === 'CHECKLINKS') {
@@ -1735,6 +1737,18 @@ async function executeOp(
       memo.set(key, { ...out, warnings });
       return { ...out, key, memo: 'miss' };
     }
+    if (op.kind === 'PRECACHE') {
+      // The chain key covers the stage's earlier steps, so also what its FINGERPRINTs renamed.
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = precacheOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1759,6 +1773,10 @@ async function checkLinks(op: Extract<Operation, { kind: 'CHECKLINKS' }>, tree: 
 
 function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Fingerprinted {
   return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
+}
+
+function precacheOp(op: Extract<Operation, { kind: 'PRECACHE' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn' | 'renames'>): Tree {
+  return precache(tree, op, new Set(env.renames?.values() ?? []), `${env.label}:${op.span.line} PRECACHE`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -2372,7 +2390,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
  * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
  * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
  */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'PRECACHE' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {

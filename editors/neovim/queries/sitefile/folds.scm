@@ -18,6 +18,7 @@
   (redirect_instruction)
   (header_instruction)
   (fingerprint_instruction)
+  (precache_instruction)
   (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)

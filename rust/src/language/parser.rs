@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 17] = [
+pub const INSTRUCTIONS: [&str; 18] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -34,6 +34,7 @@ pub const INSTRUCTIONS: [&str; 17] = [
     "REDIRECT",
     "HEADER",
     "FINGERPRINT",
+    "PRECACHE",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -65,6 +66,8 @@ pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
 /// Clauses after `FINGERPRINT <pattern>…`.
 pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
+/// Clauses after `PRECACHE <pattern>…`, in this order.
+pub const PRECACHE_CLAUSES: [&str; 2] = ["TO", "INTO"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
@@ -103,7 +106,7 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECACHE" => SITE_FLAGS,
         "FINGERPRINT" => FINGERPRINT_FLAGS,
         "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
@@ -163,6 +166,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
+        "PRECACHE" => parse_precache(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1128,6 +1132,39 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         manifest,
         integrity,
         no_cache_headers: flags.has("no-cache-headers"),
+        overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` (clauses in this order)
+fn parse_precache(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut patterns = Vec::new();
+    while !c.at_end() && !c.peek_keyword("TO") && !c.peek_keyword("INTO") {
+        patterns.push(c.operand("path pattern")?);
+    }
+    if patterns.is_empty() {
+        return Err(c.error(
+            E_SYNTAX,
+            "expected a path pattern (PRECACHE /assets/ or PRECACHE /**/*.css /index.html)",
+        ));
+    }
+    let dest = if c.keyword("TO") {
+        Some(c.operand("destination")?)
+    } else {
+        None
+    };
+    let into = if c.keyword("INTO") {
+        Some(c.operand("service worker path")?)
+    } else {
+        None
+    };
+    c.expect_end()?;
+    Ok(Instruction::Precache {
+        span,
+        patterns,
+        dest,
+        into,
         overwrite: flags.has("overwrite"),
     })
 }
@@ -2460,6 +2497,7 @@ mod tests {
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
             ("FINGERPRINT", FINGERPRINT_FLAGS),
+            ("PRECACHE", SITE_FLAGS),
             ("CHECKLINKS", CHECKLINKS_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);

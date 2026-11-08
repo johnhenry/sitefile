@@ -78,6 +78,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",
     ),
     (
+        "PRECACHE",
+        "PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]",
+        "Writes a Workbox-style precache manifest, `[{url, revision}]`, of the matching files below the EXPORT path (default `/sw-manifest.json`); `revision` is 10 hex digits of the SHA-256, or null for a fingerprinted file. `INTO` replaces `self.__WB_MANIFEST` in a service worker of the stage with it.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
@@ -150,6 +155,8 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
     ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
+    ("PRECACHE", "TO", "`TO <dest>`: the manifest file (default `/sw-manifest.json`; with only INTO, none is written)."),
+    ("PRECACHE", "INTO", "`INTO <service-worker>`: a file of the stage whose first `self.__WB_MANIFEST` becomes the manifest (Workbox `injectManifest`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -385,6 +392,7 @@ mod tests {
             ("FEED", &FEED_CLAUSES[..]),
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
+            ("PRECACHE", &crate::language::parser::PRECACHE_CLAUSES[..]),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

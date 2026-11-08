@@ -49,6 +49,8 @@ export function operationLabel(op: Operation): string {
       return `FEED ${op.list} ${op.dest}`;
     case 'FINGERPRINT':
       return `FINGERPRINT ${op.patterns.join(' ')}`;
+    case 'PRECACHE':
+      return `PRECACHE ${op.patterns.join(' ')}`;
     case 'CHECKLINKS':
       return `CHECKLINKS${op.warn ? ' --warn' : ''}${op.external ? ' --external' : ''}`;
   }
@@ -458,6 +460,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
         if (op.each) inputs.push(`list ${op.each.list}`);
       } else if (op.kind === 'SITEMAP') inputs.push('the .html files in the tree');
       else if (op.kind === 'CHECKLINKS') return;
+      else if (op.kind === 'PRECACHE') inputs.push(op.into === file ? 'the service worker (manifest injected)' : 'the files it lists');
       else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
       else inputs.push(`list ${op.list}`);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: prev ? 'overwrite' : 'write', digest: next.digest, inputs });

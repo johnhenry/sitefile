@@ -1017,6 +1017,38 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
 
+### Precache manifest: PRECACHE (see `examples/precache/`)
+`PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`
+(clauses in this order) lists files for a service worker to precache, in the
+format Workbox's `precacheAndRoute` reads (`injectManifest`). It runs **at
+its place in the stage** on the tree at that point, so put it after the files
+and after any FINGERPRINT.
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below); patterns that match nothing print a warning.
+- **Entries**: every matching file below the EXPORT path (other than the
+  manifest and the service worker themselves), sorted by URL: `url` is its
+  path below the EXPORT path, percent-encoded like a rewritten reference
+  (`/img/a%20b.png`), and `revision` the first 10 hex digits of its SHA-256,
+  or `null` for a file a FINGERPRINT of the stage (or the stages it is built
+  `FROM`) renamed, since its name already changes with its content.
+- **`TO <dest>`** (default `/sw-manifest.json`) writes the JSON array, one
+  entry per line:
+
+  ```json
+  [
+    {"url": "/index.html", "revision": "3f2a9c1b0d"},
+    {"url": "/style.5e1b0c2a9f.css", "revision": null}
+  ]
+  ```
+- **`INTO <service-worker>`** replaces the first `self.__WB_MANIFEST` in that
+  file of the stage (UTF-8 text) with the same array, as `workbox
+  injectManifest` does; a missing file or placeholder is `E_VALIDATION`. With
+  only INTO, no manifest file is written. sitefile writes no service worker of
+  its own.
+- The manifest follows the conflict rules (`--overwrite`); the service worker
+  is replaced. Both get the origin `Sitefile:<line> PRECACHE`.
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and

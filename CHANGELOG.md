@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with

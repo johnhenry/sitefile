@@ -90,6 +90,7 @@ pub fn operation_label(op: &Operation) -> String {
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
         Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
         Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
+        Operation::Precache { patterns, .. } => format!("PRECACHE {}", patterns.join(" ")),
         Operation::CheckLinks { warn, external, .. } => {
             format!(
                 "CHECKLINKS{}{}",
@@ -342,6 +343,7 @@ pub fn plan_graph(p: &Plan) -> Graph {
                 Operation::Feed { list: l, .. } => inputs.push(list(l)),
                 Operation::Sitemap { .. }
                 | Operation::Fingerprint { .. }
+                | Operation::Precache { .. }
                 | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
@@ -878,6 +880,14 @@ impl<'a> WhyScope<'a> {
                     }
                 }
                 Operation::Sitemap { .. } => inputs.push("the .html files in the tree".into()),
+                Operation::Precache { into, .. } => inputs.push(
+                    if into.as_deref() == Some(file) {
+                        "the service worker (manifest injected)"
+                    } else {
+                        "the files it lists"
+                    }
+                    .into(),
+                ),
                 // Writes nothing, so never reached.
                 Operation::CheckLinks { .. } => {}
                 Operation::Fingerprint { manifest, .. } => inputs.push(

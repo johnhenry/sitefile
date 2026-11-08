@@ -24,6 +24,7 @@ use crate::export::oci::{
     build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions,
 };
 use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
+use crate::precache::{precache, PrecacheOp};
 use crate::language::ast::{
     ExportFormat, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart,
     FEED_ITEM,
@@ -4266,6 +4267,10 @@ impl<'a> Exec<'a> {
             if let Operation::Sitemap { .. } = op {
                 return Ok((self.sitemap(op, tree)?, String::new(), None));
             }
+            if let Operation::Precache { .. } = op {
+                let out = self.precache(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
             if let Operation::CheckLinks { .. } = op {
                 self.check_links(op, &tree, &*self.warn.clone())?;
                 return Ok((tree, String::new(), None));
@@ -4334,6 +4339,30 @@ impl<'a> Exec<'a> {
                 Vec::new(),
             );
             self.last_renames = Some(renames);
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Precache { .. } = op {
+            // The chain key covers the stage's earlier steps, so also what its FINGERPRINTs renamed.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.precache(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
             return Ok((out, key, Some("miss")));
         }
         if let Operation::Sitemap { .. } = op {
@@ -4429,6 +4458,31 @@ impl<'a> Exec<'a> {
         fingerprint(tree, &op, &origin, warn)
     }
 
+    fn precache(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Precache {
+            patterns,
+            dest,
+            into,
+            root,
+            overwrite,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} PRECACHE", self.label, span.line);
+        let fingerprinted: HashSet<String> = self.renames.values().cloned().collect();
+        let op = PrecacheOp {
+            patterns,
+            dest: dest.as_deref(),
+            into: into.as_deref(),
+            root,
+            overwrite: *overwrite,
+            span,
+        };
+        precache(tree, &op, &fingerprinted, &origin, warn)
+    }
+
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
         let Operation::Sitemap {
             base,
@@ -4470,6 +4524,9 @@ impl<'a> Exec<'a> {
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => {
                 unreachable!("FINGERPRINT reads the tree: execute_op runs it")
+            }
+            Operation::Precache { .. } => {
+                unreachable!("PRECACHE reads the tree: execute_op runs it")
             }
             Operation::CheckLinks { .. } => {
                 unreachable!("CHECKLINKS reads the tree: execute_op runs it")
@@ -5758,7 +5815,8 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Transform { overwrite, .. }
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
-        | Operation::Fingerprint { overwrite, .. } => *overwrite,
+        | Operation::Fingerprint { overwrite, .. }
+        | Operation::Precache { overwrite, .. } => *overwrite,
         Operation::CheckLinks { .. } => false,
     }
 }

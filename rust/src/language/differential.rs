@@ -223,6 +223,14 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("noCacheHeaders", no_cache_headers.then(|| json!(true))),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::Precache { span: sp, patterns, dest, into, overwrite } => obj(vec![
+            ("kind", s("PRECACHE")),
+            ("span", Some(span(sp))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("dest", dest.as_ref().map(operand)),
+            ("into", into.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

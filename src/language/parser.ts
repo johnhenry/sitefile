@@ -71,6 +71,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseHeader(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
+    case 'PRECACHE':
+      return parsePrecache(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -578,6 +580,18 @@ function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
     ...(flags.has('no-cache-headers') && { noCacheHeaders: true as const }),
     overwrite: flags.has('overwrite'),
   };
+}
+
+/** `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` (clauses in this order) */
+function parsePrecache(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const patterns: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('TO') && !c.peekKeyword('INTO')) patterns.push(c.operand('path pattern'));
+  if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (PRECACHE /assets/ or PRECACHE /**/*.css /index.html)');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  const into = c.keyword('INTO') ? c.operand('service worker path') : undefined;
+  c.expectEnd();
+  return { kind: 'PRECACHE', span, patterns, ...(dest ? { dest } : {}), ...(into ? { into } : {}), overwrite: flags.has('overwrite') };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */
