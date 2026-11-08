@@ -113,6 +113,7 @@ const run: Command = {
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
@@ -126,6 +127,7 @@ const run: Command = {
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    'keep-os-metadata': { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -145,8 +147,10 @@ const run: Command = {
     const { label, source } = await resolveSource(store, pos[0] as string);
     if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
+    const keepOsMetadata = !!v['keep-os-metadata'];
+    const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
-      const tree = await loadServedTree(store, source);
+      const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const server = createSiteServer(tree, { spa: !!v.spa, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
@@ -155,7 +159,7 @@ const run: Command = {
       return 0;
     }
 
-    await loadServedTree(store, source); // fail fast on a bad image, directory or archive
+    await loadServedTree(store, source, { keepOsMetadata, warn }); // fail fast on a bad image, directory or archive
     const reg = await ServerRegistry.open(store);
     const { id, name: finalName } = await reg.allocate(name);
     const state: ServerState = {
@@ -164,6 +168,7 @@ const run: Command = {
       image: label,
       source,
       spa: !!v.spa,
+      ...(keepOsMetadata ? { keepOsMetadata } : {}),
       bind,
       host: bind.host,
       port: bind.port,
@@ -220,6 +225,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
             ...(v['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
             skipBase: true,
+            keepOsMetadata: !!v['keep-os-metadata'],
             ...(memo ? { memo } : {}),
             onNotice: (m) => process.stderr.write(`${m}\n`),
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
@@ -424,7 +430,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     await stopServer(reg, s, graceOf(v));
-    await loadServedTree(reg.store, s.source);
+    await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
     const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
     delete (fresh as { error?: string }).error;
     await reg.write(fresh);

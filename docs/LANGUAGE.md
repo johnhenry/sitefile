@@ -1483,6 +1483,12 @@ checked:
   imports, and the import's provenance digest is the archive's digest.
 - Directories are implicit. Modes are reduced to `0644`/`0755`. A single
   top-level directory is **not** stripped: `COPY name:/top/ /` does that.
+- OS metadata is dropped, with a warning naming the import and the count:
+  `__MACOSX/` anywhere in a path, AppleDouble `._*` files, `.DS_Store`,
+  Finder's `Icon\r`, and `Thumbs.db` and `desktop.ini` in any case. A Finder
+  zip of `site/` is then just `site/`. `--keep-os-metadata`
+  (`BuildOptions.keepOsMetadata`) keeps them. Unsafe or conflicting entries
+  are still errors, junk or not.
 - Entry names are normalized to NFC, and names that differ only in case are
   `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),

@@ -51,6 +51,7 @@ use crate::render::{
     decode_utf8, fragment_not_value, parse_render_template, render_template_with,
     resolve_json_path, walk, TemplateContext, TemplateNode,
 };
+use crate::resources::archive::{os_metadata_warning, without_os_metadata};
 use crate::resources::convert::{bytes_to_resource, verify_integrity, BytesInfo};
 use crate::resources::git::{
     fetch_git_commit, pinned_git_url, select_git_path, GitLocation, GitSelection, GitTransport,
@@ -128,6 +129,9 @@ pub struct BuildOptions {
     pub plugin_policy: PluginPolicy,
     /// Permit hard-linked files in the context.
     pub allow_hardlinks: bool,
+    /// Keep OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) in
+    /// archives imported AS tree (`--keep-os-metadata`). Default false: dropped with a warning.
+    pub keep_os_metadata: bool,
     /// `--allow-exec` entries: `name` or `name=/absolute/path`.
     pub allow_exec: Vec<String>,
     /// `--allow-plugin` entries: JavaScript PLUGINs allowed to run, by declared name.
@@ -237,6 +241,7 @@ impl Default for BuildOptions {
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             allow_hardlinks: false,
+            keep_os_metadata: false,
             allow_exec: Vec::new(),
             allow_plugin: Vec::new(),
             allow_all_plugins: false,
@@ -851,6 +856,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let env = ImportEnv {
         local: &local,
         archive_limits: &options.archive_limits,
+        keep_os_metadata: options.keep_os_metadata,
         remote: RemoteEnv {
             policy: &options.fetch_policy,
             lock: &lock,
@@ -974,6 +980,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         memo: options.memo.as_deref(),
         concurrency: options.concurrency,
         allow_hardlinks: options.allow_hardlinks,
+        keep_os_metadata: options.keep_os_metadata,
         strict_pins: options.strict_pins,
         skip,
         temp_dirs,
@@ -1717,6 +1724,7 @@ fn export_build(
 struct ImportEnv<'a> {
     local: &'a LocalContext,
     archive_limits: &'a ArchiveLimits,
+    keep_os_metadata: bool,
     remote: RemoteEnv<'a>,
     memo: Option<&'a Mutex<BuildMemo>>,
     cancel: Option<&'a CancelToken>,
@@ -2178,6 +2186,7 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                     };
                     let res = convert(&key, &|_| {
                         bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+                            .and_then(|r| drop_os_metadata(r, spec, env))
                     })?;
                     Ok((res, key))
                 }
@@ -2203,6 +2212,7 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
                     let kind = spec.as_kind.unwrap_or(ImportKind::File);
                     let res = convert(&key, &|_| {
                         bytes_to_resource(bytes.to_vec(), kind, &info, span, env.archive_limits)
+                            .and_then(|r| drop_os_metadata(r, spec, env))
                     })?;
                     Ok((with_commit(res, &commit), key))
                 }
@@ -2285,9 +2295,30 @@ fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, S
             };
             let res = convert(&key, &|_| {
                 bytes_to_resource(bytes.clone(), kind, &info, span, env.archive_limits)
+                    .and_then(|r| drop_os_metadata(r, spec, env))
             })?;
             Ok((res, key))
         }
+    }
+}
+
+/// An archive imported AS tree without its OS metadata files (unless `--keep-os-metadata`), with a warning.
+fn drop_os_metadata(res: Resource, spec: &ImportSpec, env: &ImportEnv) -> Result<Resource> {
+    if env.keep_os_metadata {
+        return Ok(res);
+    }
+    match res {
+        Resource::Tree { tree, provenance } => {
+            let (tree, skipped) = without_os_metadata(tree)?;
+            if skipped > 0 {
+                (env.remote.warn)(&os_metadata_warning(
+                    &format!("IMPORT {}", spec.name),
+                    skipped,
+                ));
+            }
+            Ok(Resource::Tree { tree, provenance })
+        }
+        other => Ok(other),
     }
 }
 
@@ -2662,6 +2693,7 @@ struct UnitsEnv<'a> {
     memo: Option<&'a Mutex<BuildMemo>>,
     concurrency: usize,
     allow_hardlinks: bool,
+    keep_os_metadata: bool,
     strict_pins: bool,
     /// Real paths the build writes or skips (export, vendor, --profile): left out of an imported context inside the build context.
     skip: Vec<PathBuf>,
@@ -2942,6 +2974,7 @@ fn load_sitefile_import(
     let ienv = ImportEnv {
         local: &local,
         archive_limits: &env.remote.archive_limits,
+        keep_os_metadata: env.keep_os_metadata,
         remote: RemoteEnv {
             label: &label,
             ..env.remote

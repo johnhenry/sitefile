@@ -11,8 +11,8 @@ use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
-    is_running, load_served_tree, resolve_source, restart_detached, serve_detached, DetachedServe,
-    ServerRegistry, ServerState,
+    is_running, load_served_tree, load_served_tree_with, resolve_source, restart_detached,
+    serve_detached_with, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
 use crate::store::{now_iso, Store};
@@ -77,6 +77,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     string_s("publish", 'p'),
     flag_s("detach", 'd'),
     flag("spa"),
+    flag("keep-os-metadata"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -104,6 +105,7 @@ pub const SERVE: Command = Command {
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
+        "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
         "--target <stage>             build up to this stage and serve its whole tree (--watch)",
@@ -145,8 +147,17 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         ));
     }
 
+    let keep_os_metadata = v.flag("keep-os-metadata");
+    let warn = |m: &str| err(&format!("warning: {m}\n"));
     if !v.flag("detach") {
-        let tree = load_served_tree(&store, &source)?;
+        let tree = load_served_tree_with(
+            &store,
+            &source,
+            &ServedTreeOptions {
+                keep_os_metadata,
+                warn: Some(&warn),
+            },
+        )?;
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
@@ -171,7 +182,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     }
 
     let reg = ServerRegistry::open(Some(store))?;
-    let up = serve_detached(
+    let up = serve_detached_with(
         &reg,
         &DetachedServe {
             label: label.clone(),
@@ -179,8 +190,10 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             name: name.map(str::to_string),
             bind,
             spa: v.flag("spa"),
+            keep_os_metadata,
         },
         None,
+        &warn,
     )?;
     out(&format!(
         "Started {} ({}) serving {label} at {}\n",
@@ -234,6 +247,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 options.cache_dir = Some(super::cache::transform_cache_dir());
             }
             options.skip_base = true;
+            options.keep_os_metadata = v.flag("keep-os-metadata");
             options.memo = memo.clone();
             let notice: Callback = Arc::new(|m: &str| err(&format!("{m}\n")));
             options.on_notice = Some(notice);
@@ -324,7 +338,15 @@ pub fn serve_worker(id: &str) -> i32 {
     };
     catch_signals();
     let started = (|| -> Result<crate::server::ListeningServer> {
-        let tree = load_served_tree(&reg.store, &state.source)?;
+        let warn = |m: &str| stamp(&format!("warning: {m}"));
+        let tree = load_served_tree_with(
+            &reg.store,
+            &state.source,
+            &ServedTreeOptions {
+                keep_os_metadata: state.keep_os_metadata,
+                warn: Some(&warn),
+            },
+        )?;
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
         let server = listen(

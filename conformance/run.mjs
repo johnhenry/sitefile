@@ -24,7 +24,8 @@
 // create before the case runs and remove after it. `files` maps context paths
 // to contents, created before the case and removed after it (with the
 // top-level directory each one creates), for names that should not be
-// committed as written (NFD file names: write them with JSON \u escapes).
+// committed as written (NFD file names: write them with JSON \u escapes); a
+// `{ "base64": … }` content is written as those bytes (small binary archives).
 // `copy` maps context paths to repository paths copied there the same way, so a
 // case can use a binary that is committed once (plugins/image/image.wasm).
 // `expectPaths` lists output paths (exact code points, as read back from the
@@ -269,7 +270,7 @@ try {
       const top = path.join(c.context, rel.split('/')[0]);
       if (!generated.includes(top) && (await fs.lstat(top).catch(() => undefined)) === undefined) generated.push(top);
       await fs.mkdir(path.dirname(path.join(c.context, rel)), { recursive: true });
-      await fs.writeFile(path.join(c.context, rel), content);
+      await fs.writeFile(path.join(c.context, rel), typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
     }
     for (const [rel, from] of Object.entries(c.copy ?? {})) {
       const top = path.join(c.context, rel.split('/')[0]);

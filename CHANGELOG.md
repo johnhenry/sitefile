@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **OS metadata is filtered from archives** (#186): `IMPORT … AS tree` and
+  `serve` of a zip, tar or Web Bundle (and `serve ./dir`) drop `__MACOSX/`,
+  `._*`, `.DS_Store`, `Icon\r`, `Thumbs.db` and `desktop.ini`, with a warning
+  giving the count; `--keep-os-metadata` (`keepOsMetadata`) keeps them. A
+  Finder-made zip is now a single top-level folder. Changes the output (and
+  image ID) of builds that imported such archives. Both implementations.
+
 ## 0.0.2 (2026-11-08)
 
 - **Plugin console output keeps its order** (johnhenry/sitefile#164): a
