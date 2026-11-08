@@ -662,7 +662,7 @@ fn run_build_command(
         if format_override.is_none() {
             return Ok(usage_error(&format!(
                 "--format expects one of {} (or tar.gz), got '{f}'",
-                images::EXPORT_FORMATS
+                images::export_formats()
             )));
         }
     }

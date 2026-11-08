@@ -19,7 +19,10 @@ use crate::store::{diff_trees, short_id, Store};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
-pub const EXPORT_FORMATS: &str = "directory, zip, tar, tgz, wbn, oci";
+/// Every export format, comma-separated (`EXPORT_FORMATS.join(', ')` in TypeScript).
+pub fn export_formats() -> String {
+    ExportFormat::ALL.map(ExportFormat::as_str).join(", ")
+}
 
 fn split(key: &str) -> (String, String) {
     let i = key.rfind(':').unwrap_or(key.len());
@@ -365,7 +368,8 @@ fn run_save(v: &Parsed) -> Result<i32> {
         format = ExportFormat::parse(v.str("format").unwrap_or(""));
         if format.is_none() {
             return usage(format!(
-                "--format expects one of {EXPORT_FORMATS} (or tar.gz)"
+                "--format expects one of {} (or tar.gz)",
+                export_formats()
             ));
         }
     }

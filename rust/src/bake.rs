@@ -479,7 +479,7 @@ fn expand(def: &Definition, bake_dir: &str) -> Result<Vec<(String, Vec<BakeTarge
                             &def.label,
                             format!(
                                 "target '{name}': format must be one of {} (or tar.gz), got '{f}'",
-                                crate::cli::images::EXPORT_FORMATS
+                                crate::cli::images::export_formats()
                             ),
                         )
                     }
@@ -891,7 +891,13 @@ mod tests {
             err("targets:\n  a:\n    bogus: 1\n"),
             format!("b.yaml: target 'a': unknown key 'bogus' (expected {TARGET_KEYS})")
         );
-        assert_eq!(err("targets:\n  a:\n    format: rar\n"), "b.yaml: target 'a': format must be one of directory, zip, tar, tgz, wbn, oci (or tar.gz), got 'rar'");
+        assert_eq!(
+            err("targets:\n  a:\n    format: rar\n"),
+            format!(
+                "b.yaml: target 'a': format must be one of {} (or tar.gz), got 'rar'",
+                ExportFormat::ALL.map(|f| f.as_str()).join(", ")
+            )
+        );
         assert_eq!(
             err("targets:\n  a:\n    output: out\n  b:\n    output: out/\n"),
             "bake targets 'a' and 'b' both write 'site/out'"
