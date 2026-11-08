@@ -1,0 +1,4 @@
+# INTEGRITY comes after MANIFEST.
+FROM scratch
+FINGERPRINT /a/ INTEGRITY MANIFEST /m.json
+EXPORT /

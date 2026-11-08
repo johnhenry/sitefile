@@ -171,6 +171,29 @@ test('plugin errors, bad results, timeouts and placement rules', async () => {
   assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
 });
 
+test('a JS plugin that passes --plugin-memory fails with E_PLUGIN, without the V8 report (#157)', async () => {
+  // Retained objects grow the heap until V8 gives up at --max-old-space-size.
+  const hog = 'export function transform() { const keep = []; for (;;) keep.push({ n: keep.length, s: String(keep.length) }); }';
+  const site = (plugin: string): Record<string, string> => ({
+    'plugins/p.mjs': plugin,
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  });
+  const warnings: string[] = [];
+  const t0 = Date.now();
+  await assert.rejects(run(site(hog), { pluginPolicy: { maxMemoryMiB: 32 }, onWarning: (m) => warnings.push(m) }), (e: unknown) => {
+    assert.ok(isSitefileError(e), String(e));
+    assert.equal(e.code, 'E_PLUGIN');
+    assert.match(e.message, /: PLUGIN p: ran out of memory \(more than the 32 MiB limit\)$/);
+    return true;
+  });
+  assert.ok(Date.now() - t0 < 30_000, 'stopped by the memory limit, not the time limit');
+  assert.deepEqual(warnings.filter((w) => /FATAL ERROR|Last few GCs|node::/.test(w)), [], 'the native stack trace is not logged');
+  // A plugin within the limit is unaffected.
+  const r = await run(site('export function transform() { return "x".repeat(4 << 20).length + ""; }'), { pluginPolicy: { maxMemoryMiB: 64 } });
+  assert.equal(text(r.output.get('/a.out')?.bytes), String(4 << 20));
+});
+
 test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before anything starts', async () => {
   const site = (body: string): Record<string, string> => ({
     'plugins/up.mjs': 'export function transform(r) { return r.input.text.toUpperCase(); }',

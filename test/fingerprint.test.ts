@@ -8,7 +8,9 @@ import { build } from '../src/executor.js';
 import { why } from '../src/explain.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { globMatches, hashedName, manifestJson } from '../src/fingerprint.js';
-import { renameReference, resolveReference, scanCss, scanHtml, decodeCssText } from '../src/links.js';
+import { integrityTags, renameReference, resolveReference, scanCss, scanHtml, decodeCssText } from '../src/links.js';
+import { cacheHeaderRules } from '../src/site.js';
+import { createHash } from 'node:crypto';
 import { parseSitefile } from '../src/language/parser.js';
 import { parseProgram } from '../src/language/validate.js';
 import { plan } from '../src/planner.js';
@@ -206,7 +208,7 @@ test('build: a cycle of CSS references is an error; nothing matching warns', asy
 test('build: a renamed file that would replace a different one is a conflict unless --overwrite', async () => {
   const files = { 'a.css': 'x', Sitefile: '' };
   const first = await run({ ...files, Sitefile: 'COPY ./a.css /\nFINGERPRINT /a.css\nEXPORT /\n' });
-  const hashed = first.output.entries()[0]![0];
+  const hashed = first.output.entries().map(([p]) => p).find((p) => p.startsWith('/a.'))!;
   await rejects(
     run({ ...files, 'other.css': 'y', Sitefile: `COPY ./a.css /\nCOPY ./other.css ${hashed}\nFINGERPRINT /a.css\nEXPORT /\n` }),
     'E_CONFLICT',
@@ -244,4 +246,81 @@ test('incremental: an unchanged FINGERPRINT step is reused, and its warnings are
     assert.deepEqual(warnings.map(rel), ['Sitefile:2 FINGERPRINT: no files match /none/**']);
     if (i === 1) assert.ok(memo.stats.hits >= 1, JSON.stringify(memo.stats));
   }
+});
+
+test('parse and plan: FINGERPRINT INTEGRITY and --no-cache-headers', () => {
+  const [f] = parseSitefile('FINGERPRINT --no-cache-headers /a/ MANIFEST /m.json integrity');
+  assert.ok(f?.kind === 'FINGERPRINT' && f.integrity === true && f.noCacheHeaders === true && f.manifest && f.patterns.length === 1);
+  const [g] = parseSitefile('FINGERPRINT /a/ INTEGRITY');
+  assert.ok(g?.kind === 'FINGERPRINT' && g.integrity && !g.manifest && g.noCacheHeaders === undefined);
+  assert.throws(() => parseSitefile('FINGERPRINT INTEGRITY'), /expected a path pattern/);
+  assert.throws(() => parseSitefile('FINGERPRINT /a/ INTEGRITY MANIFEST /m.json'), /unexpected 'MANIFEST'/);
+  assert.throws(() => parseSitefile('FINGERPRINT --no-cache-headers=1 /a/'), /takes no value/);
+  const on = plan(parseProgram('COPY ./x /x\nFINGERPRINT /a/ INTEGRITY\nFINGERPRINT /b/\nEXPORT /'));
+  assert.deepEqual(on.cacheHeaders, { span: { file: 'Sitefile', line: 2, column: 1 } });
+  assert.equal(on.stages[0]!.operations[1]!.kind === 'FINGERPRINT' && on.stages[0]!.operations[1]!.integrity, true);
+  assert.equal(plan(parseProgram('COPY ./x /x\nFINGERPRINT /a/\nFINGERPRINT --no-cache-headers /b/\nEXPORT /')).cacheHeaders, undefined);
+  assert.equal(plan(parseProgram('COPY ./x /x\nFINGERPRINT /a/\nHEADER /* cache-control: no-store\nEXPORT /')).cacheHeaders, undefined);
+  assert.equal(plan(parseProgram('COPY ./x /x\nEXPORT /')).cacheHeaders, undefined);
+});
+
+test('integrityTags: scripts and stylesheet/modulepreload links without integrity', () => {
+  const html = '<!-- <script src=a.js></script> --><script src=" a&amp;b.js "></script><LINK rel="Preload StyleSheet" HREF=c.css>' +
+    '<link rel=modulepreload href=m.js><link rel=preload href=p.js><link rel=icon href=i.png><script src=x.js integrity=y></script>' +
+    '<script src=first.js src=second.js></script><textarea><script src=t.js></script></textarea><script></script><img src=i.png>';
+  const tags = integrityTags(html);
+  assert.deepEqual(tags.map((t) => t.url), ['a&b.js', 'c.css', 'm.js', 'first.js']);
+  assert.deepEqual(tags.map((t) => html.slice(0, t.at).split('<').pop()!.toLowerCase()), ['script', 'link', 'link', 'script']);
+});
+
+test('cacheHeaderRules: directories of renamed files, single files, pages', () => {
+  const files = ['/a/x.1.css', '/a/s/y.2.js', '/b/keep.txt', '/b/z.3.js', '/blog/index.html', '/index.html', '/q r.4.js', '/top.5.svg'];
+  const hashed = new Set(['/a/x.1.css', '/a/s/y.2.js', '/b/z.3.js', '/q r.4.js', '/top.5.svg']);
+  assert.deepEqual(cacheHeaderRules(files, hashed).map((r) => `${r.pattern} ${r.value}`), [
+    '/a/* public, max-age=31536000, immutable',
+    '/b/z.3.js public, max-age=31536000, immutable',
+    '/top.5.svg public, max-age=31536000, immutable',
+    '/ no-cache',
+    '/*/ no-cache',
+    '/*.html no-cache',
+  ]);
+  assert.deepEqual(cacheHeaderRules(files, new Set()), []);
+  assert.deepEqual(cacheHeaderRules(['/a.1.js', '/p.html'], new Set(['/a.1.js'])).map((r) => r.pattern), ['/a.1.js', '/*.html']);
+});
+
+test('build: INTEGRITY adds sha384 SRI; EXPORT writes Cache-Control lines to /_headers', async () => {
+  const r = await run({
+    'public/index.html': '<link rel="stylesheet" href="assets/a.css"><script type=module src="/assets/m.js"></script><img src="assets/i.png">\n',
+    'public/assets/a.css': 'a{background:url(i.png)}',
+    'public/assets/m.js': 'export {}',
+    'public/assets/i.png': 'PNG',
+    Sitefile: 'COPY ./public/ /\nFINGERPRINT /assets/ INTEGRITY\nEXPORT /\n',
+  }, { recordSteps: true });
+  const paths = r.output.entries().map(([p]) => p);
+  const css = paths.find((p) => p.startsWith('/assets/a.'))!;
+  const js = paths.find((p) => p.startsWith('/assets/m.'))!;
+  const sri = (p: string) => 'sha384-' + createHash('sha384').update(r.output.get(p)!.bytes).digest('base64');
+  assert.equal(
+    text(r.output.get('/index.html')!.bytes),
+    `<link integrity="${sri(css)}" rel="stylesheet" href="${css.slice(1)}"><script integrity="${sri(js)}" type=module src="${js}"></script><img src="${paths.find((p) => p.startsWith('/assets/i.'))!.slice(1)}">\n`,
+  );
+  assert.equal(text(r.output.get('/_headers')!.bytes), '/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/*.html\n  Cache-Control: no-cache\n');
+  assert.equal(rel(r.output.get('/_headers')!.origin), 'Sitefile:2 FINGERPRINT');
+  const w = why(r, '/_headers', r.dir);
+  assert.deepEqual(w.history.map((e) => [e.instruction, e.inputs.map(rel)]), [['FINGERPRINT', ['Sitefile:2 FINGERPRINT']]]);
+  // Without INTEGRITY the pages only get the new names; --no-cache-headers writes no /_headers.
+  const plain = await run({ 'public/a.js': 'x', 'public/index.html': '<script src=a.js></script>', Sitefile: 'COPY ./public/ /\nFINGERPRINT --no-cache-headers /a.js\nEXPORT /\n' });
+  assert.ok(!text(plain.output.get('/index.html')!.bytes).includes('integrity'));
+  assert.equal(plain.output.get('/_headers'), undefined);
+});
+
+test('build: a COPY\'d /_headers is kept (with a warning); HEADER lines come first; --target writes none', async () => {
+  const files = { 'public/a.js': 'x', 'public/_headers': '/*\n  X: 1\n', Sitefile: 'COPY ./public/ /\nFINGERPRINT /a.js\nEXPORT /\n' };
+  const kept = await run(files);
+  assert.equal(text(kept.output.get('/_headers')!.bytes), '/*\n  X: 1\n');
+  assert.ok(kept.printed.some((m) => rel(m).includes('Sitefile:2 FINGERPRINT: /_headers already exists (not written by HEADER)')), kept.printed.join('\n'));
+  const mixed = await run({ 'public/a.js': 'x', Sitefile: 'COPY ./public/ /\nFINGERPRINT /a.js\nHEADER /* X: 1\nEXPORT /\n' });
+  const a = mixed.output.entries().map(([p]) => p).find((p) => p.startsWith('/a.'))!;
+  assert.equal(text(mixed.output.get('/_headers')!.bytes), `/*\n  X: 1\n${a}\n  Cache-Control: public, max-age=31536000, immutable\n`);
+  assert.equal(rel(mixed.output.get('/_headers')!.origin), 'Sitefile:3 HEADER');
 });

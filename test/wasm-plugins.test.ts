@@ -96,6 +96,13 @@ test('traps, bad results, plugin errors and timeouts are E_PLUGIN', async () => 
   await rejects(site(await fixture('loop')), 'E_PLUGIN', /timed out/, { pluginPolicy: { timeoutMs: 300 } });
 });
 
+test('--plugin-memory caps a wasm module\'s linear memory too (#157)', async () => {
+  const wasm = await fixture('grow'); // grows by 2 MiB
+  await rejects(site(wasm), 'E_PLUGIN', /used 2162688 bytes of memory, more than the 1048576 allowed/, { pluginPolicy: { maxMemoryMiB: 1 } });
+  const r = await build({ contextDir: await project(site(wasm)), lockfile: false, pluginPolicy: { maxMemoryMiB: 4 } });
+  assert.equal(text(r.output.get('/out.txt')?.bytes), 'grew');
+});
+
 test('INTEGRITY pins a wasm module', async () => {
   const wasm = await fixture('const');
   await rejects({ 'p.wasm': wasm, Sitefile: `FROM scratch\nPLUGIN p FROM ./p.wasm INTEGRITY ${sha256('other')}\nTRANSFORM WITH p TO /o\nEXPORT /` }, 'E_INTEGRITY', /./);

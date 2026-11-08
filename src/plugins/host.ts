@@ -7,7 +7,7 @@ import { WasmPlugin } from './wasm.js';
 /**
  * Plugins run one Node process each, under Node's permission model:
  *
- *   node --permission --allow-fs-read=<plugin folder> --input-type=module -e <runner>
+ *   node --permission --allow-fs-read=<plugin folder> --max-old-space-size=<MiB> --input-type=module -e <runner>
  *
  * so a plugin can read files in its own folder and nothing else: no writes,
  * child processes, workers, native addons, WASI or network, and an empty
@@ -23,9 +23,19 @@ export interface PluginPolicy {
   readonly timeoutMs: number;
   /** Largest result accepted from one call (default 64 MiB). */
   readonly maxOutputBytes: number;
+  /**
+   * Memory limit in MiB (default 1024, `--plugin-memory`): a JavaScript plugin's heap
+   * (`node --max-old-space-size`) and a wasm plugin's linear memory.
+   */
+  readonly maxMemoryMiB: number;
 }
 
-export const DEFAULT_PLUGIN_POLICY: PluginPolicy = { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 * 1024 };
+export const DEFAULT_PLUGIN_POLICY: PluginPolicy = { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 * 1024, maxMemoryMiB: 1024 };
+
+/** What V8 prints when a heap passes --max-old-space-size (followed by a native stack trace). */
+const OUT_OF_MEMORY = 'JavaScript heap out of memory';
+/** V8's out-of-memory report starts with one of these; it and everything after it is not logged. */
+const isFatalReport = (line: string): boolean => line.startsWith('<--- Last few GCs --->') || line.startsWith('FATAL ERROR:');
 
 /** A directory TRANSFORM runs at most this many wasm or tool calls at a time (a JS plugin, one). */
 export const TRANSFORM_JOBS = Math.max(1, Math.min(4, os.availableParallelism()));
@@ -120,6 +130,10 @@ class PluginProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private buf = '';
   private stderr = '';
+  /** V8 reported that the heap passed the memory limit. */
+  private outOfMemory = false;
+  /** Set once V8's fatal error report starts on stderr: the rest is a native stack trace, not logged. */
+  private quiet = false;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   /** False when the module exports `cache = false`; known once it has loaded. */
@@ -137,7 +151,7 @@ class PluginProcess {
     const dir = path.dirname(file);
     this.child = spawn(
       process.execPath,
-      ['--permission', `--allow-fs-read=${dir}`, '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', RUNNER],
+      ['--permission', `--allow-fs-read=${dir}`, `--max-old-space-size=${policy.maxMemoryMiB}`, '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', RUNNER],
       { cwd: dir, env: {}, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     this.child.stdout.setEncoding('utf8');
@@ -145,7 +159,11 @@ class PluginProcess {
     this.child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
     this.child.stderr.on('data', (chunk: string) => {
       this.stderr = (this.stderr + chunk).slice(-8192);
-      for (const line of chunk.split('\n')) if (line.trim()) this.log(line);
+      if (this.stderr.includes(OUT_OF_MEMORY)) this.outOfMemory = true;
+      for (const line of chunk.split('\n')) {
+        if (isFatalReport(line)) this.quiet = true;
+        if (line.trim() && !this.quiet) this.log(line);
+      }
     });
     let onReady: () => void = () => {};
     let onLoadError: (e: Error) => void = () => {};
@@ -158,7 +176,8 @@ class PluginProcess {
     this.onReadyMsg = onReady;
     this.onLoadError = (m) => onLoadError(new SitefileError('E_PLUGIN', `PLUGIN ${name}: ${m}`, span));
     this.child.on('error', (e) => this.fail(`could not start: ${e.message}`));
-    this.child.on('exit', (code, signal) => this.fail(signal ? `stopped by ${signal}` : `exited with code ${code}`));
+    // 'close' (not 'exit'): stderr has been read by then, so the reason can say why it died.
+    this.child.on('close', (code, signal) => this.fail(signal ? `stopped by ${signal}` : `exited with code ${code}`));
     this.write({ type: 'load', url: new URL(`file://${file}`).href });
   }
 
@@ -222,6 +241,11 @@ class PluginProcess {
 
   private fail(reason: string): void {
     if (this.exited) return;
+    if (this.outOfMemory) {
+      // The stderr tail would be V8's native stack trace: machine-specific, and no help.
+      reason = `ran out of memory (more than the ${this.policy.maxMemoryMiB} MiB limit)`;
+      this.stderr = '';
+    }
     this.exited = reason;
     const tail = this.stderr.trim() ? `\n${this.stderr.trim().split('\n').slice(-5).join('\n')}` : '';
     const err = new Error(`${reason}${tail}`);

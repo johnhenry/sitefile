@@ -489,13 +489,15 @@ test('serve: _headers: glob patterns, joined values, protected names and invalid
   });
 });
 
+const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
+
 test('live reload: 404.html is injected too, and a swapped tree brings its own _redirects', async () => {
   const mk = (files: Record<string, string>): Tree => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   let current = mk({ '/index.html': 'home', '/404.html': '<p>gone</p></body>', '/_redirects': '/a /b 302\n' });
   const s = createSiteServer(() => current, { liveReload: new LiveReload() });
   const { port } = await listen(s, '127.0.0.1', 0);
   try {
-    let r = await req(port, '/missing');
+    let r = await req(port, '/missing', 'GET', NAV);
     assert.equal(r.status, 404);
     assert.equal(r.body, `<p>gone</p>${RELOAD_SCRIPT}</body>`);
     assert.equal(r.headers['content-length'], String(Buffer.byteLength(r.body)));
@@ -504,7 +506,32 @@ test('live reload: 404.html is injected too, and a swapped tree brings its own _
     r = await req(port, '/a');
     assert.equal(r.status, 301);
     assert.equal(r.headers.location, '/c');
-    assert.equal((await req(port, '/')).body, `v2${RELOAD_SCRIPT}`);
+    assert.equal((await req(port, '/', 'GET', NAV)).body, `v2${RELOAD_SCRIPT}`);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('live reload: a _headers CSP that blocks the script or the event stream is warned about once per policy', async () => {
+  const mk = (files: Record<string, string>): Tree => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const site = mk({
+    '/index.html': 'home',
+    '/a.html': 'a',
+    '/ok.html': 'ok',
+    '/frag.html': '<li>x</li>',
+    '/_headers': "/*\n  Content-Security-Policy: script-src 'nonce-x'\n/ok\n  X-Ok: 1\n/frag\n  X-Frag: 1\n",
+  });
+  const warnings: string[] = [];
+  const s = createSiteServer(site, { liveReload: new LiveReload(), warn: (m) => warnings.push(m) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    await req(port, '/', 'GET', { 'sec-fetch-mode': 'cors' });
+    assert.deepEqual(warnings, [], 'only navigations are checked');
+    await req(port, '/', 'GET', NAV);
+    await req(port, '/a', 'GET', NAV);
+    assert.deepEqual(warnings, [
+      "live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'",
+    ]);
   } finally {
     await closeServer(s);
   }

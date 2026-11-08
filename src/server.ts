@@ -5,6 +5,7 @@ import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from 
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
+import { RELOAD_CLIENT } from './reload-client.js';
 
 export interface SiteServerOptions {
   /** Fall back to `/index.html` for unknown extension-less paths (single-page apps). */
@@ -14,20 +15,84 @@ export interface SiteServerOptions {
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
   readonly serverId?: string;
   /**
-   * `serve --watch`: answer {@link RELOAD_PATH} with an event stream and add
-   * {@link RELOAD_SCRIPT} to HTML responses. Never set otherwise, and never written to exports.
+   * `serve --watch`: answer {@link RELOAD_PATH} with an event stream and {@link RELOAD_SCRIPT_PATH}
+   * with the client script, and add {@link RELOAD_SCRIPT} to HTML navigations. Never set otherwise,
+   * and never written to exports.
    */
   readonly liveReload?: LiveReload;
+  /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
+  readonly warn?: (message: string) => void;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
 export const RELOAD_PATH = '/__sitefile/reload';
-/** Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`. */
-export const RELOAD_SCRIPT = `<script>new EventSource("${RELOAD_PATH}").onmessage=function(){location.reload()}</script>`;
+/** Reserved for the live-reload client script ({@link RELOAD_CLIENT}) while `serve --watch` runs. */
+export const RELOAD_SCRIPT_PATH = '/__sitefile/reload.js';
+/** Added to navigated HTML (before the last `</body>`, else at the end) under `serve --watch`. */
+export const RELOAD_SCRIPT = `<script src="${RELOAD_SCRIPT_PATH}"></script>`;
+export { RELOAD_CLIENT };
+
+/**
+ * Whether a request is a page navigation, which gets the reload script: `Sec-Fetch-Mode: navigate`
+ * when the browser sends it, else `Sec-Fetch-Dest` document/iframe/frame, else an `Accept` naming
+ * `text/html`. A `fetch()` of an HTML fragment is none of these and is served unchanged.
+ */
+export function isNavigation(headers: Readonly<Record<string, string | string[] | undefined>>): boolean {
+  const one = (k: string): string | undefined => {
+    const v = headers[k];
+    return Array.isArray(v) ? v.join(', ') : v;
+  };
+  const mode = one('sec-fetch-mode');
+  if (mode !== undefined) return mode.trim().toLowerCase() === 'navigate';
+  const dest = one('sec-fetch-dest');
+  if (dest !== undefined) return ['document', 'iframe', 'frame'].includes(dest.trim().toLowerCase());
+  return (one('accept') ?? '').toLowerCase().includes('text/html');
+}
+
+/**
+ * The directive of a `Content-Security-Policy` value that blocks live reload: `script-src` when
+ * a same-origin script cannot run, `connect-src` when the event stream cannot connect, else
+ * undefined. A comma separates policies, and each one is enforced. Only `'self'`, `*`, `http:` and
+ * `https:` count as allowing the server's own origin (host sources are not matched), and
+ * `'strict-dynamic'` makes `'self'` ignored for scripts.
+ */
+export function cspBlocksReload(value: string): 'script-src' | 'connect-src' | undefined {
+  for (const policy of value.split(',')) {
+    const directives = new Map<string, string[]>();
+    for (const d of policy.split(';')) {
+      const [name, ...sources] = d.trim().split(/[\t\n\f\r ]+/).filter((t) => t !== '');
+      if (name !== undefined && !directives.has(name.toLowerCase())) directives.set(name.toLowerCase(), sources.map((t) => t.toLowerCase()));
+    }
+    const effective = (names: string[]): string[] | undefined => names.map((n) => directives.get(n)).find((v) => v !== undefined);
+    const allows = (sources: string[] | undefined, script: boolean): boolean =>
+      sources === undefined ||
+      (!(script && sources.includes("'strict-dynamic'")) && sources.some((t) => t === "'self'" || t === '*' || t === 'http:' || t === 'https:'));
+    if (!allows(effective(['script-src-elem', 'script-src', 'default-src']), true)) return 'script-src';
+    if (!allows(effective(['connect-src', 'default-src']), false)) return 'connect-src';
+  }
+  return undefined;
+}
+
+/** What the client script does besides reloading (`serve --watch` flags). */
+export interface LiveReloadOptions {
+  /** Unregister the page's service workers and empty its Cache Storage before each reload (default true; `--keep-service-workers` turns it off). */
+  readonly resetServiceWorkers?: boolean;
+}
+
+/** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
+export function clientScript(options: LiveReloadOptions = {}): string {
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false}});\n`;
+}
 
 /** Open live-reload streams; {@link LiveReload.reload} tells every page to reload. */
 export class LiveReload {
   private readonly clients = new Set<http.ServerResponse>();
+  /** The client script for this session ({@link clientScript}). */
+  readonly script: string;
+
+  constructor(options: LiveReloadOptions = {}) {
+    this.script = clientScript(options);
+  }
 
   /** Hold `res` open as a text/event-stream until the client goes away. */
   attach(res: http.ServerResponse, headers: Record<string, string>): void {
@@ -126,13 +191,24 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     return rules;
   };
 
+  // One warning per policy text: a site usually sends the same CSP on every page.
+  const warnedCsp = new Set<string>();
+  const warnCsp = (served: string, policy: string | undefined): void => {
+    if (policy === undefined || options.warn === undefined || warnedCsp.has(policy)) return;
+    const blocked = cspBlocksReload(policy);
+    if (blocked === undefined) return;
+    warnedCsp.add(policy);
+    const what = blocked === 'script-src' ? `scripts from 'self' (${RELOAD_SCRIPT_PATH})` : `connections to 'self' (${RELOAD_PATH})`;
+    options.warn(`live reload: the Content-Security-Policy that _headers sets for ${served} does not allow ${what}, so open pages will not reload: ${policy}`);
+  };
+
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
     const method = req.method ?? 'GET';
     const target = req.url ?? '/';
     const url = originForm(target);
     let bytes = 0;
-    const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined): void => {
+    const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
       res.writeHead(status, { ...base, ...headers });
       if (buf !== undefined && method !== 'HEAD' && status !== 304) {
@@ -142,6 +218,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         res.end();
       }
       const ms = Number((process.hrtime.bigint() - started) / 1000n) / 1000;
+      if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
       options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
@@ -162,6 +239,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (method === 'HEAD') return finish(200, { 'content-type': 'text/event-stream' }, undefined);
       return options.liveReload.attach(res, base); // not access-logged: one long request per open page
     }
+    if (options.liveReload && rawPath === RELOAD_SCRIPT_PATH) {
+      // not access-logged either: every page load fetches it
+      const js = options.liveReload.script;
+      return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(js) }, js, true);
+    }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
     const segs = safeSegments(rawPath);
     if (!segs) return page(400, BAD_REQUEST_PAGE);
@@ -173,7 +255,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const sendFile = (status: number, served: string): void => {
       const file = tree.get(served)!;
       const type = mimeTypeFor(served);
-      const live = options.liveReload !== undefined && type.startsWith('text/html');
+      const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
+      if (live) warnCsp(served, custom['content-security-policy']);
       const body = live ? injectReloadScript(file.bytes) : file.bytes;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
       // An injected page is a different representation of the file: give it its own ETag.
