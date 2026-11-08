@@ -124,7 +124,10 @@ pub fn parse_manifest(bytes: &[u8], origin: &str) -> Result<Manifest> {
             )))
         }
     };
-    let root = o.get("root").and_then(Value::as_str).filter(|r| is_digest(r));
+    let root = o
+        .get("root")
+        .and_then(Value::as_str)
+        .filter(|r| is_digest(r));
     let (Some(root), Some(list)) = (root, o.get("files").and_then(Value::as_array)) else {
         return Err(bad("not a Sitefile manifest (root or files missing)".into()));
     };
@@ -213,10 +216,7 @@ impl LazyStore {
 pub fn resolve_target(arg: &str, store: &mut LazyStore) -> Result<Target> {
     if looks_like_dir(arg) {
         return kind_on_disk(arg).ok_or_else(|| {
-            SitefileError::plain(
-                E_NOT_FOUND,
-                format!("'{arg}' is not a directory or a file"),
-            )
+            SitefileError::plain(E_NOT_FOUND, format!("'{arg}' is not a directory or a file"))
         });
     }
     match store.get().and_then(|s| s.resolve(arg)) {
@@ -296,10 +296,7 @@ impl VerifyReport {
             .chain(self.extra.iter().map(|p| (p.as_str(), "extra")))
             .collect();
         lines.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
-        lines
-            .iter()
-            .map(|(p, k)| format!("{k:<8} {p}\n"))
-            .collect()
+        lines.iter().map(|(p, k)| format!("{k:<8} {p}\n")).collect()
     }
 }
 
@@ -373,9 +370,16 @@ mod tests {
         let b = f("/b", "sha256:11");
         let c = f("/c", "sha256:22");
         assert_eq!(merkle_root(&[]), format!("sha256:{}", hex(&sha(&[]))));
-        let (la, lb, lc) = (leaf("/a\0sha256:00"), leaf("/b\0sha256:11"), leaf("/c\0sha256:22"));
+        let (la, lb, lc) = (
+            leaf("/a\0sha256:00"),
+            leaf("/b\0sha256:11"),
+            leaf("/c\0sha256:22"),
+        );
         let ab = sha(&[&[1], &la, &lb]);
-        assert_eq!(merkle_root(&[a.clone(), b.clone()]), format!("sha256:{}", hex(&ab)));
+        assert_eq!(
+            merkle_root(&[a.clone(), b.clone()]),
+            format!("sha256:{}", hex(&ab))
+        );
         let abc = sha(&[&[1], &ab, &lc]);
         assert_eq!(merkle_root(&[a, b, c]), format!("sha256:{}", hex(&abc)));
     }
@@ -389,7 +393,9 @@ mod tests {
         };
         let bytes = encode_manifest(&m);
         assert_eq!(parse_manifest(&bytes, "m").unwrap(), m);
-        let text = String::from_utf8(bytes).unwrap().replace("\"/a\"", "\"/b\"");
+        let text = String::from_utf8(bytes)
+            .unwrap()
+            .replace("\"/a\"", "\"/b\"");
         let e = parse_manifest(text.as_bytes(), "m").unwrap_err();
         assert_eq!(e.code, E_INTEGRITY);
     }

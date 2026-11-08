@@ -4,8 +4,8 @@ use super::args::{flag, string, OptSpec, Parsed};
 use super::common::{out, pretty_json, require_args, usage, Command};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::integrity::{
-    load_target, manifest_of, parse_manifest, path_inside, resolve_target, verify_tree,
-    LazyStore, Target,
+    load_target, manifest_of, parse_manifest, path_inside, resolve_target, verify_tree, LazyStore,
+    Target,
 };
 
 const VERIFY_OPTS: &[OptSpec] = &[string("manifest"), flag("json")];
