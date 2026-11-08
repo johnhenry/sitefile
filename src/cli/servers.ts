@@ -32,11 +32,26 @@ export function parsePublish(spec: string | undefined): { host: string; port: nu
 
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
 
+async function isFile(p: string): Promise<boolean> {
+  return fs.stat(p).then((s) => s.isFile(), () => false);
+}
+
+/** An archive file source: labelled by its absolute path, stored by its real path. */
+async function archiveSource(arg: string): Promise<{ label: string; source: ServerState['source'] }> {
+  const file = path.resolve(arg);
+  return { label: file, source: { kind: 'archive', path: await fs.realpath(file).catch(() => file) } };
+}
+
+/**
+ * A directory or archive file when `arg` looks like a path, else an image reference or ID, else an
+ * archive file by that name (`site.zip`). Whether a file is an archive is checked when it is loaded.
+ */
 async function resolveSource(store: Store, arg: string): Promise<{ label: string; source: ServerState['source'] }> {
   if (/^(\.\.?|~.*|\.\.?\/.*|\/.*|.*\/)$/.test(arg)) {
     const dir = path.resolve(arg);
+    if (await isFile(dir)) return archiveSource(arg);
     const st = await fs.stat(dir).catch(() => undefined);
-    if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${arg}' is not a directory`);
+    if (!st?.isDirectory()) throw new SitefileError('E_NOT_FOUND', `'${arg}' is not a directory or a file`);
     return { label: dir, source: { kind: 'dir', path: await fs.realpath(dir) } };
   }
   try {
@@ -45,6 +60,7 @@ async function resolveSource(store: Store, arg: string): Promise<{ label: string
     if (e instanceof SitefileError && e.code === 'E_NOT_FOUND' && (await fs.stat(arg).then((s) => s.isDirectory(), () => false))) {
       throw new SitefileError('E_NOT_FOUND', `${e.message} (to serve the directory, write ./${arg})`);
     }
+    if (await isFile(arg)) return archiveSource(arg);
     throw e;
   }
 }
@@ -88,10 +104,10 @@ async function startDetached(reg: ServerRegistry, state: ServerState): Promise<S
 
 const run: Command = {
   name: 'serve',
-  summary: 'serve an image or directory over HTTP',
-  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>  |  serve --watch [options] [context]',
+  summary: 'serve an image, directory or archive file over HTTP',
+  usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]',
   description:
-    'Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.',
+    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
@@ -121,7 +137,7 @@ const run: Command = {
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
-    requireArgs(pos, 1, 1, 'an image reference or ./directory');
+    requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
@@ -139,7 +155,7 @@ const run: Command = {
       return 0;
     }
 
-    await loadServedTree(store, source); // fail fast on a bad image or directory
+    await loadServedTree(store, source); // fail fast on a bad image, directory or archive
     const reg = await ServerRegistry.open(store);
     const { id, name: finalName } = await reg.allocate(name);
     const state: ServerState = {
@@ -400,7 +416,7 @@ const restart: Command = {
   name: 'restart',
   summary: 'restart a site server',
   usage: 'server restart [--time secs] <name|id>',
-  description: 'Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory is re-read.',
+  description: 'Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory or archive file is re-read.',
   flags: ['--time <secs>   grace period before SIGKILL (default 5)'],
   options: { time: { type: 'string' } },
   async run(v, pos) {

@@ -96,9 +96,9 @@ const WATCH_ONLY: &[&str] = &[
 ];
 pub const SERVE: Command = Command {
     name: "serve",
-    summary: "serve an image or directory over HTTP",
-    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>  |  serve --watch [options] [context]",
-    description: "Serve an image from the local store, or a directory (a snapshot read at start; paths starting with ./, ../ or /),\nover HTTP. GET and HEAD only; no directory listings. Binds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.",
+    summary: "serve an image, directory or archive file over HTTP",
+    usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]",
+    description: "Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.",
     flags: &[
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
@@ -125,7 +125,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             return usage(format!("--{f} needs --watch"));
         }
     }
-    require_args(&v.positionals, 1, 1, "an image reference or ./directory")?;
+    require_args(
+        &v.positionals,
+        1,
+        1,
+        "an image reference, ./directory or archive file",
+    )?;
     let bind = parse_publish(v.str("publish"))?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
@@ -593,7 +598,7 @@ pub const RESTART: Command = Command {
     name: "restart",
     summary: "restart a site server",
     usage: "server restart [--time secs] <name|id>",
-    description: "Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory is re-read.",
+    description: "Stop the server if it is running, then start it again with the same name, image and bind address.\nImages are served by the same image ID; a directory or archive file is re-read.",
     flags: &["--time <secs>   grace period before SIGKILL (default 5)"],
     options: TIME_OPTS,
     run: run_restart,
