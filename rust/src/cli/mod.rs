@@ -7,6 +7,7 @@ pub mod bake;
 pub mod cache;
 pub mod common;
 pub mod git_context;
+pub mod hosts;
 pub mod images;
 pub mod integrity;
 pub mod network;
@@ -58,6 +59,8 @@ Integrity:
                                                    and their Merkle root (save --manifest too)
   sitefile verify <dir|archive|ref> --manifest m.json   check a deployed or extracted copy: missing,
                                                    changed and extra files (exit 1 on any)
+  sitefile diff <a> <b> [--json]                   files added, removed and changed between two images,
+                                                   directories or archives, and _redirects/_headers rules
 
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
@@ -70,6 +73,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -145,6 +152,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
                                plugin's linear memory (default 1024)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else node on PATH); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -181,6 +190,9 @@ Options:
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -218,6 +230,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("secret"),
     string("plugin-timeout"),
     string("plugin-memory"),
+    string("node"),
     strings("allow-exec"),
     strings("allow-plugin"),
     flag("allow-plugins"),
@@ -248,6 +261,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("json"),
     flag("dot"),
     flag("watch"),
+    flag("poll"),
+    string("poll-interval"),
     string("profile"),
     string("manifest"),
     flag_s("help", 'h'),
@@ -267,8 +282,10 @@ const TOP: &[&Command] = &[
     &registry::PULL,
     &vendor::VENDOR,
     &outdated::OUTDATED,
+    &hosts::HOSTS,
     &bake::BAKE,
     &integrity::VERIFY,
+    &integrity::DIFF,
 ];
 
 struct Group {
@@ -361,6 +378,29 @@ fn run_extra_command(argv: &[String]) -> i32 {
 }
 
 // ------------------------------------------------------------ build / validate / inspect
+
+/// `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path.
+fn plugin_node(flag: Option<&str>) -> Result<Option<std::path::PathBuf>> {
+    let (value, from) = match flag {
+        Some(f) => (Some(f.to_string()), "--node"),
+        None => (
+            std::env::var("SITEFILE_NODE")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            "SITEFILE_NODE",
+        ),
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !std::path::Path::new(&value).is_absolute() {
+        return Err(SitefileError::plain(
+            ErrorCode::E_USAGE,
+            format!("{from} expects an absolute path to a Node binary, got '{value}'"),
+        ));
+    }
+    Ok(Some(std::path::PathBuf::from(value)))
+}
 
 fn positive_int(raw: &str, flag: &str) -> Result<u64> {
     let n = js_to_number(raw);
@@ -484,6 +524,16 @@ fn run_main(argv: &[String]) -> i32 {
             return usage_error("--cache-to can be given only once");
         }
     }
+    if !o.flag("watch") && (o.flag("poll") || o.has("poll-interval")) {
+        return usage_error(&format!(
+            "--{} needs --watch",
+            if o.has("poll-interval") {
+                "poll-interval"
+            } else {
+                "poll"
+            }
+        ));
+    }
     if o.flag("watch") {
         if command != "build" {
             return usage_error(&format!(
@@ -495,10 +545,16 @@ fn run_main(argv: &[String]) -> i32 {
         }
         servers::catch_signals();
         let arg_files = o.strs("build-arg-file");
+        let poll = match crate::watch::poll_option(o.flag("poll"), o.str("poll-interval")) {
+            Ok(p) => p,
+            Err(e) => return report(&e),
+        };
         let opts = crate::watch::WatchOptions {
             context: &context,
             sitefile: o.str("file").filter(|s| !s.is_empty()),
             arg_files: &arg_files,
+            poll,
+            plain: false,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
@@ -794,6 +850,7 @@ fn run_build_command(
     if let Some(m) = o.str("plugin-memory").filter(|s| !s.is_empty()) {
         options.plugin_policy.max_memory_mib = positive_int(m, "--plugin-memory")? as usize;
     }
+    options.node = plugin_node(o.str("node"))?;
     options.allow_exec = o.strs("allow-exec");
     options.allow_plugin = o.strs("allow-plugin");
     options.allow_all_plugins = o.flag("allow-plugins");
