@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **JavaScript plugins get a memory limit** (johnhenry/sitefile#157): the
+  plugin process starts with `--max-old-space-size`, set by the new
+  `--plugin-memory <MiB>` flag (default 1024, the same as the wasm linear
+  memory cap, which the flag now sets too; `bake` passes it through). A plugin
+  that passes it fails with `E_PLUGIN: … ran out of memory (more than the N MiB
+  limit)` instead of V8's stack trace. Library: `PluginPolicy.maxMemoryMiB` /
+  `max_memory_mib`.
+
 ## 0.0.2 (2026-11-08)
 
 - **Plugin console output keeps its order** (johnhenry/sitefile#164): a
