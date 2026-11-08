@@ -86,14 +86,44 @@ export const STREAM_HEADERS: Readonly<Record<string, string>> = {
 export interface LiveReloadOptions {
   /** Unregister the page's service workers and empty its Cache Storage before each reload (default true; `--keep-service-workers` turns it off). */
   readonly resetServiceWorkers?: boolean;
+  /** Swap changed stylesheets in place instead of reloading when only CSS changed (default true; `--no-css-inject` turns it off). */
+  readonly cssInject?: boolean;
 }
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false}});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false}});\n`;
 }
 
-/** Open live-reload streams; {@link LiveReload.reload} tells every page to reload. */
+/** The event that tells every page to reload. */
+export const RELOAD_EVENT = '{"type":"reload"}';
+
+/**
+ * The live-reload event for a new tree (undefined when no file changed): `{"type":"css","paths":[...]}`
+ * when `cssInject` is on and every changed file is a stylesheet that is in both trees (added or
+ * removed files always reload), else {@link RELOAD_EVENT}. Paths are sorted.
+ */
+export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean): string | undefined {
+  const changed: string[] = [];
+  let cssOnly = cssInject;
+  for (const [p, f] of next.entries()) {
+    const old = prev.get(p);
+    if (old !== undefined && old.digest === f.digest && old.mode === f.mode) continue;
+    changed.push(p);
+    if (old === undefined || !mimeTypeFor(p).startsWith('text/css')) cssOnly = false;
+  }
+  for (const [p] of prev.entries()) {
+    if (!next.isFile(p)) {
+      changed.push(p);
+      cssOnly = false;
+    }
+  }
+  if (changed.length === 0) return undefined;
+  if (!cssOnly) return RELOAD_EVENT;
+  return JSON.stringify({ type: 'css', paths: changed.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) });
+}
+
+/** Open live-reload streams; {@link LiveReload.send} gives every page an event ({@link LiveReload.reload}: reload). */
 export class LiveReload {
   private readonly clients = new Set<http.ServerResponse>();
   /** The client script for this session ({@link clientScript}). */
@@ -124,8 +154,13 @@ export class LiveReload {
     });
   }
 
+  /** Send `event` (one line of JSON) to every open page. */
+  send(event: string): void {
+    for (const c of this.clients) c.write(`data: ${event}\n\n`);
+  }
+
   reload(): void {
-    for (const c of this.clients) c.write('data: reload\n\n');
+    this.send(RELOAD_EVENT);
   }
 
   get size(): number {

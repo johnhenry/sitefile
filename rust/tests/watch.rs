@@ -418,8 +418,14 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/index.html"), "<h1>v2</h1>");
-    assert_eq!(ev.next(), "data: reload");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
     assert_eq!(get(port, "/").2, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
+    // only a stylesheet of the build changed: pages swap it in place
+    write(site.join("public/style.css"), "body{margin:1px}");
+    assert_eq!(
+        ev.next(),
+        "data: {\"type\":\"css\",\"paths\":[\"/style.css\"]}"
+    );
 
     write(
         site.join("Sitefile"),
@@ -436,6 +442,72 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
         !w.stdout().contains("/__sitefile/"),
         "the event stream and the script are not access-logged"
     );
+    drop(ev);
+    assert_eq!(w.stop(), 0);
+}
+
+/// The port from a `Serving ... at http://127.0.0.1:PORT/` line.
+fn port_of(stdout: &str) -> u16 {
+    let at = stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
+    stdout[at..].split('/').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn serve_watch_plain_directory_is_reread_and_swaps_css() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let dir = t.0.join("plain");
+    fs::create_dir_all(&dir).unwrap();
+    write(
+        dir.join("index.html"),
+        "<link rel=\"stylesheet\" href=\"/s.css\"><h1>p1</h1>",
+    );
+    write(dir.join("s.css"), "a{}");
+    write(dir.join(".env"), "SECRET=1");
+    let w = Proc::start(&home, &["serve", "--watch", s(&dir)]);
+    w.wait_lines("Watching ", 1);
+    let stdout = w.stdout();
+    assert!(stdout.starts_with("Read 2 files (sha256:"), "{stdout}");
+    assert!(stdout.contains(" (2 files) at "), "{stdout}");
+    let port = port_of(&stdout);
+    assert_eq!(
+        get(port, "/").2,
+        format!("<link rel=\"stylesheet\" href=\"/s.css\"><h1>p1</h1>{RELOAD_SCRIPT}")
+    );
+    assert_eq!(get(port, "/.env").0, 404);
+    let mut ev = Events::open(port);
+    assert_eq!(ev.next(), "retry: 1000");
+    write(dir.join("s.css"), "a{color:red}");
+    assert_eq!(ev.next(), "data: {\"type\":\"css\",\"paths\":[\"/s.css\"]}");
+    write(dir.join("index.html"), "<h1>p2</h1>");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
+    w.wait_lines("Change detected, re-reading", 2);
+    assert_eq!(get(port, "/").2, format!("<h1>p2</h1>{RELOAD_SCRIPT}"));
+    let mut names: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".env", "index.html", "s.css"]);
+    drop(ev);
+    assert_eq!(w.stop(), 0);
+}
+
+#[test]
+fn serve_watch_no_css_inject_reloads() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[("public/index.html", "<h1>x</h1>")], DEFAULT_SITEFILE);
+    let w = Proc::start(&home, &["serve", "--watch", "--no-css-inject", s(&site)]);
+    w.wait_lines("Watching ", 1);
+    let port = port_of(&w.stdout());
+    assert!(get(port, "/__sitefile/reload.js")
+        .2
+        .ends_with("\"cssInject\":false});\n"));
+    let mut ev = Events::open(port);
+    assert_eq!(ev.next(), "retry: 1000");
+    write(site.join("public/style.css"), "body{margin:3px}");
+    assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
     drop(ev);
     assert_eq!(w.stop(), 0);
 }

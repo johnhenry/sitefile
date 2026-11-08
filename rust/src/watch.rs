@@ -52,6 +52,8 @@ pub fn poll_option(poll: bool, interval: Option<&str>) -> Result<Option<Duration
 
 const MSG_CHANGE: &str = "Change detected, rebuilding\n";
 const MSG_FAILED: &str = "Build failed; keeping the last good output\n";
+const MSG_CHANGE_PLAIN: &str = "Change detected, re-reading\n";
+const MSG_FAILED_PLAIN: &str = "Read failed; serving the last good copy\n";
 
 /// `p` is `dir` or inside it (both absolute).
 pub fn is_within(p: &Path, dir: &Path) -> bool {
@@ -174,6 +176,8 @@ pub struct WatchOptions<'a> {
     /// `--poll`: scan every this long instead of every [`POLL`]. (This implementation always polls;
     /// the flag only slows the scans down, for network shares where each stat is slow.)
     pub poll: Option<Duration>,
+    /// `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages).
+    pub plain: bool,
 }
 
 /// Build once, then rebuild whenever a watched path changes, until `stop()`.
@@ -251,9 +255,9 @@ pub fn watch_loop(
         }
         if dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             dirty_since = None;
-            out(MSG_CHANGE);
+            out(if o.plain { MSG_CHANGE_PLAIN } else { MSG_CHANGE });
             if run(&mut w, &mut last) != 0 {
-                err(MSG_FAILED);
+                err(if o.plain { MSG_FAILED_PLAIN } else { MSG_FAILED });
             }
             // a change during the build differs from `last` in the next scan: one follow-up build
         }

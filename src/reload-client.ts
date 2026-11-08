@@ -34,6 +34,30 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     return Promise.all(jobs).catch(function () {});
   }
 
+  // Only stylesheets changed: point each <link rel=stylesheet> whose path changed at a fresh URL
+  // (the old sheet stays until the new one loads, so nothing flashes). False when no link matched,
+  // e.g. a sheet that is only @import-ed: then the page reloads.
+  function swapStylesheets(paths) {
+    var swapped = false;
+    var links = document.querySelectorAll("link[rel~=stylesheet][href]");
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var url = new URL(link.getAttribute("href"), location.href);
+      if (url.origin !== location.origin) continue;
+      var p = decodeURIComponent(url.pathname);
+      if (paths.indexOf(p) === -1) continue;
+      url.searchParams.set("__sitefile", String(Date.now()));
+      var fresh = link.cloneNode(false);
+      fresh.href = url.href;
+      fresh.onload = fresh.onerror = (function (old) {
+        return function () { if (old.parentNode) old.parentNode.removeChild(old); };
+      })(link);
+      link.parentNode.insertBefore(fresh, link.nextSibling);
+      swapped = true;
+    }
+    return swapped;
+  }
+
   function reload() {
     resetServiceWorkers().then(function () { location.reload(); });
   }
@@ -47,7 +71,14 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     source.onopen = function () {
       delay = 1000;
     };
-    source.onmessage = function () {
+    source.onmessage = function (e) {
+      var ev;
+      try {
+        ev = JSON.parse(e.data);
+      } catch (_) {
+        ev = { type: "reload" };
+      }
+      if (ev.type === "css" && options.cssInject && swapStylesheets(ev.paths || [])) return;
       reload();
     };
     source.onerror = function () {

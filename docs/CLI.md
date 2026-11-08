@@ -503,15 +503,26 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 ## Watch mode
 
 ```
-sitefile build --watch [--poll] [--poll-interval ms] [context] [build options]
+sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject]
+                       [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
-                       [--poll] [--poll-interval ms] [context]
+                       [--poll] [--poll-interval ms] [--no-css-inject]
+                       [context | ./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
 `serve --watch` builds the context **in memory** (like `inspect`; no export is written), serves the result like
 `serve`, and reloads open pages after each good rebuild.
+
+**A plain directory**: `serve --watch ./dir` on a directory that has no `Sitefile`, given none of `-f`,
+`--target`, `--build-arg` and `--build-arg-file`, serves the directory itself, the way `serve ./dir` does (through
+the sandboxed local reader: symlinks may not leave it, hidden files other than `.well-known` are not served), and
+re-reads it when something in it changes, with the same watcher, ignore rules, debounce and `--poll`. A directory
+with a `Sitefile`, or any of those flags, is a build context. The messages are `Read N files (sha256:...)`,
+`Change detected, re-reading` and, when the directory cannot be read (a symlink that escapes it, say),
+`Read failed; serving the last good copy`. Archive files are not watched (`serve site.zip` reads the file at start;
+`server restart` picks up a new copy), and `-d` cannot be combined with `--watch` in either mode.
 
 - **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
   and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
@@ -557,8 +568,15 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 Only under `serve --watch`:
 
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
-  `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
-  sends nothing. The stream is not written to the access log.
+  `text/event-stream` that sends `retry: 1000`, then one event per good rebuild (or re-read) that changed the
+  served files: `data: {"type":"css","paths":["/a.css",...]}` when every changed file is a stylesheet
+  (`text/css`) that was already there (CSS injection, below), else `data: {"type":"reload"}`. A rebuild whose
+  output is identical, and a failed rebuild, send nothing. The stream is not written to the access log.
+- **CSS injection** (`--no-css-inject` turns it off; then a CSS-only change sends `{"type":"reload"}`): on a
+  `css` event the client points each same-origin `<link rel="stylesheet">` whose path is listed at the same URL with
+  a fresh `__sitefile=<time>` query parameter (the old sheet stays until the new one has loaded), so the page keeps
+  its scroll position and state. When no link matches (a sheet only reached through `@import`), it reloads. Any
+  other event, or one it cannot parse (an older client), reloads the page.
 - **Through proxies and tunnels**: the stream (and its HEAD) has `cache-control: no-cache, no-transform` and
   `x-accel-buffering: no`, so nginx-style proxies neither buffer nor compress it, and a `: ping` comment every 15 s
   keeps idle connections open. The client opens the stream at `reload` relative to the script's own URL, so a page
