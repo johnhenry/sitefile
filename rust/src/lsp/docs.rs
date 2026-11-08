@@ -231,6 +231,7 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("tgz", "A gzip-compressed tar archive (alias `tar.gz`)."),
     ("wbn", "A Web Bundle; needs `BASE <https url>` or `--base-url`; `COMPRESSION gzip` gzips it."),
     ("oci", "An OCI image (archive for `-o *.tar`, else a layout directory); `BASE`, `AT` and `COMPRESSION` apply."),
+    ("car", "An IPFS CARv1 file (UnixFS, CIDv1); its root CID is the one `ipfs add -r --hidden --cid-version=1` prints."),
 ];
 
 const COMPRESSIONS: &[(&str, &str)] = &[
