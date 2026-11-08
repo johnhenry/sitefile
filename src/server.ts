@@ -73,6 +73,15 @@ export function cspBlocksReload(value: string): 'script-src' | 'connect-src' | u
   return undefined;
 }
 
+/** Heartbeat interval on the event stream. */
+export const HEARTBEAT_MS = 15_000;
+/** Headers of the event stream (also on HEAD): no proxy buffering (`X-Accel-Buffering`), no compression or other transforms. */
+export const STREAM_HEADERS: Readonly<Record<string, string>> = {
+  'content-type': 'text/event-stream',
+  'cache-control': 'no-cache, no-transform',
+  'x-accel-buffering': 'no',
+};
+
 /** What the client script does besides reloading (`serve --watch` flags). */
 export interface LiveReloadOptions {
   /** Unregister the page's service workers and empty its Cache Storage before each reload (default true; `--keep-service-workers` turns it off). */
@@ -90,16 +99,29 @@ export class LiveReload {
   /** The client script for this session ({@link clientScript}). */
   readonly script: string;
 
-  constructor(options: LiveReloadOptions = {}) {
+  /** Time between heartbeat comments on an open stream (15 s; tests pass less). */
+  private readonly heartbeatMs: number;
+
+  constructor(options: LiveReloadOptions = {}, heartbeatMs = HEARTBEAT_MS) {
     this.script = clientScript(options);
+    this.heartbeatMs = heartbeatMs;
   }
 
-  /** Hold `res` open as a text/event-stream until the client goes away. */
+  /**
+   * Hold `res` open as a text/event-stream until the client goes away. The headers keep proxies
+   * and tunnels from buffering or compressing it, and a comment every 15 s keeps idle
+   * connections from being cut (and finds clients that went away).
+   */
   attach(res: http.ServerResponse, headers: Record<string, string>): void {
-    res.writeHead(200, { ...headers, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    res.writeHead(200, { ...headers, ...STREAM_HEADERS });
     res.write('retry: 1000\n\n');
     this.clients.add(res);
-    res.on('close', () => this.clients.delete(res));
+    const beat = setInterval(() => res.write(': ping\n\n'), this.heartbeatMs);
+    beat.unref();
+    res.on('close', () => {
+      clearInterval(beat);
+      this.clients.delete(res);
+    });
   }
 
   reload(): void {
@@ -223,7 +245,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const end = Math.min(q === -1 ? url.length : q, hash === -1 ? url.length : hash);
     const rawPath = url.slice(0, end);
     if (options.liveReload && rawPath === RELOAD_PATH) {
-      if (method === 'HEAD') return finish(200, { 'content-type': 'text/event-stream' }, undefined);
+      if (method === 'HEAD') return finish(200, { ...STREAM_HEADERS }, undefined);
       return options.liveReload.attach(res, base); // not access-logged: one long request per open page
     }
     if (options.liveReload && rawPath === RELOAD_SCRIPT_PATH) {

@@ -121,6 +121,14 @@ pub fn csp_blocks_reload(value: &str) -> Option<&'static str> {
     None
 }
 
+/// Headers of the event stream (also on HEAD): no proxy buffering (`X-Accel-Buffering`), no
+/// compression or other transforms.
+pub const STREAM_HEADERS: [(&str, &str); 3] = [
+    ("content-type", "text/event-stream"),
+    ("cache-control", "no-cache, no-transform"),
+    ("x-accel-buffering", "no"),
+];
+
 /// What the client script does besides reloading (`serve --watch` flags).
 #[derive(Debug, Clone)]
 pub struct LiveReloadOptions {
@@ -219,16 +227,17 @@ impl LiveReload {
     }
 
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
+    /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
+    /// 15 s keeps idle connections from being cut (and finds clients that went away).
     fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
-        let mut head = String::from(
-            "HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\ncache-control: no-cache\r\n",
-        );
+        let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
         }
-        head.push_str(
-            "content-type: text/event-stream\r\nconnection: close\r\n\r\nretry: 1000\n\n",
-        );
+        for (k, v) in STREAM_HEADERS {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head.push_str("connection: close\r\n\r\nretry: 1000\n\n");
         if out
             .write_all(head.as_bytes())
             .and_then(|_| out.flush())
@@ -740,7 +749,12 @@ pub fn respond(
         // GET is streamed by the connection loop; HEAD only gets the headers.
         return finish(
             200,
-            owned(vec![("content-type", "text/event-stream".into())]),
+            owned(
+                STREAM_HEADERS
+                    .iter()
+                    .map(|(k, v)| (*k, v.to_string()))
+                    .collect(),
+            ),
             None,
         );
     }
@@ -1986,6 +2000,14 @@ mod tests {
             handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h).header("content-type"),
             Some("text/event-stream")
         );
+        let head = handle_request(&tree, &opts, "HEAD", RELOAD_PATH, &h);
+        assert_eq!(
+            (
+                head.header("cache-control"),
+                head.header("x-accel-buffering")
+            ),
+            (Some("no-cache, no-transform"), Some("no"))
+        );
         // without --watch: no script, and the path is an ordinary (missing) file
         let plain = SiteServerOptions::default();
         assert_eq!(
@@ -2015,6 +2037,8 @@ mod tests {
         };
         read_until(&mut c, &mut got, "retry: 1000\n\n");
         assert!(got.contains("content-type: text/event-stream"));
+        assert!(got.contains("cache-control: no-cache, no-transform\r\n"), "{got}");
+        assert!(got.contains("x-accel-buffering: no\r\n"), "{got}");
         for _ in 0..200 {
             if live.clients() == 1 {
                 break;

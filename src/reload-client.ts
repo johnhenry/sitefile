@@ -38,8 +38,23 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     resetServiceWorkers().then(function () { location.reload(); });
   }
 
-  var source = new EventSource(new URL("reload", base).href);
-  source.onmessage = function () {
-    reload();
-  };
+  // EventSource reconnects by itself after a dropped connection (the server sends retry: 1000),
+  // but gives up for good when an answer is not an event stream (a proxy or tunnel error page):
+  // then try again, waiting twice as long each time, up to 30 s.
+  var delay = 1000;
+  function connect() {
+    var source = new EventSource(new URL("reload", base).href);
+    source.onopen = function () {
+      delay = 1000;
+    };
+    source.onmessage = function () {
+      reload();
+    };
+    source.onerror = function () {
+      if (source.readyState !== EventSource.CLOSED) return;
+      setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30000);
+    };
+  }
+  connect();
 })`;

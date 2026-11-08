@@ -120,9 +120,10 @@ function get(port: number, p: string, headers: Record<string, string> = {}): Pro
 }
 
 /** Open the event stream; `next()` resolves with the next complete event. */
-function events(port: number): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
+function events(port: number, through?: { proxyPort: number }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const req = http.get({ host: '127.0.0.1', port, path: RELOAD_PATH, agent: false }, (res) => {
+    const target = through ? { port: through.proxyPort } : { port };
+    const req = http.get({ host: '127.0.0.1', ...target, path: RELOAD_PATH, agent: false }, (res) => {
       let buf = '';
       const waiters: Array<(e: string) => void> = [];
       const queue: string[] = [];
@@ -199,6 +200,69 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
   } finally {
     await closeServer(server);
     await closeServer(plain);
+  }
+});
+
+/**
+ * A reverse proxy that behaves like nginx's default: it buffers each upstream response until it
+ * ends, unless the upstream says `X-Accel-Buffering: no`.
+ */
+async function bufferingProxy(upstreamPort: number): Promise<{ port: number; close: () => Promise<void> }> {
+  const proxy = http.createServer((req, res) => {
+    const up = http.request({ host: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method, headers: req.headers }, (r) => {
+      const streaming = String(r.headers['x-accel-buffering']).toLowerCase() === 'no';
+      if (streaming) {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        res.flushHeaders();
+        r.pipe(res);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      r.on('data', (c: Buffer) => chunks.push(c));
+      r.on('end', () => res.writeHead(r.statusCode ?? 502, r.headers).end(Buffer.concat(chunks)));
+    });
+    up.on('error', () => res.destroy());
+    req.pipe(up);
+  });
+  await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));
+  return {
+    port: (proxy.address() as { port: number }).port,
+    close: () => {
+      proxy.closeAllConnections();
+      return new Promise((r) => proxy.close(() => r()));
+    },
+  };
+}
+
+test('live reload through a buffering reverse proxy: unbuffered, untransformed stream with a heartbeat', async () => {
+  const tree = Tree.fromFiles([['/index.html', makeFile(enc('<h1>v1</h1>'), 't')]]);
+  const live = new LiveReload({}, 50);
+  const server = createSiteServer(() => tree, { liveReload: live });
+  const { port } = await listen(server, '127.0.0.1', 0);
+  const proxy = await bufferingProxy(port);
+  try {
+    const ev = await events(port, { proxyPort: proxy.port });
+    assert.equal(ev.headers['x-accel-buffering'], 'no');
+    assert.equal(ev.headers['cache-control'], 'no-cache, no-transform');
+    assert.equal(await ev.next(), 'retry: 1000');
+    assert.equal(await ev.next(), ': ping', 'a comment keeps the idle connection alive');
+    live.reload();
+    let e = await ev.next();
+    while (e === ': ping') e = await ev.next();
+    assert.equal(e, 'data: reload', 'the event arrives through the proxy before the stream ends');
+    ev.close();
+    const head = await new Promise<http.IncomingHttpHeaders>((resolve, reject) =>
+      http.request({ host: '127.0.0.1', port, path: RELOAD_PATH, method: 'HEAD', agent: false }, (r) => resolve(r.headers)).on('error', reject).end(),
+    );
+    assert.equal(head['x-accel-buffering'], 'no');
+    assert.equal(head['cache-control'], 'no-cache, no-transform');
+    // the client reconnects with backoff when an answer is not an event stream, and finds the
+    // stream relative to its own URL (another public origin or a base path)
+    assert.match(RELOAD_CLIENT, /new URL\("reload", base\)/);
+    assert.match(RELOAD_CLIENT, /delay = Math\.min\(delay \* 2, 30000\)/);
+  } finally {
+    await proxy.close();
+    await closeServer(server);
   }
 });
 

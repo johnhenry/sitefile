@@ -551,6 +551,11 @@ Only under `serve --watch`:
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
   `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
   sends nothing. The stream is not written to the access log.
+- **Through proxies and tunnels**: the stream (and its HEAD) has `cache-control: no-cache, no-transform` and
+  `x-accel-buffering: no`, so nginx-style proxies neither buffer nor compress it, and a `: ping` comment every 15 s
+  keeps idle connections open. The client opens the stream at `reload` relative to the script's own URL, so a page
+  reached through another public origin connects back through it; when an answer is not an event stream (a proxy
+  error page), it reconnects after 1 s, doubling the wait up to 30 s.
 - `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
   (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
   `reload`, relative to its own URL, and reloads the page on each event. The script is the same in both
