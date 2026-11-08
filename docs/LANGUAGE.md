@@ -826,6 +826,26 @@ use `${NAME}`.
   `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
   segment is percent-encoded like `encodeURIComponent`, and the result is XML
   escaped. There is no `lastmod` (the output depends only on the tree).
+  Above the [protocol's limits](https://www.sitemaps.org/protocol.html) of
+  50,000 URLs or 50 MiB (52,428,800 bytes) the destination becomes a
+  **sitemap index** (`<sitemapindex>`, one `<sitemap><loc>` per part) and the
+  URLs go to numbered parts next to it, `/sitemap-1.xml`, `/sitemap-2.xml`, …
+  (`-N` before the last extension), in path order; a part is closed when the
+  next URL would pass either limit. Search engines and `ROBOTS … SITEMAP`
+  then use the index.
+- `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical" href="…">`
+  right before the first `</head>` of every `.html`/`.htm` page of the
+  **current stage's tree at that point** that is below the EXPORT path (other
+  than `/404.html` there), is valid UTF-8 and has no `<link>` whose `rel`
+  has the token `canonical` before that `</head>` (yours win). The URL is
+  `<base>` and the page's path below the EXPORT path, encoded like a sitemap
+  entry (`…/index.html` becomes `…/`); `PRETTY` also drops `.html` (`/about.html`
+  → `<base>/about`), for hosts that serve pages without the extension. A page
+  with no `</head>` is left alone, and one warning names those pages. Comments
+  and the contents of `<script>` and the other raw-text elements are skipped,
+  as when references are scanned. The rewritten pages get the origin
+  `Sitefile:<line> CANONICAL`. Alternate-language links (`hreflang`) are not
+  written yet.
 - `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so

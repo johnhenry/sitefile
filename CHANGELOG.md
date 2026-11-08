@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **CANONICAL links and split sitemaps** (johnhenry/sitefile#218):
+  `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical">` before
+  `</head>` of every page that has none (PRETTY drops `.html`), and SITEMAP
+  writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
+  Both implementations, with conformance cases; example `examples/canonical`.
+  hreflang alternates are not done yet.
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with

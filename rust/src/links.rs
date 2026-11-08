@@ -711,6 +711,124 @@ pub fn integrity_tags(text: &str) -> Vec<IntegrityTag> {
     out
 }
 
+/// Where a canonical link goes in an HTML text (`canonicalSlot` in src/links.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalSlot {
+    /// The byte offset of the first `</head` end tag.
+    Before(usize),
+    /// A `<link rel=canonical>` comes before it.
+    Has,
+    /// There is no `</head>`.
+    NoHead,
+}
+
+/// Where a canonical link goes: before the first `</head`, unless a `<link>` whose `rel` has the token
+/// `canonical` comes first. Comments, declarations and raw text are skipped as in [`scan_html`].
+pub fn canonical_slot(text: &str) -> CanonicalSlot {
+    let b = text.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        let Some(lt) = find_byte(b, b'<', i) else {
+            break;
+        };
+        i = lt;
+        let next = b.get(i + 1).copied();
+        if b[i..].starts_with(b"<!--") {
+            i = find_from(b, b"-->", i + 4).map_or(n, |j| j + 3);
+            continue;
+        }
+        if next == Some(b'/') {
+            let end = i + 6;
+            if end <= n
+                && b[i + 2..end].eq_ignore_ascii_case(b"head")
+                && (end >= n || is_ws(b[end]) || b[end] == b'/' || b[end] == b'>')
+            {
+                return CanonicalSlot::Before(i);
+            }
+        }
+        if matches!(next, Some(b'!' | b'?' | b'/')) {
+            i = find_byte(b, b'>', i + 2).map_or(n, |j| j + 1);
+            continue;
+        }
+        if !next.is_some_and(|c| c.is_ascii_alphabetic()) {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < n && !is_ws(b[j]) && b[j] != b'/' && b[j] != b'>' {
+            j += 1;
+        }
+        let tag = lower_ascii(&b[i + 1..j]);
+        i = j;
+        let mut rel: Option<(usize, usize)> = None;
+        loop {
+            while i < n && (is_ws(b[i]) || b[i] == b'/') {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            if b[i] == b'>' {
+                i += 1;
+                break;
+            }
+            let name_start = i;
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            while i < n && !is_ws(b[i]) && b[i] != b'/' && b[i] != b'>' && b[i] != b'=' {
+                i += 1;
+            }
+            let name = lower_ascii(&b[name_start..i]);
+            let mut k = i;
+            while k < n && is_ws(b[k]) {
+                k += 1;
+            }
+            if k >= n || b[k] != b'=' {
+                continue;
+            }
+            i = k + 1;
+            while i < n && is_ws(b[i]) {
+                i += 1;
+            }
+            let (start, end);
+            if i < n && (b[i] == b'"' || b[i] == b'\'') {
+                start = i + 1;
+                match find_byte(b, b[i], start) {
+                    Some(close) => {
+                        end = close;
+                        i = close + 1;
+                    }
+                    None => {
+                        end = n;
+                        i = n;
+                    }
+                }
+            } else {
+                start = i;
+                while i < n && !is_ws(b[i]) && b[i] != b'>' {
+                    i += 1;
+                }
+                end = i;
+            }
+            if name == "rel" && rel.is_none() {
+                rel = Some((start, end));
+            }
+        }
+        if tag == "link" {
+            if let Some((s, e)) = rel {
+                let r = decode_html_text(&text[s..e]).to_ascii_lowercase();
+                if r.split([' ', '\t', '\n', '\r', '\x0c']).any(|t| t == "canonical") {
+                    return CanonicalSlot::Has;
+                }
+            }
+        }
+        if RAW_TEXT.contains(&tag.as_str()) {
+            i = index_of_close_tag(b, &tag, i);
+        }
+    }
+    CanonicalSlot::NoHead
+}
+
 /// Where `</tag` (ASCII case-insensitive, followed by whitespace, `/` or `>`) starts at or after `from`.
 fn index_of_close_tag(b: &[u8], tag: &str, from: usize) -> usize {
     let mut i = from;
