@@ -232,6 +232,8 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("wbn", "A Web Bundle; needs `BASE <https url>` or `--base-url`; `COMPRESSION gzip` gzips it."),
     ("oci", "An OCI image (archive for `-o *.tar`, else a layout directory); `BASE`, `AT` and `COMPRESSION` apply."),
     ("car", "An IPFS CARv1 file (UnixFS, CIDv1); its root CID is the one `ipfs add -r --hidden --cid-version=1` prints."),
+    ("html", "`index.html` as one file, every asset it references inlined as a `data:` URI."),
+    ("mhtml", "`index.html` and its assets as one MHTML (multipart/related) file; `BASE` sets the parts' URLs."),
 ];
 
 const COMPRESSIONS: &[(&str, &str)] = &[
