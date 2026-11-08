@@ -2037,7 +2037,10 @@ mod tests {
         };
         read_until(&mut c, &mut got, "retry: 1000\n\n");
         assert!(got.contains("content-type: text/event-stream"));
-        assert!(got.contains("cache-control: no-cache, no-transform\r\n"), "{got}");
+        assert!(
+            got.contains("cache-control: no-cache, no-transform\r\n"),
+            "{got}"
+        );
         assert!(got.contains("x-accel-buffering: no\r\n"), "{got}");
         for _ in 0..200 {
             if live.clients() == 1 {
