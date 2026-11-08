@@ -599,7 +599,7 @@ test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async (
   try {
     await w.waitFor(/Watching /);
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
-    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false\}\);\n$/);
+    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:3px}');
