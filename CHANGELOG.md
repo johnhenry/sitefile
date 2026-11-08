@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.2 (2026-11-08)
+
+- **Plugin console output keeps its order** (johnhenry/sitefile#164): a
+  plugin's console lines are written before its result, in both the
+  TypeScript and Rust runners, so they always become build warnings (a race
+  dropped some). Fixed in 5689229 (#164).
+- **Docs: the tool is "sitefile".** The product name is lowercase where it
+  stands alone; "Sitefile" stays for the file (`Sitefile`, `Sitefile.lock`, "a
+  Sitefile") and the language. The desktop app is Sitefile Desktop.
+
 ## 0.0.1 (2026-11-08)
 
 - **`serve` serves archive files** (johnhenry/sitefile#155): `sitefile serve
