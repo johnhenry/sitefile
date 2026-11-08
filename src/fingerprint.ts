@@ -3,7 +3,8 @@
 // tree, manifest and messages.
 import { createHash } from 'node:crypto';
 import { SitefileError, type SourceSpan } from './errors.js';
-import { referenceKind, resolveReference, rewriteReferences, scanFile, type Reference } from './links.js';
+import { integrityTags, referenceKind, resolveReference, rewriteReferences, scanFile, type Reference } from './links.js';
+import { integrityOf } from './media.js';
 import { nfc } from './paths.js';
 import { makeFile, Tree, type FileNode } from './tree.js';
 
@@ -85,6 +86,8 @@ function renamable(path: string): boolean {
 export interface FingerprintOp {
   readonly patterns: readonly string[];
   readonly manifest?: string;
+  /** `INTEGRITY`: add Subresource Integrity attributes for the renamed files to the HTML that loads them. */
+  readonly integrity?: boolean;
   /** The directory the site is served from (the EXPORT path): absolute references resolve below it. */
   readonly root: string;
   readonly overwrite: boolean;
@@ -156,11 +159,16 @@ export function fingerprint(tree: Tree, op: FingerprintOp, origin: string, warn:
   };
   for (const [p] of selected) visit(p, []);
 
+  // INTEGRITY: the SRI value of each renamed file, by its new path.
+  const sri = new Map<string, string>();
+  if (op.integrity) for (const [p] of selected) sri.set(renamed.get(p)!, integrityOf(content.get(p)!));
+
   const files: Array<[string, FileNode]> = [];
   for (const [p, node] of entries) {
     if (isSelected.has(p)) continue;
     const s = referenceKind(p) !== undefined ? scan(p, node) : undefined;
-    const text = s ? rewriteReferences(s.text, s.refs, p, op.root, (q) => renamed.get(q)) : undefined;
+    let text = s ? rewriteReferences(s.text, s.refs, p, op.root, (q) => renamed.get(q)) : undefined;
+    if (s && sri.size > 0 && referenceKind(p) === 'html') text = withIntegrity(text ?? s.text, p, op.root, sri) ?? text;
     files.push([p, text === undefined ? node : makeFile(new TextEncoder().encode(text), origin, node.mode)]);
   }
   const renames = selected.map(([p]): [string, string] => [p, renamed.get(p)!]);
@@ -172,6 +180,24 @@ export function fingerprint(tree: Tree, op: FingerprintOp, origin: string, warn:
   );
   if (op.manifest !== undefined) out = out.withFiles([[op.manifest, makeFile(new TextEncoder().encode(manifestJson(renames)), origin)]], policy, op.span);
   return { tree: out, renames };
+}
+
+/**
+ * `text` (an HTML file at `from`) with ` integrity="…"` added after the tag name of each script and
+ * stylesheet tag that loads a file of `sri` (new path -> value); undefined when no tag does.
+ */
+function withIntegrity(text: string, from: string, root: string, sri: ReadonlyMap<string, string>): string | undefined {
+  let out = '';
+  let at = 0;
+  for (const tag of integrityTags(text)) {
+    const t = resolveReference(tag.url, from, root);
+    if (t.kind !== 'internal' || t.dir) continue;
+    const value = sri.get(t.path);
+    if (value === undefined) continue;
+    out += text.slice(at, tag.at) + ` integrity="${value}"`;
+    at = tag.at;
+  }
+  return at === 0 ? undefined : out + text.slice(at);
 }
 
 /** Compose rename maps: `earlier` then `later` (a renamed file renamed again maps to its last name). */

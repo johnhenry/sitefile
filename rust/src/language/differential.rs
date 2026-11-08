@@ -214,11 +214,13 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("warn", Some(json!(warn))),
             ("external", Some(json!(external))),
         ]),
-        Instruction::Fingerprint { span: sp, patterns, manifest, overwrite } => obj(vec![
+        Instruction::Fingerprint { span: sp, patterns, manifest, integrity, no_cache_headers, overwrite } => obj(vec![
             ("kind", s("FINGERPRINT")),
             ("span", Some(span(sp))),
             ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
             ("manifest", manifest.as_ref().map(operand)),
+            ("integrity", integrity.then(|| json!(true))),
+            ("noCacheHeaders", no_cache_headers.then(|| json!(true))),
             ("overwrite", Some(json!(overwrite))),
         ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![

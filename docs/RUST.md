@@ -120,8 +120,8 @@ errors and per-plugin cache entries.
 | The store home | `BuildOptions::store_home: Option<PathBuf>` (`None`: `$SITEFILE_HOME`, else `~/.sitefile`), used by `FROM <local image>`, `BASE` and the wasm module cache; `BuildOptions::store_home()` / `open_store()`. The TRANSFORM cache stays `BuildOptions::cache_dir` | every build |
 | Cancellation | `BuildOptions::cancel: Option<CancelToken>`; `CancelToken::new()`, `.cancel()`, `.is_cancelled()`, `.check()`. A cancelled build fails with `E_CANCELLED` ("the build was cancelled") | not the CLI |
 | Per-plugin cache | `TransformCache::usage_by_plugin() -> Vec<PluginCacheUsage>` (`{ plugin: Option<String>, entries, blobs, bytes }`); `TransformCache::prune_plugin(name: &str, older_than: Duration) -> PruneResult`; `get_for` / `put_for` record the name | `cache prune --plugin` |
-| Permission errors | `SitefileError::needs: Option<Needs>`; `Needs { kind: NeedsKind::Plugin \| NeedsKind::Tool, name }`, `.flag()` (`--allow-plugin` / `--allow-exec`), `.args()` | `E_UNSUPPORTED` at a PLUGIN or TOOL |
-| Network settings (proxy, host rules, timeouts) | `FetchPolicy::network: NetworkSettings` (`resources::network`; `NetworkSettings::NONE` is the default) for `BuildOptions::fetch_policy` and `git_context::materialize_git_context(&policy, …)`; `RegistryOptions::network` for registry clients built directly. `network_from_env(&Env)`, `merge_network`, `network_problem` and `host_matches` are what the CLI uses. Both implementations (TS: `FetchPolicy.network`, `RegistryOptions.network`, `networkFromEnv`); see docs/CLI.md, "Network" | `--proxy`, `--no-proxy`, `--allow-hosts`, `--deny-hosts`, `--connect-timeout`, `--read-timeout` and `SITEFILE_*` |
+| Permission errors | `SitefileError::needs: Option<Needs>`; `Needs { kind: NeedsKind::Plugin \| Tool \| Host \| SecretHost, name }`, `.flag()` (`--allow-plugin` / `--allow-exec` / `--allow-hosts` / `--allow-secret-host`), `.args()`, `.to_json()`; `SitefileError::to_json()` is the `--json` error object. `NeedsKind` gained `Host` and `SecretHost` in #176: an exhaustive `match` needs the new arms | `E_UNSUPPORTED` at a PLUGIN or TOOL; `E_HOST_BLOCKED` for a host outside the allow list (not a deny-hosts match) or, in strict mode, a secret without `--allow-secret-host` |
+| Network settings (proxy, host rules, timeouts) | `FetchPolicy::network: NetworkSettings` (`resources::network`; `NetworkSettings::NONE` is the default) for `BuildOptions::fetch_policy` and `git_context::materialize_git_context(&policy, …)`; `RegistryOptions::network` for registry clients built directly. `network_from_env(&Env)`, `merge_network`, `network_problem` and `host_matches` are what the CLI uses. Strict mode is `NetworkSettings::strict` (`--network strict`, `SITEFILE_NETWORK`), secret rules `NetworkSettings::secret_hosts` (`--allow-secret-host`, `<id>=<pattern>`); `host_allowed` and `check_secret_hosts` apply them. Both implementations (TS: `FetchPolicy.network`, `RegistryOptions.network`, `networkFromEnv`); see docs/CLI.md, "Network" | `--proxy`, `--no-proxy`, `--allow-hosts`, `--deny-hosts`, `--network`, `--allow-secret-host`, `--connect-timeout`, `--read-timeout` and `SITEFILE_*` |
 
 - **Cancellation is cooperative.** The token is checked before each import
   (download), `FROM image` and `BASE` resolution, stage, operation, plugin
@@ -208,6 +208,11 @@ paths").
   (a CONNECT tunnel with real TLS to a name only the proxy resolves, a refused
   tunnel, `push`/`pull` through it), the private-address rule through a proxy,
   `--no-proxy`, and the allow/deny host rules.
+  Watch cases (`conformance/watch.mjs`) run `serve --watch` with both CLIs and
+  compare a transcript of requests (status, headers, body), file edits,
+  event-stream events and `warning:` lines. The live-reload client script has
+  one source, `src/reload-client.ts`, which `rust/src/server.rs` compiles in
+  with `include_str!`.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest
   (and, with `--provenance` / `--sbom`, by the digest of every attestation).
@@ -316,6 +321,11 @@ protocol v2, not by running the `git` program:
 
 ## Known differences
 
+- **A wasm plugin that passes `--plugin-memory`.** wasmtime refuses the
+  `memory.grow` (it returns -1, so the module typically traps or reports an
+  error of its own); V8 lets the memory grow and fails the call after it
+  returns (`used N bytes of memory, more than the M allowed`). Both fail with
+  `E_PLUGIN`; the message differs.
 - **Extra CAs.** Both CLIs trust the PEM file named by `NODE_EXTRA_CA_CERTS`
   (Node reads it at startup; the Rust CLI reads the same variable for imports
   and registries, and ignores an unreadable file with Node's warning). As in

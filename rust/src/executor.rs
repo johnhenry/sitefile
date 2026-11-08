@@ -66,14 +66,15 @@ use crate::resources::types::{
 use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::site::{
-    atom_xml, headers_file, page_url, parse_feed_date, redirects_file, sitemap_xml, FeedEntry,
+    atom_xml, cache_header_rules, headers_file, page_url, parse_feed_date, redirects_file,
+    sitemap_xml, FeedEntry,
 };
 use crate::store::Store;
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
 use crate::values::{js_string_of, Env, Scalar};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1201,7 +1202,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             ),
         ));
     }
-    let tree = with_site_rules(tree, &p, &label, &current_renames)?;
+    let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
     let output = tree.subtree(&p.export_path);
     if output.is_empty() {
         warn(&match &p.target {
@@ -1279,6 +1280,7 @@ fn with_site_rules(
     p: &Plan,
     label: &str,
     renames: &BTreeMap<String, String>,
+    warn: &dyn Fn(&str),
 ) -> Result<Tree> {
     let url_below = |path: &str| -> Option<String> {
         if p.export_path == "/" {
@@ -1301,11 +1303,44 @@ fn with_site_rules(
             .zip(&to)
             .map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)),
     );
+    // FINGERPRINT's Cache-Control lines, after the HEADER lines (see `cache_header_rules`).
+    let mut auto: Vec<(String, &str)> = Vec::new();
+    let mut header_rules: Vec<(bool, &SourceSpan)> =
+        p.headers.iter().map(|h| (h.overwrite, &h.span)).collect();
+    let mut header_kind = "HEADER";
+    let headers_path = join_virtual(&p.export_path, "_headers");
+    if let (Some(fp), false) = (&p.cache_headers, urls.is_empty()) {
+        let files: Vec<String> = tree
+            .subtree(&p.export_path)
+            .entries()
+            .map(|(f, _)| f.clone())
+            .collect();
+        let present: HashSet<&String> = files.iter().collect();
+        let hashed: HashSet<String> = urls
+            .values()
+            .filter(|u| present.contains(u))
+            .cloned()
+            .collect();
+        let rules = cache_header_rules(&files, &hashed);
+        if !rules.is_empty() && p.headers.is_empty() && tree.is_file(&headers_path) {
+            warn(&format!("{label}:{} FINGERPRINT: {headers_path} already exists (not written by HEADER), so no Cache-Control lines were added for the fingerprinted files; add them to that file, or use HEADER", fp.line));
+        } else if !rules.is_empty() {
+            auto = rules;
+            if p.headers.is_empty() {
+                header_rules = vec![(false, fp)];
+                header_kind = "FINGERPRINT";
+            }
+        }
+    }
     let headers = headers_file(
         p.headers
             .iter()
             .zip(&patterns)
-            .map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str())),
+            .map(|(h, pattern)| (pattern.as_str(), h.name.as_str(), h.value.as_str()))
+            .chain(
+                auto.iter()
+                    .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            ),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
@@ -1316,12 +1351,7 @@ fn with_site_rules(
             p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(),
             "REDIRECT",
         ),
-        (
-            "_headers",
-            headers,
-            p.headers.iter().map(|h| (h.overwrite, &h.span)).collect(),
-            "HEADER",
-        ),
+        ("_headers", headers, header_rules, header_kind),
     ];
     for (name, text, rules, kind) in files {
         let Some((_, first)) = rules.first() else {
@@ -1838,7 +1868,13 @@ pub fn fetch_git_import(
                 env.label, spec.span.line, spec.name, v.dir
             ));
         }
-        let origin_headers = secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+        let origin_headers = secret_headers(
+            &spec.name,
+            &spec.secrets,
+            &spec.span,
+            env.secrets,
+            Some((&loc.repo, &env.policy.network)),
+        )?;
         let transport = GitTransport {
             origin_headers: &origin_headers,
             ..GitTransport::new(env.policy, span)
@@ -1909,8 +1945,13 @@ pub fn fetch_remote_import(
     let (bytes, final_url) = match (env.vendor, vendored) {
         (Some((v, local)), Some(e)) => v.read_resource(local, url, e, span)?,
         _ => {
-            let origin_headers =
-                secret_headers(&spec.name, &spec.secrets, &spec.span, env.secrets)?;
+            let origin_headers = secret_headers(
+                &spec.name,
+                &spec.secrets,
+                &spec.span,
+                env.secrets,
+                Some((url, &env.policy.network)),
+            )?;
             let f = fetch_remote_with(
                 url,
                 env.policy,
@@ -4401,6 +4442,7 @@ impl<'a> Exec<'a> {
         let Operation::Fingerprint {
             patterns,
             manifest,
+            integrity,
             root,
             overwrite,
             span,
@@ -4412,6 +4454,7 @@ impl<'a> Exec<'a> {
         let op = FingerprintOp {
             patterns,
             manifest: manifest.as_deref(),
+            integrity: *integrity,
             root,
             overwrite: *overwrite,
             span,

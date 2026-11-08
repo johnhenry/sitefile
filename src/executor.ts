@@ -46,7 +46,7 @@ import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
-import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
+import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -534,7 +534,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label, currentRenames);
+  tree = withSiteRules(tree, p, label, currentRenames, warn);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
@@ -921,7 +921,7 @@ export async function fetchRemoteImport(spec: ImportSpec, url: string, env: Remo
     env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}; fetching it (run 'sitefile vendor' to add it)`);
   }
   const fetchIt = (): Promise<{ bytes: Uint8Array; finalUrl: string }> => {
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url, network: env.policy.network });
     return fetchRemote(url, env.policy, spec.span, originHeaders ? { originHeaders } : {});
   };
   const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchIt();
@@ -976,7 +976,7 @@ export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: Re
       env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}${vendored ? ` at commit ${want ?? 'the latest'}` : ''}; fetching it (run 'sitefile vendor' to add it)`);
     }
     const limits = env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS;
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url: loc.repo, network: env.policy.network });
     const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
     want = objs.commit;
     selection = selectGitPath(objs, loc, limits, spec.span);
@@ -2282,13 +2282,13 @@ async function transformFiles(
   return out;
 }
 
-/** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
 /**
  * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
  * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
- * names its new URL.
+ * names its new URL. Unless the plan turns them off, the renamed files (and the pages) also get
+ * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}).
  */
-function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>): Tree {
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
   const url = new Map<string, string>();
   for (const [from, to] of renames) {
     const a = urlBelow(p.exportPath, from);
@@ -2296,10 +2296,27 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
     if (a !== undefined && b !== undefined) url.set(a, b);
   }
   const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
-  const headers = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
+  const headers: HeaderRule[] = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
+  let headerRules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }> = p.headers;
+  let headerKind = 'HEADER';
+  const headersPath = joinVirtual(p.exportPath, '_headers');
+  if (p.cacheHeaders && url.size > 0) {
+    const files = tree.subtree(p.exportPath).entries().map(([f]) => f);
+    const present = new Set(files);
+    const auto = cacheHeaderRules(files, new Set([...url.values()].filter((u) => present.has(u))));
+    if (auto.length > 0 && p.headers.length === 0 && tree.isFile(headersPath)) {
+      warn(`${label}:${p.cacheHeaders.span.line} FINGERPRINT: ${headersPath} already exists (not written by HEADER), so no Cache-Control lines were added for the fingerprinted files; add them to that file, or use HEADER`);
+    } else if (auto.length > 0) {
+      headers.push(...auto);
+      if (p.headers.length === 0) {
+        headerRules = [{ overwrite: false, span: p.cacheHeaders.span }];
+        headerKind = 'FINGERPRINT';
+      }
+    }
+  }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
     { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
-    { name: '_headers', text: headersFile(headers), rules: headers, kind: 'HEADER' },
+    { name: '_headers', text: headersFile(headers), rules: headerRules, kind: headerKind },
   ];
   for (const f of files) {
     const first = f.rules[0];

@@ -1,0 +1,6 @@
+# Strict network mode (issue #176): every host must be allowed by name, even with no
+# allow list; the error and its --json form name the flag to add (needs).
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

@@ -1,0 +1,8 @@
+# Strict network mode (issue #176): a SECRET is sent only to a host that an
+# --allow-secret-host <id>=<host> rule names; otherwise E_HOST_BLOCKED with needs.
+FROM scratch
+IMPORT note FROM ${HTTPS}/private/note.txt AS text SECRET tok AS BEARER
+RENDER <<T TO /index.html
+${note}
+T
+EXPORT /

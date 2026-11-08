@@ -448,10 +448,29 @@ pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tre
     load_archive_tree_opts(file, limits, &ServedTreeOptions::default())
 }
 
+/// [`load_archive_tree`] with hidden files and OS metadata kept (`verify` and `diff` compare every file).
+pub fn load_archive_tree_all(file: &Path) -> Result<Tree> {
+    load_archive(
+        file,
+        &DEFAULT_ARCHIVE_LIMITS,
+        true,
+        &ServedTreeOptions::default(),
+    )
+}
+
 /// [`load_archive_tree_with`] with `options` (OS metadata files are dropped unless kept).
 pub fn load_archive_tree_opts(
     file: &Path,
     limits: &ArchiveLimits,
+    options: &ServedTreeOptions,
+) -> Result<Tree> {
+    load_archive(file, limits, false, options)
+}
+
+fn load_archive(
+    file: &Path,
+    limits: &ArchiveLimits,
+    hidden: bool,
     options: &ServedTreeOptions,
 ) -> Result<Tree> {
     let origin = file.display().to_string();
@@ -486,6 +505,9 @@ pub fn load_archive_tree_opts(
     let tree = extract_archive(&bytes, &origin, limits, None)?;
     if tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
+    }
+    if hidden {
+        return Ok(tree);
     }
     served(tree, &origin, options)
 }
