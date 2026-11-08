@@ -504,11 +504,11 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 
 ```
 sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [--no-overlay] [context | ./plain-directory] [build options]
+                       [--no-overlay] [--navigate-to-changed] [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [--no-overlay] [context | ./plain-directory]
+                       [--no-overlay] [--navigate-to-changed] [context | ./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -575,6 +575,11 @@ Only under `serve --watch`:
   and a failed one sends `data: {"type":"error","code":"E_...","message":"...","file":"/ctx/Sitefile","line":2,"column":1}`
   (`file`, `line` and `column` only when the error has a Sitefile location). A stream that opens while the last
   build is broken gets that error event right after `retry: 1000`. The stream is not written to the access log.
+- **Go to the changed page** (`--navigate-to-changed`, off by default): when a rebuild added or changed exactly one
+  HTML file (other files may change too), its `reload` event names the page that serves it:
+  `data: {"type":"reload","path":"/posts/hello/"}` (`/dir/index.html` becomes `/dir/`, other files keep their path;
+  segments are percent-encoded). Open pages go there instead of reloading, unless they already show it. Two or more
+  changed pages, or none, give a plain reload.
 - **Rebuilding badge and error overlay** (`--no-overlay` turns both off): on `building` the client shows a small
   "Rebuilding..." badge in the corner; on `error` it shows a dismissible overlay with the code, the message and the
   Sitefile location, noting that the page shows the last good build (and when a service worker controls the

@@ -142,6 +142,8 @@ pub struct LiveReloadOptions {
     pub console: bool,
     /// Show a Rebuilding badge and a build-error overlay in the page (`--no-overlay` turns it off).
     pub overlay: bool,
+    /// After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`).
+    pub navigate_to_changed: bool,
 }
 
 impl Default for LiveReloadOptions {
@@ -151,6 +153,7 @@ impl Default for LiveReloadOptions {
             css_inject: true,
             console: false,
             overlay: true,
+            navigate_to_changed: false,
         }
     }
 }
@@ -159,12 +162,13 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{}}});\n",
         reload_client(),
         options.reset_service_workers,
         options.css_inject,
         options.console,
-        options.overlay
+        options.overlay,
+        options.navigate_to_changed
     )
 }
 
@@ -286,10 +290,27 @@ pub fn error_event(e: &SitefileError) -> String {
     serde_json::Value::Object(m).to_string()
 }
 
+/// The URL path that serves `file` (`/dir/` for `/dir/index.html`); same as `pageUrlFor` in src/server.ts.
+pub fn page_url_for(file: &str) -> String {
+    let mut segs: Vec<&str> = file.split('/').skip(1).collect();
+    if segs.last() == Some(&"index.html") {
+        let n = segs.len() - 1;
+        segs[n] = "";
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    format!("/{}", enc.join("/"))
+}
+
 /// The live-reload event for a new tree (`None` when no file changed); same rules as
 /// `reloadEventFor` in src/server.ts.
-pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<String> {
+pub fn reload_event_for(
+    prev: &Tree,
+    next: &Tree,
+    css_inject: bool,
+    navigate: bool,
+) -> Option<String> {
     let mut changed: Vec<String> = Vec::new();
+    let mut pages: Vec<&String> = Vec::new();
     let mut css_only = css_inject;
     for (p, f) in next.entries() {
         let old = prev.get(p);
@@ -297,6 +318,9 @@ pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<St
             continue;
         }
         changed.push(p.clone());
+        if mime_type_for(p).starts_with("text/html") {
+            pages.push(p);
+        }
         if old.is_none() || !mime_type_for(p).starts_with("text/css") {
             css_only = false;
         }
@@ -311,6 +335,11 @@ pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<St
         return None;
     }
     if !css_only {
+        if navigate && pages.len() == 1 {
+            return Some(
+                serde_json::json!({ "type": "reload", "path": page_url_for(pages[0]) }).to_string(),
+            );
+        }
         return Some(RELOAD_EVENT.to_string());
     }
     changed.sort();
@@ -2163,20 +2192,19 @@ mod tests {
         assert!(!js.contains('`'));
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
-            format!(
-                "{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true}});\n"
-            )
+            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true,\"navigateToChanged\":false}});\n")
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
             css_inject: false,
             console: true,
             overlay: false,
+            navigate_to_changed: true,
         });
         assert_eq!(
             keep.script(),
             format!(
-                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false}});\n"
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false,\"navigateToChanged\":true}});\n"
             )
         );
         assert!(js.contains("attachShadow"));
@@ -2194,7 +2222,7 @@ mod tests {
             .unwrap()
         };
         let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
-        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css);
+        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css, false);
         assert_eq!(
             e(
                 &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
@@ -2437,6 +2465,73 @@ mod tests {
         );
         assert_eq!(BUILDING_EVENT, "{\"type\":\"building\"}");
         assert_eq!(OK_EVENT, "{\"type\":\"ok\"}");
+    }
+
+    #[test]
+    fn navigate_to_changed_names_the_one_changed_page() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let base: Vec<(&str, &str)> = vec![
+            ("/index.html", "i"),
+            ("/posts/a/index.html", "a"),
+            ("/posts/b/index.html", "b"),
+            ("/x.html", "x"),
+            ("/s.css", "s"),
+            ("/app.js", "1"),
+        ];
+        let a = t(&base);
+        let with = |edits: &[(&'static str, &'static str)]| {
+            let mut v = base.clone();
+            for (p, c) in edits {
+                match v.iter_mut().find(|(q, _)| q == p) {
+                    Some(e) => e.1 = c,
+                    None => v.push((p, c)),
+                }
+            }
+            t(&v)
+        };
+        let e = |next: &Tree, nav: bool| reload_event_for(&a, next, true, nav);
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/posts/a/\"}")
+        );
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), false).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/x.html", "X"), ("/app.js", "2")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/x.html\"}")
+        );
+        assert_eq!(
+            e(
+                &with(&[("/index.html", "I"), ("/posts/a/index.html", "A")]),
+                true
+            )
+            .as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/app.js", "2")]), true).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/s.css", "S")]), true).as_deref(),
+            Some("{\"type\":\"css\",\"paths\":[\"/s.css\"]}")
+        );
+        assert_eq!(
+            e(&with(&[("/new/index.html", "n")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/new/\"}")
+        );
+        assert_eq!(page_url_for("/index.html"), "/");
+        assert_eq!(page_url_for("/a b/index.html"), "/a%20b/");
+        assert_eq!(page_url_for("/caf\u{e9}.html"), "/caf%C3%A9.html");
     }
 
     #[test]

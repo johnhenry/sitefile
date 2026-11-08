@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { BUILDING_EVENT, closeServer, CONSOLE_LIMIT, errorEvent, OK_EVENT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
+import { BUILDING_EVENT, closeServer, pageUrlFor, CONSOLE_LIMIT, errorEvent, OK_EVENT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { SitefileError } from '../src/errors.js';
 import { isIgnoredChange, pollSnapshot, RebuildScheduler } from '../src/watch.js';
@@ -95,9 +95,9 @@ test('injectReloadScript inserts before the last </body>, else appends', () => {
 });
 
 test('clientScript passes the session options to the client', () => {
-  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true});\n`);
-  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true,"console":false,"overlay":true});\n`);
-  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false,"console":false,"overlay":true});\n`);
+  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true,"navigateToChanged":false});\n`);
+  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true,"console":false,"overlay":true,"navigateToChanged":false});\n`);
+  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false,"console":false,"overlay":true,"navigateToChanged":false});\n`);
   assert.equal(new LiveReload({ resetServiceWorkers: false }).script, clientScript({ resetServiceWorkers: false }));
   // the client unregisters service workers and empties Cache Storage before reloading
   assert.match(RELOAD_CLIENT, /getRegistrations\(\)/);
@@ -113,7 +113,7 @@ test('errorEvent: code, message and the Sitefile location', () => {
   assert.equal(BUILDING_EVENT, '{"type":"building"}');
   assert.equal(OK_EVENT, '{"type":"ok"}');
   assert.match(RELOAD_CLIENT, /attachShadow/, 'the overlay is in a shadow root');
-  assert.equal(clientScript({ overlay: false }).endsWith('"overlay":false});\n'), true);
+  assert.equal(clientScript({ overlay: false }).endsWith('"overlay":false,"navigateToChanged":false});\n'), true);
 });
 
 test('reloadEventFor: nothing, css (only changed stylesheets in both trees) or reload', () => {
@@ -191,6 +191,22 @@ test('POST /__sitefile/console: same-origin only, size-capped, rate-limited, nev
     await closeServer(server);
     await closeServer(plain);
   }
+});
+
+test('--navigate-to-changed: a reload that changed exactly one page names its URL', () => {
+  const t = (files: Record<string, string>) => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const a = t({ '/index.html': 'i', '/posts/a/index.html': 'a', '/posts/b/index.html': 'b', '/x.html': 'x', '/s.css': 's', '/app.js': '1' });
+  const same = { '/index.html': 'i', '/posts/a/index.html': 'a', '/posts/b/index.html': 'b', '/x.html': 'x', '/s.css': 's', '/app.js': '1' };
+  assert.equal(reloadEventFor(a, t({ ...same, '/posts/a/index.html': 'A' }), true, true), '{"type":"reload","path":"/posts/a/"}');
+  assert.equal(reloadEventFor(a, t({ ...same, '/posts/a/index.html': 'A' }), true, false), RELOAD_EVENT, 'off by default');
+  assert.equal(reloadEventFor(a, t({ ...same, '/x.html': 'X', '/app.js': '2' }), true, true), '{"type":"reload","path":"/x.html"}', 'other files may change too');
+  assert.equal(reloadEventFor(a, t({ ...same, '/index.html': 'I', '/posts/a/index.html': 'A' }), true, true), RELOAD_EVENT, 'two pages changed');
+  assert.equal(reloadEventFor(a, t({ ...same, '/app.js': '2' }), true, true), RELOAD_EVENT, 'no page changed');
+  assert.equal(reloadEventFor(a, t({ ...same, '/s.css': 'S' }), true, true), '{"type":"css","paths":["/s.css"]}');
+  assert.equal(reloadEventFor(a, t({ ...same, '/new/index.html': 'n' }), true, true), '{"type":"reload","path":"/new/"}', 'a new page');
+  assert.equal(pageUrlFor('/index.html'), '/');
+  assert.equal(pageUrlFor('/a b/index.html'), '/a%20b/');
+  assert.equal(pageUrlFor('/caf\u00e9.html'), '/caf%C3%A9.html');
 });
 
 test('isNavigation: Sec-Fetch-Mode, then Sec-Fetch-Dest, then Accept', () => {
@@ -295,7 +311,7 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     assert.equal(js.status, 200);
     assert.equal(js.body, clientScript());
     assert.ok(js.body.startsWith(RELOAD_CLIENT));
-    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true});\n'));
+    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true,"navigateToChanged":false});\n'));
     assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(js.headers['cache-control'], 'no-cache');
     assert.equal(Number(js.headers['content-length']), Buffer.byteLength(js.body));
@@ -632,12 +648,34 @@ test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async (
   try {
     await w.waitFor(/Watching /);
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
-    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false,"overlay":true\}\);\n$/);
+    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false,"overlay":true,"navigateToChanged":false\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:3px}');
     assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
+    ev.close();
+  } finally {
+    assert.equal(await w.stop(), 0);
+  }
+});
+
+test('serve --watch --navigate-to-changed: editing a post\'s Markdown names that post\'s URL', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const site = await makeSite(
+    { 'posts/2026-01-01-first.md': '# First\n\nOne.\n', 'posts/2026-01-02-second.md': '# Second\n\nTwo.\n', 'templates/post.html': '<main>${post.content}</main>' },
+    'FROM scratch\nIMPORT posts FROM ./posts AS markdown\nRENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts\nEXPORT /\n',
+  );
+  const w = startCli(home, ['serve', '--watch', '--navigate-to-changed', site]);
+  try {
+    await w.waitFor(/Watching /);
+    const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
+    assert.match((await get(port, '/__sitefile/reload.js')).body, /"navigateToChanged":true\}\);\n$/);
+    const ev = await events(port);
+    assert.equal(await ev.next(), 'retry: 1000');
+    await fs.writeFile(path.join(site, 'posts', '2026-01-02-second.md'), '# Second\n\nTwo, edited.\n');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"reload","path":"/posts/second/"}');
     ev.close();
   } finally {
     assert.equal(await w.stop(), 0);
