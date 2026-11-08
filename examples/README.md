@@ -18,6 +18,7 @@ both implementations and requires identical output.
 | [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
 | [`image/`](./image/) | The first-party image plugin (pinned with `INTEGRITY`) writes resized variants and a metadata file. |
+| [`mime/`](./mime/) | `MIME`: custom content types (`.usdz`, `.ts` as MPEG-TS) as `/_headers` rules. |
 | [`theme/`](./theme/) | A site image: built with `-t theme:1` into the local image store rather than exported. |
 | [`themed-site/`](./themed-site/) | `FROM theme:1`: a site that starts from a stored theme image. Needs `theme/` built first (the runner does it). |
 | [`bake/`](./bake/) | `sitefile bake`: a matrix of 2 locales × 2 environments builds four variants side by side. |

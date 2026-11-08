@@ -111,6 +111,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.mime_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -318,6 +319,9 @@ export default grammar({
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
         optional(kw($, 'INTEGRITY')),
       ),
+
+    // MIME <.ext> <type/subtype>
+    mime_instruction: ($) => seq(kw($, 'MIME'), field('extension', $._operand), field('type', $._operand)),
 
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),

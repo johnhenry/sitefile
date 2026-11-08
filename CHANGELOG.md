@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **MIME: custom content types** (johnhenry/sitefile#220): `MIME <.ext>
+  <type/subtype>` adds a `/*.ext` `Content-Type` rule to `/_headers` (in
+  source order with HEADER), which `serve`, the hosts and `EXPORT … AS wbn`
+  use. Both implementations, with conformance cases. The CLI's `--mime` flag
+  is not part of this change.
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with

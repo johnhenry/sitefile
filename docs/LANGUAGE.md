@@ -880,6 +880,17 @@ use `${NAME}`.
     pattern is an absolute path like `from`. `/_headers` has one block per
     pattern, in order of first use: the pattern, then `  Name: value` lines in
     source order.
+  - `MIME <.ext> <type/subtype>` (see `examples/mime/`) sets the `Content-Type` of the files with
+    that extension, for types a host doesn't know (`.usdz`, game data) or
+    gets wrong (`.ts` as MPEG-TS): it adds the rule `/*<.ext>` with
+    `Content-Type: <type/subtype>` to `/_headers`, in source order with the
+    HEADER lines (so `sitefile serve`, Netlify and Cloudflare Pages use it), and
+    `EXPORT … AS wbn` gives those files that content-type, since a Web Bundle
+    takes `content-type` from `/_headers`. The extension is a dot and
+    letters, digits, `+`, `-` or `_`, the type an RFC 6838 `type/subtype`
+    without parameters (`E_VALIDATION` otherwise); both are written in
+    lowercase. An extension given twice is `E_VALIDATION`. With only MIME
+    lines, `/_headers` has the origin `Sitefile:<line> MIME`.
   - If the tree already has `/_redirects` or `/_headers` (from a COPY, say),
     the normal conflict rules apply: identical bytes are fine, different
     content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or

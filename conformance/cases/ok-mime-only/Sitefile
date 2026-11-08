@@ -1,0 +1,5 @@
+# MIME alone: /_headers has the MIME origin.
+FROM scratch
+COPY ./public/ /
+MIME .usdz model/vnd.usdz+zip
+EXPORT /

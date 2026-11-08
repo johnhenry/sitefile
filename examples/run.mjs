@@ -96,6 +96,10 @@ const examples = {
     const list = files(build('image'));
     assert.ok(list.some((p) => /\.(png|jpe?g|webp)$/.test(p)), 'the image plugin writes resized images');
   },
+  mime() {
+    const site = build('mime');
+    assert.equal(read(site, '_headers'), '/*.usdz\n  Content-Type: model/vnd.usdz+zip\n/*.ts\n  Content-Type: video/mp2t\n', 'MIME writes Content-Type rules');
+  },
   theme() {
     // Stored as an image only: themed-site starts FROM it.
     run(['build', path.join(here, 'theme'), '-t', 'theme:1']);

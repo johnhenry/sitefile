@@ -149,6 +149,7 @@ const INSTRUCTIONS = {
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
   FINGERPRINT: () =>
     `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a', '--no-cache-headers', '--no-cache-headers=1'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/', 'INTEGRITY'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}${maybe(() => pick([' INTEGRITY', ' integrity', ' INTEGRITY x', ' INTEGRITY MANIFEST /m.json']), 0.3)}`,
+  MIME: () => `MIME ${pick(['.usdz', '.ts', 'usdz', '.a/b', '.X', '${x}', '""'])} ${pick(['model/vnd.usdz+zip', 'video/mp2t', 'text', '"text/plain; charset=utf-8"', 'a/b', 'A/B', ''])}${maybe(' extra', 0.1)}`,
   CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
@@ -164,7 +165,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CHECKLINKS', 'sitefile', 'ARG', '+',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'MIME', 'CHECKLINKS', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -320,6 +321,7 @@ function validProgram() {
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
     () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
     () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
+    () => `MIME ${pick(['.usdz', '.glb', `.${v()}`])} ${pick(['model/vnd.usdz+zip', 'model/gltf-binary', 'application/octet-stream'])}`,
     stage,
   ];
   if (chance(0.5)) lines.push(stage());

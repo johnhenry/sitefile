@@ -15,6 +15,7 @@
   (redirect_instruction)
   (header_instruction)
   (fingerprint_instruction)
+  (mime_instruction)
   (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)

@@ -476,14 +476,14 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
   const after = result.tree.get(full);
   if (after && !same(before, after)) {
     const [rules, kind] = full === joinVirtual(p.exportPath, '_redirects') ? [p.redirects, 'REDIRECT'] : [p.headers, 'HEADER'];
-    const inputs = rules.map((r) => `${at(r.span.line)} ${kind}`);
+    const inputs = rules.map((r) => `${at(r.span.line)} ${('instruction' in r && r.instruction) || kind}`);
     // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cacheHeaders set, no
     // HEADER sets Cache-Control, so the name in the file means they were added.
     const fp = kind === 'HEADER' && p.cacheHeaders && new TextDecoder().decode(after.bytes).includes('  Cache-Control: ') ? p.cacheHeaders : undefined;
     if (fp) inputs.push(`${at(fp.span.line)} FINGERPRINT`);
     events.push({
       location: at((rules[0] ?? fp)!.span.line),
-      instruction: rules.length ? kind : 'FINGERPRINT',
+      instruction: rules.length ? ('instruction' in rules[0]! && rules[0].instruction) || kind : 'FINGERPRINT',
       stage: stageDisplay(p.stages[lastIndex]!, lastIndex),
       path: full,
       action: before ? 'overwrite' : 'write',

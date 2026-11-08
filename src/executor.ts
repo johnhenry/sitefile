@@ -2283,7 +2283,7 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
   const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
   const headers: HeaderRule[] = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
   let headerRules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }> = p.headers;
-  let headerKind = 'HEADER';
+  let headerKind: string = p.headers[0]?.instruction ?? 'HEADER';
   const headersPath = joinVirtual(p.exportPath, '_headers');
   if (p.cacheHeaders && url.size > 0) {
     const files = tree.subtree(p.exportPath).entries().map(([f]) => f);

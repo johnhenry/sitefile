@@ -51,6 +51,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.from, ins.to];
     case 'HEADER':
       return [ins.pattern, ins.name, ...ins.value];
+    case 'MIME':
+      return [ins.ext, ins.type];
     case 'FINGERPRINT':
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
     case 'CHECKLINKS':
@@ -274,6 +276,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'SITEMAP':
       case 'REDIRECT':
       case 'HEADER':
+      case 'MIME':
       case 'FINGERPRINT':
       case 'CHECKLINKS':
         break;

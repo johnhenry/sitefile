@@ -3865,6 +3865,27 @@
           ]
         },
         {
+          "name": "meta.instruction.mime.sitefile",
+          "begin": "^\\s*((?i:MIME))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.checklinks.sitefile",
           "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
           "beginCaptures": {

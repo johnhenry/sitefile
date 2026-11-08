@@ -946,18 +946,24 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
     let before = w.final_of(last).get(&full).map(|n| &**n);
     let after = result.tree.get(&full).map(|n| &**n);
     if let Some(a) = after.filter(|_| !same(before, after)) {
-        let (lines, kind): (Vec<u32>, &str) = if full == join_virtual(&p.export_path, "_redirects")
-        {
-            (
-                p.redirects.iter().map(|r| r.span.line).collect(),
-                "REDIRECT",
-            )
+        let (lines, kinds): (Vec<u32>, Vec<&str>) =
+            if full == join_virtual(&p.export_path, "_redirects") {
+                p.redirects.iter().map(|r| (r.span.line, "REDIRECT")).unzip()
+            } else {
+                p.headers
+                    .iter()
+                    .map(|h| (h.span.line, h.instruction))
+                    .unzip()
+            };
+        let kind = if full == join_virtual(&p.export_path, "_redirects") {
+            "REDIRECT"
         } else {
-            (p.headers.iter().map(|h| h.span.line).collect(), "HEADER")
+            "HEADER"
         };
         let mut inputs: Vec<String> = lines
             .iter()
-            .map(|l| format!("{} {kind}", w.at(*l)))
+            .zip(&kinds)
+            .map(|(l, k)| format!("{} {k}", w.at(*l)))
             .collect();
         // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cache_headers set,
         // no HEADER sets Cache-Control, so the name in the file means they were added.
@@ -968,7 +974,7 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
             inputs.push(format!("{} FINGERPRINT", w.at(fp.line)));
         }
         let (location, instruction) = match (lines.first(), fp) {
-            (Some(l), _) => (*l, kind),
+            (Some(l), _) => (*l, kinds[0]),
             (None, Some(fp)) => (fp.line, "FINGERPRINT"),
             (None, None) => (0, kind),
         };

@@ -10,7 +10,8 @@ use crate::language::ast::{
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path,
+    check_base_url, check_header_name, check_header_value, check_mime_extension, check_mime_type,
+    check_redirect_target, check_site_path,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -182,6 +183,8 @@ pub struct HeaderSpec {
     pub value: String,
     pub overwrite: bool,
     pub span: SourceSpan,
+    /// `HEADER`, or `MIME` for a MIME line (a `Content-Type` rule); names it in origins and `why`.
+    pub instruction: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -437,6 +440,7 @@ pub fn plan_with(
     let mut headers = Vec::new();
     // Each FINGERPRINT's span, and whether it allows the Cache-Control lines.
     let mut fingerprints: Vec<(SourceSpan, bool)> = Vec::new();
+    let mut mimes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -942,6 +946,32 @@ pub fn plan_with(
                     value,
                     overwrite: *overwrite,
                     span: span.clone(),
+                    instruction: "HEADER",
+                });
+            }
+            Instruction::Mime {
+                span,
+                ext,
+                media_type,
+            } => {
+                let e = check_mime_extension(&evaluate_operand(ext, &vars)?, &ext.span)?;
+                if let Some(prior) = mimes.get(&e) {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("MIME {e} given twice (line {prior} already sets its type)"),
+                        &ext.span,
+                    ));
+                }
+                mimes.insert(e.clone(), span.line);
+                let value =
+                    check_mime_type(&evaluate_operand(media_type, &vars)?, &media_type.span)?;
+                headers.push(HeaderSpec {
+                    pattern: format!("/*{e}"),
+                    name: "Content-Type".into(),
+                    value,
+                    overwrite: false,
+                    span: span.clone(),
+                    instruction: "MIME",
                 });
             }
             Instruction::Export {

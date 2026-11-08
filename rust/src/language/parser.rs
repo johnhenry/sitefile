@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 17] = [
+pub const INSTRUCTIONS: [&str; 18] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -34,6 +34,7 @@ pub const INSTRUCTIONS: [&str; 17] = [
     "REDIRECT",
     "HEADER",
     "FINGERPRINT",
+    "MIME",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -163,6 +164,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
+        "MIME" => parse_mime(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1129,6 +1131,18 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         integrity,
         no_cache_headers: flags.has("no-cache-headers"),
         overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `MIME <.ext> <type/subtype>`
+fn parse_mime(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let ext = c.operand("extension (.ext)")?;
+    let media_type = c.operand("media type (type/subtype)")?;
+    c.expect_end()?;
+    Ok(Instruction::Mime {
+        span,
+        ext,
+        media_type,
     })
 }
 
