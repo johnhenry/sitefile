@@ -24,6 +24,8 @@ pub fn default_out_name(format: ExportFormat, compression: Option<OciCompression
         ExportFormat::Wbn => "dist.wbn",
         ExportFormat::Oci => "dist.oci.tar",
         ExportFormat::Car => "dist.car",
+        ExportFormat::Html => "dist.html",
+        ExportFormat::Mhtml => "dist.mhtml",
     }
 }
 
@@ -53,6 +55,10 @@ pub fn encode_tree(tree: &Tree, format: ExportFormat, options: &EncodeOptions) -
             })
         }
         ExportFormat::Car => Ok(super::car::encode_car(tree)?.0),
+        ExportFormat::Html => super::single_file::write_single_file(tree, None),
+        ExportFormat::Mhtml => {
+            super::single_file::write_mhtml(tree, None, options.base_url.as_deref())
+        }
         ExportFormat::Directory | ExportFormat::Oci => Err(crate::error::SitefileError::plain(
             crate::error::ErrorCode::E_EXPORT,
             format!("'{}' is not an archive format", format.as_str()),
@@ -75,6 +81,8 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
         Some(ExportFormat::Wbn)
     } else if name.ends_with(".car") {
         Some(ExportFormat::Car)
+    } else if name.ends_with(".mhtml") || name.ends_with(".mht") {
+        Some(ExportFormat::Mhtml)
     } else {
         None
     }

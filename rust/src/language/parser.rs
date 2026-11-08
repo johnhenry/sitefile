@@ -1150,7 +1150,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         format = ExportFormat::parse(&name).ok_or_else(|| {
             SitefileError::at(
                 E_UNSUPPORTED,
-                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci or car)"),
+                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html or mhtml)"),
                 &at,
             )
         })?;

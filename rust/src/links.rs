@@ -17,6 +17,8 @@ pub struct Reference {
     pub line: u32,
     /// Written as CSS (a CSS file, a `<style>` element or a `style` attribute), so CSS escapes apply.
     pub css: bool,
+    /// For a URL in an HTML attribute (not CSS): the lower-case element and attribute names, `img src`.
+    pub element: Option<String>,
 }
 
 fn is_ws(c: u8) -> bool {
@@ -221,7 +223,14 @@ impl Collector<'_> {
             url,
             line,
             css,
+            element: None,
         });
+    }
+    fn push_attr(&mut self, start: usize, end: usize, url: String, tag: &str, name: &str) {
+        self.push(start, end, url, false);
+        if let Some(r) = self.out.last_mut() {
+            r.element = Some(format!("{tag} {name}"));
+        }
     }
 }
 
@@ -463,7 +472,7 @@ fn html_attribute(col: &mut Collector, tag: &str, name: &str, start: usize, end:
     }
     if name == "srcset" || name == "imagesrcset" {
         for (a, b) in srcset_urls(value.as_bytes()) {
-            col.push(start + a, start + b, decode_html_text(&value[a..b]), false);
+            col.push_attr(start + a, start + b, decode_html_text(&value[a..b]), tag, name);
         }
         return;
     }
@@ -476,11 +485,12 @@ fn html_attribute(col: &mut Collector, tag: &str, name: &str, start: usize, end:
         return;
     }
     let (a, b) = trim_ws(value.as_bytes());
-    col.push(
+    col.push_attr(
         start + a,
         start + b,
         trimmed(&decode_html_text(&value[a..b])),
-        false,
+        tag,
+        name,
     );
 }
 

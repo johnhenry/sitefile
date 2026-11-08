@@ -5,4 +5,5 @@ pub mod exporter;
 pub mod formats;
 pub mod incremental;
 pub mod oci;
+pub mod single_file;
 pub mod wbn;

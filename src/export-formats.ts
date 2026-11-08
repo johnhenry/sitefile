@@ -4,6 +4,7 @@ import type { ExportFormat, OciCompression } from './language/ast.js';
 import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
 import { writeCar } from './car.js';
+import { writeMhtml, writeSingleFile } from './single-file.js';
 
 export type ArchiveFormat = Exclude<ExportFormat, 'directory' | 'oci'>;
 
@@ -14,7 +15,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -32,11 +33,15 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return 'dist.oci.tar';
     case 'car':
       return 'dist.car';
+    case 'html':
+      return 'dist.html';
+    case 'mhtml':
+      return 'dist.mhtml';
   }
 }
 
 export interface EncodeOptions extends WriterOptions {
-  /** Required for `wbn`: absolute https URL ending in `/`. */
+  /** Required for `wbn`: absolute https URL ending in `/`; for `mhtml`, the parts' URLs (default https://site.invalid/). */
   readonly baseUrl?: string | undefined;
   /** `wbn`: `gzip` wraps the finished bundle in gzip (the shared deterministic encoder); default none. */
   readonly compression?: OciCompression | undefined;
@@ -58,6 +63,10 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
     }
     case 'car':
       return writeCar(tree);
+    case 'html':
+      return writeSingleFile(tree);
+    case 'mhtml':
+      return writeMhtml(tree, undefined, options.baseUrl);
   }
 }
 
@@ -70,6 +79,7 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.zip')) return 'zip';
   if (name.endsWith('.wbn') || name.endsWith('.wbn.gz')) return 'wbn';
   if (name.endsWith('.car')) return 'car';
+  if (name.endsWith('.mhtml') || name.endsWith('.mht')) return 'mhtml';
   return undefined;
 }
 

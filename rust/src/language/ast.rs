@@ -175,11 +175,13 @@ pub enum ExportFormat {
     Wbn,
     Oci,
     Car,
+    Html,
+    Mhtml,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 7] = [
+    pub const ALL: [ExportFormat; 9] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -187,6 +189,8 @@ impl ExportFormat {
         ExportFormat::Wbn,
         ExportFormat::Oci,
         ExportFormat::Car,
+        ExportFormat::Html,
+        ExportFormat::Mhtml,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
@@ -205,6 +209,8 @@ impl ExportFormat {
             ExportFormat::Wbn => "wbn",
             ExportFormat::Oci => "oci",
             ExportFormat::Car => "car",
+            ExportFormat::Html => "html",
+            ExportFormat::Mhtml => "mhtml",
         }
     }
 }
