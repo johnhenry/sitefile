@@ -103,8 +103,9 @@ function printable(s: string): string {
 /**
  * An HTTP server for an immutable Tree. GET and HEAD only; nothing outside the tree is
  * ever reachable because lookups are exact map keys built from validated segments.
- * Honours `/404.html`, `/_redirects` and `/_headers` (which it never serves), and answers
- * `/about` with `/about.html` when there is no such file or directory.
+ * Honours `/404.html`, `/_redirects` and `/_headers` (which it never serves), answers
+ * `/about` with `/about.html` when there is no such file or directory, and redirects `/about/`
+ * to `/about` when only `/about.html` answers it.
  */
 export function createSiteServer(site: Tree | (() => Tree), options: SiteServerOptions = {}): http.Server {
   // A function is read per request (`serve --watch` swaps in each good rebuild).
@@ -221,6 +222,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
+    // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
+    // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
+    if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
+      const location = '/' + segs.map(encodeURIComponent).join('/') + search;
+      return finish(301, { location, 'content-length': 0 }, undefined);
+    }
     if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
     if (served !== undefined) return sendFile(200, served);
     if (isFile('/404.html')) return sendFile(404, '/404.html');
