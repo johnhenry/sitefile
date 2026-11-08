@@ -8,8 +8,12 @@
 //   { post: '/path', body, headers? }           record one response to a POST (SELF in a header: the server's origin)
 //   { log: true }                               record the `browser ...` lines of stdout so far
 //   { open: true }                              open the event stream (records its headers and first event)
-//   { next: true }                              record the next event
-//   { write: { 'rel/path': 'content' } }        edit files in the context (then wait for the rebuild via next)
+//   { next: true }                              record the events since the last step: `building` events are
+//                                               left out, and `ok` events too unless they are all there is
+//                                               (a file system may report one save twice: the second rebuild
+//                                               changes nothing and sends ok)
+//   { write: { 'rel/path': 'content' } }        edit files in the context, then wait until a rebuild has finished
+//                                               and the server has been quiet for a moment
 //   { wait: ms }                                sleep
 // Each implementation gets its own copy of the context and its own SITEFILE_HOME.
 
@@ -114,6 +118,20 @@ export const WATCH_CASES = [
       { log: true },
     ],
   },
+  {
+    name: 'watch/build-error',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    steps: [
+      { open: true },
+      { write: { Sitefile: 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n' } },
+      { next: true },
+      { get: '/', headers: NAV },
+      { write: { Sitefile: SITEFILE } },
+      { next: true },
+      { write: { 'public/index.html': '<h1>y</h1>' } },
+      { next: true },
+    ],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -168,6 +186,8 @@ function openEvents(port) {
                   r(e);
                 });
               }),
+        /** Every event received and not yet taken. */
+        drain: () => queue.splice(0),
         close: () => req.destroy(),
       });
     });
@@ -191,6 +211,19 @@ async function runOne(c, cmd, work, home) {
   child.stderr.on('data', (d) => (stderr += d));
   const transcript = [];
   let events;
+  // Builds and re-reads that have finished (their last line).
+  const finished = () => (stdout + stderr).match(/^(Built |Read |Build failed|Read failed)/gm)?.length ?? 0;
+  /** Wait until no build finishes for `ms`. */
+  const quiet = async (ms = 500) => {
+    let n = finished();
+    for (let still = 0; still < ms; still += 50) {
+      await sleep(50);
+      if (finished() !== n) {
+        n = finished();
+        still = 0;
+      }
+    }
+  };
   try {
     const deadline = Date.now() + 30000;
     while (!/Watching /.test(stdout)) {
@@ -206,11 +239,22 @@ async function runOne(c, cmd, work, home) {
         transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers, body: s.body })) });
       } else if (s.log) transcript.push({ step: 'log', lines: stdout.split('\n').filter((l) => l.startsWith('browser')) });
       else if (s.open) {
+        await quiet();
         events = await openEvents(port);
         transcript.push({ step: 'open', status: events?.status, headers: events?.headers, event: await events?.next() });
-      } else if (s.next) transcript.push({ step: 'next', event: await events?.next() });
-      else if (s.write) {
+      } else if (s.next) {
+        let got = events?.drain() ?? [];
+        if (got.length === 0 && events) got = [await events.next()];
+        const OK = 'data: {"type":"ok"}';
+        const shown = got.filter((e) => e !== 'data: {"type":"building"}');
+        const rest = shown.filter((e) => e !== OK);
+        transcript.push({ step: 'next', events: rest.length > 0 ? rest : shown.length > 0 ? [OK] : [] });
+      } else if (s.write) {
+        const before = finished();
         for (const [rel, content] of Object.entries(s.write)) await fs.writeFile(path.join(work, rel), content);
+        const deadline = Date.now() + 20000;
+        while (finished() === before && Date.now() < deadline) await sleep(25);
+        await quiet();
       } else if (s.wait) await sleep(s.wait);
     }
   } finally {
@@ -231,7 +275,10 @@ export async function runWatchCases({ impls, tmp, only }) {
     const got = {};
     for (const [impl, cmd] of impls) {
       const dir = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'));
-      got[impl] = await runOne(c, cmd, path.join(dir, 'ctx'), path.join(tmp, impl, '.home'));
+      const r = await runOne(c, cmd, path.join(dir, 'ctx'), path.join(tmp, impl, '.home'));
+      // Error locations name each implementation's own copy of the context.
+      const own = `/${impl}/${path.basename(dir)}/`;
+      got[impl] = { transcript: JSON.parse(JSON.stringify(r.transcript).replaceAll(own, `/<impl>/${path.basename(dir)}/`)) };
     }
     const detail = [];
     const a = got.ts.transcript;

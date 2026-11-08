@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Build-error overlay and Rebuilding badge** (johnhenry/sitefile#198): the
+  `serve --watch` stream sends `{"type":"building"}` when a rebuild starts,
+  `{"type":"error",code,message,file,line,column}` when it fails (also to
+  pages that connect while it is broken) and `{"type":"ok"}` for a good
+  rebuild with identical output. Pages show a badge while rebuilding and a
+  dismissible overlay (in a shadow root) on errors; `--no-overlay` turns
+  both off.
 - **Browser console errors in the `serve --watch` log** (johnhenry/sitefile#174):
   the live-reload client forwards uncaught errors, unhandled rejections,
   `console.error` and `console.warn` (`--console`: also `log` and `info`) to

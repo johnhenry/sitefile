@@ -90,11 +90,13 @@ export interface LiveReloadOptions {
   readonly cssInject?: boolean;
   /** Forward the page's `console.log`/`console.info` too, not only errors and warnings (`--console`). */
   readonly console?: boolean;
+  /** Show a Rebuilding badge and a build-error overlay in the page (default true; `--no-overlay` turns it off). */
+  readonly overlay?: boolean;
 }
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true}});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false}});\n`;
 }
 
 /** Reserved for browser console messages (POST) while `serve --watch` runs. */
@@ -162,6 +164,20 @@ export function isSameOriginPost(headers: Readonly<Record<string, string | strin
 
 /** The event that tells every page to reload. */
 export const RELOAD_EVENT = '{"type":"reload"}';
+/** Sent when a rebuild starts (pages show a Rebuilding badge). */
+export const BUILDING_EVENT = '{"type":"building"}';
+/** Sent after a good rebuild that changed nothing (pages clear the badge and any error overlay). */
+export const OK_EVENT = '{"type":"ok"}';
+
+/** The event for a failed rebuild: `{"type":"error","code","message"[,"file","line","column"]}`. */
+export function errorEvent(e: SitefileError): string {
+  return JSON.stringify({
+    type: 'error',
+    code: e.code,
+    message: e.detail,
+    ...(e.span ? { file: e.span.file, line: e.span.line, column: e.span.column } : {}),
+  });
+}
 
 /**
  * The live-reload event for a new tree (undefined when no file changed): `{"type":"css","paths":[...]}`
@@ -211,6 +227,8 @@ export class LiveReload {
   attach(res: http.ServerResponse, headers: Record<string, string>): void {
     res.writeHead(200, { ...headers, ...STREAM_HEADERS });
     res.write('retry: 1000\n\n');
+    // A page opened while the last build is broken shows the error at once.
+    if (this.failure !== undefined) res.write(`data: ${this.failure}\n\n`);
     this.clients.add(res);
     const beat = setInterval(() => res.write(': ping\n\n'), this.heartbeatMs);
     beat.unref();
@@ -238,8 +256,13 @@ export class LiveReload {
     return this.consoleCount === CONSOLE_LIMIT + 1 ? { ok: false, notice: `browser: more than ${CONSOLE_LIMIT} console messages in 10 s; dropping the rest` } : { ok: false };
   }
 
+  /** The last error event, until a good build: sent to streams that open meanwhile. */
+  private failure: string | undefined;
+
   /** Send `event` (one line of JSON) to every open page. */
   send(event: string): void {
+    if (event.startsWith('{"type":"error"')) this.failure = event;
+    else if (event !== BUILDING_EVENT) this.failure = undefined;
     for (const c of this.clients) c.write(`data: ${event}\n\n`);
   }
 

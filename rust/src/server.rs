@@ -140,6 +140,8 @@ pub struct LiveReloadOptions {
     pub css_inject: bool,
     /// Forward the page's `console.log`/`console.info` too, not only errors and warnings (`--console`).
     pub console: bool,
+    /// Show a Rebuilding badge and a build-error overlay in the page (`--no-overlay` turns it off).
+    pub overlay: bool,
 }
 
 impl Default for LiveReloadOptions {
@@ -148,6 +150,7 @@ impl Default for LiveReloadOptions {
             reset_service_workers: true,
             css_inject: true,
             console: false,
+            overlay: true,
         }
     }
 }
@@ -156,11 +159,12 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{}}});\n",
         reload_client(),
         options.reset_service_workers,
         options.css_inject,
-        options.console
+        options.console,
+        options.overlay
     )
 }
 
@@ -263,6 +267,24 @@ pub fn is_same_origin_post(headers: &HashMap<String, String>) -> bool {
 
 /// The event that tells every page to reload.
 pub const RELOAD_EVENT: &str = "{\"type\":\"reload\"}";
+/// Sent when a rebuild starts (pages show a Rebuilding badge).
+pub const BUILDING_EVENT: &str = "{\"type\":\"building\"}";
+/// Sent after a good rebuild that changed nothing (pages clear the badge and any error overlay).
+pub const OK_EVENT: &str = "{\"type\":\"ok\"}";
+
+/// The event for a failed rebuild; same shape as `errorEvent` in src/server.ts.
+pub fn error_event(e: &SitefileError) -> String {
+    let mut m = serde_json::Map::new();
+    m.insert("type".into(), "error".into());
+    m.insert("code".into(), e.code.to_string().into());
+    m.insert("message".into(), e.detail.clone().into());
+    if let Some(span) = &e.span {
+        m.insert("file".into(), span.file.clone().into());
+        m.insert("line".into(), span.line.into());
+        m.insert("column".into(), span.column.into());
+    }
+    serde_json::Value::Object(m).to_string()
+}
 
 /// The live-reload event for a new tree (`None` when no file changed); same rules as
 /// `reloadEventFor` in src/server.ts.
@@ -317,6 +339,8 @@ pub struct LiveReload {
     warned_csp: Mutex<std::collections::HashSet<String>>,
     /// `--console`: log and info messages are logged too.
     console: bool,
+    /// The last error event, until a good build: sent to streams that open meanwhile.
+    failure: Mutex<Option<String>>,
     /// Console rate limit: the current window's start and how many messages it has seen.
     console_window: Mutex<Option<(Instant, u32)>>,
 }
@@ -420,6 +444,13 @@ impl LiveReload {
 
     /// Send `event` (one line of JSON) to every open page.
     pub fn send(&self, event: &str) {
+        if let Ok(mut f) = self.failure.lock() {
+            if event.starts_with("{\"type\":\"error\"") {
+                *f = Some(event.to_string());
+            } else if event != BUILDING_EVENT {
+                *f = None;
+            }
+        }
         if let Ok(mut e) = self.events.lock() {
             let id = e.next;
             e.recent.push_back((id, event.to_string()));
@@ -481,6 +512,10 @@ impl LiveReload {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
         head.push_str("connection: close\r\n\r\nretry: 1000\n\n");
+        // A page opened while the last build is broken shows the error at once.
+        if let Some(f) = self.failure.lock().ok().and_then(|f| f.clone()) {
+            head.push_str(&format!("data: {f}\n\n"));
+        }
         if out
             .write_all(head.as_bytes())
             .and_then(|_| out.flush())
@@ -2129,20 +2164,22 @@ mod tests {
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
             format!(
-                "{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false}});\n"
+                "{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true}});\n"
             )
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
             css_inject: false,
             console: true,
+            overlay: false,
         });
         assert_eq!(
             keep.script(),
             format!(
-                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true}});\n"
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false}});\n"
             )
         );
+        assert!(js.contains("attachShadow"));
         assert!(js.contains("getRegistrations()") && js.contains("caches.delete(k)"));
     }
 
@@ -2381,6 +2418,25 @@ mod tests {
         );
         srv.close();
         plain.close();
+    }
+
+    #[test]
+    fn error_event_shape() {
+        let e = SitefileError::new(
+            E_SYNTAX,
+            "unknown instruction \"X\"",
+            Some(crate::error::SourceSpan::new("/c/Sitefile", 3, 1)),
+        );
+        assert_eq!(
+            error_event(&e),
+            "{\"type\":\"error\",\"code\":\"E_SYNTAX\",\"message\":\"unknown instruction \\\"X\\\"\",\"file\":\"/c/Sitefile\",\"line\":3,\"column\":1}"
+        );
+        assert_eq!(
+            error_event(&SitefileError::plain(E_NOT_FOUND, "no such file")),
+            "{\"type\":\"error\",\"code\":\"E_NOT_FOUND\",\"message\":\"no such file\"}"
+        );
+        assert_eq!(BUILDING_EVENT, "{\"type\":\"building\"}");
+        assert_eq!(OK_EVENT, "{\"type\":\"ok\"}");
     }
 
     #[test]

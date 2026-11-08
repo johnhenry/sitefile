@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { closeServer, createSiteServer, formatUrl, listen, LiveReload, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -125,6 +125,7 @@ const run: Command = {
     '--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)',
     '--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)',
     '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
+    '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -143,6 +144,7 @@ const run: Command = {
     'poll-interval': { type: 'string' },
     'no-css-inject': { type: 'boolean' },
     console: { type: 'boolean' },
+    'no-overlay': { type: 'boolean' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -195,7 +197,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay'] as const;
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -221,10 +223,10 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   let current: Tree = Tree.empty;
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'] });
   /** Serve `next` and tell open pages what changed. */
   const swap = (next: Tree): void => {
-    const event = started ? reloadEventFor(current, next, cssInject) : undefined;
+    const event = started ? (reloadEventFor(current, next, cssInject) ?? OK_EVENT) : undefined;
     current = next;
     if (event !== undefined) live.send(event);
   };
@@ -237,6 +239,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       ...(plain ? { plain } : {}),
       argFiles,
       build: async () => {
+        if (started) live.send(BUILDING_EVENT);
         try {
           if (plain) {
             const tree = await loadDirectoryTree(context);
@@ -263,6 +266,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           if (!(e instanceof SitefileError)) throw e;
           if (e.code === 'E_USAGE') return { code: usageError(e.detail) };
           process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+          live.send(errorEvent(e)); // pages show it (and pages opened later get it on connect)
           return { code: 1 };
         }
       },
