@@ -1,11 +1,11 @@
-//! `sitefile verify` (port of `src/cli/integrity.ts`).
+//! `sitefile verify` and `sitefile diff` (port of `src/cli/integrity.ts`).
 
 use super::args::{flag, string, OptSpec, Parsed};
 use super::common::{out, pretty_json, require_args, usage, Command};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::integrity::{
-    load_target, manifest_of, parse_manifest, path_inside, resolve_target, verify_tree, LazyStore,
-    Target,
+    diff_trees, load_target, manifest_of, parse_manifest, path_inside, resolve_target, verify_tree,
+    LazyStore, Target,
 };
 
 const VERIFY_OPTS: &[OptSpec] = &[string("manifest"), flag("json")];
@@ -88,4 +88,40 @@ fn run_verify(v: &Parsed) -> Result<i32> {
         ));
     }
     Ok(0)
+}
+
+const DIFF_OPTS: &[OptSpec] = &[flag("json"), flag("exit-code")];
+
+pub const DIFF: Command = Command {
+    name: "diff",
+    summary: "files changed between two images, directories or archives",
+    usage: "diff <a> <b> [--json] [--exit-code]",
+    description: "List the files added (A), removed (D) and changed (C: content or mode) going from <a> to <b>, with their\nsizes, then the rules added (+) and removed (-) in _redirects and _headers. Each side is a directory, an\narchive file (zip, tar, tar.gz, wbn, OCI archive) or an image reference or ID, read as \"sitefile verify\"\nreads it (hidden files count). Digests, not timestamps, decide what changed.",
+    flags: &[
+        "--json        machine-readable report (sizes in bytes, digests, modes)",
+        "--exit-code   exit 1 when the two differ (default 0 either way)",
+    ],
+    options: DIFF_OPTS,
+    run: run_diff,
+};
+
+fn run_diff(v: &Parsed) -> Result<i32> {
+    require_args(
+        &v.positionals,
+        2,
+        2,
+        "two images, directories or archive files",
+    )?;
+    let mut store = LazyStore::default();
+    let a = resolve_target(&v.positionals[0], &mut store)?;
+    let b = resolve_target(&v.positionals[1], &mut store)?;
+    let ta = load_target(&a, &mut store)?;
+    let tb = load_target(&b, &mut store)?;
+    let r = diff_trees(&ta, &tb);
+    out(&if v.flag("json") {
+        pretty_json(&r.to_json()) + "\n"
+    } else {
+        r.text()
+    });
+    Ok(if v.flag("exit-code") && !r.is_empty() { 1 } else { 0 })
 }

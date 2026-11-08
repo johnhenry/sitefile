@@ -6,7 +6,7 @@ import { cp, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/p
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { encodeManifest, manifestOf, merkleRoot, parseManifest, verifyTree, type ManifestFile } from '../src/integrity.js';
+import { diffText, diffTrees, encodeManifest, manifestOf, merkleRoot, parseManifest, verifyTree, type ManifestFile } from '../src/integrity.js';
 import { Tree, makeFile } from '../src/tree.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -150,4 +150,64 @@ test('verify and --manifest usage errors', async () => {
   const bad = await sitefile(['verify', work, '--manifest', path.join(work, 'bad.json')]);
   assert.equal(bad.code, 1);
   assert.match(bad.stderr, /error\[E_INTEGRITY\]: .*not a Sitefile manifest/);
+});
+
+test('diffTrees: added, removed, changed (content or mode) and _redirects/_headers rules', () => {
+  const enc = new TextEncoder();
+  const a = Tree.fromFiles([
+    ['/a', makeFile(enc.encode('a'), 't')],
+    ['/b', makeFile(enc.encode('b'), 't')],
+    ['/x.sh', makeFile(enc.encode('x'), 't')],
+    ['/_redirects', makeFile(enc.encode('/old /new 301\n/keep   /k  302\n'), 't')],
+    ['/_headers', makeFile(enc.encode('/*\n  X-Frame-Options: DENY\n'), 't')],
+  ]);
+  const b = Tree.fromFiles([
+    ['/b', makeFile(enc.encode('B!'), 't')],
+    ['/c', makeFile(enc.encode('c'), 't')],
+    ['/x.sh', makeFile(enc.encode('x'), 't', 0o755)],
+    ['/_redirects', makeFile(enc.encode('# moved\n/keep /k 302\n/older /new 301\n'), 't')],
+    ['/_headers', makeFile(enc.encode('/*\n  X-Frame-Options: DENY\n/assets/*\n  Cache-Control: immutable\n'), 't')],
+  ]);
+  const r = diffTrees(a, b);
+  assert.deepEqual(r.added.map((f) => f.path), ['/c']);
+  assert.deepEqual(r.removed.map((f) => f.path), ['/a']);
+  assert.deepEqual(r.changed.map((c) => c.path), ['/_headers', '/_redirects', '/b', '/x.sh']);
+  assert.deepEqual(r.rules, {
+    '/_redirects': { added: ['/older /new 301'], removed: ['/old /new 301'] },
+    '/_headers': { added: ['/assets/* Cache-Control: immutable'], removed: [] },
+  });
+  assert.equal(
+    diffText(r),
+    [
+      'C  /_headers  (27 B -> 64 B)',
+      'C  /_redirects  (30 B -> 37 B)',
+      'D  /a  (1 B)',
+      'C  /b  (1 B -> 2 B)',
+      'A  /c  (1 B)',
+      'C  /x.sh  (1 B -> 1 B, mode 644 -> 755)',
+      '-  /_redirects: /old /new 301',
+      '+  /_redirects: /older /new 301',
+      '+  /_headers: /assets/* Cache-Control: immutable',
+      '1 added, 1 removed, 4 changed',
+      '',
+    ].join('\n'),
+  );
+  assert.equal(diffText(diffTrees(a, a)), '0 added, 0 removed, 0 changed\n');
+});
+
+test('sitefile diff compares a directory, an archive and an image', async () => {
+  const work = await tmp();
+  const ctx = path.join(work, 'hello');
+  await cp(path.join(root, 'examples', 'hello'), ctx, { recursive: true });
+  assert.equal((await sitefile(['build', ctx, '-o', path.join(work, 'a.zip'), '--no-lockfile', '-t', 'diff-me:1'])).code, 0);
+  assert.equal((await sitefile(['build', ctx, '-o', path.join(work, 'b'), '--no-lockfile', '--build-arg', 'TITLE=Other'])).code, 0);
+  await writeFile(path.join(work, 'b', 'new.txt'), 'n');
+  const r = await sitefile(['diff', path.join(work, 'a.zip'), path.join(work, 'b')]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^C  \/index\.html  \(\d+ B -> \d+ B\)\nA  \/new\.txt  \(1 B\)\n1 added, 0 removed, 1 changed\n$/);
+  const j = JSON.parse((await sitefile(['diff', 'diff-me:1', path.join(work, 'b'), '--json'])).stdout);
+  assert.deepEqual(j.added.map((f: { path: string }) => f.path), ['/new.txt']);
+  assert.equal((await sitefile(['diff', 'diff-me:1', path.join(work, 'a.zip'), '--exit-code'])).code, 0);
+  assert.equal((await sitefile(['diff', 'diff-me:1', path.join(work, 'b'), '--exit-code'])).code, 1);
+  assert.equal((await sitefile(['diff', 'diff-me:1'])).code, 2);
 });

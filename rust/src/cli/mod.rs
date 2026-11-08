@@ -57,6 +57,8 @@ Integrity:
                                                    and their Merkle root (save --manifest too)
   sitefile verify <dir|archive|ref> --manifest m.json   check a deployed or extracted copy: missing,
                                                    changed and extra files (exit 1 on any)
+  sitefile diff <a> <b> [--json]                   files added, removed and changed between two images,
+                                                   directories or archives, and _redirects/_headers rules
 
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
@@ -259,6 +261,7 @@ const TOP: &[&Command] = &[
     &outdated::OUTDATED,
     &bake::BAKE,
     &integrity::VERIFY,
+    &integrity::DIFF,
 ];
 
 struct Group {

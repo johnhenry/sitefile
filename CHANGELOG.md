@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`sitefile diff`** (johnhenry/sitefile#212): files added, removed and
+  changed (with sizes, digests and modes) between two images, directories or
+  archives, plus the `_redirects`/`_headers` rules added and removed;
+  `--json` and `--exit-code`. Conformance step case `steps-diff`.
+
 - **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
   `build --manifest <file>` and `save --manifest <file>` write every exported
   file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify
