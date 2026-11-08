@@ -800,6 +800,7 @@ pub struct PluginHost {
     registered: HashMap<String, Registered>,
     procs: HashMap<String, Runner>,
     pub stats: HostStats,
+    store_home: Option<PathBuf>,
 }
 
 impl PluginHost {
@@ -812,7 +813,18 @@ impl PluginHost {
             registered: HashMap::new(),
             procs: HashMap::new(),
             stats: HostStats::default(),
+            store_home: None,
         }
+    }
+
+    /// Where wasm plugins' compiled modules are cached: `<home>/cache/wasm`
+    /// (`None`, the default: `$SITEFILE_HOME`). See `BuildOptions::store_home`.
+    pub fn set_store_home(&mut self, home: Option<PathBuf>) {
+        self.store_home = home;
+    }
+
+    pub fn store_home(&self) -> Option<&Path> {
+        self.store_home.as_deref()
     }
 
     /// The Node binary for JS plugins (default: `node` on PATH, looked up at first use).
@@ -906,7 +918,10 @@ impl PluginHost {
                 ));
             };
             let runner = match &reg.wasm {
-                Some(bytes) => Runner::Wasm(WasmPlugin::new(name, bytes.clone(), self.policy)),
+                Some(bytes) => Runner::Wasm(
+                    WasmPlugin::new(name, bytes.clone(), self.policy)
+                        .with_store_home(self.store_home.clone()),
+                ),
                 None => {
                     let log = self.log.clone();
                     let prefix = format!("[plugin {name}] ");

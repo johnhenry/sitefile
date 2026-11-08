@@ -477,15 +477,19 @@ beside the image store but separate from it (`image prune` does not touch it). S
 ```
 sitefile cache info [--json]              location, entries, blobs, size
 sitefile cache prune [--older-than days]  delete every cached result, or only entries unused for N days
+sitefile cache prune --plugin <name>      only the results of that PLUGIN or TOOL (with --older-than: unused for N days)
 sitefile cache prune --max-size <size>    apply the size limit below now, with that size
 sitefile cache du [--json]                size of every cache and the store, and what may be evicted (alias: cache ls)
 ```
+
+`--plugin` keeps every other plugin's entries, entries that do not name a plugin (written before entries recorded
+it), and every blob another entry still uses; it conflicts with `--max-size`.
 
 ### What lives under `$SITEFILE_HOME`
 
 | Path | What | Safe to delete? |
 | --- | --- | --- |
-| `cache/transform/entries/<key>.json`, `cache/transform/blobs/<hex>` | TRANSFORM results (both implementations) | yes: a pure cache, rebuilt on the next miss. **Evicted automatically.** |
+| `cache/transform/entries/<key>.json`, `cache/transform/blobs/<hex>` | TRANSFORM results (both implementations; each entry names its PLUGIN or TOOL) | yes: a pure cache, rebuilt on the next miss. **Evicted automatically.** |
 | `cache/wasm/<key>.cwasm` | compiled wasm plugins (Rust build only; [RUST.md](RUST.md#wasm-module-cache)) | yes: a pure cache, recompiled on the next miss. **Evicted automatically.** |
 | `index.json`, `oci-layout`, `blobs/sha256/<hex>` of **tagged** images | the image store: your images | **no**. Never evicted automatically; `rmi` removes tags. |
 | untagged images (`<none>`: a re-tagged build's old image, a BASE image pulled by digest) and blobs no image uses | the image store's garbage and pulled BASE images | yes: `image prune`, or **evicted automatically** (a BASE image is pulled again when needed). |

@@ -29,17 +29,23 @@ const info: Command = {
 const prune: Command = {
   name: 'cache prune',
   summary: 'delete cached TRANSFORM results',
-  usage: 'cache prune [--older-than <days> | --max-size <size>]',
+  usage: 'cache prune [--older-than <days>] [--plugin <name>] | --max-size <size>',
   description:
-    'Delete every cached TRANSFORM result, or only entries not used for the given number of days, and the blobs no\nentry still uses. With --max-size, instead apply the automatic size limit now with that size: least recently\nused evictable data (TRANSFORM results, compiled wasm modules, untagged images and unused blobs) is deleted\nuntil the rest fits. Tagged images are never touched.',
-  flags: ['    --older-than <days>   keep entries used within this many days', '    --max-size <size>     shrink evictable data to this size (e.g. 500M, 2G)'],
-  options: { 'older-than': { type: 'string' }, 'max-size': { type: 'string' } },
+    'Delete every cached TRANSFORM result, or only entries not used for the given number of days, and the blobs no\nentry still uses. With --plugin, only the results of that PLUGIN or TOOL (entries written before results\nrecorded their plugin are kept). With --max-size, instead apply the automatic size limit now with that size:\nleast recently used evictable data (TRANSFORM results, compiled wasm modules, untagged images and unused\nblobs) is deleted until the rest fits. Tagged images are never touched.',
+  flags: [
+    '    --older-than <days>   keep entries used within this many days',
+    '    --plugin <name>       only the results of this PLUGIN or TOOL',
+    '    --max-size <size>     shrink evictable data to this size (e.g. 500M, 2G)',
+  ],
+  options: { 'older-than': { type: 'string' }, plugin: { type: 'string' }, 'max-size': { type: 'string' } },
   async run(v, pos) {
     requireArgs(pos, 0, 0, 'no arguments');
     const raw = v['older-than'];
     const max = str(v['max-size']);
+    const plugin = str(v['plugin']);
     if (max !== undefined) {
       if (raw !== undefined) usage('--older-than and --max-size conflict');
+      if (plugin !== undefined) usage('--plugin and --max-size conflict');
       const n = parseSize(max);
       if (n === undefined || n === 0) usage('--max-size expects a size greater than 0, such as 500M or 2G');
       const r = await enforceCacheLimit(resolveStoreHome(), n);
@@ -52,7 +58,9 @@ const prune: Command = {
       if (!Number.isFinite(days) || days <= 0) usage('--older-than expects a positive number of days');
       ms = days * 86_400_000;
     }
-    const r = await new TransformCache(transformCacheDir()).prune(ms);
+    if (plugin !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(plugin)) usage(`--plugin expects a PLUGIN or TOOL name (an identifier), got '${plugin}'`);
+    const cache = new TransformCache(transformCacheDir());
+    const r = plugin === undefined ? await cache.prune(ms) : await cache.prunePlugin(plugin, ms);
     process.stdout.write(`Deleted ${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} and ${r.blobs} blob${r.blobs === 1 ? '' : 's'}\nTotal reclaimed space: ${humanSize(r.bytes)}\n`);
     return 0;
   },

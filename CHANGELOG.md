@@ -2,6 +2,27 @@
 
 ## 0.1.0 (unreleased)
 
+- **Library API for embedders** (johnhenry/sitefile#153), found by embedding
+  the crate in sitefile Desktop. Rust: `servers::serve_detached`,
+  `restart_detached`, `start_detached`, `stop_server`, `resolve_source`,
+  `parse_publish` and `DetachedServe` (the CLI's `serve -d`, `server restart`
+  and `server stop` now call them); `executor::store_build_as_image` with
+  `ImageInfo` and `StoredImage` (what `build -t` calls);
+  `BuildOptions::store_home`, so `FROM <local image>`, `BASE` and the wasm
+  module cache use an embedder's store instead of `$SITEFILE_HOME`;
+  `BuildOptions::cancel` with `CancelToken`, checked between imports, stages,
+  operations and plugin or tool calls, failing with the new code
+  `E_CANCELLED`; detached workers are reaped on a background thread, so a
+  long-lived host can stop them without waiting out the grace period.
+  Both implementations: TRANSFORM cache entries record their PLUGIN or TOOL
+  (`"plugin"`, same bytes in both; older entries are still read, keys are
+  unchanged), with `usage_by_plugin`/`usageByPlugin`,
+  `prune_plugin`/`prunePlugin` and `sitefile cache prune --plugin <name>`; the
+  `E_UNSUPPORTED` error of a PLUGIN or TOOL that is not allowed carries
+  `needs` (kind, name, flag), with the message unchanged. CLI output is
+  otherwise unchanged. docs/RUST.md, "Embedding the crate";
+  `rust/tests/embed.rs`. Added in e0c555d (#154).
+
 - **`EXPORT … AS wbn COMPRESSION gzip`** (johnhenry/sitefile#143): a Web Bundle
   export can now be gzip(`application/webbundle`), the `.wbn` archive format of
   `@johnhenry/packfile` (`toArchive`/`fromArchive`) and `@johnhenry/fileable`

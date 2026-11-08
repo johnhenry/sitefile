@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SitefileError, type SourceSpan } from './errors.js';
+import { needsPlugin, needsTool, SitefileError, type SourceSpan } from './errors.js';
 import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { fragmentText, parseProgram } from './language/validate.js';
@@ -1807,6 +1807,7 @@ function checkPlugins(p: Plan, options: BuildOptions, warn: (m: string) => void)
       'E_UNSUPPORTED',
       `PLUGIN ${spec.name} runs JavaScript, which must be allowed explicitly: add --allow-plugin ${spec.name} (or --allow-plugins to allow every PLUGIN); WebAssembly plugins need no flag`,
       spec.span,
+      { needs: needsPlugin(spec.name) },
     );
   };
   for (const spec of p.plugins) if (!spec.path.endsWith('.wasm')) allowed(spec);
@@ -1832,6 +1833,7 @@ async function resolveTools(p: Plan, options: BuildOptions, warn: (m: string) =>
         'E_UNSUPPORTED',
         `TOOL ${t.name} runs an external program, which must be allowed explicitly: add --allow-exec ${t.name} (or --allow-exec ${t.name}=/absolute/path)`,
         t.span,
+        { needs: needsTool(t.name) },
       );
     }
     const tool = await resolveTool(t.name, allowed.get(t.name), process.env['PATH'], t.span);
@@ -1972,7 +1974,7 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
             })
           : undefined;
         const call = begin(env.profiler, `TRANSFORM ${op.plugin} ${dest.path}`, 'transform', { plugin: op.plugin, tool: tool !== undefined, dest: dest.path });
-        let result: PluginResult | undefined = cached ? await env.cache!.get(cached) : undefined;
+        let result: PluginResult | undefined = cached ? await env.cache!.get(cached, op.plugin) : undefined;
         const cacheState = !cached ? 'off' : result ? 'hit' : 'miss';
         if (!result) {
           if (tool) {
@@ -1988,7 +1990,7 @@ async function produceTransform(op: Extract<Operation, { kind: 'TRANSFORM' }>, e
           } else {
             result = await env.plugins.call(op.plugin, request, op.span);
           }
-          if (cached && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(cached, result);
+          if (cached && (tool || env.plugins.cacheable(op.plugin))) await env.cache!.put(cached, result, op.plugin);
         }
         call.end({ cache: cacheState });
         if (result.kind === 'file') {
@@ -2180,7 +2182,7 @@ async function transformFiles(
       cache: cached !== undefined ? 'miss' : 'off',
     };
     if (cached !== undefined) {
-      const hit = await env.cache!.get(cached);
+      const hit = await env.cache!.get(cached, op.plugin);
       if (hit) {
         span.start();
         span.end({ cache: 'hit' });
@@ -2220,7 +2222,7 @@ async function transformFiles(
     for (const l of job.logs) env.unrecorded(l);
     if (job.error) throw namingFile(job.error.error, job.label);
     const result = job.result!;
-    if (job.cache === 'miss' && store()) await env.cache!.put(job.cached!, result);
+    if (job.cache === 'miss' && store()) await env.cache!.put(job.cached!, result, op.plugin);
     const files: Files = [];
     if (result.kind === 'file') {
       if (job.dest.trailingSlash) {

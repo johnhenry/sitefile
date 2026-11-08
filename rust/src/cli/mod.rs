@@ -16,7 +16,7 @@ pub mod vendor;
 use crate::build_args::collect_build_args;
 use crate::error::{ErrorCode, Result, SitefileError};
 use crate::executor::{
-    build, build_to_directory, check_plan_pins, join_path, oci_options, plan_build, relative_path,
+    build, build_to_directory, check_plan_pins, join_path, plan_build, relative_path,
     sitefile_compression, BuildOptions, BuildResult, Callback, ExportTarget, LockfileSetting,
 };
 use crate::export::attest::AttestRequest;
@@ -27,13 +27,12 @@ use crate::profile::Profiler;
 use crate::refs::{parse_local_ref, ref_key};
 use crate::resources::types::FetchPolicy;
 use crate::secrets::{load_secrets, process_env};
-use crate::store::{short_id, Store};
+use crate::store::short_id;
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
 use common::{
     err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command,
 };
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const VERSION: &str = crate::export::attest::SITEFILE_VERSION;
@@ -339,73 +338,26 @@ fn positive_int(raw: &str, flag: &str) -> Result<u64> {
     Ok(n as u64)
 }
 
-/// Validate `-t` values before building: local name[:tag] only.
-fn validate_image_tags(tags: &[String]) -> Result<()> {
-    for t in tags {
-        if parse_local_ref(t)?.digest.is_some() {
-            return Err(SitefileError::plain(
-                ErrorCode::E_USAGE,
-                format!("-t '{t}': a tag cannot include a digest"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-struct ImageInfo<'a> {
-    context_dir: &'a str,
-    oci_root: Option<&'a str>,
-    oci_compression: Option<OciCompression>,
-    platform: Option<&'a str>,
-    labels: &'a BTreeMap<String, String>,
-    git_labels: bool,
-    /// `--provenance` / `--sbom`: attach these attestations to the stored image (they are pushed with it).
-    attest: AttestRequest,
-}
+use crate::executor::{validate_image_tags, ImageInfo};
 
 /// Store a build's exported tree as an OCI image in the local store and point each tag at it.
 fn store_build_as_image(
     result: &BuildResult,
     tags: &[String],
-    info: &ImageInfo<'_>,
+    info: &ImageInfo,
     build_options: &BuildOptions,
 ) -> Result<String> {
-    let store = Store::open_default()?;
-    let opts = oci_options(
-        result,
-        info.context_dir,
-        info.oci_root,
-        info.oci_compression,
-        info.platform,
-        info.labels,
-        info.git_labels,
-    )?;
-    let added = store.add_image(&result.output, &opts)?;
-    if info.attest.any() {
-        let manifest_bytes = store.read_blob(&added.id, None)?;
-        let d = store.details(&added.id)?;
-        let config_bytes = store.read_blob(&d.manifest.config.digest, None)?;
-        let referrers = crate::executor::image_attestations(
-            result,
-            &added.id,
-            &manifest_bytes,
-            &config_bytes,
-            &d.root,
-            build_options,
-            info.attest,
-        )?;
-        store.put_referrers(&added.id, &referrers)?;
-    }
+    let store = build_options.open_store()?;
+    let stored = crate::executor::store_build_as_image(&store, result, tags, info, build_options)?;
     let n = result.output.len();
-    for t in tags {
-        let key = store.tag(&added.id, &parse_local_ref(t)?)?;
+    for key in &stored.tags {
         out(&format!(
             "Tagged {key} {} ({n} file{})\n",
-            short_id(&added.id),
+            short_id(&stored.id),
             if n == 1 { "" } else { "s" }
         ));
     }
-    Ok(added.id)
+    Ok(stored.id)
 }
 
 fn run_main(argv: &[String]) -> i32 {
@@ -876,11 +828,11 @@ fn run_build_command(
                 }
             }
             let info = ImageInfo {
-                context_dir: context,
-                oci_root: o.str("oci-root"),
+                context_dir: context.to_string(),
+                oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
-                platform: o.str("platform"),
-                labels: &labels,
+                platform: o.str("platform").map(str::to_string),
+                labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
                 attest,
             };

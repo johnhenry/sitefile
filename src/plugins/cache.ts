@@ -7,12 +7,15 @@ import type { PluginResult } from './host.js';
 /**
  * Content-addressed cache of TRANSFORM results (see docs/PLUGINS.md, "Caching").
  *
- *   <dir>/entries/<key>.json   manifest: which blobs make up the result
+ *   <dir>/entries/<key>.json   manifest: which blobs make up the result, and the
+ *                              PLUGIN or TOOL that produced it ("plugin")
  *   <dir>/blobs/<hex>          result bytes, named by their SHA-256
  *
  * The key is the SHA-256 of a canonical JSON document describing everything the
  * result can depend on. Reads verify every blob's digest and size; a damaged
  * entry is removed and counts as a miss, so the next put rewrites it.
+ * "plugin" is optional (entries written before it was recorded have none and are
+ * still read) and not part of the key.
  */
 
 /** Bump to invalidate every existing entry when the key or entry format changes. */
@@ -20,6 +23,22 @@ export const CACHE_VERSION = 1;
 
 interface Manifest extends CacheEntry {
   readonly version: number;
+  /** The PLUGIN or TOOL that produced the result (absent in older entries). */
+  readonly plugin?: string;
+}
+
+/** What one plugin's entries hold (`TransformCache.usageByPlugin`). */
+export interface PluginCacheUsage {
+  /** The PLUGIN or TOOL name; undefined for entries that record none. */
+  readonly plugin: string | undefined;
+  readonly entries: number;
+  /** Distinct blobs these entries reference (a blob shared with another plugin's entry counts for both). */
+  readonly blobs: number;
+  readonly bytes: number;
+}
+
+function manifestOf(version: number, kind: CacheEntry['kind'], files: CacheEntry['files'], plugin: string | undefined): Manifest {
+  return plugin === undefined ? { version, kind, files } : { version, kind, files, plugin };
 }
 
 /** What an entry records: the result kind and `[path, blob hex, size]` per file (a `file` result has one, with path ''). */
@@ -90,7 +109,8 @@ export class TransformCache {
     return path.join(this.dir, 'blobs', hex);
   }
 
-  async get(key: string): Promise<PluginResult | undefined> {
+  /** `plugin`: the TRANSFORM's PLUGIN or TOOL, recorded on an entry fetched from the remote cache. */
+  async get(key: string, plugin?: string): Promise<PluginResult | undefined> {
     const file = this.entryPath(key);
     let raw: string;
     try {
@@ -101,7 +121,7 @@ export class TransformCache {
         this.stats.misses++;
         return undefined;
       }
-      const m: Manifest = { version: CACHE_VERSION, kind: fetched.kind, files: fetched.files };
+      const m = manifestOf(CACHE_VERSION, fetched.kind, fetched.files, plugin);
       raw = JSON.stringify(m);
       await this.writeAtomic(file, raw, false).catch(() => {});
     }
@@ -147,7 +167,8 @@ export class TransformCache {
     return { result, entry: { kind: m.kind, files: m.files.map((f) => [f[0], f[1], f[2]] as const) } };
   }
 
-  async put(key: string, result: PluginResult): Promise<void> {
+  /** `plugin`: the PLUGIN or TOOL that produced the result (see `usageByPlugin`, `prunePlugin`). */
+  async put(key: string, result: PluginResult, plugin?: string): Promise<void> {
     try {
       const pairs: ReadonlyArray<readonly [string, Uint8Array]> = result.kind === 'file' ? [['', result.bytes]] : result.files;
       const files: Array<readonly [string, string, number]> = [];
@@ -156,7 +177,7 @@ export class TransformCache {
         await this.writeAtomic(this.blobPath(hex), bytes, true);
         files.push([p, hex, bytes.byteLength]);
       }
-      const manifest: Manifest = { version: CACHE_VERSION, kind: result.kind, files };
+      const manifest = manifestOf(CACHE_VERSION, result.kind, files, plugin);
       await this.writeAtomic(this.entryPath(key), JSON.stringify(manifest), false);
       this.stats.writes++;
       this.remote?.used(key, { kind: result.kind, files });
@@ -230,6 +251,87 @@ export class TransformCache {
       bytes += st?.size ?? 0;
     }
     return { entries: removedEntries, blobs: removedBlobs, bytes };
+  }
+
+  /**
+   * Remove the entries `plugin` (a PLUGIN or TOOL name) wrote that were not used for `olderThanMs`
+   * (0: all of them), then the blobs they used that no remaining entry references. Entries of other
+   * plugins, entries that record no plugin, and blobs no entry references yet are kept.
+   */
+  async prunePlugin(plugin: string, olderThanMs = 0, now = Date.now()): Promise<{ entries: number; blobs: number; bytes: number }> {
+    let removedEntries = 0;
+    const live = new Set<string>();
+    const removed = new Set<string>();
+    for (const n of await readdir(path.join(this.dir, 'entries')).catch(() => [] as string[])) {
+      const file = path.join(this.dir, 'entries', n);
+      const st = await stat(file).catch(() => undefined);
+      if (!st) continue;
+      let m: Manifest;
+      try {
+        m = JSON.parse(await readFile(file, 'utf8')) as Manifest;
+      } catch {
+        continue;
+      }
+      const refs = Array.isArray(m?.files) ? m.files.map((f) => f[1]) : [];
+      const old = olderThanMs === 0 || now - st.mtimeMs >= olderThanMs;
+      if (old && m.plugin === plugin) {
+        await rm(file, { force: true });
+        removedEntries++;
+        for (const r of refs) removed.add(r);
+      } else {
+        for (const r of refs) live.add(r);
+      }
+    }
+    let removedBlobs = 0;
+    let bytes = 0;
+    for (const n of removed) {
+      if (live.has(n)) continue;
+      const file = path.join(this.dir, 'blobs', n);
+      const st = await stat(file).catch(() => undefined);
+      if (!st?.isFile()) continue;
+      await rm(file, { force: true });
+      removedBlobs++;
+      bytes += st.size;
+    }
+    return { entries: removedEntries, blobs: removedBlobs, bytes };
+  }
+
+  /** Entries, blobs and bytes per plugin, sorted by name (entries that record none first). Reads no blob. */
+  async usageByPlugin(): Promise<PluginCacheUsage[]> {
+    const by = new Map<string | undefined, { entries: number; blobs: Set<string> }>();
+    for (const n of await readdir(path.join(this.dir, 'entries')).catch(() => [] as string[])) {
+      if (!n.endsWith('.json')) continue;
+      let m: Manifest;
+      try {
+        m = JSON.parse(await readFile(path.join(this.dir, 'entries', n), 'utf8')) as Manifest;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(m?.files)) continue;
+      const name = typeof m.plugin === 'string' ? m.plugin : undefined;
+      const slot = by.get(name) ?? { entries: 0, blobs: new Set<string>() };
+      slot.entries++;
+      for (const f of m.files) if (typeof f?.[1] === 'string') slot.blobs.add(f[1]);
+      by.set(name, slot);
+    }
+    // (Array.prototype.sort puts undefined last without asking the comparator.)
+    const named = [...by.keys()].filter((k): k is string => k !== undefined).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const names = by.has(undefined) ? [undefined, ...named] : named;
+    const out: PluginCacheUsage[] = [];
+    for (const plugin of names) {
+      const slot = by.get(plugin)!;
+      let blobs = 0;
+      let bytes = 0;
+      for (const hex of slot.blobs) {
+        const st = await stat(this.blobPath(hex)).catch(() => undefined);
+        if (st?.isFile()) {
+          blobs++;
+          bytes += st.size;
+        }
+      }
+      out.push({ plugin, entries: slot.entries, blobs, bytes });
+    }
+    return out;
   }
 }
 

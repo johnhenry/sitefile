@@ -14,7 +14,7 @@ use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
 };
-use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
+use crate::error::{ErrorCode::*, Needs, Result, SitefileError, SourceSpan};
 use crate::export::archive_writers::{source_date_epoch, WriterOptions};
 use crate::export::exporter::{
     export_directory, export_file, is_exporter_temp_name, resolve_path, ExportOptions,
@@ -44,7 +44,7 @@ use crate::plugins::host::{
     run_bounded, transform_jobs, PluginHost, PluginInput, PluginPolicy, PluginRequest,
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
-use crate::plugins::wasm::check_wasm_plugin;
+use crate::plugins::wasm::check_wasm_plugin_in;
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
 use crate::render::{
@@ -160,6 +160,61 @@ pub struct BuildOptions {
     pub memo: Option<SharedMemo>,
     /// Keep every intermediate tree in [`BuildResult::steps`] (for `sitefile why`).
     pub record_steps: bool,
+    /// The image store home (`$SITEFILE_HOME`) that `FROM <local image>`, `BASE`
+    /// and the wasm compiled-module cache use. `None` (the CLI): `resolve_store_home()`,
+    /// i.e. `$SITEFILE_HOME` or `~/.sitefile`. The TRANSFORM cache is `cache_dir`.
+    pub store_home: Option<PathBuf>,
+    /// Stops the build: checked before each stage, operation, plugin or tool call,
+    /// import and download; a cancelled build fails with `E_CANCELLED`.
+    pub cancel: Option<CancelToken>,
+}
+
+/// A handle that cancels a running build ([`BuildOptions::cancel`]). Clones
+/// share one flag, so keep a clone and call [`cancel`](Self::cancel) from any thread.
+/// Cancellation is cooperative: a plugin call, tool run or download already
+/// running finishes (or times out) first, and nothing after it starts.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// `Err(E_CANCELLED)` once cancelled.
+    pub fn check(&self) -> Result<()> {
+        if self.is_cancelled() {
+            Err(SitefileError::cancelled())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl BuildOptions {
+    /// The store home this build uses (`store_home`, else `$SITEFILE_HOME` / `~/.sitefile`).
+    pub fn store_home(&self) -> PathBuf {
+        match &self.store_home {
+            Some(h) => h.clone(),
+            None => crate::store::resolve_store_home(),
+        }
+    }
+    /// The image store this build reads `FROM` images and BASE layers from (created if needed).
+    pub fn open_store(&self) -> Result<Store> {
+        Store::open(self.store_home())
+    }
+    /// `Err(E_CANCELLED)` if the build's [`CancelToken`] was cancelled.
+    pub fn check_cancelled(&self) -> Result<()> {
+        match &self.cancel {
+            Some(c) => c.check(),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Default for BuildOptions {
@@ -198,6 +253,8 @@ impl Default for BuildOptions {
             also_writes: Vec::new(),
             memo: None,
             record_steps: false,
+            store_home: None,
+            cancel: None,
         }
     }
 }
@@ -806,6 +863,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             secrets: &options.secrets,
         },
         memo: options.memo.as_deref(),
+        cancel: options.cancel.as_ref(),
     };
     // Imports resolve concurrently: each gets its own trace thread, reserved in Sitefile order.
     let import_spans: Vec<_> = p
@@ -868,10 +926,11 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
                          span: &SourceSpan,
                          unit: Option<&str>|
      -> Result<FromImage> {
+        options.check_cancelled()?;
         let store = match image_store.get() {
             Some(s) => s,
             None => {
-                let s = Store::open_default()?;
+                let s = options.open_store()?;
                 image_store.get_or_init(|| s)
             }
         };
@@ -922,6 +981,8 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugin_policy: options.plugin_policy,
         tool_policy: options.tool_policy,
         from_image: &from_image_in,
+        cancel: options.cancel.as_ref(),
+        store_home: options.store_home.clone(),
     };
     let root_id = if options.sitefile.is_none() {
         context_real.to_string_lossy().into_owned()
@@ -1007,7 +1068,11 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         partials: &partials,
         label: &label,
         warn: warn.clone(),
-        plugins: PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m)),
+        plugins: {
+            let mut h = PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m));
+            h.set_store_home(options.store_home.clone());
+            h
+        },
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
         tool_policy: options.tool_policy,
         cache: options
@@ -1028,6 +1093,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         from_image: &from_image,
         last_renames: None,
         fetch_policy: options.fetch_policy.clone(),
+        cancel: options.cancel.as_ref(),
     };
     let mut steps: Option<Vec<Vec<Tree>>> = options.record_steps.then(Vec::new);
     // FINGERPRINT renames: per operation (by line), and per stage (composed, inherited by FROM <stage>).
@@ -1144,7 +1210,8 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     };
     let base = match base_ref {
         Some(r) => {
-            let store = Store::open_default()?;
+            options.check_cancelled()?;
+            let store = options.open_store()?;
             let w = warn.clone();
             let warn_fn = move |m: &str| w(m);
             let o = ResolveBaseOptions {
@@ -1165,6 +1232,8 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         None => None,
     };
     base_span.end(Vec::new());
+    // A build cancelled after its last check still fails: nothing is saved for it.
+    options.check_cancelled()?;
     // Imported Sitefiles' own imports follow, by qualified name (`theme+data`), for the provenance.
     let mut resource_list = resource_list;
     nested_resources(&units, &mut resource_list);
@@ -1389,6 +1458,107 @@ pub fn oci_options(
     })
 }
 
+/// How [`store_build_as_image`] builds the image: what `build -t` takes from
+/// its flags. `ImageInfo::new(context_dir)` is a plain `build -t` (no labels,
+/// no attestations, the Sitefile's root and compression).
+#[derive(Debug, Clone, Default)]
+pub struct ImageInfo {
+    /// The build context (the image title and, with `git_labels`, its Git labels).
+    pub context_dir: String,
+    /// `--oci-root`: overrides the Sitefile's EXPORT path inside the image.
+    pub oci_root: Option<String>,
+    /// `--oci-compression` / `--compression`: overrides `EXPORT … AS oci COMPRESSION`.
+    pub oci_compression: Option<OciCompression>,
+    /// `--platform`: `os/arch` of the image.
+    pub platform: Option<String>,
+    /// `--label key=value`.
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// `--git-labels`.
+    pub git_labels: bool,
+    /// `--provenance` / `--sbom`: attach these attestations to the stored image.
+    pub attest: crate::export::attest::AttestRequest,
+}
+
+impl ImageInfo {
+    pub fn new(context_dir: impl Into<String>) -> Self {
+        ImageInfo {
+            context_dir: context_dir.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// What [`store_build_as_image`] stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredImage {
+    /// The image ID (`sha256:…`, the manifest digest).
+    pub id: String,
+    /// Each tag as it was recorded (`name:tag`), in the order given.
+    pub tags: Vec<String>,
+}
+
+/// Validate `-t` values before building: local `name[:tag]` only, no digest.
+pub fn validate_image_tags(tags: &[String]) -> Result<()> {
+    for t in tags {
+        if crate::refs::parse_local_ref(t)?.digest.is_some() {
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("-t '{t}': a tag cannot include a digest"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `build -t`: store a build's exported tree as an OCI image in `store`, attach
+/// the requested attestations, and point each tag at it. No tags stores an
+/// untagged (`<none>`) image. Tags are validated first ([`validate_image_tags`]),
+/// and a cancelled build ([`BuildOptions::cancel`]) stores nothing (`E_CANCELLED`).
+/// Prints nothing; the CLI prints `Tagged <tag> <short id> (<n> files)` per tag.
+pub fn store_build_as_image(
+    store: &Store,
+    result: &BuildResult,
+    tags: &[String],
+    info: &ImageInfo,
+    build_options: &BuildOptions,
+) -> Result<StoredImage> {
+    validate_image_tags(tags)?;
+    build_options.check_cancelled()?;
+    let opts = oci_options(
+        result,
+        &info.context_dir,
+        info.oci_root.as_deref(),
+        info.oci_compression,
+        info.platform.as_deref(),
+        &info.labels,
+        info.git_labels,
+    )?;
+    let added = store.add_image(&result.output, &opts)?;
+    if info.attest.any() {
+        let manifest_bytes = store.read_blob(&added.id, None)?;
+        let d = store.details(&added.id)?;
+        let config_bytes = store.read_blob(&d.manifest.config.digest, None)?;
+        let referrers = image_attestations(
+            result,
+            &added.id,
+            &manifest_bytes,
+            &config_bytes,
+            &d.root,
+            build_options,
+            info.attest,
+        )?;
+        store.put_referrers(&added.id, &referrers)?;
+    }
+    let mut keys = Vec::new();
+    for t in tags {
+        keys.push(store.tag(&added.id, &crate::refs::parse_local_ref(t)?)?);
+    }
+    Ok(StoredImage {
+        id: added.id,
+        tags: keys,
+    })
+}
+
 /// Build, then write the exported tree to `out_dir`: a directory for the
 /// `directory` format, a single file for zip, tar, tgz and wbn; oci writes an
 /// OCI archive for `*.tar` and an image layout directory otherwise.
@@ -1442,7 +1612,7 @@ fn export_build(
         let img = build_oci_image(&result.output, &opts)?;
         // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {
-            Some(_) => read_layer_blobs(&Store::open_default()?, &img.base_layers)?,
+            Some(_) => read_layer_blobs(&options.open_store()?, &img.base_layers)?,
             None => Vec::new(),
         };
         let ref_name = target.oci_ref_name.as_deref();
@@ -1547,6 +1717,14 @@ struct ImportEnv<'a> {
     archive_limits: &'a ArchiveLimits,
     remote: RemoteEnv<'a>,
     memo: Option<&'a Mutex<BuildMemo>>,
+    cancel: Option<&'a CancelToken>,
+}
+
+fn check_cancel(cancel: Option<&CancelToken>) -> Result<()> {
+    match cancel {
+        Some(c) => c.check(),
+        None => Ok(()),
+    }
 }
 
 /// What fetching a remote IMPORT needs: the network policy and the lockfile rules (and, for builds,
@@ -1857,6 +2035,7 @@ fn url_basename(url: &str) -> String {
 /// it read. With a memo, conversions (Markdown, data, archives) whose key is
 /// unchanged are reused; a collection's documents are memoized one by one.
 fn resolve_import(spec: &ImportSpec, env: &ImportEnv<'_>) -> Result<(Resource, String)> {
+    check_cancel(env.cancel)?;
     let origin = format!(
         "{}:{} IMPORT {}",
         env.remote.label, spec.span.line, spec.name
@@ -2494,6 +2673,9 @@ struct UnitsEnv<'a> {
     /// Resolve a `FROM image` stage base: (reference, AT, local, lead, span, the imported Sitefile's qualified name).
     from_image:
         &'a dyn Fn(&str, Option<&str>, bool, &str, &SourceSpan, Option<&str>) -> Result<FromImage>,
+    cancel: Option<&'a CancelToken>,
+    /// `BuildOptions::store_home` (the wasm module cache of imported Sitefiles' plugins).
+    store_home: Option<PathBuf>,
 }
 
 /// Who imports a Sitefile: the build's own Sitefile or another imported one.
@@ -2618,6 +2800,7 @@ fn load_sitefile_import(
     refs: &[ImportedStageRef],
     env: &UnitsEnv<'_>,
 ) -> Result<ImportedSitefile> {
+    check_cancel(env.cancel)?;
     let qualified = match importer.name {
         Some(n) => format!("{n}+{}", spec.name),
         None => spec.name.clone(),
@@ -2762,6 +2945,7 @@ fn load_sitefile_import(
             ..env.remote
         },
         memo: env.memo,
+        cancel: env.cancel,
     };
     let plain: Vec<&ImportSpec> = p
         .imports
@@ -2937,7 +3121,11 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
         partials: &partials,
         label: &unit.label,
         warn: warn.clone(),
-        plugins: PluginHost::new(env.plugin_policy, move |m: &str| warn(m)),
+        plugins: {
+            let mut h = PluginHost::new(env.plugin_policy, move |m: &str| warn(m));
+            h.set_store_home(env.store_home.clone());
+            h
+        },
         tools: HashMap::new(),
         tool_policy: env.tool_policy,
         cache: None,
@@ -2955,6 +3143,7 @@ fn build_unit_stages(unit: &mut ImportedSitefile, upto: usize, env: &UnitsEnv<'_
         from_image: &from_image,
         last_renames: None,
         fetch_policy: env.remote.policy.clone(),
+        cancel: env.cancel,
     };
     let mut steps: Vec<Vec<Tree>> = Vec::new();
     let mut built = unit.built;
@@ -3223,7 +3412,7 @@ fn register_plugin(
     }
     if real.to_string_lossy().ends_with(".wasm") {
         // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
-        check_wasm_plugin(&spec.name, &bytes, span)?;
+        check_wasm_plugin_in(host.store_home(), &spec.name, &bytes, span)?;
         host.register(&spec.name, real, Some(spec.span.clone()), Some(bytes));
         return Ok(());
     }
@@ -3270,7 +3459,8 @@ impl PluginPermission {
                 spec.name
             ),
             &spec.span,
-        ))
+        )
+        .with_needs(Needs::plugin(&spec.name)))
     }
 }
 
@@ -3338,7 +3528,8 @@ fn resolve_tools(p: &Plan, options: &BuildOptions, warn: &Warn) -> Result<Vec<Re
                     t.name
                 ),
                 &t.span,
-            ));
+            )
+            .with_needs(Needs::tool(&t.name)));
         };
         let tool = resolve_tool(
             &t.name,
@@ -3663,6 +3854,8 @@ struct Exec<'a> {
     last_renames: Option<Vec<(String, String)>>,
     /// The network policy (CHECKLINKS --external).
     fetch_policy: FetchPolicy,
+    /// `BuildOptions::cancel`.
+    cancel: Option<&'a CancelToken>,
 }
 
 /// What a stage starts from, for the trace.
@@ -3706,6 +3899,7 @@ impl<'a> Exec<'a> {
 
     /// The tree a stage starts from, and its key.
     fn start_stage(&self, stage: &Stage) -> Result<(Tree, String)> {
+        check_cancel(self.cancel)?;
         match &stage.base {
             StageBase::Scratch => Ok((
                 Tree::empty(),
@@ -4023,6 +4217,7 @@ impl<'a> Exec<'a> {
         tree: Tree,
         prev: &str,
     ) -> Result<(Tree, String, Option<&'static str>)> {
+        check_cancel(self.cancel)?;
         let span = op.span();
         let Some(memo) = self.memo else {
             if let Operation::Sitemap { .. } = op {
@@ -4975,7 +5170,7 @@ impl<'a> Exec<'a> {
                 },
             );
             let mut result: Option<PluginResult> = match (&cached, self.cache.as_mut()) {
-                (Some(k), Some(c)) => c.get(k),
+                (Some(k), Some(c)) => c.get_for(k, Some(plugin)),
                 _ => None,
             };
             let cache_state = if cached.is_none() {
@@ -4986,6 +5181,7 @@ impl<'a> Exec<'a> {
                 "miss"
             };
             if result.is_none() {
+                check_cancel(self.cancel)?;
                 let r = if let Some(t) = &tool {
                     self.stats.tool_runs += 1;
                     let call = ToolCall {
@@ -5012,7 +5208,7 @@ impl<'a> Exec<'a> {
                 if let Some(k) = &cached {
                     if tool.is_some() || self.plugins.cacheable(plugin) {
                         if let Some(c) = self.cache.as_mut() {
-                            c.put(k, &r);
+                            c.put_for(k, Some(plugin), &r);
                         }
                     }
                 }
@@ -5246,7 +5442,7 @@ impl<'a> Exec<'a> {
                 result: None,
             };
             if let (Some(k), Some(c)) = (&job.cached, self.cache.as_mut()) {
-                if let Some(hit) = c.get(k) {
+                if let Some(hit) = c.get_for(k, Some(plugin)) {
                     job.span.start();
                     job.span.end(vec![("cache", json!("hit"))]);
                     job.result = Some(hit);
@@ -5263,7 +5459,9 @@ impl<'a> Exec<'a> {
         let settled: Vec<Option<Result<PluginResult>>> = if let Some(t) = ctx.tool {
             let policy = &self.tool_policy;
             let jobs_ref = &jobs;
+            let cancel = self.cancel;
             let out = run_bounded(misses.len(), transform_jobs(), |k| {
+                check_cancel(cancel)?;
                 let job = &jobs_ref[misses[k]];
                 job.span.start();
                 let input = job.request.input.as_ref().map(|i| ToolInput {
@@ -5292,7 +5490,9 @@ impl<'a> Exec<'a> {
             out
         } else if let Some(w) = self.plugins.shared_wasm(plugin, Some(span))? {
             let jobs_ref = &jobs;
+            let cancel = self.cancel;
             let out = run_bounded(misses.len(), transform_jobs(), |k| {
+                check_cancel(cancel)?;
                 let job = &jobs_ref[misses[k]];
                 job.span.start();
                 let r = w.call_prepared(&job.request, Some(span));
@@ -5308,7 +5508,8 @@ impl<'a> Exec<'a> {
             for &i in &misses {
                 let job = &jobs[i];
                 job.span.start();
-                let r = self.plugins.call(plugin, &job.request, Some(span));
+                let r = check_cancel(self.cancel)
+                    .and_then(|_| self.plugins.call(plugin, &job.request, Some(span)));
                 let failed = r.is_err();
                 if !failed {
                     job.span.end(vec![("cache", json!(job.cache))]);
@@ -5344,6 +5545,9 @@ impl<'a> Exec<'a> {
                 (self.unrecorded)(&l);
             }
             if let Some(e) = errors.remove(&ji) {
+                if e.code == E_CANCELLED {
+                    return Err(e);
+                }
                 return Err(SitefileError {
                     detail: format!("{}: {}", job.label, e.detail),
                     ..e
@@ -5354,7 +5558,7 @@ impl<'a> Exec<'a> {
             };
             if job.cache == "miss" && store(&self.plugins) {
                 if let (Some(k), Some(c)) = (&job.cached, self.cache.as_mut()) {
-                    c.put(k, &result);
+                    c.put_for(k, Some(plugin), &result);
                 }
             }
             let mut files: Files = Vec::new();

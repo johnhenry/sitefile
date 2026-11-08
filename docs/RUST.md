@@ -23,6 +23,7 @@ are maintained: same language, same CLI, same output.
 - **Tooling exceptions are Rust-only by design:**
   - the language server;
   - the wasm module disk cache;
+  - the embedding hooks of the crate ([Embedding the crate](#embedding-the-crate));
   - other features that only make sense for a long-running or installed
     binary.
 
@@ -86,7 +87,7 @@ with the same runner, so `node` must be on PATH for them.
 
 Compiling a wasm plugin with Cranelift costs ~55 ms, so the Rust build keeps
 compiled modules in `$SITEFILE_HOME/cache/wasm/<key>.cwasm` (default
-`~/.sitefile/cache/wasm`). The key is a SHA-256 over the wasm bytes, the
+`~/.sitefile/cache/wasm`; an embedder's `BuildOptions::store_home` instead). The key is a SHA-256 over the wasm bytes, the
 wasmtime version, the target and the codegen settings. Entries are loaded with
 wasmtime's `deserialize_file`, which trusts the file, so the directory is
 created `0700`, entries are written `0600` through a temp file and rename, and a
@@ -100,6 +101,47 @@ file's mtime, and the shared cache size limit (`SITEFILE_CACHE_MAX`, see
 [CLI.md](CLI.md#cache-size-limit)) evicts least recently used modules; both
 implementations measure and evict this directory, so `cache du` and the
 eviction results are the same whichever one runs.
+
+## Embedding the crate
+
+sitefile Desktop (johnhenry/sitefile-desktop, `crates/sfd-local`) links the
+`sitefile` crate into a long-running process. These functions are what the
+CLI's own commands call, so an embedder gets the CLI's behaviour without
+copying it (johnhenry/sitefile#153). They are Rust-only embedding hooks (a
+tooling exception, above): none changes build output. The TypeScript library
+has the two that are part of shared formats: the `needs` field of permission
+errors and per-plugin cache entries.
+
+| Need | API (Rust) | Used by |
+| --- | --- | --- |
+| Detached servers | `servers::serve_detached(&ServerRegistry, &DetachedServe, worker_exe: Option<&Path>) -> Result<ServerState>`; `servers::restart_detached(&ServerRegistry, &ServerState, grace: Duration, worker_exe: Option<&Path>) -> Result<ServerState>`; `servers::stop_server(&ServerRegistry, &ServerState, grace: Duration) -> Result<bool>`; `servers::start_detached(&ServerRegistry, &ServerState, worker_exe: Option<&Path>) -> Result<ServerState>` (a state already written) | `serve -d`, `server restart`, `server stop`, `server rm -f` |
+| What `serve <arg>` serves | `servers::resolve_source(&Store, arg: &str) -> Result<(String, ServerSource)>`; `DetachedServe::resolve(&Store, arg) -> Result<DetachedServe>` (then set `name`, `bind`, `spa`); `servers::parse_publish(Option<&str>) -> Result<Bind>` (`-p`); `servers::looks_like_dir(&str) -> bool` | `serve` |
+| Store a build as an image | `executor::store_build_as_image(&Store, &BuildResult, tags: &[String], &ImageInfo, &BuildOptions) -> Result<StoredImage>` (`StoredImage { id, tags }`; `ImageInfo::new(context_dir)` plus `oci_root`, `oci_compression`, `platform`, `labels`, `git_labels`, `attest`); `executor::validate_image_tags(&[String]) -> Result<()>` | `build -t` |
+| The store home | `BuildOptions::store_home: Option<PathBuf>` (`None`: `$SITEFILE_HOME`, else `~/.sitefile`), used by `FROM <local image>`, `BASE` and the wasm module cache; `BuildOptions::store_home()` / `open_store()`. The TRANSFORM cache stays `BuildOptions::cache_dir` | every build |
+| Cancellation | `BuildOptions::cancel: Option<CancelToken>`; `CancelToken::new()`, `.cancel()`, `.is_cancelled()`, `.check()`. A cancelled build fails with `E_CANCELLED` ("the build was cancelled") | not the CLI |
+| Per-plugin cache | `TransformCache::usage_by_plugin() -> Vec<PluginCacheUsage>` (`{ plugin: Option<String>, entries, blobs, bytes }`); `TransformCache::prune_plugin(name: &str, older_than: Duration) -> PruneResult`; `get_for` / `put_for` record the name | `cache prune --plugin` |
+| Permission errors | `SitefileError::needs: Option<Needs>`; `Needs { kind: NeedsKind::Plugin \| NeedsKind::Tool, name }`, `.flag()` (`--allow-plugin` / `--allow-exec`), `.args()` | `E_UNSUPPORTED` at a PLUGIN or TOOL |
+
+- **Cancellation is cooperative.** The token is checked before each import
+  (download), `FROM image` and `BASE` resolution, stage, operation, plugin
+  call and tool run (also between the files of a directory TRANSFORM), and
+  once more after the last step, so a cancelled build never returns a result
+  or saves `Sitefile.lock`. A plugin call, tool run or download already
+  running is not interrupted: it finishes or times out under its policy, and
+  nothing starts after it. `store_build_as_image` stores nothing once the
+  token is cancelled.
+- **The worker.** `worker_exe` (default: the current executable) is run as
+  `<exe> __serve-worker <id>` with `SITEFILE_HOME` set to the registry's store
+  home, so a binary that embeds the crate passes that argv to
+  `sitefile::cli::main` before anything else.
+- **Reaping.** The worker is a child of the process that started it, and
+  `start_detached` waits for it on a background thread (`sitefile-reaper`).
+  Without that, a stopped worker of a long-lived host stays a zombie, which
+  `kill -0` (`pid_alive`) reports as alive, so `stop_server` would wait out its
+  grace period and fail. When the starter exits first (the CLI), the worker is
+  re-parented and keeps running. `pid_alive` still counts a zombie of any other
+  parent as alive.
+- `rust/tests/embed.rs` exercises each of these through the public API only.
 
 ## Incremental rebuilds
 

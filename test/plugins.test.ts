@@ -198,6 +198,30 @@ test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before 
   await assert.rejects(build({ contextDir: dir, lockfile: false }), (e: unknown) => isSitefileError(e) && e.code === 'E_UNSUPPORTED' && denied.test(e.message));
 });
 
+test('permission errors carry what must be allowed (needs), with the message unchanged', async () => {
+  const dir = await project({
+    'plugins/up.mjs': 'export function transform() { return "x"; }',
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN up FROM ./plugins/up.mjs\nTRANSFORM ./a.txt WITH up TO /a.out\nEXPORT /',
+  });
+  await assert.rejects(build({ contextDir: dir, lockfile: false }), (e: unknown) => {
+    assert.ok(isSitefileError(e, 'E_UNSUPPORTED'));
+    assert.deepEqual(e.needs, { kind: 'plugin', name: 'up', flag: '--allow-plugin' });
+    assert.match(e.message, /: PLUGIN up runs JavaScript, which must be allowed explicitly: add --allow-plugin up /);
+    return true;
+  });
+  const tool = await project({ 'a.txt': 'a', Sitefile: 'FROM scratch\nTOOL ffmpeg\nTRANSFORM ./a.txt WITH ffmpeg TO /a.out ARGS {input} {output}\nEXPORT /' });
+  await assert.rejects(build({ contextDir: tool, lockfile: false }), (e: unknown) => {
+    assert.ok(isSitefileError(e, 'E_UNSUPPORTED'));
+    assert.deepEqual(e.needs, { kind: 'tool', name: 'ffmpeg', flag: '--allow-exec' });
+    assert.match(e.message, /TOOL ffmpeg runs an external program, which must be allowed explicitly/);
+    return true;
+  });
+  // Other errors carry none.
+  const other = await project({ Sitefile: 'FROM scratch\nCOPY ./missing.txt /m.txt\nEXPORT /' });
+  await assert.rejects(build({ contextDir: other, lockfile: false }), (e: unknown) => isSitefileError(e) && e.needs === undefined);
+});
+
 test('plugin console output becomes build warnings, not output', async () => {
   const warnings: string[] = [];
   const r = await run(

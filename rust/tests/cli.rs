@@ -1059,3 +1059,60 @@ fn cache_size_limit_evicts_after_build_and_cache_du_reports() {
     assert_eq!(pr.code, 0, "{}", pr.stderr);
     assert_eq!(pr.stdout, "Evicted 0 items\nTotal reclaimed space: 0B\n");
 }
+
+/// Same as test/transform-cache.test.ts "CLI: cache prune --plugin …".
+#[test]
+fn cache_prune_plugin_deletes_only_that_plugins_results() {
+    let work = Tmp::new();
+    let ctx = work.path().join("ctx");
+    fs::create_dir_all(&ctx).unwrap();
+    fs::write(ctx.join("a.txt"), "alpha").unwrap();
+    fs::write(ctx.join("b.txt"), "beta").unwrap();
+    fs::write(
+        ctx.join("Sitefile"),
+        "FROM scratch\nTOOL copya\nTOOL copyb\nTRANSFORM ./a.txt WITH copya TO /a.txt ARGS {input} {output}\nTRANSFORM ./b.txt WITH copyb TO /b.txt ARGS {input} {output}\nEXPORT /",
+    )
+    .unwrap();
+    let dist = ctx.join("dist");
+    let b = sitefile(
+        &work,
+        &[
+            "build",
+            s(&ctx),
+            "-o",
+            s(&dist),
+            "--allow-exec",
+            "copya=/bin/cp",
+            "--allow-exec",
+            "copyb=/bin/cp",
+        ],
+    );
+    assert_eq!(b.code, 0, "{}", b.stderr);
+    let pr = sitefile(&work, &["cache", "prune", "--plugin", "copya"]);
+    assert_eq!(pr.code, 0, "{}", pr.stderr);
+    assert_eq!(
+        pr.stdout,
+        "Deleted 1 entry and 1 blob\nTotal reclaimed space: 5B\n"
+    );
+    assert!(sitefile(&work, &["cache", "info", "--json"])
+        .stdout
+        .contains("\"entries\": 1"));
+    let bad = sitefile(&work, &["cache", "prune", "--plugin", "bad-name"]);
+    assert_eq!(bad.code, 2);
+    assert!(
+        bad.stderr
+            .contains("--plugin expects a PLUGIN or TOOL name (an identifier), got 'bad-name'"),
+        "{}",
+        bad.stderr
+    );
+    let conflict = sitefile(
+        &work,
+        &["cache", "prune", "--plugin", "copyb", "--max-size", "1M"],
+    );
+    assert_eq!(conflict.code, 2);
+    assert!(
+        conflict.stderr.contains("--plugin and --max-size conflict"),
+        "{}",
+        conflict.stderr
+    );
+}

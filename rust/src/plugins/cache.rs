@@ -2,9 +2,13 @@
 //! (see docs/PLUGINS.md, "Caching").
 //!
 //! ```text
-//! <dir>/entries/<key>.json   manifest: which blobs make up the result
+//! <dir>/entries/<key>.json   manifest: which blobs make up the result, and
+//!                            the PLUGIN or TOOL that produced it ("plugin")
 //! <dir>/blobs/<hex>          result bytes, named by their SHA-256
 //! ```
+//!
+//! `"plugin"` is optional (entries written before it was recorded have none and
+//! are still read); it is not part of the key, so recording it changed no key.
 //!
 //! The key is the SHA-256 of a canonical JSON document describing everything the
 //! result can depend on. It is byte-for-byte the document the TypeScript version
@@ -41,6 +45,21 @@ pub struct CacheInfo {
     pub dir: PathBuf,
     pub entries: u64,
     pub blobs: u64,
+    pub bytes: u64,
+}
+
+/// What one plugin's entries hold ([`TransformCache::usage_by_plugin`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginCacheUsage {
+    /// The PLUGIN or TOOL name; `None` for entries that do not record one
+    /// (written before names were recorded, or fetched from a registry cache
+    /// without one).
+    pub plugin: Option<String>,
+    pub entries: u64,
+    /// Distinct blobs these entries reference (a blob shared with another
+    /// plugin's entry counts for both).
+    pub blobs: u64,
+    /// Size of those blobs.
     pub bytes: u64,
 }
 
@@ -252,14 +271,33 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
-    fn manifest_json(&self) -> Value {
+    /// `{"version":1,"kind":…,"files":[…]}`, then `"plugin":…` when named (as cache.ts writes it).
+    fn manifest_json(&self, plugin: Option<&str>) -> Value {
         let files: Vec<Value> = self
             .files
             .iter()
             .map(|(p, h, n)| json!([p, h, n]))
             .collect();
-        json!({ "version": CACHE_VERSION, "kind": self.kind, "files": files })
+        let mut m = json!({ "version": CACHE_VERSION, "kind": self.kind, "files": files });
+        if let (Some(name), Value::Object(o)) = (plugin, &mut m) {
+            o.insert("plugin".into(), json!(name));
+        }
+        m
     }
+}
+
+/// The `"plugin"` an entry manifest records, if any.
+fn manifest_plugin(m: &Value) -> Option<String> {
+    m.get("plugin").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The blob hex digests a manifest references, or `None` when it is not one.
+fn manifest_blobs(m: &Value) -> Option<Vec<String>> {
+    m.get("files")?
+        .as_array()?
+        .iter()
+        .map(|f| f.get(1).and_then(Value::as_str).map(String::from))
+        .collect()
 }
 
 /// A second-level cache consulted on a local miss (`--cache-from`, see
@@ -303,6 +341,12 @@ impl TransformCache {
     }
 
     pub fn get(&mut self, key: &str) -> Option<PluginResult> {
+        self.get_for(key, None)
+    }
+
+    /// [`get`](Self::get) for a TRANSFORM by `plugin` (the PLUGIN or TOOL name):
+    /// an entry fetched from the remote cache is recorded locally under that name.
+    pub fn get_for(&mut self, key: &str, plugin: Option<&str>) -> Option<PluginResult> {
         let file = self.entry_path(key);
         let raw = match fs::read_to_string(&file) {
             Ok(r) => r,
@@ -315,7 +359,7 @@ impl TransformCache {
                     self.stats.misses += 1;
                     return None;
                 };
-                let raw = js_json(&entry.manifest_json());
+                let raw = js_json(&entry.manifest_json(plugin));
                 let _ = write_atomic(&file, raw.as_bytes(), false);
                 raw
             }
@@ -386,7 +430,14 @@ impl TransformCache {
     /// Store a result. Never fails: a cache that cannot be written (read-only
     /// home, full disk) must not fail the build.
     pub fn put(&mut self, key: &str, result: &PluginResult) {
-        if let Ok(entry) = self.try_put(key, result) {
+        self.put_for(key, None, result)
+    }
+
+    /// [`put`](Self::put), recording the PLUGIN or TOOL that produced the result
+    /// (so [`usage_by_plugin`](Self::usage_by_plugin) and
+    /// [`prune_plugin`](Self::prune_plugin) can find it).
+    pub fn put_for(&mut self, key: &str, plugin: Option<&str>, result: &PluginResult) {
+        if let Ok(entry) = self.try_put(key, plugin, result) {
             self.stats.writes += 1;
             if let Some(r) = &self.remote {
                 r.used(key, &entry);
@@ -394,7 +445,12 @@ impl TransformCache {
         }
     }
 
-    fn try_put(&self, key: &str, result: &PluginResult) -> io::Result<CacheEntry> {
+    fn try_put(
+        &self,
+        key: &str,
+        plugin: Option<&str>,
+        result: &PluginResult,
+    ) -> io::Result<CacheEntry> {
         let (kind, pairs): (&str, Vec<(&str, &[u8])>) = match result {
             PluginResult::File(b) => ("file", vec![("", b.as_slice())]),
             PluginResult::Files(fs) => (
@@ -416,7 +472,7 @@ impl TransformCache {
         }
         write_atomic(
             &self.entry_path(key),
-            js_json(&entry.manifest_json()).as_bytes(),
+            js_json(&entry.manifest_json(plugin)).as_bytes(),
             false,
         )?;
         Ok(entry)
@@ -453,6 +509,68 @@ impl TransformCache {
 
     /// [`prune`](Self::prune) with an explicit "now".
     pub fn prune_at(&self, older_than: Duration, now: SystemTime) -> PruneResult {
+        self.prune_where(older_than, now, None)
+    }
+
+    /// Remove the entries `plugin` (a PLUGIN or TOOL name) wrote that were not
+    /// used for `older_than` (zero: all of them), then every blob no remaining
+    /// entry references. Entries of other plugins, and entries that record no
+    /// plugin, are kept.
+    pub fn prune_plugin(&self, plugin: &str, older_than: Duration) -> PruneResult {
+        self.prune_where(older_than, SystemTime::now(), Some(plugin))
+    }
+
+    /// Entries, blobs and bytes per plugin, sorted by name (unnamed entries
+    /// first). Reads every entry manifest (no blob is read).
+    pub fn usage_by_plugin(&self) -> Vec<PluginCacheUsage> {
+        let mut by: std::collections::BTreeMap<
+            Option<String>,
+            (u64, std::collections::BTreeSet<String>),
+        > = std::collections::BTreeMap::new();
+        let entries = self.dir.join("entries");
+        for n in read_names(&entries) {
+            if !n.ends_with(".json") {
+                continue;
+            }
+            let Some(m) = fs::read_to_string(entries.join(&n))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            else {
+                continue;
+            };
+            let Some(blobs) = manifest_blobs(&m) else {
+                continue;
+            };
+            let slot = by.entry(manifest_plugin(&m)).or_default();
+            slot.0 += 1;
+            slot.1.extend(blobs);
+        }
+        by.into_iter()
+            .map(|(plugin, (entries, blobs))| {
+                let mut u = PluginCacheUsage {
+                    plugin,
+                    entries,
+                    ..Default::default()
+                };
+                for hex in blobs {
+                    if let Ok(st) = fs::metadata(self.blob_path(&hex)) {
+                        if st.is_file() {
+                            u.blobs += 1;
+                            u.bytes += st.len();
+                        }
+                    }
+                }
+                u
+            })
+            .collect()
+    }
+
+    fn prune_where(
+        &self,
+        older_than: Duration,
+        now: SystemTime,
+        plugin: Option<&str>,
+    ) -> PruneResult {
         let older_ms = older_than.as_secs_f64() * 1000.0;
         let now_ms = now
             .duration_since(UNIX_EPOCH)
@@ -460,27 +578,38 @@ impl TransformCache {
             .unwrap_or(0.0);
         let mut out = PruneResult::default();
         let mut live = std::collections::HashSet::new();
+        let mut removed = std::collections::HashSet::new();
         let entries = self.dir.join("entries");
         for n in read_names(&entries) {
             let file = entries.join(&n);
             let Ok(st) = fs::metadata(&file) else {
                 continue;
             };
-            if older_ms == 0.0 || now_ms - mtime_ms(&st) >= older_ms || !n.ends_with(".json") {
+            let old = older_ms == 0.0 || now_ms - mtime_ms(&st) >= older_ms;
+            if plugin.is_none() && (old || !n.ends_with(".json")) {
                 let _ = remove_any(&file);
                 out.entries += 1;
                 continue;
             }
-            let refs: Option<Vec<String>> = fs::read_to_string(&file)
+            let manifest: Option<Value> = fs::read_to_string(&file)
                 .ok()
-                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                .and_then(|m| {
-                    m.get("files")?
-                        .as_array()?
-                        .iter()
-                        .map(|f| f.get(1).and_then(Value::as_str).map(String::from))
-                        .collect()
-                });
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+            if let Some(name) = plugin {
+                // Only this plugin's entries go; anything else (even unreadable) is left alone.
+                let Some(m) = manifest.as_ref() else {
+                    continue;
+                };
+                let refs = manifest_blobs(m).unwrap_or_default();
+                if old && manifest_plugin(m).is_some_and(|p| p == name) {
+                    let _ = remove_any(&file);
+                    out.entries += 1;
+                    removed.extend(refs);
+                } else {
+                    live.extend(refs);
+                }
+                continue;
+            }
+            let refs = manifest.as_ref().and_then(manifest_blobs);
             match refs {
                 Some(r) => live.extend(r),
                 None => {
@@ -491,7 +620,9 @@ impl TransformCache {
         }
         let blobs = self.dir.join("blobs");
         for n in read_names(&blobs) {
-            if live.contains(&n) {
+            // A plugin's prune deletes only blobs its removed entries used (not one
+            // another build is writing, whose entry has not landed yet).
+            if live.contains(&n) || (plugin.is_some() && !removed.contains(&n)) {
                 continue;
             }
             let file = blobs.join(&n);
@@ -835,6 +966,105 @@ mod tests {
         assert_eq!(c.stats.corrupt, 4);
         c.put("k1", &PluginResult::File(b"alpha".to_vec()));
         assert!(c.get("k1").is_some());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    struct OneEntry(CacheEntry, Vec<u8>);
+    impl RemoteCache for OneEntry {
+        fn fetch(&self, _key: &str, blob_dir: &Path) -> Option<CacheEntry> {
+            fs::create_dir_all(blob_dir).ok()?;
+            fs::write(blob_dir.join(&self.0.files[0].1), &self.1).ok()?;
+            Some(self.0.clone())
+        }
+        fn used(&self, _key: &str, _entry: &CacheEntry) {}
+    }
+
+    #[test]
+    fn entries_record_their_plugin_and_older_entries_still_read() {
+        let d = tmp("sitefile-cache-plugin-rs-");
+        let mut c = TransformCache::new(d.join("cache/transform"));
+        let hex = |b: &[u8]| crate::digest::hex_of(&sha256(b)).to_string();
+        c.put_for("k1", Some("shout"), &PluginResult::File(b"alpha".to_vec()));
+        // The manifest cache.ts writes for `put(key, result, 'shout')`, byte for byte.
+        assert_eq!(
+            fs::read_to_string(c.entry_path("k1")).unwrap(),
+            format!(
+                r#"{{"version":1,"kind":"file","files":[["","{}",5]],"plugin":"shout"}}"#,
+                hex(b"alpha")
+            )
+        );
+        assert_eq!(c.get("k1"), Some(PluginResult::File(b"alpha".to_vec())));
+        // An entry written before plugins were recorded (no "plugin") is read as before.
+        c.put("k2", &PluginResult::File(b"beta".to_vec()));
+        assert!(!fs::read_to_string(c.entry_path("k2"))
+            .unwrap()
+            .contains("plugin"));
+        assert_eq!(
+            c.get_for("k2", Some("shout")),
+            Some(PluginResult::File(b"beta".to_vec()))
+        );
+        // Shared blob: "alpha" again under another plugin.
+        c.put_for("k3", Some("upper"), &PluginResult::File(b"alpha".to_vec()));
+        c.put_for(
+            "k4",
+            Some("upper"),
+            &PluginResult::Files(vec![("x".into(), b"xyz".to_vec())]),
+        );
+        let u = c.usage_by_plugin();
+        assert_eq!(
+            u,
+            [
+                PluginCacheUsage {
+                    plugin: None,
+                    entries: 1,
+                    blobs: 1,
+                    bytes: 4
+                },
+                PluginCacheUsage {
+                    plugin: Some("shout".into()),
+                    entries: 1,
+                    blobs: 1,
+                    bytes: 5
+                },
+                PluginCacheUsage {
+                    plugin: Some("upper".into()),
+                    entries: 2,
+                    blobs: 2,
+                    bytes: 8
+                },
+            ]
+        );
+        // Pruning one plugin keeps a blob another entry still uses, and unnamed entries.
+        let r = c.prune_plugin("upper", Duration::ZERO);
+        assert_eq!((r.entries, r.blobs, r.bytes), (2, 1, 3));
+        assert!(c.get("k1").is_some() && c.get("k2").is_some());
+        assert!(c.get("k3").is_none());
+        // Only entries unused for the given time go.
+        let r = c.prune_plugin("shout", Duration::from_secs(3600));
+        assert_eq!(r.entries, 0);
+        assert_eq!(
+            c.prune_plugin("nobody", Duration::ZERO),
+            PruneResult::default()
+        );
+        // A blob another build is writing (no entry yet) is not touched by a plugin's prune.
+        fs::write(c.blob_path(&hex(b"inflight")), "inflight").unwrap();
+        let r = c.prune_plugin("shout", Duration::ZERO);
+        assert_eq!((r.entries, r.blobs), (1, 1));
+        assert!(c.blob_path(&hex(b"inflight")).exists());
+
+        // An entry fetched from the remote cache is stored under the plugin that asked for it.
+        let mut remote =
+            TransformCache::new(d.join("other")).with_remote(Some(std::sync::Arc::new(OneEntry(
+                CacheEntry {
+                    kind: "file".into(),
+                    files: vec![("".into(), hex(b"remote"), 6)],
+                },
+                b"remote".to_vec(),
+            ))));
+        assert!(remote.get_for("rk", Some("shout")).is_some());
+        assert!(fs::read_to_string(remote.entry_path("rk"))
+            .unwrap()
+            .ends_with(r#","plugin":"shout"}"#));
         fs::remove_dir_all(&d).unwrap();
     }
 

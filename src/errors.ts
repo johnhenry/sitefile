@@ -73,20 +73,51 @@ export type ErrorCode =
   // cli
   /** One or more `sitefile bake` targets failed. */
   | 'E_BAKE'
-  | 'E_USAGE';
+  | 'E_USAGE'
+  /** The build was stopped by its embedder (the Rust library's `CancelToken`; see docs/RUST.md). */
+  | 'E_CANCELLED';
+
+/**
+ * The permission a build needs: carried by the `E_UNSUPPORTED` error of a JavaScript PLUGIN
+ * (`--allow-plugin <name>`) or a TOOL (`--allow-exec <name>`) that was not allowed, so callers
+ * need not parse the message.
+ */
+export interface Needs {
+  readonly kind: 'plugin' | 'tool';
+  /** The declared PLUGIN or TOOL name. */
+  readonly name: string;
+  /** The flag that grants it. */
+  readonly flag: '--allow-plugin' | '--allow-exec';
+}
+
+export function needsPlugin(name: string): Needs {
+  return { kind: 'plugin', name, flag: '--allow-plugin' };
+}
+
+export function needsTool(name: string): Needs {
+  return { kind: 'tool', name, flag: '--allow-exec' };
+}
+
+export interface SitefileErrorOptions extends ErrorOptions {
+  /** What must be allowed (permission errors only). */
+  readonly needs?: Needs;
+}
 
 export class SitefileError extends Error {
   readonly code: ErrorCode;
   readonly span: SourceSpan | undefined;
   /** The message without the location prefix. */
   readonly detail: string;
+  /** For a permission error (`E_UNSUPPORTED` at a PLUGIN or TOOL line): what must be allowed. Not part of the message. */
+  readonly needs: Needs | undefined;
 
-  constructor(code: ErrorCode, detail: string, span?: SourceSpan, options?: ErrorOptions) {
+  constructor(code: ErrorCode, detail: string, span?: SourceSpan, options?: SitefileErrorOptions) {
     super(span ? `${formatSpan(span)}: ${detail}` : detail, options);
     this.name = 'SitefileError';
     this.code = code;
     this.span = span;
     this.detail = detail;
+    this.needs = options?.needs;
   }
 }
 

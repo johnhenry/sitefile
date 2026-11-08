@@ -50,22 +50,36 @@ fn run_info(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-const PRUNE_OPTS: &[OptSpec] = &[string("older-than"), string("max-size")];
+const PRUNE_OPTS: &[OptSpec] = &[string("older-than"), string("plugin"), string("max-size")];
 pub const PRUNE: Command = Command {
     name: "cache prune",
     summary: "delete cached TRANSFORM results",
-    usage: "cache prune [--older-than <days> | --max-size <size>]",
-    description: "Delete every cached TRANSFORM result, or only entries not used for the given number of days, and the blobs no\nentry still uses. With --max-size, instead apply the automatic size limit now with that size: least recently\nused evictable data (TRANSFORM results, compiled wasm modules, untagged images and unused blobs) is deleted\nuntil the rest fits. Tagged images are never touched.",
-    flags: &["    --older-than <days>   keep entries used within this many days", "    --max-size <size>     shrink evictable data to this size (e.g. 500M, 2G)"],
+    usage: "cache prune [--older-than <days>] [--plugin <name>] | --max-size <size>",
+    description: "Delete every cached TRANSFORM result, or only entries not used for the given number of days, and the blobs no\nentry still uses. With --plugin, only the results of that PLUGIN or TOOL (entries written before results\nrecorded their plugin are kept). With --max-size, instead apply the automatic size limit now with that size:\nleast recently used evictable data (TRANSFORM results, compiled wasm modules, untagged images and unused\nblobs) is deleted until the rest fits. Tagged images are never touched.",
+    flags: &[
+        "    --older-than <days>   keep entries used within this many days",
+        "    --plugin <name>       only the results of this PLUGIN or TOOL",
+        "    --max-size <size>     shrink evictable data to this size (e.g. 500M, 2G)",
+    ],
     options: PRUNE_OPTS,
     run: run_prune,
 };
 
+fn is_identifier(s: &str) -> bool {
+    let mut c = s.chars();
+    matches!(c.next(), Some(f) if f.is_ascii_alphabetic() || f == '_')
+        && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
+}
+
 fn run_prune(v: &Parsed) -> Result<i32> {
     require_args(&v.positionals, 0, 0, "no arguments")?;
+    let plugin = v.str("plugin");
     if let Some(max) = v.str("max-size") {
         if v.str("older-than").is_some() {
             return usage("--older-than and --max-size conflict");
+        }
+        if plugin.is_some() {
+            return usage("--plugin and --max-size conflict");
         }
         let Some(n) = parse_size(max).filter(|n| *n > 0) else {
             return usage("--max-size expects a size greater than 0, such as 500M or 2G");
@@ -87,7 +101,16 @@ fn run_prune(v: &Parsed) -> Result<i32> {
         }
         older = Duration::from_secs_f64(days * 86_400.0);
     }
-    let r = TransformCache::new(transform_cache_dir()).prune(older);
+    if let Some(p) = plugin.filter(|p| !is_identifier(p)) {
+        return usage(format!(
+            "--plugin expects a PLUGIN or TOOL name (an identifier), got '{p}'"
+        ));
+    }
+    let cache = TransformCache::new(transform_cache_dir());
+    let r = match plugin {
+        Some(p) => cache.prune_plugin(p, older),
+        None => cache.prune(older),
+    };
     out(&format!(
         "Deleted {} entr{} and {} blob{}\nTotal reclaimed space: {}\n",
         r.entries,
