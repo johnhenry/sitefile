@@ -1,0 +1,709 @@
+{
+  "command": "serve",
+  "requests": [
+    {
+      "target": "/file.aac",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/aac"
+        }
+      }
+    },
+    {
+      "target": "/file.apng",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/apng"
+        }
+      }
+    },
+    {
+      "target": "/file.atom",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/atom+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.avif",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/avif"
+        }
+      }
+    },
+    {
+      "target": "/file.bmp",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/bmp"
+        }
+      }
+    },
+    {
+      "target": "/file.cjs",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/javascript; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.css",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/css; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.csv",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/csv; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.eot",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/vnd.ms-fontobject"
+        }
+      }
+    },
+    {
+      "target": "/file.epub",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/epub+zip"
+        }
+      }
+    },
+    {
+      "target": "/file.flac",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/flac"
+        }
+      }
+    },
+    {
+      "target": "/file.geojson",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/geo+json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.gif",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/gif"
+        }
+      }
+    },
+    {
+      "target": "/file.glb",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "model/gltf-binary"
+        }
+      }
+    },
+    {
+      "target": "/file.gltf",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "model/gltf+json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.gz",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/gzip"
+        }
+      }
+    },
+    {
+      "target": "/file.heic",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/heic"
+        }
+      }
+    },
+    {
+      "target": "/file.heif",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/heif"
+        }
+      }
+    },
+    {
+      "target": "/file.htm",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/html; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.html",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/html; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.ico",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/x-icon"
+        }
+      }
+    },
+    {
+      "target": "/file.ics",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/calendar; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.jpeg",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/jpeg"
+        }
+      }
+    },
+    {
+      "target": "/file.jpg",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/jpeg"
+        }
+      }
+    },
+    {
+      "target": "/file.js",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/javascript; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.json",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.jsonld",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/ld+json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.jxl",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/jxl"
+        }
+      }
+    },
+    {
+      "target": "/file.m3u8",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/vnd.apple.mpegurl"
+        }
+      }
+    },
+    {
+      "target": "/file.m4a",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/mp4"
+        }
+      }
+    },
+    {
+      "target": "/file.m4v",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/mp4"
+        }
+      }
+    },
+    {
+      "target": "/file.map",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.markdown",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/markdown; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.md",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/markdown; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.mjs",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/javascript; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.mkv",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/x-matroska"
+        }
+      }
+    },
+    {
+      "target": "/file.mov",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/quicktime"
+        }
+      }
+    },
+    {
+      "target": "/file.mp3",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/mpeg"
+        }
+      }
+    },
+    {
+      "target": "/file.mp4",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/mp4"
+        }
+      }
+    },
+    {
+      "target": "/file.mpd",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/dash+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.ndjson",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/x-ndjson; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.oga",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/ogg"
+        }
+      }
+    },
+    {
+      "target": "/file.ogg",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/ogg"
+        }
+      }
+    },
+    {
+      "target": "/file.ogv",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/ogg"
+        }
+      }
+    },
+    {
+      "target": "/file.opus",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/ogg"
+        }
+      }
+    },
+    {
+      "target": "/file.otf",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "font/otf"
+        }
+      }
+    },
+    {
+      "target": "/file.pdf",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/pdf"
+        }
+      }
+    },
+    {
+      "target": "/file.png",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/png"
+        }
+      }
+    },
+    {
+      "target": "/file.rss",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/rss+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.svg",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/svg+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.tar",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/x-tar"
+        }
+      }
+    },
+    {
+      "target": "/file.tif",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/tiff"
+        }
+      }
+    },
+    {
+      "target": "/file.tiff",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/tiff"
+        }
+      }
+    },
+    {
+      "target": "/file.toml",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/toml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.tsv",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/tab-separated-values; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.ttc",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "font/collection"
+        }
+      }
+    },
+    {
+      "target": "/file.ttf",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "font/ttf"
+        }
+      }
+    },
+    {
+      "target": "/file.txt",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.vtt",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/vtt; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.wasm",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/wasm"
+        }
+      }
+    },
+    {
+      "target": "/file.wav",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/wav"
+        }
+      }
+    },
+    {
+      "target": "/file.wbn",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/webbundle"
+        }
+      }
+    },
+    {
+      "target": "/file.weba",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "audio/webm"
+        }
+      }
+    },
+    {
+      "target": "/file.webm",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "video/webm"
+        }
+      }
+    },
+    {
+      "target": "/file.webmanifest",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/manifest+json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.webp",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "image/webp"
+        }
+      }
+    },
+    {
+      "target": "/file.woff",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "font/woff"
+        }
+      }
+    },
+    {
+      "target": "/file.woff2",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "font/woff2"
+        }
+      }
+    },
+    {
+      "target": "/file.xhtml",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/xhtml+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.xml",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.xsl",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.xslt",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/xslt+xml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.yaml",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/yaml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.yml",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/yaml; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.zip",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/zip"
+        }
+      }
+    },
+    {
+      "target": "/UPPER.VTT",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/vtt; charset=utf-8"
+        }
+      }
+    },
+    {
+      "target": "/file.unknownext",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/octet-stream"
+        }
+      }
+    },
+    {
+      "method": "HEAD",
+      "target": "/file.vtt",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/vtt; charset=utf-8",
+          "content-length": "9"
+        }
+      }
+    }
+  ]
+}

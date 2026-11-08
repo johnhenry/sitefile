@@ -11,6 +11,7 @@
 // Nothing listens on a fixed port, nothing is written outside `dir`, and the
 // servers are closed by `close()`.
 
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -246,4 +247,130 @@ export async function startServers(root, dir) {
     pki.dispose();
     throw e;
   }
+}
+
+// ---------------------------------------------------------------- serve cases
+//
+// A case with case.json `"command": "serve"` starts `sitefile serve <site>` (default
+// `site`, relative to the case directory; `args` go before it) with each CLI, sends
+// every request in `requests` over its own connection (`connection: close`), and
+// requires the same answer from both: interim (1xx) and final status lines, every
+// header but `date`, `connection` and `keep-alive` (sorted by name), and the body
+// bytes. A request is `{ method = "GET", target, headers = {}, expect }`; `target`
+// is sent as written (so an absolute-form target works). `expect` checks both
+// answers: `status`, `headers` (name → exact value, or null for absent), `body`
+// (exact text) and `interim` (the list of 1xx statuses).
+
+const IGNORED_HEADERS = new Set(['date', 'connection', 'keep-alive']);
+
+/** Send one raw HTTP/1.1 request; resolve with { interim, status, headers, body }. */
+function rawRequest(port, { method = 'GET', target, headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1');
+    const chunks = [];
+    const lines = [`${method} ${target} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
+    sock.on('connect', () => sock.write(lines.join('\r\n')));
+    sock.on('data', (d) => chunks.push(d));
+    sock.on('error', reject);
+    sock.setTimeout(10000, () => sock.destroy(new Error(`timeout: ${method} ${target}`)));
+    sock.on('close', () => {
+      let buf = Buffer.concat(chunks);
+      const interim = [];
+      for (;;) {
+        const end = buf.indexOf('\r\n\r\n');
+        if (end === -1) return reject(new Error(`incomplete response to ${method} ${target}`));
+        const head = buf.subarray(0, end).toString('latin1').split('\r\n');
+        buf = buf.subarray(end + 4);
+        const status = Number(head[0].split(' ')[1]);
+        const hs = head
+          .slice(1)
+          .map((l) => [l.slice(0, l.indexOf(':')).trim().toLowerCase(), l.slice(l.indexOf(':') + 1).trim()])
+          .filter(([k]) => !IGNORED_HEADERS.has(k))
+          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+        if (status >= 100 && status < 200) {
+          interim.push({ status, headers: hs });
+          continue;
+        }
+        return resolve({ interim, status, headers: hs, body: buf });
+      }
+    });
+  });
+}
+
+/** Start `serve` with one CLI and resolve with { port, stop }. */
+function startServe(cmd, argv, env, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd[0], [...cmd.slice(1), ...argv], { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`serve did not start: ${err || out}`));
+    }, 30000);
+    child.stderr.on('data', (d) => (err += d));
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = / at http:\/\/127\.0\.0\.1:(\d+)\//.exec(out);
+      if (!m) return;
+      clearTimeout(timer);
+      resolve({
+        port: Number(m[1]),
+        stop: () => new Promise((r) => (child.exitCode !== null ? r() : (child.once('exit', () => r()), child.kill()))),
+      });
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`serve exited (${code}): ${err || out}`));
+    });
+  });
+}
+
+const show = (r) =>
+  [
+    ...r.interim.map((i) => `${i.status} ${i.headers.map(([k, v]) => `${k}: ${v}`).join(' | ')}`),
+    `${r.status}`,
+    ...r.headers.map(([k, v]) => `${k}: ${v}`),
+    `body ${r.body.length} bytes sha256:${createHash('sha256').update(r.body).digest('hex').slice(0, 16)}`,
+  ].join('\n');
+
+/** Run a `command: "serve"` case with both CLIs. Returns { name, compare, pass, detail, ts, rust }. */
+export async function runServeCase(c, { impls, tmp }) {
+  const detail = [];
+  const answers = {};
+  for (const [impl, cmd] of impls) {
+    const home = path.join(tmp, impl, '.home');
+    await fs.mkdir(home, { recursive: true });
+    let server;
+    try {
+      server = await startServe(cmd, ['serve', ...(c.args ?? []), `./${c.site ?? 'site'}`], { SITEFILE_HOME: home, ...(c.env ?? {}) }, c.context);
+      answers[impl] = [];
+      for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
+    } catch (e) {
+      detail.push(`${impl}: ${e.message}`);
+    } finally {
+      await server?.stop();
+    }
+  }
+  if (detail.length === 0) {
+    c.requests.forEach((r, i) => {
+      const label = `${r.method ?? 'GET'} ${r.target}${r.headers ? ' ' + JSON.stringify(r.headers) : ''}`;
+      const [a, b] = impls.map(([impl]) => answers[impl][i]);
+      const sa = show(a);
+      const sb = show(b);
+      if (sa !== sb || !a.body.equals(b.body)) detail.push(`${label}: answers differ\nts:\n${sa}\nrust:\n${sb}`);
+      const want = r.expect ?? {};
+      for (const [impl] of impls) {
+        const got = answers[impl][i];
+        const get = (n) => got.headers.find(([k]) => k === n)?.[1] ?? null;
+        if (want.status !== undefined && got.status !== want.status) detail.push(`${impl} ${label}: status ${got.status}, expected ${want.status}`);
+        for (const [n, v] of Object.entries(want.headers ?? {})) if (get(n) !== v) detail.push(`${impl} ${label}: ${n} ${JSON.stringify(get(n))}, expected ${JSON.stringify(v)}`);
+        if (want.body !== undefined && got.body.toString('utf8') !== want.body) detail.push(`${impl} ${label}: body ${JSON.stringify(got.body.toString('utf8').slice(0, 200))}, expected ${JSON.stringify(want.body)}`);
+        if (want.interim !== undefined && JSON.stringify(got.interim.map((x) => x.status)) !== JSON.stringify(want.interim)) {
+          detail.push(`${impl} ${label}: interim ${JSON.stringify(got.interim.map((x) => x.status))}, expected ${JSON.stringify(want.interim)}`);
+        }
+      }
+    });
+  }
+  const summary = (impl) => ({ requests: c.requests.length, statuses: (answers[impl] ?? []).map((a) => a.status) });
+  return { name: c.name, compare: 'serve', pass: detail.length === 0, detail, ts: summary('ts'), rust: summary('rust') };
 }
