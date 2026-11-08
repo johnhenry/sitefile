@@ -50,7 +50,7 @@ CI (`.github/workflows/ci.yml`) runs these in this order; match it locally.
   Spawned CLIs inherit it — keep `--import` in the test script.
 - **No new runtime dependencies** without a written rationale (npm side:
   there are none; Rust side: see the comment block in `rust/Cargo.toml`).
-  The family integrates with Sitefile through file formats (`.wbn`, trees,
+  The family integrates with sitefile through file formats (`.wbn`, trees,
   OCI), not imports; `@johnhenry/packfile` is a devDependency for the interop
   test only.
 - **Never parse raw Sitefile text outside the parser.** A Sitefile becomes a

@@ -1,4 +1,4 @@
-# Sitefile
+# sitefile
 
 [![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fsitefile.svg)](https://www.npmjs.com/package/@johnhenry/sitefile)
 [![CI](https://github.com/johnhenry/sitefile/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhenry/sitefile/actions/workflows/ci.yml)
@@ -325,7 +325,7 @@ stopgap in VS Code.
 - [docs/RUST.md](docs/RUST.md) — the Rust port: layout, parity checks, known differences
 - [docs/LSP.md](docs/LSP.md) — the language server for editors (`sitefile lsp`, Rust binary)
 - [docs/PLUGINS.md](docs/PLUGINS.md) — writing renderer plugins, and the sandbox
-- [docs/DOCKER.md](docs/DOCKER.md) — Sitefile next to Docker: site images Docker runs, Dockerfile stages, shared registries
+- [docs/DOCKER.md](docs/DOCKER.md) — sitefile next to Docker: site images Docker runs, Dockerfile stages, shared registries
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and module layout
 - [docs/MILESTONES.md](docs/MILESTONES.md), [docs/TASKS.md](docs/TASKS.md)
 - [AGENTS.md](AGENTS.md) — the verification loop and rules for anyone (human or agent) changing this repo
@@ -380,7 +380,7 @@ stage), so building one is treated as running untrusted input. Templates,
 imports and WebAssembly plugins are data; JavaScript plugins and external
 tools are code, and run only when you name them on the command line.
 
-**What Sitefile guarantees:**
+**What sitefile guarantees:**
 
 - **Local reads stay inside the build context.** No `..`, absolute paths or
   symlinks out; hard-linked files are refused (`E_HARDLINK`) unless
@@ -447,14 +447,14 @@ tools are code, and run only when you name them on the command line.
   `INTEGRITY`, `@sha256:` and `--strict-pins` for builds that must be
   reproducible.
 - **Web Bundles are unsigned.** `EXPORT … AS wbn` writes an unsigned b2 bundle;
-  signing (for example for an Isolated Web App) happens outside Sitefile.
+  signing (for example for an Isolated Web App) happens outside sitefile.
 - **Widening flags are yours to justify.** `--allow-http`,
   `--allow-private-network`, `--allow-hardlinks`, `--force` and `serve -p
   0.0.0.0:…` each turn off one of the guarantees above for that build.
 
 ## Family
 
-Sitefile is the build orchestrator of the @johnhenry family's static tools. It
+sitefile is the build orchestrator of the @johnhenry family's static tools. It
 runs the pipeline (pinned imports, stages, templates, sandboxed plugins, checks,
 exports); its siblings write file trees in code and serve the result. It has no
 runtime dependency on either: they meet at file formats, a directory, a zip or
@@ -462,7 +462,7 @@ a `.wbn` Web Bundle.
 
 - **[`@johnhenry/fileable`](https://github.com/johnhenry/fileable)** -- writes
   file trees in JSX (`Dir`, `File`, `Rm`), for scaffolding and codegen. A
-  fileable build's output is an ordinary Sitefile input. Neither package
+  fileable build's output is an ordinary sitefile input. Neither package
   depends on the other.
 - **[`@johnhenry/packfile`](https://github.com/johnhenry/packfile)** -- the
   family's Web Bundle reader and in-memory server. It reads what `EXPORT … AS
@@ -479,14 +479,14 @@ not published: the npm versions still behave as the rest of that row says.
 
 | From | To | How | Status |
 | --- | --- | --- | --- |
-| fileable, loose output | Sitefile | `COPY ./generated/ /` | Works |
-| fileable, `encode="zip"` | Sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
-| fileable, `encode="wbn"` | Sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| fileable, loose output | sitefile | `COPY ./generated/ /` | Works |
+| fileable, `encode="zip"` | sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
+| fileable, `encode="wbn"` | sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
 | fileable tree, rendered during a build | Sitefile | a JavaScript `TRANSFORM` plugin calling fileable's in-memory `toFiles()` | An example on main, not part of the npm package: [`examples/fileable/`](examples/fileable/) ([#145](https://github.com/johnhenry/sitefile/issues/145)). fileable is vendored into the plugin folder; `cmd`, local `src=` and `env://` fail with `E_PLUGIN` |
-| Sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`), and packfile's own tests read a bundle written by Sitefile 0.0.0 |
-| Sitefile `.wbn` | packfile `fromArchive()` | with 0.0.0 / 0.2.0: gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround. **Fixed on main, in the next release:** `EXPORT … AS wbn COMPRESSION gzip` (or `-o site.wbn.gz`) writes the gzip ([#143](https://github.com/johnhenry/sitefile/issues/143)), and `fromArchive()` takes a `baseURL` or the origin of the bundle's primary URL, so any `BASE` reads back ([packfile#18](https://github.com/johnhenry/packfile/issues/18)) |
-| Sitefile `HEADER` / `REDIRECT` | packfile `createWebBundleRouter()` | -- | **Not applied in 0.0.0:** only the `/_headers` and `/_redirects` files are in the bundle. **Fixed on main, in the next release:** each response carries its HEADER values, and exact-path 301/302/303/307/308 REDIRECTs are 3xx responses with `location` ([#144](https://github.com/johnhenry/sitefile/issues/144)). Splats, `200` rewrites and `404` rules stay in `/_redirects` only |
-| packfile `toArchive()` | Sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`), and packfile's own tests read a bundle written by sitefile 0.0.0 |
+| sitefile `.wbn` | packfile `fromArchive()` | with 0.0.0 / 0.2.0: gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround. **Fixed on main, in the next release:** `EXPORT … AS wbn COMPRESSION gzip` (or `-o site.wbn.gz`) writes the gzip ([#143](https://github.com/johnhenry/sitefile/issues/143)), and `fromArchive()` takes a `baseURL` or the origin of the bundle's primary URL, so any `BASE` reads back ([packfile#18](https://github.com/johnhenry/packfile/issues/18)) |
+| sitefile `HEADER` / `REDIRECT` | packfile `createWebBundleRouter()` | -- | **Not applied in 0.0.0:** only the `/_headers` and `/_redirects` files are in the bundle. **Fixed on main, in the next release:** each response carries its HEADER values, and exact-path 301/302/303/307/308 REDIRECTs are 3xx responses with `location` ([#144](https://github.com/johnhenry/sitefile/issues/144)). Splats, `200` rewrites and `404` rules stay in `/_redirects` only |
+| packfile `toArchive()` | sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
 
 Gotchas when serving a Sitefile bundle with packfile:
 
@@ -494,14 +494,14 @@ Gotchas when serving a Sitefile bundle with packfile:
   for `/docs/ünï/page.html` returns 404 because the pathname isn't
   percent-decoded; the string `"/docs/ünï/page.html"` works
   ([packfile#20](https://github.com/johnhenry/packfile/issues/20)).
-- **`fromWebBundle` skips the bundle's entry at the bare base URL.** Sitefile
+- **`fromWebBundle` skips the bundle's entry at the bare base URL.** sitefile
   stores the index page there as well as at `/index.html`; you get it from
   `index.html`.
 - **The `baseURL` you pass to `fromWebBundle` must be the `BASE` you exported
   with.** Entries under any other origin are skipped, so the wrong base reads
   back as an empty map, without an error. packfile's `fromArchive()` on its
   main branch (next release) defaults to the origin of the primary URL, which
-  Sitefile writes only when the site has `/index.html`; with a `BASE` that has
+  sitefile writes only when the site has `/index.html`; with a `BASE` that has
   a path (`https://site.example/blog/`), the keys start with `blog/` unless you
   pass that `baseURL`.
 - **HEADER and REDIRECT need `createWebBundleRouter()`** (on main, next

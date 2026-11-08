@@ -10,7 +10,7 @@
 //! A server is `running` only when its pid is alive AND its port answers with
 //! this server's `x-sitefile-server` header.
 //!
-//! Embedders (a long-running host such as sitefile Desktop) start, restart and
+//! Embedders (a long-running host such as Sitefile Desktop) start, restart and
 //! stop detached servers with [`serve_detached`], [`restart_detached`] and
 //! [`stop_server`], the functions `serve -d`, `server restart` and
 //! `server stop` use. The worker is the executable given as `worker_exe`

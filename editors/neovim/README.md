@@ -1,7 +1,7 @@
-# Sitefile for Neovim
+# sitefile for Neovim
 
 Tree-sitter highlighting, injections (heredoc bodies by delimiter), folds and
-locals for [Sitefile](https://github.com/johnhenry/sitefile), using the grammar
+locals for [sitefile](https://github.com/johnhenry/sitefile), using the grammar
 in [`editors/tree-sitter-sitefile`](../tree-sitter-sitefile/).
 `queries/sitefile/*.scm` are generated from that directory's queries (the
 capture names there are already nvim-treesitter's); don't edit them here.

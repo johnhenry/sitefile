@@ -1,9 +1,9 @@
-# Sitefile and Docker
+# sitefile and Docker
 
-Sitefile fits next to Docker rather than replacing it: Docker runs things, and Sitefile builds static content into the
+sitefile fits next to Docker rather than replacing it: Docker runs things, and sitefile builds static content into the
 same image format Docker uses. The two meet at OCI images and registries.
 
-## 1. Sitefile builds the site image, Docker runs it
+## 1. sitefile builds the site image, Docker runs it
 
 ```
 # Sitefile
@@ -17,9 +17,9 @@ sitefile build -t ghcr.io/me/site:1.4 && sitefile push ghcr.io/me/site:1.4
 docker run -p 8080:80 ghcr.io/me/site:1.4      # or Kubernetes, ECS, Fly, Cloud Run…
 ```
 
-- No Docker daemon is needed to build: Sitefile pulls the base image from the registry itself. CI runners need neither
+- No Docker daemon is needed to build: sitefile pulls the base image from the registry itself. CI runners need neither
   Docker-in-Docker nor root.
-- The image is ordinary OCI. The engine tests (which run in CI on Linux) load a saved Sitefile image into Docker and
+- The image is ordinary OCI. The engine tests (which run in CI on Linux) load a saved sitefile image into Docker and
   serve it from that nginx base.
 
 ## 2. Use it as a stage in a Dockerfile
@@ -67,7 +67,7 @@ linux/arm64`, or Docker warns about the mismatch.
 
 ## 4. Shared infrastructure
 
-- **Same registries and credentials.** Sitefile reads your Docker config (`$DOCKER_CONFIG/config.json` or
+- **Same registries and credentials.** sitefile reads your Docker config (`$DOCKER_CONFIG/config.json` or
   `~/.docker/config.json`, including `credsStore` and `credHelpers`), so `docker login` covers both.
 - **Same cache and supply-chain tools:**
   - `--cache-from` / `--cache-to` store cached `TRANSFORM` results in the registry, so CI runs and teammates reuse them
@@ -76,7 +76,7 @@ linux/arm64`, or Docker warns about the mismatch.
     in-toto statements attached as OCI 1.1 referrers (artifacts whose `subject` is the image), which referrer-aware
     tools such as `oras discover` list. This is not BuildKit's layout, which stores its attestations inside the image
     index.
-  - Sitefile doesn't sign anything. Sign the image and its attestations with cosign or notation, as you would any other
+  - sitefile doesn't sign anything. Sign the image and its attestations with cosign or notation, as you would any other
     image.
 - **Platforms.** An image is built for one platform (`--platform`, default `linux/amd64`). The site layer is the same
   bytes for every platform, so a registry stores it once; only the base image differs by platform. For a multi-platform
@@ -85,7 +85,7 @@ linux/arm64`, or Docker warns about the mismatch.
 ## 5. Where Docker stays the right tool
 
 - Anything that runs at request time: APIs, server-side rendering, databases.
-- Build steps that need arbitrary tools. Sitefile deliberately refuses `RUN`.
+- Build steps that need arbitrary tools. sitefile deliberately refuses `RUN`.
 
 A common split: the app is a Docker image, and the static assets are a Sitefile image. You serve them through an nginx
 sidecar, or export them as a folder (`EXPORT / AS directory`) and upload that to a CDN. Docker Compose can run both

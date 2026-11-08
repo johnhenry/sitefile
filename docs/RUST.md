@@ -104,7 +104,7 @@ eviction results are the same whichever one runs.
 
 ## Embedding the crate
 
-sitefile Desktop (johnhenry/sitefile-desktop, `crates/sfd-local`) links the
+Sitefile Desktop (johnhenry/sitefile-desktop, `crates/sfd-local`) links the
 `sitefile` crate into a long-running process. These functions are what the
 CLI's own commands call, so an embedder gets the CLI's behaviour without
 copying it (johnhenry/sitefile#153). They are Rust-only embedding hooks (a

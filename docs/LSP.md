@@ -71,7 +71,7 @@ and `$/cancelRequest` are ignored (requests are answered synchronously).
 - **Single-threaded.** One loop reads a message, handles it and replies.
   Diagnostics are published when no further input is already buffered, so a
   burst of edits is analyzed once, for the last version.
-- **Positions** are UTF-16 code units, which is also how Sitefile error spans
+- **Positions** are UTF-16 code units, which is also how sitefile error spans
   count columns, so `file:line:col` maps directly to an LSP range (the range
   covers the word at that position).
 - **Editor features** (completion, hover, navigation, symbols) use a small
