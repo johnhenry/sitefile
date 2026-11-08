@@ -49,8 +49,7 @@ fn header_value_ok(v: &str) -> bool {
 /// What a secret may hold: printable ASCII, tabs and line breaks (a PEM key for EXPORT ... KEY).
 fn secret_value_ok(v: &str) -> bool {
     !v.is_empty()
-        && v
-            .chars()
+        && v.chars()
             .all(|c| matches!(c, '\t' | '\n' | '\r') || (' '..='~').contains(&c))
 }
 

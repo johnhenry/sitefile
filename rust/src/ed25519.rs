@@ -30,7 +30,13 @@ fn carry(mut r: [u128; 5]) -> Fe {
         r[4] &= MASK as u128;
         r[0] += c * 19;
     }
-    [r[0] as u64, r[1] as u64, r[2] as u64, r[3] as u64, r[4] as u64]
+    [
+        r[0] as u64,
+        r[1] as u64,
+        r[2] as u64,
+        r[3] as u64,
+        r[4] as u64,
+    ]
 }
 
 fn add(a: &Fe, b: &Fe) -> Fe {
@@ -62,30 +68,6 @@ fn mul(a: &Fe, b: &Fe) -> Fe {
 
 fn from_u64(n: u64) -> Fe {
     [n, 0, 0, 0, 0]
-}
-
-fn fe_from_bytes(b: &[u8; 32]) -> Fe {
-    let mut n = [0u8; 32];
-    n.copy_from_slice(b);
-    n[31] &= 0x7f;
-    let word = |i: usize| -> u64 {
-        // 64 bits starting at bit offset i
-        let byte = i / 8;
-        let mut v: u64 = 0;
-        for k in 0..8 {
-            if byte + k < 32 {
-                v |= (n[byte + k] as u64) << (8 * k);
-            }
-        }
-        v >> (i % 8)
-    };
-    [
-        word(0) & MASK,
-        word(51) & MASK,
-        word(102) & MASK,
-        word(153) & MASK,
-        word(204) & MASK,
-    ]
 }
 
 fn fe_to_bytes(a: &Fe) -> [u8; 32] {
@@ -228,7 +210,13 @@ fn encode(p: &Point) -> [u8; 32] {
 
 // ---------------------------------------------------------------- scalars mod L
 
-const L: [u64; 5] = [0x5812631a5cf5d3ed, 0x14def9dea2f79cd6, 0, 0x1000000000000000, 0];
+const L: [u64; 5] = [
+    0x5812631a5cf5d3ed,
+    0x14def9dea2f79cd6,
+    0,
+    0x1000000000000000,
+    0,
+];
 
 fn ge_l(r: &[u64; 5]) -> bool {
     for i in (0..5).rev() {

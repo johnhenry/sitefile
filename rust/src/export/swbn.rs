@@ -21,10 +21,9 @@ pub fn parse_ed25519_pem(pem: &str) -> Option<[u8; 32]> {
     let start = pem.find(BEGIN)? + BEGIN.len();
     let end = start + pem[start..].find(END)?;
     let body = &pem[start..end];
-    if !body
-        .bytes()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=') || c.is_ascii_whitespace())
-    {
+    if !body.bytes().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=') || c.is_ascii_whitespace()
+    }) {
         return None;
     }
     let b64: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
@@ -62,7 +61,11 @@ pub fn web_bundle_id(public_key: &[u8; 32]) -> String {
 }
 
 /// The signed bundle and its Web Bundle ID. `key_pem` is the secret's value; `key_id` names it.
-pub fn write_signed_web_bundle(tree: &Tree, key_pem: &str, key_id: &str) -> Result<(Vec<u8>, String)> {
+pub fn write_signed_web_bundle(
+    tree: &Tree,
+    key_pem: &str,
+    key_id: &str,
+) -> Result<(Vec<u8>, String)> {
     let seed = parse_ed25519_pem(key_pem).ok_or_else(|| {
         SitefileError::plain(
             E_SECRET,
@@ -72,7 +75,10 @@ pub fn write_signed_web_bundle(tree: &Tree, key_pem: &str, key_id: &str) -> Resu
     let public_key = crate::ed25519::public_key(&seed);
     let id = web_bundle_id(&public_key);
     let bundle = write_web_bundle_at(tree, &format!("isolated-app://{id}/"))?;
-    let attributes = Cbor::Map(vec![(Cbor::Text("webBundleId".into()), Cbor::Text(id.clone()))]);
+    let attributes = Cbor::Map(vec![(
+        Cbor::Text("webBundleId".into()),
+        Cbor::Text(id.clone()),
+    )]);
     let head = vec![
         Cbor::Bytes(MAGIC.to_vec()),
         Cbor::Bytes(VERSION_B2.to_vec()),
@@ -117,7 +123,10 @@ mod tests {
         ))
         .unwrap();
         let t = Tree::from_files(vec![
-            ("/index.html".to_string(), make_file(b"<p>iwa</p>".to_vec(), "t", 0o644)),
+            (
+                "/index.html".to_string(),
+                make_file(b"<p>iwa</p>".to_vec(), "t", 0o644),
+            ),
             (
                 "/.well-known/manifest.webmanifest".to_string(),
                 make_file(br#"{"name":"x"}"#.to_vec(), "t", 0o644),
@@ -125,7 +134,10 @@ mod tests {
         ])
         .unwrap();
         let (bytes, id) = write_signed_web_bundle(&t, &pem, "k").unwrap();
-        assert_eq!(id, "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenaaaic");
+        assert_eq!(
+            id,
+            "25njqamcweflpvkl73j4szahhihoc4xt3ktcgjnpaingr5yhkenaaaic"
+        );
         assert_eq!(
             crate::digest::sha256(&bytes),
             "sha256:f5d83a92a880a0705e033d6d5f9584afca57968b989334a8f572116c9e76bb25"

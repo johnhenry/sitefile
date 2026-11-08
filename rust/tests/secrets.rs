@@ -233,7 +233,9 @@ fn secrets_reach_only_their_origin_and_are_never_recorded() {
         );
         if args[0] == "build" && args.contains(&"id=extra,env=API_TOKEN") {
             assert!(
-                stderr.contains("warning: --secret extra is not used by any IMPORT … SECRET or EXPORT … KEY"),
+                stderr.contains(
+                    "warning: --secret extra is not used by any IMPORT … SECRET or EXPORT … KEY"
+                ),
                 "{stderr}"
             );
         }
