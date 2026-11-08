@@ -290,9 +290,16 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
   }
   if (eocd < 0) throw bad('zip end-of-central-directory record not found');
-  const count = v.getUint16(eocd + 10, true);
+  let count = v.getUint16(eocd + 10, true);
   let p = v.getUint32(eocd + 16, true);
-  if (count === 0xffff || p === 0xffffffff) throw bad('zip64 archives are not supported');
+  // ZIP64 (APPNOTE 4.3.14-4.3.15): a locator right before the end record points at the zip64 end
+  // record, whose counts and offsets replace the 16- and 32-bit ones. Streaming writers add it even to small archives.
+  if (eocd >= 20 && v.getUint32(eocd - 20, true) === 0x07064b50) {
+    const r = u64(b, eocd - 12);
+    if (r > b.length - 56 || v.getUint32(r, true) !== 0x06064b50) throw bad('corrupt zip64 end-of-central-directory record');
+    count = u64(b, r + 32);
+    p = u64(b, r + 48);
+  }
   if (count > limits.maxEntries) {
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive has more than ${limits.maxEntries} entries`, span);
   }
@@ -322,7 +329,19 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
       isDir: name.endsWith('/') || (unix && fileType === 0o040000),
     };
     if (v.getUint16(p + 8, true) & 1) throw bad(`encrypted zip entry '${e.name}' is not supported`);
-    if (e.csize === 0xffffffff || e.usize === 0xffffffff) throw bad('zip64 archives are not supported');
+    // ZIP64 extra field (0x0001): the 64-bit values of the fields that are 0xffffffff, in this order.
+    if (e.usize === 0xffffffff || e.csize === 0xffffffff || e.local === 0xffffffff) {
+      const z = extraField(b.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen), 0x0001);
+      let at = 0;
+      const next = (): number => {
+        if (!z || at + 8 > z.length) throw bad(`corrupt zip64 extra field for '${e.name}'`);
+        at += 8;
+        return u64(z, at - 8);
+      };
+      if (e.usize === 0xffffffff) e.usize = next();
+      if (e.csize === 0xffffffff) e.csize = next();
+      if (e.local === 0xffffffff) e.local = next();
+    }
     if (unix && fileType !== 0 && fileType !== 0o100000 && fileType !== 0o040000) {
       throw new SitefileError('E_ARCHIVE_UNSAFE', `unsafe archive entry '${e.name}': symlink or special file entries are not allowed`, span);
     }

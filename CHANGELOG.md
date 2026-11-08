@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **ZIP64 zips are read** (#185): the zip64 end record and locator and the
+  0x0001 extra field (central and local) are read, so zips from Python's
+  `force_zip64`, Java, Go and Node `archiver` with `forceZip64` import and
+  serve; the archive limits still refuse large ones. Writing ZIP64 stays
+  unsupported. Both implementations.
 - **Zip local headers are cross-checked** (#184): a local header whose name,
   compression method or sizes (without a data descriptor) differ from the
   central directory, or entries whose bytes overlap, are `E_ARCHIVE_UNSAFE`,
