@@ -1,3 +1,4 @@
+import { looksLikeWarc, readWarc } from './warc.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -199,6 +200,7 @@ export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFA
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`);
   }
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
+  if (looksLikeWarc(bytes)) return visible(readWarc(bytes, origin, limits));
   const tree = await extractArchive(bytes, origin, limits);
   return tree.get('/oci-layout') ? ociArchiveTree(tree, origin, limits) : visible(tree);
 }

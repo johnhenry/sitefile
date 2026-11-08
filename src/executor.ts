@@ -649,7 +649,7 @@ export interface ExportTarget {
   readonly ociRoot?: string;
   /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
   readonly ociCompression?: OciCompression;
-  /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
+  /** wbn: `gzip` wraps the bundle in gzip; warc: each record is a gzip member (overrides EXPORT ... COMPRESSION; default none). */
   readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
   readonly imageLabels?: Readonly<Record<string, string>>;
@@ -736,7 +736,7 @@ async function exportBuild(
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),
     baseUrl: options.baseUrl ?? result.plan.exportBase,
-    ...(format === 'wbn' ? { compression: options.wbnCompression ?? sitefileCompression(result.plan, 'wbn') } : {}),
+    ...(format === 'wbn' || format === 'warc' ? { compression: options.wbnCompression ?? sitefileCompression(result.plan, format) } : {}),
   });
   const written = await exportFile(data, options.outDir, exportOptions);
   return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(data) };

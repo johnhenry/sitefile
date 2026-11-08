@@ -1,0 +1,18 @@
+# EXPORT ... AS warc: a WARC/1.1 web archive of the site, compared byte for byte.
+FROM scratch
+COPY <<HTML /index.html
+<!doctype html><title>archived</title><p>home</p>
+HTML
+COPY <<HTML /docs/index.html
+<p>docs</p>
+HTML
+COPY <<CSS "/css/site style.css"
+body { color: #333; }
+CSS
+COPY <<H /_headers
+/css/*
+  Cache-Control: max-age=60
+/*
+  X-Frame-Options: DENY
+H
+EXPORT / AS warc BASE https://example.org/

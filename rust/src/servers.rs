@@ -436,6 +436,9 @@ pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tre
         ));
     }
     let bytes = fs::read(file).map_err(|_| unreadable())?;
+    if crate::warc::looks_like_warc(&bytes) {
+        return visible(&crate::warc::read_warc(&bytes, &origin, limits, None)?);
+    }
     let tree = extract_archive(&bytes, &origin, limits, None)?;
     if tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);

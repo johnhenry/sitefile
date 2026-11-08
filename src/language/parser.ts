@@ -589,7 +589,7 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     if (name === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
     const f = parseExportFormat(name);
     if (f === undefined) {
-      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html or mhtml)`, at);
+      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml or warc)`, at);
     }
     format = f;
   }

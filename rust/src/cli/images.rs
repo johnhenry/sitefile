@@ -339,7 +339,7 @@ pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
     usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--force]",
-    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
+    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, an IPFS CAR, a single-file\npage (html, mhtml), a WARC, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .warc .warc.gz), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
         "    --format <fmt>   directory | zip | tar | tgz | wbn | oci (alias tar.gz)",

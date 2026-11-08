@@ -61,6 +61,7 @@ pub mod outdated;
 pub mod plugins;
 pub mod profile;
 pub mod vendor;
+pub mod warc;
 pub mod watch;
 
 // Editor tooling (Rust only; docs/LSP.md)

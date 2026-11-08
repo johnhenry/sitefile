@@ -1709,10 +1709,10 @@ fn export_build(
                 .base_url
                 .clone()
                 .or_else(|| result.plan.export_base.clone()),
-            compression: if format == ExportFormat::Wbn {
+            compression: if matches!(format, ExportFormat::Wbn | ExportFormat::Warc) {
                 target
                     .wbn_compression
-                    .or(sitefile_compression(&result.plan, ExportFormat::Wbn))
+                    .or(sitefile_compression(&result.plan, format))
             } else {
                 None
             },
