@@ -220,6 +220,70 @@ pub fn safe_segments(raw_path: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// What a `Range` header asks of a body (see [`byte_range`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRange {
+    /// First and last byte, inclusive.
+    Bytes(usize, usize),
+    /// `416 Range Not Satisfiable`.
+    Unsatisfiable,
+}
+
+/// A `bytes=` value's number: digits only; more than 15 digits counts as larger than any file.
+fn range_number(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(if s.len() > 15 {
+        u64::MAX
+    } else {
+        s.parse().ok()?
+    })
+}
+
+/// The byte range a `Range` header asks of a body of `size` bytes, or `None` when the header is
+/// absent, malformed, not in bytes, or asks for several ranges (those are ignored: the whole body
+/// is sent, as RFC 9110 allows). Same rules as `byteRange` in src/server.ts.
+pub fn byte_range(header: Option<&str>, size: usize) -> Option<ByteRange> {
+    let v = header?.trim();
+    if v.len() < 6 || !v.as_bytes()[..6].eq_ignore_ascii_case(b"bytes=") {
+        return None;
+    }
+    let spec = v[6..].trim();
+    if spec.contains(',') {
+        return None;
+    }
+    let (first, last) = spec.split_once('-')?;
+    let (first, last) = (first.trim(), last.trim());
+    let size64 = size as u64;
+    if first.is_empty() {
+        let n = range_number(last)?;
+        if n == 0 || size == 0 {
+            return Some(ByteRange::Unsatisfiable);
+        }
+        return Some(ByteRange::Bytes(
+            size64.saturating_sub(n) as usize,
+            size - 1,
+        ));
+    }
+    let start = range_number(first)?;
+    let end = if last.is_empty() {
+        u64::MAX
+    } else {
+        range_number(last)?
+    };
+    if end < start {
+        return None;
+    }
+    if start >= size64 {
+        return Some(ByteRange::Unsatisfiable);
+    }
+    Some(ByteRange::Bytes(
+        start as usize,
+        end.min(size64 - 1) as usize,
+    ))
+}
+
 fn etag_matches(header: Option<&str>, etag: &str) -> bool {
     let Some(h) = header else { return false };
     if h.trim() == "*" {
@@ -270,10 +334,12 @@ fn reason(status: u16) -> &'static str {
         303 => "See Other",
         307 => "Temporary Redirect",
         308 => "Permanent Redirect",
+        206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        416 => "Range Not Satisfiable",
         _ => "",
     }
 }
@@ -301,13 +367,15 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 6] = [
+const PROTECTED_HEADERS: [&str; 8] = [
     "content-length",
     "transfer-encoding",
     "connection",
     "keep-alive",
     "etag",
     "location",
+    "accept-ranges",
+    "content-range",
 ];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
@@ -665,8 +733,36 @@ pub fn respond(
             h.push(("etag".into(), etag));
             return finish(304, h, None);
         }
-        h.push(("etag".into(), etag));
-        finish(200, h, Some(body))
+        h.push(("etag".into(), etag.clone()));
+        // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
+        let if_range_ok = headers
+            .get("if-range")
+            .is_none_or(|v| v.trim() == etag.as_str());
+        let range = if method == "GET" && if_range_ok {
+            byte_range(headers.get("range").map(String::as_str), body.len())
+        } else {
+            None
+        };
+        h.push(("accept-ranges".into(), "bytes".into()));
+        match range {
+            Some(ByteRange::Unsatisfiable) => {
+                let mut h: Vec<(String, String)> = custom.clone();
+                h.push(("accept-ranges".into(), "bytes".into()));
+                h.push(("content-range".into(), format!("bytes */{}", body.len())));
+                h.push(("content-length".into(), "0".into()));
+                finish(416, h, None)
+            }
+            Some(ByteRange::Bytes(start, end)) => {
+                let part = body[start..=end].to_vec();
+                h[1] = ("content-length".into(), part.len().to_string());
+                h.push((
+                    "content-range".into(),
+                    format!("bytes {start}-{end}/{}", body.len()),
+                ));
+                finish(206, h, Some(part))
+            }
+            None => finish(200, h, Some(body)),
+        }
     };
     // The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash.
     let resolve = |p: &str, slash: bool| -> Option<String> {
@@ -1330,6 +1426,73 @@ mod tests {
                 "application/octet-stream"
             );
         });
+    }
+
+    #[test]
+    fn byte_ranges() {
+        use ByteRange::*;
+        assert_eq!(byte_range(Some("bytes=0-"), 5), Some(Bytes(0, 4)));
+        assert_eq!(byte_range(Some(" BYTES= 1 - 2 "), 5), Some(Bytes(1, 2)));
+        assert_eq!(
+            byte_range(Some("bytes=0-99999999999999999999"), 5),
+            Some(Bytes(0, 4))
+        );
+        assert_eq!(
+            byte_range(Some("bytes=99999999999999999999-"), 5),
+            Some(Unsatisfiable)
+        );
+        assert_eq!(byte_range(Some("bytes=-30"), 10), Some(Bytes(0, 9)));
+        assert_eq!(byte_range(Some("bytes=-0"), 10), Some(Unsatisfiable));
+        assert_eq!(byte_range(Some("bytes=0-"), 0), Some(Unsatisfiable));
+        for ignored in [
+            "bytes=0-1,4-5",
+            "bytes=5-2",
+            "items=0-1",
+            "bytes=a-b",
+            "bytes=1",
+        ] {
+            assert_eq!(byte_range(Some(ignored), 10), None, "{ignored}");
+        }
+        assert_eq!(byte_range(None, 5), None);
+        let t = Tree::from_files([(
+            "/v.txt".to_string(),
+            make_file(b"0123456789".to_vec(), "t", 0o644),
+        )])
+        .unwrap();
+        let opts = SiteServerOptions::default();
+        let ask = |method: &str, extra: &[(&str, &str)]| {
+            let h: HashMap<String, String> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            handle_request(&t, &opts, method, "/v.txt", &h)
+        };
+        let full = ask("GET", &[]);
+        assert_eq!(full.header("accept-ranges"), Some("bytes"));
+        let etag = full.header("etag").unwrap().to_string();
+        let r = ask("GET", &[("range", "bytes=2-4")]);
+        assert_eq!(r.status, 206);
+        assert_eq!(r.body, b"234");
+        assert_eq!(r.header("content-range"), Some("bytes 2-4/10"));
+        assert_eq!(r.header("content-length"), Some("3"));
+        let r = ask("GET", &[("range", "bytes=10-")]);
+        assert_eq!(
+            (r.status, r.header("content-range")),
+            (416, Some("bytes */10"))
+        );
+        assert!(r.body.is_empty());
+        let r = ask("GET", &[("range", "bytes=0-0"), ("if-range", &etag)]);
+        assert_eq!(r.status, 206);
+        assert_eq!(
+            ask("GET", &[("range", "bytes=0-0"), ("if-range", "\"x\"")]).status,
+            200
+        );
+        assert_eq!(
+            ask("GET", &[("range", "bytes=0-0"), ("if-none-match", &etag)]).status,
+            304
+        );
+        let h = ask("HEAD", &[("range", "bytes=0-1")]);
+        assert_eq!((h.status, h.header("content-length")), (200, Some("10")));
     }
 
     #[test]

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
+  bytes` on file responses; a single `Range` on `GET` gets `206` with
+  `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
+  and `HEAD` are handled; multiple ranges are ignored (the whole file). Both
+  servers; `_headers` cannot set `accept-ranges` or `content-range`.
 - **`serve`: `/about/` no longer 404s when only `about.html` exists**
   (johnhenry/sitefile#188): it redirects (`301`, query kept) to the clean URL
   `/about`, in both servers. `/about.html` still answers 200; which spelling
