@@ -62,6 +62,56 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     resetServiceWorkers().then(function () { location.reload(); });
   }
 
+  // Forward errors and warnings (and, with --console, log and info) to the server log, for pages
+  // open on a phone or in a browser without devtools.
+  var consoleUrl = new URL("console", base).href;
+  var sending = false;
+  function text(x) {
+    if (typeof x === "string") return x;
+    if (x instanceof Error) return x.name + ": " + x.message;
+    try {
+      var j = JSON.stringify(x);
+      return j === undefined ? String(x) : j;
+    } catch (_) {
+      return String(x);
+    }
+  }
+  function forward(level, message, stack, url, line, col) {
+    if (sending) return;
+    sending = true;
+    try {
+      var body = { level: level, message: String(message).slice(0, 4000) };
+      if (stack) body.stack = String(stack).slice(0, 4000);
+      if (url) body.url = String(url);
+      if (typeof line === "number") body.line = line;
+      if (typeof col === "number") body.col = col;
+      fetch(consoleUrl, { method: "POST", body: JSON.stringify(body), keepalive: true }).catch(function () {});
+    } catch (_) {
+      // never let forwarding break the page
+    } finally {
+      sending = false;
+    }
+  }
+  window.addEventListener("error", function (e) {
+    if (e.error === undefined && !e.message) return; // a resource that failed to load
+    forward("error", "Uncaught " + (e.error ? text(e.error) : e.message), e.error && e.error.stack, e.filename, e.lineno, e.colno);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    forward("error", "Unhandled rejection: " + text(r), r && r.stack, location.href);
+  });
+  var levels = options.console ? ["error", "warn", "log", "info"] : ["error", "warn"];
+  levels.forEach(function (level) {
+    var original = console[level];
+    if (typeof original !== "function") return;
+    console[level] = function () {
+      var args = Array.prototype.slice.call(arguments);
+      var err = args.filter(function (a) { return a instanceof Error; })[0];
+      forward(level, args.map(text).join(" "), err && err.stack, location.href);
+      return original.apply(this, arguments);
+    };
+  });
+
   // EventSource reconnects by itself after a dropped connection (the server sends retry: 1000),
   // but gives up for good when an answer is not an event stream (a proxy or tunnel error page):
   // then try again, waiting twice as long each time, up to 30 s.

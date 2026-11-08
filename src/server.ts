@@ -88,11 +88,76 @@ export interface LiveReloadOptions {
   readonly resetServiceWorkers?: boolean;
   /** Swap changed stylesheets in place instead of reloading when only CSS changed (default true; `--no-css-inject` turns it off). */
   readonly cssInject?: boolean;
+  /** Forward the page's `console.log`/`console.info` too, not only errors and warnings (`--console`). */
+  readonly console?: boolean;
 }
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false}});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true}});\n`;
+}
+
+/** Reserved for browser console messages (POST) while `serve --watch` runs. */
+export const CONSOLE_PATH = '/__sitefile/console';
+/** Largest console message body accepted (bytes). */
+export const MAX_CONSOLE_BODY = 16 * 1024;
+/** At most this many console messages are logged per {@link CONSOLE_WINDOW_MS}. */
+export const CONSOLE_LIMIT = 50;
+export const CONSOLE_WINDOW_MS = 10_000;
+
+/** `s` with each run of control characters made one space, trimmed, and cut to `max` code points (then `...`). */
+function cleanText(s: string, max: number): string {
+  const t = [...s.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()];
+  return t.length > max ? t.slice(0, max).join('') + '...' : t.join('');
+}
+
+/**
+ * The server-log lines for one console message body (JSON `{level, message, stack, url, line, col}`),
+ * or undefined when it is not one. `level` is error, warn, log or info; log and info give no lines
+ * unless `all` (`--console`). The first line is `browser <level>: <message> (<url>:<line>:<col>)`;
+ * up to 5 stack lines follow, indented.
+ */
+export function consoleLines(body: string, all: boolean): string[] | undefined {
+  let v: unknown;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  const level = o.level;
+  if (level !== 'error' && level !== 'warn' && level !== 'log' && level !== 'info') return undefined;
+  if ((level === 'log' || level === 'info') && !all) return [];
+  const message = cleanText(typeof o.message === 'string' ? o.message : '', 1000);
+  const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= Number.MAX_SAFE_INTEGER ? x : undefined);
+  const url = typeof o.url === 'string' ? cleanText(o.url, 300) : '';
+  const line = num(o.line);
+  const col = line === undefined ? undefined : num(o.col);
+  const at = url === '' ? '' : ` (${url}${line === undefined ? '' : `:${line}`}${col === undefined ? '' : `:${col}`})`;
+  const out = [`browser ${level}: ${message}${at}`];
+  if (typeof o.stack === 'string') {
+    const frames = o.stack
+      .split('\n')
+      .map((l) => cleanText(l, 300))
+      .filter((l) => l !== '' && l !== message);
+    for (const f of frames.slice(0, 5)) out.push(`    ${f}`);
+  }
+  return out;
+}
+
+/** A console POST comes from a page of this server: `Origin` is `http(s)://<Host>`, and `Sec-Fetch-Site` (when sent) is same-origin. */
+export function isSameOriginPost(headers: Readonly<Record<string, string | string[] | undefined>>): boolean {
+  const one = (k: string): string | undefined => {
+    const x = headers[k];
+    return Array.isArray(x) ? x.join(', ') : x;
+  };
+  const origin = one('origin');
+  const host = one('host');
+  if (origin === undefined || host === undefined || host === '') return false;
+  const site = one('sec-fetch-site');
+  if (site !== undefined && site.trim().toLowerCase() !== 'same-origin') return false;
+  return origin === `http://${host}` || origin === `https://${host}`;
 }
 
 /** The event that tells every page to reload. */
@@ -135,6 +200,7 @@ export class LiveReload {
   constructor(options: LiveReloadOptions = {}, heartbeatMs = HEARTBEAT_MS) {
     this.script = clientScript(options);
     this.heartbeatMs = heartbeatMs;
+    this.console = options.console === true;
   }
 
   /**
@@ -152,6 +218,24 @@ export class LiveReload {
       clearInterval(beat);
       this.clients.delete(res);
     });
+  }
+
+  readonly console: boolean;
+  private consoleWindow = 0;
+  private consoleCount = 0;
+
+  /**
+   * Whether one more console message may be logged now (at most {@link CONSOLE_LIMIT} per
+   * {@link CONSOLE_WINDOW_MS}); the first refused one in a window also returns a notice line.
+   */
+  admitConsole(now: number): { ok: boolean; notice?: string } {
+    if (now - this.consoleWindow >= CONSOLE_WINDOW_MS) {
+      this.consoleWindow = now;
+      this.consoleCount = 0;
+    }
+    this.consoleCount++;
+    if (this.consoleCount <= CONSOLE_LIMIT) return { ok: true };
+    return this.consoleCount === CONSOLE_LIMIT + 1 ? { ok: false, notice: `browser: more than ${CONSOLE_LIMIT} console messages in 10 s; dropping the rest` } : { ok: false };
   }
 
   /** Send `event` (one line of JSON) to every open page. */
@@ -270,6 +354,32 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
+    const live = options.liveReload;
+    if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {
+      // Browser console messages (the client script sends them; not access-logged).
+      if (method !== 'POST') return finish(405, { allow: 'POST', 'content-length': 0 }, undefined, true);
+      if (!isSameOriginPost(req.headers)) return finish(403, { 'content-length': 0 }, undefined, true);
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let tooBig = false;
+      req.on('data', (c: Buffer) => {
+        size += c.byteLength;
+        if (size > MAX_CONSOLE_BODY) tooBig = true;
+        else chunks.push(c);
+      });
+      req.on('end', () => {
+        if (tooBig) return finish(413, { 'content-length': 0, connection: 'close' }, undefined, true);
+        const lines = consoleLines(Buffer.concat(chunks).toString('utf8'), live.console);
+        if (lines === undefined) return finish(400, { 'content-length': 0 }, undefined, true);
+        if (lines.length > 0) {
+          const admitted = live.admitConsole(Date.now());
+          if (admitted.notice !== undefined) options.log?.(admitted.notice);
+          if (admitted.ok) for (const l of lines) options.log?.(l);
+        }
+        finish(204, {}, undefined, true);
+      });
+      return;
+    }
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: 'GET, HEAD' });
     const tree = current();
     const { redirects, headers: headerRules } = rulesFor(tree);

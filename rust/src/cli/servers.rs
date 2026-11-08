@@ -88,6 +88,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("poll"),
     string("poll-interval"),
     flag("no-css-inject"),
+    flag("console"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -101,6 +102,7 @@ const WATCH_ONLY: &[&str] = &[
     "poll",
     "poll-interval",
     "no-css-inject",
+    "console",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -123,6 +125,7 @@ pub const SERVE: Command = Command {
         "--poll            poll for changes (every 1000 ms) instead of file system events (--watch)",
         "--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)",
         "--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)",
+        "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -236,6 +239,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let live = LiveReload::with_options(&crate::server::LiveReloadOptions {
         reset_service_workers: !v.flag("keep-service-workers"),
         css_inject,
+        console: v.flag("console"),
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
