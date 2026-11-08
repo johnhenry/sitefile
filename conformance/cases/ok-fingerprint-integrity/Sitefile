@@ -1,0 +1,8 @@
+# FINGERPRINT INTEGRITY (SRI attributes) and the Cache-Control lines EXPORT adds to /_headers.
+STAGE site
+COPY ./public/ /www/
+FINGERPRINT /www/img/ /www/fonts/*.woff2
+FINGERPRINT /www/css/ /www/app.js /www/docs/notes.txt MANIFEST /www/asset-manifest.json INTEGRITY
+HEADER /* X-Frame-Options: DENY
+HEADER /css/site.css X-Asset: site
+EXPORT /www
