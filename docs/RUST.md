@@ -193,6 +193,9 @@ paths").
   line, and identical output trees; `validate`/`inspect`/`graph`/`why` cases compare stdout.
   Cases with `"profile": true` also compare the `--profile` trace with every
   `ts`/`dur` removed (timings are the one thing allowed to differ).
+  Serve cases (`conformance/cases/serve-*`, `"command": "serve"`) start `sitefile serve` with both CLIs
+  and send the same raw HTTP requests to each: status lines (1xx included), headers (but `date`,
+  `connection`, `keep-alive`) and body bytes must match, and each case's expectations must hold.
   Network cases (`conformance/cases/net-*`) start a local HTTPS server (a
   throwaway CA, trusted through `NODE_EXTRA_CA_CERTS`, which both CLIs honor)
   and an in-process mock OCI registry, then cover remote `IMPORT` with and
