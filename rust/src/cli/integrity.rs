@@ -77,15 +77,19 @@ fn run_verify(v: &Parsed) -> Result<i32> {
         r.text()
     });
     if !r.ok() {
-        return Err(SitefileError::plain(
-            E_INTEGRITY,
-            format!(
-                "'{arg}' does not match the manifest: {} missing, {} changed, {} extra",
-                r.missing.len(),
-                r.changed.len(),
-                r.extra.len()
-            ),
-        ));
+        let message = format!(
+            "'{arg}' does not match the manifest: {} missing, {} changed, {} extra",
+            r.missing.len(),
+            r.changed.len(),
+            r.extra.len()
+        );
+        // With --json the report above is the one document on stdout (it already says ok: false),
+        // so the error goes to stderr only instead of through the generic --json error output.
+        if v.flag("json") {
+            eprintln!("error[{E_INTEGRITY}]: {message}");
+            return Ok(1);
+        }
+        return Err(SitefileError::plain(E_INTEGRITY, message));
     }
     Ok(0)
 }
