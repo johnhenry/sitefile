@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Live reload through tunnels and proxies** (johnhenry/sitefile#226): the
+  `/__sitefile/reload` stream is sent with `X-Accel-Buffering: no` and
+  `Cache-Control: no-cache, no-transform`, and the TypeScript server now sends
+  the same `: ping` comment every 15 s as the Rust one, so a buffering or
+  idle-cutting proxy passes events through. The client finds the stream
+  relative to its own URL and, when an answer is not an event stream (a proxy
+  error page), reconnects with backoff (1 s doubling to 30 s).
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with
