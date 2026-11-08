@@ -874,6 +874,15 @@ to `image` (`imageId`) and `dir` (`path`).
   (`bytes=0-1,5-6`), other units and malformed values are ignored (the whole file, `200`), as RFC 9110 allows;
   `HEAD` ignores `Range` and reports the full length. Under `serve --watch` a range applies to the page as
   sent (with the reload script). `404` pages are never ranged;
+  **`Last-Modified`** on file responses (`200`, `206`, `304`): for an image, when it was first stored (as
+  `images` shows it; the config's `created` is the Unix epoch unless `SOURCE_DATE_EPOCH` is set, so it is not
+  used); for a directory, the newest modification time of the files under it (hidden entries but `.well-known`
+  skipped); for an archive, the file's modification time; under `--watch`, the time of the build being served.
+  `If-Modified-Since` (an IMF-fixdate; other date formats are ignored) gives `304` when the files are not newer,
+  but only when the request has no `If-None-Match`, which wins;
+  **`103 Early Hints`**: before a `200` HTML page answering a `GET` over HTTP/1.1, the link-values of its `Link`
+  header (from `_headers`) with `rel=preload` or `rel=preconnect` are sent in a `103` response, as Cloudflare
+  does (`Link: </app.css>; rel=preload; as=style`); the page itself keeps the whole `Link` header;
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
@@ -894,7 +903,7 @@ to `image` (`imageId`) and `dir` (`path`).
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
     with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
-    `keep-alive`, `transfer-encoding`, `accept-ranges` and `content-range` cannot be set. Lines with an invalid name or a control character in
+    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the

@@ -7,7 +7,7 @@ import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { closeServer, createSiteServer, formatUrl, listen, LiveReload } from '../server.js';
-import { isRunning, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
+import { isRunning, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -147,7 +147,8 @@ const run: Command = {
 
     if (!v.detach) {
       const tree = await loadServedTree(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, log: (l) => process.stdout.write(`${l}\n`) });
+      const modified = await servedLastModified(store, source);
+      const server = createSiteServer(tree, { spa: !!v.spa, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -201,10 +202,11 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;
+  let builtAt: number | undefined; // Last-Modified: the time of the build being served
   let started = false;
   const memo = watchMemo();
   const live = new LiveReload();
-  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, log: (l) => process.stdout.write(`${l}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`) });
   try {
     return await watchLoop({
       context,
@@ -225,6 +227,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
           });
           current = r.output;
+          builtAt = Math.floor(Date.now() / 1000);
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
           if (started) live.reload();
           return { code: 0 };
