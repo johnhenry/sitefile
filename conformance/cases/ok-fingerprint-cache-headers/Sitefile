@@ -1,0 +1,6 @@
+# Cache-Control lines only (no HEADER): /_headers has the FINGERPRINT origin; a directory that also holds
+# an unrenamed file is covered file by file; a URL with a space is left out.
+FROM scratch
+COPY ./public/ /
+FINGERPRINT /assets/*.css /assets/sub/ "/space name.js" /logo.svg
+EXPORT /

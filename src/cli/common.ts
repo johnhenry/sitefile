@@ -1,5 +1,5 @@
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { SitefileError } from '../errors.js';
+import { errorJson, SitefileError } from '../errors.js';
 
 type Options = NonNullable<ParseArgsConfig['options']>;
 
@@ -44,6 +44,8 @@ export async function runCommand(command: Command, args: readonly string[]): Pro
   } catch (e) {
     if (e instanceof SitefileError) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
+      // With --json, the failure is also machine-readable on stdout (code, span, needs).
+      if ((parsed.values as ParsedValues).json === true) process.stdout.write(errorJson(e));
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
       return 1;
     }

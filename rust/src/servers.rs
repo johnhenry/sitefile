@@ -407,6 +407,15 @@ pub fn load_archive_tree(file: &Path) -> Result<Tree> {
 /// OCI archive serves its first image's files, like that image from the store,
 /// after checking every blob's digest and its site layer against `limits`.
 pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tree> {
+    load_archive(file, limits, false)
+}
+
+/// [`load_archive_tree`] with hidden files kept (`verify` and `diff` compare every file).
+pub fn load_archive_tree_all(file: &Path) -> Result<Tree> {
+    load_archive(file, &DEFAULT_ARCHIVE_LIMITS, true)
+}
+
+fn load_archive(file: &Path, limits: &ArchiveLimits, hidden: bool) -> Result<Tree> {
     let origin = file.display().to_string();
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     let meta = fs::metadata(file).map_err(|e| {
@@ -439,6 +448,9 @@ pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tre
     let tree = extract_archive(&bytes, &origin, limits, None)?;
     if tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
+    }
+    if hidden {
+        return Ok(tree);
     }
     visible(&tree)
 }

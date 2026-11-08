@@ -43,6 +43,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
+| `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
 | `--node path` | the Node binary JavaScript plugins run on: an absolute path, at least Node 26 (default `$SITEFILE_NODE`, else the Node running the TypeScript CLI or `node` on `PATH` for the Rust binary; [PLUGINS.md](PLUGINS.md#which-node-runs-plugins)) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
 | `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
@@ -88,6 +89,8 @@ reroutes a build.
 | `--no-proxy <hosts>` | `SITEFILE_NO_PROXY` | hosts reached directly instead of through the proxy (patterns below). Loopback is **not** bypassed by default; for a local registry, add `localhost,127.0.0.1`. |
 | `--allow-hosts <hosts>` | `SITEFILE_ALLOW_HOSTS` | when set, only hosts that match a pattern may be contacted |
 | `--deny-hosts <hosts>` | `SITEFILE_DENY_HOSTS` | hosts that are never contacted. **A deny rule beats an allow rule.** |
+| `--network <mode>` | `SITEFILE_NETWORK` | `open` (the default) or `strict`: every host must match an `--allow-hosts` pattern, also when none is given (then nothing is contacted), and `IMPORT … SECRET` needs `--allow-secret-host` (see [Strict network mode](#strict-network-mode)). The flag replaces the variable, so `--network open` turns an inherited `SITEFILE_NETWORK=strict` off. |
+| `--allow-secret-host <id=host>` | | in strict mode, let `IMPORT … SECRET <id>` send that secret to hosts matching the pattern (repeatable, comma-separated). Ignored in open mode. |
 | `--connect-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | time limit for opening each TCP connection (to the target, or to the proxy) |
 | `--read-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | longest wait for data on an open connection (idle time). For registries it replaces the per-request `--timeout`. |
 
@@ -117,8 +120,68 @@ download redirected to a CDN, the registry's own host included. A refused host f
 
 ```
 error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches deny-hosts rule 'example.com' (https://cdn.example.com/a.css)
-error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css)
+error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css); add --allow-hosts cdn.example.com
 ```
+
+A host that matches no allow rule also carries a `needs` (as a `PLUGIN` or `TOOL` that was not allowed
+does): `{ kind: 'host', name: 'cdn.example.com', flag: '--allow-hosts' }` on the TypeScript
+`SitefileError`, `SitefileError::needs` (`NeedsKind::Host`) in Rust, and in the `--json` error output
+below, so a tool can offer "allow cdn.example.com and rebuild" without parsing the message. A deny-hosts
+match has no `needs`: no flag overrides it.
+
+### Strict network mode
+
+`--network strict` (or `SITEFILE_NETWORK=strict`) turns the allow list into the only way to reach a host:
+
+```bash
+SITEFILE_NETWORK=strict sitefile build                         # fails at the first host, naming it
+sitefile build --network strict --allow-hosts cdn.example.com  # contacts cdn.example.com (and its subdomains) only
+```
+
+- An empty allow list allows nothing; the error says `(strict network mode)` and carries the `needs` of
+  the host to add. Hosts behind an imported Sitefile (`IMPORT … AS sitefile`) are only known once it has
+  been fetched, so they come up one at a time, each with its own `needs`.
+- Every hop is checked as in open mode: redirects, a registry's token realm and a blob CDN must each be
+  allowed. Git contexts, `vendor`, `outdated`, `pull`/`push`, the registry cache and `CHECKLINKS EXTERNAL`
+  follow the same rules (a refused `CHECKLINKS` URL is reported as broken, not fetched).
+- **Secrets need their own rule.** An `IMPORT … SECRET <id>` is refused before anything is sent unless an
+  `--allow-secret-host <id>=<pattern>` matches the import's host (the only origin its secrets are sent to):
+
+  ```
+  error[E_HOST_BLOCKED]: Sitefile:2:1: IMPORT data: refusing to send secret 'tok' to api.example.com (strict network mode); add --allow-secret-host tok=api.example.com
+  ```
+
+  with `needs` `{ kind: 'secret-host', name: 'tok=api.example.com', flag: '--allow-secret-host' }`. The
+  host itself must be allowed too (that error comes first). There is no environment variable for it.
+- **What counts as contact.** Strict mode checks a host only when sitefile is about to connect to it. A
+  build whose remote inputs are all read from `sitefile vendor` (`vendor/sitefile` or `--vendor-dir`), and
+  whose `FROM image`/`BASE` images are pinned (`@sha256:` or `Sitefile.lock`) and already in the local
+  store, connects to nothing and needs no host. An https `IMPORT` that is not vendored is fetched on every
+  build, pinned or not (there is no download cache), so it needs its host; so does a Git `IMPORT` that is
+  not vendored at its commit. `validate` and `graph` of a local context never connect.
+
+The default stays `open`, so existing scripts and CI are unchanged.
+
+### `--json` errors
+
+With `--json`, a command that fails also prints the error on stdout (the `error[CODE]: …` line still goes
+to stderr, and the exit code is unchanged). This works for `build`, `validate`, `inspect`, `graph`, `why`
+and every other command that has `--json` (`outdated`, `images`, …); usage errors (exit 2) stay text only.
+
+```json
+{
+  "error": {
+    "code": "E_HOST_BLOCKED",
+    "message": "Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (strict network mode) (https://cdn.example.com/a.css); add --allow-hosts cdn.example.com",
+    "span": { "file": "Sitefile", "line": 2, "column": 1 },
+    "needs": { "kind": "host", "name": "cdn.example.com", "flag": "--allow-hosts" }
+  }
+}
+```
+
+`span` and `needs` are `null` when the error has none. `needs.kind` is `plugin`, `tool`, `host` or
+`secret-host`; `[flag, name]` are the arguments to add. In `outdated --json`, an `error` row's object has
+a `needs` key too when the error carries one.
 
 Timeouts fail with `E_FETCH_TIMEOUT` and say which limit was hit (`…: connecting timed out after 500 ms
 (connect timeout)`, `…: no data for 2000 ms (read timeout)`, or `… timed out after 30000 ms` for the total).
@@ -434,7 +497,7 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 | `-f, --file`, `--print`, `--json`, `-j, --jobs` | bake's own (see above) |
 | `--build-arg K=V`, `--build-arg-file f` | added to every target: `--build-arg` wins over the bake file's `args` and arg files; `--build-arg-file` files (relative to the current directory) are read after the target's own `arg-files` (a target's `args` still win over them, as `--build-arg` always wins over files) |
 | `--profile <dir>` | one trace per target: `<dir>/<target>.json` |
-| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--node`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
+| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--node`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
 | `--cache-to` | refused: each target would replace the results the others pushed. Push from one `sitefile build --cache-to` |
 | `-o`, `-t`, `--format`, `--target`, `--watch` and the image flags (`--base`, `--label`, `--provenance`, ...) | not accepted: set them per target in the bake file (`output`, `tags`, `format`, `target`); watch mode and image options are per build |
 
@@ -489,11 +552,24 @@ Only under `serve --watch`:
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
   `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
   sends nothing. The stream is not written to the access log.
-- Every `text/html` file response gets one script tag, inserted before the last `</body>` (ASCII
-  case-insensitive), or appended when there is none:
-  `<script>new EventSource("/__sitefile/reload").onmessage=function(){location.reload()}</script>`.
-  `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached un-injected copy is not
-  reused. Other files are served unchanged.
+- `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
+  (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
+  `reload`, relative to its own URL, and reloads the page on each event.
+- Every `text/html` file response to a **page navigation** gets one script tag, inserted before the last `</body>`
+  (ASCII case-insensitive), or appended when there is none: `<script src="/__sitefile/reload.js"></script>`.
+  A navigation is a request with `Sec-Fetch-Mode: navigate`; without that header, one with `Sec-Fetch-Dest`
+  `document`, `iframe` or `frame`; without either, one whose `Accept` names `text/html`. HTML fetched by a page
+  script (`fetch('/partial.html')`: `Sec-Fetch-Mode: cors`, `Accept: */*`) and requests from tools like curl are
+  served unchanged. `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached
+  un-injected copy is not reused. Other files are served unchanged.
+- The script is external and same-origin, so a Content-Security-Policy with `script-src 'self'` allows it. When
+  the `Content-Security-Policy` that `_headers` sets on an injected page still blocks it (its `script-src-elem`,
+  `script-src` or `default-src` has none of `'self'`, `*`, `http:`, `https:`, or has `'strict-dynamic'`), or blocks
+  the event stream (`connect-src`, else `default-src`, likewise), `serve --watch` prints one warning per policy:
+  `warning: live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts
+  from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'`. Host sources are not
+  matched (a policy naming only `http://127.0.0.1:8080` is warned about), and a CSP in a `<meta http-equiv>` tag
+  is not checked.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
@@ -643,6 +719,53 @@ OCI registry, like buildx's registry cache. Keys are the local cache's keys (con
   timestamps or credentials. Results of plugins exporting `cache = false` are never cached, so never pushed.
 - **Trust**: a result from `--cache-from` is used as if the plugin or tool had produced it. Pull only from a repository
   whose writers you trust (CI pushes, pull requests read).
+
+## File manifests and `sitefile verify`
+
+An image ID covers the whole tree. To check single files of a deployed or extracted copy, write a
+manifest with the export and verify the copy against it later:
+
+```sh
+sitefile build . -o site.zip --manifest site.manifest.json
+unzip site.zip -d /srv/www
+sitefile verify /srv/www --manifest site.manifest.json
+sitefile verify site.zip --manifest site.manifest.json --json
+sitefile save mysite:1 -o out --manifest out.manifest.json
+```
+
+`--manifest <file>` (build and save) writes, next to any export format, every exported file with its
+size and SHA-256, and a Merkle root over them. It is written with the export's destination rules (an
+existing file outside the context needs `--force`), and it may not be inside an exported directory. It
+does not depend on the format: a directory, zip or OCI export of the same build gives the same bytes.
+
+```json
+{
+  "mediaType": "application/vnd.sitefile.manifest.v1+json",
+  "root": "sha256:…",
+  "files": [
+    { "path": "/index.html", "size": 207, "digest": "sha256:…" }
+  ]
+}
+```
+
+`files` is in path order (UTF-16 code units, as JavaScript sorts strings). `root` is the
+[RFC 6962](https://www.rfc-editor.org/rfc/rfc6962#section-2.1) Merkle Tree Hash of the leaves
+`<path> 0x00 <digest>` (UTF-8, the digest written `sha256:<hex>`): a leaf hashes as
+SHA-256(0x00 ‖ leaf), an inner node as SHA-256(0x01 ‖ left ‖ right), split at the largest power of two
+below the count; no files hash as SHA-256 of nothing. One file can be proven against the root with the
+log2(n) sibling hashes on its path, as in a Certificate Transparency inclusion proof.
+
+`sitefile verify <dir|archive|ref|id> [--manifest <file>] [--json]` loads the target and compares it with
+the manifest: a listed file that is absent is `missing`, one with another size or digest is `changed`, a
+file the manifest does not list is `extra`. It prints one line per difference (`OK: N files match <root>`
+when there is none) and fails with `E_INTEGRITY`, exit 1, when there is any. A directory is read like a
+build context: hidden files count, `.git` is skipped, symlinks must stay inside it, and a manifest file
+inside the directory is not counted as extra. An archive (zip, tar, tar.gz, wbn, OCI archive) is read from
+its bytes with the default archive limits. An image needs no manifest: without one, verify checks every
+stored blob against its digest. The manifest itself is checked first: its root must match its files.
+
+`--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
+actual: { size, digest } }], extra: [path] }`.
 
 ## Image store
 

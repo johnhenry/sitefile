@@ -86,7 +86,7 @@ no runtime dependencies.
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
-| `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest |
+| `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest, `Cache-Control` lines in `/_headers` and (INTEGRITY) SRI attributes |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -395,6 +395,13 @@ tools are code, and run only when you name them on the command line.
   checks the target itself before handing it to the proxy. `--allow-hosts` and
   `--deny-hosts` narrow it further, on every hop
   ([docs/CLI.md](docs/CLI.md#network-proxy-host-rules-and-timeouts)).
+- **Strict network mode is opt-in.** With `--network strict` (or
+  `SITEFILE_NETWORK=strict`) a build contacts only hosts you list with
+  `--allow-hosts`, none when you list none. A refused host fails with
+  `E_HOST_BLOCKED` naming the flag to add, also as `needs` in the library
+  error and in `--json` output, so a tool can ask before allowing it. A
+  vendored build with pinned, stored images contacts nothing
+  ([docs/CLI.md](docs/CLI.md#strict-network-mode)).
 - **Pins are enforced.** Unpinned URLs are recorded in `Sitefile.lock` and must
   match on later builds; `--strict-pins` refuses any remote import or BASE image
   that is not pinned (`INTEGRITY`, `@sha256:` or a lockfile entry).
@@ -405,12 +412,14 @@ tools are code, and run only when you name them on the command line.
 - **Secrets go only where they are sent.** `--secret id=token,env=API_TOKEN` with
   `IMPORT … SECRET token AS BEARER` (or `AS HEADER X-Api-Key`) sends the secret
   only to that import's own origin, and never into the output, caches,
-  `Sitefile.lock`, vendor files, provenance, traces or messages.
+  `Sitefile.lock`, vendor files, provenance, traces or messages. In strict mode a
+  secret is sent only to a host that `--allow-secret-host <id>=<host>` names.
 - **Nothing executes unless you allow it by name.** A JavaScript `PLUGIN` runs
   only with `--allow-plugin <name>`, in its own Node process under Node's
   permission model (read access to its own folder only, no writes, network,
-  processes or environment) on a Node you can name with `--node` (checked to
-  be at least Node 26 and printed); a `TOOL` runs only with `--allow-exec <name>`, argv
+  processes or environment) with a heap limit (`--plugin-memory`, default
+  1 GiB), on a Node you can name with `--node` (checked to be at least Node 26
+  and printed); a `TOOL` runs only with `--allow-exec <name>`, argv
   only, no shell, scrubbed environment. The Sitefile cannot allow itself. A
   WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
@@ -449,6 +458,13 @@ tools are code, and run only when you name them on the command line.
   reproducible.
 - **Web Bundles are unsigned.** `EXPORT … AS wbn` writes an unsigned b2 bundle;
   signing (for example for an Isolated Web App) happens outside sitefile.
+- **Which hosts an open build contacts.** The default network mode is `open`:
+  a Sitefile you did not write may make the build contact any public HTTPS
+  host its author chose (telling it your IP address and when you build),
+  clone Git repositories and pull registry images, and send a `--secret` you
+  supplied to the host its `IMPORT … SECRET` names. Use `--network strict`
+  with `--allow-hosts` (and `--allow-secret-host`) for builds you did not
+  write.
 - **Widening flags are yours to justify.** `--allow-http`,
   `--allow-private-network`, `--allow-hardlinks`, `--force` and `serve -p
   0.0.0.0:…` each turn off one of the guarantees above for that build.
