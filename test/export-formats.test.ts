@@ -849,7 +849,7 @@ test('CLI: --compression is usage-checked and belongs to the export format', asy
   const zip = await project('EXPORT / AS zip');
   const z = await sitefile(['build', zip, '--compression', 'gzip']);
   assert.equal(z.code, 2);
-  assert.match(z.stderr, /--compression applies only to oci and wbn exports, not zip/);
+  assert.match(z.stderr, /--compression applies only to oci, wbn and warc exports, not zip/);
   const bad = await sitefile(['build', zip, '--format', 'wbn', '--compression', 'zstd']);
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /--compression expects gzip or none, got 'zstd'/);
