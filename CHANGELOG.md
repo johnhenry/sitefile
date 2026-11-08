@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Live reload gets past caching service workers** (johnhenry/sitefile#229):
+  before reloading after a rebuild, the `serve --watch` client unregisters the
+  page origin's service workers and empties its Cache Storage, so a site with
+  a caching service worker shows the new build. `--keep-service-workers`
+  turns it off.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of

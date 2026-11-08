@@ -84,6 +84,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     flag("no-cache"),
     flag("no-lockfile"),
+    flag("keep-service-workers"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -93,6 +94,7 @@ const WATCH_ONLY: &[&str] = &[
     "build-arg-file",
     "no-cache",
     "no-lockfile",
+    "keep-service-workers",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -111,6 +113,7 @@ pub const SERVE: Command = Command {
         "--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)",
         "--no-cache        do not use the TRANSFORM result cache (--watch)",
         "--no-lockfile     do not read or write Sitefile.lock (--watch)",
+        "--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -215,7 +218,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     catch_signals();
 
     let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
-    let live = LiveReload::new();
+    let live = LiveReload::with_options(&crate::server::LiveReloadOptions {
+        reset_service_workers: !v.flag("keep-service-workers"),
+    });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
     let memo = crate::memo::watch_memo();

@@ -442,7 +442,7 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 ```
 sitefile build --watch [context] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
-                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -479,7 +479,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
   foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
-  `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
+  `--no-lockfile` (and the live-reload flags such as `--keep-service-workers`) need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
 
@@ -490,7 +490,13 @@ Only under `serve --watch`:
   sends nothing. The stream is not written to the access log.
 - `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
   (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
-  `reload`, relative to its own URL, and reloads the page on each event.
+  `reload`, relative to its own URL, and reloads the page on each event. The script is the same in both
+  implementations and ends with a call carrying the session's options, e.g. `({"resetServiceWorkers":true});`.
+- **Service workers**: a service worker that caches the site would answer the reload with the old build, so
+  before reloading the client unregisters every service worker of the page's origin and deletes every Cache
+  Storage cache (`caches`). The site's own registration code installs its worker again on the reloaded page.
+  `--keep-service-workers` turns this off (for working on the service worker's update flow itself). Other storage
+  (cookies, `localStorage`, IndexedDB) is never touched, and nothing is sent as `Clear-Site-Data`.
 - Every `text/html` file response to a **page navigation** gets one script tag, inserted before the last `</body>`
   (ASCII case-insensitive), or appended when there is none: `<script src="/__sitefile/reload.js"></script>`.
   A navigation is a request with `Sec-Fetch-Mode: navigate`; without that header, one with `Sec-Fetch-Dest`
