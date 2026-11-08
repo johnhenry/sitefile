@@ -255,9 +255,17 @@ pub fn watch_loop(
         }
         if dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             dirty_since = None;
-            out(if o.plain { MSG_CHANGE_PLAIN } else { MSG_CHANGE });
+            out(if o.plain {
+                MSG_CHANGE_PLAIN
+            } else {
+                MSG_CHANGE
+            });
             if run(&mut w, &mut last) != 0 {
-                err(if o.plain { MSG_FAILED_PLAIN } else { MSG_FAILED });
+                err(if o.plain {
+                    MSG_FAILED_PLAIN
+                } else {
+                    MSG_FAILED
+                });
             }
             // a change during the build differs from `last` in the next scan: one follow-up build
         }

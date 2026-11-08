@@ -1938,20 +1938,35 @@ mod tests {
         let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
         let e = |next: &Tree, css: bool| reload_event_for(&a, next, css);
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]), true),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
+                true
+            ),
             None
         );
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]), true).as_deref(),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]),
+                true
+            )
+            .as_deref(),
             Some("{\"type\":\"css\",\"paths\":[\"/a.css\",\"/z/b.css\"]}")
         );
         let reload = Some(RELOAD_EVENT);
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]), false).as_deref(),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                false
+            )
+            .as_deref(),
             reload
         );
         assert_eq!(
-            e(&t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]), true).as_deref(),
+            e(
+                &t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                true
+            )
+            .as_deref(),
             reload
         );
         assert_eq!(

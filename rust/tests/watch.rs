@@ -448,7 +448,8 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
 
 /// The port from a `Serving ... at http://127.0.0.1:PORT/` line.
 fn port_of(stdout: &str) -> u16 {
-    let at = stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
+    let at =
+        stdout.find("at http://127.0.0.1:").expect("Serving line") + "at http://127.0.0.1:".len();
     stdout[at..].split('/').next().unwrap().parse().unwrap()
 }
 
