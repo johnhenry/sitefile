@@ -396,7 +396,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
       vendor,
       registry: {
         ...options.registry,
-        allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork,
+        allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork, network: options.registry?.network ?? policy.network,
       },
       warn,
       span: b.span,
@@ -545,7 +545,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
         vendor,
         registry: {
           ...options.registry,
-          allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork,
+          allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork, network: options.registry?.network ?? policy.network,
         },
         warn,
       })

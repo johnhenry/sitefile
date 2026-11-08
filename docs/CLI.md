@@ -73,6 +73,71 @@ and removed afterwards. `build`, `validate`, `inspect`, `graph` and `why` accept
 - `--watch` needs a local context (usage error). A ref is resolved on every build; name a commit for a
   reproducible one.
 
+## Network: proxy, host rules and timeouts
+
+Everything sitefile fetches goes through one client per implementation: `IMPORT` over http(s), Git
+contexts and Git imports, `FROM image` and `BASE` pulls, `push`/`pull`, `vendor`, `outdated`, the
+registry cache and `CHECKLINKS EXTERNAL`. These settings apply to all of it. Every one is opt-in, and
+nothing is read from `HTTP_PROXY`, `HTTPS_PROXY` or `NO_PROXY`, so a variable set for other tools never
+reroutes a build.
+
+| Option | Environment | Meaning |
+| --- | --- | --- |
+| `--proxy <url>` | `SITEFILE_PROXY` | send requests through this HTTP proxy, `http://[user:password@]host[:port]` (port 80 by default). https targets go through a `CONNECT` tunnel, so TLS is end to end and the certificate is checked for the target's name. http targets are sent to the proxy in absolute form. Credentials go to the proxy as `Proxy-Authorization: Basic` and never appear in messages. Only `http://` proxy URLs are accepted. |
+| `--no-proxy <hosts>` | `SITEFILE_NO_PROXY` | hosts reached directly instead of through the proxy (patterns below). Loopback is **not** bypassed by default; for a local registry, add `localhost,127.0.0.1`. |
+| `--allow-hosts <hosts>` | `SITEFILE_ALLOW_HOSTS` | when set, only hosts that match a pattern may be contacted |
+| `--deny-hosts <hosts>` | `SITEFILE_DENY_HOSTS` | hosts that are never contacted. **A deny rule beats an allow rule.** |
+| `--connect-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | time limit for opening each TCP connection (to the target, or to the proxy) |
+| `--read-timeout <ms>` | `SITEFILE_FETCH_TIMEOUT` | longest wait for data on an open connection (idle time). For registries it replaces the per-request `--timeout`. |
+
+`SITEFILE_FETCH_TIMEOUT` is `<ms>` (sets both timeouts) or `connect=<ms>,read=<ms>` (either part may be left
+out). The total per-resource `--timeout` still applies on top of these. Host lists are comma- and/or
+space-separated, and the flags repeat. Flags are added to the environment's lists; `--proxy` and the
+timeout flags replace the environment's values (`--proxy ''` turns `SITEFILE_PROXY` off). A malformed
+value is a usage error (exit 2). These flags work on `build`, `validate`, `inspect`, `graph`, `why`,
+`pull`, `push`, `vendor` and `outdated`.
+
+Host patterns use the `NO_PROXY` syntax, matched against the host as written in the URL:
+
+| Pattern | Matches |
+| --- | --- |
+| `*` | every host |
+| `example.com`, `.example.com`, `*.example.com` | `example.com` and every subdomain (`cdn.example.com`), but not `badexample.com` |
+| `192.0.2.7`, `::1` | that IP-literal host |
+| `10.0.0.0/8`, `fd00::/8` | IP-literal hosts in that network |
+| any of these + `:port` | only that port (`[::1]:8080` for IPv6) |
+
+A name pattern never matches an IP literal, and an IP pattern never matches a name, whatever it resolves
+to. The private-address rule below covers names that resolve to internal addresses.
+
+The rules are checked on **every hop**: the first URL, each redirect, a registry's token realm and a blob
+download redirected to a CDN, the registry's own host included. A refused host fails with
+`E_HOST_BLOCKED`, and the message names the rule:
+
+```
+error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches deny-hosts rule 'example.com' (https://cdn.example.com/a.css)
+error[E_HOST_BLOCKED]: Sitefile:2:1: refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css)
+```
+
+Timeouts fail with `E_FETCH_TIMEOUT` and say which limit was hit (`…: connecting timed out after 500 ms
+(connect timeout)`, `…: no data for 2000 ms (read timeout)`, or `… timed out after 30000 ms` for the total).
+A proxy that refuses a tunnel fails with `E_FETCH` (`proxy http://proxy:3128 refused to connect to
+host:443`, or `… requires authentication (HTTP 407)`); for registries, these are `E_REGISTRY`.
+
+**Security note: a proxy never widens the policy.** The host rules are applied to the target, not to the
+proxy. The private-address rule is also applied to the target: before a request is handed to the proxy,
+sitefile resolves the target's name itself and refuses it (`E_SSRF_BLOCKED`) if any address is non-public,
+just as a direct connection does at connect time. So a proxy cannot be used to reach `localhost`, the
+cloud metadata address or an internal network unless `--allow-private-network` is given. The cost is
+that the target's name must resolve on this machine. If the network can only resolve names through the
+proxy, the fetch fails with `E_FETCH` (`cannot resolve … to check it against the private-network rule
+before using the proxy`). One gap remains: the proxy resolves the name again on its own, and a name
+whose DNS answer changes between the two lookups (DNS rebinding) is resolved by the proxy, not by
+sitefile. Use `--allow-hosts` to pin builds to known hosts. The proxy itself is named by you, so it may
+be on a private address. Embedders set all of this in code, never through the environment
+(`FetchPolicy.network` and `RegistryOptions.network`, `NetworkSettings` in both implementations;
+`networkFromEnv()` / `network_from_env()` read the variables when wanted).
+
 ## Offline builds: `vendor`
 
 ```

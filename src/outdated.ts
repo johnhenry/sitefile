@@ -204,7 +204,7 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
         return entry({ kind, name, source, pin, pinnedBy, latest: null, status: 'digest-only', newerTag: null, error: null });
       }
       const tag = ref.tag ?? 'latest';
-      const client = makeClient(registry, { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork });
+      const client = makeClient(registry, { ...options.registry, allowPrivateNetwork: options.registry?.allowPrivateNetwork ?? policy.allowPrivateNetwork, network: options.registry?.network ?? policy.network });
       const latest = (await client.getManifest(ref.name, tag)).digest;
       let newerTag: string | null = null;
       if (versionTag(tag)) {

@@ -547,6 +547,7 @@ fn image_rows(
                     &env,
                 ),
                 allow_private_network: options.fetch_policy.allow_private_network,
+                network: options.fetch_policy.network.clone(),
                 ..Default::default()
             };
             let client = make_client(&registry, &o, None, &env);

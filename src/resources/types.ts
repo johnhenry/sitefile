@@ -1,3 +1,4 @@
+import type { NetworkSettings } from './network.js';
 import type { Tree } from '../tree.js';
 
 export interface Provenance {
@@ -55,6 +56,11 @@ export interface FetchPolicy {
    * private CAs; certificate and hostname verification stay on.
    */
   readonly ca?: string | Buffer | undefined;
+  /**
+   * Proxy, host rules and connect/read timeouts (see {@link NetworkSettings}). Unset: direct
+   * connections, every public host, only the total `timeoutMs`.
+   */
+  readonly network?: NetworkSettings | undefined;
 }
 
 export const DEFAULT_FETCH_POLICY: FetchPolicy = {

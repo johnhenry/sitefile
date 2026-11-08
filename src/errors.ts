@@ -33,6 +33,7 @@ export type ErrorCode =
   // remote resources
   | 'E_PROTOCOL'
   | 'E_SSRF_BLOCKED'
+  | 'E_HOST_BLOCKED'
   | 'E_FETCH'
   | 'E_FETCH_STATUS'
   | 'E_FETCH_TIMEOUT'

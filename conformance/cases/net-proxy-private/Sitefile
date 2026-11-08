@@ -1,0 +1,5 @@
+# A proxy does not widen the policy: a loopback target is still refused, before the proxy is asked.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

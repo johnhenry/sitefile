@@ -19,7 +19,17 @@ const COMMON_FLAGS_PUSH: &[&str] = &[
     "                                    $SITEFILE_REGISTRY_AUTH or ~/.docker/config.json (auths, credHelpers, credsStore)",
     "--password-stdin                    read the password from stdin",
     "--allow-private-network             let redirects/token servers on other hosts resolve to private addresses",
-    "--timeout <ms>                      per-request idle timeout (default 30000)",
+    "--timeout <ms>                      per-request idle timeout (default 30000; --read-timeout wins)",
+    "--proxy <url>                       send requests through this HTTP proxy: http://[user:password@]host[:port]",
+    "                                    (also $SITEFILE_PROXY; HTTP(S)_PROXY are never read)",
+    "--no-proxy <hosts>                  hosts reached directly, not through the proxy (NO_PROXY syntax; repeatable,",
+    "                                    comma-separated; also $SITEFILE_NO_PROXY)",
+    "--allow-hosts <hosts>               contact only hosts matching these patterns (repeatable, comma-separated;",
+    "                                    also $SITEFILE_ALLOW_HOSTS)",
+    "--deny-hosts <hosts>                never contact hosts matching these patterns; beats --allow-hosts",
+    "                                    (repeatable, comma-separated; also $SITEFILE_DENY_HOSTS)",
+    "--connect-timeout <ms>              time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)",
+    "--read-timeout <ms>                 longest wait for data on a connection (also $SITEFILE_FETCH_TIMEOUT)",
 ];
 
 const COMMON_FLAGS_PULL: &[&str] = &[
@@ -31,7 +41,17 @@ const COMMON_FLAGS_PULL: &[&str] = &[
     "                                    $SITEFILE_REGISTRY_AUTH or ~/.docker/config.json (auths, credHelpers, credsStore)",
     "--password-stdin                    read the password from stdin",
     "--allow-private-network             let redirects/token servers on other hosts resolve to private addresses",
-    "--timeout <ms>                      per-request idle timeout (default 30000)",
+    "--timeout <ms>                      per-request idle timeout (default 30000; --read-timeout wins)",
+    "--proxy <url>                       send requests through this HTTP proxy: http://[user:password@]host[:port]",
+    "                                    (also $SITEFILE_PROXY; HTTP(S)_PROXY are never read)",
+    "--no-proxy <hosts>                  hosts reached directly, not through the proxy (NO_PROXY syntax; repeatable,",
+    "                                    comma-separated; also $SITEFILE_NO_PROXY)",
+    "--allow-hosts <hosts>               contact only hosts matching these patterns (repeatable, comma-separated;",
+    "                                    also $SITEFILE_ALLOW_HOSTS)",
+    "--deny-hosts <hosts>                never contact hosts matching these patterns; beats --allow-hosts",
+    "                                    (repeatable, comma-separated; also $SITEFILE_DENY_HOSTS)",
+    "--connect-timeout <ms>              time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)",
+    "--read-timeout <ms>                 longest wait for data on a connection (also $SITEFILE_FETCH_TIMEOUT)",
 ];
 
 const PUSH_OPTS: &[OptSpec] = &[
@@ -40,6 +60,12 @@ const PUSH_OPTS: &[OptSpec] = &[
     flag("password-stdin"),
     flag("allow-private-network"),
     string("timeout"),
+    string("proxy"),
+    strings("no-proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    string("connect-timeout"),
+    string("read-timeout"),
 ];
 const PULL_OPTS: &[OptSpec] = &[
     strings("insecure-registry"),
@@ -47,6 +73,12 @@ const PULL_OPTS: &[OptSpec] = &[
     flag("password-stdin"),
     flag("allow-private-network"),
     string("timeout"),
+    string("proxy"),
+    strings("no-proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    string("connect-timeout"),
+    string("read-timeout"),
     string("platform"),
     string("max-download-bytes"),
 ];
@@ -97,6 +129,7 @@ fn client_options(v: &Parsed) -> Result<(RegistryOptions, Option<Credentials>)> 
     }
     let timeout = positive(v.str("timeout"), "--timeout")?;
     let max_blob = positive(v.str("max-download-bytes"), "--max-download-bytes")?;
+    let network = super::network::network_option(v)?;
     let mut limits = RegistryLimits::default();
     if let Some(t) = timeout {
         limits.timeout_ms = t;
@@ -108,6 +141,7 @@ fn client_options(v: &Parsed) -> Result<(RegistryOptions, Option<Credentials>)> 
         insecure_registries: insecure_registries_from_env(&v.strs("insecure-registry")),
         allow_private_network: v.flag("allow-private-network"),
         limits,
+        network,
         ..Default::default()
     };
     Ok((options, explicit))

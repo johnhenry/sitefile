@@ -1,0 +1,8 @@
+{
+  "network": true,
+  "steps": [
+    { "args": ["build", "${CTX}", "-o", "${OUT}/dist", "--allow-private-network"], "env": { "SITEFILE_PROXY": "${PROXY}" } }
+  ],
+  "outputs": [["dist", "tree"]],
+  "lock": true
+}

@@ -69,6 +69,8 @@ function externalReason(e: SitefileError, url: string, policy: FetchPolicy): str
       return /^http:/i.test(url) && !policy.allowHttp ? 'plain http is checked only with --allow-http' : 'not allowed by the network policy';
     case 'E_SSRF_BLOCKED':
       return 'a non-public address (checked only with --allow-private-network)';
+    case 'E_HOST_BLOCKED':
+      return 'refused by the allow-hosts/deny-hosts rules';
     case 'E_REDIRECT':
       return 'too many or invalid redirects';
     default:
