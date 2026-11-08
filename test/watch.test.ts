@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
+import { closeServer, createSiteServer, clientScript, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { isIgnoredChange, RebuildScheduler } from '../src/watch.js';
 import { cliPath, makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -65,6 +65,15 @@ test('injectReloadScript inserts before the last </body>, else appends', () => {
   assert.equal(dec(injectReloadScript(enc('<body></body><!-- </body> --></body>'))), `<body></body><!-- </body> -->${RELOAD_SCRIPT}</body>`);
   assert.equal(dec(injectReloadScript(enc('<h1>x</h1>'))), `<h1>x</h1>${RELOAD_SCRIPT}`);
   assert.equal(RELOAD_SCRIPT, `<script src="${RELOAD_SCRIPT_PATH}"></script>`);
+});
+
+test('clientScript passes the session options to the client', () => {
+  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true});\n`);
+  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false});\n`);
+  assert.equal(new LiveReload({ resetServiceWorkers: false }).script, clientScript({ resetServiceWorkers: false }));
+  // the client unregisters service workers and empties Cache Storage before reloading
+  assert.match(RELOAD_CLIENT, /getRegistrations\(\)/);
+  assert.match(RELOAD_CLIENT, /caches\.delete\(k\)/);
 });
 
 test('isNavigation: Sec-Fetch-Mode, then Sec-Fetch-Dest, then Accept', () => {
@@ -166,10 +175,12 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     assert.doesNotMatch(String(f.headers.etag), /-live"$/);
     const js = await get(port, RELOAD_SCRIPT_PATH);
     assert.equal(js.status, 200);
-    assert.equal(js.body, RELOAD_CLIENT);
+    assert.equal(js.body, clientScript());
+    assert.ok(js.body.startsWith(RELOAD_CLIENT));
+    assert.ok(js.body.endsWith('({"resetServiceWorkers":true});\n'));
     assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(js.headers['cache-control'], 'no-cache');
-    assert.equal(Number(js.headers['content-length']), Buffer.byteLength(RELOAD_CLIENT));
+    assert.equal(Number(js.headers['content-length']), Buffer.byteLength(js.body));
     const p = await get(plainPort, '/', NAV);
     assert.equal(p.body, '<html><body><h1>v1</h1></body></html>', 'no injection without --watch');
     assert.equal((await get(plainPort, RELOAD_PATH)).status, 404, 'the path is only reserved under --watch');
@@ -318,6 +329,9 @@ test('build --watch: usage errors', async () => {
   r = await runCli(home, ['serve', '--build-arg', 'A=1', './x/']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /--build-arg needs --watch/);
+  r = await runCli(home, ['serve', '--keep-service-workers', './x/']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--keep-service-workers needs --watch/);
 });
 
 test('serve --watch: serves the build, live-reloads after a good rebuild, keeps serving on failure', async () => {
@@ -331,7 +345,7 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
     let r = await get(port, '/', NAV);
     assert.equal(r.body, `<html><body><h1>v1</h1>${RELOAD_SCRIPT}</body></html>`);
     assert.equal((await get(port, '/style.css', NAV)).body, 'body{margin:0}', 'no script outside HTML');
-    assert.equal((await get(port, RELOAD_SCRIPT_PATH)).body, RELOAD_CLIENT);
+    assert.equal((await get(port, RELOAD_SCRIPT_PATH)).body, clientScript());
 
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
