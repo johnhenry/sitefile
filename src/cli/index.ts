@@ -5,6 +5,7 @@ import { serverCommands, serverSubcommands } from './servers.js';
 import { cacheSubcommands } from './cache.js';
 import { vendorCommands } from './vendor.js';
 import { outdatedCommands } from './outdated.js';
+import { hostsCommands } from './hosts.js';
 import { bakeCommands } from './bake.js';
 import { integrityCommands } from './integrity.js';
 
@@ -12,7 +13,7 @@ import { integrityCommands } from './integrity.js';
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...bakeCommands, ...integrityCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -42,6 +43,8 @@ Integrity:
                                                    and their Merkle root (save --manifest too)
   sitefile verify <dir|archive|ref> --manifest m.json   check a deployed or extracted copy: missing,
                                                    changed and extra files (exit 1 on any)
+  sitefile diff <a> <b> [--json]                   files added, removed and changed between two images,
+                                                   directories or archives, and _redirects/_headers rules
 
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
@@ -54,6 +57,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size

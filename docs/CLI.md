@@ -44,6 +44,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
 | `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
+| `--node path` | the Node binary JavaScript plugins run on: an absolute path, at least Node 26 (default `$SITEFILE_NODE`, else the Node running the TypeScript CLI or `node` on `PATH` for the Rust binary; [PLUGINS.md](PLUGINS.md#which-node-runs-plugins)) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
 | `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
@@ -160,6 +161,45 @@ sitefile build --network strict --allow-hosts cdn.example.com  # contacts cdn.ex
   not vendored at its commit. `validate` and `graph` of a local context never connect.
 
 The default stays `open`, so existing scripts and CI are unchanged.
+
+### Which hosts a build needs: `hosts`
+
+```
+sitefile hosts [context] [-f Sitefile] [--json] [--build-arg K=V]... [--build-arg-file f]... [--base image]
+               [network flags]
+```
+
+Lists the hosts a build would contact, read from the plan only: nothing is fetched and no host is
+contacted. Each host comes with what needs it and its status under the network flags given (the same
+`--allow-hosts`, `--deny-hosts`, `--network` and `--allow-secret-host` as `build`):
+
+```
+HOST                  PORT  STATUS   USED BY
+cdn.example.com       443   allowed  IMPORT css (Sitefile:2)
+github.com            443   blocked  IMPORT theme (Sitefile:3)
+registry-1.docker.io  443   blocked  BASE
+github.com: needs --allow-hosts github.com
+registry-1.docker.io: needs --allow-hosts registry-1.docker.io
+IMPORT css (Sitefile:2): secret needs --allow-secret-host tok=cdn.example.com
+IMPORT theme (Sitefile:3): an imported Sitefile; the hosts it needs are known once it is fetched
+3 hosts (strict network mode): 1 allowed, 2 blocked
+```
+
+- Listed: every remote `IMPORT` (https and `git+https`, by the URL's host and port), every `FROM image`
+  with a registry, and the BASE image of an oci export (or `--base`), by the registry's API host
+  (`registry-1.docker.io` for Docker Hub). `FROM image` from the local store and local imports contact
+  nothing and are not listed.
+- Status: `allowed`; `blocked` (no allow-hosts rule matches; `needs` names the `--allow-hosts` to add);
+  `denied` (a deny-hosts rule matches; no flag overrides it). In strict mode, an `IMPORT … SECRET` whose
+  secret has no matching `--allow-secret-host` carries that `needs` on its use.
+- Not known before fetching, so not listed: redirects, a registry's token realm and blob CDN, and the
+  inputs of an imported Sitefile (`nested`). `CHECKLINKS --external` contacts the hosts of the site's
+  external links and is reported on its own line. All of these still come up at build time, one at a
+  time, each as an `E_HOST_BLOCKED` with `needs`.
+- `--json`: `{"strict", "hosts": [{"host", "port", "status", "needs", "uses": [{"kind": "import" | "image" |
+  "base", "name", "source", "span", "secrets", "nested", "needs"}]}], "checklinksExternal": [<line>…]}`.
+  `needs` is `null` or `{kind, name, flag}` as in errors. The text and JSON are identical in the
+  TypeScript and Rust CLIs.
 
 ### `--json` errors
 
@@ -496,21 +536,35 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 | `-f, --file`, `--print`, `--json`, `-j, --jobs` | bake's own (see above) |
 | `--build-arg K=V`, `--build-arg-file f` | added to every target: `--build-arg` wins over the bake file's `args` and arg files; `--build-arg-file` files (relative to the current directory) are read after the target's own `arg-files` (a target's `args` still win over them, as `--build-arg` always wins over files) |
 | `--profile <dir>` | one trace per target: `<dir>/<target>.json` |
-| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
+| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--node`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
 | `--cache-to` | refused: each target would replace the results the others pushed. Push from one `sitefile build --cache-to` |
 | `-o`, `-t`, `--format`, `--target`, `--watch` and the image flags (`--base`, `--label`, `--provenance`, ...) | not accepted: set them per target in the bake file (`output`, `tags`, `format`, `target`); watch mode and image options are per build |
 
 ## Watch mode
 
 ```
-sitefile build --watch [context] [build options]
+sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject] [--console]
+                       [--no-overlay] [--navigate-to-changed]
+                       [--reload full|morph] [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
-                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
+                       [--poll] [--poll-interval ms] [--no-css-inject] [--console]
+                       [--no-overlay] [--navigate-to-changed]
+                       [--reload full|morph] [context | ./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
 `serve --watch` builds the context **in memory** (like `inspect`; no export is written), serves the result like
 `serve`, and reloads open pages after each good rebuild.
+
+**A plain directory**: `serve --watch ./dir` on a directory that has no `Sitefile`, given none of `-f`,
+`--target`, `--build-arg` and `--build-arg-file`, serves the directory itself, the way `serve ./dir` does (through
+the sandboxed local reader: symlinks may not leave it, hidden files other than `.well-known` are not served), and
+re-reads it when something in it changes, with the same watcher, ignore rules, debounce and `--poll`. A directory
+with a `Sitefile`, or any of those flags, is a build context. The messages are `Read N files (sha256:...)`,
+`Change detected, re-reading` and, when the directory cannot be read (a symlink that escapes it, say),
+`Read failed; serving the last good copy`. Archive files are not watched (`serve site.zip` reads the file at start;
+`server restart` picks up a new copy), and `-d` cannot be combined with `--watch` in either mode.
 
 - **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
   and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
@@ -519,6 +573,13 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   store (`$SITEFILE_HOME`). A build's own writes never trigger another build.
 - **Debounce**: a rebuild starts once nothing has changed for 100 ms, so saving several files is one rebuild.
   Changes that arrive while a build runs are coalesced into one follow-up build.
+- **Polling** (`--poll`, `--poll-interval <ms>`): file system events do not arrive for network shares (SMB, NFS),
+  some Docker bind mounts and WSL paths under `/mnt`. `--poll` compares a stat snapshot of the watched paths (type,
+  size, mtime, ctime and inode; symlinks not followed; ignored paths not walked) every 1000 ms instead;
+  `--poll-interval <ms>` sets the interval (a whole number, 10 or more) and implies `--poll`. Both need `--watch`
+  (`error: --poll needs --watch`) and work for `build --watch` and `serve --watch`. A change shows up at the next
+  scan, so a rebuild can start up to one interval later. sitefile does not detect network file systems itself; pass
+  `--poll` when saves do not trigger rebuilds.
 - **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
@@ -542,18 +603,57 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
   foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
-  `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
+  `--no-lockfile` (and the live-reload flags such as `--keep-service-workers`) need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
 
 Only under `serve --watch`:
 
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
-  `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
-  sends nothing. The stream is not written to the access log.
+  `text/event-stream` that sends `retry: 1000`, then one event per good rebuild (or re-read) that changed the
+  served files: `data: {"type":"css","paths":["/a.css",...]}` when every changed file is a stylesheet
+  (`text/css`) that was already there (CSS injection, below), else `data: {"type":"reload"}`. A rebuild whose
+  output is identical sends `data: {"type":"ok"}`. Each rebuild (or re-read) starts with `data: {"type":"building"}`,
+  and a failed one sends `data: {"type":"error","code":"E_...","message":"...","file":"/ctx/Sitefile","line":2,"column":1}`
+  (`file`, `line` and `column` only when the error has a Sitefile location). A stream that opens while the last
+  build is broken gets that error event right after `retry: 1000`. The stream is not written to the access log.
+- **Go to the changed page** (`--navigate-to-changed`, off by default): when a rebuild added or changed exactly one
+  HTML file (other files may change too), its `reload` event names the page that serves it:
+  `data: {"type":"reload","path":"/posts/hello/"}` (`/dir/index.html` becomes `/dir/`, other files keep their path;
+  segments are percent-encoded). Open pages go there instead of reloading, unless they already show it. Two or more
+  changed pages, or none, give a plain reload.
+- **Morphing instead of reloading** (`--reload morph`, the default; `--reload full` turns it off): a `reload` event
+  where only existing HTML files changed (none added or removed, nothing of another type) carries `"morph":true`.
+  The client then fetches its own page again and updates the document in place: text and attributes change,
+  elements are matched by position, tag and `id`, the scroll position stays, and the focused `<input>`,
+  `<textarea>` or `<select>` (and every `<textarea>`'s text) is left as the person edited it. If the page's scripts
+  (each `<script>`'s `src`, `type` and text) differ from the new ones, or anything fails, it reloads instead.
+- **Scroll position across reloads**: before a full reload the client saves the scroll position for the path in
+  `sessionStorage` and restores it once the reloaded page has loaded (not when it goes to another page).
+- **Rebuilding badge and error overlay** (`--no-overlay` turns both off): on `building` the client shows a small
+  "Rebuilding..." badge in the corner; on `error` it shows a dismissible overlay with the code, the message and the
+  Sitefile location, noting that the page shows the last good build (and when a service worker controls the
+  page). Both live in a shadow root, so the site's CSS does not reach them. The next `ok`, `css` or `reload` event
+  clears them.
+- **CSS injection** (`--no-css-inject` turns it off; then a CSS-only change sends `{"type":"reload"}`): on a
+  `css` event the client points each same-origin `<link rel="stylesheet">` whose path is listed at the same URL with
+  a fresh `__sitefile=<time>` query parameter (the old sheet stays until the new one has loaded), so the page keeps
+  its scroll position and state. When no link matches (a sheet only reached through `@import`), it reloads. Any
+  other event, or one it cannot parse (an older client), reloads the page.
+- **Through proxies and tunnels**: the stream (and its HEAD) has `cache-control: no-cache, no-transform` and
+  `x-accel-buffering: no`, so nginx-style proxies neither buffer nor compress it, and a `: ping` comment every 15 s
+  keeps idle connections open. The client opens the stream at `reload` relative to the script's own URL, so a page
+  reached through another public origin connects back through it; when an answer is not an event stream (a proxy
+  error page), it reconnects after 1 s, doubling the wait up to 30 s.
 - `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
   (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
-  `reload`, relative to its own URL, and reloads the page on each event.
+  `reload`, relative to its own URL, and reloads the page on each event. The script is the same in both
+  implementations and ends with a call carrying the session's options, e.g. `({"resetServiceWorkers":true});`.
+- **Service workers**: a service worker that caches the site would answer the reload with the old build, so
+  before reloading the client unregisters every service worker of the page's origin and deletes every Cache
+  Storage cache (`caches`). The site's own registration code installs its worker again on the reloaded page.
+  `--keep-service-workers` turns this off (for working on the service worker's update flow itself). Other storage
+  (cookies, `localStorage`, IndexedDB) is never touched, and nothing is sent as `Clear-Site-Data`.
 - Every `text/html` file response to a **page navigation** gets one script tag, inserted before the last `</body>`
   (ASCII case-insensitive), or appended when there is none: `<script src="/__sitefile/reload.js"></script>`.
   A navigation is a request with `Sec-Fetch-Mode: navigate`; without that header, one with `Sec-Fetch-Dest`
@@ -569,10 +669,23 @@ Only under `serve --watch`:
   from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'`. Host sources are not
   matched (a policy naming only `http://127.0.0.1:8080` is warned about), and a CSP in a `<meta http-equiv>` tag
   is not checked.
+- **Browser console** (`--console` adds `log` and `info`): the client forwards uncaught errors (`error` events),
+  unhandled promise rejections, `console.error` and `console.warn` with
+  `POST /__sitefile/console` (reserved like the other paths; any other method is `405`). The body is JSON
+  `{level, message, stack, url, line, col}`, at most 16 KiB (`413`); anything else is `400`. Only a page of this
+  server may post: `Origin` must be `http://<Host>` or `https://<Host>` and `Sec-Fetch-Site`, when sent,
+  `same-origin` (else `403`; a tunnel that rewrites `Host` therefore drops them). The server answers `204` and
+  writes, to stdout and not as access-log lines,
+  `browser error: Uncaught TypeError: x is undefined (http://127.0.0.1:8080/app.js:3:5)` (runs of control
+  characters become one space; the message is cut at 1000 characters, the URL at 300) followed by up to five stack
+  lines indented by four spaces. At most 50 messages are logged per 10 s; the first one over prints
+  `browser: more than 50 console messages in 10 s; dropping the rest`. The endpoint exists only under `--watch`,
+  and it only ever writes to the log.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
-(recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)).
+(recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)); with
+`--poll` both poll.
 
 ## Profiling (`--profile`)
 
@@ -765,6 +878,38 @@ stored blob against its digest. The manifest itself is checked first: its root m
 
 `--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
 actual: { size, digest } }], extra: [path] }`.
+
+## Comparing builds: `sitefile diff`
+
+`sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
+a directory, an archive file (zip, tar, tar.gz, wbn, OCI archive) or an image reference or ID, read the
+way `verify` reads it (hidden files count, `.git` is skipped). Files are compared by digest and mode, never
+by timestamp:
+
+```
+C  /index.html  (207 B -> 210 B)
+A  /new.txt  (1 B)
+C  /run.sh  (10 B -> 10 B, mode 644 -> 755)
+-  /_redirects: /old /new 301
++  /_redirects: /older /new 301
++  /_headers: /assets/* Cache-Control: immutable
+1 added, 0 removed, 3 changed
+```
+
+`A` is added, `D` removed, `C` changed, in path order. When `/_redirects` or `/_headers` differ, the rules
+added (`+`) and removed (`-`) follow: a `_redirects` rule is its line with fields joined by one space; a
+`_headers` rule is `<path> <Name>: <value>`, one per header line. Blank lines and `#` comments are not
+rules. The exit status is 0 whether or not the two differ; `--exit-code` makes it 1 when they do.
+
+`--json` prints `{ added: [file], removed: [file], changed: [{ path, before: file, after: file }], rules:
+{ "/_redirects": { added: [rule], removed: [rule] }, "/_headers": … } }`, where a file is
+`{ path, size, digest, mode }` (`mode` is `644` or `755`) and `rules` has a key only for a file whose rules
+changed. (`sitefile image diff` is the older, images-only form with bare `A|D|C <path>` lines.)
+
+Archive exports give every file one fixed mtime (`SOURCE_DATE_EPOCH`, else 0), so after extracting a new
+version `rsync` without `-c` sees unchanged sizes and times and can skip changed files, and nginx sends the
+same `Last-Modified` for every version. Compare with `diff` (or `verify` against a manifest) instead, and
+use `rsync -c` (checksums) to upload.
 
 ## Image store
 
@@ -976,16 +1121,22 @@ to `image` (`imageId`) and `dir` (`path`).
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
-  URLs: `/about` serves `/about.html` when there is no file `/about`; otherwise a directory `/dir` redirects (`301`)
-  to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
+  URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
+  `/about` when only `/about.html` answers it (after any `_redirects` rule for the path); `/about.html` and
+  `/about/index.html` still answer as themselves; otherwise a directory `/dir` redirects (`301`) to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
   page); `content-type` from the extension (case-insensitive) through one table shared by both implementations
   and by Web Bundle export: `tools/gen-mime.mjs` writes `src/mime-data.ts` and `rust/src/mime_data.rs` (types
   from nginx's `mime.types`, else the IANA registrations: HTML, CSS, JavaScript including `.cjs`, JSON and
   source maps, XML/XSLT, feeds, WebVTT, CSV, Markdown, YAML, TOML, fonts, images, audio, video, HLS/DASH,
   glTF, Web Bundles and common archives); text types get `; charset=utf-8`; any other extension is
-  `application/octet-stream`;
+  `application/octet-stream`. A few well-known files without an extension are typed by their exact path first:
+  `/.well-known/apple-app-site-association` and `/apple-app-site-association`, `openid-configuration`,
+  `oauth-authorization-server` and `nodeinfo` under `/.well-known/` are `application/json`, `/.well-known/webfinger`
+  is `application/jrd+json`, `/.well-known/host-meta` is `application/xrd+xml` (`_headers` can still override);
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
-  `x-content-type-options: nosniff`. Paths are percent-decoded per segment; `..`, an encoded `/`, NUL, control
+  `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
+  it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
+  percent-decoded per segment; `..`, an encoded `/`, NUL, control
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
   file extension (a missing `/app.js` stays `404`).
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and

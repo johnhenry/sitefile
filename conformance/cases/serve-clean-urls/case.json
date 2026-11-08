@@ -1,0 +1,15 @@
+{
+  "command": "serve",
+  "requests": [
+    { "target": "/about", "expect": { "status": 200, "body": "about page\n" } },
+    { "target": "/about/", "expect": { "status": 301, "headers": { "location": "/about" }, "body": "" } },
+    { "target": "/about/?q=1", "expect": { "status": 301, "headers": { "location": "/about?q=1" } } },
+    { "method": "HEAD", "target": "/about/", "expect": { "status": 301, "headers": { "location": "/about" } } },
+    { "target": "/about.html", "expect": { "status": 200, "body": "about page\n" } },
+    { "target": "/about/index.html", "expect": { "status": 404 } },
+    { "target": "/docs", "expect": { "status": 301, "headers": { "location": "/docs/" } } },
+    { "target": "/docs/", "expect": { "status": 200, "body": "docs\n" } },
+    { "target": "/docs.html", "expect": { "status": 404 } },
+    { "target": "/docs/index.html", "expect": { "status": 200, "body": "docs\n" } }
+  ]
+}
