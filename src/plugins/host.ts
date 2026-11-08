@@ -52,8 +52,9 @@ const MARK = '\u0000SITEFILE:';
 const RUNNER = String.raw`
 const MARK = '\u0000SITEFILE:';
 const send = (msg) => process.stdout.write(MARK + JSON.stringify(msg) + '\n');
-// Plugin console output goes to stderr so stdout stays a clean channel.
-for (const k of ['log', 'info', 'debug']) console[k] = (...a) => process.stderr.write(a.map(String).join(' ') + '\n');
+// Plugin console output goes to stdout as unmarked lines, so it reaches the host before
+// the result that follows it (stderr is another pipe, with no order against stdout).
+for (const k of ['log', 'info', 'debug']) console[k] = (...a) => process.stdout.write(a.map(String).join(' ').split('\n').filter((l) => !l.startsWith(MARK)).join('\n') + '\n');
 const toB64 = (v) => Buffer.from(typeof v === 'string' ? Buffer.from(v, 'utf8') : v).toString('base64');
 const isBytes = (v) => typeof v === 'string' || v instanceof Uint8Array;
 let transform;
