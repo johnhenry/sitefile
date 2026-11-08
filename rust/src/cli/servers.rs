@@ -85,6 +85,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("no-cache"),
     flag("no-lockfile"),
     flag("keep-service-workers"),
+    flag("poll"),
+    string("poll-interval"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -95,6 +97,8 @@ const WATCH_ONLY: &[&str] = &[
     "no-cache",
     "no-lockfile",
     "keep-service-workers",
+    "poll",
+    "poll-interval",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -114,6 +118,8 @@ pub const SERVE: Command = Command {
         "--no-cache        do not use the TRANSFORM result cache (--watch)",
         "--no-lockfile     do not read or write Sitefile.lock (--watch)",
         "--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)",
+        "--poll            poll for changes (every 1000 ms) instead of file system events (--watch)",
+        "--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -209,6 +215,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
     let arg_flags = v.strs("build-arg");
+    let poll = crate::watch::poll_option(v.flag("poll"), v.str("poll-interval"))?;
     if is_wildcard(&bind.host) {
         err(&format!(
             "warning: binding {}: the site will be reachable from other machines\n",
@@ -296,6 +303,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             context: &context,
             sitefile: file.as_deref(),
             arg_files: &arg_files,
+            poll,
         },
         &mut run_build,
         &mut on_started,

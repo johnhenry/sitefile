@@ -6,7 +6,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { closeServer, createSiteServer, clientScript, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
-import { isIgnoredChange, RebuildScheduler } from '../src/watch.js';
+import { isIgnoredChange, pollSnapshot, RebuildScheduler } from '../src/watch.js';
+import { pollOption } from '../src/cli/watch.js';
 import { cliPath, makeSite, runCli, tmpDir } from './helpers/cli.js';
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -58,6 +59,31 @@ test('isIgnoredChange skips .git, exporter temp siblings and ignored paths', () 
   assert.equal(ig('.dist.sitefile-tmp-0a1b2c/index.html'), true);
   assert.equal(ig('.dist.sitefile-old-ff'), true);
   assert.equal(isIgnoredChange(path.resolve('/home/.sitefile/cache/x'), [root], ignored), true);
+});
+
+test('pollSnapshot sees added, changed and removed files and skips ignored ones; pollOption', async () => {
+  const dir = await tmpDir('sitefile-poll-');
+  await fs.mkdir(path.join(dir, 'sub'));
+  await fs.writeFile(path.join(dir, 'sub', 'a.txt'), 'a');
+  await fs.mkdir(path.join(dir, '.git'));
+  await fs.writeFile(path.join(dir, '.git', 'HEAD'), 'x');
+  const missing = path.join(dir, '..', 'nope-' + path.basename(dir));
+  const spec = { dirs: [dir], files: [missing], ignore: (p: string) => isIgnoredChange(p, [dir], []) };
+  const one = await pollSnapshot(spec);
+  assert.deepEqual([...one.keys()].sort(), [missing, path.join(dir, 'sub'), path.join(dir, 'sub', 'a.txt')].sort());
+  assert.equal(one.get(missing), 'missing');
+  await fs.writeFile(path.join(dir, 'sub', 'a.txt'), 'abc');
+  await fs.writeFile(path.join(dir, 'b.txt'), 'b');
+  const two = await pollSnapshot(spec);
+  assert.notEqual(two.get(path.join(dir, 'sub', 'a.txt')), one.get(path.join(dir, 'sub', 'a.txt')));
+  assert.ok(two.has(path.join(dir, 'b.txt')));
+  await fs.rm(path.join(dir, 'b.txt'));
+  assert.equal((await pollSnapshot(spec)).has(path.join(dir, 'b.txt')), false);
+
+  assert.equal(pollOption(undefined, undefined), undefined);
+  assert.equal(pollOption(true, undefined), 1000);
+  assert.equal(pollOption(undefined, '250'), 250, 'an interval implies --poll');
+  for (const bad of ['5', '1.5', 'x', '-1', '', '+50']) assert.throws(() => pollOption(true, bad), /--poll-interval expects a whole number of milliseconds \(10 or more\)/);
 });
 
 test('injectReloadScript inserts before the last </body>, else appends', () => {
@@ -428,6 +454,32 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
   } finally {
     assert.equal(await w.stop(), 0);
   }
+});
+
+test('build --watch --poll-interval: polling sees changes; --poll needs --watch', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const site = await makeSite({});
+  const w = startCli(home, ['build', '--watch', '--poll-interval', '50', site]);
+  try {
+    await w.waitFor(/Watching /);
+    await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:2px}');
+    await w.waitFor(/^Exported /m, 2);
+    assert.equal(await fs.readFile(path.join(site, 'dist', 'style.css'), 'utf8'), 'body{margin:2px}');
+    await fs.writeFile(path.join(site, 'public', 'new.txt'), 'new');
+    await w.waitFor(/^Exported /m, 3);
+    assert.equal(await fs.readFile(path.join(site, 'dist', 'new.txt'), 'utf8'), 'new');
+  } finally {
+    assert.equal(await w.stop(), 0);
+  }
+  let r = await runCli(home, ['build', '--poll', site]);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--poll needs --watch/);
+  r = await runCli(home, ['build', '--watch', '--poll-interval', 'soon', site]);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--poll-interval expects a whole number of milliseconds \(10 or more\), got 'soon'/);
+  r = await runCli(home, ['serve', '--poll', './x/']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--poll needs --watch/);
 });
 
 test('build --watch: a failing first build keeps watching and recovers', async () => {

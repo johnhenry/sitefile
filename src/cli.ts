@@ -17,7 +17,7 @@ import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { SITEFILE_VERSION } from './attest.js';
-import { watchLoop } from './cli/watch.js';
+import { pollOption, watchLoop } from './cli/watch.js';
 import { Profiler } from './profile.js';
 import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
@@ -117,6 +117,9 @@ ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -182,6 +185,8 @@ export async function main(
         json: { type: 'boolean' },
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
+        poll: { type: 'boolean' },
+        'poll-interval': { type: 'string' },
         profile: { type: 'string' },
         manifest: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
@@ -230,13 +235,21 @@ export async function main(
     if (o['no-cache']) return usageError('--no-cache cannot be combined with --cache-from or --cache-to');
     if (cacheTo.length > 1) return usageError('--cache-to can be given only once');
   }
+  if (!o.watch && (o.poll || o['poll-interval'] !== undefined)) return usageError(`--${o['poll-interval'] !== undefined ? 'poll-interval' : 'poll'} needs --watch`);
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
+    let pollMs: number | undefined;
+    try {
+      pollMs = pollOption(o.poll, o['poll-interval']);
+    } catch (e) {
+      return usageError((e as SitefileError).detail);
+    }
     try {
       const memo = watchMemo();
       return await watchLoop({
         context: contextArg,
+        ...(pollMs !== undefined ? { pollMs } : {}),
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {

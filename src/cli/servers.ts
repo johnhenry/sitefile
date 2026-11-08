@@ -13,7 +13,7 @@ import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
 import { watchMemo } from '../memo.js';
-import { watchLoop } from './watch.js';
+import { pollOption, watchLoop } from './watch.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -121,6 +121,8 @@ const run: Command = {
     '--no-cache        do not use the TRANSFORM result cache (--watch)',
     '--no-lockfile     do not read or write Sitefile.lock (--watch)',
     '--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)',
+    '--poll            poll for changes (every 1000 ms) instead of file system events (--watch)',
+    '--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)',
   ],
   options: {
     name: { type: 'string' },
@@ -135,6 +137,8 @@ const run: Command = {
     'no-cache': { type: 'boolean' },
     'no-lockfile': { type: 'boolean' },
     'keep-service-workers': { type: 'boolean' },
+    poll: { type: 'boolean' },
+    'poll-interval': { type: 'string' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -187,7 +191,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval'] as const;
 
 /** `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. */
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
@@ -200,6 +204,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const target = str(v.target);
   const argFiles = strs(v['build-arg-file']);
   const argFlags = strs(v['build-arg']);
+  const pollMs = pollOption(!!v.poll, str(v['poll-interval']));
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;
@@ -210,6 +215,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   try {
     return await watchLoop({
       context,
+      ...(pollMs !== undefined ? { pollMs } : {}),
       ...(file ? { sitefile: file } : {}),
       argFiles,
       build: async () => {

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SitefileError } from '../errors.js';
 import { resolveStoreHome } from '../store.js';
-import { isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
+import { DEFAULT_POLL_MS, isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
 
 export interface BuildOutcome {
   /** CLI exit code of the build: 0 ok, 1 build error (already printed), 2 usage error (already printed). */
@@ -21,8 +21,21 @@ export interface WatchLoopOptions {
   readonly build: () => Promise<BuildOutcome>;
   /** After the first build, before the "Watching" line (serve starts listening here). */
   readonly onStarted?: () => Promise<void>;
+  /** `--poll`: poll every this many milliseconds instead of using file system events. */
+  readonly pollMs?: number;
   /** For tests: resolves to stop the loop (default: SIGINT or SIGTERM). */
   readonly stop?: Promise<void>;
+}
+
+/**
+ * `--poll` / `--poll-interval <ms>` (the interval implies polling): the poll interval in
+ * milliseconds, or undefined for file system events. Throws E_USAGE for a bad interval.
+ */
+export function pollOption(poll: boolean | undefined, interval: string | undefined): number | undefined {
+  if (interval === undefined) return poll ? DEFAULT_POLL_MS : undefined;
+  const n = /^[0-9]{1,9}$/.test(interval) ? Number(interval) : NaN;
+  if (!(n >= 10)) throw new SitefileError('E_USAGE', `--poll-interval expects a whole number of milliseconds (10 or more), got '${interval}'`);
+  return n;
 }
 
 const MSG_CHANGE = 'Change detected, rebuilding\n';
@@ -85,6 +98,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
     onChange: (p) => {
       if (relevant(p)) scheduler.notify(p);
     },
+    ...(o.pollMs !== undefined ? { pollMs: o.pollMs, ignore: (p: string) => !relevant(p) } : {}),
   });
   void (o.stop ?? signalled()).then(() => finish(0));
   try {

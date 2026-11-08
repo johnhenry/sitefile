@@ -503,9 +503,10 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 ## Watch mode
 
 ```
-sitefile build --watch [context] [build options]
+sitefile build --watch [--poll] [--poll-interval ms] [context] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
-                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers] [context]
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
+                       [--poll] [--poll-interval ms] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -519,6 +520,13 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
   store (`$SITEFILE_HOME`). A build's own writes never trigger another build.
 - **Debounce**: a rebuild starts once nothing has changed for 100 ms, so saving several files is one rebuild.
   Changes that arrive while a build runs are coalesced into one follow-up build.
+- **Polling** (`--poll`, `--poll-interval <ms>`): file system events do not arrive for network shares (SMB, NFS),
+  some Docker bind mounts and WSL paths under `/mnt`. `--poll` compares a stat snapshot of the watched paths (type,
+  size, mtime, ctime and inode; symlinks not followed; ignored paths not walked) every 1000 ms instead;
+  `--poll-interval <ms>` sets the interval (a whole number, 10 or more) and implies `--poll`. Both need `--watch`
+  (`error: --poll needs --watch`) and work for `build --watch` and `serve --watch`. A change shows up at the next
+  scan, so a rebuild can start up to one interval later. sitefile does not detect network file systems itself; pass
+  `--poll` when saves do not trigger rebuilds.
 - **Incremental rebuilds**: the watch session keeps the results of the previous builds in memory and re-runs only
   the steps whose inputs changed: an import whose files are unchanged is not parsed again (a Markdown or data
   collection re-parses only the edited documents), an operation that reads nothing that changed reuses its files,
@@ -583,7 +591,8 @@ Only under `serve --watch`:
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
-(recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)).
+(recursive), the Rust CLI polls the watched paths every 100 ms (see [RUST.md](RUST.md#known-differences)); with
+`--poll` both poll.
 
 ## Profiling (`--profile`)
 
