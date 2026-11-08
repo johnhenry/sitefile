@@ -52,6 +52,13 @@
   plan alone, with what needs each and its status under `--allow-hosts`,
   `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
   `needs`). Nothing is fetched. Both implementations, with a conformance case.
+- **Extensionless well-known files get their type** (johnhenry/sitefile#180):
+  `serve` and Web Bundle export send `/.well-known/apple-app-site-association`
+  (and `/apple-app-site-association`), `openid-configuration`,
+  `oauth-authorization-server` and `nodeinfo` as `application/json`,
+  `webfinger` as `application/jrd+json` and `host-meta` as
+  `application/xrd+xml`, instead of `application/octet-stream`. Extension
+  matching is ASCII case-insensitive in both implementations.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of

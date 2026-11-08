@@ -1,0 +1,11 @@
+# Web Bundle export types extensionless well-known files like serve does (johnhenry/sitefile#180).
+COPY <<X /.well-known/apple-app-site-association
+{"applinks": {"details": []}}
+X
+COPY <<X /.well-known/webfinger
+{}
+X
+COPY <<X /.well-known/host-meta
+<XRD/>
+X
+EXPORT / AS wbn BASE https://example.com/

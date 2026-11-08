@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MIME_TYPES } from '../src/mime-data.js';
+import { MIME_TYPES, WELL_KNOWN_TYPES } from '../src/mime-data.js';
 import { DEFAULT_ARCHIVE_LIMITS } from '../src/resources/types.js';
 import { readWebBundle } from '../src/resources/wbn-reader.js';
 import { makeFile, Tree } from '../src/tree.js';
@@ -18,9 +18,11 @@ test('src/mime-data.ts and rust/src/mime_data.rs are generated from tools/gen-mi
   assert.equal(r.status, 0, r.stderr);
   const rust = readFileSync(path.join(root, 'rust', 'src', 'mime_data.rs'), 'utf8');
   const rows = [...rust.matchAll(/^ {4}\("([^"]+)", "([^"]+)"\),$/gm)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(rows, MIME_TYPES.map(([e, t]) => [e, t]));
-  const exts = MIME_TYPES.map(([e]) => e);
-  assert.deepEqual(exts, [...exts].sort(), 'sorted (the Rust lookup is a binary search)');
+  assert.deepEqual(rows, [...WELL_KNOWN_TYPES, ...MIME_TYPES].map(([e, t]) => [e, t]));
+  for (const table of [WELL_KNOWN_TYPES, MIME_TYPES]) {
+    const keys = table.map(([e]) => e);
+    assert.deepEqual(keys, [...keys].sort(), 'sorted (the Rust lookup is a binary search)');
+  }
 });
 
 test('mimeTypeFor: common static types, charset on text types, case-insensitive, octet-stream otherwise', () => {
@@ -41,6 +43,25 @@ test('mimeTypeFor: common static types, charset on text types, case-insensitive,
     ['/index.html', 'text/html; charset=utf-8'],
     ['/blob.xyz', 'application/octet-stream'],
     ['/noext', 'application/octet-stream'],
+    // ASCII case-insensitive only, like the Rust port: U+212A KELVIN SIGN does not lowercase to `k`.
+    ['/m.m\u212av', 'application/octet-stream'],
+  ];
+  for (const [p, want] of cases) assert.equal(mimeTypeFor(p), want, p);
+});
+
+test('mimeTypeFor: extensionless well-known paths by exact name (johnhenry/sitefile#180)', () => {
+  const cases: Array<[string, string]> = [
+    ['/.well-known/apple-app-site-association', 'application/json; charset=utf-8'],
+    ['/apple-app-site-association', 'application/json; charset=utf-8'],
+    ['/.well-known/openid-configuration', 'application/json; charset=utf-8'],
+    ['/.well-known/oauth-authorization-server', 'application/json; charset=utf-8'],
+    ['/.well-known/webfinger', 'application/jrd+json; charset=utf-8'],
+    ['/.well-known/nodeinfo', 'application/json; charset=utf-8'],
+    ['/.well-known/host-meta', 'application/xrd+xml; charset=utf-8'],
+    ['/.well-known/host-meta.json', 'application/json; charset=utf-8'],
+    ['/.well-known/other', 'application/octet-stream'],
+    ['/docs/.well-known/webfinger', 'application/octet-stream'],
+    ['/.well-known/WEBFINGER', 'application/octet-stream'],
   ];
   for (const [p, want] of cases) assert.equal(mimeTypeFor(p), want, p);
 });
@@ -50,9 +71,11 @@ test('Web Bundle export records the same content types', () => {
     ['/index.html', makeFile(new TextEncoder().encode('<h1>x</h1>'), 't')],
     ['/en.vtt', makeFile(new TextEncoder().encode('WEBVTT\n'), 't')],
     ['/font.otf', makeFile(new TextEncoder().encode('OTTO'), 't')],
+    ['/.well-known/apple-app-site-association', makeFile(new TextEncoder().encode('{}'), 't')],
   ]);
   const b = readWebBundle(writeWebBundle(tree, 'https://example.com/'), 'test', DEFAULT_ARCHIVE_LIMITS);
   const type = (u: string) => b.entries.find((e) => e.url === u)?.headers['content-type'];
   assert.equal(type('https://example.com/en.vtt'), 'text/vtt; charset=utf-8');
   assert.equal(type('https://example.com/font.otf'), 'font/otf');
+  assert.equal(type('https://example.com/.well-known/apple-app-site-association'), 'application/json; charset=utf-8');
 });

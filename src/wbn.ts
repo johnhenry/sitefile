@@ -2,7 +2,7 @@ import { SitefileError } from './errors.js';
 import { cborArray, cborBytes, cborMap, cborText, cborUint } from './cbor.js';
 import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules, type ServeHeaders, type ServeRedirect } from './serve-rules.js';
 import type { Tree } from './tree.js';
-import { MIME_TYPES } from './mime-data.js';
+import { MIME_TYPES, WELL_KNOWN_TYPES } from './mime-data.js';
 
 /**
  * Unsigned Web Bundle, format version "b2"
@@ -31,14 +31,21 @@ import { MIME_TYPES } from './mime-data.js';
 const MAGIC = Buffer.from('f09f8c90f09f93a6', 'hex');
 const VERSION = Buffer.from([0x62, 0x32, 0x00, 0x00]);
 
-/** Content types by extension (tools/gen-mime.mjs; the same table as rust/src/mime_data.rs). */
+/** Content types by extension and well-known path (tools/gen-mime.mjs; the same tables as rust/src/mime_data.rs). */
 const MIME: ReadonlyMap<string, string> = new Map(MIME_TYPES);
+const WELL_KNOWN: ReadonlyMap<string, string> = new Map(WELL_KNOWN_TYPES);
 
-/** The content type `serve` and Web Bundle export give a path (`application/octet-stream` when unknown). */
+/**
+ * The content type `serve` and Web Bundle export give a tree path: a well-known extensionless path
+ * (`/.well-known/apple-app-site-association`, ...) by its exact name, else by the extension, ASCII
+ * case-insensitively (`application/octet-stream` when unknown).
+ */
 export function mimeTypeFor(path: string): string {
+  const known = WELL_KNOWN.get(path);
+  if (known !== undefined) return known;
   const base = path.slice(path.lastIndexOf('/') + 1);
   const dot = base.lastIndexOf('.');
-  const ext = dot < 0 ? '' : base.slice(dot + 1).toLowerCase();
+  const ext = dot < 0 ? '' : base.slice(dot + 1).replace(/[A-Z]/g, (c) => c.toLowerCase());
   return MIME.get(ext) ?? 'application/octet-stream';
 }
 
