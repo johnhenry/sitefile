@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`EXPORT … AS swbn KEY <secret-id>`** (johnhenry/sitefile#207): a Signed
+  Web Bundle for Isolated Web Apps, signed with an Ed25519 PEM key passed as
+  `--secret id=<id>,src=key.pem` (never stored). The output is
+  byte-identical to `wbn-sign` 0.3.1's; `build` prints the Web Bundle ID.
+  The Rust port has a small RFC 8032 Ed25519 of its own (no new crate).
+  `--secret` values may now contain line breaks; a value used as an HTTP
+  header still may not. Conformance cases `ok-swbn`, `err-swbn-*`.
+
 - **WARC export, import and serve** (johnhenry/sitefile#206, WARC part):
   `EXPORT / AS warc BASE <url>` writes a deterministic WARC/1.1 file (one
   `response` record per file with its `_headers`, directory indexes at their

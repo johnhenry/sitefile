@@ -124,7 +124,7 @@ test('a secret is sent as the named header (or Bearer), only to the import origi
   const landing = seen.find((s) => s.port === 'other')!;
   assert.equal(landing.headers['x-api-key'], undefined);
   assert.equal(landing.headers.authorization, undefined);
-  assert.ok(warnings.includes('--secret extra is not used by any IMPORT … SECRET'), warnings.join('\n'));
+  assert.ok(warnings.includes('--secret extra is not used by any IMPORT … SECRET or EXPORT … KEY'), warnings.join('\n'));
   await assert.rejects(build({ contextDir: ctx, fetchPolicy: { allowHttp: true, allowPrivateNetwork: true }, onWarning: () => {} }), (e: unknown) => isSitefileError(e, 'E_SECRET') && /secret 'k' was not given/.test((e as Error).message));
   // The memo (incremental rebuild keys) holds no secret.
   const memo = new BuildMemo();

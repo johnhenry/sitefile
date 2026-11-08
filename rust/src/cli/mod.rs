@@ -121,12 +121,12 @@ Options:
                                a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc | swbn
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
                                Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml
-                               .warc .warc.gz),
+                               .warc .warc.gz .swbn),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
@@ -1018,6 +1018,10 @@ fn run_build_command(
                     r.root_cid
                         .as_deref()
                         .map(|c| format!(", root {c}"))
+                        .or_else(|| r
+                            .web_bundle_id
+                            .as_deref()
+                            .map(|i| format!(", web bundle id {i}")))
                         .unwrap_or_default()
                 ),
             };

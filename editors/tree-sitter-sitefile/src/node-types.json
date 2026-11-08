@@ -335,6 +335,16 @@
           }
         ]
       },
+      "key": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "path": {
         "multiple": false,
         "required": true,
@@ -2585,6 +2595,10 @@
   },
   {
     "type": "INTEGRITY",
+    "named": false
+  },
+  {
+    "type": "KEY",
     "named": false
   },
   {

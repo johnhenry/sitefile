@@ -232,6 +232,8 @@ export interface Plan {
   readonly exportRoot: string | undefined;
   /** `COMPRESSION` clause of EXPORT ... AS oci or wbn (undefined: gzip for oci, none for wbn). */
   readonly exportCompression: OciCompression | undefined;
+  /** `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key. */
+  readonly exportKey?: string;
   /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
   readonly redirects: readonly RedirectSpec[];
   /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
@@ -277,6 +279,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportBase: string | undefined;
   let exportRoot: string | undefined;
   let exportCompression: OciCompression | undefined;
+  let exportKey: string | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -495,6 +498,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
         if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn' && ins.format !== 'warc') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc', ins.compression.span);
         exportCompression = ins.compression?.value;
+        if (ins.key && ins.format !== 'swbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... KEY applies only to AS swbn', ins.key.span);
+        if (ins.format === 'swbn' && !ins.key) throw new SitefileError('E_VALIDATION', 'EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key', ins.span);
+        exportKey = ins.key?.id;
         break;
     }
   }
@@ -537,6 +543,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     exportBase,
     exportRoot,
     exportCompression,
+    ...(exportKey !== undefined ? { exportKey } : {}),
     redirects,
     headers,
     ...(cacheHeaders ? { cacheHeaders } : {}),

@@ -687,12 +687,15 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
         .imports
         .iter()
         .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .chain(p.export_key.as_deref())
         .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
         if !used.contains(id) {
-            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+            warn(&format!(
+                "--secret {id} is not used by any IMPORT … SECRET or EXPORT … KEY"
+            ));
         }
     }
 }
@@ -1422,6 +1425,8 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// car: the root CID (CIDv1, base32).
     pub root_cid: Option<String>,
+    /// swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`).
+    pub web_bundle_id: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
 }
@@ -1694,6 +1699,7 @@ fn export_build(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
+                web_bundle_id: None,
                 incremental: None,
             });
         }
@@ -1710,6 +1716,7 @@ fn export_build(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
+            web_bundle_id: None,
             incremental: None,
         });
     }
@@ -1727,7 +1734,41 @@ fn export_build(
             file_digest: None,
             manifest_digest: None,
             root_cid: None,
+            web_bundle_id: None,
             incremental: written.incremental,
+        });
+    }
+    if format == ExportFormat::Swbn {
+        let key_id = if result.plan.export_format == ExportFormat::Swbn {
+            result.plan.export_key.clone()
+        } else {
+            None
+        };
+        let Some(key_id) = key_id else {
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+            ));
+        };
+        let Some(pem) = options.secrets.get(&key_id) else {
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("EXPORT ... KEY {key_id}: no --secret id={key_id} was given"),
+            ));
+        };
+        let (data, id) =
+            crate::export::swbn::write_signed_web_bundle(&result.output, pem, &key_id)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: None,
+            web_bundle_id: Some(id),
+            incremental: None,
         });
     }
     if format == ExportFormat::Car {
@@ -1741,6 +1782,7 @@ fn export_build(
             file_digest: Some(sha256(&data)),
             manifest_digest: None,
             root_cid: Some(root),
+            web_bundle_id: None,
             incremental: None,
         });
     }
@@ -1775,6 +1817,7 @@ fn export_build(
         file_digest: Some(digest),
         manifest_digest: None,
         root_cid: None,
+        web_bundle_id: None,
         incremental: None,
     })
 }

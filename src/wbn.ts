@@ -81,7 +81,11 @@ const enc = new TextEncoder();
 const bstr = (s: string): Uint8Array => cborBytes(enc.encode(s));
 
 export function writeWebBundle(tree: Tree, baseUrl: string | undefined): Uint8Array {
-  const base = validateBaseUrl(baseUrl);
+  return writeWebBundleAt(tree, validateBaseUrl(baseUrl));
+}
+
+/** {@link writeWebBundle} at a base URL the caller has already validated (`isolated-app://<id>/` for swbn). */
+export function writeWebBundleAt(tree: Tree, base: string): Uint8Array {
   const { responses, urls } = bundleResponses(tree);
 
   const index: Array<[Uint8Array, Uint8Array]> = [];
