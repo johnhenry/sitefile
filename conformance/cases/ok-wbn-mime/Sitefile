@@ -1,0 +1,4 @@
+# Web Bundle export types every response with the same table as serve (johnhenry/sitefile#179);
+# case.json writes ./site/ (one file per extension in tools/gen-mime.mjs).
+COPY ./site/ /
+EXPORT / AS wbn BASE https://example.com/

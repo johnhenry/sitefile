@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
+  Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
+  fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
+  ~24, so files no longer arrive as `application/octet-stream` under
+  `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
+  implementations. A `serve` conformance case kind (`"command": "serve"`)
+  compares both servers' answers to raw HTTP requests.
 - **Network gating** (johnhenry/sitefile#176): a host refused because it
   matches no `--allow-hosts` rule now says which flag to add (`; add
   --allow-hosts <host>`) and carries `needs` (`kind: 'host'`,
