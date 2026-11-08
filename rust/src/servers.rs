@@ -9,6 +9,20 @@
 //!
 //! A server is `running` only when its pid is alive AND its port answers with
 //! this server's `x-sitefile-server` header.
+//!
+//! Embedders (a long-running host such as sitefile Desktop) start, restart and
+//! stop detached servers with [`serve_detached`], [`restart_detached`] and
+//! [`stop_server`], the functions `serve -d`, `server restart` and
+//! `server stop` use. The worker is the executable given as `worker_exe`
+//! (default: the current one) run as `<exe> __serve-worker <id>`, so an
+//! embedding binary must hand that argv to `sitefile::cli::main` first thing.
+//!
+//! **Reaping.** The worker is a child of the process that started it, which
+//! waits for it on a background thread (`sitefile-reaper`). So a long-lived
+//! host never keeps a stopped worker as a zombie, which `kill -0` (and so
+//! [`pid_alive`]) would report as alive, making [`stop_server`] wait out its
+//! grace period and fail. When the starting process exits first (the CLI),
+//! the worker is re-parented and keeps running.
 
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
@@ -19,10 +33,10 @@ use crate::tree::Tree;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -282,7 +296,9 @@ fn url_of(host: &str, port: u16) -> String {
     }
 }
 
-/// Whether a process exists (`kill -0`; EPERM counts as alive).
+/// Whether a process exists (`kill -0`; EPERM counts as alive). A zombie (a
+/// child that exited and was not waited for) still counts; detached workers
+/// are reaped by [`start_detached`], so this sees them exit.
 pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 || pid > i32::MAX as i64 {
         return false;
@@ -368,6 +384,338 @@ pub fn load_served_tree(store: &Store, source: &ServerSource) -> Result<Tree> {
         ServerSource::Image { image_id } => store.load_tree(image_id),
         ServerSource::Dir { path } => load_directory_tree(Path::new(path)),
     }
+}
+
+/// `-p` value: `port`, `host:port` or `[v6]:port`. Default (`None`) bind is
+/// 127.0.0.1 with a free port; `localhost` means 127.0.0.1. Errors are `E_USAGE`.
+pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
+    let usage = |m: String| Err(SitefileError::plain(E_USAGE, m));
+    let Some(spec) = spec else {
+        return Ok(Bind {
+            host: "127.0.0.1".into(),
+            port: 0,
+        });
+    };
+    let bad = || usage(format!("-p expects [host:]port, got '{spec}'"));
+    let is_port = |s: &str| (1..=5).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    let (host, port) = if is_port(spec) {
+        (None, spec)
+    } else if let Some(rest) = spec.strip_prefix('[') {
+        let Some((h, p)) = rest.split_once("]:") else {
+            return bad();
+        };
+        if h.is_empty() || !h.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') || !is_port(p) {
+            return bad();
+        }
+        (Some(h), p)
+    } else {
+        let Some((h, p)) = spec.split_once(':') else {
+            return bad();
+        };
+        if h.is_empty() || h.contains(['[', ']']) || !is_port(p) {
+            return bad();
+        }
+        (Some(h), p)
+    };
+    let port: u32 = port.parse().unwrap_or(0);
+    if port > 65535 {
+        return usage(format!("-p: port {port} is out of range"));
+    }
+    let mut host = host.unwrap_or("127.0.0.1").to_string();
+    if host == "localhost" {
+        host = "127.0.0.1".into();
+    }
+    if host.parse::<IpAddr>().is_err() {
+        return usage(format!(
+            "-p: host must be an IP address or 'localhost', got '{host}'"
+        ));
+    }
+    Ok(Bind {
+        host,
+        port: port as u16,
+    })
+}
+
+/// `^(\.\.?|~.*|\.\.?\/.*|\/.*|.*\/)$`: an argument that names a directory.
+pub fn looks_like_dir(arg: &str) -> bool {
+    arg == "."
+        || arg == ".."
+        || arg.starts_with('~')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with('/')
+        || arg.ends_with('/')
+}
+
+/// What `sitefile serve <arg>` serves: a directory when `arg` looks like one
+/// (`./site`, `../x`, `/abs`, `~/x`, `dir/`), else an image reference or ID in
+/// `store`. Returns the label (what the user asked for, shown and stored as
+/// `ServerState::image`) and the source. A bare name that is not an image but
+/// is a directory gets a hint to write `./name`.
+pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)> {
+    if looks_like_dir(arg) {
+        let dir = crate::export::exporter::resolve_path(Path::new(arg));
+        if !fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false) {
+            return Err(SitefileError::plain(
+                E_NOT_FOUND,
+                format!("'{arg}' is not a directory"),
+            ));
+        }
+        let real = fs::canonicalize(&dir).unwrap_or(dir.clone());
+        return Ok((
+            dir.display().to_string(),
+            ServerSource::Dir {
+                path: real.display().to_string(),
+            },
+        ));
+    }
+    match store.resolve(arg) {
+        Ok(id) => Ok((arg.to_string(), ServerSource::Image { image_id: id })),
+        Err(e) => {
+            if e.code == E_NOT_FOUND && fs::metadata(arg).map(|m| m.is_dir()).unwrap_or(false) {
+                return Err(SitefileError::plain(
+                    E_NOT_FOUND,
+                    format!("{} (to serve the directory, write ./{arg})", e.message()),
+                ));
+            }
+            Err(e)
+        }
+    }
+}
+
+/// A detached server to start ([`serve_detached`]): `serve -d`'s arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetachedServe {
+    /// What is served, as shown (`ServerState::image`): see [`resolve_source`].
+    pub label: String,
+    pub source: ServerSource,
+    /// `--name` (default `site-<6 hex>`).
+    pub name: Option<String>,
+    /// `-p` ([`parse_publish`]; default 127.0.0.1, a free port).
+    pub bind: Bind,
+    /// `--spa`.
+    pub spa: bool,
+}
+
+impl DetachedServe {
+    /// Serve `arg` (an image reference or ID, or a directory, as `serve` takes it)
+    /// on 127.0.0.1 with a free port, unnamed, not as an SPA.
+    pub fn resolve(store: &Store, arg: &str) -> Result<DetachedServe> {
+        let (label, source) = resolve_source(store, arg)?;
+        Ok(DetachedServe {
+            label,
+            source,
+            name: None,
+            bind: parse_publish(None)?,
+            spa: false,
+        })
+    }
+}
+
+/// How long [`start_detached`] waits for the worker to listen.
+pub const START_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `serve -d`: check that the image or directory loads, allocate an ID and
+/// name, record the server, start its worker and wait until it listens.
+/// Returns the running server's state (its real host and port). On failure
+/// the record is removed. `worker_exe` runs as `<exe> __serve-worker <id>`
+/// (`None`: the current executable); the worker is reaped (see the module docs).
+pub fn serve_detached(
+    reg: &ServerRegistry,
+    serve: &DetachedServe,
+    worker_exe: Option<&Path>,
+) -> Result<ServerState> {
+    load_served_tree(&reg.store, &serve.source)?; // fail fast on a bad image or directory
+    let (id, final_name) = reg.allocate(serve.name.as_deref())?;
+    let state = ServerState {
+        id: id.clone(),
+        name: final_name,
+        image: serve.label.clone(),
+        source: serve.source.clone(),
+        spa: serve.spa,
+        host: serve.bind.host.clone(),
+        port: serve.bind.port,
+        bind: serve.bind.clone(),
+        pid: 0,
+        started: crate::store::now_iso(),
+        log_file: reg.log_path(&id).display().to_string(),
+        ready: false,
+        error: None,
+    };
+    reg.write(&state)?;
+    match start_detached(reg, &state, worker_exe) {
+        Ok(up) => Ok(up),
+        Err(e) => {
+            reg.remove(&id)?;
+            Err(e)
+        }
+    }
+}
+
+/// `server restart`: stop `s` if it is running (SIGTERM, `grace`, SIGKILL),
+/// then start it again with the same ID, name, source and requested bind
+/// address (an image by the same ID; a directory is re-read). On failure the
+/// record stays, marked not ready.
+pub fn restart_detached(
+    reg: &ServerRegistry,
+    s: &ServerState,
+    grace: Duration,
+    worker_exe: Option<&Path>,
+) -> Result<ServerState> {
+    stop_server(reg, s, grace)?;
+    load_served_tree(&reg.store, &s.source)?;
+    let mut fresh = s.clone();
+    fresh.host = s.bind.host.clone();
+    fresh.port = s.bind.port;
+    fresh.pid = 0;
+    fresh.ready = false;
+    fresh.started = crate::store::now_iso();
+    fresh.error = None;
+    reg.write(&fresh)?;
+    match start_detached(reg, &fresh, worker_exe) {
+        Ok(u) => Ok(u),
+        Err(e) => {
+            reg.update(&s.id, |x| x.ready = false)?;
+            Err(e)
+        }
+    }
+}
+
+/// Spawn the detached worker for an already recorded `state` (its own process
+/// group, stdin closed, output appended to its log, `SITEFILE_HOME` set to the
+/// registry's store) and wait until the record says ready, the worker fails, or
+/// [`START_TIMEOUT`]. The worker is reaped on a background thread.
+pub fn start_detached(
+    reg: &ServerRegistry,
+    state: &ServerState,
+    worker_exe: Option<&Path>,
+) -> Result<ServerState> {
+    use std::os::unix::process::CommandExt;
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&state.log_file)
+        .map_err(|e| {
+            SitefileError::plain(E_SERVER, format!("cannot open '{}': {e}", state.log_file))
+        })?;
+    let exe = match worker_exe {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_exe().map_err(|e| {
+            SitefileError::plain(
+                E_SERVER,
+                format!("cannot find the sitefile executable: {e}"),
+            )
+        })?,
+    };
+    let log2 = log
+        .try_clone()
+        .map_err(|e| SitefileError::plain(E_SERVER, e.to_string()))?;
+    let mut child = std::process::Command::new(exe)
+        .arg("__serve-worker")
+        .arg(&state.id)
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(log2)
+        .env("SITEFILE_HOME", &reg.store.home)
+        .process_group(0)
+        .spawn()
+        .map_err(|e| {
+            SitefileError::plain(E_SERVER, format!("cannot start the server process: {e}"))
+        })?;
+    let deadline = Instant::now() + START_TIMEOUT;
+    let result = loop {
+        let cur = match reg.read(&state.id) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = child.kill();
+                break Err(e);
+            }
+        };
+        if let Some(c) = cur.as_ref().filter(|c| c.ready) {
+            break Ok(c.clone());
+        }
+        let exited = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+        let error = cur.as_ref().and_then(|c| c.error.clone());
+        if exited || error.is_some() || Instant::now() > deadline {
+            if !exited {
+                let _ = child.kill();
+            }
+            let why = error.unwrap_or_else(|| {
+                if exited {
+                    "the server process exited before it was ready".into()
+                } else {
+                    "timed out waiting for the server to start".into()
+                }
+            });
+            break Err(SitefileError::plain(
+                E_SERVER,
+                why.strip_prefix("error[E_SERVER]: ")
+                    .unwrap_or(&why)
+                    .to_string(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    };
+    reap(child);
+    result
+}
+
+/// Wait for `child` on a background thread, so it never lingers as a zombie.
+/// (If no thread can be started, it stays unreaped until this process exits.)
+fn reap(mut child: std::process::Child) {
+    let _ = std::thread::Builder::new()
+        .name("sitefile-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+}
+
+const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
+
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+fn send(pid: i64, sig: i32) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    // SAFETY: plain syscall wrapper.
+    unsafe { kill(pid as i32, sig) == 0 }
+}
+
+/// `server stop`: SIGTERM, wait up to `grace`, then SIGKILL (and 2 s more).
+/// Returns false if the server was not running. Marks the record not ready.
+pub fn stop_server(reg: &ServerRegistry, s: &ServerState, grace: Duration) -> Result<bool> {
+    if !is_running(s) {
+        return Ok(false);
+    }
+    let gone = |d: Duration| {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            if !pid_alive(s.pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        !pid_alive(s.pid)
+    };
+    if !send(s.pid, SIGTERM) {
+        return Ok(false);
+    }
+    if !gone(grace) {
+        send(s.pid, SIGKILL);
+        if !gone(Duration::from_secs(2)) {
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!("could not stop {} (pid {})", s.name, s.pid),
+            ));
+        }
+    }
+    let _ = reg.update(&s.id, |x| x.ready = false);
+    Ok(true)
 }
 
 #[cfg(test)]

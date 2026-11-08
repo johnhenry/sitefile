@@ -105,15 +105,21 @@ thread_local! {
 /// Set to a non-empty value other than `0` to skip the on-disk compiled-module cache.
 pub const NO_CACHE_ENV: &str = "SITEFILE_NO_WASM_CACHE";
 
-/// `$SITEFILE_HOME/cache/wasm`, or `None` when the disk cache is switched off.
+/// `<home>/cache/wasm` (`home` defaults to `$SITEFILE_HOME`, see
+/// `BuildOptions::store_home`), or `None` when the disk cache is switched off.
 /// (Unit tests never touch the real home: they pass their own directory.)
-fn disk_cache_dir() -> Option<PathBuf> {
+fn disk_cache_dir(home: Option<&Path>) -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
     match std::env::var(NO_CACHE_ENV) {
         Ok(v) if !v.is_empty() && v != "0" => None,
-        _ => Some(resolve_store_home().join("cache").join("wasm")),
+        _ => Some(
+            home.map(Path::to_path_buf)
+                .unwrap_or_else(resolve_store_home)
+                .join("cache")
+                .join("wasm"),
+        ),
     }
 }
 
@@ -246,7 +252,12 @@ fn load_with_dir(
 }
 
 /// One compile per distinct plugin per process; later loads clone the handle.
-fn load_module(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<Module> {
+fn load_module(
+    home: Option<&Path>,
+    name: &str,
+    bytes: &[u8],
+    span: Option<&SourceSpan>,
+) -> Result<Module> {
     static MEMO: Mutex<Option<HashMap<String, Module>>> = Mutex::new(None);
     let key = crate::digest::sha256(bytes);
     if let Some(m) = MEMO
@@ -256,7 +267,7 @@ fn load_module(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<Mo
     {
         return Ok(m);
     }
-    let (module, _) = load_with_dir(disk_cache_dir().as_deref(), name, bytes, span)?;
+    let (module, _) = load_with_dir(disk_cache_dir(home).as_deref(), name, bytes, span)?;
     if let Ok(mut g) = MEMO.lock() {
         g.get_or_insert_with(HashMap::new)
             .insert(key, module.clone());
@@ -307,7 +318,18 @@ fn check_module(name: &str, module: &Module, span: Option<&SourceSpan>) -> Resul
 
 /// Compile and check a module against ABI v1; E_PLUGIN with a precise reason.
 pub fn check_wasm_plugin(name: &str, bytes: &[u8], span: Option<&SourceSpan>) -> Result<()> {
-    load_module(name, bytes, span).map(|_| ())
+    check_wasm_plugin_in(None, name, bytes, span)
+}
+
+/// [`check_wasm_plugin`], with the compiled module cached under `<home>/cache/wasm`
+/// (`None`: `$SITEFILE_HOME`).
+pub fn check_wasm_plugin_in(
+    home: Option<&Path>,
+    name: &str,
+    bytes: &[u8],
+    span: Option<&SourceSpan>,
+) -> Result<()> {
+    load_module(home, name, bytes, span).map(|_| ())
 }
 
 struct Ctx {
@@ -319,6 +341,7 @@ pub struct WasmPlugin {
     bytes: Vec<u8>,
     module: Option<Module>,
     policy: PluginPolicy,
+    store_home: Option<PathBuf>,
 }
 
 impl WasmPlugin {
@@ -331,7 +354,14 @@ impl WasmPlugin {
             bytes,
             module: None,
             policy,
+            store_home: None,
         }
+    }
+
+    /// Cache the compiled module under `<home>/cache/wasm` (`None`: `$SITEFILE_HOME`).
+    pub fn with_store_home(mut self, home: Option<PathBuf>) -> Self {
+        self.store_home = home;
+        self
     }
 
     pub fn cacheable(&self) -> bool {
@@ -350,7 +380,12 @@ impl WasmPlugin {
     /// Compile the module (once), so `call_prepared` can run calls from several threads.
     pub fn prepare(&mut self, span: Option<&SourceSpan>) -> Result<()> {
         if self.module.is_none() {
-            self.module = Some(load_module(&self.name, &self.bytes, span)?);
+            self.module = Some(load_module(
+                self.store_home.as_deref(),
+                &self.name,
+                &self.bytes,
+                span,
+            )?);
         }
         Ok(())
     }

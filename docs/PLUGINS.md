@@ -124,7 +124,11 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
 - Without it the build stops with `E_UNSUPPORTED` at the `PLUGIN` line and
   the exact flag to add, before any import is fetched or any plugin process
   starts. The Sitefile cannot allow its own plugins; there is no environment
-  variable or config file for it (as with `--allow-exec`).
+  variable or config file for it (as with `--allow-exec`). For programs that
+  call the library, that error (and a `TOOL`'s) also carries `needs`:
+  `{ kind: 'plugin' | 'tool', name, flag: '--allow-plugin' | '--allow-exec' }`
+  in TypeScript, `SitefileError::needs` (`Needs`) in Rust, so nothing has to
+  parse the message.
 - An `--allow-plugin` name that matches no `PLUGIN` is a warning.
 - `validate` never runs plugins and needs no flag. `inspect` builds in memory,
   so it needs the flag like `build`. The language server never runs plugins.
@@ -449,7 +453,11 @@ The key is the SHA-256 of a canonical JSON (sorted keys) of:
   value-import `data`, and the `FOR` `item`.
 
 Results are stored by content hash (`entries/<key>.json` pointing at
-`blobs/<sha256>`). Every read re-verifies each blob's digest and size, so a
+`blobs/<sha256>`). An entry also records the `PLUGIN` or `TOOL` that produced
+it (`"plugin": "<name>"`, after `version`, `kind` and `files`), so
+`sitefile cache prune --plugin <name>` can clear one plugin's results; the name
+is not part of the key, and entries written before it was recorded (no
+`plugin`) are read as before. Both implementations write the same bytes. Every read re-verifies each blob's digest and size, so a
 corrupt or truncated entry is ignored, removed, and rewritten after the rebuild;
 a cache that cannot be written never fails the build.
 

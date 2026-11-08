@@ -80,7 +80,7 @@ export function redactSecrets(text: string, secrets: Secrets | undefined): strin
 export function redactError(e: unknown, secrets: Secrets | undefined): unknown {
   if (!isSitefileError(e) || !secrets || secrets.size === 0) return e;
   const detail = redactSecrets(e.detail, secrets);
-  return detail === e.detail ? e : new SitefileError(e.code, detail, e.span);
+  return detail === e.detail ? e : new SitefileError(e.code, detail, e.span, e.needs ? { needs: e.needs } : undefined);
 }
 
 /** The request headers of an import's SECRET clauses; a secret that was not given is E_SECRET. */

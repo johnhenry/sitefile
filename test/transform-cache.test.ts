@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { build, type BuildOptions, type BuildResult } from '../src/executor.js';
@@ -240,6 +241,57 @@ test('prune removes everything or only entries unused for N days; info counts', 
   const all = await cache.prune();
   assert.deepEqual([all.entries, all.blobs], [1, 1]);
   assert.deepEqual(await cache.info(), { dir: t.cacheDir, entries: 0, blobs: 0, bytes: 0 });
+});
+
+test('entries record their PLUGIN or TOOL; usage and prune per plugin; older entries still read', async () => {
+  const d = await dir('sitefile-cache-plugin-');
+  const cache = new TransformCache(d);
+  const hex = (s: string): string => createHash('sha256').update(s).digest('hex');
+  await cache.put('k1', { kind: 'file', bytes: new TextEncoder().encode('alpha') }, 'shout');
+  // Byte for byte what the Rust port writes (rust/src/plugins/cache.rs, the same test).
+  assert.equal(await readFile(path.join(d, 'entries', 'k1.json'), 'utf8'), `{"version":1,"kind":"file","files":[["","${hex('alpha')}",5]],"plugin":"shout"}`);
+  await cache.put('k2', { kind: 'file', bytes: new TextEncoder().encode('beta') });
+  assert.ok(!(await readFile(path.join(d, 'entries', 'k2.json'), 'utf8')).includes('plugin'));
+  assert.equal(text(((await cache.get('k2', 'shout')) as { bytes: Uint8Array }).bytes), 'beta');
+  await cache.put('k3', { kind: 'file', bytes: new TextEncoder().encode('alpha') }, 'upper');
+  await cache.put('k4', { kind: 'files', files: [['x', new TextEncoder().encode('xyz')]] }, 'upper');
+  assert.deepEqual(await cache.usageByPlugin(), [
+    { plugin: undefined, entries: 1, blobs: 1, bytes: 4 },
+    { plugin: 'shout', entries: 1, blobs: 1, bytes: 5 },
+    { plugin: 'upper', entries: 2, blobs: 2, bytes: 8 },
+  ]);
+  // A blob another plugin's entry still uses is kept; unnamed entries are kept.
+  assert.deepEqual(await cache.prunePlugin('upper'), { entries: 2, blobs: 1, bytes: 3 });
+  assert.ok((await cache.get('k1')) && (await cache.get('k2')));
+  assert.equal(await cache.get('k3'), undefined);
+  assert.equal((await cache.prunePlugin('shout', 3_600_000)).entries, 0);
+  assert.deepEqual(await cache.prunePlugin('nobody'), { entries: 0, blobs: 0, bytes: 0 });
+  // A blob whose entry has not landed yet (another build writing it) is not touched.
+  await writeFile(path.join(d, 'blobs', hex('inflight')), 'inflight');
+  assert.deepEqual([(await cache.prunePlugin('shout')).entries], [1]);
+  assert.ok(await stat(path.join(d, 'blobs', hex('inflight'))));
+});
+
+test('CLI: cache prune --plugin deletes only that plugin\'s results', async () => {
+  const home = await tmpDir();
+  const ctx = await dir('sitefile-cache-cli-plugin-');
+  await write(ctx, {
+    'a.txt': 'alpha',
+    'b.txt': 'beta',
+    Sitefile: 'FROM scratch\nTOOL copya\nTOOL copyb\nTRANSFORM ./a.txt WITH copya TO /a.txt ARGS {input} {output}\nTRANSFORM ./b.txt WITH copyb TO /b.txt ARGS {input} {output}\nEXPORT /',
+  });
+  const b = await runCli(home, ['build', ctx, '-o', path.join(ctx, 'dist'), '--allow-exec', 'copya=/bin/cp', '--allow-exec', 'copyb=/bin/cp']);
+  assert.equal(b.code, 0, b.stderr);
+  const pr = await runCli(home, ['cache', 'prune', '--plugin', 'copya']);
+  assert.equal(pr.code, 0, pr.stderr);
+  assert.equal(pr.stdout, 'Deleted 1 entry and 1 blob\nTotal reclaimed space: 5B\n');
+  assert.equal(JSON.parse((await runCli(home, ['cache', 'info', '--json'])).stdout).entries, 1);
+  const bad = await runCli(home, ['cache', 'prune', '--plugin', 'bad-name']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /--plugin expects a PLUGIN or TOOL name \(an identifier\), got 'bad-name'/);
+  const conflict = await runCli(home, ['cache', 'prune', '--plugin', 'copyb', '--max-size', '1M']);
+  assert.equal(conflict.code, 2);
+  assert.match(conflict.stderr, /--plugin and --max-size conflict/);
 });
 
 test('CLI: builds cache under $SITEFILE_HOME/cache/transform; --no-cache skips it; cache info / prune', async () => {

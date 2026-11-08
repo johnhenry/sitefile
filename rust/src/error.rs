@@ -90,11 +90,70 @@ codes!(
     E_AUTH,
     E_BAKE,
     E_USAGE,
+    E_CANCELLED,
 );
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// What a permission error asks for (see [`SitefileError::needs`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NeedsKind {
+    /// A JavaScript `PLUGIN`: allowed by `--allow-plugin <name>` (or `--allow-plugins`).
+    Plugin,
+    /// A `TOOL` (an external program): allowed by `--allow-exec <name>`.
+    Tool,
+}
+
+impl NeedsKind {
+    /// `plugin` or `tool` (the TypeScript `needs.kind`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NeedsKind::Plugin => "plugin",
+            NeedsKind::Tool => "tool",
+        }
+    }
+    /// The flag that grants it: `--allow-plugin` or `--allow-exec`.
+    pub fn flag(self) -> &'static str {
+        match self {
+            NeedsKind::Plugin => "--allow-plugin",
+            NeedsKind::Tool => "--allow-exec",
+        }
+    }
+}
+
+/// The permission a build needs, carried by the `E_UNSUPPORTED` error of a
+/// `PLUGIN` or `TOOL` that was not allowed, so an embedder need not parse the message.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Needs {
+    pub kind: NeedsKind,
+    /// The declared `PLUGIN` or `TOOL` name.
+    pub name: String,
+}
+
+impl Needs {
+    pub fn plugin(name: impl Into<String>) -> Self {
+        Needs {
+            kind: NeedsKind::Plugin,
+            name: name.into(),
+        }
+    }
+    pub fn tool(name: impl Into<String>) -> Self {
+        Needs {
+            kind: NeedsKind::Tool,
+            name: name.into(),
+        }
+    }
+    /// The flag that grants it: `--allow-plugin` or `--allow-exec`.
+    pub fn flag(&self) -> &'static str {
+        self.kind.flag()
+    }
+    /// The command-line arguments that grant it, e.g. `["--allow-plugin", "shout"]`.
+    pub fn args(&self) -> [String; 2] {
+        [self.flag().to_string(), self.name.clone()]
     }
 }
 
@@ -104,6 +163,9 @@ pub struct SitefileError {
     /// The message without the location prefix.
     pub detail: String,
     pub span: Option<SourceSpan>,
+    /// For a permission error (`E_UNSUPPORTED` at a `PLUGIN` or `TOOL` line):
+    /// what must be allowed. `None` for every other error. Not part of the message.
+    pub needs: Option<Needs>,
 }
 
 impl SitefileError {
@@ -112,6 +174,7 @@ impl SitefileError {
             code,
             detail: detail.into(),
             span,
+            needs: None,
         }
     }
     pub fn at(code: ErrorCode, detail: impl Into<String>, span: &SourceSpan) -> Self {
@@ -119,6 +182,7 @@ impl SitefileError {
             code,
             detail: detail.into(),
             span: Some(span.clone()),
+            needs: None,
         }
     }
     pub fn plain(code: ErrorCode, detail: impl Into<String>) -> Self {
@@ -126,7 +190,17 @@ impl SitefileError {
             code,
             detail: detail.into(),
             span: None,
+            needs: None,
         }
+    }
+    /// The same error, recording the permission it asks for.
+    pub fn with_needs(mut self, needs: Needs) -> Self {
+        self.needs = Some(needs);
+        self
+    }
+    /// `E_CANCELLED`: the build was stopped through its [`CancelToken`](crate::executor::CancelToken).
+    pub fn cancelled() -> Self {
+        SitefileError::plain(ErrorCode::E_CANCELLED, "the build was cancelled")
     }
     /// `file:line:col: detail`, or just `detail`.
     pub fn message(&self) -> String {
