@@ -2,10 +2,10 @@
 //! and in docs/LANGUAGE.md).
 
 use crate::deflate::gzip;
+use crate::error::SourceSpan;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::oci::iso_of;
 use crate::export::wbn::{mime_type_for, validate_base_url};
-use crate::error::SourceSpan;
 use crate::language::ast::OciCompression;
 use crate::links::{encode_path, percent_decode};
 use crate::resources::types::ArchiveLimits;
@@ -151,7 +151,12 @@ pub fn looks_like_warc(bytes: &[u8]) -> bool {
     d.read_exact(&mut head).is_ok() && &head == b"WARC/"
 }
 
-fn inflate(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> Result<Vec<u8>> {
+fn inflate(
+    bytes: &[u8],
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Vec<u8>> {
     let cap = limits
         .max_total_bytes
         .saturating_add(limits.max_entries.saturating_mul(4096))
@@ -171,10 +176,15 @@ fn inflate(bytes: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&Sou
         )
         .with_span(span));
     }
-    if out.len() > 1024 * 1024 && out.len() as u64 > (bytes.len() as u64).saturating_mul(limits.max_ratio) {
+    if out.len() > 1024 * 1024
+        && out.len() as u64 > (bytes.len() as u64).saturating_mul(limits.max_ratio)
+    {
         return Err(SitefileError::plain(
             E_ARCHIVE_LIMIT,
-            format!("{origin}: WARC compression ratio exceeds {}", limits.max_ratio),
+            format!(
+                "{origin}: WARC compression ratio exceeds {}",
+                limits.max_ratio
+            ),
         )
         .with_span(span));
     }
@@ -185,7 +195,10 @@ fn index_of(b: &[u8], pat: &[u8], from: usize) -> Option<usize> {
     if from > b.len() {
         return None;
     }
-    b[from..].windows(pat.len()).position(|w| w == pat).map(|i| i + from)
+    b[from..]
+        .windows(pat.len())
+        .position(|w| w == pat)
+        .map(|i| i + from)
 }
 
 fn latin1(b: &[u8]) -> String {
@@ -213,7 +226,14 @@ fn split_url(uri: &str) -> Option<(String, String)> {
     let after = &rest[host_end..];
     let path_end = after.find(['?', '#']).unwrap_or(after.len());
     let path = &after[..path_end];
-    Some((host, if path.is_empty() { "/".into() } else { path.into() }))
+    Some((
+        host,
+        if path.is_empty() {
+            "/".into()
+        } else {
+            path.into()
+        },
+    ))
 }
 
 fn is_ok_status(line: &str) -> bool {
@@ -229,7 +249,12 @@ fn is_ok_status(line: &str) -> bool {
 }
 
 /// The files of a WARC (plain or gzipped).
-pub fn read_warc(input: &[u8], origin: &str, limits: &ArchiveLimits, span: Option<&SourceSpan>) -> Result<Tree> {
+pub fn read_warc(
+    input: &[u8],
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Tree> {
     let owned;
     let bytes: &[u8] = if input.starts_with(&[0x1f, 0x8b]) {
         owned = inflate(input, origin, limits, span)?;
@@ -237,7 +262,8 @@ pub fn read_warc(input: &[u8], origin: &str, limits: &ArchiveLimits, span: Optio
     } else {
         input
     };
-    let bad = |why: String| SitefileError::plain(E_ARCHIVE, format!("{origin}: {why}")).with_span(span);
+    let bad =
+        |why: String| SitefileError::plain(E_ARCHIVE, format!("{origin}: {why}")).with_span(span);
     let mut files: Vec<(String, Node)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut host: Option<String> = None;
@@ -261,7 +287,10 @@ pub fn read_warc(input: &[u8], origin: &str, limits: &ArchiveLimits, span: Optio
         }
         let fields = &lines[1..];
         let len_text = field(fields, "content-length").unwrap_or("");
-        if len_text.is_empty() || len_text.len() > 15 || !len_text.bytes().all(|c| c.is_ascii_digit()) {
+        if len_text.is_empty()
+            || len_text.len() > 15
+            || !len_text.bytes().all(|c| c.is_ascii_digit())
+        {
             return Err(bad("WARC record without a valid Content-Length".into()));
         }
         let start = head_end + 4;
@@ -325,7 +354,10 @@ pub fn read_warc(input: &[u8], origin: &str, limits: &ArchiveLimits, span: Optio
         if total > limits.max_total_bytes {
             return Err(SitefileError::plain(
                 E_ARCHIVE_LIMIT,
-                format!("{origin}: WARC expands beyond {} bytes", limits.max_total_bytes),
+                format!(
+                    "{origin}: WARC expands beyond {} bytes",
+                    limits.max_total_bytes
+                ),
             )
             .with_span(span));
         }
@@ -343,8 +375,14 @@ mod tests {
     #[test]
     fn round_trip_and_ids() {
         let t = Tree::from_files(vec![
-            ("/index.html".to_string(), make_file(b"<p>home</p>".to_vec(), "t", 0o644)),
-            ("/_headers".to_string(), make_file(b"/*\n  X-A: 1\n".to_vec(), "t", 0o644)),
+            (
+                "/index.html".to_string(),
+                make_file(b"<p>home</p>".to_vec(), "t", 0o644),
+            ),
+            (
+                "/_headers".to_string(),
+                make_file(b"/*\n  X-A: 1\n".to_vec(), "t", 0o644),
+            ),
         ])
         .unwrap();
         let w = write_warc(&t, Some("https://example.org/"), None, None).unwrap();
@@ -352,13 +390,26 @@ mod tests {
         assert!(text.contains("WARC-Target-URI: https://example.org/\r\n"));
         assert!(text.contains("\r\nx-a: 1\r\n\r\n<p>home</p>"));
         assert!(text.contains("<urn:uuid:32a50fc6-5352-8fca-bc5c-8d0ed98d1aa1>"));
-        let gz = write_warc(&t, Some("https://example.org/"), None, Some(OciCompression::Gzip)).unwrap();
+        let gz = write_warc(
+            &t,
+            Some("https://example.org/"),
+            None,
+            Some(OciCompression::Gzip),
+        )
+        .unwrap();
         assert!(looks_like_warc(&w) && looks_like_warc(&gz));
         let limits = crate::resources::types::DEFAULT_ARCHIVE_LIMITS;
         for b in [&w, &gz] {
             let back = read_warc(b, "x", &limits, None).unwrap();
-            assert_eq!(back.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["/index.html"]);
+            assert_eq!(
+                back.entries().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+                ["/index.html"]
+            );
         }
-        assert!(is_ok_status("HTTP/1.1 200 OK") && is_ok_status("HTTP/2 200") && !is_ok_status("HTTP/1.1 2000"));
+        assert!(
+            is_ok_status("HTTP/1.1 200 OK")
+                && is_ok_status("HTTP/2 200")
+                && !is_ok_status("HTTP/1.1 2000")
+        );
     }
 }

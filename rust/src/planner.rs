@@ -967,7 +967,10 @@ pub fn plan_with(
                     export_root = None;
                 }
                 if let Some((v, cspan)) = compression {
-                    if !matches!(format, ExportFormat::Oci | ExportFormat::Wbn | ExportFormat::Warc) {
+                    if !matches!(
+                        format,
+                        ExportFormat::Oci | ExportFormat::Wbn | ExportFormat::Warc
+                    ) {
                         return Err(SitefileError::at(
                             E_VALIDATION,
                             "EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc",
