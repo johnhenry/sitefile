@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
@@ -16,7 +17,65 @@ import { WasmPlugin } from './wasm.js';
  * Node documents the permission model as a "seat belt" for trusted code, not a
  * defence against deliberately malicious code: plugins are code you choose to
  * run. Pin them with INTEGRITY.
+ *
+ * The sandbox is only as strong as the Node that runs it: by default the Node
+ * running sitefile (`process.execPath`), or the one named by `--node` /
+ * `SITEFILE_NODE` / `BuildOptions.node`. Its version is checked (at least
+ * MIN_NODE) before the first plugin starts, and reported with `onNotice`.
  */
+
+/**
+ * The oldest Node that JavaScript plugins run on. Node 25 added network permissions
+ * (before it, `--permission` did not block sockets); 26 is the release sitefile
+ * requires and tests with (package.json `engines`).
+ */
+export const MIN_NODE = [26, 0, 0] as const;
+
+/** The Node binary JavaScript plugins run on, as checked when the first one starts. */
+export interface NodeRuntime {
+  /** Absolute real path. */
+  readonly path: string;
+  /** `process.version` of that binary, e.g. `v26.11.1`. */
+  readonly version: string;
+}
+
+/** `vX.Y.Z` → [X, Y, Z], or undefined. */
+export function parseNodeVersion(v: string): [number, number, number] | undefined {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+const atLeast = (v: readonly number[], min: readonly number[]): boolean => {
+  for (let i = 0; i < 3; i++) if (v[i]! !== min[i]!) return v[i]! > min[i]!;
+  return true;
+};
+
+/**
+ * Resolve and check the Node binary for JavaScript plugins (`node`: an absolute path; default
+ * `process.execPath`). The error text is the part after `PLUGIN name: `.
+ */
+export async function checkNode(node: string | undefined, timeoutMs: number): Promise<NodeRuntime> {
+  const given = node ?? process.execPath;
+  const choose = 'choose another with --node or SITEFILE_NODE';
+  if (!path.isAbsolute(given)) throw new Error(`the Node binary must be an absolute path, got '${given}'`);
+  let real: string;
+  try {
+    real = await realpath(given);
+    if (!(await stat(real)).isFile()) throw new Error('not a file');
+  } catch {
+    throw new Error(`could not start: no Node binary at ${given}`);
+  }
+  const out = await new Promise<string>((resolve, reject) =>
+    execFile(real, ['--version'], { env: {}, timeout: timeoutMs, maxBuffer: 4096 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout)))),
+  ).catch(() => undefined);
+  const parsed = out === undefined ? undefined : parseNodeVersion(out);
+  if (!parsed) throw new Error(`could not start: ${real} --version did not print a Node version; ${choose}`);
+  const version = out!.trim();
+  if (!atLeast(parsed, MIN_NODE)) {
+    throw new Error(`node ${version} (${real}) is too old for the plugin sandbox: JavaScript plugins need Node ${MIN_NODE.join('.')} or later; ${choose}`);
+  }
+  return { path: real, version };
+}
 
 export interface PluginPolicy {
   /** Per-call time limit (default 60 s); the process is killed when it passes. */
@@ -130,13 +189,14 @@ class PluginProcess {
   constructor(
     readonly name: string,
     file: string,
+    node: string,
     private readonly policy: PluginPolicy,
     private readonly log: (line: string) => void,
     span: SourceSpan | undefined,
   ) {
     const dir = path.dirname(file);
     this.child = spawn(
-      process.execPath,
+      node,
       ['--permission', `--allow-fs-read=${dir}`, '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', RUNNER],
       { cwd: dir, env: {}, stdio: ['pipe', 'pipe', 'pipe'] },
     );
@@ -280,15 +340,37 @@ interface PluginRunner {
   close(): void;
 }
 
+/** Where JavaScript plugins' Node comes from, and where to report it. */
+export interface PluginHostOptions {
+  /** Absolute path of the Node binary (default: `process.execPath`, the Node running sitefile). */
+  readonly node?: string;
+  /** Receives `plugins run on node <version> (<path>)` when the first JavaScript plugin starts. */
+  readonly onNotice?: (message: string) => void;
+}
+
 export class PluginHost {
   private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined; wasm?: Uint8Array }>();
   private readonly procs = new Map<string, PluginRunner>();
   readonly stats: HostStats = { spawned: 0, calls: 0 };
+  private runtime: Promise<NodeRuntime> | undefined;
 
   constructor(
     private readonly policy: PluginPolicy = DEFAULT_PLUGIN_POLICY,
     private readonly log: (line: string) => void = () => {},
+    private readonly options: PluginHostOptions = {},
   ) {}
+
+  /** The checked Node binary (resolved once, on the first JavaScript plugin). */
+  node(): Promise<NodeRuntime> {
+    if (!this.runtime) {
+      this.runtime = checkNode(this.options.node, this.policy.timeoutMs).then((rt) => {
+        this.options.onNotice?.(`plugins run on node ${rt.version} (${rt.path})`);
+        return rt;
+      });
+      this.runtime.catch(() => {});
+    }
+    return this.runtime;
+  }
 
   /**
    * `file` is the plugin's absolute real path (already sandbox- and integrity-checked).
@@ -313,11 +395,23 @@ export class PluginHost {
     if (!p) {
       const reg = this.registered.get(name);
       if (!reg) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
-      p = reg.wasm
-        ? new WasmPlugin(name, reg.wasm, this.policy, TRANSFORM_JOBS)
-        : new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
-      this.procs.set(name, p);
-      this.stats.spawned++;
+      let node: NodeRuntime | undefined;
+      if (!reg.wasm) {
+        try {
+          node = await this.node();
+        } catch (e) {
+          throw new SitefileError('E_PLUGIN', `PLUGIN ${name}: ${(e as Error).message}`, reg.span);
+        }
+        // Another call may have started it while this one waited for the check.
+        p = this.procs.get(name);
+      }
+      if (!p) {
+        p = reg.wasm
+          ? new WasmPlugin(name, reg.wasm, this.policy, TRANSFORM_JOBS)
+          : new PluginProcess(name, reg.file, node!.path, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
+        this.procs.set(name, p);
+        this.stats.spawned++;
+      }
     }
     this.stats.calls++;
     return p.call(request, span);

@@ -1,12 +1,14 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink, chmod, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { build, type BuildOptions } from '../src/executor.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { parseProgram } from '../src/language/validate.js';
 import { sha256 } from '../src/digest.js';
+import { checkNode, parseNodeVersion, MIN_NODE } from '../src/plugins/host.js';
+import { runCli, tmpDir } from './helpers/cli.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -171,6 +173,54 @@ test('plugin errors, bad results, timeouts and placement rules', async () => {
   assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
 });
 
+/** An executable that prints `out` for --version, standing in for another Node. */
+async function fakeNode(out: string): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sitefile-node-'));
+  temps.push(dir);
+  const file = path.join(dir, 'node');
+  await writeFile(file, `#!/bin/sh\necho '${out}'\n`);
+  await chmod(file, 0o755);
+  return realpath(file);
+}
+
+test('the Node binary for JS plugins: chosen explicitly, version-checked, reported (#159)', { skip: process.platform === 'win32' }, async () => {
+  assert.deepEqual(parseNodeVersion('v26.11.1\n'), [26, 11, 1]);
+  assert.equal(parseNodeVersion('26.1.0'), undefined);
+  assert.equal(parseNodeVersion('v26.1'), undefined);
+  assert.deepEqual(MIN_NODE, [26, 0, 0]);
+
+  // The default is the Node running sitefile, and it passes.
+  const rt = await checkNode(undefined, 10_000);
+  assert.equal(rt.path, await realpath(process.execPath));
+  assert.equal(rt.version, process.version);
+  await assert.rejects(checkNode('node', 10_000), /must be an absolute path, got 'node'/);
+  await assert.rejects(checkNode('/nonexistent/node', 10_000), /could not start: no Node binary at \/nonexistent\/node/);
+  const old = await fakeNode('v22.1.0');
+  await assert.rejects(checkNode(old, 10_000), (e: Error) => {
+    assert.equal(e.message, `node v22.1.0 (${old}) is too old for the plugin sandbox: JavaScript plugins need Node 26.0.0 or later; choose another with --node or SITEFILE_NODE`);
+    return true;
+  });
+  await assert.rejects(checkNode(await fakeNode('hello'), 10_000), /--version did not print a Node version/);
+
+  const site = {
+    'plugins/p.mjs': 'export function transform() { return "ok"; }',
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  };
+  // A too-old Node fails the build at the PLUGIN line, before any plugin process starts.
+  await assert.rejects(run(site, { node: old }), (e: unknown) => {
+    assert.ok(isSitefileError(e), String(e));
+    assert.equal(e.code, 'E_PLUGIN');
+    assert.match(e.message, /Sitefile:2:1: PLUGIN p: node v22\.1\.0 .* is too old for the plugin sandbox/);
+    return true;
+  });
+  // The chosen Node runs the plugin and is named in a notice.
+  const notices: string[] = [];
+  const r = await run(site, { node: process.execPath, onNotice: (m) => notices.push(m) });
+  assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
+  assert.deepEqual(notices, [`plugins run on node ${process.version} (${await realpath(process.execPath)})`]);
+});
+
 test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before anything starts', async () => {
   const site = (body: string): Record<string, string> => ({
     'plugins/up.mjs': 'export function transform(r) { return r.input.text.toUpperCase(); }',
@@ -237,4 +287,27 @@ test('plugin console output becomes build warnings, not output', async () => {
   // Console lines arrive ahead of the result on stdout, so none is lost when the build ends at once;
   // a line that looks like a protocol message is dropped, not obeyed.
   assert.deepEqual(warnings.filter((w) => w.startsWith('[plugin p]')), ['[plugin p] working…', '[plugin p] two', '[plugin p] lines']);
+});
+
+test('--node and SITEFILE_NODE: absolute paths only; the build log names the Node (#159)', { skip: process.platform === 'win32' }, async () => {
+  const home = await tmpDir();
+  const ctx = await project({
+    'plugins/p.mjs': 'export function transform() { return "ok"; }',
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  });
+  const out = path.join(await tmpDir(), 'out');
+  const rel = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--allow-plugins', '--node', 'node']);
+  assert.notEqual(rel.code, 0);
+  assert.match(rel.stderr, /--node expects an absolute path to a Node binary, got 'node'/);
+  const env = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--allow-plugins'], undefined, { SITEFILE_NODE: 'bin/node' });
+  assert.notEqual(env.code, 0);
+  assert.match(env.stderr, /SITEFILE_NODE expects an absolute path to a Node binary, got 'bin\/node'/);
+  const old = await fakeNode('v20.0.0');
+  const tooOld = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--no-cache', '--allow-plugins'], undefined, { SITEFILE_NODE: old });
+  assert.notEqual(tooOld.code, 0);
+  assert.match(tooOld.stderr, /error\[E_PLUGIN\]: .*PLUGIN p: node v20\.0\.0 .* is too old for the plugin sandbox/);
+  const ok = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--no-cache', '--allow-plugins', '--node', process.execPath], undefined, { SITEFILE_NODE: old });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.ok(ok.stderr.includes(`plugins run on node ${process.version} (${await realpath(process.execPath)})`), ok.stderr);
 });

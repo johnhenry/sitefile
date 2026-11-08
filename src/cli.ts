@@ -78,6 +78,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else the Node running sitefile); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -152,6 +154,7 @@ export async function main(
         'build-arg-file': { type: 'string', multiple: true },
         secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
+        node: { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
@@ -321,6 +324,7 @@ export async function main(
       ...(o['plugin-timeout']
         ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
         : {}),
+      ...pluginNode(o.node),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
       allowAllPlugins: !!o['allow-plugins'],
@@ -482,6 +486,14 @@ export async function main(
       }
     }
   }
+}
+
+/** `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path. */
+function pluginNode(flag: string | undefined): { node?: string } {
+  const [value, from] = flag !== undefined ? [flag, '--node'] : [process.env['SITEFILE_NODE'] || undefined, 'SITEFILE_NODE'];
+  if (value === undefined) return {};
+  if (!path.isAbsolute(value)) throw new SitefileError('E_USAGE', `${from} expects an absolute path to a Node binary, got '${value}'`);
+  return { node: value };
 }
 
 function positiveInt(raw: string, flag: string): number {

@@ -135,6 +135,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else node on PATH); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -202,6 +204,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     strings("secret"),
     string("plugin-timeout"),
+    string("node"),
     strings("allow-exec"),
     strings("allow-plugin"),
     flag("allow-plugins"),
@@ -340,6 +343,29 @@ fn run_extra_command(argv: &[String]) -> i32 {
 }
 
 // ------------------------------------------------------------ build / validate / inspect
+
+/// `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path.
+fn plugin_node(flag: Option<&str>) -> Result<Option<std::path::PathBuf>> {
+    let (value, from) = match flag {
+        Some(f) => (Some(f.to_string()), "--node"),
+        None => (
+            std::env::var("SITEFILE_NODE")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            "SITEFILE_NODE",
+        ),
+    };
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !std::path::Path::new(&value).is_absolute() {
+        return Err(SitefileError::plain(
+            ErrorCode::E_USAGE,
+            format!("{from} expects an absolute path to a Node binary, got '{value}'"),
+        ));
+    }
+    Ok(Some(std::path::PathBuf::from(value)))
+}
 
 fn positive_int(raw: &str, flag: &str) -> Result<u64> {
     let n = js_to_number(raw);
@@ -759,6 +785,7 @@ fn run_build_command(
         options.plugin_policy.timeout_ms = ms;
         options.tool_policy.timeout_ms = ms;
     }
+    options.node = plugin_node(o.str("node"))?;
     options.allow_exec = o.strs("allow-exec");
     options.allow_plugin = o.strs("allow-plugin");
     options.allow_all_plugins = o.flag("allow-plugins");

@@ -107,6 +107,31 @@ node --permission --allow-fs-read=<the plugin's folder> …
 Each call has a time limit (`--plugin-timeout`, default 60 s) and results are
 capped at 64 MiB. Processes are stopped when the build ends.
 
+### Which Node runs plugins
+
+The sandbox is Node's permission model, so it is only as strong as the Node
+binary that enforces it. That binary is:
+
+1. `--node /absolute/path` (`BuildOptions.node` / `BuildOptions::node` for
+   programs that call the library), else
+2. `$SITEFILE_NODE` (an absolute path; ignored when empty), else
+3. the default: in the TypeScript CLI, the Node running sitefile
+   (`process.execPath`); in the Rust binary, `node` on `PATH`. A `PATH` you
+   don't control can swap the runtime, so name the binary when it matters.
+
+A relative `--node` or `SITEFILE_NODE` is a usage error. Before the first
+JavaScript plugin starts, sitefile resolves the binary to its real path, runs
+`<node> --version` (empty environment) and requires **Node 26.0.0 or later**:
+network permissions arrived in Node 25 (an older `--permission` does not block
+sockets), and 26 is the version sitefile requires and tests with. An older or
+unrecognized binary fails the build at the `PLUGIN` line with `E_PLUGIN`, for
+example `PLUGIN motion: node v22.1.0 (/usr/bin/node) is too old for the plugin
+sandbox: JavaScript plugins need Node 26.0.0 or later; choose another with
+--node or SITEFILE_NODE`. The binary that passed is printed (`plugins run on
+node v26.11.1 (/opt/node/bin/node)`), next to the paths of allowed tools.
+The check runs when the first plugin process starts, so a build whose
+plugins are all cache hits does not run it.
+
 ## Trust model: `--allow-plugin`
 
 Node describes its permission model as a "seat belt" for trusted code, not a

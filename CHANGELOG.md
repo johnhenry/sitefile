@@ -9,6 +9,14 @@
   `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
   implementations. A `serve` conformance case kind (`"command": "serve"`)
   compares both servers' answers to raw HTTP requests.
+- **Choose the Node that runs JavaScript plugins** (johnhenry/sitefile#159):
+  `--node /abs/path`, `SITEFILE_NODE` or `BuildOptions.node` / `node` names
+  the binary (relative paths are a usage error); the default stays the running
+  Node (TypeScript) or `node` on PATH (Rust). Before the first plugin starts
+  the binary is resolved, its `--version` must be at least 26.0.0 (Node 25
+  added network permissions), and `plugins run on node <version> (<path>)` is
+  printed. An older binary fails with `E_PLUGIN` at the `PLUGIN` line. `bake`
+  passes `--node` through.
 
 ## 0.0.2 (2026-11-08)
 
