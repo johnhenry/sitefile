@@ -2347,6 +2347,23 @@
               "type": "BLANK"
             }
           ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_integrity"
+              },
+              "named": false,
+              "value": "INTEGRITY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },

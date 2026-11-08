@@ -1,0 +1,5 @@
+# A /_headers COPY'd into the tree without HEADER lines is kept as it is (a warning says no lines were added).
+FROM scratch
+COPY ./public/ /
+FINGERPRINT /assets/
+EXPORT /

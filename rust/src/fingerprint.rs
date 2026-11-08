@@ -5,8 +5,10 @@
 use crate::digest::{hex_of, sha256};
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
 use crate::links::{
-    reference_kind, resolve_reference, rewrite_references, scan_file, Reference, Target,
+    integrity_tags, reference_kind, resolve_reference, rewrite_references, scan_file, Reference,
+    Target,
 };
+use crate::media::integrity_of;
 use crate::paths::nfc;
 use crate::tree::{make_file, ConflictPolicy, Node, Tree};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -114,6 +116,8 @@ pub fn manifest_json(renames: &[(String, String)]) -> String {
 pub struct FingerprintOp<'a> {
     pub patterns: &'a [String],
     pub manifest: Option<&'a str>,
+    /// `INTEGRITY`: add Subresource Integrity attributes for the renamed files to the HTML that loads them.
+    pub integrity: bool,
     /// The directory the site is served from (the EXPORT path): absolute references resolve below it.
     pub root: &'a str,
     pub overwrite: bool,
@@ -233,6 +237,17 @@ pub fn fingerprint(
         visit(&mut st, p, &mut Vec::new(), op.root, op.span)?;
     }
 
+    // INTEGRITY: the SRI value of each renamed file, by its new path.
+    let mut sri: HashMap<String, String> = HashMap::new();
+    if op.integrity {
+        for p in &selected {
+            sri.insert(
+                st.renamed[p.as_str()].clone(),
+                integrity_of(&st.content[p.as_str()]),
+            );
+        }
+    }
+
     let mut files: Vec<(String, Node)> = Vec::new();
     for (p, node) in &entries {
         if st.is_selected.contains(p.as_str()) {
@@ -241,7 +256,14 @@ pub fn fingerprint(
         let rewritten = if reference_kind(p).is_some() {
             match scan(&mut st, p).clone() {
                 Some((text, refs)) => {
-                    rewrite_references(&text, &refs, p, op.root, |q| st.renamed.get(q).cloned())
+                    let t = rewrite_references(&text, &refs, p, op.root, |q| {
+                        st.renamed.get(q).cloned()
+                    });
+                    if !sri.is_empty() && reference_kind(p) == Some("html") {
+                        with_integrity(t.as_deref().unwrap_or(&text), p, op.root, &sri).or(t)
+                    } else {
+                        t
+                    }
                 }
                 None => None,
             }
@@ -286,6 +308,30 @@ pub fn fingerprint(
         )?;
     }
     Ok((out, renames))
+}
+
+/// `text` (an HTML file at `from`) with ` integrity="…"` added after the tag name of each script and
+/// stylesheet tag that loads a file of `sri` (new path -> value); None when no tag does.
+fn with_integrity(
+    text: &str,
+    from: &str,
+    root: &str,
+    sri: &HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut at = 0;
+    for tag in integrity_tags(text) {
+        let Target::Internal { path, dir: false } = resolve_reference(&tag.url, from, root) else {
+            continue;
+        };
+        let Some(value) = sri.get(&path) else {
+            continue;
+        };
+        out.push_str(&text[at..tag.at]);
+        out.push_str(&format!(" integrity=\"{value}\""));
+        at = tag.at;
+    }
+    (at != 0).then(|| out + &text[at..])
 }
 
 fn by_path_mode(entries: &[(&String, &Node)], p: &str) -> u32 {

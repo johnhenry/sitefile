@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **FINGERPRINT writes cache headers and SRI** (johnhenry/sitefile#202):
+  EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the
+  fingerprinted files (a `/dir/*` rule when a directory holds only them) and
+  `no-cache` for the pages to `/_headers`, unless `--no-cache-headers` or a
+  HEADER sets `Cache-Control`. `FINGERPRINT … INTEGRITY` adds
+  `integrity="sha384-…"` to the `<script src>` and
+  `<link rel=stylesheet|modulepreload>` tags that load a renamed file. Both
+  implementations, with conformance cases.
+
 ## 0.0.2 (2026-11-08)
 
 - **Plugin console output keeps its order** (johnhenry/sitefile#164): a

@@ -1,0 +1,6 @@
+# --no-cache-headers on any FINGERPRINT: EXPORT writes no Cache-Control lines (and so no /_headers here).
+FROM scratch
+COPY ./public/ /
+FINGERPRINT /assets/
+FINGERPRINT --no-cache-headers /logo.svg
+EXPORT /

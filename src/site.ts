@@ -208,3 +208,62 @@ export function headersFile(rules: readonly HeaderRule[]): string {
   for (const [pattern, lines] of blocks) out += `${pattern}\n${lines.join('')}`;
   return out;
 }
+
+// ---------------------------------------------------------------- FINGERPRINT cache headers
+
+/** The `Cache-Control` of a fingerprinted file: its name changes with its content, so it never goes stale. */
+export const IMMUTABLE = 'public, max-age=31536000, immutable';
+/** The `Cache-Control` of a page: revalidate on every request, so it always names the current assets. */
+export const NO_CACHE = 'no-cache';
+
+/**
+ * The `/_headers` rules EXPORT adds for FINGERPRINT (docs/LANGUAGE.md, "Fingerprinting"). `files` are the
+ * URL paths of every file in the exported directory, `hashed` those of the fingerprinted ones. A
+ * fingerprinted file gets `Cache-Control: public, max-age=31536000, immutable`, by a `/dir/*` rule for the
+ * topmost directory (below the root) that holds only fingerprinted files, or else by its own path; pages
+ * get `Cache-Control: no-cache` through `/`, `/*​/` and `/*.html` (each only when a page it matches
+ * exists). Paths with spaces or control characters are left out (a `_headers` path cannot hold them).
+ * Rules are in path order (UTF-8), immutable ones first; none when nothing is fingerprinted.
+ */
+export function cacheHeaderRules(files: readonly string[], hashed: ReadonlySet<string>): HeaderRule[] {
+  const ok = (p: string): boolean => !SPACE_OR_CONTROL.test(p);
+  const sorted = [...files].sort(utf8Compare);
+  const counts = new Map<string, { total: number; hashed: number }>();
+  for (const f of sorted) {
+    const segs = f.split('/');
+    for (let k = 2; k < segs.length; k++) {
+      const d = segs.slice(0, k).join('/');
+      const c = counts.get(d) ?? { total: 0, hashed: 0 };
+      c.total++;
+      if (hashed.has(f)) c.hashed++;
+      counts.set(d, c);
+    }
+  }
+  const out: HeaderRule[] = [];
+  const seen = new Set<string>();
+  const add = (pattern: string, value: string): void => {
+    if (seen.has(pattern) || !ok(pattern)) return;
+    seen.add(pattern);
+    out.push({ pattern, name: 'Cache-Control', value });
+  };
+  for (const f of sorted) {
+    if (!hashed.has(f)) continue;
+    const segs = f.split('/');
+    let pattern = f;
+    for (let k = 2; k < segs.length; k++) {
+      const d = segs.slice(0, k).join('/');
+      const c = counts.get(d)!;
+      if (c.total === c.hashed) {
+        pattern = d + '/*';
+        break;
+      }
+    }
+    add(pattern, IMMUTABLE);
+  }
+  if (out.length === 0) return out;
+  const pages = sorted.filter((f) => /\.html$/i.test(f));
+  if (pages.includes('/index.html')) add('/', NO_CACHE);
+  if (pages.some((f) => f !== '/index.html' && /\/index\.html$/i.test(f))) add('/*/', NO_CACHE);
+  if (pages.length > 0) add('/*.html', NO_CACHE);
+  return out;
+}
