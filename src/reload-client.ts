@@ -58,13 +58,111 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     return swapped;
   }
 
+  // A full reload keeps the scroll position: it is saved per path in sessionStorage and restored
+  // when the reloaded page has loaded.
+  var scrollKey = "sitefile:scroll:" + location.pathname;
+  function saveScroll() {
+    try {
+      sessionStorage.setItem(scrollKey, JSON.stringify([window.scrollX, window.scrollY]));
+    } catch (_) {}
+  }
+  function restoreScroll() {
+    var saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(scrollKey) || "null");
+      sessionStorage.removeItem(scrollKey);
+    } catch (_) {}
+    if (saved && saved.length === 2) window.scrollTo(saved[0], saved[1]);
+  }
+  if (document.readyState === "complete") restoreScroll();
+  else window.addEventListener("load", restoreScroll);
+
   // --navigate-to-changed: a rebuild that changed exactly one page names it; go there unless
   // this is already that page.
   function reload(path) {
     resetServiceWorkers().then(function () {
-      if (path && options.navigateToChanged && path !== location.pathname) location.assign(path);
-      else location.reload();
+      if (path && options.navigateToChanged && path !== location.pathname) return location.assign(path);
+      saveScroll();
+      location.reload();
     });
+  }
+
+  // --reload morph (the default): when only HTML changed, fetch this page again and update the
+  // document in place (scroll position, focus and form input stay), unless its scripts changed;
+  // anything unexpected falls back to a full reload.
+  function isOurs(n) {
+    return n.nodeType === 1 && (n.localName === "sitefile-overlay" || n === me);
+  }
+  function scriptsOf(doc) {
+    var out = [];
+    var list = doc.querySelectorAll("script");
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (s === me || (s.getAttribute("src") || "").indexOf("/__sitefile/reload.js") !== -1) continue;
+      out.push((s.getAttribute("src") || "") + "|" + (s.getAttribute("type") || "") + "|" + s.textContent);
+    }
+    return out.join("\n");
+  }
+  function sameKind(a, b) {
+    return a.nodeType === b.nodeType && a.nodeName === b.nodeName && (a.nodeType !== 1 || (a.id || "") === (b.id || ""));
+  }
+  function morphChildren(from, to) {
+    var have = Array.prototype.filter.call(from.childNodes, function (n) { return !isOurs(n); });
+    var want = Array.prototype.slice.call(to.childNodes);
+    var anchor = null;
+    for (var k = 0; k < from.childNodes.length; k++) {
+      if (isOurs(from.childNodes[k])) { anchor = from.childNodes[k]; break; }
+    }
+    for (var i = 0; i < want.length; i++) {
+      var h = have[i];
+      if (!h) from.insertBefore(document.importNode(want[i], true), anchor);
+      else if (sameKind(h, want[i])) morphNode(h, want[i]);
+      else from.replaceChild(document.importNode(want[i], true), h);
+    }
+    for (var j = want.length; j < have.length; j++) from.removeChild(have[j]);
+  }
+  function morphNode(from, to) {
+    if (from.nodeType === 3 || from.nodeType === 8) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return;
+    }
+    if (from.nodeType !== 1 || from.localName === "script") return;
+    var i;
+    for (i = 0; i < to.attributes.length; i++) {
+      var a = to.attributes[i];
+      if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
+    }
+    for (i = from.attributes.length - 1; i >= 0; i--) {
+      if (!to.hasAttribute(from.attributes[i].name)) from.removeAttribute(from.attributes[i].name);
+    }
+    var tag = from.localName;
+    if (from === document.activeElement && (tag === "input" || tag === "textarea" || tag === "select")) return;
+    if (tag === "textarea") return; // its text is its value, which the person may have edited
+    morphChildren(from, to);
+  }
+  function morph() {
+    return fetch(location.href, { headers: { accept: "text/html" }, cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("status " + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        if (scriptsOf(doc) !== scriptsOf(document)) throw new Error("scripts changed");
+        morphChildren(document.head, doc.head);
+        morphChildren(document.body, doc.body);
+        if (document.title !== doc.title) document.title = doc.title;
+      });
+  }
+  function update(ev) {
+    var going = ev.path && options.navigateToChanged && ev.path !== location.pathname;
+    if (!ev.morph || going || options.reload !== "morph") return reload(ev.path);
+    resetServiceWorkers()
+      .then(morph)
+      .catch(function () {
+        saveScroll();
+        location.reload();
+      });
   }
 
   // Forward errors and warnings (and, with --console, log and info) to the server log, for pages
@@ -193,7 +291,8 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
       hideError();
       if (ev.type === "ok") return;
       if (ev.type === "css" && options.cssInject && swapStylesheets(ev.paths || [])) return;
-      reload(ev.path);
+      if (ev.type === "reload") return update(ev);
+      reload();
     };
     source.onerror = function () {
       if (source.readyState !== EventSource.CLOSED) return;

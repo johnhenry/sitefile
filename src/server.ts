@@ -94,11 +94,13 @@ export interface LiveReloadOptions {
   readonly overlay?: boolean;
   /** After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`; default false). */
   readonly navigateToChanged?: boolean;
+  /** `--reload`: `morph` (default) updates a page in place when only HTML changed; `full` always reloads. */
+  readonly reload?: 'full' | 'morph';
 }
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false},"navigateToChanged":${options.navigateToChanged === true}});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false},"navigateToChanged":${options.navigateToChanged === true},"reload":"${options.reload ?? 'morph'}"});\n`;
 }
 
 /** Reserved for browser console messages (POST) while `serve --watch` runs. */
@@ -196,27 +198,36 @@ export function pageUrlFor(file: string): string {
  * when `cssInject` is on and every changed file is a stylesheet that is in both trees (added or
  * removed files always reload), else {@link RELOAD_EVENT}; with `navigate`, a reload where exactly
  * one HTML file was added or changed also names its page: `{"type":"reload","path":"/posts/a/"}`.
- * Paths are sorted.
+ * A reload where only existing HTML files changed (nothing added or removed, no other type) is
+ * marked `"morph":true`: pages may update in place. Paths are sorted.
  */
 export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean, navigate = false): string | undefined {
   const changed: string[] = [];
   const pages: string[] = [];
   let cssOnly = cssInject;
+  let htmlOnly = true;
   for (const [p, f] of next.entries()) {
     const old = prev.get(p);
     if (old !== undefined && old.digest === f.digest && old.mode === f.mode) continue;
     changed.push(p);
-    if (mimeTypeFor(p).startsWith('text/html')) pages.push(p);
+    const html = mimeTypeFor(p).startsWith('text/html');
+    if (html) pages.push(p);
+    if (old === undefined || !html) htmlOnly = false;
     if (old === undefined || !mimeTypeFor(p).startsWith('text/css')) cssOnly = false;
   }
   for (const [p] of prev.entries()) {
     if (!next.isFile(p)) {
       changed.push(p);
       cssOnly = false;
+      htmlOnly = false;
     }
   }
   if (changed.length === 0) return undefined;
-  if (!cssOnly) return navigate && pages.length === 1 ? JSON.stringify({ type: 'reload', path: pageUrlFor(pages[0]!) }) : RELOAD_EVENT;
+  if (!cssOnly) {
+    const path = navigate && pages.length === 1 ? pageUrlFor(pages[0]!) : undefined;
+    if (path === undefined && !htmlOnly) return RELOAD_EVENT;
+    return JSON.stringify({ type: 'reload', ...(path !== undefined ? { path } : {}), ...(htmlOnly ? { morph: true } : {}) });
+  }
   return JSON.stringify({ type: 'css', paths: changed.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) });
 }
 

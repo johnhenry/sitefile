@@ -504,11 +504,13 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 
 ```
 sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [--no-overlay] [--navigate-to-changed] [context | ./plain-directory] [build options]
+                       [--no-overlay] [--navigate-to-changed]
+                       [--reload full|morph] [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [--no-overlay] [--navigate-to-changed] [context | ./plain-directory]
+                       [--no-overlay] [--navigate-to-changed]
+                       [--reload full|morph] [context | ./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -580,6 +582,14 @@ Only under `serve --watch`:
   `data: {"type":"reload","path":"/posts/hello/"}` (`/dir/index.html` becomes `/dir/`, other files keep their path;
   segments are percent-encoded). Open pages go there instead of reloading, unless they already show it. Two or more
   changed pages, or none, give a plain reload.
+- **Morphing instead of reloading** (`--reload morph`, the default; `--reload full` turns it off): a `reload` event
+  where only existing HTML files changed (none added or removed, nothing of another type) carries `"morph":true`.
+  The client then fetches its own page again and updates the document in place: text and attributes change,
+  elements are matched by position, tag and `id`, the scroll position stays, and the focused `<input>`,
+  `<textarea>` or `<select>` (and every `<textarea>`'s text) is left as the person edited it. If the page's scripts
+  (each `<script>`'s `src`, `type` and text) differ from the new ones, or anything fails, it reloads instead.
+- **Scroll position across reloads**: before a full reload the client saves the scroll position for the path in
+  `sessionStorage` and restores it once the reloaded page has loaded (not when it goes to another page).
 - **Rebuilding badge and error overlay** (`--no-overlay` turns both off): on `building` the client shows a small
   "Rebuilding..." badge in the corner; on `error` it shows a dismissible overlay with the code, the message and the
   Sitefile location, noting that the page shows the last good build (and when a service worker controls the

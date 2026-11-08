@@ -127,6 +127,7 @@ const run: Command = {
     '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
     '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
     '--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)',
+    '--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -147,6 +148,7 @@ const run: Command = {
     console: { type: 'boolean' },
     'no-overlay': { type: 'boolean' },
     'navigate-to-changed': { type: 'boolean' },
+    reload: { type: 'string' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -199,7 +201,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload'] as const;
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -221,12 +223,14 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const plain = !buildFlags && !(await isFile(path.join(context, 'Sitefile')));
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
+  const reloadMode = str(v.reload) ?? 'morph';
+  if (reloadMode !== 'full' && reloadMode !== 'morph') usage(`--reload expects full or morph, got '${reloadMode}'`);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate, reload: reloadMode });
   /** Serve `next` and tell open pages what changed. */
   const swap = (next: Tree): void => {
     const event = started ? (reloadEventFor(current, next, cssInject, navigate) ?? OK_EVENT) : undefined;
