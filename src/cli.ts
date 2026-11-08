@@ -24,6 +24,9 @@ import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 import { loadSecrets } from './secrets.js';
+import { exportFile } from './exporter.js';
+import { encodeManifest, manifestOf } from './integrity.js';
+import type { Tree } from './tree.js';
 import { NETWORK_OPTIONS, networkHelp, networkOption } from './cli/network.js';
 
 const VERSION = SITEFILE_VERSION;
@@ -90,6 +93,8 @@ Options:
                                registry cache (build only, once); registry problems only warn
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
+      --manifest <file>        also write a manifest of the exported files (build only): path, size and
+                               SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -174,6 +179,7 @@ export async function main(
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
         profile: { type: 'string' },
+        manifest: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -242,6 +248,9 @@ export async function main(
   }
 
   if (o.profile === '') return usageError('--profile expects a file path');
+  if (o.manifest !== undefined && command !== 'build') return usageError('--manifest is only for build');
+  if (o.manifest === '') return usageError('--manifest expects a file path');
+  if (o.manifest !== undefined) run.wrote?.push(o.manifest);
   // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
   const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
   if (o.profile !== undefined) run.wrote?.push(o.profile);
@@ -373,9 +382,14 @@ export async function main(
         await remoteCache?.load();
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
-          await storeBuildAsImage(await build(options), tags, imageInfo);
+          const built = await build(options);
+          if (o.manifest !== undefined) await writeManifest(built.output, o.manifest, context, !!o.force);
+          await storeBuildAsImage(built, tags, imageInfo);
           await remoteCache?.push(transformCacheDir());
           return 0;
+        }
+        if (o.manifest !== undefined && (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat) === 'directory' && isInsideDir(o.manifest, out)) {
+          return usageError(`--manifest '${o.manifest}' is inside the exported directory '${out}': write it elsewhere`);
         }
         const r = await buildToDirectory({
           ...options,
@@ -401,6 +415,7 @@ export async function main(
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
               : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest})\n`,
         );
+        if (o.manifest !== undefined) await writeManifest(r.output, o.manifest, context, !!o.force);
         // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
         if (r.lockfileWritten && !fetched) process.stdout.write('Updated Sitefile.lock\n');
         if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
@@ -482,6 +497,17 @@ export async function main(
       }
     }
   }
+}
+
+/** True when `file` would be written inside the directory `dir` (lexically, from the cwd). */
+function isInsideDir(file: string, dir: string): boolean {
+  const rel = path.relative(path.resolve(dir), path.resolve(file));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** `--manifest`: the exported files' manifest, written with the export's destination rules (and --force). */
+async function writeManifest(tree: Tree, file: string, contextDir: string, force: boolean): Promise<void> {
+  await exportFile(encodeManifest(manifestOf(tree)), file, { contextDir, force });
 }
 
 function positiveInt(raw: string, flag: string): number {

@@ -9,6 +9,12 @@
   `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
   implementations. A `serve` conformance case kind (`"command": "serve"`)
   compares both servers' answers to raw HTTP requests.
+- **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
+  `build --manifest <file>` and `save --manifest <file>` write every exported
+  file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify
+  <dir|archive|image> --manifest <file> [--json]` reports missing, changed and
+  extra files and fails with `E_INTEGRITY`. Same bytes from both
+  implementations; conformance step cases `steps-verify*`.
 
 ## 0.0.2 (2026-11-08)
 
