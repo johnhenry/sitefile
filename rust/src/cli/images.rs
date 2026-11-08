@@ -439,17 +439,17 @@ fn run_save(v: &Parsed) -> Result<i32> {
             bytes.clone()
         } else {
             encode_tree(
-            &tree,
-            format,
-            &EncodeOptions {
-                writer: WriterOptions {
-                    epoch: source_date_epoch()?,
-                    dirs: Vec::new(),
+                &tree,
+                format,
+                &EncodeOptions {
+                    writer: WriterOptions {
+                        epoch: source_date_epoch()?,
+                        dirs: Vec::new(),
+                    },
+                    base_url: v.str("base-url").map(str::to_string),
+                    compression: compression_from_extension(out_path, format),
                 },
-                base_url: v.str("base-url").map(str::to_string),
-                compression: compression_from_extension(out_path, format),
-            },
-        )?
+            )?
         };
         let w = export_file(&data, out_p, &opts)?;
         let name = if format == ExportFormat::Tgz {

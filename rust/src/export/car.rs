@@ -148,10 +148,8 @@ impl Dag {
         };
         let file_size: u64 = children.iter().map(|c| c.file_size).sum();
         let sizes: Vec<u64> = children.iter().map(|c| c.file_size).collect();
-        let links: Vec<(&[u8], &str, u64)> = children
-            .iter()
-            .map(|c| (&c.cid[..], "", c.tsize))
-            .collect();
+        let links: Vec<(&[u8], &str, u64)> =
+            children.iter().map(|c| (&c.cid[..], "", c.tsize)).collect();
         let block = dag_pb(&links, &unixfs(2, Some(file_size), &sizes));
         let tsize = block.len() as u64 + children.iter().map(|c| c.tsize).sum::<u64>();
         let cid = self.put(
@@ -208,7 +206,8 @@ fn build_dag(tree: &Tree) -> Result<(Dag, Vec<u8>)> {
         for s in &segs[..segs.len() - 1] {
             d = d.dirs.entry((*s).to_string()).or_default();
         }
-        d.files.insert(segs[segs.len() - 1].to_string(), &n.bytes[..]);
+        d.files
+            .insert(segs[segs.len() - 1].to_string(), &n.bytes[..]);
     }
     fn walk(dag: &mut Dag, d: &DirEntry, path: &str) -> Result<Node> {
         let mut entries = Vec::new();
@@ -292,9 +291,15 @@ mod tests {
         use crate::tree::make_file;
         let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let tree = Tree::from_files(vec![
-            ("/a.txt".to_string(), make_file(b"hello".to_vec(), "t", 0o644)),
+            (
+                "/a.txt".to_string(),
+                make_file(b"hello".to_vec(), "t", 0o644),
+            ),
             ("/empty".to_string(), make_file(Vec::new(), "t", 0o644)),
-            ("/.hidden".to_string(), make_file(b".h".to_vec(), "t", 0o644)),
+            (
+                "/.hidden".to_string(),
+                make_file(b".h".to_vec(), "t", 0o644),
+            ),
             ("/sub/big.bin".to_string(), make_file(big, "t", 0o644)),
             (
                 "/sub/deeper/huge.txt".to_string(),

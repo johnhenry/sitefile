@@ -1646,7 +1646,7 @@ fn export_build(
                 bytes: Some(written.bytes),
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
-            root_cid: None,
+                root_cid: None,
                 root_cid: None,
                 incremental: None,
             });
