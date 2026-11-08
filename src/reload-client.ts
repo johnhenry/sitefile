@@ -146,7 +146,7 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
         "border-top:6px solid #dc2626;border-radius:8px;padding:20px 24px;font:14px/1.5 system-ui,sans-serif;" +
         "box-shadow:0 10px 40px rgba(0,0,0,.4)}h2{margin:0 0 8px;font-size:16px;color:#b91c1c}" +
         "pre{white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,monospace;margin:8px 0}" +
-        ".where,.note{color:#555;font-size:13px}button{float:right;font:inherit;border:0;background:none;" +
+        ".where,.note{color:#555;font-size:13px;overflow-wrap:anywhere}button{float:right;font:inherit;border:0;background:none;" +
         "font-size:20px;line-height:1;cursor:pointer;color:#555}",
       "<div class=\"back\"><div class=\"box\" role=\"alertdialog\" aria-label=\"Build failed\">" +
         "<button type=\"button\" aria-label=\"Dismiss\">\u00d7</button><h2></h2><pre></pre>" +
