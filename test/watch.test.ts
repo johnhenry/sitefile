@@ -224,6 +224,12 @@ test('--reload morph: only reloads where nothing but existing HTML changed are m
   for (const re of [/scriptsOf\(doc\) !== scriptsOf\(document\)/, /document\.activeElement/, /sessionStorage\.setItem\(scrollKey/, /options\.reload !== "morph"/]) assert.match(RELOAD_CLIENT, re);
 });
 
+test('the client script parses with every option', () => {
+  for (const o of [{}, { resetServiceWorkers: false, cssInject: false, console: true, overlay: false, navigateToChanged: true, reload: 'full' as const }]) {
+    assert.doesNotThrow(() => new Function(clientScript(o)));
+  }
+});
+
 test('isNavigation: Sec-Fetch-Mode, then Sec-Fetch-Dest, then Accept', () => {
   assert.equal(isNavigation({ 'sec-fetch-mode': 'navigate' }), true);
   assert.equal(isNavigation({ 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'document', accept: 'text/html' }), false, 'fetch() of HTML');
