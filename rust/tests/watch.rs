@@ -296,6 +296,12 @@ fn watch_usage_errors() {
     let (code, _, err) = run(&home, &["serve", "--build-arg", "A=1", "./x/"]);
     assert_eq!(code, 2);
     assert!(err.contains("--build-arg needs --watch"), "{err}");
+    let (code, _, err) = run(&home, &["serve", "--keep-service-workers", "./x/"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("--keep-service-workers needs --watch"),
+        "{err}"
+    );
 }
 
 /// GET `path` as a page navigation; returns (status, headers lowercased, body).

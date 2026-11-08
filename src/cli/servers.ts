@@ -120,6 +120,7 @@ const run: Command = {
     '--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)',
     '--no-cache        do not use the TRANSFORM result cache (--watch)',
     '--no-lockfile     do not read or write Sitefile.lock (--watch)',
+    '--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -133,6 +134,7 @@ const run: Command = {
     'build-arg-file': { type: 'string', multiple: true },
     'no-cache': { type: 'boolean' },
     'no-lockfile': { type: 'boolean' },
+    'keep-service-workers': { type: 'boolean' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -185,7 +187,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers'] as const;
 
 /** `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. */
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
@@ -203,7 +205,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   let current: Tree = Tree.empty;
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload();
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'] });
   const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({

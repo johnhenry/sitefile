@@ -121,9 +121,37 @@ pub fn csp_blocks_reload(value: &str) -> Option<&'static str> {
     None
 }
 
+/// What the client script does besides reloading (`serve --watch` flags).
+#[derive(Debug, Clone)]
+pub struct LiveReloadOptions {
+    /// Unregister the page's service workers and empty its Cache Storage before each reload
+    /// (`--keep-service-workers` turns it off).
+    pub reset_service_workers: bool,
+}
+
+impl Default for LiveReloadOptions {
+    fn default() -> Self {
+        LiveReloadOptions {
+            reset_service_workers: true,
+        }
+    }
+}
+
+/// The script served at [`RELOAD_SCRIPT_PATH`]: [`reload_client`] called with `options` (keys in
+/// the same fixed order as `clientScript` in src/server.ts).
+pub fn client_script(options: &LiveReloadOptions) -> String {
+    format!(
+        "{}({{\"resetServiceWorkers\":{}}});\n",
+        reload_client(),
+        options.reset_service_workers
+    )
+}
+
 /// Open live-reload streams; [`LiveReload::reload`] tells every page to reload.
 #[derive(Default)]
 pub struct LiveReload {
+    /// The client script for this session ([`client_script`]); empty means the default options.
+    script: String,
     generation: Mutex<u64>,
     changed: Condvar,
     closed: AtomicBool,
@@ -134,7 +162,19 @@ pub struct LiveReload {
 
 impl LiveReload {
     pub fn new() -> Arc<LiveReload> {
-        Arc::new(LiveReload::default())
+        LiveReload::with_options(&LiveReloadOptions::default())
+    }
+
+    pub fn with_options(options: &LiveReloadOptions) -> Arc<LiveReload> {
+        Arc::new(LiveReload {
+            script: client_script(options),
+            ..LiveReload::default()
+        })
+    }
+
+    /// The client script for this session.
+    pub fn script(&self) -> &str {
+        &self.script
     }
 
     pub fn reload(&self) {
@@ -704,8 +744,12 @@ pub fn respond(
             None,
         );
     }
-    if options.live_reload.is_some() && raw_path == RELOAD_SCRIPT_PATH {
-        let js = reload_client();
+    if let Some(lr) = options
+        .live_reload
+        .as_ref()
+        .filter(|_| raw_path == RELOAD_SCRIPT_PATH)
+    {
+        let js = lr.script();
         return finish(
             200,
             owned(vec![
@@ -1784,9 +1828,21 @@ mod tests {
     #[test]
     fn reload_client_is_the_typescript_literal() {
         let js = reload_client();
-        assert!(js.starts_with("(function () {"), "{js}");
-        assert!(js.ends_with("})();\n"), "{js}");
+        assert!(js.starts_with("(function (options) {"), "{js}");
+        assert!(js.ends_with("})"), "{js}");
         assert!(!js.contains('`'));
+        assert_eq!(
+            client_script(&LiveReloadOptions::default()),
+            format!("{js}({{\"resetServiceWorkers\":true}});\n")
+        );
+        let keep = LiveReload::with_options(&LiveReloadOptions {
+            reset_service_workers: false,
+        });
+        assert_eq!(
+            keep.script(),
+            format!("{js}({{\"resetServiceWorkers\":false}});\n")
+        );
+        assert!(js.contains("getRegistrations()") && js.contains("caches.delete(k)"));
     }
 
     #[test]
@@ -1865,7 +1921,10 @@ mod tests {
         let none = HashMap::new();
         let js = handle_request(&tree, &opts, "GET", RELOAD_SCRIPT_PATH, &none);
         assert_eq!(js.status, 200);
-        assert_eq!(js.body, reload_client().as_bytes());
+        assert_eq!(
+            js.body,
+            client_script(&LiveReloadOptions::default()).as_bytes()
+        );
         assert_eq!(
             js.header("content-type"),
             Some("text/javascript; charset=utf-8")
