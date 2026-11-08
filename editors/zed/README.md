@@ -1,6 +1,6 @@
-# Sitefile for Zed
+# sitefile for Zed
 
-A Zed extension for [Sitefile](https://github.com/johnhenry/sitefile): syntax
+A Zed extension for [sitefile](https://github.com/johnhenry/sitefile): syntax
 highlighting from the tree-sitter grammar in
 [`editors/tree-sitter-sitefile`](../tree-sitter-sitefile/), heredoc bodies in
 the language their delimiter names (`<<HTML`, `<<CSS`, `<<JS`, `<<MD`,

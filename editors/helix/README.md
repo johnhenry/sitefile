@@ -1,7 +1,7 @@
-# Sitefile for Helix
+# sitefile for Helix
 
 Tree-sitter highlighting, injections (heredoc bodies by delimiter) and locals
-for [Sitefile](https://github.com/johnhenry/sitefile), using the grammar in
+for [sitefile](https://github.com/johnhenry/sitefile), using the grammar in
 [`editors/tree-sitter-sitefile`](../tree-sitter-sitefile/), plus the language
 server `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).
 

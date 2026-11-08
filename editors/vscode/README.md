@@ -1,7 +1,7 @@
-# Sitefile for VS Code
+# sitefile for VS Code
 
 Syntax highlighting and language server support for
-[Sitefile](https://github.com/johnhenry/sitefile), the Docker-inspired static
+[sitefile](https://github.com/johnhenry/sitefile), the Docker-inspired static
 site builder. Highlighting is a TextMate grammar; diagnostics, completion,
 hover, go to definition, references, rename and the outline come from the
 Rust binary's language server, `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).

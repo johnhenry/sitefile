@@ -1,7 +1,7 @@
 {
   "name": "sitefile",
   "displayName": "Sitefile",
-  "description": "Syntax highlighting and language server support for Sitefile, the Docker-inspired static site builder",
+  "description": "Syntax highlighting and language server support for sitefile, the Docker-inspired static site builder",
   "version": "0.2.0",
   "publisher": "johnhenry",
   "license": "MIT",

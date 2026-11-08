@@ -568,7 +568,7 @@ For offline builds, `sitefile vendor` keeps copies **in the context** (`vendor/s
 
 ### Cache size limit
 
-At the end of every `build` and `inspect`, Sitefile keeps the **evictable** data (TRANSFORM results, compiled wasm
+At the end of every `build` and `inspect`, sitefile keeps the **evictable** data (TRANSFORM results, compiled wasm
 modules, untagged images and unreferenced blobs) under a size limit by deleting the least recently used items first.
 Tagged images, and every blob a tagged image uses, are never deleted and do not count against the limit.
 

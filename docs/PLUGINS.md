@@ -142,12 +142,12 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
 Allowing a plugin is still trusting it: treat it like any dependency, keep it
 in your repository, and pin it with `INTEGRITY` (which covers the module file
 itself; other files in its folder are not hashed). Because a plugin can read
-its whole folder, Sitefile refuses a plugin placed directly in the build
+its whole folder, sitefile refuses a plugin placed directly in the build
 context root.
 
 ## Determinism
 
-Sitefile builds are reproducible, so plugins should be too: produce the same
+sitefile builds are reproducible, so plugins should be too: produce the same
 bytes for the same request. Avoid `Date.now()`, `Math.random()` and anything
 that depends on the machine. (Reading the clock is not blocked; it is just a
 bad idea.)
@@ -160,7 +160,7 @@ works the same. See `examples/wasm/` for a plugin written in Rust
 (`plugins/badge-src`, built with `./build.sh`).
 
 **The module imports nothing.** That is checked when the build starts, and
-it's what makes wasm plugins the strongest sandbox Sitefile offers: with no
+it's what makes wasm plugins the strongest sandbox sitefile offers: with no
 imports a module can't open files, use the network, read the clock or get
 randomness. It can only compute. So a wasm plugin may live anywhere in the
 context (it can't read its folder), and its results are always cacheable.
@@ -196,7 +196,7 @@ and results at 64 MiB. Traps, out-of-range results, invalid JSON and
 
 ## The image plugin
 
-Sitefile ships a first-party WebAssembly plugin for responsive images:
+sitefile ships a first-party WebAssembly plugin for responsive images:
 [`plugins/image/image.wasm`](../plugins/image/), with its Rust source and
 build script next to it. Copy the `.wasm` into your project and pin it:
 
@@ -351,7 +351,7 @@ input, dest }` and returns a fileable tree, built with fileable's
 renders it with fileable's in-memory `toFiles()` and the tree's paths land
 under `TO`.
 
-It is an example, not part of Sitefile: Sitefile has no runtime dependencies
+It is an example, not part of sitefile: sitefile has no runtime dependencies
 and fileable is not one. Because a plugin reads only its own folder,
 fileable has to be in it. `node examples/fileable/vendor.mjs` copies the
 files Node loads for `@johnhenry/fileable/browser` (about 45 files, 600 KB:
@@ -369,7 +369,7 @@ fileable's `cmd` attribute (a shell command; a plugin cannot start processes,
 and Node's permission model would refuse `child_process` anyway, so use
 `TOOL` and `--allow-exec`), local `src=` paths and `<Dir from>` (pass the
 content as the TRANSFORM source or a value import instead), `src="env://…"`
-(the environment is empty) and `encode="zip"`/`"wbn"` (let Sitefile write the
+(the environment is empty) and `encode="zip"`/`"wbn"` (let sitefile write the
 archive). Like every JavaScript plugin it needs `--allow-plugin fileable`.
 
 ## External tools: `TOOL` and `--allow-exec`

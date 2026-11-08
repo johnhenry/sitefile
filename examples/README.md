@@ -1,4 +1,4 @@
-# Sitefile examples
+# sitefile examples
 
 Each directory is a build context (a `Sitefile` and its inputs). `npm run
 examples` builds every one with the TypeScript CLI into a temporary directory

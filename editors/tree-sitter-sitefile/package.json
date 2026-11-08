@@ -1,7 +1,7 @@
 {
   "name": "tree-sitter-sitefile",
   "version": "0.1.0",
-  "description": "Tree-sitter grammar for Sitefile, the Docker-inspired static site builder",
+  "description": "Tree-sitter grammar for Sitefiles, the build files of sitefile (the Docker-inspired static site builder)",
   "private": true,
   "type": "module",
   "license": "MIT",

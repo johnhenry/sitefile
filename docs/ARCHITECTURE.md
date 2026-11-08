@@ -82,7 +82,7 @@ content digests of everything it reads, and a later build reuses the result when
   TRANSFORM cache hit. Failures are never memoized, so a failing step fails again the same way.
 
 The memo is **in memory only**, by design. A watch session is where rebuilds repeat, it already holds the previous
-output, and keeping the memo there means no new on-disk format, no stale entries across Sitefile versions or
+output, and keeping the memo there means no new on-disk format, no stale entries across sitefile versions or
 implementations, no extra `$SITEFILE_HOME` space to account for under `SITEFILE_CACHE_MAX`, and no question of trusting
 cached trees written by another process. The expensive cross-process step, TRANSFORM, already has its disk cache.
 One-shot `build` keeps no memo. Entries not used by the latest build are dropped (after a failed build, the last
@@ -103,7 +103,7 @@ changed (`ExportState`, held by the session's memo; `exportIncremental` in `src/
 builds and `SITEFILE_NO_INCREMENTAL=1` sessions.
 
 - **What is recorded**: after each export of the session, the destination's real path, the dev/ino of it and of its
-  parent, and per file the tree digest and mode plus its lstat stamp right after Sitefile wrote it (dev, ino, size,
+  parent, and per file the tree digest and mode plus its lstat stamp right after sitefile wrote it (dev, ino, size,
   mtime, ctime, mode). Both trees' digests and modes are in memory, so the diff costs nothing.
 - **Is the output as we left it?** Before applying anything: the same destination directory and parent (dev/ino), a
   walk of the output (one `readdir` per directory) finding exactly the recorded directories and files and nothing
@@ -131,7 +131,7 @@ builds and `SITEFILE_NO_INCREMENTAL=1` sessions.
   access to the output can race a check and the following call; we detect it afterwards and never "fix" it
   silently), plus: a change made to an untouched file between the walk and the end of the apply is not seen by that
   export (the next one sees it, since its stamp no longer matches); a modification inside the same clock tick as
-  Sitefile's own write, keeping the size, would not change the stamp.
+  sitefile's own write, keeping the size, would not change the stamp.
 
 The randomized tests modify the exported directory between rebuilds (rewrite a file keeping its size and mtime,
 append, add a file or an empty directory, delete a file or a directory, chmod, replace a file or a directory with a

@@ -1102,7 +1102,7 @@ RENDER ./templates/trusted.html TO /index.html
   macOS, which often hands out NFD names, and Linux agree.
 - A local source is found whichever normalization its on-disk name uses and
   whichever the Sitefile uses: a non-ASCII path segment is matched by NFC form
-  against its directory listing (macOS does this itself; on Linux Sitefile
+  against its directory listing (macOS does this itself; on Linux sitefile
   does). Two names in one context directory that differ only in normalization
   (possible on Linux) are `E_PATH_COLLISION`, both in directory walks and when
   one of them is named explicitly.
@@ -1215,7 +1215,7 @@ repository at a commit, and `sitefile build https://host/repo.git#ref:dir` build
   Files keep their executable bit (`0755`), everything else is `0644`. The provenance digest is the
   tree digest (or the file's sha256) and the commit is recorded as `gitCommit` (`--provenance`:
   `"digest": {"gitCommit": …, "sha256": …}`, `downloadLocation` = the URL with the commit as ref).
-- **Protocol.** Sitefile speaks Git's smart HTTP **protocol v2** itself; no `git` program runs, so
+- **Protocol.** sitefile speaks Git's smart HTTP **protocol v2** itself; no `git` program runs, so
   there are no hooks, no Git config, no credential helpers and no filters (`.gitattributes` is just a
   file; Git LFS files arrive as their pointer files). One capability request
   (`GET <repo>/info/refs?service=git-upload-pack`, `Git-Protocol: version=2`), an `ls-refs` request
@@ -1226,7 +1226,7 @@ repository at a commit, and `sitefile build https://host/repo.git#ref:dir` build
   verification, the size cap (`--max-download-bytes`, per request) and the timeout. Redirects are
   followed (and re-checked) for the capability request only; the repository URL it ends at is used
   for the rest, and a redirect of a `POST` is `E_REDIRECT`.
-- **Verification.** The packfile is parsed by Sitefile (zlib objects, `OFS_DELTA` and `REF_DELTA`,
+- **Verification.** The packfile is parsed by sitefile (zlib objects, `OFS_DELTA` and `REF_DELTA`,
   bases inside the pack only); its trailing SHA-1 is checked, every object's id is recomputed from
   its content, and the commit must be the one asked for, so the files imported are exactly those the
   commit names. Inflated objects are bounded by the archive limits (`maxTotalBytes`, and
@@ -1508,7 +1508,7 @@ A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwis
 
 All archive writers are deterministic: the same tree gives byte-identical
 output, whatever the order files were added, and the TypeScript and Rust
-implementations write the same bytes. Compression uses Sitefile's own
+implementations write the same bytes. Compression uses sitefile's own
 deterministic DEFLATE encoder (`src/deflate.ts`, ported as `rust/src/deflate.rs`;
 the algorithm is specified at the top of `src/deflate.ts`), not the platform's
 zlib, so the output does not depend on the Node or zlib version. It compresses

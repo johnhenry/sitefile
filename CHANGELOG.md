@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.2 (2026-11-08)
+
+- **Plugin console output keeps its order** (johnhenry/sitefile#164): a
+  plugin's console lines are written before its result, in both the
+  TypeScript and Rust runners, so they always become build warnings (a race
+  dropped some). Fixed in 5689229 (#164).
+- **Docs: the tool is "sitefile".** The product name is lowercase where it
+  stands alone; "Sitefile" stays for the file (`Sitefile`, `Sitefile.lock`, "a
+  Sitefile") and the language. The desktop app is Sitefile Desktop.
+
 ## 0.0.1 (2026-11-08)
 
 - **`serve` serves archive files** (johnhenry/sitefile#155): `sitefile serve
@@ -34,7 +44,7 @@
   conformance cases. Added in c131eb3 (#162).
 
 - **Library API for embedders** (johnhenry/sitefile#153), found by embedding
-  the crate in sitefile Desktop. Rust: `servers::serve_detached`,
+  the crate in Sitefile Desktop. Rust: `servers::serve_detached`,
   `restart_detached`, `start_detached`, `stop_server`, `resolve_source`,
   `parse_publish` and `DetachedServe` (the CLI's `serve -d`, `server restart`
   and `server stop` now call them); `executor::store_build_as_image` with
@@ -77,7 +87,7 @@
   johnhenry/sitefile#145). A JavaScript plugin renders a `@johnhenry/fileable`
   tree into the build with fileable's in-memory `toFiles()` and returns
   `{ files }`, so a JSX file tree needs no directory or zip on disk in
-  between. fileable stays out of Sitefile's dependencies: it is a
+  between. fileable stays out of sitefile's dependencies: it is a
   devDependency, and `examples/fileable/vendor.mjs` copies the files its
   browser entry point loads into the plugin folder (gitignored; nothing
   generated is committed), the only folder a plugin can read. Its `cmd`
@@ -106,7 +116,7 @@
 
 ## 0.0.0 — first npm release (2026-11-06)
 
-`@johnhenry/sitefile` is a new package: Sitefile was never published to npm
+`@johnhenry/sitefile` is a new package: sitefile was never published to npm
 under any name, and `0.0.0` is its first version. It joins the @johnhenry
 family as its static build orchestrator, next to `@johnhenry/fileable` (file
 trees in JSX) and `@johnhenry/packfile` (the Web Bundle reader and server).
