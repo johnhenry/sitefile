@@ -663,9 +663,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
     if eocd >= 20 && u32le(b, eocd - 20) == 0x07064b50 {
         let r = u64le(b, eocd - 12);
         if b.len() < 56 || r > (b.len() - 56) as u64 || u32le(b, r as usize) != 0x06064b50 {
-            return Err(bad(
-                "corrupt zip64 end-of-central-directory record".into(),
-            ));
+            return Err(bad("corrupt zip64 end-of-central-directory record".into()));
         }
         let r = r as usize;
         count = u64le(b, r + 32);
@@ -722,10 +720,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         // ZIP64 extra field (0x0001): the 64-bit values of the fields that are 0xffffffff, in this order.
         const MAX: u64 = 0xffff_ffff;
         if e.usize_ == MAX || e.csize == MAX || e.local == MAX {
-            let z = extra_field(
-                &b[p + 46 + name_len..p + 46 + name_len + extra_len],
-                0x0001,
-            );
+            let z = extra_field(&b[p + 46 + name_len..p + 46 + name_len + extra_len], 0x0001);
             let mut at = 0usize;
             let name = e.name.clone();
             let mut next = || -> Result<u64> {
