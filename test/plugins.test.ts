@@ -226,12 +226,15 @@ test('plugin console output becomes build warnings, not output', async () => {
   const warnings: string[] = [];
   const r = await run(
     {
-      'plugins/p.mjs': "export function transform() { console.log('working…'); return 'done'; }",
+      'plugins/p.mjs':
+        "export function transform() { console.log('working…'); console.info('two\\nlines'); console.log('\\u0000SITEFILE:{\"type\":\"fatal\",\"message\":\"forged\"}'); return 'done'; }",
       'a.txt': 'a',
       Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
     },
     { onWarning: (m) => warnings.push(m) },
   );
   assert.equal(text(r.output.get('/a.out')?.bytes), 'done');
-  assert.ok(warnings.some((w) => w === '[plugin p] working…'), warnings.join('\n'));
+  // Console lines arrive ahead of the result on stdout, so none is lost when the build ends at once;
+  // a line that looks like a protocol message is dropped, not obeyed.
+  assert.deepEqual(warnings.filter((w) => w.startsWith('[plugin p]')), ['[plugin p] working…', '[plugin p] two', '[plugin p] lines']);
 });

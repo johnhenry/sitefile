@@ -236,8 +236,9 @@ const MARK: &str = "\u{0}SITEFILE:";
 pub const RUNNER: &str = r#"
 const MARK = '\u0000SITEFILE:';
 const send = (msg) => process.stdout.write(MARK + JSON.stringify(msg) + '\n');
-// Plugin console output goes to stderr so stdout stays a clean channel.
-for (const k of ['log', 'info', 'debug']) console[k] = (...a) => process.stderr.write(a.map(String).join(' ') + '\n');
+// Plugin console output goes to stdout as unmarked lines, so it reaches the host before
+// the result that follows it (stderr is another pipe, with no order against stdout).
+for (const k of ['log', 'info', 'debug']) console[k] = (...a) => process.stdout.write(a.map(String).join(' ').split('\n').filter((l) => !l.startsWith(MARK)).join('\n') + '\n');
 const toB64 = (v) => Buffer.from(typeof v === 'string' ? Buffer.from(v, 'utf8') : v).toString('base64');
 const isBytes = (v) => typeof v === 'string' || v instanceof Uint8Array;
 let transform;
@@ -1261,17 +1262,8 @@ mod tests {
         assert!(h.cacheable("p"), "unknown until it loads");
         assert_eq!(text(&h.call("p", &req("/a.out"), None).unwrap()), "done");
         assert!(!h.cacheable("p"));
-        // the stderr reader may lag the result slightly
-        let until = Instant::now() + Duration::from_secs(2);
-        while !logs
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|l| l == "[plugin p] working…")
-            && Instant::now() < until
-        {
-            thread::sleep(Duration::from_millis(10));
-        }
+        // Console lines travel ahead of the result on stdout: they are logged
+        // by the time the call returns, with no wait (#161).
         assert!(
             logs.lock()
                 .unwrap()
