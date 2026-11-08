@@ -1947,7 +1947,7 @@ mod tests {
             &[],
             E_VALIDATION,
             2,
-            "EXPORT ... COMPRESSION applies only to AS oci and AS wbn",
+            "EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc",
         );
         let p = plan_of(
             "FROM scratch\nEXPORT / AS wbn BASE https://x.test/ COMPRESSION gzip",
