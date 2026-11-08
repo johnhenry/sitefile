@@ -803,6 +803,14 @@ const EDGE = [
   () => zip64Of([['a.txt', B('x')]], { badLocator: true }),
   () => zip64Of([['a.txt', B('x')]], { noLocator: true }),
   () => zip64Of(Array.from({ length: 3 }, (_, i) => [`f${i}`, B('x')])),
+  // Formats sitefile does not read are named in the E_TYPE error (#221).
+  () => Buffer.concat([Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), Buffer.alloc(600)]),
+  () => Buffer.concat([Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), Buffer.alloc(600)]),
+  () => Buffer.from('BZh91AY&SY'),
+  () => Buffer.from('BZhello, not bzip2'),
+  () => Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4]), Buffer.alloc(600)]),
+  () => Buffer.from('Rar!\u001a\u0007\u0001\u0000', 'latin1'),
+  () => Buffer.from([0x28, 0xb5, 0x2f]),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

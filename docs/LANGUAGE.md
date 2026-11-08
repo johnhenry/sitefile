@@ -1512,7 +1512,8 @@ checked:
   tgz (gzip), and zip (stored and deflate, including ZIP64 records: the zip64
   end record and locator and the 0x0001 extra field, as streaming writers add
   them even to small archives; no encryption). Anything
-  else fails with `E_TYPE`. Supported tar extras: POSIX ustar prefix (old GNU
+  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.

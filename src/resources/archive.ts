@@ -63,9 +63,21 @@ export async function extractArchive(
   } else if (isTar(bytes)) {
     readTar(bytes, origin, limits, span, add);
   } else {
-    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (expected tar, tar.gz, zip or web bundle)`, span);
+    const what = otherFormat(bytes);
+    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (${what ?? 'expected tar, tar.gz, zip or web bundle'})`, span);
   }
   return Tree.fromFiles(files);
+}
+
+/** Formats sitefile does not read, by magic bytes: what the file is and what to do instead. */
+function otherFormat(b: Uint8Array): string | undefined {
+  const starts = (...m: number[]): boolean => b.length >= m.length && m.every((x, i) => b[i] === x);
+  if (starts(0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00)) return 'it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip';
+  if (starts(0x28, 0xb5, 0x2f, 0xfd)) return 'it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip';
+  if (starts(0x42, 0x5a, 0x68) && b.length > 3 && b[3]! >= 0x31 && b[3]! <= 0x39) return 'it is bzip2-compressed, e.g. .tar.bz2; recompress it as .tar.gz or zip';
+  if (starts(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c)) return 'it is a 7z archive; convert it to zip or tar';
+  if (starts(0x52, 0x61, 0x72, 0x21, 0x1a, 0x07)) return 'it is a RAR archive; convert it to zip or tar';
+  return undefined;
 }
 
 const isGzip = (b: Uint8Array): boolean => b.length > 2 && b[0] === 0x1f && b[1] === 0x8b;

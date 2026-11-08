@@ -124,13 +124,34 @@ pub fn extract_archive(
     } else if is_tar(bytes) {
         read_tar(bytes, &mut c)?;
     } else {
+        let what = other_format(bytes).unwrap_or("expected tar, tar.gz, zip or web bundle");
         return Err(SitefileError::new(
             E_TYPE,
-            format!("{origin}: not a recognized archive (expected tar, tar.gz, zip or web bundle)"),
+            format!("{origin}: not a recognized archive ({what})"),
             span.cloned(),
         ));
     }
     Tree::from_files(c.files)
+}
+
+/// Formats sitefile does not read, by magic bytes: what the file is and what to do instead.
+fn other_format(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+        return Some("it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        return Some("it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(b"BZh") && b.len() > 3 && (b'1'..=b'9').contains(&b[3]) {
+        return Some("it is bzip2-compressed, e.g. .tar.bz2; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(&[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]) {
+        return Some("it is a 7z archive; convert it to zip or tar");
+    }
+    if b.starts_with(&[0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]) {
+        return Some("it is a RAR archive; convert it to zip or tar");
+    }
+    None
 }
 
 fn is_gzip(b: &[u8]) -> bool {
