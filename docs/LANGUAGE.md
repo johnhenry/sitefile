@@ -1530,7 +1530,10 @@ checked:
   `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
-  device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
+  device and fifo entries (`E_ARCHIVE_UNSAFE`). A zip whose local header
+  disagrees with its central-directory record (name, compression method, or
+  sizes when there is no data descriptor), or whose entries overlap, is
+  `E_ARCHIVE_UNSAFE` too: other tools would extract different files from it. Duplicate paths, or a file and
   directory at one path, fail with `E_CONFLICT`. Malformed or truncated
   archives fail with `E_ARCHIVE`, as does a zip entry whose CRC-32 does not
   match its central-directory record (a corrupt stored entry inflate cannot

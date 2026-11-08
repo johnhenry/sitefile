@@ -614,7 +614,10 @@ const tarOf = (...entries) =>
     ...entries.flatMap(([n, type, data]) => [tarHeader({ name: B(n), type, size: data.length, magic: 'ustar\u000000' }), data, pad512(data.length)]),
     Buffer.alloc(1024),
   ]);
-/** A stored zip of `[name, data, { flags, extra, method, body, crc }]` entries, honest unless told otherwise. */
+/**
+ * A stored zip of `[name, data, { flags, extra, method, body, crc, localName, localMethod, localSizes, offset }]`
+ * entries, honest unless told otherwise (`local*` lie in the local header only, `offset` in the central one).
+ */
 function zipOf(...entries) {
   const local = [];
   const central = [];
@@ -626,12 +629,14 @@ function zipOf(...entries) {
     const l = Buffer.alloc(30);
     l.writeUInt32LE(0x04034b50, 0);
     l.writeUInt16LE(20, 4);
+    const lname = o.localName ? B(o.localName) : name;
+    const [lc, lu] = o.localSizes ?? [body.length, data.length];
     l.writeUInt16LE(o.flags ?? 0, 6);
-    l.writeUInt16LE(o.method ?? 0, 8);
+    l.writeUInt16LE(o.localMethod ?? o.method ?? 0, 8);
     l.writeUInt32LE(o.crc ?? crc32(data), 14);
-    l.writeUInt32LE(body.length, 18);
-    l.writeUInt32LE(data.length, 22);
-    l.writeUInt16LE(name.length, 26);
+    l.writeUInt32LE(lc, 18);
+    l.writeUInt32LE(lu, 22);
+    l.writeUInt16LE(lname.length, 26);
     l.writeUInt16LE(extra.length, 28);
     const c = Buffer.alloc(46);
     c.writeUInt32LE(0x02014b50, 0);
@@ -645,10 +650,10 @@ function zipOf(...entries) {
     c.writeUInt16LE(name.length, 28);
     c.writeUInt16LE(extra.length, 30);
     c.writeUInt32LE((0o100644 << 16) >>> 0, 38);
-    c.writeUInt32LE(offset, 42);
-    local.push(l, name, extra, body);
+    c.writeUInt32LE(o.offset ?? offset, 42);
+    local.push(l, lname, extra, body);
     central.push(c, name, extra);
-    offset += 30 + name.length + extra.length + body.length;
+    offset += 30 + lname.length + extra.length + body.length;
   }
   const cd = Buffer.concat(central);
   const end = Buffer.alloc(22);
@@ -704,6 +709,20 @@ const EDGE = [
   () => zipOf([B('index.html'), B('<h1>hello</h1>'), { body: B('<H1>hello</h1>') }]),
   () => zipOf([B('a.txt'), B('hello hello hello'), { method: 8, body: deflateRawSync(B('hello hello hello')), crc: 0x12345678 }]),
   () => zipOf([B('ok.txt'), B('fine')], [B('empty'), B(''), { crc: 1 }]),
+  // Local headers vs the central directory, and overlapping entries (#184).
+  () => zipOf([B('index.html'), B('hi'), { localName: 'evil.html' }]),
+  () => zipOf([B('index.html'), B('hi'), { localName: 'INDEX.HTML' }]),
+  () => zipOf([B('a.txt'), B('hi'), { localMethod: 8 }]),
+  () => zipOf([B('a.txt'), B('hi'), { localSizes: [2, 3] }]),
+  () => zipOf([B('a.txt'), B('hi'), { flags: 8, localSizes: [0, 0] }]), // data descriptor: local sizes may be 0
+  () => zipOf([B('a.txt'), B('hi'), { flags: 8, localSizes: [7, 7] }]),
+  () => zipOf([B('a.txt'), B('hello')], [B('a.txt'), B('hello'), { offset: 0 }]), // two records, one local entry
+  // b.txt's local header and data lie inside a.txt's data (a non-recursive zip bomb's overlap).
+  () => zipOf([B('a.txt'), zipOf([B('b.txt'), B('x')]).subarray(0, 36)], [B('b.txt'), B('x'), { offset: 35 }]),
+  () => zipOf([B('d/'), B('')], [B('d/x'), B('y')]),
+  // Python zipfile, force_zip64=True: 0xffffffff local sizes with a local ZIP64 field; seekable and streamed (data descriptors).
+  () => Buffer.from('UEsDBC0AAAAIAAAAIVATjxBo//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAsAAAAAAAAACwAAAAAAAACzyTC0y8i00QdSAFBLAwQtAAAACAAAACFQe8wlO///////////CgAUAHNpdGUvYS5jc3MBABAAlgAAAAAAAAAIAAAAAAAAAEusrk0cfAgAUEsBAi0DLQAAAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0AAAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAUwAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAJAAAAAAAA==', 'base64'),
+  () => Buffer.from('UEsDBC0ACAAIAAAAIVAAAAAA//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAAAAAAAAAAAAAAAAAAAAACzyTC0y8i00QdSAFBLBwgTjxBoCwAAAAAAAAALAAAAAAAAAFBLAwQtAAgACAAAACFQAAAAAP//////////CgAUAHNpdGUvYS5jc3MBABAAAAAAAAAAAAAAAAAAAAAAAEusrk0cfAgAUEsHCHvMJTsIAAAAAAAAAJYAAAAAAAAAUEsBAi0DLQAIAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0ACAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAWQAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAMAAAAAAAA==', 'base64'),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

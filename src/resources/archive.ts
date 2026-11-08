@@ -212,6 +212,7 @@ function parsePax(data: Uint8Array, bad: (why: string) => SitefileError): { path
 
 interface ZipEntry {
   name: string;
+  rawName: Uint8Array;
   method: number;
   crc: number;
   csize: number;
@@ -267,6 +268,20 @@ function zipName(raw: Uint8Array, flags: number, extra: Uint8Array): string {
   return out;
 }
 
+/** The data of the first extra field `id` in `extra`, or undefined. */
+function extraField(extra: Uint8Array, id: number): Uint8Array | undefined {
+  for (let i = 0; i + 4 <= extra.length; ) {
+    const size = extra[i + 2]! | (extra[i + 3]! << 8);
+    if (i + 4 + size > extra.length) return undefined;
+    if ((extra[i]! | (extra[i + 1]! << 8)) === id) return extra.subarray(i + 4, i + 4 + size);
+    i += 4 + size;
+  }
+  return undefined;
+}
+
+/** A little-endian 64-bit integer as a number (values beyond 2^53 are rounded; they fail the limits anyway). */
+const u64 = (b: Uint8Array, at: number): number => Number(new DataView(b.buffer, b.byteOffset, b.byteLength).getBigUint64(at, true));
+
 async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): Promise<void> {
   const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`, span);
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -296,6 +311,7 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     const name = zipName(b.subarray(p + 46, p + 46 + nameLen), v.getUint16(p + 8, true), b.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen));
     const e: ZipEntry = {
       name,
+      rawName: b.subarray(p + 46, p + 46 + nameLen),
       method: v.getUint16(p + 10, true),
       crc: v.getUint32(p + 16, true),
       csize: v.getUint32(p + 20, true),
@@ -321,12 +337,41 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: compression ratio exceeds ${limits.maxRatio}:1`, span);
   }
 
+  // Every local header must agree with its central record, and no two entries' bytes may overlap:
+  // otherwise other tools (unzip, browsers, Archive Utility) would see different files (#184).
+  const unsafe = (e: ZipEntry, why: string): SitefileError =>
+    new SitefileError('E_ARCHIVE_UNSAFE', `unsafe archive entry '${e.name}': ${why}`, span);
+  const spans: Array<{ e: ZipEntry; from: number; start: number; end: number }> = [];
   for (const e of list) {
-    if (e.isDir) { add(e.name, 'dir', new Uint8Array(0), 0o755); continue; }
     const h = e.local;
     if (h + 30 > b.length || v.getUint32(h, true) !== 0x04034b50) throw bad(`corrupt zip local header for '${e.name}'`);
-    const start = h + 30 + v.getUint16(h + 26, true) + v.getUint16(h + 28, true);
+    const nameLen = v.getUint16(h + 26, true);
+    const start = h + 30 + nameLen + v.getUint16(h + 28, true);
     if (start + e.csize > b.length) throw bad(`truncated zip entry '${e.name}'`);
+    if (Buffer.compare(b.subarray(h + 30, h + 30 + nameLen), e.rawName) !== 0) throw unsafe(e, 'its local header has a different name');
+    if (v.getUint16(h + 8, true) !== e.method) throw unsafe(e, 'its local header has a different compression method');
+    // With a data descriptor (bit 3) the local sizes may be zero; the descriptor follows the data.
+    if (!(v.getUint16(h + 6, true) & 8)) {
+      let csize: number = v.getUint32(h + 18, true);
+      let usize: number = v.getUint32(h + 22, true);
+      if (csize === 0xffffffff || usize === 0xffffffff) {
+        // A local ZIP64 extra field holds both sizes (APPNOTE 4.5.3); Python's force_zip64 writes one.
+        const z = extraField(b.subarray(h + 30 + nameLen, start), 0x0001);
+        if (z && z.length >= 16) [usize, csize] = [u64(z, 0), u64(z, 8)];
+      }
+      if (csize !== e.csize || usize !== e.usize) throw unsafe(e, 'its local header has different sizes');
+    }
+    spans.push({ e, from: h, start, end: start + e.csize });
+  }
+  const byOffset = [...spans].sort((a, c) => a.from - c.from);
+  for (let i = 1; i < byOffset.length; i++) {
+    const prev = byOffset[i - 1]!;
+    const cur = byOffset[i]!;
+    if (cur.from < prev.end) throw unsafe(cur.e, `its data overlaps entry '${prev.e.name}'`);
+  }
+
+  for (const { e, start } of spans) {
+    if (e.isDir) { add(e.name, 'dir', new Uint8Array(0), 0o755); continue; }
     const raw = b.subarray(start, start + e.csize);
     let data: Uint8Array;
     if (e.method === 0) {
