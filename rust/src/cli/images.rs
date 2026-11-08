@@ -336,7 +336,7 @@ pub const SAVE: Command = Command {
     name: "save",
     summary: "export an image to a directory or archive",
     usage: "save <ref|id> -o <out> [--format fmt] [--base-url url] [--force]",
-    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
+    description: "Write an image's files to a directory, or to a zip, tar, tar.gz (tgz) or wbn archive or an IPFS CAR, or the image itself as\nan OCI archive (-o x.oci.tar) or OCI layout directory (--format oci). The format is chosen like \"build -o\":\nfrom --format, else the extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car), else a directory; a wbn\nwritten to *.wbn.gz is gzipped.\nArchives are deterministic (set SOURCE_DATE_EPOCH to stamp them). A non-empty destination needs --force.",
     flags: &[
         "-o, --out <path>     destination (required)",
         "    --format <fmt>   directory | zip | tar | tgz | wbn | oci (alias tar.gz)",
@@ -430,7 +430,15 @@ fn run_save(v: &Parsed) -> Result<i32> {
             shown(&w.out_dir)
         ));
     } else {
-        let data = encode_tree(
+        let car = if format == ExportFormat::Car {
+            Some(crate::export::car::encode_car(&tree)?)
+        } else {
+            None
+        };
+        let data = if let Some((bytes, _)) = &car {
+            bytes.clone()
+        } else {
+            encode_tree(
             &tree,
             format,
             &EncodeOptions {
@@ -441,7 +449,8 @@ fn run_save(v: &Parsed) -> Result<i32> {
                 base_url: v.str("base-url").map(str::to_string),
                 compression: compression_from_extension(out_path, format),
             },
-        )?;
+        )?
+        };
         let w = export_file(&data, out_p, &opts)?;
         let name = if format == ExportFormat::Tgz {
             "tar.gz"
@@ -449,11 +458,12 @@ fn run_save(v: &Parsed) -> Result<i32> {
             format.as_str()
         };
         out(&format!(
-            "Saved {} ({} files) to {} ({name}, {} bytes)\n",
+            "Saved {} ({} files) to {} ({name}, {} bytes{})\n",
             short_id(&id),
             tree.len(),
             shown(&w.out_file),
-            w.bytes
+            w.bytes,
+            car.map(|(_, r)| format!(", root {r}")).unwrap_or_default()
         ));
     }
     drop(scratch);

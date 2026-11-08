@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1501,8 +1501,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1656,6 +1656,20 @@ and tar timestamps instead.
     both implementations write identical `.wbn.gz` files. With
     `BASE https://packfile.invalid/` it is exactly what packfile's
     `fromArchive(buffer)` reads with no options.
+
+- **car**: an [IPFS CARv1](https://ipld.io/specs/transport/car/carv1/) file of the tree as a UnixFS DAG,
+  built the way kubo's `ipfs add -r --hidden --cid-version=1 <dir>` builds it, so the root CID is the one
+  kubo prints for the exported directory (tested against kubo 0.43, whose `ipfs dag export` of that root
+  gives the same bytes). Files are cut into 262144-byte chunks, each a raw block (CIDv1, codec `raw`); a
+  file of one chunk is that block; longer files are a balanced tree of dag-pb UnixFS File nodes of at most
+  174 links. Directories are dag-pb UnixFS Directory nodes with links sorted by name; a directory big
+  enough for IPFS to shard (HAMT, over 256 KiB of names and CIDs, roughly 5000 entries) fails with
+  `E_EXPORT`. Every CID is v1 with a SHA-256 multihash. The header's one root is the tree's `/`; blocks
+  follow once each, root first, then depth first in link order. No modes or timestamps are recorded (kubo
+  adds neither by default), so `SOURCE_DATE_EPOCH` does not change the file. `build` and `save` print the
+  root CID (`root bafy…`). Upload the file to an IPFS pinning service (`ipfs dag import`, web3.storage,
+  Pinata). Tools that wrap the directory in one more directory (as `ipfs-car pack` can) report a different
+  root; compare with kubo's unwrapped `ipfs add -r`.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

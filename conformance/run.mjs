@@ -40,6 +40,9 @@
 // ignoring each event's `ts` and `dur` (names, categories, threads, args and order
 // must match; also when the build fails).
 //
+// Step cases: a case.json with "steps" (and no "network") runs a list of CLI steps like a
+// network case (format in conformance/network.mjs), offline: verify, diff, save chains.
+//
 // Network cases (case.json "network": true, conformance/cases/net-*; format in
 // conformance/network.mjs) run a list of CLI steps (build, push, pull, save)
 // against local servers started on the first such case (conformance/servers.mjs):
@@ -129,6 +132,8 @@ function cases() {
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':tar-bytes', out: 'site.tar', compare: 'bytes' }),
+    ex('blog', { suffix: ':car-bytes', out: 'site.car', compare: 'bytes' }),
+    ex('data', { suffix: ':car-format', out: 'site-car', args: ['--format', 'car'], compare: 'bytes' }),
     // Attestations (--provenance, --sbom): OCI 1.1 referrers of an unchanged image.
     ex('hello', { suffix: ':oci-attest-bytes', out: 'site.oci.tar', args: ['--provenance', '--sbom', '--build-arg', 'TITLE=Attested', '--build-arg', 'API_TOKEN=hunter2'], compare: 'bytes' }),
     ex('blog', { suffix: ':oci-attest-id', out: 'site.oci.tar', args: ['--sbom', '--provenance'], compare: 'oci' }),
@@ -239,15 +244,17 @@ async function runBakeCase(c) {
   return { name: c.name, compare: 'bake', pass: detail.length === 0, detail, ts: summary(r.ts), rust: summary(r.rust) };
 }
 
+const NO_SERVERS = { vars: {}, env: {}, manifestDigest: () => null };
 const results = [];
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
 let servers; // started on the first network case (conformance/servers.mjs)
 try {
   for (const c of [...cases(), ...(await caseDirs())]) {
     if (only && !c.name.includes(only)) continue;
-    if (c.network) {
-      servers ??= await startServers(root, tmp);
-      const res = await runNetworkCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, cwd: root, servers, run, outputOf, errorLine });
+    if (c.network || c.steps) {
+      // Offline step cases (case.json "steps" without "network") use the same runner with no servers.
+      if (c.network) servers ??= await startServers(root, tmp);
+      const res = await runNetworkCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, cwd: root, servers: c.network ? servers : NO_SERVERS, run, outputOf, errorLine });
       results.push({ name: res.name, compare: res.compare, pass: res.pass, ts: res.ts, rust: res.rust });
       console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
       for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);

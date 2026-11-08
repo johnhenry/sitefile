@@ -3,6 +3,7 @@ import { gzip } from './deflate.js';
 import type { ExportFormat, OciCompression } from './language/ast.js';
 import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
+import { writeCar } from './car.js';
 
 export type ArchiveFormat = Exclude<ExportFormat, 'directory' | 'oci'>;
 
@@ -13,7 +14,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -29,6 +30,8 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return compression === 'gzip' ? 'dist.wbn.gz' : 'dist.wbn';
     case 'oci':
       return 'dist.oci.tar';
+    case 'car':
+      return 'dist.car';
   }
 }
 
@@ -53,6 +56,8 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
       const bundle = writeWebBundle(tree, options.baseUrl);
       return options.compression === 'gzip' ? gzip(bundle) : bundle;
     }
+    case 'car':
+      return writeCar(tree);
   }
 }
 
@@ -64,6 +69,7 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.tar')) return 'tar';
   if (name.endsWith('.zip')) return 'zip';
   if (name.endsWith('.wbn') || name.endsWith('.wbn.gz')) return 'wbn';
+  if (name.endsWith('.car')) return 'car';
   return undefined;
 }
 
