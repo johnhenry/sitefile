@@ -87,6 +87,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("keep-service-workers"),
     flag("poll"),
     string("poll-interval"),
+    flag("no-css-inject"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -99,12 +100,13 @@ const WATCH_ONLY: &[&str] = &[
     "keep-service-workers",
     "poll",
     "poll-interval",
+    "no-css-inject",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
     summary: "serve an image, directory or archive file over HTTP",
     usage: "serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]",
-    description: "Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.",
+    description: "Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place.",
     flags: &[
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
@@ -120,6 +122,7 @@ pub const SERVE: Command = Command {
         "--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)",
         "--poll            poll for changes (every 1000 ms) instead of file system events (--watch)",
         "--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)",
+        "--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -216,6 +219,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let arg_files = v.strs("build-arg-file");
     let arg_flags = v.strs("build-arg");
     let poll = crate::watch::poll_option(v.flag("poll"), v.str("poll-interval"))?;
+    // A directory without a Sitefile, given no build flags, is served as it is (re-read on change).
+    let build_flags =
+        file.is_some() || v.has("target") || !arg_files.is_empty() || !arg_flags.is_empty();
+    let plain = !build_flags && !std::path::Path::new(&context).join("Sitefile").is_file();
+    let css_inject = !v.flag("no-css-inject");
     if is_wildcard(&bind.host) {
         err(&format!(
             "warning: binding {}: the site will be reachable from other machines\n",
@@ -227,11 +235,47 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
     let live = LiveReload::with_options(&crate::server::LiveReloadOptions {
         reset_service_workers: !v.flag("keep-service-workers"),
+        css_inject,
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
     let memo = crate::memo::watch_memo();
+    // Serve `next` and tell open pages what changed.
+    let swap = |next: Tree| {
+        let Ok(mut t) = current.write() else { return };
+        let event = if started.get() {
+            crate::server::reload_event_for(&t, &next, css_inject)
+        } else {
+            None
+        };
+        *t = Arc::new(next);
+        drop(t);
+        if let Some(e) = event {
+            live.send(&e);
+        }
+    };
     let mut run_build = || -> BuildOutcome {
+        if plain {
+            return match crate::servers::load_directory_tree(std::path::Path::new(&context)) {
+                Ok(tree) => {
+                    let n = tree.len();
+                    out(&format!(
+                        "Read {n} file{} ({})\n",
+                        if n == 1 { "" } else { "s" },
+                        tree.digest()
+                    ));
+                    swap(tree);
+                    BuildOutcome {
+                        code: 0,
+                        wrote: Vec::new(),
+                    }
+                }
+                Err(e) => BuildOutcome {
+                    code: super::common::report(&e),
+                    wrote: Vec::new(),
+                },
+            };
+        }
         let attempt = || -> Result<Tree> {
             let mut options = BuildOptions {
                 context_dir: context.clone(),
@@ -262,12 +306,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     if n == 1 { "" } else { "s" },
                     tree.digest()
                 ));
-                if let Ok(mut t) = current.write() {
-                    *t = Arc::new(tree);
-                }
-                if started.get() {
-                    live.reload();
-                }
+                swap(tree);
                 BuildOutcome {
                     code: 0,
                     wrote: Vec::new(),
@@ -304,6 +343,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             sitefile: file.as_deref(),
             arg_files: &arg_files,
             poll,
+            plain,
         },
         &mut run_build,
         &mut on_started,

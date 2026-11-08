@@ -516,6 +516,7 @@ fn run_main(argv: &[String]) -> i32 {
             sitefile: o.str("file").filter(|s| !s.is_empty()),
             arg_files: &arg_files,
             poll,
+            plain: false,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");

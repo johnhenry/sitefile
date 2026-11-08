@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`serve --watch` for a plain directory, with CSS injection**
+  (johnhenry/sitefile#168): `serve --watch ./dir` on a directory without a
+  `Sitefile` (and without `-f`, `--target` or `--build-arg*`) serves it as it
+  is and re-reads it on change. Events are now JSON:
+  `{"type":"reload"}`, or `{"type":"css","paths":[...]}` when only existing
+  stylesheets changed, in which case pages swap the `<link>` instead of
+  reloading (`--no-css-inject` turns that off). A rebuild with identical
+  output sends no event.
 - **`--poll` for watch mode** (johnhenry/sitefile#225): `build --watch` and
   `serve --watch` take `--poll` (stat polling every 1000 ms instead of file
   system events, for network shares, Docker bind mounts and WSL) and

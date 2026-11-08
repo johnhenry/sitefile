@@ -23,6 +23,8 @@ export interface WatchLoopOptions {
   readonly onStarted?: () => Promise<void>;
   /** `--poll`: poll every this many milliseconds instead of using file system events. */
   readonly pollMs?: number;
+  /** `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages). */
+  readonly plain?: boolean;
   /** For tests: resolves to stop the loop (default: SIGINT or SIGTERM). */
   readonly stop?: Promise<void>;
 }
@@ -40,6 +42,8 @@ export function pollOption(poll: boolean | undefined, interval: string | undefin
 
 const MSG_CHANGE = 'Change detected, rebuilding\n';
 const MSG_FAILED = 'Build failed; keeping the last good output\n';
+const MSG_CHANGE_PLAIN = 'Change detected, re-reading\n';
+const MSG_FAILED_PLAIN = 'Read failed; serving the last good copy\n';
 
 function signalled(): Promise<void> {
   return new Promise((resolve) => {
@@ -70,7 +74,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
   const scheduler = new RebuildScheduler(async (changed) => {
     if (!first) {
       if (!changed.some(relevant)) return; // only our own writes
-      process.stdout.write(MSG_CHANGE);
+      process.stdout.write(o.plain ? MSG_CHANGE_PLAIN : MSG_CHANGE);
     }
     const r = await o.build();
     for (const w of r.wrote ?? []) {
@@ -78,7 +82,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
       ignored.add(await resolveReal(w));
     }
     if (!first) {
-      if (r.code !== 0) process.stderr.write(MSG_FAILED);
+      if (r.code !== 0) process.stderr.write(o.plain ? MSG_FAILED_PLAIN : MSG_FAILED);
       return;
     }
     first = false;

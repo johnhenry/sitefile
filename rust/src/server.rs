@@ -135,12 +135,16 @@ pub struct LiveReloadOptions {
     /// Unregister the page's service workers and empty its Cache Storage before each reload
     /// (`--keep-service-workers` turns it off).
     pub reset_service_workers: bool,
+    /// Swap changed stylesheets in place instead of reloading when only CSS changed
+    /// (`--no-css-inject` turns it off).
+    pub css_inject: bool,
 }
 
 impl Default for LiveReloadOptions {
     fn default() -> Self {
         LiveReloadOptions {
             reset_service_workers: true,
+            css_inject: true,
         }
     }
 }
@@ -149,18 +153,62 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{}}});\n",
         reload_client(),
-        options.reset_service_workers
+        options.reset_service_workers,
+        options.css_inject
     )
 }
 
-/// Open live-reload streams; [`LiveReload::reload`] tells every page to reload.
+/// The event that tells every page to reload.
+pub const RELOAD_EVENT: &str = "{\"type\":\"reload\"}";
+
+/// The live-reload event for a new tree (`None` when no file changed); same rules as
+/// `reloadEventFor` in src/server.ts.
+pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<String> {
+    let mut changed: Vec<String> = Vec::new();
+    let mut css_only = css_inject;
+    for (p, f) in next.entries() {
+        let old = prev.get(p);
+        if old.is_some_and(|o| o.digest == f.digest && o.mode == f.mode) {
+            continue;
+        }
+        changed.push(p.clone());
+        if old.is_none() || !mime_type_for(p).starts_with("text/css") {
+            css_only = false;
+        }
+    }
+    for (p, _) in prev.entries() {
+        if !next.is_file(p) {
+            changed.push(p.clone());
+            css_only = false;
+        }
+    }
+    if changed.is_empty() {
+        return None;
+    }
+    if !css_only {
+        return Some(RELOAD_EVENT.to_string());
+    }
+    changed.sort();
+    Some(serde_json::json!({ "type": "css", "paths": changed }).to_string())
+}
+
+/// Events sent so far: `next` is the id the next one gets; the last [`KEPT_EVENTS`] are kept for
+/// streams that have not written them yet.
+#[derive(Default)]
+struct Events {
+    next: u64,
+    recent: std::collections::VecDeque<(u64, String)>,
+}
+const KEPT_EVENTS: usize = 64;
+
+/// Open live-reload streams; [`LiveReload::send`] gives every page an event ([`LiveReload::reload`]: reload).
 #[derive(Default)]
 pub struct LiveReload {
     /// The client script for this session ([`client_script`]); empty means the default options.
     script: String,
-    generation: Mutex<u64>,
+    events: Mutex<Events>,
     changed: Condvar,
     closed: AtomicBool,
     clients: AtomicUsize,
@@ -185,11 +233,21 @@ impl LiveReload {
         &self.script
     }
 
-    pub fn reload(&self) {
-        if let Ok(mut g) = self.generation.lock() {
-            *g += 1;
+    /// Send `event` (one line of JSON) to every open page.
+    pub fn send(&self, event: &str) {
+        if let Ok(mut e) = self.events.lock() {
+            let id = e.next;
+            e.recent.push_back((id, event.to_string()));
+            e.next += 1;
+            while e.recent.len() > KEPT_EVENTS {
+                e.recent.pop_front();
+            }
         }
         self.changed.notify_all();
+    }
+
+    pub fn reload(&self) {
+        self.send(RELOAD_EVENT);
     }
 
     /// End every open stream.
@@ -246,30 +304,37 @@ impl LiveReload {
             return;
         }
         self.clients.fetch_add(1, Ordering::SeqCst);
-        let mut seen = self.generation.lock().map(|g| *g).unwrap_or(0);
+        let mut seen = self.events.lock().map(|e| e.next).unwrap_or(0);
         loop {
-            let Ok(g) = self.generation.lock() else { break };
-            let Ok((g, _)) = self
+            let Ok(e) = self.events.lock() else { break };
+            let Ok((e, _)) = self
                 .changed
-                .wait_timeout_while(g, Duration::from_secs(15), |g| {
-                    *g == seen && !self.closed.load(Ordering::SeqCst)
+                .wait_timeout_while(e, Duration::from_secs(15), |e| {
+                    e.next == seen && !self.closed.load(Ordering::SeqCst)
                 })
             else {
                 break;
             };
-            let now = *g;
-            drop(g);
+            let mut msg = String::new();
+            for (id, ev) in &e.recent {
+                if *id >= seen {
+                    msg.push_str(&format!("data: {ev}\n\n"));
+                }
+            }
+            seen = e.next;
+            drop(e);
             if self.closed.load(Ordering::SeqCst) {
                 break;
             }
             // a comment line every 15 s finds clients that went away
-            let msg: &[u8] = if now != seen {
-                b"data: reload\n\n"
-            } else {
-                b": ping\n\n"
-            };
-            seen = now;
-            if out.write_all(msg).and_then(|_| out.flush()).is_err() {
+            if msg.is_empty() {
+                msg.push_str(": ping\n\n");
+            }
+            if out
+                .write_all(msg.as_bytes())
+                .and_then(|_| out.flush())
+                .is_err()
+            {
                 break;
             }
         }
@@ -1847,16 +1912,81 @@ mod tests {
         assert!(!js.contains('`'));
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
-            format!("{js}({{\"resetServiceWorkers\":true}});\n")
+            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true}});\n")
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
+            css_inject: false,
         });
         assert_eq!(
             keep.script(),
-            format!("{js}({{\"resetServiceWorkers\":false}});\n")
+            format!("{js}({{\"resetServiceWorkers\":false,\"cssInject\":false}});\n")
         );
         assert!(js.contains("getRegistrations()") && js.contains("caches.delete(k)"));
+    }
+
+    #[test]
+    fn reload_event_for_nothing_css_or_reload() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
+        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css);
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]),
+                true
+            )
+            .as_deref(),
+            Some("{\"type\":\"css\",\"paths\":[\"/a.css\",\"/z/b.css\"]}")
+        );
+        let reload = Some(RELOAD_EVENT);
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                false
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(
+                &t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                true
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(
+                &t(&[
+                    ("/index.html", "i"),
+                    ("/a.css", "a"),
+                    ("/z/b.css", "b"),
+                    ("/c.css", "c")
+                ]),
+                true
+            )
+            .as_deref(),
+            reload
+        );
+        assert_eq!(
+            e(&t(&[("/index.html", "i"), ("/a.css", "a")]), true).as_deref(),
+            reload
+        );
+        assert_eq!(RELOAD_EVENT, "{\"type\":\"reload\"}");
     }
 
     #[test]
@@ -2056,7 +2186,15 @@ mod tests {
             .unwrap(),
         );
         live.reload();
-        read_until(&mut c, &mut got, "data: reload\n\n");
+        read_until(&mut c, &mut got, "data: {\"type\":\"reload\"}\n\n");
+        // events sent back to back all arrive, in order
+        live.send("{\"type\":\"css\",\"paths\":[\"/a.css\"]}");
+        live.reload();
+        read_until(
+            &mut c,
+            &mut got,
+            "data: {\"type\":\"css\",\"paths\":[\"/a.css\"]}\n\ndata: {\"type\":\"reload\"}\n\n",
+        );
         assert_eq!(
             req(
                 srv.port,

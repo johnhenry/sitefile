@@ -69,6 +69,33 @@ export const WATCH_CASES = [
     args: ['--keep-service-workers'],
     steps: [{ get: '/__sitefile/reload.js' }, { get: '/sw.js' }],
   },
+  {
+    name: 'watch/plain-dir',
+    files: { 'index.html': '<link rel="stylesheet" href="/s.css"><h1>p1</h1>', 's.css': 'a{}', '.env': 'SECRET=1', '.well-known/x.txt': 'x' },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/.env' },
+      { get: '/.well-known/x.txt' },
+      { open: true },
+      { write: { 's.css': 'a{color:red}' } },
+      { next: true },
+      { get: '/s.css' },
+      { write: { 'index.html': '<h1>p2</h1>' } },
+      { next: true },
+      { get: '/', headers: NAV },
+    ],
+  },
+  {
+    name: 'watch/css-inject-build',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>', 'public/a.css': 'a{}', 'public/b.css': 'b{}' },
+    steps: [{ open: true }, { write: { 'public/a.css': 'a{color:red}' } }, { next: true }, { write: { 'public/index.html': '<h1>y</h1>' } }, { next: true }],
+  },
+  {
+    name: 'watch/no-css-inject',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>', 'public/a.css': 'a{}' },
+    args: ['--no-css-inject'],
+    steps: [{ get: '/__sitefile/reload.js' }, { open: true }, { write: { 'public/a.css': 'a{color:red}' } }, { next: true }],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
