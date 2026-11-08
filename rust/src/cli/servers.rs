@@ -11,8 +11,8 @@ use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
-    is_running, load_served_tree, load_served_tree_with, resolve_source, restart_detached,
-    serve_detached_with, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
+    is_running, load_served_tree_with, resolve_source, restart_detached, serve_detached_with,
+    DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
 use crate::store::{now_iso, Store};
