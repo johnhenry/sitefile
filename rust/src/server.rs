@@ -630,6 +630,27 @@ pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
+/// section 3.2.2) loses its scheme and authority (`/path?q`, or `/` for an empty path); any other
+/// target is returned as it is. The authority is not checked.
+pub fn origin_form(target: &str) -> std::borrow::Cow<'_, str> {
+    let b = target.as_bytes();
+    let scheme = if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"http://") {
+        7
+    } else if b.len() >= 8 && b[..8].eq_ignore_ascii_case(b"https://") {
+        8
+    } else {
+        return std::borrow::Cow::Borrowed(target);
+    };
+    let after = &target[scheme..];
+    let rest = &after[after.find(['/', '?', '#']).unwrap_or(after.len())..];
+    if rest.starts_with('/') {
+        std::borrow::Cow::Borrowed(rest)
+    } else {
+        std::borrow::Cow::Owned(format!("/{rest}"))
+    }
+}
+
 /// The request path: `url` up to `?` or `#`.
 fn raw_path_of(url: &str) -> &str {
     let end = url.find(['?', '#']).unwrap_or(url.len());
@@ -1068,6 +1089,8 @@ pub fn respond(
     if method != "GET" && method != "HEAD" {
         return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
     }
+    let url = origin_form(url);
+    let url = url.as_ref();
     let q = url.find('?');
     let hash = url.find('#');
     let end = q.unwrap_or(url.len()).min(hash.unwrap_or(url.len()));
@@ -1407,7 +1430,7 @@ fn serve_connection(
         if let Some(live) = options
             .live_reload
             .as_ref()
-            .filter(|_| req.method == "GET" && raw_path_of(&req.url) == RELOAD_PATH)
+            .filter(|_| req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH)
         {
             live.stream(&mut out, options); // not access-logged: one long request per open page
             break;
@@ -1849,6 +1872,35 @@ mod tests {
                 "application/octet-stream"
             );
         });
+    }
+
+    #[test]
+    fn absolute_form_targets() {
+        with_server(false, |port, log| {
+            let home = get(port, "http://example.com/index.html");
+            assert_eq!(home.status, 200);
+            assert_eq!(home.body, "<h1>home</h1>");
+            assert_eq!(get(port, "http://example.com").body, "<h1>home</h1>");
+            assert_eq!(
+                get(port, "HTTPS://Example.COM:8443?x=1").body,
+                "<h1>home</h1>"
+            );
+            assert_eq!(
+                get(port, "http://example.com/about/").body,
+                "<h1>about</h1>"
+            );
+            let dir = get(port, "http://example.com/about?x=1");
+            assert_eq!(dir.status, 301);
+            assert_eq!(dir.headers["location"], "/about/?x=1");
+            assert_eq!(get(port, "http://example.com/..%2f").status, 400);
+            assert_eq!(get(port, "ftp://example.com/index.html").status, 400);
+            assert!(log.lock().unwrap()[0].starts_with("GET http://example.com/index.html 200 "));
+        });
+        assert_eq!(origin_form("http://h/a?b"), "/a?b");
+        assert_eq!(origin_form("http://h?b"), "/?b");
+        assert_eq!(origin_form("http://h"), "/");
+        assert_eq!(origin_form("/a"), "/a");
+        assert_eq!(origin_form("*"), "*");
     }
 
     #[test]

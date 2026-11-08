@@ -52,6 +52,10 @@
   plan alone, with what needs each and its status under `--allow-hosts`,
   `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
   `needs`). Nothing is fetched. Both implementations, with a conformance case.
+- **`serve` accepts absolute-form request targets** (johnhenry/sitefile#189):
+  `GET http://host/path?q HTTP/1.1` is answered like `GET /path?q` (the
+  authority is ignored) instead of `400`, in both servers, as RFC 9112
+  requires.
 - **Extensionless well-known files get their type** (johnhenry/sitefile#180):
   `serve` and Web Bundle export send `/.well-known/apple-app-site-association`
   (and `/apple-app-site-association`), `openid-configuration`,

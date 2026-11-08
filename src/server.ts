@@ -334,6 +334,18 @@ export function safeSegments(rawPath: string): string[] | undefined {
   return out;
 }
 
+/**
+ * The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
+ * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
+ * `/` for an empty path); any other target is returned as it is. The authority is not checked.
+ */
+export function originForm(target: string): string {
+  const m = /^https?:\/\/[^/?#]*/i.exec(target);
+  if (!m) return target;
+  const rest = target.slice(m[0].length);
+  return rest.startsWith('/') ? rest : '/' + rest;
+}
+
 function etagMatches(header: string | undefined, etag: string): boolean {
   if (header === undefined) return false;
   if (header.trim() === '*') return true;
@@ -384,7 +396,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
     const method = req.method ?? 'GET';
-    const url = req.url ?? '/';
+    const target = req.url ?? '/';
+    const url = originForm(target);
     let bytes = 0;
     const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
@@ -399,7 +412,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (quiet) return;
       // `servers` probes carry the server's own id; they would only clutter the access log.
       if (options.serverId !== undefined && req.headers['x-sitefile-probe'] === options.serverId) return;
-      options.log?.(`${method} ${printable(url)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
+      options.log?.(`${method} ${printable(target)} ${status} ${bytes} ${ms.toFixed(1)}ms`);
     };
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
