@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
+  Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
+  fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
+  ~24, so files no longer arrive as `application/octet-stream` under
+  `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
+  implementations. A `serve` conformance case kind (`"command": "serve"`)
+  compares both servers' answers to raw HTTP requests.
 - **OS metadata is filtered from archives** (#186): `IMPORT … AS tree` and
   `serve` of a zip, tar or Web Bundle (and `serve ./dir`) drop `__MACOSX/`,
   `._*`, `.DS_Store`, `Icon\r`, `Thumbs.db` and `desktop.ini`, with a warning

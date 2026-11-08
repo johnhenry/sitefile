@@ -34,6 +34,9 @@
 // `sitefile bake <args>` there (so the default sitefile.bake.yaml and relative paths
 // apply); it compares exit code, the whole stdout and stderr, and the tree of `out`
 // (default `dist`) in the copy when it exists.
+// `command: "serve"` starts `sitefile serve` on a directory of the case with both
+// CLIs and compares their answers to a list of raw HTTP requests (format in
+// conformance/servers.mjs, runServeCase).
 // `profile: true` adds `--profile <file>` and requires the same trace from both,
 // ignoring each event's `ts` and `dur` (names, categories, threads, args and order
 // must match; also when the build fails).
@@ -58,7 +61,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runNetworkCase } from './network.mjs';
-import { startServers } from './servers.mjs';
+import { runServeCase, startServers } from './servers.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -249,6 +252,13 @@ try {
       results.push({ name: res.name, compare: res.compare, pass: res.pass, ts: res.ts, rust: res.rust });
       console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
       for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+      continue;
+    }
+    if (c.command === 'serve') {
+      const res = await runServeCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp });
+      results.push(res);
+      console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
+      if (!res.pass) for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
       continue;
     }
     if (c.command === 'bake') {
