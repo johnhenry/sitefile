@@ -453,6 +453,27 @@ FINGERPRINT /app.js INTEGRITY
     (path)))
 
 ================================================================================
+ROBOTS and SECURITY_TXT
+================================================================================
+
+ROBOTS DISALLOW /drafts/ ALLOW /drafts/ok.html SITEMAP
+robots
+SECURITY_TXT CONTACT mailto:a@example.com EXPIRES 2099-01-01 POLICY https://example.com/p TO /s.txt
+
+---
+
+(source_file
+  (robots_instruction
+    (path)
+    (path))
+  (robots_instruction)
+  (security_txt_instruction
+    (word)
+    (word)
+    (url)
+    (path)))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

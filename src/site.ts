@@ -221,7 +221,7 @@ export const NO_CACHE = 'no-cache';
  * URL paths of every file in the exported directory, `hashed` those of the fingerprinted ones. A
  * fingerprinted file gets `Cache-Control: public, max-age=31536000, immutable`, by a `/dir/*` rule for the
  * topmost directory (below the root) that holds only fingerprinted files, or else by its own path; pages
- * get `Cache-Control: no-cache` through `/`, `/*​/` and `/*.html` (each only when a page it matches
+ * get `Cache-Control: no-cache` through `/`, `/*/` and `/*.html` (each only when a page it matches
  * exists). Paths with spaces or control characters are left out (a `_headers` path cannot hold them).
  * Rules are in path order (UTF-8), immutable ones first; none when nothing is fingerprinted.
  */
@@ -266,4 +266,41 @@ export function cacheHeaderRules(files: readonly string[], hashed: ReadonlySet<s
   if (pages.some((f) => f !== '/index.html' && /\/index\.html$/i.test(f))) add('/*/', NO_CACHE);
   if (pages.length > 0) add('/*.html', NO_CACHE);
   return out;
+}
+// ---------------------------------------------------------------- robots.txt and security.txt
+
+/** `/robots.txt` (RFC 9309) for every user agent: the rules in order (an empty `Disallow:` when none), then a `Sitemap:` line per URL. */
+export function robotsTxt(rules: ReadonlyArray<{ readonly allow: boolean; readonly path: string }>, sitemaps: readonly string[]): string {
+  let out = 'User-agent: *\n';
+  if (rules.length === 0) out += 'Disallow:\n';
+  for (const r of rules) out += `${r.allow ? 'Allow' : 'Disallow'}: ${r.path}\n`;
+  if (sitemaps.length > 0) out += '\n' + sitemaps.map((u) => `Sitemap: ${u}\n`).join('');
+  return out;
+}
+
+/** A security.txt URI field: one of `schemes` (lowercase, with their `:` or `://`), no spaces or control characters. */
+export function checkFieldUri(raw: string, field: string, schemes: readonly string[], span: SourceSpan): string {
+  const lower = raw.toLowerCase();
+  if (SPACE_OR_CONTROL.test(raw) || !schemes.some((s) => lower.startsWith(s) && raw.length > s.length)) {
+    throw new SitefileError('E_VALIDATION', `SECURITY_TXT ${field} '${raw}' must be a ${schemes.map((s) => s.replace(/\/\/$/, '//…')).join(', ')} URI with no spaces`, span);
+  }
+  return raw;
+}
+
+export interface SecurityTxt {
+  readonly contact: readonly string[];
+  /** RFC 3339, as {@link parseFeedDate} writes it. */
+  readonly expires: string;
+  readonly encryption: readonly string[];
+  readonly policy: readonly string[];
+}
+
+/** RFC 9116 `security.txt`: Contact lines, Expires, then Encryption and Policy lines, in source order. */
+export function securityTxt(s: SecurityTxt): string {
+  return [
+    ...s.contact.map((v) => `Contact: ${v}\n`),
+    `Expires: ${s.expires}\n`,
+    ...s.encryption.map((v) => `Encryption: ${v}\n`),
+    ...s.policy.map((v) => `Policy: ${v}\n`),
+  ].join('');
 }

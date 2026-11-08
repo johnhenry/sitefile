@@ -8,6 +8,7 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
+    ROBOTS_CLAUSES, SECURITY_TXT_CLAUSES,
     INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
@@ -412,6 +413,42 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             } else {
                 let from = last.map_or(0, |l| l + 1);
                 kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "ROBOTS" => {
+            // [ALLOW|DISALLOW <path>]… [SITEMAP] [TO <dest>], in this order.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            if ["ALLOW", "DISALLOW", "TO"].contains(&prev.as_str()) || ops.iter().any(|w| w == "TO") {
+                Vec::new()
+            } else if ops.iter().any(|w| w == "SITEMAP") {
+                kw_items(["TO"], CIK_KEYWORD)
+            } else {
+                kw_items(ROBOTS_CLAUSES.iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "SECURITY_TXT" => {
+            // Clauses in any order; EXPIRES and TO once.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            if SECURITY_TXT_CLAUSES.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                kw_items(
+                    SECURITY_TXT_CLAUSES
+                        .iter()
+                        .copied()
+                        .filter(|c| !((*c == "EXPIRES" || *c == "TO") && ops.iter().any(|w| w == c))),
+                    CIK_KEYWORD,
+                )
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1264,6 +1301,25 @@ mod tests {
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
         assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
+        // ROBOTS: rules, then SITEMAP, then TO
+        assert_eq!(labels("ROBOTS "), ["ALLOW", "DISALLOW", "SITEMAP", "TO"]);
+        assert!(labels("ROBOTS ALLOW ").is_empty());
+        assert_eq!(
+            labels("ROBOTS DISALLOW /a/ "),
+            ["ALLOW", "DISALLOW", "SITEMAP", "TO"]
+        );
+        assert_eq!(labels("ROBOTS SITEMAP "), ["TO"]);
+        assert!(labels("ROBOTS TO /r.txt ").is_empty());
+        // SECURITY_TXT: any order, EXPIRES and TO once
+        assert_eq!(
+            labels("SECURITY_TXT "),
+            ["CONTACT", "EXPIRES", "ENCRYPTION", "POLICY", "TO"]
+        );
+        assert!(labels("SECURITY_TXT CONTACT ").is_empty());
+        assert_eq!(
+            labels("SECURITY_TXT EXPIRES 2099-01-01 "),
+            ["CONTACT", "ENCRYPTION", "POLICY", "TO"]
+        );
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);

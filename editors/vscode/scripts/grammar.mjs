@@ -15,9 +15,9 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'ROBOTS', 'SECURITY_TXT', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
@@ -38,6 +38,8 @@ export const KEYWORDS = {
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
     FINGERPRINT: ['overwrite', 'no-cache-headers'],
+    ROBOTS: ['overwrite'],
+    SECURITY_TXT: ['overwrite'],
     CHECKLINKS: ['warn', 'external'],
   },
 };
@@ -376,6 +378,8 @@ export function buildGrammar() {
           instruction('TOOL', [head('entity.name.function.tool')]),
           instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
           instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST', 'INTEGRITY']), { include: '#operands' }]),
+          instruction('ROBOTS', [...flags('ROBOTS'), kw(['ALLOW', 'DISALLOW', 'SITEMAP', 'TO']), { include: '#operands' }]),
+          instruction('SECURITY_TXT', [...flags('SECURITY_TXT'), kw(['CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'TO']), { include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]

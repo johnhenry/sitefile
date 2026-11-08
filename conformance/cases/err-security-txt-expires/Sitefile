@@ -1,0 +1,4 @@
+# EXPIRES is required (RFC 9116).
+FROM scratch
+SECURITY_TXT CONTACT mailto:a@example.com
+EXPORT /

@@ -4467,6 +4467,18 @@ impl<'a> Exec<'a> {
                 let files = self.feed_files(op)?;
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
+            Operation::TextFile { dest, text, .. } => {
+                // The planner wrote the text; it reads nothing.
+                let key = memoized.then(|| memo_key(&["text", op_id]));
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files: Files = vec![(
+                    dest.clone(),
+                    make_file(text.clone().into_bytes(), origin, 0o644),
+                )];
+                Ok(self.memo_store(key, files, Vec::new(), true))
+            }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => {
                 unreachable!("FINGERPRINT reads the tree: execute_op runs it")
@@ -5758,7 +5770,8 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Transform { overwrite, .. }
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
-        | Operation::Fingerprint { overwrite, .. } => *overwrite,
+        | Operation::Fingerprint { overwrite, .. }
+        | Operation::TextFile { overwrite, .. } => *overwrite,
         Operation::CheckLinks { .. } => false,
     }
 }

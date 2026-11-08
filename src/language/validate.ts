@@ -53,6 +53,10 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.pattern, ins.name, ...ins.value];
     case 'FINGERPRINT':
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
+    case 'ROBOTS':
+      return [...ins.rules.map((r) => r.path), ...(ins.dest ? [ins.dest] : [])];
+    case 'SECURITY_TXT':
+      return [...ins.contact, ins.expires, ...ins.encryption, ...ins.policy, ...(ins.dest ? [ins.dest] : [])];
     case 'CHECKLINKS':
       return [];
     case 'EXPORT':
@@ -275,6 +279,8 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'REDIRECT':
       case 'HEADER':
       case 'FINGERPRINT':
+      case 'ROBOTS':
+      case 'SECURITY_TXT':
       case 'CHECKLINKS':
         break;
       case 'EXPORT':

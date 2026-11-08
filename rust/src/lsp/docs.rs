@@ -78,6 +78,16 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",
     ),
     (
+        "ROBOTS",
+        "ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]",
+        "Writes `/robots.txt` for every user agent (`User-agent: *`) with the ALLOW and DISALLOW rules in source order (an empty `Disallow:` allows everything). `SITEMAP` adds a `Sitemap:` line for each SITEMAP of the Sitefile (its BASE and destination).",
+    ),
+    (
+        "SECURITY_TXT",
+        "SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]",
+        "Writes an RFC 9116 `/.well-known/security.txt`. CONTACT (`mailto:`, `tel:` or `https:`) and EXPIRES (a date or RFC 3339 date-time, not a duration) are required; a date in the past or less than 30 days away warns.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
@@ -150,6 +160,15 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
     ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
+    ("ROBOTS", "ALLOW", "`ALLOW <path>`: an `Allow:` rule (an absolute path; `*` and `$` work as robots.txt wildcards)."),
+    ("ROBOTS", "DISALLOW", "`DISALLOW <path>`: a `Disallow:` rule (an absolute path; `/` keeps crawlers out of everything)."),
+    ("ROBOTS", "SITEMAP", "`SITEMAP`: a `Sitemap:` line for each SITEMAP of the Sitefile (an error when there is none)."),
+    ("ROBOTS", "TO", "`TO <dest>`: the file (default `/robots.txt`)."),
+    ("SECURITY_TXT", "CONTACT", "`CONTACT <uri>` (required, repeatable): how to report a vulnerability: `mailto:`, `tel:` or `https:`."),
+    ("SECURITY_TXT", "EXPIRES", "`EXPIRES <date>` (required): when the file is stale: `YYYY-MM-DD` or an RFC 3339 date-time."),
+    ("SECURITY_TXT", "ENCRYPTION", "`ENCRYPTION <uri>` (repeatable): a key for encrypted reports: `https:`, `openpgp4fpr:` or `dns:`."),
+    ("SECURITY_TXT", "POLICY", "`POLICY <uri>` (repeatable): the disclosure policy, an `https:` URL."),
+    ("SECURITY_TXT", "TO", "`TO <dest>`: the file (default `/.well-known/security.txt`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn or oci."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -385,6 +404,8 @@ mod tests {
             ("FEED", &FEED_CLAUSES[..]),
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
+            ("ROBOTS", &crate::language::parser::ROBOTS_CLAUSES[..]),
+            ("SECURITY_TXT", &crate::language::parser::SECURITY_TXT_CLAUSES[..]),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

@@ -72,6 +72,11 @@ const examples = {
   data() {
     assert.ok(files(build('data')).length > 0, 'YAML, CSV and Web Bundle data render');
   },
+  robots() {
+    const site = build('robots');
+    assert.match(read(site, 'robots.txt'), /^User-agent: \*\nDisallow: \/drafts\/\n\nSitemap: https:\/\/example.com\/sitemap.xml\n$/, 'ROBOTS points at the sitemap');
+    assert.match(read(site, '.well-known/security.txt'), /^Contact: mailto:security@example.com\nExpires: 2099-01-01T00:00:00Z\n/, 'SECURITY_TXT writes RFC 9116 fields');
+  },
   motion() {
     assert.throws(() => build('motion'), 'a JavaScript plugin does not run without --allow-plugin');
     assert.ok(files(build('motion', ['--allow-plugin', 'motion'])).some((p) => p.endsWith('.svg')), 'the plugin writes SVG');

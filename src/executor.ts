@@ -2380,6 +2380,10 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     return memoFiles(env, key, async () => feedFiles(op, env));
   }
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
+  // The planner wrote the text; it reads nothing.
+  if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') {
+    return memoFiles(env, env.memo ? memoKey('text', opId) : undefined, async () => [[op.dest, makeFile(new TextEncoder().encode(op.text), origin)]]);
+  }
 
   if (op.kind === 'COPY') {
     const exclude = op.exclude ? IgnoreRules.fromPatterns(op.exclude) : undefined;

@@ -1,0 +1,13 @@
+# ROBOTS and SECURITY_TXT: byte-identical robots.txt and security.txt.
+ARG URL = "https://example.com/site/"
+STAGE base
+ROBOTS --overwrite DISALLOW /drafts/ ALLOW /drafts/public.html DISALLOW /*.json$ SITEMAP TO /www/robots.txt
+SECURITY_TXT EXPIRES 2099-06-30T12:00:00+02:00 CONTACT mailto:security@example.com CONTACT "https://example.com/report" ENCRYPTION openpgp4fpr:5F2DE5521C63A801AB59CCB603D49DE44B29100F POLICY https://example.com/policy TO /www/.well-known/security.txt
+FROM base
+ROBOTS TO /www/open/robots.txt
+COPY <<X /www/index.html
+<p>hi</p>
+X
+SITEMAP BASE ${URL}
+SITEMAP BASE http://Example.org TO /maps/second.xml
+EXPORT /www
