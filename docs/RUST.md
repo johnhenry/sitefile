@@ -357,6 +357,10 @@ protocol v2, not by running the `git` program:
   directory walk per poll. With `--poll` both poll the same way (same stamps,
   every `--poll-interval`, default 1000 ms); in Rust the flag only changes the
   interval.
+- **Chunked console posts.** `POST /__sitefile/console` (`serve --watch`) with
+  `Transfer-Encoding: chunked` is read by the TypeScript server and refused
+  with `413` by the Rust one, whose request reader handles bodies only by
+  `Content-Length`. The live-reload client always sends a `Content-Length`.
 - **zlib error text.** A Git packfile object that fails to inflate is `E_GIT` in both, but the
   message embeds Node's or flate2's wording.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in
