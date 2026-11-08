@@ -404,7 +404,7 @@ export function buildGrammar() {
           instruction('EXPORT', [
             valueAfter('AS', KEYWORDS.exportFormats, 'support.type.export-format', 'invalid.illegal.export-format'),
             valueAfter('COMPRESSION', KEYWORDS.compressions, 'constant.language.compression', 'invalid.illegal.compression'),
-            kw(['BASE', 'AT']),
+            kw(['BASE', 'AT', 'KEY']),
             { include: '#operands' },
           ]),
           {
