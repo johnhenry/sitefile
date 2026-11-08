@@ -227,6 +227,7 @@ mod tests {
             "API_TOKEN" => Some("tok-secret-value".into()),
             "EMPTY" => Some(String::new()),
             "CRLF" => Some("a\r\nX-Injected: 1".into()),
+            "NUL" => Some("a\0b".into()),
             _ => None,
         }
     }
@@ -277,7 +278,21 @@ mod tests {
         assert_eq!(code(&["id=a,env=NOPE"]), "E_SECRET");
         assert_eq!(code(&["id=a,src=/nonexistent/secret/file"]), "E_SECRET");
         assert_eq!(code(&["id=a,env=EMPTY"]), "E_SECRET");
-        assert_eq!(code(&["id=a,env=CRLF"]), "E_SECRET");
+        // Line breaks are allowed in a value (a PEM key) but never sent as a header; other control
+        // characters are refused.
+        assert_eq!(code(&["id=a,env=CRLF"]), "ok");
+        assert_eq!(code(&["id=a,env=NUL"]), "E_SECRET");
+        let crlf = load_secrets(&["id=a,env=CRLF".to_string()], &env).unwrap();
+        let refs = [SecretRef {
+            id: "a".into(),
+            header: "X-Key".into(),
+            bearer: false,
+        }];
+        let span = SourceSpan::new("Sitefile", 1, 1);
+        assert_eq!(
+            secret_headers("api", &refs, &span, &crlf).unwrap_err().code,
+            E_SECRET
+        );
     }
 
     #[test]

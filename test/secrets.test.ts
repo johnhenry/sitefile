@@ -108,7 +108,10 @@ test('loadSecrets: env= and src= (one trailing newline dropped); errors never sh
   assert.equal(await code(['id=a,env=NOPE']), 'E_SECRET');
   assert.equal(await code([`id=a,src=${path.join(dir, 'missing')}`]), 'E_SECRET');
   assert.equal(await code(['id=a,env=V'], { V: '' }), 'E_SECRET');
-  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\r\nX-Injected: 1` }), 'E_SECRET');
+  // Line breaks are allowed in a value (a PEM key) but never sent as a header (see test/swbn.test.ts);
+  // other control characters are refused.
+  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\r\nX-Injected: 1` }), 'ok');
+  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\u0000` }), 'E_SECRET');
   assert.equal(redactSecrets(`a ${SECRET} b ${SECRET}`, s), 'a *** b ***');
 });
 
