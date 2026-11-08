@@ -51,6 +51,15 @@
   default stays `open`. With `--json`, a failed command also prints
   `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
   error rows include `needs`. Both implementations, with conformance cases.
+- **JavaScript plugins declare whether they may be cached**
+  (johnhenry/sitefile#160): `export const cache = true` says a plugin is
+  deterministic; `cache = false` opts out as before; any other value fails
+  with `E_PLUGIN`. A JS plugin that exports neither is still cached, with one
+  warning per build when results are cached or memoized. The examples' JS
+  plugins export `cache = true`. docs/PLUGINS.md now says that module state
+  carries over between calls and lists what is trusted as-is (`--cache-from`
+  results, the local TRANSFORM cache, the Rust wasm module cache); the README
+  security model links it.
 
 ## 0.0.2 (2026-11-08)
 

@@ -423,6 +423,14 @@ tools are code, and run only when you name them on the command line.
   WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **Caches are trusted.** A TRANSFORM cache hit (local, or from
+  `--cache-from <registry>`) is used as if the plugin had returned it, and the
+  Rust build loads compiled wasm modules from `$SITEFILE_HOME/cache/wasm` as
+  native code (kept `0700`/`0600`). Only pull caches from registries you
+  trust; `--no-cache` skips them
+  ([docs/PLUGINS.md](docs/PLUGINS.md#what-sitefile-trusts-as-is)). JavaScript
+  plugins say whether they are deterministic with `export const cache =
+  true|false`; one that says neither is cached with a warning.
 - **No silent overwrites.** Writing different content to an existing path fails
   unless `--overwrite` is given. Two output paths that differ only in case
   (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is

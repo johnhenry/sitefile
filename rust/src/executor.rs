@@ -1073,6 +1073,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugins: {
             let mut h = PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m));
             h.set_store_home(options.store_home.clone());
+            h.set_reuses_results(options.cache_dir.is_some() || memo.is_some());
             h
         },
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),

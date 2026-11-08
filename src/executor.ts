@@ -405,7 +405,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local, ...(unit !== undefined ? { import: unit } : {}) });
     return r;
   };
-  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
+  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn, options.cacheDir !== undefined || memo !== undefined);
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
   const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy };

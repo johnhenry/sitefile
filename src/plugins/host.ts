@@ -88,9 +88,11 @@ async function handle(msg) {
       if (typeof api.transform !== 'function') throw new Error('the module must export transform(request), or a default object with transform');
       if (version !== 1) throw new Error('unsupported plugin apiVersion ' + JSON.stringify(version) + ' (this Sitefile supports 1)');
       transform = api.transform;
-      // 'export const cache = false' opts a (non-deterministic) plugin out of the result cache.
+      // 'export const cache = false' opts a (non-deterministic) plugin out of the result cache;
+      // 'cache = true' says it is deterministic. Without either it is cached, with a warning.
       const cache = api.cache ?? mod.cache;
-      send({ type: 'ready', cache: cache !== false });
+      if (cache !== undefined && typeof cache !== 'boolean') throw new Error('cache must be true or false, got ' + JSON.stringify(cache));
+      send({ type: 'ready', cache: cache !== false, declared: cache !== undefined });
     } catch (e) {
       send({ type: 'load-error', message: e && e.message ? e.message : String(e) });
     }
@@ -138,6 +140,8 @@ class PluginProcess {
   private readonly pending = new Map<number, Pending>();
   /** False when the module exports `cache = false`; known once it has loaded. */
   cacheable = true;
+  /** Whether the module exports `cache` at all; known once it has loaded. */
+  declaredCache = true;
   private ready: Promise<void>;
   private exited: string | undefined;
 
@@ -211,6 +215,7 @@ class PluginProcess {
     switch (msg['type']) {
       case 'ready':
         this.cacheable = msg['cache'] !== false;
+        this.declaredCache = msg['declared'] === true;
         this.onReadyMsg();
         return;
       case 'load-error':
@@ -304,14 +309,25 @@ interface PluginRunner {
   close(): void;
 }
 
+/** What PluginHost warns when a JavaScript plugin whose results may be reused doesn't export `cache`. */
+export function undeclaredCacheWarning(name: string): string {
+  return `PLUGIN ${name} does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call`;
+}
+
 export class PluginHost {
+  private readonly warnedCache = new Set<string>();
   private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined; wasm?: Uint8Array }>();
   private readonly procs = new Map<string, PluginRunner>();
   readonly stats: HostStats = { spawned: 0, calls: 0 };
 
+  /**
+   * `reusesResults`: the build caches or memoizes results (a cache directory or an incremental
+   * rebuild), so a JavaScript plugin that doesn't export `cache` gets one warning.
+   */
   constructor(
     private readonly policy: PluginPolicy = DEFAULT_PLUGIN_POLICY,
     private readonly log: (line: string) => void = () => {},
+    private readonly reusesResults = false,
   ) {}
 
   /**
@@ -344,7 +360,12 @@ export class PluginHost {
       this.stats.spawned++;
     }
     this.stats.calls++;
-    return p.call(request, span);
+    const result = await p.call(request, span);
+    if (this.reusesResults && p instanceof PluginProcess && !p.declaredCache && !this.warnedCache.has(name)) {
+      this.warnedCache.add(name);
+      this.log(undeclaredCacheWarning(name));
+    }
+    return result;
   }
 
   /** The folder a registered plugin lives in. */

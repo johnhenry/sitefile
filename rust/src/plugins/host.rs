@@ -274,9 +274,11 @@ async function handle(msg) {
       if (typeof api.transform !== 'function') throw new Error('the module must export transform(request), or a default object with transform');
       if (version !== 1) throw new Error('unsupported plugin apiVersion ' + JSON.stringify(version) + ' (this Sitefile supports 1)');
       transform = api.transform;
-      // 'export const cache = false' opts a (non-deterministic) plugin out of the result cache.
+      // 'export const cache = false' opts a (non-deterministic) plugin out of the result cache;
+      // 'cache = true' says it is deterministic. Without either it is cached, with a warning.
       const cache = api.cache ?? mod.cache;
-      send({ type: 'ready', cache: cache !== false });
+      if (cache !== undefined && typeof cache !== 'boolean') throw new Error('cache must be true or false, got ' + JSON.stringify(cache));
+      send({ type: 'ready', cache: cache !== false, declared: cache !== undefined });
     } catch (e) {
       send({ type: 'load-error', message: e && e.message ? e.message : String(e) });
     }
@@ -336,6 +338,8 @@ struct PluginProcess {
     next_id: u64,
     /// False when the module exports `cache = false`; known once it has loaded.
     cacheable: bool,
+    /// Whether the module exports `cache` at all; known once it has loaded.
+    declared_cache: bool,
     load: LoadState,
     exited: Option<String>,
     policy: PluginPolicy,
@@ -418,6 +422,7 @@ impl PluginProcess {
             out_of_memory: Arc::new(AtomicBool::new(false)),
             next_id: 1,
             cacheable: true,
+            declared_cache: true,
             load: LoadState::Pending,
             exited: None,
             policy,
@@ -699,6 +704,7 @@ impl PluginProcess {
                 match msg.get("type").and_then(Value::as_str) {
                     Some("ready") => {
                         self.cacheable = msg.get("cache") != Some(&Value::Bool(false));
+                        self.declared_cache = msg.get("declared") == Some(&Value::Bool(true));
                         self.load = LoadState::Ready;
                     }
                     Some("load-error") => {
@@ -800,6 +806,11 @@ fn message_of(msg: &Value) -> String {
     }
 }
 
+/// What PluginHost warns when a JavaScript plugin whose results may be reused doesn't export `cache`.
+pub fn undeclared_cache_warning(name: &str) -> String {
+    format!("PLUGIN {name} does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call")
+}
+
 /// What a plugin runs as: a sandboxed Node process (.mjs) or a WebAssembly runner (.wasm).
 enum Runner {
     Js(PluginProcess),
@@ -838,6 +849,8 @@ pub struct PluginHost {
     policy: PluginPolicy,
     log: Log,
     node: Option<PathBuf>,
+    reuses_results: bool,
+    warned_cache: Vec<String>,
     registered: HashMap<String, Registered>,
     procs: HashMap<String, Runner>,
     pub stats: HostStats,
@@ -851,6 +864,8 @@ impl PluginHost {
             policy,
             log: Arc::new(log),
             node: None,
+            reuses_results: false,
+            warned_cache: Vec::new(),
             registered: HashMap::new(),
             procs: HashMap::new(),
             stats: HostStats::default(),
@@ -914,6 +929,12 @@ impl PluginHost {
         self.procs.get(name).map(Runner::cacheable).unwrap_or(true)
     }
 
+    /// The build caches or memoizes results (a cache directory or an incremental rebuild), so a
+    /// JavaScript plugin that doesn't export `cache` gets one warning.
+    pub fn set_reuses_results(&mut self, reuses: bool) {
+        self.reuses_results = reuses;
+    }
+
     pub fn call(
         &mut self,
         name: &str,
@@ -922,10 +943,14 @@ impl PluginHost {
     ) -> Result<PluginResult> {
         self.start(name, span)?;
         self.stats.calls += 1;
-        self.procs
-            .get_mut(name)
-            .expect("started above")
-            .call(request, span)
+        let runner = self.procs.get_mut(name).expect("started above");
+        let result = runner.call(request, span)?;
+        let undeclared = matches!(runner, Runner::Js(p) if !p.declared_cache);
+        if self.reuses_results && undeclared && !self.warned_cache.contains(name) {
+            self.warned_cache.push(name.to_string());
+            (self.log)(&undeclared_cache_warning(name));
+        }
+        Ok(result)
     }
 
     /// A wasm plugin, compiled, whose calls may run on several threads at once (`WasmPlugin::call_prepared`;
@@ -1370,6 +1395,57 @@ mod tests {
         h.call("p", &req("/a"), None).unwrap();
         assert!(!h.cacheable("p"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_undeclared_cache_warns_once_when_results_are_reused() {
+        if !node_available() {
+            return;
+        }
+        let warned = |logs: &Arc<Mutex<Vec<String>>>| -> Vec<String> {
+            logs.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("does not export cache"))
+                .cloned()
+                .collect()
+        };
+        // Undeclared: cacheable, one warning for two calls (#160).
+        let (root, file) = plugin("export function transform(r) { return r.dest; }", &[]);
+        let (mut h, logs) = host_with(&file, PluginPolicy::default());
+        h.set_reuses_results(true);
+        h.call("p", &req("/a"), None).unwrap();
+        h.call("p", &req("/b"), None).unwrap();
+        assert!(h.cacheable("p"));
+        assert_eq!(warned(&logs), vec![undeclared_cache_warning("p")]);
+        assert_eq!(
+            undeclared_cache_warning("p"),
+            "PLUGIN p does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call"
+        );
+        // Nothing reused: no warning.
+        let (mut h, logs) = host_with(&file, PluginPolicy::default());
+        h.call("p", &req("/a"), None).unwrap();
+        assert!(warned(&logs).is_empty());
+        fs::remove_dir_all(root).unwrap();
+        // Declared either way: no warning.
+        for (src, cacheable) in [
+            ("export const cache = true; export function transform() { return 'x'; }", true),
+            ("export default { apiVersion: 1, cache: true, transform: () => 'x' };", true),
+            ("export const cache = false; export function transform() { return 'x'; }", false),
+        ] {
+            let (root, file) = plugin(src, &[]);
+            let (mut h, logs) = host_with(&file, PluginPolicy::default());
+            h.set_reuses_results(true);
+            h.call("p", &req("/a"), None).unwrap();
+            assert_eq!(h.cacheable("p"), cacheable, "{src}");
+            assert!(warned(&logs).is_empty(), "{src}");
+            fs::remove_dir_all(root).unwrap();
+        }
+        rejects(
+            "export const cache = 'yes'; export function transform() { return 'x'; }",
+            PluginPolicy::default(),
+            "PLUGIN p: cache must be true or false, got \"yes\"",
+        );
     }
 
     #[test]
