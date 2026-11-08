@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
+  rebuild changed only existing HTML files, the reload event carries
+  `"morph":true` and pages update in place (scroll, focus and form input
+  stay), falling back to a full reload when their scripts changed. Full
+  reloads keep the scroll position. `--reload full` turns morphing off.
 - **`serve --watch --navigate-to-changed`** (johnhenry/sitefile#199): after a
   rebuild that changed exactly one page, the reload event carries its URL
   (`{"type":"reload","path":"/posts/hello/"}`) and open pages go there.

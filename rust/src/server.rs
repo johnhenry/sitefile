@@ -144,6 +144,9 @@ pub struct LiveReloadOptions {
     pub overlay: bool,
     /// After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`).
     pub navigate_to_changed: bool,
+    /// `--reload morph` (true, the default) updates a page in place when only HTML changed;
+    /// `--reload full` (false) always reloads.
+    pub morph: bool,
 }
 
 impl Default for LiveReloadOptions {
@@ -154,6 +157,7 @@ impl Default for LiveReloadOptions {
             console: false,
             overlay: true,
             navigate_to_changed: false,
+            morph: true,
         }
     }
 }
@@ -162,13 +166,14 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{},\"reload\":\"{}\"}});\n",
         reload_client(),
         options.reset_service_workers,
         options.css_inject,
         options.console,
         options.overlay,
-        options.navigate_to_changed
+        options.navigate_to_changed,
+        if options.morph { "morph" } else { "full" }
     )
 }
 
@@ -312,14 +317,19 @@ pub fn reload_event_for(
     let mut changed: Vec<String> = Vec::new();
     let mut pages: Vec<&String> = Vec::new();
     let mut css_only = css_inject;
+    let mut html_only = true;
     for (p, f) in next.entries() {
         let old = prev.get(p);
         if old.is_some_and(|o| o.digest == f.digest && o.mode == f.mode) {
             continue;
         }
         changed.push(p.clone());
-        if mime_type_for(p).starts_with("text/html") {
+        let html = mime_type_for(p).starts_with("text/html");
+        if html {
             pages.push(p);
+        }
+        if old.is_none() || !html {
+            html_only = false;
         }
         if old.is_none() || !mime_type_for(p).starts_with("text/css") {
             css_only = false;
@@ -329,18 +339,26 @@ pub fn reload_event_for(
         if !next.is_file(p) {
             changed.push(p.clone());
             css_only = false;
+            html_only = false;
         }
     }
     if changed.is_empty() {
         return None;
     }
     if !css_only {
-        if navigate && pages.len() == 1 {
-            return Some(
-                serde_json::json!({ "type": "reload", "path": page_url_for(pages[0]) }).to_string(),
-            );
+        let path = (navigate && pages.len() == 1).then(|| page_url_for(pages[0]));
+        if path.is_none() && !html_only {
+            return Some(RELOAD_EVENT.to_string());
         }
-        return Some(RELOAD_EVENT.to_string());
+        let mut m = serde_json::Map::new();
+        m.insert("type".into(), "reload".into());
+        if let Some(p) = path {
+            m.insert("path".into(), p.into());
+        }
+        if html_only {
+            m.insert("morph".into(), true.into());
+        }
+        return Some(serde_json::Value::Object(m).to_string());
     }
     changed.sort();
     Some(serde_json::json!({ "type": "css", "paths": changed }).to_string())
@@ -2192,7 +2210,7 @@ mod tests {
         assert!(!js.contains('`'));
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
-            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true,\"navigateToChanged\":false}});\n")
+            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true,\"navigateToChanged\":false,\"reload\":\"morph\"}});\n")
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
@@ -2200,11 +2218,12 @@ mod tests {
             console: true,
             overlay: false,
             navigate_to_changed: true,
+            morph: false,
         });
         assert_eq!(
             keep.script(),
             format!(
-                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false,\"navigateToChanged\":true}});\n"
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false,\"navigateToChanged\":true,\"reload\":\"full\"}});\n"
             )
         );
         assert!(js.contains("attachShadow"));
@@ -2499,11 +2518,11 @@ mod tests {
         let e = |next: &Tree, nav: bool| reload_event_for(&a, next, true, nav);
         assert_eq!(
             e(&with(&[("/posts/a/index.html", "A")]), true).as_deref(),
-            Some("{\"type\":\"reload\",\"path\":\"/posts/a/\"}")
+            Some("{\"type\":\"reload\",\"path\":\"/posts/a/\",\"morph\":true}")
         );
         assert_eq!(
             e(&with(&[("/posts/a/index.html", "A")]), false).as_deref(),
-            Some(RELOAD_EVENT)
+            Some("{\"type\":\"reload\",\"morph\":true}")
         );
         assert_eq!(
             e(&with(&[("/x.html", "X"), ("/app.js", "2")]), true).as_deref(),
@@ -2515,7 +2534,7 @@ mod tests {
                 true
             )
             .as_deref(),
-            Some(RELOAD_EVENT)
+            Some("{\"type\":\"reload\",\"morph\":true}")
         );
         assert_eq!(
             e(&with(&[("/app.js", "2")]), true).as_deref(),
@@ -2532,6 +2551,64 @@ mod tests {
         assert_eq!(page_url_for("/index.html"), "/");
         assert_eq!(page_url_for("/a b/index.html"), "/a%20b/");
         assert_eq!(page_url_for("/caf\u{e9}.html"), "/caf%C3%A9.html");
+    }
+
+    #[test]
+    fn morph_marks_reloads_where_only_existing_html_changed() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let base = [
+            ("/index.html", "i"),
+            ("/b.html", "b"),
+            ("/app.js", "1"),
+            ("/s.css", "s"),
+        ];
+        let a = t(&base);
+        let m = |edits: &[(&'static str, &'static str)]| {
+            let mut v: Vec<(&str, &str)> = base.to_vec();
+            for (p, c) in edits {
+                match v.iter_mut().find(|(q, _)| q == p) {
+                    Some(e) => e.1 = c,
+                    None => v.push((p, c)),
+                }
+            }
+            reload_event_for(&a, &t(&v), true, false)
+        };
+        let morph = Some("{\"type\":\"reload\",\"morph\":true}");
+        assert_eq!(m(&[("/index.html", "I")]).as_deref(), morph);
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/b.html", "B")]).as_deref(),
+            morph
+        );
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/app.js", "2")]).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            m(&[("/index.html", "I"), ("/s.css", "S")]).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(m(&[("/c.html", "c")]).as_deref(), Some(RELOAD_EVENT));
+        let removed = t(&[("/index.html", "I"), ("/app.js", "1"), ("/s.css", "s")]);
+        assert_eq!(
+            reload_event_for(&a, &removed, true, false).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        let js = reload_client();
+        for needle in [
+            "scriptsOf(doc) !== scriptsOf(document)",
+            "document.activeElement",
+            "sessionStorage.setItem(scrollKey",
+            "options.reload !== \"morph\"",
+        ] {
+            assert!(js.contains(needle), "{needle}");
+        }
     }
 
     #[test]

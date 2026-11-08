@@ -91,6 +91,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("console"),
     flag("no-overlay"),
     flag("navigate-to-changed"),
+    string("reload"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -107,6 +108,7 @@ const WATCH_ONLY: &[&str] = &[
     "console",
     "no-overlay",
     "navigate-to-changed",
+    "reload",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -132,6 +134,7 @@ pub const SERVE: Command = Command {
         "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
         "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
         "--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)",
+        "--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -234,6 +237,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let plain = !build_flags && !std::path::Path::new(&context).join("Sitefile").is_file();
     let css_inject = !v.flag("no-css-inject");
     let navigate = v.flag("navigate-to-changed");
+    let morph = match v.str("reload").unwrap_or("morph") {
+        "morph" => true,
+        "full" => false,
+        other => return usage(format!("--reload expects full or morph, got '{other}'")),
+    };
     if is_wildcard(&bind.host) {
         err(&format!(
             "warning: binding {}: the site will be reachable from other machines\n",
@@ -249,6 +257,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         console: v.flag("console"),
         overlay: !v.flag("no-overlay"),
         navigate_to_changed: navigate,
+        morph,
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);

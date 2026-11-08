@@ -144,6 +144,23 @@ export const WATCH_CASES = [
       { next: true },
     ],
   },
+  {
+    name: 'watch/morph',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>', 'public/b.html': '<h1>b</h1>', 'public/app.js': '1' },
+    steps: [
+      { open: true },
+      { write: { 'public/index.html': '<h1>I</h1>' } },
+      { next: true },
+      { write: { 'public/b.html': '<h1>B</h1>', 'public/app.js': '2' } },
+      { next: true },
+    ],
+  },
+  {
+    name: 'watch/reload-full',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>' },
+    args: ['--reload', 'full'],
+    steps: [{ get: '/__sitefile/reload.js' }],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
