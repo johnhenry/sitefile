@@ -506,9 +506,9 @@ fn serve_watch_no_css_inject_reloads() {
     let w = Proc::start(&home, &["serve", "--watch", "--no-css-inject", s(&site)]);
     w.wait_lines("Watching ", 1);
     let port = port_of(&w.stdout());
-    assert!(get(port, "/__sitefile/reload.js")
-        .2
-        .ends_with("\"cssInject\":false,\"console\":false,\"overlay\":true,\"navigateToChanged\":false});\n"));
+    assert!(get(port, "/__sitefile/reload.js").2.ends_with(
+        "\"cssInject\":false,\"console\":false,\"overlay\":true,\"navigateToChanged\":false});\n"
+    ));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/style.css"), "body{margin:3px}");
@@ -531,7 +531,10 @@ fn serve_watch_navigate_to_changed_names_the_edited_post() {
         ],
         "FROM scratch\nIMPORT posts FROM ./posts AS markdown\nRENDER --escape=html ./templates/post.html TO /posts/${post.slug}/index.html FOR post IN posts\nEXPORT /\n",
     );
-    let w = Proc::start(&home, &["serve", "--watch", "--navigate-to-changed", s(&site)]);
+    let w = Proc::start(
+        &home,
+        &["serve", "--watch", "--navigate-to-changed", s(&site)],
+    );
     w.wait_lines("Watching ", 1);
     let port = port_of(&w.stdout());
     assert!(get(port, "/__sitefile/reload.js")
@@ -539,7 +542,10 @@ fn serve_watch_navigate_to_changed_names_the_edited_post() {
         .ends_with("\"navigateToChanged\":true});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
-    write(site.join("posts/2026-01-02-second.md"), "# Second\n\nTwo, edited.\n");
+    write(
+        site.join("posts/2026-01-02-second.md"),
+        "# Second\n\nTwo, edited.\n",
+    );
     assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(
         ev.next(),

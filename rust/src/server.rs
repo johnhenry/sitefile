@@ -215,7 +215,10 @@ pub fn console_lines(body: &str, all: bool) -> Option<Vec<String>> {
     if (level == "log" || level == "info") && !all {
         return Some(Vec::new());
     }
-    let message = clean_text(o.get("message").and_then(|m| m.as_str()).unwrap_or(""), 1000);
+    let message = clean_text(
+        o.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+        1000,
+    );
     let num = |k: &str| -> Option<u64> {
         let f = o.get(k)?.as_f64()?;
         (f.fract() == 0.0 && f >= 0.0 && f <= 9007199254740991.0).then_some(f as u64)
@@ -396,7 +399,9 @@ impl LiveReload {
             return (false, None);
         };
         let (start, count) = match *w {
-            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => (start, count + 1),
+            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => {
+                (start, count + 1)
+            }
             _ => (now, 1),
         };
         *w = Some((start, count));
@@ -404,7 +409,9 @@ impl LiveReload {
             return (true, None);
         }
         let notice = (count == CONSOLE_LIMIT + 1).then(|| {
-            format!("browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest")
+            format!(
+                "browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest"
+            )
         });
         (false, notice)
     }
@@ -2217,20 +2224,35 @@ mod tests {
         let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
         let e = |next: &Tree, css: bool| reload_event_for(&a, next, css, false);
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]), true),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
+                true
+            ),
             None
         );
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]), true).as_deref(),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]),
+                true
+            )
+            .as_deref(),
             Some("{\"type\":\"css\",\"paths\":[\"/a.css\",\"/z/b.css\"]}")
         );
         let reload = Some(RELOAD_EVENT);
         assert_eq!(
-            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]), false).as_deref(),
+            e(
+                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                false
+            )
+            .as_deref(),
             reload
         );
         assert_eq!(
-            e(&t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]), true).as_deref(),
+            e(
+                &t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]),
+                true
+            )
+            .as_deref(),
             reload
         );
         assert_eq!(
@@ -2261,18 +2283,30 @@ mod tests {
             Some(vec!["browser error: Uncaught TypeError: x is undefined (http://h/app.js:3:5)".to_string()])
         );
         assert_eq!(
-            l("{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}", false),
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}",
+                false
+            ),
             Some(vec!["browser warn: w (http://h/:2)".to_string()])
         );
         assert_eq!(
-            l("{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}", false),
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}",
+                false
+            ),
             Some(vec!["browser warn: w (http://h/)".to_string()])
         );
         assert_eq!(
-            l("{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}", false),
+            l(
+                "{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}",
+                false
+            ),
             Some(vec!["browser error: m (u)".to_string()])
         );
-        assert_eq!(l("{\"level\":\"log\",\"message\":\"hi\"}", false), Some(vec![]));
+        assert_eq!(
+            l("{\"level\":\"log\",\"message\":\"hi\"}", false),
+            Some(vec![])
+        );
         assert_eq!(
             l("{\"level\":\"info\",\"message\":\"hi\"}", true),
             Some(vec!["browser info: hi".to_string()])
@@ -2285,15 +2319,25 @@ mod tests {
                 "    at g (b.js:3:4)".to_string()
             ])
         );
-        let long = serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
+        let long =
+            serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
         assert_eq!(
             l(&long, false).unwrap()[0],
             format!("browser error: {}...", "\u{1F600}".repeat(1000))
         );
         let stack: Vec<String> = (0..9).map(|i| format!("at f{i}")).collect();
-        let frames = serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")}).to_string();
+        let frames =
+            serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")})
+                .to_string();
         assert_eq!(l(&frames, false).unwrap().len(), 6);
-        for bad in ["", "x", "[]", "null", "{\"level\":\"debug\",\"message\":\"m\"}", "{\"message\":\"m\"}"] {
+        for bad in [
+            "",
+            "x",
+            "[]",
+            "null",
+            "{\"level\":\"debug\",\"message\":\"m\"}",
+            "{\"message\":\"m\"}",
+        ] {
             assert_eq!(l(bad, true), None, "{bad}");
         }
     }
@@ -2301,13 +2345,19 @@ mod tests {
     #[test]
     fn is_same_origin_post_rules() {
         let o = |p: &[(&str, &str)]| is_same_origin_post(&headers(p));
-        assert!(o(&[("host", "127.0.0.1:8080"), ("origin", "http://127.0.0.1:8080")]));
+        assert!(o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080")
+        ]));
         assert!(o(&[
             ("host", "x.example"),
             ("origin", "https://x.example"),
             ("sec-fetch-site", "same-origin")
         ]));
-        assert!(!o(&[("host", "127.0.0.1:8080"), ("origin", "http://evil.example")]));
+        assert!(!o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://evil.example")
+        ]));
         assert!(!o(&[("host", "127.0.0.1:8080")]));
         assert!(!o(&[
             ("host", "127.0.0.1:8080"),
@@ -2323,7 +2373,9 @@ mod tests {
         let l2 = log.clone();
         let opts = SiteServerOptions {
             live_reload: Some(LiveReload::new()),
-            log: Some(Arc::new(move |m: &str| l2.lock().unwrap().push(m.to_string()))),
+            log: Some(Arc::new(move |m: &str| {
+                l2.lock().unwrap().push(m.to_string())
+            })),
             ..Default::default()
         };
         let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
@@ -2332,7 +2384,12 @@ mod tests {
             let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let host = format!("127.0.0.1:{port}");
             let o = origin
-                .map(|o| format!("origin: {}\r\n", o.replace("SELF", &format!("http://{host}"))))
+                .map(|o| {
+                    format!(
+                        "origin: {}\r\n",
+                        o.replace("SELF", &format!("http://{host}"))
+                    )
+                })
                 .unwrap_or_default();
             write!(
                 c,
@@ -2353,16 +2410,33 @@ mod tests {
             *log.lock().unwrap(),
             vec!["browser error: Uncaught Error: boom (http://127.0.0.1/app.js:1:7)".to_string()]
         );
-        assert_eq!(post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", Some("http://evil.example")), 403);
-        assert_eq!(post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None), 403);
+        assert_eq!(
+            post(
+                srv.port,
+                "{\"level\":\"error\",\"message\":\"x\"}",
+                Some("http://evil.example")
+            ),
+            403
+        );
+        assert_eq!(
+            post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None),
+            403
+        );
         assert_eq!(post(srv.port, "not json", me), 400);
         let big = serde_json::json!({"level": "error", "message": "x".repeat(20000)}).to_string();
         assert_eq!(post(srv.port, &big, me), 413);
         assert_eq!(get(srv.port, "/__sitefile/console").status, 405);
-        assert_eq!(post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me), 405);
+        assert_eq!(
+            post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me),
+            405
+        );
         log.lock().unwrap().clear();
         for i in 0..CONSOLE_LIMIT + 5 {
-            post(srv.port, &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"), me);
+            post(
+                srv.port,
+                &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"),
+                me,
+            );
         }
         let got = log.lock().unwrap().clone();
         assert_eq!(got.len(), CONSOLE_LIMIT as usize);
@@ -2436,7 +2510,11 @@ mod tests {
             Some("{\"type\":\"reload\",\"path\":\"/x.html\"}")
         );
         assert_eq!(
-            e(&with(&[("/index.html", "I"), ("/posts/a/index.html", "A")]), true).as_deref(),
+            e(
+                &with(&[("/index.html", "I"), ("/posts/a/index.html", "A")]),
+                true
+            )
+            .as_deref(),
             Some(RELOAD_EVENT)
         );
         assert_eq!(
@@ -2634,7 +2712,10 @@ mod tests {
         };
         read_until(&mut c, &mut got, "retry: 1000\n\n");
         assert!(got.contains("content-type: text/event-stream"));
-        assert!(got.contains("cache-control: no-cache, no-transform\r\n"), "{got}");
+        assert!(
+            got.contains("cache-control: no-cache, no-transform\r\n"),
+            "{got}"
+        );
         assert!(got.contains("x-accel-buffering: no\r\n"), "{got}");
         for _ in 0..200 {
             if live.clients() == 1 {
