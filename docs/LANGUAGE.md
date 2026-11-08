@@ -1514,6 +1514,11 @@ checked:
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  Zip entry names are UTF-8 when general-purpose bit 11 is set. Without it,
+  the Info-ZIP Unicode Path field (0x7075) is used when its CRC-32 matches the
+  raw name; otherwise a name that is valid UTF-8 is read as UTF-8 (macOS, 7-Zip
+  and many tools write UTF-8 without the flag), and any other name as IBM437
+  (CP437), as older Windows Explorer, Info-ZIP and Java tools write it.
   A gzip stream may hold several members; zero bytes after the last one are
   ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.

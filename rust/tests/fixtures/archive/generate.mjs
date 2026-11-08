@@ -614,6 +614,63 @@ const tarOf = (...entries) =>
     ...entries.flatMap(([n, type, data]) => [tarHeader({ name: B(n), type, size: data.length, magic: 'ustar\u000000' }), data, pad512(data.length)]),
     Buffer.alloc(1024),
   ]);
+/** A stored zip of `[name, data, { flags, extra, method, body, crc }]` entries, honest unless told otherwise. */
+function zipOf(...entries) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const [n, data, o = {}] of entries) {
+    const name = B(n);
+    const extra = o.extra ?? Buffer.alloc(0);
+    const body = o.body ?? data;
+    const l = Buffer.alloc(30);
+    l.writeUInt32LE(0x04034b50, 0);
+    l.writeUInt16LE(20, 4);
+    l.writeUInt16LE(o.flags ?? 0, 6);
+    l.writeUInt16LE(o.method ?? 0, 8);
+    l.writeUInt32LE(o.crc ?? crc32(data), 14);
+    l.writeUInt32LE(body.length, 18);
+    l.writeUInt32LE(data.length, 22);
+    l.writeUInt16LE(name.length, 26);
+    l.writeUInt16LE(extra.length, 28);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0);
+    c.writeUInt16LE((3 << 8) | 20, 4);
+    c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(o.flags ?? 0, 8);
+    c.writeUInt16LE(o.method ?? 0, 10);
+    c.writeUInt32LE(o.crc ?? crc32(data), 16);
+    c.writeUInt32LE(body.length, 20);
+    c.writeUInt32LE(data.length, 24);
+    c.writeUInt16LE(name.length, 28);
+    c.writeUInt16LE(extra.length, 30);
+    c.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    c.writeUInt32LE(offset, 42);
+    local.push(l, name, extra, body);
+    central.push(c, name, extra);
+    offset += 30 + name.length + extra.length + body.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, cd, end]);
+}
+/** Info-ZIP Unicode Path extra field (0x7075) for raw name `raw`, naming `unicode`. */
+function unicodePath(raw, unicode, { crc = crc32(B(raw)), version = 1 } = {}) {
+  const u = B(unicode);
+  const f = Buffer.alloc(9);
+  f.writeUInt16LE(0x7075, 0);
+  f.writeUInt16LE(5 + u.length, 2);
+  f[4] = version;
+  f.writeUInt32LE(crc, 5);
+  return Buffer.concat([f, u]);
+}
+const CP437_ALL = Buffer.from(Array.from({ length: 128 }, (_, i) => 0x80 + i));
+
 /** Regressions and boundaries, always in the committed fixture. */
 const EDGE = [
   // A pax record without a length prefix's space after a complete record (TypeScript looped forever).
@@ -629,6 +686,20 @@ const EDGE = [
   () => Buffer.alloc(1024),
   () => gzipSync(Buffer.alloc(1024)),
   () => gzipSync(tarOf(['big', '0', Buffer.alloc(1_200_000)])),
+  // Zip names (#182): CP437 without bit 11, UTF-8 with it, UTF-8 without it, the 0x7075 Unicode Path field.
+  () => zipOf([CP437_ALL, B('all of CP437')], [Buffer.from([0x63, 0x61, 0x66, 0x82]), B('caf\u00e9 in CP437')]),
+  () => zipOf([CP437_ALL, B('flagged: lossy UTF-8'), { flags: 0x800 }]),
+  () => zipOf([B('caf\u00e9.txt'), B('UTF-8 without the flag')], [B('\u{1f600}'), B('x'), { flags: 0x800 }]),
+  () => zipOf([Buffer.from([0x82]), B('a'), { extra: unicodePath(Buffer.from([0x82]), 'caf\u00e9/\u00e9t\u00e9.txt') }]),
+  () => zipOf([Buffer.from([0x82]), B('a'), { extra: Buffer.concat([B('UT\u0005\u0000\u0001\u0000\u0000\u0000\u0000'), unicodePath(Buffer.from([0x82]), 'right.txt')]) }]),
+  () => zipOf([Buffer.from([0x82]), B('bad crc'), { extra: unicodePath(Buffer.from([0x82]), 'wrong.txt', { crc: 1 }) }]),
+  () => zipOf([Buffer.from([0x82]), B('version 2'), { extra: unicodePath(Buffer.from([0x82]), 'wrong.txt', { version: 2 }) }]),
+  () => zipOf([Buffer.from([0x82]), B('invalid UTF-8'), { extra: Buffer.concat([unicodePath(Buffer.from([0x82]), 'x').subarray(0, 9), Buffer.from([0xff])]).fill(6, 2, 3).fill(0, 3, 4) }]),
+  () => zipOf([B('ascii.txt'), B('flag set: the field is ignored'), { flags: 0x800, extra: unicodePath(B('ascii.txt'), 'other.txt') }]),
+  () => zipOf([Buffer.from([0x82]), B('truncated field'), { extra: unicodePath(Buffer.from([0x82]), 'x.txt').subarray(0, 12) }]),
+  () => zipOf([Buffer.from([0x82, 0x2f, 0x2e, 0x2e, 0x2f, 0x78]), B('unsafe after decoding')]),
+  () => zipOf([Buffer.from([0x82]), B('unsafe via 0x7075'), { extra: unicodePath(Buffer.from([0x82]), '../evil') }]),
+  () => zipOf([Buffer.from([0x82]), B('1')], [B('\u00e9'), B('2')]),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

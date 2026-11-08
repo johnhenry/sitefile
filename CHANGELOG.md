@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Zip names without the UTF-8 flag** (#182): names without general-purpose
+  bit 11 are read from the Info-ZIP Unicode Path field (0x7075) when its CRC
+  matches, else as UTF-8 when valid, else as CP437 (they used to become
+  U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
+  `serve x.zip`, in both implementations.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

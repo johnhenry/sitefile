@@ -1,4 +1,4 @@
-import { gunzip as gunzipCb, inflateRaw as inflateRawCb, type ZlibOptions } from 'node:zlib';
+import { crc32, gunzip as gunzipCb, inflateRaw as inflateRawCb, type ZlibOptions } from 'node:zlib';
 import { promisify } from 'node:util';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { normalizeVirtual } from '../paths.js';
@@ -220,6 +220,52 @@ interface ZipEntry {
   isDir: boolean;
 }
 
+/** IBM437, bytes 0x80–0xFF (0x00–0x7F are ASCII). */
+const CP437_HIGH =
+  '\u00c7\u00fc\u00e9\u00e2\u00e4\u00e0\u00e5\u00e7\u00ea\u00eb\u00e8\u00ef\u00ee\u00ec\u00c4\u00c5' +
+  '\u00c9\u00e6\u00c6\u00f4\u00f6\u00f2\u00fb\u00f9\u00ff\u00d6\u00dc\u00a2\u00a3\u00a5\u20a7\u0192' +
+  '\u00e1\u00ed\u00f3\u00fa\u00f1\u00d1\u00aa\u00ba\u00bf\u2310\u00ac\u00bd\u00bc\u00a1\u00ab\u00bb' +
+  '\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510' +
+  '\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567' +
+  '\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580' +
+  '\u03b1\u00df\u0393\u03c0\u03a3\u03c3\u00b5\u03c4\u03a6\u0398\u03a9\u03b4\u221e\u03c6\u03b5\u2229' +
+  '\u2261\u00b1\u2265\u2264\u2320\u2321\u00f7\u2248\u00b0\u2219\u00b7\u221a\u207f\u00b2\u25a0\u00a0';
+
+/** Strict UTF-8 (a BOM is kept), or undefined. */
+function utf8Strict(b: Uint8Array): string | undefined {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(b);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A zip entry name (APPNOTE 4.4.4, 4.6.9, appendix D). With general-purpose bit 11 it is UTF-8.
+ * Without it: the Info-ZIP Unicode Path field (0x7075, version 1) when its CRC-32 matches the raw
+ * name; else the raw name as UTF-8 when it is valid UTF-8 (macOS, 7-Zip and many tools write UTF-8
+ * without the flag; CP437 text of non-ASCII letters is practically never valid UTF-8); else IBM437.
+ */
+function zipName(raw: Uint8Array, flags: number, extra: Uint8Array): string {
+  if (flags & 0x800) return Buffer.from(raw).toString('utf8');
+  for (let i = 0; i + 4 <= extra.length; ) {
+    const id = extra[i]! | (extra[i + 1]! << 8);
+    const size = extra[i + 2]! | (extra[i + 3]! << 8);
+    if (i + 4 + size > extra.length) break;
+    if (id === 0x7075 && size >= 5 && extra[i + 4] === 1) {
+      const stored = (extra[i + 5]! | (extra[i + 6]! << 8) | (extra[i + 7]! << 16) | (extra[i + 8]! << 24)) >>> 0;
+      const name = stored === crc32(raw) ? utf8Strict(extra.subarray(i + 9, i + 4 + size)) : undefined;
+      if (name !== undefined) return name;
+    }
+    i += 4 + size;
+  }
+  const utf8 = utf8Strict(raw);
+  if (utf8 !== undefined) return utf8;
+  let out = '';
+  for (const c of raw) out += c < 0x80 ? String.fromCharCode(c) : CP437_HIGH[c - 0x80]!;
+  return out;
+}
+
 async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, span: SourceSpan | undefined, add: Add): Promise<void> {
   const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`, span);
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -245,7 +291,8 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     const unix = v.getUint16(p + 4, true) >> 8 === 3;
     const attr = v.getUint32(p + 38, true) >>> 16;
     const fileType = attr & 0o170000;
-    const name = Buffer.from(b.subarray(p + 46, p + 46 + nameLen)).toString('utf8');
+    const extraLen = v.getUint16(p + 30, true);
+    const name = zipName(b.subarray(p + 46, p + 46 + nameLen), v.getUint16(p + 8, true), b.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen));
     const e: ZipEntry = {
       name,
       method: v.getUint16(p + 10, true),

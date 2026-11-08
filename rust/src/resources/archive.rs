@@ -564,6 +564,60 @@ fn u32le(b: &[u8], i: usize) -> u32 {
     u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
 
+/// IBM437, bytes 0x80–0xFF (0x00–0x7F are ASCII).
+const CP437_HIGH: [char; 128] = [
+    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å', //
+    'É', 'æ', 'Æ', 'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ', //
+    'á', 'í', 'ó', 'ú', 'ñ', 'Ñ', 'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»', //
+    '░', '▒', '▓', '│', '┤', '╡', '╢', '╖', '╕', '╣', '║', '╗', '╝', '╜', '╛', '┐', //
+    '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧', //
+    '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌', '█', '▄', '▌', '▐', '▀', //
+    'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩', //
+    '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{a0}',
+];
+
+/// A zip entry name (APPNOTE 4.4.4, 4.6.9, appendix D). With general-purpose
+/// bit 11 it is UTF-8. Without it: the Info-ZIP Unicode Path field (0x7075,
+/// version 1) when its CRC-32 matches the raw name; else the raw name as UTF-8
+/// when it is valid UTF-8 (macOS, 7-Zip and many tools write UTF-8 without the
+/// flag; CP437 text of non-ASCII letters is practically never valid UTF-8);
+/// else IBM437.
+fn zip_name(raw: &[u8], flags: u16, extra: &[u8]) -> String {
+    if flags & 0x800 != 0 {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    let mut i = 0usize;
+    while i + 4 <= extra.len() {
+        let id = u16le(extra, i);
+        let size = u16le(extra, i + 2) as usize;
+        if i + 4 + size > extra.len() {
+            break;
+        }
+        if id == 0x7075 && size >= 5 && extra[i + 4] == 1 {
+            let mut crc = flate2::Crc::new();
+            crc.update(raw);
+            if u32le(extra, i + 5) == crc.sum() {
+                if let Ok(name) = std::str::from_utf8(&extra[i + 9..i + 4 + size]) {
+                    return name.to_string();
+                }
+            }
+        }
+        i += 4 + size;
+    }
+    if let Ok(name) = std::str::from_utf8(raw) {
+        return name.to_string();
+    }
+    raw.iter()
+        .map(|&c| {
+            if c < 0x80 {
+                c as char
+            } else {
+                CP437_HIGH[(c - 0x80) as usize]
+            }
+        })
+        .collect()
+}
+
 fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
     let (origin, span, limits) = (c.origin, c.span, *c.limits);
     let bad = |why: String| corrupt(origin, why, span);
@@ -606,7 +660,12 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         let unix = u16le(b, p + 4) >> 8 == 3;
         let attr = u32le(b, p + 38) >> 16;
         let file_type = attr & 0o170000;
-        let name = String::from_utf8_lossy(&b[p + 46..p + 46 + name_len]).into_owned();
+        let extra_len = u16le(b, p + 30) as usize;
+        let name = zip_name(
+            &b[p + 46..p + 46 + name_len],
+            u16le(b, p + 8),
+            &b[p + 46 + name_len..p + 46 + name_len + extra_len],
+        );
         let e = ZipEntry {
             method: u16le(b, p + 10),
             csize: u32le(b, p + 20),
