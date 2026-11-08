@@ -114,6 +114,23 @@ export const WATCH_CASES = [
       { log: true },
     ],
   },
+  {
+    name: 'watch/build-error',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    steps: [
+      { open: true },
+      { write: { Sitefile: 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n' } },
+      { next: true },
+      { next: true },
+      { get: '/', headers: NAV },
+      { write: { Sitefile: SITEFILE } },
+      { next: true },
+      { next: true },
+      { write: { 'public/index.html': '<h1>y</h1>' } },
+      { next: true },
+      { next: true },
+    ],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

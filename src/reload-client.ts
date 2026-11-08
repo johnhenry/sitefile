@@ -112,6 +112,60 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     };
   });
 
+  // The Rebuilding badge and the build-error overlay live in shadow roots, so the site's CSS
+  // cannot reach them and theirs cannot leak into the site (--no-overlay turns both off).
+  var badge = null;
+  var overlay = null;
+  function host(css, html) {
+    var el = document.createElement("sitefile-overlay");
+    var root = el.attachShadow ? el.attachShadow({ mode: "open" }) : el;
+    root.innerHTML = "<style>" + css + "</style>" + html;
+    (document.body || document.documentElement).appendChild(el);
+    return { el: el, root: root };
+  }
+  function showBadge() {
+    if (!options.overlay || badge) return;
+    badge = host(
+      ":host{all:initial}div{position:fixed;right:12px;bottom:12px;z-index:2147483647;padding:6px 10px;" +
+        "border-radius:6px;background:#1f2937;color:#f9fafb;font:12px/1.4 system-ui,sans-serif;opacity:.9}",
+      "<div role=\"status\">Rebuilding\u2026</div>"
+    );
+  }
+  function hideBadge() {
+    if (badge) badge.el.remove();
+    badge = null;
+  }
+  function showError(ev) {
+    hideBadge();
+    hideError();
+    if (!options.overlay) return;
+    overlay = host(
+      ":host{all:initial}.back{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);" +
+        "display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px;box-sizing:border-box}" +
+        ".box{max-width:860px;width:100%;max-height:80vh;overflow:auto;background:#fff;color:#111;" +
+        "border-top:6px solid #dc2626;border-radius:8px;padding:20px 24px;font:14px/1.5 system-ui,sans-serif;" +
+        "box-shadow:0 10px 40px rgba(0,0,0,.4)}h2{margin:0 0 8px;font-size:16px;color:#b91c1c}" +
+        "pre{white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,monospace;margin:8px 0}" +
+        ".where,.note{color:#555;font-size:13px}button{float:right;font:inherit;border:0;background:none;" +
+        "font-size:20px;line-height:1;cursor:pointer;color:#555}",
+      "<div class=\"back\"><div class=\"box\" role=\"alertdialog\" aria-label=\"Build failed\">" +
+        "<button type=\"button\" aria-label=\"Dismiss\">\u00d7</button><h2></h2><pre></pre>" +
+        "<div class=\"where\"></div><div class=\"note\"></div></div></div>"
+    );
+    var r = overlay.root;
+    r.querySelector("h2").textContent = "Build failed: " + (ev.code || "error");
+    r.querySelector("pre").textContent = ev.message || "";
+    r.querySelector(".where").textContent = ev.file ? ev.file + (ev.line ? ":" + ev.line + (ev.column ? ":" + ev.column : "") : "") : "";
+    r.querySelector(".note").textContent =
+      "The page shows the last good build. This clears on the next good build." +
+      (navigator.serviceWorker && navigator.serviceWorker.controller ? " A service worker controls this page." : "");
+    r.querySelector("button").onclick = hideError;
+  }
+  function hideError() {
+    if (overlay) overlay.el.remove();
+    overlay = null;
+  }
+
   // EventSource reconnects by itself after a dropped connection (the server sends retry: 1000),
   // but gives up for good when an answer is not an event stream (a proxy or tunnel error page):
   // then try again, waiting twice as long each time, up to 30 s.
@@ -128,6 +182,11 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
       } catch (_) {
         ev = { type: "reload" };
       }
+      if (ev.type === "building") return showBadge();
+      if (ev.type === "error") return showError(ev);
+      hideBadge();
+      hideError();
+      if (ev.type === "ok") return;
       if (ev.type === "css" && options.cssInject && swapStylesheets(ev.paths || [])) return;
       reload();
     };

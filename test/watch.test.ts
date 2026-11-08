@@ -4,8 +4,9 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, CONSOLE_LIMIT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
+import { BUILDING_EVENT, closeServer, CONSOLE_LIMIT, errorEvent, OK_EVENT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
+import { SitefileError } from '../src/errors.js';
 import { isIgnoredChange, pollSnapshot, RebuildScheduler } from '../src/watch.js';
 import { pollOption } from '../src/cli/watch.js';
 import { cliPath, makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -94,13 +95,25 @@ test('injectReloadScript inserts before the last </body>, else appends', () => {
 });
 
 test('clientScript passes the session options to the client', () => {
-  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true,"console":false});\n`);
-  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true,"console":false});\n`);
-  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false,"console":false});\n`);
+  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true});\n`);
+  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true,"console":false,"overlay":true});\n`);
+  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false,"console":false,"overlay":true});\n`);
   assert.equal(new LiveReload({ resetServiceWorkers: false }).script, clientScript({ resetServiceWorkers: false }));
   // the client unregisters service workers and empties Cache Storage before reloading
   assert.match(RELOAD_CLIENT, /getRegistrations\(\)/);
   assert.match(RELOAD_CLIENT, /caches\.delete\(k\)/);
+});
+
+test('errorEvent: code, message and the Sitefile location', () => {
+  assert.equal(
+    errorEvent(new SitefileError('E_SYNTAX', 'unknown instruction "X"', { file: '/c/Sitefile', line: 3, column: 1 })),
+    '{"type":"error","code":"E_SYNTAX","message":"unknown instruction \\"X\\"","file":"/c/Sitefile","line":3,"column":1}',
+  );
+  assert.equal(errorEvent(new SitefileError('E_NOT_FOUND', 'no such file')), '{"type":"error","code":"E_NOT_FOUND","message":"no such file"}');
+  assert.equal(BUILDING_EVENT, '{"type":"building"}');
+  assert.equal(OK_EVENT, '{"type":"ok"}');
+  assert.match(RELOAD_CLIENT, /attachShadow/, 'the overlay is in a shadow root');
+  assert.equal(clientScript({ overlay: false }).endsWith('"overlay":false});\n'), true);
 });
 
 test('reloadEventFor: nothing, css (only changed stylesheets in both trees) or reload', () => {
@@ -282,7 +295,7 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     assert.equal(js.status, 200);
     assert.equal(js.body, clientScript());
     assert.ok(js.body.startsWith(RELOAD_CLIENT));
-    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true,"console":false});\n'));
+    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true,"console":false,"overlay":true});\n'));
     assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(js.headers['cache-control'], 'no-cache');
     assert.equal(Number(js.headers['content-length']), Buffer.byteLength(js.body));
@@ -518,18 +531,36 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'index.html'), '<h1>v2</h1>');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
     r = await get(port, '/', NAV);
     assert.equal(r.body, `<h1>v2</h1>${RELOAD_SCRIPT}`);
     // only a stylesheet of the build changed: pages swap it in place
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:1px}');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"css","paths":["/style.css"]}');
 
-    // a failed rebuild: error printed, no reload, the last good build still served
+    // a failed rebuild: error printed, an error event, the last good build still served
+    const good = await fs.readFile(path.join(site, 'Sitefile'), 'utf8');
     await fs.writeFile(path.join(site, 'Sitefile'), 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n');
     await w.waitFor(/Build failed; keeping the last good output/);
     assert.match(w.stderr(), /error\[E_/);
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    const failed = await ev.next();
+    assert.match(failed, /^data: \{"type":"error","code":"E_[A-Z_]+","message":"[^"]+","file":"[^"]*Sitefile","line":2,"column":\d+\}$/);
     assert.equal((await get(port, '/', NAV)).body, `<h1>v2</h1>${RELOAD_SCRIPT}`);
+    // a page opened while the build is broken gets the error at once
+    const late = await events(port);
+    assert.equal(await late.next(), 'retry: 1000');
+    assert.equal(await late.next(), failed);
+    late.close();
+    // fixed, with the same output as before: ok (the overlay clears, no reload)
+    await fs.writeFile(path.join(site, 'Sitefile'), good);
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"ok"}');
+    const fresh = await events(port);
+    assert.equal(await fresh.next(), 'retry: 1000');
+    fresh.close();
     ev.close();
     assert.deepEqual(await fs.readdir(site).then((n) => n.filter((x) => x === 'dist')), [], 'serve --watch writes no export');
   } finally {
@@ -579,9 +610,11 @@ test('serve --watch on a directory without a Sitefile: served as it is, re-read 
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(dir, 's.css'), 'a{color:red}');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"css","paths":["/s.css"]}');
     assert.equal((await get(port, '/s.css')).body, 'a{color:red}');
     await fs.writeFile(path.join(dir, 'index.html'), '<h1>p2</h1>');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
     await w.waitFor(/^Change detected, re-reading$/m, 2);
     assert.equal((await get(port, '/', NAV)).body, `<h1>p2</h1>${RELOAD_SCRIPT}`);
@@ -599,10 +632,11 @@ test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async (
   try {
     await w.waitFor(/Watching /);
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
-    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false\}\);\n$/);
+    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false,"overlay":true\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:3px}');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
     assert.equal(await ev.next(), 'data: {"type":"reload"}');
     ev.close();
   } finally {

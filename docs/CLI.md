@@ -504,11 +504,11 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 
 ```
 sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [context | ./plain-directory] [build options]
+                       [--no-overlay] [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
-                       [context | ./plain-directory]
+                       [--no-overlay] [context | ./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -571,7 +571,15 @@ Only under `serve --watch`:
   `text/event-stream` that sends `retry: 1000`, then one event per good rebuild (or re-read) that changed the
   served files: `data: {"type":"css","paths":["/a.css",...]}` when every changed file is a stylesheet
   (`text/css`) that was already there (CSS injection, below), else `data: {"type":"reload"}`. A rebuild whose
-  output is identical, and a failed rebuild, send nothing. The stream is not written to the access log.
+  output is identical sends `data: {"type":"ok"}`. Each rebuild (or re-read) starts with `data: {"type":"building"}`,
+  and a failed one sends `data: {"type":"error","code":"E_...","message":"...","file":"/ctx/Sitefile","line":2,"column":1}`
+  (`file`, `line` and `column` only when the error has a Sitefile location). A stream that opens while the last
+  build is broken gets that error event right after `retry: 1000`. The stream is not written to the access log.
+- **Rebuilding badge and error overlay** (`--no-overlay` turns both off): on `building` the client shows a small
+  "Rebuilding..." badge in the corner; on `error` it shows a dismissible overlay with the code, the message and the
+  Sitefile location, noting that the page shows the last good build (and when a service worker controls the
+  page). Both live in a shadow root, so the site's CSS does not reach them. The next `ok`, `css` or `reload` event
+  clears them.
 - **CSS injection** (`--no-css-inject` turns it off; then a CSS-only change sends `{"type":"reload"}`): on a
   `css` event the client points each same-origin `<link rel="stylesheet">` whose path is listed at the same URL with
   a fresh `__sitefile=<time>` query parameter (the old sheet stays until the new one has loaded), so the page keeps

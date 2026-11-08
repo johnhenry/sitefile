@@ -89,6 +89,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("poll-interval"),
     flag("no-css-inject"),
     flag("console"),
+    flag("no-overlay"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -103,6 +104,7 @@ const WATCH_ONLY: &[&str] = &[
     "poll-interval",
     "no-css-inject",
     "console",
+    "no-overlay",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -126,6 +128,7 @@ pub const SERVE: Command = Command {
         "--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)",
         "--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)",
         "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
+        "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -240,6 +243,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         reset_service_workers: !v.flag("keep-service-workers"),
         css_inject,
         console: v.flag("console"),
+        overlay: !v.flag("no-overlay"),
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
@@ -248,7 +252,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let swap = |next: Tree| {
         let Ok(mut t) = current.write() else { return };
         let event = if started.get() {
-            crate::server::reload_event_for(&t, &next, css_inject)
+            Some(
+                crate::server::reload_event_for(&t, &next, css_inject)
+                    .unwrap_or_else(|| crate::server::OK_EVENT.to_string()),
+            )
         } else {
             None
         };
@@ -258,7 +265,21 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             live.send(&e);
         }
     };
+    // A failed build or read: print it, and tell the pages (and pages opened later).
+    let failed = |e: &SitefileError| -> BuildOutcome {
+        let code = super::common::report(e);
+        if e.code != E_USAGE {
+            live.send(&crate::server::error_event(e));
+        }
+        BuildOutcome {
+            code,
+            wrote: Vec::new(),
+        }
+    };
     let mut run_build = || -> BuildOutcome {
+        if started.get() {
+            live.send(crate::server::BUILDING_EVENT);
+        }
         if plain {
             return match crate::servers::load_directory_tree(std::path::Path::new(&context)) {
                 Ok(tree) => {
@@ -274,10 +295,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                         wrote: Vec::new(),
                     }
                 }
-                Err(e) => BuildOutcome {
-                    code: super::common::report(&e),
-                    wrote: Vec::new(),
-                },
+                Err(e) => failed(&e),
             };
         }
         let attempt = || -> Result<Tree> {
@@ -316,10 +334,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     wrote: Vec::new(),
                 }
             }
-            Err(e) => BuildOutcome {
-                code: super::common::report(&e),
-                wrote: Vec::new(),
-            },
+            Err(e) => failed(&e),
         }
     };
     let mut on_started = || -> Result<()> {

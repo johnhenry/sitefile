@@ -418,10 +418,12 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/index.html"), "<h1>v2</h1>");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
     assert_eq!(get(port, "/").2, format!("<h1>v2</h1>{RELOAD_SCRIPT}"));
     // only a stylesheet of the build changed: pages swap it in place
     write(site.join("public/style.css"), "body{margin:1px}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(
         ev.next(),
         "data: {\"type\":\"css\",\"paths\":[\"/style.css\"]}"
@@ -479,8 +481,10 @@ fn serve_watch_plain_directory_is_reread_and_swaps_css() {
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(dir.join("s.css"), "a{color:red}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"css\",\"paths\":[\"/s.css\"]}");
     write(dir.join("index.html"), "<h1>p2</h1>");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
     w.wait_lines("Change detected, re-reading", 2);
     assert_eq!(get(port, "/").2, format!("<h1>p2</h1>{RELOAD_SCRIPT}"));
@@ -504,10 +508,11 @@ fn serve_watch_no_css_inject_reloads() {
     let port = port_of(&w.stdout());
     assert!(get(port, "/__sitefile/reload.js")
         .2
-        .ends_with("\"cssInject\":false,\"console\":false});\n"));
+        .ends_with("\"cssInject\":false,\"console\":false,\"overlay\":true});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/style.css"), "body{margin:3px}");
+    assert_eq!(ev.next(), "data: {\"type\":\"building\"}");
     assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
     drop(ev);
     assert_eq!(w.stop(), 0);
