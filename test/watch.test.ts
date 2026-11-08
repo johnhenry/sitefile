@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, injectReloadScript, listen, LiveReload, RELOAD_PATH, RELOAD_SCRIPT } from '../src/server.js';
+import { closeServer, createSiteServer, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { isIgnoredChange, RebuildScheduler } from '../src/watch.js';
 import { cliPath, makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -12,6 +12,8 @@ import { cliPath, makeSite, runCli, tmpDir } from './helpers/cli.js';
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** What a browser sends for a page navigation (only those get the reload script). */
+const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', accept: 'text/html,*/*;q=0.8' };
 
 // ------------------------------------------------------------ units
 
@@ -62,7 +64,33 @@ test('injectReloadScript inserts before the last </body>, else appends', () => {
   assert.equal(dec(injectReloadScript(enc('<p>a</p></BODY></html>'))), `<p>a</p>${RELOAD_SCRIPT}</BODY></html>`);
   assert.equal(dec(injectReloadScript(enc('<body></body><!-- </body> --></body>'))), `<body></body><!-- </body> -->${RELOAD_SCRIPT}</body>`);
   assert.equal(dec(injectReloadScript(enc('<h1>x</h1>'))), `<h1>x</h1>${RELOAD_SCRIPT}`);
-  assert.ok(RELOAD_SCRIPT.includes(RELOAD_PATH));
+  assert.equal(RELOAD_SCRIPT, `<script src="${RELOAD_SCRIPT_PATH}"></script>`);
+});
+
+test('isNavigation: Sec-Fetch-Mode, then Sec-Fetch-Dest, then Accept', () => {
+  assert.equal(isNavigation({ 'sec-fetch-mode': 'navigate' }), true);
+  assert.equal(isNavigation({ 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'document', accept: 'text/html' }), false, 'fetch() of HTML');
+  assert.equal(isNavigation({ 'sec-fetch-mode': 'same-origin', accept: 'text/html' }), false);
+  assert.equal(isNavigation({ 'sec-fetch-dest': 'document' }), true);
+  assert.equal(isNavigation({ 'sec-fetch-dest': 'iframe' }), true);
+  assert.equal(isNavigation({ 'sec-fetch-dest': 'empty', accept: 'text/html' }), false);
+  assert.equal(isNavigation({ accept: 'Text/HTML,application/xhtml+xml' }), true, 'older browsers: Accept');
+  assert.equal(isNavigation({ accept: '*/*' }), false, 'fetch() default, curl');
+  assert.equal(isNavigation({}), false);
+});
+
+test('cspBlocksReload: script-src, connect-src, default-src fallbacks and several policies', () => {
+  assert.equal(cspBlocksReload("script-src 'self'"), undefined);
+  assert.equal(cspBlocksReload("default-src 'self'"), undefined);
+  assert.equal(cspBlocksReload("default-src 'none'; script-src 'self'"), 'connect-src');
+  assert.equal(cspBlocksReload("default-src 'none'; script-src 'self'; connect-src 'self'"), undefined);
+  assert.equal(cspBlocksReload("script-src 'nonce-abc'"), 'script-src');
+  assert.equal(cspBlocksReload("script-src 'self' 'strict-dynamic'"), 'script-src', "'strict-dynamic' ignores 'self'");
+  assert.equal(cspBlocksReload("script-src-elem 'none'; script-src 'self'"), 'script-src', 'script-src-elem wins');
+  assert.equal(cspBlocksReload("SCRIPT-SRC 'SELF'; script-src 'none'"), undefined, 'case-insensitive, the first directive counts');
+  assert.equal(cspBlocksReload('script-src https:; connect-src *'), undefined);
+  assert.equal(cspBlocksReload("img-src 'none'"), undefined);
+  assert.equal(cspBlocksReload("script-src 'self', script-src 'none'"), 'script-src', 'each policy is enforced');
 });
 
 interface Res {
@@ -126,15 +154,26 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
   const { port } = await listen(server, '127.0.0.1', 0);
   const { port: plainPort } = await listen(plain, '127.0.0.1', 0);
   try {
-    let r = await get(port, '/');
+    let r = await get(port, '/', NAV);
     assert.equal(r.body, `<html><body><h1>v1</h1>${RELOAD_SCRIPT}</body></html>`);
     assert.equal(Number(r.headers['content-length']), Buffer.byteLength(r.body));
     assert.match(String(r.headers.etag), /-live"$/);
-    assert.equal((await get(port, '/', { 'if-none-match': String(r.headers.etag) })).status, 304);
-    assert.equal((await get(port, '/style.css')).body, 'a{}');
-    const p = await get(plainPort, '/');
+    assert.equal((await get(port, '/', { ...NAV, 'if-none-match': String(r.headers.etag) })).status, 304);
+    assert.equal((await get(port, '/style.css', NAV)).body, 'a{}');
+    // fetch('/') from a page script: not a navigation, served as the file is
+    const f = await get(port, '/', { 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty', accept: '*/*' });
+    assert.equal(f.body, '<html><body><h1>v1</h1></body></html>', 'a fetch() of HTML is untouched');
+    assert.doesNotMatch(String(f.headers.etag), /-live"$/);
+    const js = await get(port, RELOAD_SCRIPT_PATH);
+    assert.equal(js.status, 200);
+    assert.equal(js.body, RELOAD_CLIENT);
+    assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
+    assert.equal(js.headers['cache-control'], 'no-cache');
+    assert.equal(Number(js.headers['content-length']), Buffer.byteLength(RELOAD_CLIENT));
+    const p = await get(plainPort, '/', NAV);
     assert.equal(p.body, '<html><body><h1>v1</h1></body></html>', 'no injection without --watch');
     assert.equal((await get(plainPort, RELOAD_PATH)).status, 404, 'the path is only reserved under --watch');
+    assert.equal((await get(plainPort, RELOAD_SCRIPT_PATH)).status, 404);
 
     const ev = await events(port);
     assert.equal(ev.headers['content-type'], 'text/event-stream');
@@ -142,9 +181,9 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     tree = Tree.fromFiles([['/index.html', makeFile(enc('<h1>v2</h1>'), 't')]]);
     live.reload();
     assert.equal(await ev.next(), 'data: reload');
-    r = await get(port, '/');
+    r = await get(port, '/', NAV);
     assert.equal(r.body, `<h1>v2</h1>${RELOAD_SCRIPT}`, 'the swapped tree is served');
-    assert.equal(log.filter((l) => l.includes(RELOAD_PATH)).length, 0, 'the event stream is not access-logged');
+    assert.equal(log.filter((l) => l.includes('/__sitefile/')).length, 0, 'the event stream and the script are not access-logged');
     ev.close();
   } finally {
     await closeServer(server);
@@ -289,22 +328,23 @@ test('serve --watch: serves the build, live-reloads after a good rebuild, keeps 
     await w.waitFor(/Watching .* for changes/);
     assert.match(w.stdout(), /^Built 3 files \(sha256:[0-9a-f]{64}\)\nServing .* \(3 files\) at http:\/\/127\.0\.0\.1:(\d+)\/ {2}\(Ctrl-C to stop\)\n/);
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
-    let r = await get(port, '/');
+    let r = await get(port, '/', NAV);
     assert.equal(r.body, `<html><body><h1>v1</h1>${RELOAD_SCRIPT}</body></html>`);
-    assert.equal((await get(port, '/style.css')).body, 'body{margin:0}', 'no script outside HTML');
+    assert.equal((await get(port, '/style.css', NAV)).body, 'body{margin:0}', 'no script outside HTML');
+    assert.equal((await get(port, RELOAD_SCRIPT_PATH)).body, RELOAD_CLIENT);
 
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'index.html'), '<h1>v2</h1>');
     assert.equal(await ev.next(), 'data: reload');
-    r = await get(port, '/');
+    r = await get(port, '/', NAV);
     assert.equal(r.body, `<h1>v2</h1>${RELOAD_SCRIPT}`);
 
     // a failed rebuild: error printed, no reload, the last good build still served
     await fs.writeFile(path.join(site, 'Sitefile'), 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n');
     await w.waitFor(/Build failed; keeping the last good output/);
     assert.match(w.stderr(), /error\[E_/);
-    assert.equal((await get(port, '/')).body, `<h1>v2</h1>${RELOAD_SCRIPT}`);
+    assert.equal((await get(port, '/', NAV)).body, `<h1>v2</h1>${RELOAD_SCRIPT}`);
     ev.close();
     assert.deepEqual(await fs.readdir(site).then((n) => n.filter((x) => x === 'dist')), [], 'serve --watch writes no export');
   } finally {

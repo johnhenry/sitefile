@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Live reload works under a strict CSP and leaves fetch()ed HTML alone**
+  (johnhenry/sitefile#181): `serve --watch` injects
+  `<script src="/__sitefile/reload.js"></script>` (a same-origin script that
+  `script-src 'self'` allows) instead of an inline script, and only into page
+  navigations (`Sec-Fetch-Mode: navigate`, else `Sec-Fetch-Dest`, else an
+  `Accept` naming `text/html`), so an HTML fragment loaded with `fetch()` is
+  served unchanged. A `_headers` CSP that still blocks the script or the event
+  stream gets a one-time warning. The client script has one source
+  (`src/reload-client.ts`), which the Rust server compiles in. New watch-mode
+  conformance cases (`conformance/watch.mjs`) compare both servers' responses
+  and events.
+
 ## 0.0.2 (2026-11-08)
 
 - **Plugin console output keeps its order** (johnhenry/sitefile#164): a
