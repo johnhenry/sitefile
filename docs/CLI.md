@@ -43,6 +43,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
 | `--plugin-timeout ms` | per-call time limit for TRANSFORM plugins and tools (default 60000) |
+| `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
 | `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
@@ -534,7 +535,7 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 | `-f, --file`, `--print`, `--json`, `-j, --jobs` | bake's own (see above) |
 | `--build-arg K=V`, `--build-arg-file f` | added to every target: `--build-arg` wins over the bake file's `args` and arg files; `--build-arg-file` files (relative to the current directory) are read after the target's own `arg-files` (a target's `args` still win over them, as `--build-arg` always wins over files) |
 | `--profile <dir>` | one trace per target: `<dir>/<target>.json` |
-| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
+| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
 | `--cache-to` | refused: each target would replace the results the others pushed. Push from one `sitefile build --cache-to` |
 | `-o`, `-t`, `--format`, `--target`, `--watch` and the image flags (`--base`, `--label`, `--provenance`, ...) | not accepted: set them per target in the bake file (`output`, `tags`, `format`, `target`); watch mode and image options are per build |
 
@@ -543,7 +544,7 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 ```
 sitefile build --watch [context] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
-                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [context]
+                       [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers] [context]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -580,7 +581,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
 - **Restrictions**: `--watch` is for `build` only among the build commands (`validate`/`inspect --watch` are usage
   errors) and cannot be combined with `-t` (one image per save would fill the store). `serve --watch` runs in the
   foreground: `-d` and `--name` are refused, and `-f`, `--target`, `--build-arg`, `--build-arg-file`, `--no-cache` and
-  `--no-lockfile` need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
+  `--no-lockfile` (and the live-reload flags such as `--keep-service-workers`) need `--watch`. For other build flags, run `build --watch` and serve its output elsewhere.
 
 ### Live reload
 
@@ -589,11 +590,30 @@ Only under `serve --watch`:
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
   `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
   sends nothing. The stream is not written to the access log.
-- Every `text/html` file response gets one script tag, inserted before the last `</body>` (ASCII
-  case-insensitive), or appended when there is none:
-  `<script>new EventSource("/__sitefile/reload").onmessage=function(){location.reload()}</script>`.
-  `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached un-injected copy is not
-  reused. Other files are served unchanged.
+- `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
+  (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
+  `reload`, relative to its own URL, and reloads the page on each event. The script is the same in both
+  implementations and ends with a call carrying the session's options, e.g. `({"resetServiceWorkers":true});`.
+- **Service workers**: a service worker that caches the site would answer the reload with the old build, so
+  before reloading the client unregisters every service worker of the page's origin and deletes every Cache
+  Storage cache (`caches`). The site's own registration code installs its worker again on the reloaded page.
+  `--keep-service-workers` turns this off (for working on the service worker's update flow itself). Other storage
+  (cookies, `localStorage`, IndexedDB) is never touched, and nothing is sent as `Clear-Site-Data`.
+- Every `text/html` file response to a **page navigation** gets one script tag, inserted before the last `</body>`
+  (ASCII case-insensitive), or appended when there is none: `<script src="/__sitefile/reload.js"></script>`.
+  A navigation is a request with `Sec-Fetch-Mode: navigate`; without that header, one with `Sec-Fetch-Dest`
+  `document`, `iframe` or `frame`; without either, one whose `Accept` names `text/html`. HTML fetched by a page
+  script (`fetch('/partial.html')`: `Sec-Fetch-Mode: cors`, `Accept: */*`) and requests from tools like curl are
+  served unchanged. `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached
+  un-injected copy is not reused. Other files are served unchanged.
+- The script is external and same-origin, so a Content-Security-Policy with `script-src 'self'` allows it. When
+  the `Content-Security-Policy` that `_headers` sets on an injected page still blocks it (its `script-src-elem`,
+  `script-src` or `default-src` has none of `'self'`, `*`, `http:`, `https:`, or has `'strict-dynamic'`), or blocks
+  the event stream (`connect-src`, else `default-src`, likewise), `serve --watch` prints one warning per policy:
+  `warning: live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts
+  from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'`. Host sources are not
+  matched (a policy naming only `http://127.0.0.1:8080` is warned about), and a CSP in a `<meta http-equiv>` tag
+  is not checked.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
@@ -743,6 +763,53 @@ OCI registry, like buildx's registry cache. Keys are the local cache's keys (con
   timestamps or credentials. Results of plugins exporting `cache = false` are never cached, so never pushed.
 - **Trust**: a result from `--cache-from` is used as if the plugin or tool had produced it. Pull only from a repository
   whose writers you trust (CI pushes, pull requests read).
+
+## File manifests and `sitefile verify`
+
+An image ID covers the whole tree. To check single files of a deployed or extracted copy, write a
+manifest with the export and verify the copy against it later:
+
+```sh
+sitefile build . -o site.zip --manifest site.manifest.json
+unzip site.zip -d /srv/www
+sitefile verify /srv/www --manifest site.manifest.json
+sitefile verify site.zip --manifest site.manifest.json --json
+sitefile save mysite:1 -o out --manifest out.manifest.json
+```
+
+`--manifest <file>` (build and save) writes, next to any export format, every exported file with its
+size and SHA-256, and a Merkle root over them. It is written with the export's destination rules (an
+existing file outside the context needs `--force`), and it may not be inside an exported directory. It
+does not depend on the format: a directory, zip or OCI export of the same build gives the same bytes.
+
+```json
+{
+  "mediaType": "application/vnd.sitefile.manifest.v1+json",
+  "root": "sha256:…",
+  "files": [
+    { "path": "/index.html", "size": 207, "digest": "sha256:…" }
+  ]
+}
+```
+
+`files` is in path order (UTF-16 code units, as JavaScript sorts strings). `root` is the
+[RFC 6962](https://www.rfc-editor.org/rfc/rfc6962#section-2.1) Merkle Tree Hash of the leaves
+`<path> 0x00 <digest>` (UTF-8, the digest written `sha256:<hex>`): a leaf hashes as
+SHA-256(0x00 ‖ leaf), an inner node as SHA-256(0x01 ‖ left ‖ right), split at the largest power of two
+below the count; no files hash as SHA-256 of nothing. One file can be proven against the root with the
+log2(n) sibling hashes on its path, as in a Certificate Transparency inclusion proof.
+
+`sitefile verify <dir|archive|ref|id> [--manifest <file>] [--json]` loads the target and compares it with
+the manifest: a listed file that is absent is `missing`, one with another size or digest is `changed`, a
+file the manifest does not list is `extra`. It prints one line per difference (`OK: N files match <root>`
+when there is none) and fails with `E_INTEGRITY`, exit 1, when there is any. A directory is read like a
+build context: hidden files count, `.git` is skipped, symlinks must stay inside it, and a manifest file
+inside the directory is not counted as extra. An archive (zip, tar, tar.gz, wbn, OCI archive) is read from
+its bytes with the default archive limits. An image needs no manifest: without one, verify checks every
+stored blob against its digest. The manifest itself is checked first: its root must match its files.
+
+`--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
+actual: { size, digest } }], extra: [path] }`.
 
 ## Image store
 

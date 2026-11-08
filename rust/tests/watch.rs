@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_sitefile");
-const RELOAD_SCRIPT: &str = "<script>new EventSource(\"/__sitefile/reload\").onmessage=function(){location.reload()}</script>";
+const RELOAD_SCRIPT: &str = "<script src=\"/__sitefile/reload.js\"></script>";
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -296,14 +296,29 @@ fn watch_usage_errors() {
     let (code, _, err) = run(&home, &["serve", "--build-arg", "A=1", "./x/"]);
     assert_eq!(code, 2);
     assert!(err.contains("--build-arg needs --watch"), "{err}");
+    let (code, _, err) = run(&home, &["serve", "--keep-service-workers", "./x/"]);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("--keep-service-workers needs --watch"),
+        "{err}"
+    );
 }
 
-/// GET `path`; returns (status, headers lowercased, body).
+/// GET `path` as a page navigation; returns (status, headers lowercased, body).
 fn get(port: u16, path: &str) -> (u16, String, String) {
+    get_with(
+        port,
+        path,
+        "sec-fetch-mode: navigate\r\nsec-fetch-dest: document\r\n",
+    )
+}
+
+/// GET `path` with `extra` header lines (each ending in CRLF).
+fn get_with(port: u16, path: &str, extra: &str) -> (u16, String, String) {
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(
         c,
-        "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: x\r\n{extra}connection: close\r\n\r\n"
     )
     .unwrap();
     let mut buf = String::new();
@@ -387,6 +402,18 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
     assert!(head.contains(&format!("content-length: {}", body.len())));
     assert!(head.contains("-live\""), "{head}");
     assert_eq!(get(port, "/style.css").2, "body{margin:0}");
+    assert_eq!(
+        get_with(port, "/", "sec-fetch-mode: cors\r\naccept: */*\r\n").2,
+        "<html><body><h1>v1</h1></body></html>",
+        "a fetch() of HTML is untouched"
+    );
+    let (status, head, js) = get_with(port, "/__sitefile/reload.js", "");
+    assert_eq!(status, 200);
+    assert!(
+        head.contains("content-type: text/javascript; charset=utf-8"),
+        "{head}"
+    );
+    assert!(js.contains("new EventSource("), "{js}");
 
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
@@ -406,8 +433,8 @@ fn serve_watch_live_reloads_and_keeps_serving_on_failure() {
         "serve --watch writes no export"
     );
     assert!(
-        !w.stdout().contains("/__sitefile/reload"),
-        "the event stream is not access-logged"
+        !w.stdout().contains("/__sitefile/"),
+        "the event stream and the script are not access-logged"
     );
     drop(ev);
     assert_eq!(w.stop(), 0);

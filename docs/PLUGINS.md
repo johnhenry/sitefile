@@ -94,18 +94,27 @@ fails unless the TRANSFORM has `--overwrite`.
 Each plugin runs in its own Node process started with Node's permission model:
 
 ```
-node --permission --allow-fs-read=<the plugin's folder> …
+node --permission --allow-fs-read=<the plugin's folder> --max-old-space-size=<MiB> …
 ```
 
 | A plugin can | A plugin cannot |
 | --- | --- |
 | read files in its own folder (helpers, fonts, data) | read other files, including your project |
 | import `node:` built-ins and files in its folder | write files, spawn processes, use workers or native addons |
-| use CPU and memory | open network connections |
+| use CPU, and memory up to `--plugin-memory` (default 1 GiB) | open network connections |
 | | see environment variables (it gets an empty environment) |
 
 Each call has a time limit (`--plugin-timeout`, default 60 s) and results are
 capped at 64 MiB. Processes are stopped when the build ends.
+
+Memory is capped by `--plugin-memory <MiB>` (default 1024, the same limit as a
+wasm plugin's linear memory), passed to Node as `--max-old-space-size`. A
+plugin whose heap passes it is stopped by V8 and the build fails with
+`E_PLUGIN: PLUGIN name: ran out of memory (more than the 1024 MiB limit)`
+(V8's report and native stack trace are not shown). The limit is on the
+JavaScript heap: the contents of `Buffer`s, typed arrays and `ArrayBuffer`s
+live outside it and are only bounded indirectly, so a plugin that allocates
+large buffers can use more memory than the limit before it is stopped.
 
 ## Trust model: `--allow-plugin`
 
@@ -192,8 +201,8 @@ The **request** is UTF-8 JSON: the same object JS plugins receive, with
 
 Each call gets a **fresh instance**, so nothing carries over between calls
 and the module may simply leak its allocations. Calls run in a worker thread
-that is terminated after `--plugin-timeout`; linear memory is capped at 1 GiB
-and results at 64 MiB. Traps, out-of-range results, invalid JSON and
+that is terminated after `--plugin-timeout`; linear memory is capped by
+`--plugin-memory` (default 1 GiB) and results at 64 MiB. Traps, out-of-range results, invalid JSON and
 `{"error"}` all fail the build with `E_PLUGIN`.
 
 ## The image plugin

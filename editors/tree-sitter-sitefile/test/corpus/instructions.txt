@@ -435,6 +435,24 @@ fingerprint --overwrite /${D}/*.js "/x y/" manifest /asset-manifest.json
     (path)))
 
 ================================================================================
+FINGERPRINT with INTEGRITY and --no-cache-headers
+================================================================================
+
+FINGERPRINT --no-cache-headers /assets/ MANIFEST /m.json INTEGRITY
+FINGERPRINT /app.js INTEGRITY
+
+---
+
+(source_file
+  (fingerprint_instruction
+    (flag
+      (flag_name))
+    (path)
+    (path))
+  (fingerprint_instruction
+    (path)))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

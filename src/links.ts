@@ -388,6 +388,101 @@ export function scanHtml(text: string): Reference[] {
   return out;
 }
 
+/** A tag that loads a subresource Subresource Integrity can check: where to add the attribute, and the URL. */
+export interface IntegrityTag {
+  /** The offset just after the tag name (`<script|`), where ` integrity="…"` goes. */
+  readonly at: number;
+  /** The URL (`src` of a script, `href` of a link), decoded and trimmed as {@link scanHtml} does. */
+  readonly url: string;
+}
+
+/**
+ * The start tags of an HTML text that load a script or stylesheet SRI applies to: `<script src>` and
+ * `<link href>` whose `rel` has the token `stylesheet` or `modulepreload` (ASCII case-insensitive).
+ * Tags that already have an `integrity` attribute are left out. Comments, declarations and raw text are
+ * skipped as in {@link scanHtml}; when an attribute is given twice, the first one counts.
+ */
+export function integrityTags(text: string): IntegrityTag[] {
+  const out: IntegrityTag[] = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const lt = text.indexOf('<', i);
+    if (lt === -1) break;
+    i = lt;
+    const next = text[i + 1];
+    if (text.startsWith('<!--', i)) {
+      const j = text.indexOf('-->', i + 4);
+      i = j === -1 ? n : j + 3;
+      continue;
+    }
+    if (next === '!' || next === '?' || next === '/') {
+      const j = text.indexOf('>', i + 2);
+      i = j === -1 ? n : j + 1;
+      continue;
+    }
+    if (!isAlpha(next)) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && !isWs(text[j]) && text[j] !== '/' && text[j] !== '>') j++;
+    const tag = lowerAscii(text.slice(i + 1, j));
+    const at = j;
+    i = j;
+    const attrs = new Map<string, string>();
+    for (;;) {
+      while (i < n && (isWs(text[i]) || text[i] === '/')) i++;
+      if (i >= n) break;
+      if (text[i] === '>') {
+        i++;
+        break;
+      }
+      const nameStart = i;
+      i++;
+      while (i < n && !isWs(text[i]) && text[i] !== '/' && text[i] !== '>' && text[i] !== '=') i++;
+      const name = lowerAscii(text.slice(nameStart, i));
+      let k = i;
+      while (k < n && isWs(text[k])) k++;
+      if (text[k] !== '=') {
+        if (!attrs.has(name)) attrs.set(name, '');
+        continue;
+      }
+      i = k + 1;
+      while (i < n && isWs(text[i])) i++;
+      const q = text[i];
+      let start: number;
+      let end: number;
+      if (q === '"' || q === "'") {
+        start = i + 1;
+        const close = text.indexOf(q, start);
+        end = close === -1 ? n : close;
+        i = close === -1 ? n : close + 1;
+      } else {
+        start = i;
+        while (i < n && !isWs(text[i]) && text[i] !== '>') i++;
+        end = i;
+      }
+      if (!attrs.has(name)) attrs.set(name, text.slice(start, end));
+    }
+    if (!attrs.has('integrity')) {
+      let raw: string | undefined;
+      if (tag === 'script') raw = attrs.get('src');
+      else if (tag === 'link') {
+        const rel = lowerAscii(decodeHtmlText(attrs.get('rel') ?? '')).split(/[ \t\n\r\f]+/);
+        if (rel.includes('stylesheet') || rel.includes('modulepreload')) raw = attrs.get('href');
+      }
+      if (raw !== undefined) {
+        const [a, b] = trimWs(raw);
+        const url = trimmed(decodeHtmlText(raw.slice(a, b)));
+        if (url !== '') out.push({ at, url });
+      }
+    }
+    if (RAW_TEXT.has(tag)) i = indexOfCloseTag(text, tag, i);
+  }
+  return out;
+}
+
 /** Where `</tag` (ASCII case-insensitive, followed by whitespace, `/` or `>`) starts at or after `from`; the end of the text if nowhere. */
 function indexOfCloseTag(text: string, tag: string, from: number): number {
   let i = from;

@@ -186,8 +186,13 @@ export async function loadDirectoryTree(dir: string): Promise<Tree> {
  * write it). A zip, tar or Web Bundle is extracted with `limits` (unsafe entries are refused) and served
  * like a directory, without hidden files except `.well-known`; an OCI archive serves its first image's
  * files, like that image from the store, after checking every blob's digest and its site layer against `limits`.
+ * `hidden` keeps hidden files (verify and diff compare every file).
  */
-export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS): Promise<Tree> {
+export async function loadArchiveTree(
+  file: string,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+  options: { readonly hidden?: boolean } = {},
+): Promise<Tree> {
   const origin = file;
   const unreadable = (): SitefileError => new SitefileError('E_ARCHIVE', `cannot read '${origin}'`);
   const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
@@ -200,7 +205,8 @@ export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFA
   }
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
   const tree = await extractArchive(bytes, origin, limits);
-  return tree.get('/oci-layout') ? ociArchiveTree(tree, origin, limits) : visible(tree);
+  if (tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
+  return options.hidden ? tree : visible(tree);
 }
 
 /** The files of the first image in an extracted OCI layout. */

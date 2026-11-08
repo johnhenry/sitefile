@@ -580,6 +580,137 @@ pub fn scan_html(text: &str) -> Vec<Reference> {
     col.out
 }
 
+/// A tag that loads a subresource Subresource Integrity can check (`integrityTags` in src/links.ts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrityTag {
+    /// The byte offset just after the tag name (`<script|`), where ` integrity="…"` goes.
+    pub at: usize,
+    /// The URL (`src` of a script, `href` of a link), decoded and trimmed as [`scan_html`] does.
+    pub url: String,
+}
+
+/// The start tags of an HTML text that load a script or stylesheet SRI applies to: `<script src>` and
+/// `<link href>` whose `rel` has the token `stylesheet` or `modulepreload` (ASCII case-insensitive).
+/// Tags that already have an `integrity` attribute are left out; the first of a repeated attribute counts.
+pub fn integrity_tags(text: &str) -> Vec<IntegrityTag> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        let Some(lt) = find_byte(b, b'<', i) else {
+            break;
+        };
+        i = lt;
+        let next = b.get(i + 1).copied();
+        if b[i..].starts_with(b"<!--") {
+            i = find_from(b, b"-->", i + 4).map_or(n, |j| j + 3);
+            continue;
+        }
+        if matches!(next, Some(b'!' | b'?' | b'/')) {
+            i = find_byte(b, b'>', i + 2).map_or(n, |j| j + 1);
+            continue;
+        }
+        if !next.is_some_and(|c| c.is_ascii_alphabetic()) {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < n && !is_ws(b[j]) && b[j] != b'/' && b[j] != b'>' {
+            j += 1;
+        }
+        let tag = lower_ascii(&b[i + 1..j]);
+        let at = j;
+        i = j;
+        let mut attrs: Vec<(String, (usize, usize))> = Vec::new();
+        loop {
+            while i < n && (is_ws(b[i]) || b[i] == b'/') {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            if b[i] == b'>' {
+                i += 1;
+                break;
+            }
+            let name_start = i;
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            while i < n && !is_ws(b[i]) && b[i] != b'/' && b[i] != b'>' && b[i] != b'=' {
+                i += 1;
+            }
+            let name = lower_ascii(&b[name_start..i]);
+            let mut k = i;
+            while k < n && is_ws(b[k]) {
+                k += 1;
+            }
+            let value;
+            if k >= n || b[k] != b'=' {
+                value = (i, i);
+            } else {
+                i = k + 1;
+                while i < n && is_ws(b[i]) {
+                    i += 1;
+                }
+                if i < n && (b[i] == b'"' || b[i] == b'\'') {
+                    let start = i + 1;
+                    match find_byte(b, b[i], start) {
+                        Some(close) => {
+                            value = (start, close);
+                            i = close + 1;
+                        }
+                        None => {
+                            value = (start, n);
+                            i = n;
+                        }
+                    }
+                } else {
+                    let start = i;
+                    while i < n && !is_ws(b[i]) && b[i] != b'>' {
+                        i += 1;
+                    }
+                    value = (start, i);
+                }
+            }
+            if !attrs.iter().any(|(a, _)| *a == name) {
+                attrs.push((name, value));
+            }
+        }
+        let get = |name: &str| {
+            attrs
+                .iter()
+                .find(|(a, _)| a == name)
+                .map(|(_, (s, e))| &text[*s..*e])
+        };
+        if get("integrity").is_none() {
+            let raw = match tag.as_str() {
+                "script" => get("src"),
+                "link" => {
+                    let rel = decode_html_text(get("rel").unwrap_or("")).to_ascii_lowercase();
+                    let mut tokens = rel.split([' ', '\t', '\n', '\r', '\x0c']);
+                    if tokens.any(|t| t == "stylesheet" || t == "modulepreload") {
+                        get("href")
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(raw) = raw {
+                let (a, z) = trim_ws(raw.as_bytes());
+                let url = trimmed(&decode_html_text(&raw[a..z]));
+                if !url.is_empty() {
+                    out.push(IntegrityTag { at, url });
+                }
+            }
+        }
+        if RAW_TEXT.contains(&tag.as_str()) {
+            i = index_of_close_tag(b, &tag, i);
+        }
+    }
+    out
+}
+
 /// Where `</tag` (ASCII case-insensitive, followed by whitespace, `/` or `>`) starts at or after `from`.
 fn index_of_close_tag(b: &[u8], tag: &str, from: usize) -> usize {
     let mut i = from;

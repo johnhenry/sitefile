@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <link rel="stylesheet" href="css/site.css?v=1#x">
+  <link rel=preload as=font href=/fonts/inter.woff2 crossorigin>
+  <script src="./app.js" defer></script>
+  <style>
+    .hero { background: url( "img/hero bg.jpg" ) }
+  </style>
+</head>
+<body style="background-image: url('img/dot.svg')">
+  <!-- <img src="img/logo.png"> is not a reference -->
+  <img src="/img/logo.png" srcset="img/logo.png 1x, img/logo%402x.png 2x, IMG/LOGO.PNG 3x" alt="">
+  <picture><source srcset="img/caf%C3%A9.png" type="image/png"></picture>
+  <video poster="img/poster.jpg" src="media/clip.mp4"></video>
+  <a href="docs/">Docs</a> <a href="docs/guide.html#install">Guide</a> <a href="LICENSE">License</a>
+  <a href="https://example.com/style.css">external</a> <a href="mailto:me@example.com">mail</a> <a href="#top">top</a>
+  <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="">
+  <script>document.write('<img src="img/logo.png">')</script>
+  <a href="x?a=1&amp;b=2">query</a> <img src="img/caf&#xe9;.png" alt="">
+</body>
+</html>

@@ -560,15 +560,24 @@ function parseHeader(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'HEADER', span, pattern, name: { parts, span: raw.span }, value, overwrite: flags.has('overwrite') };
 }
 
-/** `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` */
+/** `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` */
 function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
-  const flags = parseFlags(c, { overwrite: 'bare' });
+  const flags = parseFlags(c, { overwrite: 'bare', 'no-cache-headers': 'bare' });
   const patterns: Operand[] = [];
-  while (!c.atEnd() && !c.peekKeyword('MANIFEST')) patterns.push(c.operand('path pattern'));
+  while (!c.atEnd() && !c.peekKeyword('MANIFEST') && !c.peekKeyword('INTEGRITY')) patterns.push(c.operand('path pattern'));
   if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (FINGERPRINT /assets/ or FINGERPRINT /**/*.css)');
   const manifest = c.keyword('MANIFEST') ? c.operand('manifest destination') : undefined;
+  const integrity = c.keyword('INTEGRITY');
   c.expectEnd();
-  return { kind: 'FINGERPRINT', span, patterns, ...(manifest ? { manifest } : {}), overwrite: flags.has('overwrite') };
+  return {
+    kind: 'FINGERPRINT',
+    span,
+    patterns,
+    ...(manifest ? { manifest } : {}),
+    ...(integrity && { integrity: true as const }),
+    ...(flags.has('no-cache-headers') && { noCacheHeaders: true as const }),
+    overwrite: flags.has('overwrite'),
+  };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */
