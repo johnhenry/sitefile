@@ -458,7 +458,10 @@ fn build_watch_poll_interval_sees_changes_and_poll_needs_watch() {
     let t = Tmp::new();
     let home = t.0.join("home");
     let site = make_site(&t, &[], DEFAULT_SITEFILE);
-    let w = Proc::start(&home, &["build", "--watch", "--poll-interval", "50", s(&site)]);
+    let w = Proc::start(
+        &home,
+        &["build", "--watch", "--poll-interval", "50", s(&site)],
+    );
     w.wait_lines("Watching ", 1);
     write(site.join("public/style.css"), "body{margin:2px}");
     w.wait_lines("Exported ", 2);

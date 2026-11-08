@@ -33,12 +33,19 @@ pub fn poll_option(poll: bool, interval: Option<&str>) -> Result<Option<Duration
         return Ok(poll.then_some(DEFAULT_POLL));
     };
     match i.parse::<u64>() {
-        Ok(n) if n >= 10 && !i.is_empty() && i.len() <= 9 && i.bytes().all(|b| b.is_ascii_digit()) => {
+        Ok(n)
+            if n >= 10
+                && !i.is_empty()
+                && i.len() <= 9
+                && i.bytes().all(|b| b.is_ascii_digit()) =>
+        {
             Ok(Some(Duration::from_millis(n)))
         }
         _ => Err(SitefileError::plain(
             E_USAGE,
-            format!("--poll-interval expects a whole number of milliseconds (10 or more), got '{i}'"),
+            format!(
+                "--poll-interval expects a whole number of milliseconds (10 or more), got '{i}'"
+            ),
         )),
     }
 }
