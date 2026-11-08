@@ -24,10 +24,16 @@
 //! grace period and fail. When the starting process exits first (the CLI),
 //! the worker is re-parented and keeps running.
 
+use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
+use crate::export::oci::{
+    blob_path_of, decode_index, extract_image_files, media, parse_config, parse_manifest,
+    site_layer_index,
+};
+use crate::resources::archive::extract_archive;
 use crate::resources::local::{LocalContext, LocalContextOptions};
-use crate::resources::types::Resource;
+use crate::resources::types::{ArchiveLimits, Resource, DEFAULT_ARCHIVE_LIMITS};
 use crate::store::Store;
 use crate::tree::Tree;
 use serde::{Deserialize, Serialize};
@@ -46,6 +52,11 @@ pub enum ServerSource {
         image_id: String,
     },
     Dir {
+        path: String,
+    },
+    /// An archive file: zip, tar, tar.gz/tgz, a Web Bundle (`.wbn`), or an OCI
+    /// image archive (`.oci.tar`). Read again on every start, as a directory is.
+    Archive {
         path: String,
     },
 }
@@ -367,6 +378,11 @@ pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
     let Resource::Tree { tree, .. } = ctx.read_tree("", "serve", None)? else {
         unreachable!("read_tree returns a tree")
     };
+    visible(&tree)
+}
+
+/// Paths of `tree` a directory or archive serves: no hidden files except `.well-known`.
+fn visible(tree: &Tree) -> Result<Tree> {
     let visible = tree
         .entries()
         .filter(|(p, _)| {
@@ -378,11 +394,101 @@ pub fn load_directory_tree(dir: &Path) -> Result<Tree> {
     Tree::from_files(visible)
 }
 
+/// [`load_archive_tree_with`] with [`DEFAULT_ARCHIVE_LIMITS`].
+pub fn load_archive_tree(file: &Path) -> Result<Tree> {
+    load_archive_tree_with(file, &DEFAULT_ARCHIVE_LIMITS)
+}
+
+/// Load an archive file into a Tree. The format comes from the bytes, never
+/// the name: zip, tar, tar.gz, a Web Bundle, or an OCI image archive (a tar
+/// holding an OCI layout, as `build -o x.oci.tar` and `save` write it). A zip,
+/// tar or Web Bundle is extracted with `limits` (unsafe entries are refused)
+/// and served like a directory, without hidden files except `.well-known`; an
+/// OCI archive serves its first image's files, like that image from the store,
+/// after checking every blob's digest and its site layer against `limits`.
+pub fn load_archive_tree_with(file: &Path, limits: &ArchiveLimits) -> Result<Tree> {
+    let origin = file.display().to_string();
+    let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
+    let meta = fs::metadata(file).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            SitefileError::plain(E_NOT_FOUND, format!("'{origin}' does not exist"))
+        } else {
+            unreadable()
+        }
+    })?;
+    if !meta.is_file() {
+        return Err(SitefileError::plain(
+            E_TYPE,
+            format!("'{origin}' is not a file"),
+        ));
+    }
+    // The archive is at most its expanded size plus tar framing for every entry.
+    let cap = limits
+        .max_total_bytes
+        .saturating_add(limits.max_entries.saturating_add(2).saturating_mul(4 * 512));
+    if meta.len() > cap {
+        return Err(SitefileError::plain(
+            E_ARCHIVE_LIMIT,
+            format!(
+                "{origin}: archive expands beyond {} bytes",
+                limits.max_total_bytes
+            ),
+        ));
+    }
+    let bytes = fs::read(file).map_err(|_| unreadable())?;
+    let tree = extract_archive(&bytes, &origin, limits, None)?;
+    if tree.is_file("/oci-layout") {
+        return oci_archive_tree(&tree, &origin, limits);
+    }
+    visible(&tree)
+}
+
+/// The files of the first image in an extracted OCI layout.
+fn oci_archive_tree(layout: &Tree, origin: &str, limits: &ArchiveLimits) -> Result<Tree> {
+    let bad = |why: String| SitefileError::plain(E_ARCHIVE, format!("{origin}: {why}"));
+    let blob = |digest: &str, size: u64| -> Result<Vec<u8>> {
+        let path = blob_path_of(digest)?;
+        let node = layout
+            .get(&path)
+            .ok_or_else(|| bad(format!("OCI archive has no blob {digest}")))?;
+        if sha256(&node.bytes) != digest || node.bytes.len() as u64 != size {
+            return Err(bad(format!("blob {digest} does not match its digest")));
+        }
+        Ok(node.bytes.to_vec())
+    };
+    let index = layout
+        .get("/index.json")
+        .ok_or_else(|| bad("OCI archive has no index.json".into()))?;
+    let entries =
+        decode_index(&index.bytes).map_err(|_| bad("OCI archive index.json is corrupt".into()))?;
+    let Some(first) = entries.first() else {
+        return Err(bad("OCI archive holds no image".into()));
+    };
+    let m = parse_manifest(&blob(&first.digest, first.size)?)
+        .map_err(|_| bad("OCI archive's first manifest is not an image manifest".into()))?;
+    let cfg = parse_config(&blob(&m.config.digest, m.config.size)?)
+        .map_err(|_| bad("OCI archive's image config is corrupt".into()))?;
+    let layer = site_layer_index(&m, &cfg)
+        .and_then(|i| m.layers.get(i))
+        .filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR);
+    let layer_bytes = match layer {
+        Some(l) => {
+            let b = blob(&l.digest, l.size)?;
+            // Hold the site layer to the archive limits before it is fully decoded.
+            extract_archive(&b, origin, limits, None)?;
+            b
+        }
+        None => Vec::new(), // extract_image_files reports "not a Sitefile image"
+    };
+    extract_image_files(&m, &cfg, &layer_bytes, origin)
+}
+
 /// The tree a server state serves.
 pub fn load_served_tree(store: &Store, source: &ServerSource) -> Result<Tree> {
     match source {
         ServerSource::Image { image_id } => store.load_tree(image_id),
         ServerSource::Dir { path } => load_directory_tree(Path::new(path)),
+        ServerSource::Archive { path } => load_archive_tree(Path::new(path)),
     }
 }
 
@@ -447,18 +553,40 @@ pub fn looks_like_dir(arg: &str) -> bool {
         || arg.ends_with('/')
 }
 
-/// What `sitefile serve <arg>` serves: a directory when `arg` looks like one
-/// (`./site`, `../x`, `/abs`, `~/x`, `dir/`), else an image reference or ID in
-/// `store`. Returns the label (what the user asked for, shown and stored as
-/// `ServerState::image`) and the source. A bare name that is not an image but
-/// is a directory gets a hint to write `./name`.
+/// An archive file source: labelled by its absolute path, stored by its real path.
+fn archive_source(arg: &str) -> (String, ServerSource) {
+    let file = crate::export::exporter::resolve_path(Path::new(arg));
+    let real = fs::canonicalize(&file).unwrap_or(file.clone());
+    (
+        file.display().to_string(),
+        ServerSource::Archive {
+            path: real.display().to_string(),
+        },
+    )
+}
+
+fn is_regular_file(p: &str) -> bool {
+    fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// What `sitefile serve <arg>` serves: a directory or archive file when `arg`
+/// looks like a path (`./site`, `../x.zip`, `/abs`, `~/x`, `dir/`), else an
+/// image reference or ID in `store`, else an archive file by that name
+/// (`site.zip`). Returns the label (what the user asked for, shown and stored
+/// as `ServerState::image`; the absolute path for a directory or file) and the
+/// source. A bare name that is not an image but is a directory gets a hint to
+/// write `./name`. Whether a file is an archive is checked when it is loaded
+/// ([`load_served_tree`]).
 pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)> {
     if looks_like_dir(arg) {
         let dir = crate::export::exporter::resolve_path(Path::new(arg));
+        if is_regular_file(&dir.display().to_string()) {
+            return Ok(archive_source(arg));
+        }
         if !fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false) {
             return Err(SitefileError::plain(
                 E_NOT_FOUND,
-                format!("'{arg}' is not a directory"),
+                format!("'{arg}' is not a directory or a file"),
             ));
         }
         let real = fs::canonicalize(&dir).unwrap_or(dir.clone());
@@ -477,6 +605,9 @@ pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)
                     E_NOT_FOUND,
                     format!("{} (to serve the directory, write ./{arg})", e.message()),
                 ));
+            }
+            if is_regular_file(arg) {
+                return Ok(archive_source(arg));
             }
             Err(e)
         }
@@ -498,7 +629,7 @@ pub struct DetachedServe {
 }
 
 impl DetachedServe {
-    /// Serve `arg` (an image reference or ID, or a directory, as `serve` takes it)
+    /// Serve `arg` (an image reference or ID, a directory or an archive file, as `serve` takes it)
     /// on 127.0.0.1 with a free port, unnamed, not as an SPA.
     pub fn resolve(store: &Store, arg: &str) -> Result<DetachedServe> {
         let (label, source) = resolve_source(store, arg)?;
@@ -515,7 +646,7 @@ impl DetachedServe {
 /// How long [`start_detached`] waits for the worker to listen.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// `serve -d`: check that the image or directory loads, allocate an ID and
+/// `serve -d`: check that the image, directory or archive loads, allocate an ID and
 /// name, record the server, start its worker and wait until it listens.
 /// Returns the running server's state (its real host and port). On failure
 /// the record is removed. `worker_exe` runs as `<exe> __serve-worker <id>`
@@ -525,7 +656,7 @@ pub fn serve_detached(
     serve: &DetachedServe,
     worker_exe: Option<&Path>,
 ) -> Result<ServerState> {
-    load_served_tree(&reg.store, &serve.source)?; // fail fast on a bad image or directory
+    load_served_tree(&reg.store, &serve.source)?; // fail fast on a bad image, directory or archive
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -554,7 +685,7 @@ pub fn serve_detached(
 
 /// `server restart`: stop `s` if it is running (SIGTERM, `grace`, SIGKILL),
 /// then start it again with the same ID, name, source and requested bind
-/// address (an image by the same ID; a directory is re-read). On failure the
+/// address (an image by the same ID; a directory or archive file is re-read). On failure the
 /// record stays, marked not ready.
 pub fn restart_detached(
     reg: &ServerRegistry,
@@ -904,5 +1035,291 @@ mod tests {
             .code,
             E_NOT_FOUND
         );
+    }
+
+    fn site_tree() -> Tree {
+        Tree::from_files(
+            [
+                ("/index.html", "hi"),
+                ("/.env", "secret"),
+                ("/.well-known/security.txt", "x"),
+                ("/sub/a.txt", "a"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap()
+    }
+
+    fn paths(t: &Tree) -> Vec<&str> {
+        t.entries().map(|(p, _)| p.as_str()).collect()
+    }
+
+    /// Paths and contents.
+    fn files(t: &Tree) -> Vec<(String, Vec<u8>)> {
+        t.entries()
+            .map(|(p, n)| (p.clone(), n.bytes.to_vec()))
+            .collect()
+    }
+
+    /// `site_tree()` as zip, tar, tgz, wbn and an OCI archive, written into `dir`.
+    fn write_archives(dir: &Path) -> Vec<(&'static str, PathBuf)> {
+        use crate::export::archive_writers::{write_tar, write_tgz, write_zip, WriterOptions};
+        use crate::export::oci::{build_oci_image, oci_archive, OciOptions};
+        let site = site_tree();
+        let w = WriterOptions::default();
+        let img = build_oci_image(&site, &OciOptions::default()).unwrap();
+        let all: [(&str, Vec<u8>); 5] = [
+            ("site.zip", write_zip(&site, &w).unwrap()),
+            ("site.tar", write_tar(&site, &w).unwrap()),
+            ("site.tgz", write_tgz(&site, &w).unwrap()),
+            (
+                "site.wbn",
+                crate::export::wbn::write_web_bundle(&site, Some("https://example.com/")).unwrap(),
+            ),
+            (
+                "site.oci.tar",
+                oci_archive(img.parts(), Some("site:1"), None, &[], &[]).unwrap(),
+            ),
+        ];
+        all.into_iter()
+            .map(|(n, b)| {
+                fs::write(dir.join(n), b).unwrap();
+                (n, dir.join(n))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn archive_files_are_served_in_every_format() {
+        let d = TmpDir::new("servers");
+        let store = Store::open(d.path().join("home")).unwrap();
+        for (name, file) in write_archives(d.path()) {
+            let arg = file.display().to_string();
+            let (label, source) = resolve_source(&store, &arg).unwrap();
+            let real = fs::canonicalize(&file).unwrap().display().to_string();
+            assert_eq!(label, arg, "{name}");
+            assert_eq!(source, ServerSource::Archive { path: real }, "{name}");
+            let t = load_served_tree(&store, &source).unwrap();
+            if name == "site.oci.tar" {
+                // An OCI archive is an image: served exactly as the store would serve it.
+                assert_eq!(files(&t), files(&site_tree()), "{name}");
+            } else {
+                assert_eq!(
+                    paths(&t),
+                    ["/.well-known/security.txt", "/index.html", "/sub/a.txt"],
+                    "{name}: hidden files are not served, as for a directory"
+                );
+                assert_eq!(&*t.get("/index.html").unwrap().bytes, b"hi");
+            }
+        }
+    }
+
+    #[test]
+    fn archive_files_reread_on_every_load() {
+        let d = TmpDir::new("servers");
+        let store = Store::open(d.path().join("home")).unwrap();
+        let file = d.path().join("site.tar");
+        let v = |c: &str| {
+            Tree::from_files([(
+                "/index.html".to_string(),
+                make_file(c.as_bytes().to_vec(), "t", 0o644),
+            )])
+            .unwrap()
+        };
+        let tar = |t: &Tree| crate::export::archive_writers::write_tar(t, &Default::default());
+        fs::write(&file, tar(&v("one")).unwrap()).unwrap();
+        let (_, source) = resolve_source(&store, &file.display().to_string()).unwrap();
+        let get = || {
+            load_served_tree(&store, &source)
+                .unwrap()
+                .get("/index.html")
+                .unwrap()
+                .bytes
+                .to_vec()
+        };
+        assert_eq!(get(), b"one");
+        fs::write(&file, tar(&v("two")).unwrap()).unwrap();
+        assert_eq!(get(), b"two");
+    }
+
+    #[test]
+    fn archive_errors_name_the_file() {
+        let d = TmpDir::new("servers");
+        let store = Store::open(d.path().join("home")).unwrap();
+        let notes = d.path().join("notes.txt");
+        fs::write(&notes, "just text").unwrap();
+        // A regular file resolves as an archive; loading it says what it is not.
+        let (_, source) = resolve_source(&store, &notes.display().to_string()).unwrap();
+        let e = load_served_tree(&store, &source).unwrap_err();
+        assert_eq!(e.code, E_TYPE);
+        assert_eq!(
+            e.message(),
+            format!(
+                "{}: not a recognized archive (expected tar, tar.gz, zip or web bundle)",
+                fs::canonicalize(&notes).unwrap().display()
+            )
+        );
+        let gone = d.path().join("gone.zip");
+        let e = load_archive_tree(&gone).unwrap_err();
+        assert_eq!(
+            (e.code, e.message()),
+            (E_NOT_FOUND, format!("'{}' does not exist", gone.display()))
+        );
+        let e = load_archive_tree(d.path()).unwrap_err();
+        assert_eq!(
+            (e.code, e.message()),
+            (E_TYPE, format!("'{}' is not a file", d.path().display()))
+        );
+        let e = resolve_source(&store, &gone.display().to_string()).unwrap_err();
+        assert_eq!(
+            (e.code, e.message()),
+            (
+                E_NOT_FOUND,
+                format!("'{}' is not a directory or a file", gone.display())
+            )
+        );
+    }
+
+    #[test]
+    fn archive_limits_are_enforced() {
+        let d = TmpDir::new("servers");
+        let files = write_archives(d.path());
+        let few = ArchiveLimits {
+            max_entries: 2,
+            ..DEFAULT_ARCHIVE_LIMITS
+        };
+        let small = ArchiveLimits {
+            max_total_bytes: 3,
+            ..DEFAULT_ARCHIVE_LIMITS
+        };
+        for (name, file) in &files {
+            for limits in [&few, &small] {
+                let e = load_archive_tree_with(file, limits).unwrap_err();
+                assert_eq!(e.code, E_ARCHIVE_LIMIT, "{name}: {}", e.message());
+            }
+            assert!(load_archive_tree_with(file, &DEFAULT_ARCHIVE_LIMITS).is_ok());
+        }
+        // A file larger than any archive within the limits is refused before it is read.
+        let tiny = ArchiveLimits {
+            max_total_bytes: 0,
+            max_entries: 0,
+            max_ratio: 100,
+        };
+        let big = d.path().join("big.bin");
+        fs::write(&big, vec![b'x'; 5000]).unwrap();
+        let e = load_archive_tree_with(&big, &tiny).unwrap_err();
+        assert_eq!(
+            (e.code, e.message()),
+            (
+                E_ARCHIVE_LIMIT,
+                format!("{}: archive expands beyond 0 bytes", big.display())
+            )
+        );
+        // The compression ratio holds for a gzip bomb.
+        let bomb = Tree::from_files([(
+            "/zeros".to_string(),
+            make_file(vec![0u8; 8 << 20], "t", 0o644),
+        )])
+        .unwrap();
+        let tgz = d.path().join("bomb.tgz");
+        fs::write(
+            &tgz,
+            crate::export::archive_writers::write_tgz(&bomb, &Default::default()).unwrap(),
+        )
+        .unwrap();
+        let e = load_archive_tree(&tgz).unwrap_err();
+        assert_eq!(e.code, E_ARCHIVE_LIMIT);
+        assert!(
+            e.message().contains("compression ratio exceeds 100:1"),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
+    fn oci_archives_check_every_blob() {
+        use crate::export::archive_writers::write_tar;
+        use crate::export::oci::{build_oci_image, layout_tree, OciOptions};
+        let d = TmpDir::new("servers");
+        let img = build_oci_image(&site_tree(), &OciOptions::default()).unwrap();
+        let layout = layout_tree(img.parts(), None, &[], &[]).unwrap();
+        let write = |name: &str, t: &Tree| {
+            let p = d.path().join(name);
+            fs::write(&p, write_tar(t, &Default::default()).unwrap()).unwrap();
+            p
+        };
+        let with = |path: &str, bytes: &[u8]| {
+            let mut files: Vec<(String, crate::tree::Node)> = layout
+                .entries()
+                .filter(|(p, _)| p.as_str() != path)
+                .map(|(p, n)| (p.clone(), n.clone()))
+                .collect();
+            if !bytes.is_empty() {
+                files.push((path.to_string(), make_file(bytes.to_vec(), "t", 0o644)));
+            }
+            Tree::from_files(files).unwrap()
+        };
+        let config = blob_path_of(&img.config_digest).unwrap();
+        let layer = blob_path_of(&img.layer_digest).unwrap();
+        let cases = [
+            (
+                "tampered",
+                with(&config, b"{}"),
+                "does not match its digest",
+            ),
+            ("no-layer", with(&layer, b""), "OCI archive has no blob"),
+            (
+                "no-index",
+                with("/index.json", b""),
+                "OCI archive has no index.json",
+            ),
+            (
+                "bad-index",
+                with("/index.json", b"[]"),
+                "OCI archive index.json is corrupt",
+            ),
+        ];
+        for (name, t, why) in cases {
+            let p = write(&format!("{name}.oci.tar"), &t);
+            let e = load_archive_tree(&p).unwrap_err();
+            assert_eq!(e.code, E_ARCHIVE, "{name}");
+            assert!(
+                e.message().starts_with(&format!("{}: ", p.display())) && e.message().contains(why),
+                "{name}: {}",
+                e.message()
+            );
+        }
+        let ok = write("ok.oci.tar", &layout);
+        assert_eq!(files(&load_archive_tree(&ok).unwrap()), files(&site_tree()));
+    }
+
+    #[test]
+    fn archive_records_round_trip_and_old_records_still_load() {
+        let d = TmpDir::new("servers");
+        let reg = ServerRegistry::open(Some(Store::open(d.path()).unwrap())).unwrap();
+        let mut s = state(&reg, "0123456789ab", "zip", "1");
+        s.source = ServerSource::Archive {
+            path: "/x/site.zip".into(),
+        };
+        reg.write(&s).unwrap();
+        let text = fs::read_to_string(reg.state_path(&s.id).unwrap()).unwrap();
+        assert!(text.contains(
+            "\"source\": {\n    \"kind\": \"archive\",\n    \"path\": \"/x/site.zip\"\n  }"
+        ));
+        assert_eq!(reg.read(&s.id).unwrap().unwrap(), s);
+        for (json, want) in [
+            (
+                r#"{"kind":"dir","path":"/d"}"#,
+                ServerSource::Dir { path: "/d".into() },
+            ),
+            (
+                r#"{"kind":"image","imageId":"sha256:0"}"#,
+                ServerSource::Image {
+                    image_id: "sha256:0".into(),
+                },
+            ),
+        ] {
+            assert_eq!(serde_json::from_str::<ServerSource>(json).unwrap(), want);
+        }
     }
 }

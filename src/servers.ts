@@ -2,8 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
+import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
+import { extractArchive } from './resources/archive.js';
 import { LocalContext } from './resources/local.js';
+import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
 import { Tree } from './tree.js';
 
@@ -23,7 +27,11 @@ export interface ServerState {
   readonly name: string;
   /** What the user asked to serve: the image reference as typed, or the directory. */
   readonly image: string;
-  readonly source: { readonly kind: 'image'; readonly imageId: string } | { readonly kind: 'dir'; readonly path: string };
+  readonly source:
+    | { readonly kind: 'image'; readonly imageId: string }
+    | { readonly kind: 'dir'; readonly path: string }
+    /** zip, tar, tar.gz/tgz, a Web Bundle or an OCI image archive; read again on every start, as a directory is. */
+    | { readonly kind: 'archive'; readonly path: string };
   readonly spa: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
@@ -160,15 +168,92 @@ export async function isRunning(s: ServerState): Promise<boolean> {
   });
 }
 
+/** Paths of `tree` a directory or archive serves: no hidden files except `.well-known`. */
+function visible(tree: Tree): Tree {
+  return Tree.fromFiles(tree.entries().filter(([p]) => p.split('/').every((seg) => !seg.startsWith('.') || seg === '' || seg === '.well-known')));
+}
+
 /** Load a directory into a Tree through the sandboxed local reader; hidden files (except .well-known) are not served. */
 export async function loadDirectoryTree(dir: string): Promise<Tree> {
   const ctx = await LocalContext.open(dir, { sitefileignore: false });
   const { tree } = await ctx.readTree('', 'serve');
-  const visible = tree.entries().filter(([p]) => p.split('/').every((seg) => !seg.startsWith('.') || seg === '' || seg === '.well-known'));
-  return Tree.fromFiles(visible);
+  return visible(tree);
+}
+
+/**
+ * Load an archive file into a Tree. The format comes from the bytes, never the name: zip, tar, tar.gz,
+ * a Web Bundle, or an OCI image archive (a tar holding an OCI layout, as `build -o x.oci.tar` and `save`
+ * write it). A zip, tar or Web Bundle is extracted with `limits` (unsafe entries are refused) and served
+ * like a directory, without hidden files except `.well-known`; an OCI archive serves its first image's
+ * files, like that image from the store, after checking every blob's digest and its site layer against `limits`.
+ */
+export async function loadArchiveTree(file: string, limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS): Promise<Tree> {
+  const origin = file;
+  const unreadable = (): SitefileError => new SitefileError('E_ARCHIVE', `cannot read '${origin}'`);
+  const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
+    throw e.code === 'ENOENT' ? new SitefileError('E_NOT_FOUND', `'${origin}' does not exist`) : unreadable();
+  });
+  if (!st.isFile()) throw new SitefileError('E_TYPE', `'${origin}' is not a file`);
+  // The archive is at most its expanded size plus tar framing for every entry.
+  if (st.size > limits.maxTotalBytes + (limits.maxEntries + 2) * 4 * 512) {
+    throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`);
+  }
+  const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
+  const tree = await extractArchive(bytes, origin, limits);
+  return tree.get('/oci-layout') ? ociArchiveTree(tree, origin, limits) : visible(tree);
+}
+
+/** The files of the first image in an extracted OCI layout. */
+async function ociArchiveTree(layout: Tree, origin: string, limits: ArchiveLimits): Promise<Tree> {
+  const bad = (why: string): SitefileError => new SitefileError('E_ARCHIVE', `${origin}: ${why}`);
+  const blob = (digest: string, size: number): Uint8Array => {
+    const node = layout.get(blobPathOf(digest));
+    if (!node) throw bad(`OCI archive has no blob ${digest}`);
+    if (sha256(node.bytes) !== digest || node.bytes.byteLength !== size) throw bad(`blob ${digest} does not match its digest`);
+    return node.bytes;
+  };
+  const index = layout.get('/index.json');
+  if (!index) throw bad('OCI archive has no index.json');
+  let entries;
+  try {
+    entries = decodeIndex(index.bytes);
+  } catch {
+    throw bad('OCI archive index.json is corrupt');
+  }
+  const first = entries[0];
+  if (!first) throw bad('OCI archive holds no image');
+  const manifestBytes = blob(first.digest, first.size);
+  let m;
+  try {
+    m = parseManifest(manifestBytes);
+  } catch {
+    throw bad("OCI archive's first manifest is not an image manifest");
+  }
+  const configBytes = blob(m.config.digest, m.config.size);
+  let cfg;
+  try {
+    cfg = parseConfig(configBytes);
+  } catch {
+    throw bad("OCI archive's image config is corrupt");
+  }
+  const layer = m.layers[siteLayerIndex(m, cfg)];
+  let layerBytes: Uint8Array = new Uint8Array(0); // extractImageFiles reports "not a Sitefile image"
+  if (layer && (layer.mediaType === MEDIA.layer || layer.mediaType === MEDIA.layerTar)) {
+    layerBytes = blob(layer.digest, layer.size);
+    // Hold the site layer to the archive limits before it is fully decoded.
+    await extractArchive(layerBytes, origin, limits);
+  }
+  return extractImageFiles(m, cfg, layerBytes, origin);
 }
 
 /** The tree a server state serves. */
 export async function loadServedTree(store: Store, source: ServerState['source']): Promise<Tree> {
-  return source.kind === 'image' ? store.loadTree(source.imageId) : loadDirectoryTree(source.path);
+  switch (source.kind) {
+    case 'image':
+      return store.loadTree(source.imageId);
+    case 'dir':
+      return loadDirectoryTree(source.path);
+    case 'archive':
+      return loadArchiveTree(source.path);
+  }
 }

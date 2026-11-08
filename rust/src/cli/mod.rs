@@ -70,7 +70,7 @@ Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   Evictable data over $SITEFILE_CACHE_MAX (default 1GiB, 0 = no limit) is deleted after each build.
 
 Serving sites (detached servers are tracked by name):
-  sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir>
+  sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|./dir|file>
   sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>

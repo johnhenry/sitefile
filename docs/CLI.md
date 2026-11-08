@@ -752,7 +752,7 @@ TypeScript CLI prints a usage error pointing to `rust/target/release/sitefile ls
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -761,12 +761,26 @@ sitefile server logs [-f] [-n lines] <name|id>
 sitefile server restart <name|id>
 ```
 
-`servers` lists `NAME SITE URL STATUS ID`, where SITE is the image reference or directory being served
-(`--json` calls it `site`).
+`servers` lists `NAME SITE URL STATUS ID`, where SITE is the image reference, directory or archive file being
+served (`--json` calls it `site`).
 
 `serve` serves an image from the store (the files under its root), or a directory (an argument starting with `./`,
 `../` or `/`, or ending in `/`) read once at start through the sandboxed local reader: a symlink leaving the
 directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known`) are not served.
+
+`serve` also serves an **archive file**: `sitefile serve site.zip`, `./site.tar`, `site.tgz` (`.tar.gz`),
+`site.wbn`, or an OCI image archive (`site.oci.tar`, as `build -o x.oci.tar` and `save` write it). A path-like
+argument (as above) that is a regular file is an archive; a bare name is an image reference first, and an archive
+file only when no image has that name. The format is read from the bytes, never the extension, and the file is
+read at start, so `server restart` picks up a new copy. A zip, tar or Web Bundle is extracted with the default
+archive limits (10 000 entries, 500 MiB, a 100:1 compression ratio; `E_ARCHIVE_LIMIT`), refuses unsafe entries
+(absolute or `..` paths, links, devices; `E_ARCHIVE_UNSAFE`), and is served like a directory: its paths as they
+are in the archive (a single top-level folder is kept) and without hidden files except `.well-known`. An OCI
+archive serves the first image in its `index.json` exactly as that image would be served from the store, after
+every blob it reads is checked against its digest and the site layer against the same limits. A file that is
+none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.
+In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
+to `image` (`imageId`) and `dir` (`path`).
 
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
@@ -807,4 +821,4 @@ directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known
   (auto names look like `site-1a2b3c`).
 - `stop` sends `SIGTERM`, waits `--time` seconds (default 5), then `SIGKILL`; stopping an exited server is a no-op.
   `rm` refuses a running server unless `-f`. `restart` stops and starts it again with the same name and bind
-  address, serving the same image ID (a directory is re-read). `logs -f` follows the log until Ctrl-C.
+  address, serving the same image ID (a directory or archive file is re-read). `logs -f` follows the log until Ctrl-C.

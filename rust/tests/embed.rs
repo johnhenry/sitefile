@@ -486,3 +486,45 @@ fn detached_servers_start_restart_and_stop_from_a_long_lived_process() {
     );
     assert!(reg.all().unwrap().is_empty());
 }
+
+#[test]
+fn detached_servers_serve_archive_files_and_reread_them_on_restart() {
+    use sitefile::export::archive_writers::{write_zip, WriterOptions};
+    use sitefile::tree::{make_file, Tree};
+    isolate();
+    let t = Tmp::new();
+    let zip = |body: &str| {
+        let tree = Tree::from_files([(
+            "/index.html".to_string(),
+            make_file(body.as_bytes().to_vec(), "t", 0o644),
+        )])
+        .unwrap();
+        write_zip(&tree, &WriterOptions::default()).unwrap()
+    };
+    t.write("site.zip", zip("<p>one</p>"));
+    let file = t.0.join("site.zip").display().to_string();
+    let reg = ServerRegistry::open(Some(Store::open(t.0.join("home")).unwrap())).unwrap();
+
+    let serve = DetachedServe::resolve(&reg.store, &file).unwrap();
+    assert_eq!(serve.label, file, "the label is the file's path");
+    assert_eq!(serve.source, ServerSource::Archive { path: file.clone() });
+    let up = serve_detached(&reg, &serve, Some(Path::new(BIN))).unwrap();
+    assert_eq!(up.image, file);
+    assert!(get(&up.host, up.port, "/").contains("<p>one</p>"));
+
+    // A new copy of the archive is picked up by a restart.
+    t.write("site.zip", zip("<p>two</p>"));
+    let again = restart_detached(&reg, &up, Duration::from_secs(5), Some(Path::new(BIN))).unwrap();
+    assert!(get(&again.host, again.port, "/").contains("<p>two</p>"));
+    assert!(stop_server(&reg, &again, Duration::from_secs(5)).unwrap());
+    reg.remove(&again.id).unwrap();
+
+    // A file that is not an archive is refused up front and leaves no record.
+    t.write("notes.txt", "plain text");
+    let bad =
+        DetachedServe::resolve(&reg.store, &t.0.join("notes.txt").display().to_string()).unwrap();
+    let e = serve_detached(&reg, &bad, Some(Path::new(BIN))).unwrap_err();
+    assert_eq!(e.code, ErrorCode::E_TYPE);
+    assert!(e.message().contains("notes.txt: not a recognized archive"));
+    assert!(reg.all().unwrap().is_empty());
+}

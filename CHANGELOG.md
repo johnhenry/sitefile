@@ -2,6 +2,20 @@
 
 ## 0.1.0 (unreleased)
 
+- **`serve` serves archive files** (johnhenry/sitefile#155): `sitefile serve
+  site.zip` (and `serve -d`) serves a zip, tar, tar.gz/tgz, Web Bundle or OCI
+  image archive (`build -o x.oci.tar`, `save`) the way it serves a directory.
+  The format comes from the bytes; a path-like argument that is a file is an
+  archive, and a bare name is an archive file when no image has that name.
+  Zip, tar and wbn are extracted with the default archive limits and served
+  without hidden files (as a directory is); an OCI archive serves its first
+  image as the store would, with every blob checked against its digest. The
+  file is read again on every start and `server restart`. Server records gain
+  `{"kind": "archive", "path": …}` (older records load unchanged); Rust adds
+  `ServerSource::Archive`, `servers::load_archive_tree` and
+  `load_archive_tree_with`, with every existing signature unchanged. A file
+  that is not an archive is `E_TYPE` naming it. docs/CLI.md, "Site servers".
+
 - **Library API for embedders** (johnhenry/sitefile#153), found by embedding
   the crate in sitefile Desktop. Rust: `servers::serve_detached`,
   `restart_detached`, `start_detached`, `stop_server`, `resolve_source`,
