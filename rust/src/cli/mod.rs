@@ -142,6 +142,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -211,6 +213,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     strings("secret"),
     string("plugin-timeout"),
+    string("plugin-memory"),
     strings("allow-exec"),
     strings("allow-plugin"),
     flag("allow-plugins"),
@@ -779,6 +782,9 @@ fn run_build_command(
         let ms = positive_int(t, "--plugin-timeout")?;
         options.plugin_policy.timeout_ms = ms;
         options.tool_policy.timeout_ms = ms;
+    }
+    if let Some(m) = o.str("plugin-memory").filter(|s| !s.is_empty()) {
+        options.plugin_policy.max_memory_mib = positive_int(m, "--plugin-memory")? as usize;
     }
     options.allow_exec = o.strs("allow-exec");
     options.allow_plugin = o.strs("allow-plugin");

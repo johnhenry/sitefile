@@ -81,6 +81,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -157,6 +159,7 @@ export async function main(
         'build-arg-file': { type: 'string', multiple: true },
         secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
+        'plugin-memory': { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
@@ -327,8 +330,14 @@ export async function main(
       fetchPolicy,
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(o['vendor-dir'] !== undefined ? { vendorDir: o['vendor-dir'] } : {}),
-      ...(o['plugin-timeout']
-        ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
+      ...(o['plugin-timeout'] || o['plugin-memory']
+        ? {
+            pluginPolicy: {
+              ...(o['plugin-timeout'] ? { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } : {}),
+              ...(o['plugin-memory'] ? { maxMemoryMiB: positiveInt(o['plugin-memory'], '--plugin-memory') } : {}),
+            },
+            ...(o['plugin-timeout'] ? { toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
+          }
         : {}),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),

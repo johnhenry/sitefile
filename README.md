@@ -409,7 +409,8 @@ tools are code, and run only when you name them on the command line.
 - **Nothing executes unless you allow it by name.** A JavaScript `PLUGIN` runs
   only with `--allow-plugin <name>`, in its own Node process under Node's
   permission model (read access to its own folder only, no writes, network,
-  processes or environment); a `TOOL` runs only with `--allow-exec <name>`, argv
+  processes or environment) with a heap limit (`--plugin-memory`, default
+  1 GiB); a `TOOL` runs only with `--allow-exec <name>`, argv
   only, no shell, scrubbed environment. The Sitefile cannot allow itself. A
   WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
