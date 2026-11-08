@@ -52,6 +52,10 @@
   plan alone, with what needs each and its status under `--allow-hosts`,
   `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
   `needs`). Nothing is fetched. Both implementations, with a conformance case.
+- **`serve`: `/about/` no longer 404s when only `about.html` exists**
+  (johnhenry/sitefile#188): it redirects (`301`, query kept) to the clean URL
+  `/about`, in both servers. `/about.html` still answers 200; which spelling
+  is canonical is johnhenry/sitefile#192.
 - **`serve` accepts absolute-form request targets** (johnhenry/sitefile#189):
   `GET http://host/path?q HTTP/1.1` is answered like `GET /path?q` (the
   authority is ignored) instead of `400`, in both servers, as RFC 9112

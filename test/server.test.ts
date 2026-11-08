@@ -439,6 +439,19 @@ test('serve: clean URLs: /about serves /about.html; a directory still redirects 
     assert.equal(d.status, 301);
     assert.equal(d.headers.location, '/docs/');
   });
+  // johnhenry/sitefile#188: `/about/` with only `/about.html` redirects to the clean URL.
+  await withTree({ '/about.html': 'about page', '/a b.html': 'space', '/x/index.html': 'x', '/x.html': 'x file' }, { spa: true }, async (port) => {
+    const r = await req(port, '/about/?q=1');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/about?q=1');
+    assert.equal(r.body, '');
+    assert.equal((await req(port, '/a%20b/')).headers.location, '/a%20b');
+    assert.equal((await req(port, '/about')).body, 'about page');
+    assert.equal((await req(port, '/about.html')).body, 'about page', 'the .html spelling still answers');
+    assert.equal((await req(port, '/x/')).body, 'x', 'an index file wins over the redirect');
+    assert.equal((await req(port, '/x')).body, 'x file');
+    assert.equal((await req(port, '/about.html/')).status, 404);
+  });
 });
 
 test('serve: _redirects: exact paths, splats, rewrites, 404s, shadowing and force', async () => {

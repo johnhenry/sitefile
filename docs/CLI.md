@@ -1121,8 +1121,9 @@ to `image` (`imageId`) and `dir` (`path`).
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
-  URLs: `/about` serves `/about.html` when there is no file `/about`; otherwise a directory `/dir` redirects (`301`)
-  to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
+  URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
+  `/about` when only `/about.html` answers it (after any `_redirects` rule for the path); `/about.html` and
+  `/about/index.html` still answer as themselves; otherwise a directory `/dir` redirects (`301`) to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
   page); `content-type` from the extension (case-insensitive) through one table shared by both implementations
   and by Web Bundle export: `tools/gen-mime.mjs` writes `src/mime-data.ts` and `rust/src/mime_data.rs` (types
   from nginx's `mime.types`, else the IANA registrations: HTML, CSS, JavaScript including `.cjs`, JSON and

@@ -1260,6 +1260,17 @@ pub fn respond(
             return res;
         }
     }
+    // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in
+    // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
+    if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
+        let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+        let location = format!("/{}{search}", enc.join("/"));
+        return finish(
+            301,
+            owned(vec![("location", location), ("content-length", "0".into())]),
+            None,
+        );
+    }
     if served.is_none() && options.spa {
         let last = segs.last().map(String::as_str).unwrap_or("");
         let has_ext = last.rfind('.').is_some_and(|i| i + 1 < last.len());
@@ -2113,6 +2124,31 @@ mod tests {
         .unwrap();
         let r = at(&d, "/docs");
         assert_eq!((r.status, r.header("location")), (301, Some("/docs/")));
+        // johnhenry/sitefile#188: `/about/` with only `/about.html` redirects to the clean URL.
+        let c = Tree::from_files(
+            [
+                ("/about.html", "about page"),
+                ("/a b.html", "space"),
+                ("/x/index.html", "x"),
+                ("/x.html", "x file"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let spa = SiteServerOptions {
+            spa: true,
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&c, &spa, "GET", u, &HashMap::new());
+        let r = get("/about/?q=1");
+        assert_eq!((r.status, r.header("location")), (301, Some("/about?q=1")));
+        assert!(r.body.is_empty());
+        assert_eq!(get("/a%20b/").header("location"), Some("/a%20b"));
+        assert_eq!(body(&get("/about")), "about page");
+        assert_eq!(body(&get("/about.html")), "about page");
+        assert_eq!(body(&get("/x/")), "x");
+        assert_eq!(body(&get("/x")), "x file");
+        assert_eq!(get("/about.html/").status, 404);
     }
 
     #[test]
