@@ -1532,7 +1532,9 @@ checked:
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
   device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
   directory at one path, fail with `E_CONFLICT`. Malformed or truncated
-  archives fail with `E_ARCHIVE`.
+  archives fail with `E_ARCHIVE`, as does a zip entry whose CRC-32 does not
+  match its central-directory record (a corrupt stored entry inflate cannot
+  notice).
 - Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
   `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
   `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the

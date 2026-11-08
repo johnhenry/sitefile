@@ -229,3 +229,14 @@ test('zip names: UTF-8 with bit 11, the 0x7075 Unicode Path field, UTF-8 or else
   await rejects(zip([{ name: cp437, data: 'x', extra: unicode(cp437, '../evil') }]), 'E_ARCHIVE_UNSAFE', /'\.\.' segment/);
   await rejects(zip([{ name: cp437, data: '1' }, { name: 'caf\u00e9.txt', data: '2' }]), 'E_CONFLICT', /duplicate/);
 });
+
+test('a flipped byte in a stored entry fails the CRC-32 check (#183)', async () => {
+  const z = zip([{ name: 'index.html', data: '<h1>hello</h1>' }]);
+  assert.equal(paths(await extractArchive(z, 't')).length, 1);
+  z[44] = z[44]! ^ 0x20;
+  await rejects(z, 'E_ARCHIVE', /'index\.html' fails its CRC-32 check/);
+  const e = zip([{ name: 'empty', data: '' }]);
+  const at = e.length - 22 - 51 + 16; // the central CRC
+  e[at] = e[at]! ^ 1;
+  await rejects(e, 'E_ARCHIVE', /'empty' fails its CRC-32 check/);
+});

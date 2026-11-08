@@ -550,6 +550,7 @@ fn parse_pax(
 struct ZipEntry {
     name: String,
     method: u16,
+    crc: u32,
     csize: u32,
     usize_: u32,
     local: u32,
@@ -668,6 +669,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         );
         let e = ZipEntry {
             method: u16le(b, p + 10),
+            crc: u32le(b, p + 16),
             csize: u32le(b, p + 20),
             usize_: u32le(b, p + 24),
             local: u32le(b, p + 42),
@@ -752,6 +754,15 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         if data.len() as u64 != e.usize_ as u64 {
             return Err(bad(format!(
                 "zip entry '{}' size does not match its header",
+                e.name
+            )));
+        }
+        // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
+        let mut crc = flate2::Crc::new();
+        crc.update(&data);
+        if crc.sum() != e.crc {
+            return Err(bad(format!(
+                "zip entry '{}' fails its CRC-32 check",
                 e.name
             )));
         }
@@ -883,7 +894,13 @@ pub(crate) mod tests {
             };
             let name = e.name.as_bytes();
             let usize_ = e.fake_size.unwrap_or(e.data.len() as u32);
+            let crc = {
+                let mut c = flate2::Crc::new();
+                c.update(&e.data);
+                c.sum()
+            };
             let mut l = vec![0u8; 30];
+            l[14..18].copy_from_slice(&crc.to_le_bytes());
             l[0..4].copy_from_slice(&0x04034b50u32.to_le_bytes());
             l[4..6].copy_from_slice(&20u16.to_le_bytes());
             l[8..10].copy_from_slice(&(if e.deflate { 8u16 } else { 0 }).to_le_bytes());
@@ -895,6 +912,7 @@ pub(crate) mod tests {
             c[4..6].copy_from_slice(&((3u16 << 8) | 20).to_le_bytes());
             c[6..8].copy_from_slice(&20u16.to_le_bytes());
             c[10..12].copy_from_slice(&(if e.deflate { 8u16 } else { 0 }).to_le_bytes());
+            c[16..20].copy_from_slice(&crc.to_le_bytes());
             c[20..24].copy_from_slice(&(body.len() as u32).to_le_bytes());
             c[24..28].copy_from_slice(&usize_.to_le_bytes());
             c[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
@@ -1464,6 +1482,19 @@ pub(crate) mod tests {
             inflate_like_node(&gz[..gz.len() - 4], true, 20_000),
             Inflated::Corrupt
         ));
+    }
+
+    #[test]
+    fn a_flipped_byte_in_a_stored_entry_fails_the_crc_check() {
+        let mut z = zip(&[ze("index.html", "<h1>hello</h1>")]);
+        assert!(x(&z).is_ok());
+        z[30 + 10 + 4] ^= 0x20; // 'h' -> 'H'
+        rejects(&z, E_ARCHIVE, "'index.html' fails its CRC-32 check", L);
+        // A bad CRC on an empty entry too.
+        let mut e = zip(&[ze("empty", "")]);
+        let n = e.len();
+        e[n - 22 - 51 + 16] ^= 1; // the central CRC
+        rejects(&e, E_ARCHIVE, "'empty' fails its CRC-32 check", L);
     }
 
     #[test]

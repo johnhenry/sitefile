@@ -700,6 +700,10 @@ const EDGE = [
   () => zipOf([Buffer.from([0x82, 0x2f, 0x2e, 0x2e, 0x2f, 0x78]), B('unsafe after decoding')]),
   () => zipOf([Buffer.from([0x82]), B('unsafe via 0x7075'), { extra: unicodePath(Buffer.from([0x82]), '../evil') }]),
   () => zipOf([Buffer.from([0x82]), B('1')], [B('\u00e9'), B('2')]),
+  // CRC-32 (#183): a stored entry with a flipped byte, a deflated one with a wrong CRC, an empty one.
+  () => zipOf([B('index.html'), B('<h1>hello</h1>'), { body: B('<H1>hello</h1>') }]),
+  () => zipOf([B('a.txt'), B('hello hello hello'), { method: 8, body: deflateRawSync(B('hello hello hello')), crc: 0x12345678 }]),
+  () => zipOf([B('ok.txt'), B('fine')], [B('empty'), B(''), { crc: 1 }]),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

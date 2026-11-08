@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Zip CRC-32 check** (#183): every extracted zip entry is checked against
+  its central-directory CRC-32; a mismatch is `E_ARCHIVE` naming the entry
+  (`IMPORT … AS tree`, `serve x.zip`). Both implementations.
 - **Zip names without the UTF-8 flag** (#182): names without general-purpose
   bit 11 are read from the Info-ZIP Unicode Path field (0x7075) when its CRC
   matches, else as UTF-8 when valid, else as CP437 (they used to become

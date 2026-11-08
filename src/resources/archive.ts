@@ -213,6 +213,7 @@ function parsePax(data: Uint8Array, bad: (why: string) => SitefileError): { path
 interface ZipEntry {
   name: string;
   method: number;
+  crc: number;
   csize: number;
   usize: number;
   local: number;
@@ -296,6 +297,7 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
     const e: ZipEntry = {
       name,
       method: v.getUint16(p + 10, true),
+      crc: v.getUint32(p + 16, true),
       csize: v.getUint32(p + 20, true),
       usize: v.getUint32(p + 24, true),
       local: v.getUint32(p + 42, true),
@@ -340,6 +342,8 @@ async function readZip(b: Uint8Array, origin: string, limits: ArchiveLimits, spa
       throw bad(`zip entry '${e.name}' uses unsupported compression method ${e.method}`);
     }
     if (data.length !== e.usize) throw bad(`zip entry '${e.name}' size does not match its header`);
+    // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
+    if (crc32(data) !== e.crc) throw bad(`zip entry '${e.name}' fails its CRC-32 check`);
     add(e.name, 'file', data, e.mode);
   }
 }
