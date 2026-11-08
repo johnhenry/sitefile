@@ -56,6 +56,7 @@ pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod explain;
+pub mod hosts;
 pub mod memo;
 pub mod outdated;
 pub mod plugins;

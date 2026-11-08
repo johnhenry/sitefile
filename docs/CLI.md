@@ -160,6 +160,45 @@ sitefile build --network strict --allow-hosts cdn.example.com  # contacts cdn.ex
 
 The default stays `open`, so existing scripts and CI are unchanged.
 
+### Which hosts a build needs: `hosts`
+
+```
+sitefile hosts [context] [-f Sitefile] [--json] [--build-arg K=V]... [--build-arg-file f]... [--base image]
+               [network flags]
+```
+
+Lists the hosts a build would contact, read from the plan only: nothing is fetched and no host is
+contacted. Each host comes with what needs it and its status under the network flags given (the same
+`--allow-hosts`, `--deny-hosts`, `--network` and `--allow-secret-host` as `build`):
+
+```
+HOST                  PORT  STATUS   USED BY
+cdn.example.com       443   allowed  IMPORT css (Sitefile:2)
+github.com            443   blocked  IMPORT theme (Sitefile:3)
+registry-1.docker.io  443   blocked  BASE
+github.com: needs --allow-hosts github.com
+registry-1.docker.io: needs --allow-hosts registry-1.docker.io
+IMPORT css (Sitefile:2): secret needs --allow-secret-host tok=cdn.example.com
+IMPORT theme (Sitefile:3): an imported Sitefile; the hosts it needs are known once it is fetched
+3 hosts (strict network mode): 1 allowed, 2 blocked
+```
+
+- Listed: every remote `IMPORT` (https and `git+https`, by the URL's host and port), every `FROM image`
+  with a registry, and the BASE image of an oci export (or `--base`), by the registry's API host
+  (`registry-1.docker.io` for Docker Hub). `FROM image` from the local store and local imports contact
+  nothing and are not listed.
+- Status: `allowed`; `blocked` (no allow-hosts rule matches; `needs` names the `--allow-hosts` to add);
+  `denied` (a deny-hosts rule matches; no flag overrides it). In strict mode, an `IMPORT … SECRET` whose
+  secret has no matching `--allow-secret-host` carries that `needs` on its use.
+- Not known before fetching, so not listed: redirects, a registry's token realm and blob CDN, and the
+  inputs of an imported Sitefile (`nested`). `CHECKLINKS --external` contacts the hosts of the site's
+  external links and is reported on its own line. All of these still come up at build time, one at a
+  time, each as an `E_HOST_BLOCKED` with `needs`.
+- `--json`: `{"strict", "hosts": [{"host", "port", "status", "needs", "uses": [{"kind": "import" | "image" |
+  "base", "name", "source", "span", "secrets", "nested", "needs"}]}], "checklinksExternal": [<line>…]}`.
+  `needs` is `null` or `{kind, name, flag}` as in errors. The text and JSON are identical in the
+  TypeScript and Rust CLIs.
+
 ### `--json` errors
 
 With `--json`, a command that fails also prints the error on stdout (the `error[CODE]: …` line still goes

@@ -5,13 +5,14 @@ import { serverCommands, serverSubcommands } from './servers.js';
 import { cacheSubcommands } from './cache.js';
 import { vendorCommands } from './vendor.js';
 import { outdatedCommands } from './outdated.js';
+import { hostsCommands } from './hosts.js';
 import { bakeCommands } from './bake.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...bakeCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -47,6 +48,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size

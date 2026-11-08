@@ -7,6 +7,7 @@ pub mod bake;
 pub mod cache;
 pub mod common;
 pub mod git_context;
+pub mod hosts;
 pub mod images;
 pub mod network;
 pub mod outdated;
@@ -63,6 +64,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size
@@ -251,6 +256,7 @@ const TOP: &[&Command] = &[
     &registry::PULL,
     &vendor::VENDOR,
     &outdated::OUTDATED,
+    &hosts::HOSTS,
     &bake::BAKE,
 ];
 

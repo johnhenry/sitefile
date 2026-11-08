@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`sitefile hosts`** (johnhenry/sitefile#176): lists the hosts a build would
+  contact (remote IMPORTs, FROM image registries, the BASE registry) from the
+  plan alone, with what needs each and its status under `--allow-hosts`,
+  `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
+  `needs`). Nothing is fetched. Both implementations, with a conformance case.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
