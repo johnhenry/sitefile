@@ -63,6 +63,12 @@ export const WATCH_CASES = [
       { get: '/noconnect/', headers: NAV },
     ],
   },
+  {
+    name: 'watch/keep-service-workers',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>sw</h1>', 'public/sw.js': 'self.addEventListener("fetch", () => {});' },
+    args: ['--keep-service-workers'],
+    steps: [{ get: '/__sitefile/reload.js' }, { get: '/sw.js' }],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

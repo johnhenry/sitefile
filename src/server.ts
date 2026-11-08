@@ -73,9 +73,26 @@ export function cspBlocksReload(value: string): 'script-src' | 'connect-src' | u
   return undefined;
 }
 
+/** What the client script does besides reloading (`serve --watch` flags). */
+export interface LiveReloadOptions {
+  /** Unregister the page's service workers and empty its Cache Storage before each reload (default true; `--keep-service-workers` turns it off). */
+  readonly resetServiceWorkers?: boolean;
+}
+
+/** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
+export function clientScript(options: LiveReloadOptions = {}): string {
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false}});\n`;
+}
+
 /** Open live-reload streams; {@link LiveReload.reload} tells every page to reload. */
 export class LiveReload {
   private readonly clients = new Set<http.ServerResponse>();
+  /** The client script for this session ({@link clientScript}). */
+  readonly script: string;
+
+  constructor(options: LiveReloadOptions = {}) {
+    this.script = clientScript(options);
+  }
 
   /** Hold `res` open as a text/event-stream until the client goes away. */
   attach(res: http.ServerResponse, headers: Record<string, string>): void {
@@ -211,7 +228,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (options.liveReload && rawPath === RELOAD_SCRIPT_PATH) {
       // not access-logged either: every page load fetches it
-      return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(RELOAD_CLIENT) }, RELOAD_CLIENT, true);
+      const js = options.liveReload.script;
+      return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(js) }, js, true);
     }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
     const segs = safeSegments(rawPath);

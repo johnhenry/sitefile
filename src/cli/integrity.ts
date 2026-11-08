@@ -40,7 +40,14 @@ const verify: Command = {
     const r = verifyTree(tree, manifest, ignore);
     process.stdout.write(v.json ? JSON.stringify(r, null, 2) + '\n' : r.ok ? `OK: ${r.files} file${r.files === 1 ? '' : 's'} match ${r.root}\n` : verifyText(r));
     if (!r.ok) {
-      throw new SitefileError('E_INTEGRITY', `'${arg}' does not match the manifest: ${r.missing.length} missing, ${r.changed.length} changed, ${r.extra.length} extra`);
+      const message = `'${arg}' does not match the manifest: ${r.missing.length} missing, ${r.changed.length} changed, ${r.extra.length} extra`;
+      // With --json the report above is the one document on stdout (it already says ok: false),
+      // so the error goes to stderr only instead of through the generic --json error output.
+      if (v.json) {
+        process.stderr.write(`error[E_INTEGRITY]: ${message}\n`);
+        return 1;
+      }
+      throw new SitefileError('E_INTEGRITY', message);
     }
     return 0;
   },

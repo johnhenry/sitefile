@@ -111,7 +111,11 @@ test('build --manifest and verify catch every change kind in a directory, an arc
   assert.equal(bad.code, 1);
   assert.equal(bad.stdout, 'extra    /.hidden\nchanged  /index.html\nmissing  /style.css\n');
   assert.match(bad.stderr, /error\[E_INTEGRITY\]: .* does not match the manifest: 1 missing, 1 changed, 1 extra/);
-  const json = JSON.parse((await sitefile(['verify', out, '--manifest', m, '--json'])).stdout);
+  const jsonRun = await sitefile(['verify', out, '--manifest', m, '--json']);
+  // One JSON document on stdout; the error line goes to stderr only.
+  assert.equal(jsonRun.code, 1);
+  assert.match(jsonRun.stderr, /error\[E_INTEGRITY\]: .* does not match the manifest/);
+  const json = JSON.parse(jsonRun.stdout);
   assert.equal(json.ok, false);
   assert.deepEqual(json.changed[0].expected, { size: manifest.files[0]?.size, digest: manifest.files[0]?.digest });
 
