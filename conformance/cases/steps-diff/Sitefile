@@ -1,0 +1,8 @@
+# sitefile=1
+ARG TITLE = "Hello"
+ARG RULES = "a"
+LET GREETING = "Welcome to ${TITLE}."
+COPY ./public/ /
+COPY ./rules-${RULES}/ /
+RENDER --escape=html ./templates/index.html TO /index.html
+EXPORT / AS directory

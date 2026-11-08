@@ -879,6 +879,38 @@ stored blob against its digest. The manifest itself is checked first: its root m
 `--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
 actual: { size, digest } }], extra: [path] }`.
 
+## Comparing builds: `sitefile diff`
+
+`sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
+a directory, an archive file (zip, tar, tar.gz, wbn, OCI archive) or an image reference or ID, read the
+way `verify` reads it (hidden files count, `.git` is skipped). Files are compared by digest and mode, never
+by timestamp:
+
+```
+C  /index.html  (207 B -> 210 B)
+A  /new.txt  (1 B)
+C  /run.sh  (10 B -> 10 B, mode 644 -> 755)
+-  /_redirects: /old /new 301
++  /_redirects: /older /new 301
++  /_headers: /assets/* Cache-Control: immutable
+1 added, 0 removed, 3 changed
+```
+
+`A` is added, `D` removed, `C` changed, in path order. When `/_redirects` or `/_headers` differ, the rules
+added (`+`) and removed (`-`) follow: a `_redirects` rule is its line with fields joined by one space; a
+`_headers` rule is `<path> <Name>: <value>`, one per header line. Blank lines and `#` comments are not
+rules. The exit status is 0 whether or not the two differ; `--exit-code` makes it 1 when they do.
+
+`--json` prints `{ added: [file], removed: [file], changed: [{ path, before: file, after: file }], rules:
+{ "/_redirects": { added: [rule], removed: [rule] }, "/_headers": … } }`, where a file is
+`{ path, size, digest, mode }` (`mode` is `644` or `755`) and `rules` has a key only for a file whose rules
+changed. (`sitefile image diff` is the older, images-only form with bare `A|D|C <path>` lines.)
+
+Archive exports give every file one fixed mtime (`SOURCE_DATE_EPOCH`, else 0), so after extracting a new
+version `rsync` without `-c` sees unchanged sizes and times and can skip changed files, and nginx sends the
+same `Last-Modified` for every version. Compare with `diff` (or `verify` against a manifest) instead, and
+use `rsync -c` (checksums) to upload.
+
 ## Image store
 
 The store lives in `$SITEFILE_HOME`, or `~/.sitefile`. Tests and scripts should always set `SITEFILE_HOME`.
