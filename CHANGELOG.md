@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **CSP: Content-Security-Policy from inline hashes** (johnhenry/sitefile#219):
+  `CSP [POLICY <policy>] [META]` writes a per-page policy to `/_headers` (or a
+  `<meta>` with META) that allows each page's inline scripts and styles by
+  their SHA-256 instead of `'unsafe-inline'`. Both implementations, with
+  conformance cases; example `examples/csp`.
 - **Live reload gets past caching service workers** (johnhenry/sitefile#229):
   before reloading after a rebuild, the `serve --watch` client unregisters the
   page origin's service workers and empties its Cache Storage, so a site with

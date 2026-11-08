@@ -1,0 +1,6 @@
+# CSP: a strict Content-Security-Policy for every page, allowing exactly its own inline
+# script and style by SHA-256 hash (no 'unsafe-inline'), written to /_headers.
+FROM scratch
+COPY ./public/ /
+CSP POLICY "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'"
+EXPORT /

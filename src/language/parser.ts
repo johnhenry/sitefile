@@ -71,6 +71,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseHeader(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
+    case 'CSP':
+      return parseCsp(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -578,6 +580,14 @@ function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
     ...(flags.has('no-cache-headers') && { noCacheHeaders: true as const }),
     overwrite: flags.has('overwrite'),
   };
+}
+
+/** `CSP [POLICY <policy>] [META]` */
+function parseCsp(c: Cursor, span: SourceSpan): Instruction {
+  const policy = c.keyword('POLICY') ? c.operand('policy') : undefined;
+  const meta = c.keyword('META');
+  c.expectEnd();
+  return { kind: 'CSP', span, ...(policy ? { policy } : {}), meta };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

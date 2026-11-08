@@ -47,6 +47,7 @@ import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
+import { cspPages } from './csp.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -2271,7 +2272,9 @@ async function transformFiles(
  * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
  * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
  * names its new URL. Unless the plan turns them off, the renamed files (and the pages) also get
- * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}).
+ * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}). A CSP adds a
+ * Content-Security-Policy for every exported page: lines after those, or with META a `<meta>` in each page
+ * (see {@link cspPages}).
  */
 function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
   const url = new Map<string, string>();
@@ -2297,6 +2300,21 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
         headerRules = [{ overwrite: false, span: p.cacheHeaders.span }];
         headerKind = 'FINGERPRINT';
       }
+    }
+  }
+  if (p.csp) {
+    const origin = `${label}:${p.csp.span.line} CSP`;
+    const r = cspPages(tree, p.exportPath, p.csp.policy, p.csp.meta, origin);
+    if (r.headless.length > 0) warn(`${origin}: ${r.headless.length === 1 ? '1 page has' : `${r.headless.length} pages have`} no <head>, so no policy was added: ${r.headless.join(', ')}`);
+    if (r.pages.length > 0) tree = tree.withFiles(r.pages, 'overwrite', p.csp.span);
+    if (r.rules.length > 0 && headers.length === 0 && tree.isFile(headersPath)) {
+      warn(`${origin}: ${headersPath} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META`);
+    } else if (r.rules.length > 0) {
+      if (headers.length === 0) {
+        headerRules = [{ overwrite: false, span: p.csp.span }];
+        headerKind = 'CSP';
+      }
+      headers.push(...r.rules);
     }
   }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [

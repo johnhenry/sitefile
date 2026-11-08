@@ -111,6 +111,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.csp_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -318,6 +319,10 @@ export default grammar({
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
         optional(kw($, 'INTEGRITY')),
       ),
+
+    // CSP [POLICY <policy>] [META]
+    csp_instruction: ($) =>
+      seq(kw($, 'CSP'), optional(seq(kw($, 'POLICY'), field('policy', $._operand))), optional(kw($, 'META'))),
 
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),

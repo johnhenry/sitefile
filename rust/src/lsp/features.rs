@@ -7,7 +7,7 @@ use crate::language::ast::{
     is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType,
 };
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
+    flags_of, Shape, CSP_CLAUSES, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
     INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
@@ -412,6 +412,17 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             } else {
                 let from = last.map_or(0, |l| l + 1);
                 kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "CSP" => {
+            // [POLICY <policy>] [META], in this order.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if prev == "POLICY" || ops.iter().any(|w| w == "META") {
+                Vec::new()
+            } else if ops.iter().any(|w| w == "POLICY") {
+                kw_items(["META"], CIK_KEYWORD)
+            } else {
+                kw_items(CSP_CLAUSES.iter().copied(), CIK_KEYWORD)
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1264,6 +1275,11 @@ mod tests {
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
         assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
+        // CSP: POLICY, then META
+        assert_eq!(labels("CSP "), ["POLICY", "META"]);
+        assert!(labels("CSP POLICY ").is_empty());
+        assert_eq!(labels("CSP POLICY x "), ["META"]);
+        assert!(labels("CSP META ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);

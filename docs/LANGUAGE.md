@@ -1017,6 +1017,40 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
 
+### Content Security Policy: CSP (see `examples/csp/`)
+`CSP [POLICY <policy>] [META]` gives every exported page a
+[Content-Security-Policy](https://developer.mozilla.org/docs/Web/HTTP/CSP)
+that allows its own inline `<script>` and `<style>` elements by hash, so the
+policy needs no `'unsafe-inline'`. Like HEADER it may appear in any stage
+(once: a second CSP is `E_VALIDATION`) and is applied **at EXPORT**, to the
+final pages of the exported directory.
+
+- **Base policy**: `POLICY <policy>` (one operand, so quote it; no control
+  characters or commas, `E_VALIDATION`), default
+  `default-src 'self'; base-uri 'self'; object-src 'none'`.
+- **Hashes**: for each `.html`/`.htm` page (valid UTF-8), the SHA-256 (base64)
+  of the exact text of every `<script>` without a `src` and every `<style>`,
+  found by the reference scanner (comments and other raw text skipped). The
+  `'sha256-…'` sources, deduplicated in page order, are appended to the base's
+  `script-src` / `style-src` directive, or added as `script-src 'self' …` /
+  `style-src 'self' …` when the base has none and the page has such
+  elements. Directives are written joined with `; `. Inline event handlers
+  (`onclick=`), `style=` attributes and `javascript:` URLs are not hashed (CSP
+  would need `'unsafe-hashes'`), so a strict policy blocks them; so is the
+  live-reload script `serve --watch` injects (johnhenry/sitefile#181).
+- **Where**: by default as `Content-Security-Policy` lines in `/_headers`
+  after the HEADER lines, one block per page URL: `/a/index.html` as `/a/` and
+  `/a/index.html`, `/b.html` as `/b.html` and `/b` (pretty URLs), other pages
+  by their path (URLs with spaces are left out). A HEADER that sets
+  `Content-Security-Policy` too is `E_VALIDATION`. With no HEADER lines and a
+  COPY'd `/_headers` already in the tree, that file is kept and a warning says
+  the lines were not added. With **`META`**, each page instead gets
+  `<meta http-equiv="Content-Security-Policy" content="…">` right after its
+  `<head>` start tag (pages without one are left alone, with a warning); a
+  `<meta>` policy cannot set `frame-ancestors` or reporting.
+- `--target` writes no policies (like the other EXPORT site files). `why` on a
+  page or on `/_headers` shows the CSP line.
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and

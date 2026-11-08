@@ -355,6 +355,17 @@ export interface FingerprintInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the SHA-256 of
+ * each of its inline scripts and styles; written to `/_headers` at EXPORT, or with META as a `<meta>`.
+ */
+export interface CspInstruction {
+  readonly kind: 'CSP';
+  readonly span: SourceSpan;
+  readonly policy?: Operand;
+  readonly meta: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -381,6 +392,7 @@ export type Instruction =
   | RedirectInstruction
   | HeaderInstruction
   | FingerprintInstruction
+  | CspInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

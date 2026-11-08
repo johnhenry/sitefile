@@ -453,6 +453,21 @@ FINGERPRINT /app.js INTEGRITY
     (path)))
 
 ================================================================================
+CSP with and without POLICY and META
+================================================================================
+
+CSP
+CSP POLICY "default-src 'self'" META
+
+---
+
+(source_file
+  (csp_instruction)
+  (csp_instruction
+    (string
+      (string_content))))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

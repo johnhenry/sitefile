@@ -41,6 +41,7 @@ pub mod resources;
 // Outputs, store and servers
 pub mod cache_limit;
 pub mod checklinks;
+pub mod csp;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;

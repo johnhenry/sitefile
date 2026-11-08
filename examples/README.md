@@ -17,6 +17,7 @@ both implementations and requires identical output.
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
 | [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
+| [`csp/`](./csp/) | `CSP`: a strict Content-Security-Policy in `/_headers` that allows each page's inline script and style by hash. |
 | [`image/`](./image/) | The first-party image plugin (pinned with `INTEGRITY`) writes resized variants and a metadata file. |
 | [`theme/`](./theme/) | A site image: built with `-t theme:1` into the local image store rather than exported. |
 | [`themed-site/`](./themed-site/) | `FROM theme:1`: a site that starts from a stored theme image. Needs `theme/` built first (the runner does it). |

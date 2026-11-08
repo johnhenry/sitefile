@@ -483,6 +483,84 @@ export function integrityTags(text: string): IntegrityTag[] {
   return out;
 }
 
+/** What CSP needs from a page: its inline script and style texts, in order, and where its `<head>` start tag ends. */
+export interface InlineBlocks {
+  /** The contents of each `<script>` without a `src` attribute (also empty ones). */
+  readonly scripts: readonly string[];
+  /** The contents of each `<style>`. */
+  readonly styles: readonly string[];
+  /** The offset just after the first `<head …>` start tag, if there is one. */
+  readonly headEnd?: number;
+}
+
+/** The inline scripts and styles of an HTML text (comments and other raw text skipped as in {@link scanHtml}). */
+export function inlineBlocks(text: string): InlineBlocks {
+  const scripts: string[] = [];
+  const styles: string[] = [];
+  let headEnd: number | undefined;
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const lt = text.indexOf('<', i);
+    if (lt === -1) break;
+    i = lt;
+    const next = text[i + 1];
+    if (text.startsWith('<!--', i)) {
+      const j = text.indexOf('-->', i + 4);
+      i = j === -1 ? n : j + 3;
+      continue;
+    }
+    if (next === '!' || next === '?' || next === '/') {
+      const j = text.indexOf('>', i + 2);
+      i = j === -1 ? n : j + 1;
+      continue;
+    }
+    if (!isAlpha(next)) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && !isWs(text[j]) && text[j] !== '/' && text[j] !== '>') j++;
+    const tag = lowerAscii(text.slice(i + 1, j));
+    i = j;
+    let src = false;
+    let closed = false;
+    for (;;) {
+      while (i < n && (isWs(text[i]) || text[i] === '/')) i++;
+      if (i >= n) break;
+      if (text[i] === '>') {
+        i++;
+        closed = true;
+        break;
+      }
+      const nameStart = i;
+      i++;
+      while (i < n && !isWs(text[i]) && text[i] !== '/' && text[i] !== '>' && text[i] !== '=') i++;
+      if (lowerAscii(text.slice(nameStart, i)) === 'src') src = true;
+      let k = i;
+      while (k < n && isWs(text[k])) k++;
+      if (text[k] !== '=') continue;
+      i = k + 1;
+      while (i < n && isWs(text[i])) i++;
+      const q = text[i];
+      if (q === '"' || q === "'") {
+        const close = text.indexOf(q, i + 1);
+        i = close === -1 ? n : close + 1;
+      } else {
+        while (i < n && !isWs(text[i]) && text[i] !== '>') i++;
+      }
+    }
+    if (tag === 'head' && headEnd === undefined && closed) headEnd = i;
+    if (RAW_TEXT.has(tag)) {
+      const close = indexOfCloseTag(text, tag, i);
+      if (closed && tag === 'script' && !src) scripts.push(text.slice(i, close));
+      if (closed && tag === 'style') styles.push(text.slice(i, close));
+      i = close;
+    }
+  }
+  return { scripts, styles, ...(headEnd !== undefined ? { headEnd } : {}) };
+}
+
 /** Where `</tag` (ASCII case-insensitive, followed by whitespace, `/` or `>`) starts at or after `from`; the end of the text if nowhere. */
 function indexOfCloseTag(text: string, tag: string, from: number): number {
   let i = from;
