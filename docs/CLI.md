@@ -489,11 +489,24 @@ Only under `serve --watch`:
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
   `text/event-stream` that sends `retry: 1000`, then `data: reload` after every good rebuild. A failed rebuild
   sends nothing. The stream is not written to the access log.
-- Every `text/html` file response gets one script tag, inserted before the last `</body>` (ASCII
-  case-insensitive), or appended when there is none:
-  `<script>new EventSource("/__sitefile/reload").onmessage=function(){location.reload()}</script>`.
-  `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached un-injected copy is not
-  reused. Other files are served unchanged.
+- `GET /__sitefile/reload.js` is reserved the same way and answers with the client script
+  (`text/javascript; charset=utf-8`, `cache-control: no-cache`, not access-logged). It opens the event stream at
+  `reload`, relative to its own URL, and reloads the page on each event.
+- Every `text/html` file response to a **page navigation** gets one script tag, inserted before the last `</body>`
+  (ASCII case-insensitive), or appended when there is none: `<script src="/__sitefile/reload.js"></script>`.
+  A navigation is a request with `Sec-Fetch-Mode: navigate`; without that header, one with `Sec-Fetch-Dest`
+  `document`, `iframe` or `frame`; without either, one whose `Accept` names `text/html`. HTML fetched by a page
+  script (`fetch('/partial.html')`: `Sec-Fetch-Mode: cors`, `Accept: */*`) and requests from tools like curl are
+  served unchanged. `Content-Length` matches the injected body, and the ETag gets a `-live` suffix so a cached
+  un-injected copy is not reused. Other files are served unchanged.
+- The script is external and same-origin, so a Content-Security-Policy with `script-src 'self'` allows it. When
+  the `Content-Security-Policy` that `_headers` sets on an injected page still blocks it (its `script-src-elem`,
+  `script-src` or `default-src` has none of `'self'`, `*`, `http:`, `https:`, or has `'strict-dynamic'`), or blocks
+  the event stream (`connect-src`, else `default-src`, likewise), `serve --watch` prints one warning per policy:
+  `warning: live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts
+  from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'`. Host sources are not
+  matched (a policy naming only `http://127.0.0.1:8080` is warned about), and a CSP in a `<meta http-equiv>` tag
+  is not checked.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`

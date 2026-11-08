@@ -208,6 +208,11 @@ paths").
   (a CONNECT tunnel with real TLS to a name only the proxy resolves, a refused
   tunnel, `push`/`pull` through it), the private-address rule through a proxy,
   `--no-proxy`, and the allow/deny host rules.
+  Watch cases (`conformance/watch.mjs`) run `serve --watch` with both CLIs and
+  compare a transcript of requests (status, headers, body), file edits,
+  event-stream events and `warning:` lines. The live-reload client script has
+  one source, `src/reload-client.ts`, which `rust/src/server.rs` compiles in
+  with `include_str!`.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest
   (and, with `--provenance` / `--sbom`, by the digest of every attestation).
