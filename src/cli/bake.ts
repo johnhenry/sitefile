@@ -14,7 +14,7 @@ const DEFAULT_JOBS = 4;
 
 /** Flags passed unchanged to every target's build. */
 const PASS_BOOLEANS = ['allow-plugins', 'no-cache', 'strict-pins', 'frozen-lockfile', 'update-lock', 'no-lockfile', 'allow-http', 'allow-private-network', 'allow-hardlinks', 'force'];
-const PASS_STRINGS = ['vendor-dir', 'max-download-bytes', 'timeout', 'plugin-timeout', 'plugin-memory'];
+const PASS_STRINGS = ['vendor-dir', 'max-download-bytes', 'timeout', 'plugin-timeout', 'plugin-memory', 'node'];
 const PASS_LISTS = ['allow-exec', 'allow-plugin', 'cache-from', 'insecure-registry', 'build-arg-file', 'build-arg'];
 
 function positive(raw: string | undefined, flag: string): number | undefined {
@@ -85,8 +85,8 @@ const bakeCommand: Command = {
     '--build-arg-file <path>       read ARGs for every target from a file (after the targets\' own; repeatable)',
     'Passed to every build: --allow-exec, --allow-plugin, --allow-plugins, --no-cache, --cache-from, --strict-pins,',
     '  --frozen-lockfile, --update-lock, --no-lockfile, --vendor-dir, --allow-http, --allow-private-network,',
-    '  --allow-hardlinks, --max-download-bytes, --timeout, --plugin-timeout, --plugin-memory, --insecure-registry,',
-    '  --force',
+    '  --allow-hardlinks, --max-download-bytes, --timeout, --plugin-timeout, --plugin-memory, --node,',
+    '  --insecure-registry, --force',
   ],
   options: {
     file: { type: 'string', short: 'f' },

@@ -127,6 +127,9 @@ pub struct BuildOptions {
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
+    /// `--node` / `SITEFILE_NODE`: the absolute path of the Node binary JavaScript plugins run on
+    /// (default: `node` on PATH). Checked to be at least `MIN_NODE` before the first plugin starts.
+    pub node: Option<PathBuf>,
     /// Permit hard-linked files in the context.
     pub allow_hardlinks: bool,
     /// `--allow-exec` entries: `name` or `name=/absolute/path`.
@@ -237,6 +240,7 @@ impl Default for BuildOptions {
             strict_pins: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
+            node: None,
             allow_hardlinks: false,
             allow_exec: Vec::new(),
             allow_plugin: Vec::new(),
@@ -1073,6 +1077,12 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         plugins: {
             let mut h = PluginHost::new(options.plugin_policy, move |m: &str| plugin_warn(m));
             h.set_store_home(options.store_home.clone());
+            if let Some(node) = &options.node {
+                h.set_node(node.clone());
+            }
+            if let Some(n) = options.on_notice.clone() {
+                h.set_notice(move |m: &str| n(m));
+            }
             h
         },
         tools: tools.iter().map(|t| (t.name.clone(), t.clone())).collect(),
