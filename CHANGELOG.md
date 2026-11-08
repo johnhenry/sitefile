@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve --watch --navigate-to-changed`** (johnhenry/sitefile#199): after a
+  rebuild that changed exactly one page, the reload event carries its URL
+  (`{"type":"reload","path":"/posts/hello/"}`) and open pages go there.
 - **Build-error overlay and Rebuilding badge** (johnhenry/sitefile#198): the
   `serve --watch` stream sends `{"type":"building"}` when a rebuild starts,
   `{"type":"error",code,message,file,line,column}` when it fails (also to

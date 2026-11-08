@@ -142,6 +142,8 @@ pub struct LiveReloadOptions {
     pub console: bool,
     /// Show a Rebuilding badge and a build-error overlay in the page (`--no-overlay` turns it off).
     pub overlay: bool,
+    /// After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`).
+    pub navigate_to_changed: bool,
 }
 
 impl Default for LiveReloadOptions {
@@ -151,6 +153,7 @@ impl Default for LiveReloadOptions {
             css_inject: true,
             console: false,
             overlay: true,
+            navigate_to_changed: false,
         }
     }
 }
@@ -159,12 +162,13 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{},\"overlay\":{},\"navigateToChanged\":{}}});\n",
         reload_client(),
         options.reset_service_workers,
         options.css_inject,
         options.console,
-        options.overlay
+        options.overlay,
+        options.navigate_to_changed
     )
 }
 
@@ -211,10 +215,7 @@ pub fn console_lines(body: &str, all: bool) -> Option<Vec<String>> {
     if (level == "log" || level == "info") && !all {
         return Some(Vec::new());
     }
-    let message = clean_text(
-        o.get("message").and_then(|m| m.as_str()).unwrap_or(""),
-        1000,
-    );
+    let message = clean_text(o.get("message").and_then(|m| m.as_str()).unwrap_or(""), 1000);
     let num = |k: &str| -> Option<u64> {
         let f = o.get(k)?.as_f64()?;
         (f.fract() == 0.0 && f >= 0.0 && f <= 9007199254740991.0).then_some(f as u64)
@@ -286,10 +287,27 @@ pub fn error_event(e: &SitefileError) -> String {
     serde_json::Value::Object(m).to_string()
 }
 
+/// The URL path that serves `file` (`/dir/` for `/dir/index.html`); same as `pageUrlFor` in src/server.ts.
+pub fn page_url_for(file: &str) -> String {
+    let mut segs: Vec<&str> = file.split('/').skip(1).collect();
+    if segs.last() == Some(&"index.html") {
+        let n = segs.len() - 1;
+        segs[n] = "";
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    format!("/{}", enc.join("/"))
+}
+
 /// The live-reload event for a new tree (`None` when no file changed); same rules as
 /// `reloadEventFor` in src/server.ts.
-pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<String> {
+pub fn reload_event_for(
+    prev: &Tree,
+    next: &Tree,
+    css_inject: bool,
+    navigate: bool,
+) -> Option<String> {
     let mut changed: Vec<String> = Vec::new();
+    let mut pages: Vec<&String> = Vec::new();
     let mut css_only = css_inject;
     for (p, f) in next.entries() {
         let old = prev.get(p);
@@ -297,6 +315,9 @@ pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<St
             continue;
         }
         changed.push(p.clone());
+        if mime_type_for(p).starts_with("text/html") {
+            pages.push(p);
+        }
         if old.is_none() || !mime_type_for(p).starts_with("text/css") {
             css_only = false;
         }
@@ -311,6 +332,11 @@ pub fn reload_event_for(prev: &Tree, next: &Tree, css_inject: bool) -> Option<St
         return None;
     }
     if !css_only {
+        if navigate && pages.len() == 1 {
+            return Some(
+                serde_json::json!({ "type": "reload", "path": page_url_for(pages[0]) }).to_string(),
+            );
+        }
         return Some(RELOAD_EVENT.to_string());
     }
     changed.sort();
@@ -370,9 +396,7 @@ impl LiveReload {
             return (false, None);
         };
         let (start, count) = match *w {
-            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => {
-                (start, count + 1)
-            }
+            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => (start, count + 1),
             _ => (now, 1),
         };
         *w = Some((start, count));
@@ -380,9 +404,7 @@ impl LiveReload {
             return (true, None);
         }
         let notice = (count == CONSOLE_LIMIT + 1).then(|| {
-            format!(
-                "browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest"
-            )
+            format!("browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest")
         });
         (false, notice)
     }
@@ -2163,20 +2185,19 @@ mod tests {
         assert!(!js.contains('`'));
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
-            format!(
-                "{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true}});\n"
-            )
+            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false,\"overlay\":true,\"navigateToChanged\":false}});\n")
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
             css_inject: false,
             console: true,
             overlay: false,
+            navigate_to_changed: true,
         });
         assert_eq!(
             keep.script(),
             format!(
-                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false}});\n"
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true,\"overlay\":false,\"navigateToChanged\":true}});\n"
             )
         );
         assert!(js.contains("attachShadow"));
@@ -2194,37 +2215,22 @@ mod tests {
             .unwrap()
         };
         let a = t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]);
-        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css);
+        let e = |next: &Tree, css: bool| reload_event_for(&a, next, css, false);
         assert_eq!(
-            e(
-                &t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]),
-                true
-            ),
+            e(&t(&[("/index.html", "i"), ("/a.css", "a"), ("/z/b.css", "b")]), true),
             None
         );
         assert_eq!(
-            e(
-                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]),
-                true
-            )
-            .as_deref(),
+            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "B")]), true).as_deref(),
             Some("{\"type\":\"css\",\"paths\":[\"/a.css\",\"/z/b.css\"]}")
         );
         let reload = Some(RELOAD_EVENT);
         assert_eq!(
-            e(
-                &t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]),
-                false
-            )
-            .as_deref(),
+            e(&t(&[("/index.html", "i"), ("/a.css", "A"), ("/z/b.css", "b")]), false).as_deref(),
             reload
         );
         assert_eq!(
-            e(
-                &t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]),
-                true
-            )
-            .as_deref(),
+            e(&t(&[("/index.html", "I"), ("/a.css", "A"), ("/z/b.css", "b")]), true).as_deref(),
             reload
         );
         assert_eq!(
@@ -2255,30 +2261,18 @@ mod tests {
             Some(vec!["browser error: Uncaught TypeError: x is undefined (http://h/app.js:3:5)".to_string()])
         );
         assert_eq!(
-            l(
-                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}",
-                false
-            ),
+            l("{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}", false),
             Some(vec!["browser warn: w (http://h/:2)".to_string()])
         );
         assert_eq!(
-            l(
-                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}",
-                false
-            ),
+            l("{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}", false),
             Some(vec!["browser warn: w (http://h/)".to_string()])
         );
         assert_eq!(
-            l(
-                "{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}",
-                false
-            ),
+            l("{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}", false),
             Some(vec!["browser error: m (u)".to_string()])
         );
-        assert_eq!(
-            l("{\"level\":\"log\",\"message\":\"hi\"}", false),
-            Some(vec![])
-        );
+        assert_eq!(l("{\"level\":\"log\",\"message\":\"hi\"}", false), Some(vec![]));
         assert_eq!(
             l("{\"level\":\"info\",\"message\":\"hi\"}", true),
             Some(vec!["browser info: hi".to_string()])
@@ -2291,25 +2285,15 @@ mod tests {
                 "    at g (b.js:3:4)".to_string()
             ])
         );
-        let long =
-            serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
+        let long = serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
         assert_eq!(
             l(&long, false).unwrap()[0],
             format!("browser error: {}...", "\u{1F600}".repeat(1000))
         );
         let stack: Vec<String> = (0..9).map(|i| format!("at f{i}")).collect();
-        let frames =
-            serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")})
-                .to_string();
+        let frames = serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")}).to_string();
         assert_eq!(l(&frames, false).unwrap().len(), 6);
-        for bad in [
-            "",
-            "x",
-            "[]",
-            "null",
-            "{\"level\":\"debug\",\"message\":\"m\"}",
-            "{\"message\":\"m\"}",
-        ] {
+        for bad in ["", "x", "[]", "null", "{\"level\":\"debug\",\"message\":\"m\"}", "{\"message\":\"m\"}"] {
             assert_eq!(l(bad, true), None, "{bad}");
         }
     }
@@ -2317,19 +2301,13 @@ mod tests {
     #[test]
     fn is_same_origin_post_rules() {
         let o = |p: &[(&str, &str)]| is_same_origin_post(&headers(p));
-        assert!(o(&[
-            ("host", "127.0.0.1:8080"),
-            ("origin", "http://127.0.0.1:8080")
-        ]));
+        assert!(o(&[("host", "127.0.0.1:8080"), ("origin", "http://127.0.0.1:8080")]));
         assert!(o(&[
             ("host", "x.example"),
             ("origin", "https://x.example"),
             ("sec-fetch-site", "same-origin")
         ]));
-        assert!(!o(&[
-            ("host", "127.0.0.1:8080"),
-            ("origin", "http://evil.example")
-        ]));
+        assert!(!o(&[("host", "127.0.0.1:8080"), ("origin", "http://evil.example")]));
         assert!(!o(&[("host", "127.0.0.1:8080")]));
         assert!(!o(&[
             ("host", "127.0.0.1:8080"),
@@ -2345,9 +2323,7 @@ mod tests {
         let l2 = log.clone();
         let opts = SiteServerOptions {
             live_reload: Some(LiveReload::new()),
-            log: Some(Arc::new(move |m: &str| {
-                l2.lock().unwrap().push(m.to_string())
-            })),
+            log: Some(Arc::new(move |m: &str| l2.lock().unwrap().push(m.to_string()))),
             ..Default::default()
         };
         let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
@@ -2356,12 +2332,7 @@ mod tests {
             let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let host = format!("127.0.0.1:{port}");
             let o = origin
-                .map(|o| {
-                    format!(
-                        "origin: {}\r\n",
-                        o.replace("SELF", &format!("http://{host}"))
-                    )
-                })
+                .map(|o| format!("origin: {}\r\n", o.replace("SELF", &format!("http://{host}"))))
                 .unwrap_or_default();
             write!(
                 c,
@@ -2382,33 +2353,16 @@ mod tests {
             *log.lock().unwrap(),
             vec!["browser error: Uncaught Error: boom (http://127.0.0.1/app.js:1:7)".to_string()]
         );
-        assert_eq!(
-            post(
-                srv.port,
-                "{\"level\":\"error\",\"message\":\"x\"}",
-                Some("http://evil.example")
-            ),
-            403
-        );
-        assert_eq!(
-            post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None),
-            403
-        );
+        assert_eq!(post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", Some("http://evil.example")), 403);
+        assert_eq!(post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None), 403);
         assert_eq!(post(srv.port, "not json", me), 400);
         let big = serde_json::json!({"level": "error", "message": "x".repeat(20000)}).to_string();
         assert_eq!(post(srv.port, &big, me), 413);
         assert_eq!(get(srv.port, "/__sitefile/console").status, 405);
-        assert_eq!(
-            post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me),
-            405
-        );
+        assert_eq!(post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me), 405);
         log.lock().unwrap().clear();
         for i in 0..CONSOLE_LIMIT + 5 {
-            post(
-                srv.port,
-                &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"),
-                me,
-            );
+            post(srv.port, &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"), me);
         }
         let got = log.lock().unwrap().clone();
         assert_eq!(got.len(), CONSOLE_LIMIT as usize);
@@ -2437,6 +2391,69 @@ mod tests {
         );
         assert_eq!(BUILDING_EVENT, "{\"type\":\"building\"}");
         assert_eq!(OK_EVENT, "{\"type\":\"ok\"}");
+    }
+
+    #[test]
+    fn navigate_to_changed_names_the_one_changed_page() {
+        let t = |files: &[(&str, &str)]| {
+            Tree::from_files(
+                files
+                    .iter()
+                    .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+            )
+            .unwrap()
+        };
+        let base: Vec<(&str, &str)> = vec![
+            ("/index.html", "i"),
+            ("/posts/a/index.html", "a"),
+            ("/posts/b/index.html", "b"),
+            ("/x.html", "x"),
+            ("/s.css", "s"),
+            ("/app.js", "1"),
+        ];
+        let a = t(&base);
+        let with = |edits: &[(&'static str, &'static str)]| {
+            let mut v = base.clone();
+            for (p, c) in edits {
+                match v.iter_mut().find(|(q, _)| q == p) {
+                    Some(e) => e.1 = c,
+                    None => v.push((p, c)),
+                }
+            }
+            t(&v)
+        };
+        let e = |next: &Tree, nav: bool| reload_event_for(&a, next, true, nav);
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/posts/a/\"}")
+        );
+        assert_eq!(
+            e(&with(&[("/posts/a/index.html", "A")]), false).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/x.html", "X"), ("/app.js", "2")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/x.html\"}")
+        );
+        assert_eq!(
+            e(&with(&[("/index.html", "I"), ("/posts/a/index.html", "A")]), true).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/app.js", "2")]), true).as_deref(),
+            Some(RELOAD_EVENT)
+        );
+        assert_eq!(
+            e(&with(&[("/s.css", "S")]), true).as_deref(),
+            Some("{\"type\":\"css\",\"paths\":[\"/s.css\"]}")
+        );
+        assert_eq!(
+            e(&with(&[("/new/index.html", "n")]), true).as_deref(),
+            Some("{\"type\":\"reload\",\"path\":\"/new/\"}")
+        );
+        assert_eq!(page_url_for("/index.html"), "/");
+        assert_eq!(page_url_for("/a b/index.html"), "/a%20b/");
+        assert_eq!(page_url_for("/caf\u{e9}.html"), "/caf%C3%A9.html");
     }
 
     #[test]
@@ -2617,10 +2634,7 @@ mod tests {
         };
         read_until(&mut c, &mut got, "retry: 1000\n\n");
         assert!(got.contains("content-type: text/event-stream"));
-        assert!(
-            got.contains("cache-control: no-cache, no-transform\r\n"),
-            "{got}"
-        );
+        assert!(got.contains("cache-control: no-cache, no-transform\r\n"), "{got}");
         assert!(got.contains("x-accel-buffering: no\r\n"), "{got}");
         for _ in 0..200 {
             if live.clients() == 1 {

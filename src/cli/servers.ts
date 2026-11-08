@@ -126,6 +126,7 @@ const run: Command = {
     '--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)',
     '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
     '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
+    '--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -145,6 +146,7 @@ const run: Command = {
     'no-css-inject': { type: 'boolean' },
     console: { type: 'boolean' },
     'no-overlay': { type: 'boolean' },
+    'navigate-to-changed': { type: 'boolean' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -197,7 +199,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed'] as const;
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -218,15 +220,16 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const buildFlags = !!file || target !== undefined || argFiles.length > 0 || argFlags.length > 0;
   const plain = !buildFlags && !(await isFile(path.join(context, 'Sitefile')));
   const cssInject = !v['no-css-inject'];
+  const navigate = !!v['navigate-to-changed'];
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'] });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate });
   /** Serve `next` and tell open pages what changed. */
   const swap = (next: Tree): void => {
-    const event = started ? (reloadEventFor(current, next, cssInject) ?? OK_EVENT) : undefined;
+    const event = started ? (reloadEventFor(current, next, cssInject, navigate) ?? OK_EVENT) : undefined;
     current = next;
     if (event !== undefined) live.send(event);
   };

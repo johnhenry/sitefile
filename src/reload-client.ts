@@ -58,8 +58,13 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     return swapped;
   }
 
-  function reload() {
-    resetServiceWorkers().then(function () { location.reload(); });
+  // --navigate-to-changed: a rebuild that changed exactly one page names it; go there unless
+  // this is already that page.
+  function reload(path) {
+    resetServiceWorkers().then(function () {
+      if (path && options.navigateToChanged && path !== location.pathname) location.assign(path);
+      else location.reload();
+    });
   }
 
   // Forward errors and warnings (and, with --console, log and info) to the server log, for pages
@@ -188,7 +193,7 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
       hideError();
       if (ev.type === "ok") return;
       if (ev.type === "css" && options.cssInject && swapStylesheets(ev.paths || [])) return;
-      reload();
+      reload(ev.path);
     };
     source.onerror = function () {
       if (source.readyState !== EventSource.CLOSED) return;

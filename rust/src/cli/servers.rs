@@ -90,6 +90,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("no-css-inject"),
     flag("console"),
     flag("no-overlay"),
+    flag("navigate-to-changed"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -105,6 +106,7 @@ const WATCH_ONLY: &[&str] = &[
     "no-css-inject",
     "console",
     "no-overlay",
+    "navigate-to-changed",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -129,6 +131,7 @@ pub const SERVE: Command = Command {
         "--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)",
         "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
         "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
+        "--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -230,6 +233,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         file.is_some() || v.has("target") || !arg_files.is_empty() || !arg_flags.is_empty();
     let plain = !build_flags && !std::path::Path::new(&context).join("Sitefile").is_file();
     let css_inject = !v.flag("no-css-inject");
+    let navigate = v.flag("navigate-to-changed");
     if is_wildcard(&bind.host) {
         err(&format!(
             "warning: binding {}: the site will be reachable from other machines\n",
@@ -244,6 +248,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         css_inject,
         console: v.flag("console"),
         overlay: !v.flag("no-overlay"),
+        navigate_to_changed: navigate,
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
@@ -253,7 +258,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         let Ok(mut t) = current.write() else { return };
         let event = if started.get() {
             Some(
-                crate::server::reload_event_for(&t, &next, css_inject)
+                crate::server::reload_event_for(&t, &next, css_inject, navigate)
                     .unwrap_or_else(|| crate::server::OK_EVENT.to_string()),
             )
         } else {

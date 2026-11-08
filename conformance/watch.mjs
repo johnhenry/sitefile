@@ -132,6 +132,20 @@ export const WATCH_CASES = [
       { next: true },
     ],
   },
+  {
+    name: 'watch/navigate-to-changed',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>', 'public/posts/a b/index.html': '<h1>a</h1>', 'public/x.html': '<h1>x</h1>' },
+    args: ['--navigate-to-changed'],
+    steps: [
+      { open: true },
+      { write: { 'public/posts/a b/index.html': '<h1>A</h1>' } },
+      { next: true },
+      { next: true },
+      { write: { 'public/x.html': '<h1>X</h1>', 'public/index.html': '<h1>I</h1>' } },
+      { next: true },
+      { next: true },
+    ],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

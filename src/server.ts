@@ -92,11 +92,13 @@ export interface LiveReloadOptions {
   readonly console?: boolean;
   /** Show a Rebuilding badge and a build-error overlay in the page (default true; `--no-overlay` turns it off). */
   readonly overlay?: boolean;
+  /** After a rebuild that changed exactly one page, go to that page (`--navigate-to-changed`; default false). */
+  readonly navigateToChanged?: boolean;
 }
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false}});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false},"navigateToChanged":${options.navigateToChanged === true}});\n`;
 }
 
 /** Reserved for browser console messages (POST) while `serve --watch` runs. */
@@ -180,17 +182,31 @@ export function errorEvent(e: SitefileError): string {
 }
 
 /**
+ * The URL path that serves `file`: `/dir/` for `/dir/index.html` (and `/` for `/index.html`),
+ * else the file path; each segment percent-encoded like encodeURIComponent.
+ */
+export function pageUrlFor(file: string): string {
+  const segs = file.split('/').slice(1);
+  if (segs[segs.length - 1] === 'index.html') segs[segs.length - 1] = '';
+  return '/' + segs.map(encodeURIComponent).join('/');
+}
+
+/**
  * The live-reload event for a new tree (undefined when no file changed): `{"type":"css","paths":[...]}`
  * when `cssInject` is on and every changed file is a stylesheet that is in both trees (added or
- * removed files always reload), else {@link RELOAD_EVENT}. Paths are sorted.
+ * removed files always reload), else {@link RELOAD_EVENT}; with `navigate`, a reload where exactly
+ * one HTML file was added or changed also names its page: `{"type":"reload","path":"/posts/a/"}`.
+ * Paths are sorted.
  */
-export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean): string | undefined {
+export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean, navigate = false): string | undefined {
   const changed: string[] = [];
+  const pages: string[] = [];
   let cssOnly = cssInject;
   for (const [p, f] of next.entries()) {
     const old = prev.get(p);
     if (old !== undefined && old.digest === f.digest && old.mode === f.mode) continue;
     changed.push(p);
+    if (mimeTypeFor(p).startsWith('text/html')) pages.push(p);
     if (old === undefined || !mimeTypeFor(p).startsWith('text/css')) cssOnly = false;
   }
   for (const [p] of prev.entries()) {
@@ -200,7 +216,7 @@ export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean): stri
     }
   }
   if (changed.length === 0) return undefined;
-  if (!cssOnly) return RELOAD_EVENT;
+  if (!cssOnly) return navigate && pages.length === 1 ? JSON.stringify({ type: 'reload', path: pageUrlFor(pages[0]!) }) : RELOAD_EVENT;
   return JSON.stringify({ type: 'css', paths: changed.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) });
 }
 
