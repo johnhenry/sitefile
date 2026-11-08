@@ -19,6 +19,8 @@
 //
 // Placeholders, substituted in args, env values and the context's text files:
 //   ${HTTPS}     https://127.0.0.1:<port> of the local HTTPS server (servers.mjs)
+//   ${PROXIED}   the same server as https://proxied.test:<port>: a name only the proxy resolves
+//   ${PROXY}     http://127.0.0.1:<port> of the local HTTP proxy (CONNECT to refused.test is refused)
 //   ${REGISTRY}  127.0.0.1:<port> of the mock registry
 //   ${CTX}       this implementation's copy of the case directory
 //   ${OUT}       this implementation's output directory
@@ -27,7 +29,7 @@
 //   ${GIT_V1}, ${GIT_V2}  commits of the mock Git repository ${HTTPS}/repo.git
 //                (v1 is tagged v1; main moved to v2)
 //   ${STAGES_V1}, ${STAGES_V2}  the same for ${HTTPS}/stages.git (a Sitefile of shared stages)
-// Only ${HTTPS}, ${REGISTRY}, ${GIT_V1}/${GIT_V2} and ${STAGES_V1}/${STAGES_V2} are replaced
+// Only ${HTTPS}, ${PROXIED}, ${PROXY}, ${REGISTRY}, ${GIT_V1}/${GIT_V2} and ${STAGES_V1}/${STAGES_V2} are replaced
 // inside context files (templates use ${…} for their own variables).
 //
 // Each implementation gets its own context copy, SITEFILE_HOME, HOME and
@@ -37,7 +39,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-const FILE_VARS = ['HTTPS', 'REGISTRY', 'GIT_V1', 'GIT_V2', 'STAGES_V1', 'STAGES_V2'];
+const FILE_VARS = ['HTTPS', 'PROXIED', 'PROXY', 'REGISTRY', 'GIT_V1', 'GIT_V2', 'STAGES_V1', 'STAGES_V2'];
 
 function substitute(s, vars, names = Object.keys(vars)) {
   let out = s;

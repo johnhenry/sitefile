@@ -1,0 +1,5 @@
+# A no-proxy host is reached directly (the configured proxy port has nothing listening).
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

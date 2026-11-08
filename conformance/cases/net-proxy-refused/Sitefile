@@ -1,0 +1,5 @@
+# The proxy refuses the CONNECT tunnel: E_FETCH naming the proxy (never its credentials).
+FROM scratch
+IMPORT css FROM https://refused.test/style.css
+COPY css: /style.css
+EXPORT /

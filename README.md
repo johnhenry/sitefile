@@ -390,7 +390,11 @@ tools are code, and run only when you name them on the command line.
 - **Remote imports are `https:` only, to public addresses only** — checked at
   connect time and on every redirect (SSRF), size- and time-limited, never
   decompressed or executed. `--allow-http` and `--allow-private-network` are the
-  only ways to widen this.
+  only ways to widen this. An explicit proxy (`--proxy` / `$SITEFILE_PROXY`;
+  `HTTP(S)_PROXY` is never read) does not widen it either: sitefile resolves and
+  checks the target itself before handing it to the proxy. `--allow-hosts` and
+  `--deny-hosts` narrow it further, on every hop
+  ([docs/CLI.md](docs/CLI.md#network-proxy-host-rules-and-timeouts)).
 - **Pins are enforced.** Unpinned URLs are recorded in `Sitefile.lock` and must
   match on later builds; `--strict-pins` refuses any remote import or BASE image
   that is not pinned (`INTEGRITY`, `@sha256:` or a lockfile entry).

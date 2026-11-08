@@ -121,6 +121,7 @@ errors and per-plugin cache entries.
 | Cancellation | `BuildOptions::cancel: Option<CancelToken>`; `CancelToken::new()`, `.cancel()`, `.is_cancelled()`, `.check()`. A cancelled build fails with `E_CANCELLED` ("the build was cancelled") | not the CLI |
 | Per-plugin cache | `TransformCache::usage_by_plugin() -> Vec<PluginCacheUsage>` (`{ plugin: Option<String>, entries, blobs, bytes }`); `TransformCache::prune_plugin(name: &str, older_than: Duration) -> PruneResult`; `get_for` / `put_for` record the name | `cache prune --plugin` |
 | Permission errors | `SitefileError::needs: Option<Needs>`; `Needs { kind: NeedsKind::Plugin \| NeedsKind::Tool, name }`, `.flag()` (`--allow-plugin` / `--allow-exec`), `.args()` | `E_UNSUPPORTED` at a PLUGIN or TOOL |
+| Network settings (proxy, host rules, timeouts) | `FetchPolicy::network: NetworkSettings` (`resources::network`; `NetworkSettings::NONE` is the default) for `BuildOptions::fetch_policy` and `git_context::materialize_git_context(&policy, …)`; `RegistryOptions::network` for registry clients built directly. `network_from_env(&Env)`, `merge_network`, `network_problem` and `host_matches` are what the CLI uses. Both implementations (TS: `FetchPolicy.network`, `RegistryOptions.network`, `networkFromEnv`); see docs/CLI.md, "Network" | `--proxy`, `--no-proxy`, `--allow-hosts`, `--deny-hosts`, `--connect-timeout`, `--read-timeout` and `SITEFILE_*` |
 
 - **Cancellation is cooperative.** The token is checked before each import
   (download), `FROM image` and `BASE` resolution, stage, operation, plugin
@@ -200,7 +201,10 @@ paths").
   `--update-lock`, `EXPORT … AS oci BASE`, a `push`/`pull`/`save` round trip
   and the registry TRANSFORM cache (`--cache-from`/`--cache-to`: the pushed
   manifests must have the same digest, and the Rust CLI must reuse results the
-  TypeScript CLI pushed).
+  TypeScript CLI pushed). A local HTTP proxy covers `--proxy`/`SITEFILE_PROXY`
+  (a CONNECT tunnel with real TLS to a name only the proxy resolves, a refused
+  tunnel, `push`/`pull` through it), the private-address rule through a proxy,
+  `--no-proxy`, and the allow/deny host rules.
     Compressed outputs (zip, tar.gz, OCI archives, gzip and uncompressed
   layers) are compared byte for byte, and OCI images by manifest digest
   (and, with `--provenance` / `--sbom`, by the digest of every attestation).
@@ -317,6 +321,13 @@ protocol v2, not by running the `git` program:
   rather than Node's bundled copy.
 - **Third-party error text.** Messages that embed a JSON parser's or the OS's
   own wording (invalid JSON files, DNS failures) use serde's and Rust's text.
+- **Read timeout and the total timeout.** With `--read-timeout`, the Rust
+  client bounds each read by it and checks the total `--timeout` between
+  reads, so a server that keeps sending a byte just inside the read timeout can
+  make a fetch run past the total by up to one read timeout. TypeScript ends it
+  on time. Without `--read-timeout`, both enforce the total exactly. On a
+  `CONNECT`, ureq sends `Proxy-Authorization: basic …` (lowercase scheme), and
+  Node sends `Basic` (the scheme is case-insensitive).
 - **NFC of not-yet-assigned marks.** `icu_normalizer_data` 2.4 gives a
   combining class to U+05C8–U+05C9 and U+1ADE–U+1AF0, which Node's ICU (78, Node 26)
   still treats as unassigned, so a path that puts one of them after another

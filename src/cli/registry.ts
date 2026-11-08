@@ -1,3 +1,4 @@
+import { NETWORK_OPTIONS, networkHelp, networkOption } from './network.js';
 import { insecureRegistriesFromEnv, makeClient } from '../base-image.js';
 import { SitefileError } from '../errors.js';
 import { parseRef, refKey, withDefaultRegistry, canonicalRef } from '../ref.js';
@@ -32,10 +33,12 @@ const COMMON_FLAGS = [
   '                                    $SITEFILE_REGISTRY_AUTH or ~/.docker/config.json (auths, credHelpers, credsStore)',
   '--password-stdin                    read the password from stdin',
   '--allow-private-network             let redirects/token servers on other hosts resolve to private addresses',
-  '--timeout <ms>                      per-request idle timeout (default 30000)',
+  '--timeout <ms>                      per-request idle timeout (default 30000; --read-timeout wins)',
+  ...networkHelp(36),
 ];
 
 const COMMON_OPTIONS = {
+  ...NETWORK_OPTIONS,
   'insecure-registry': { type: 'string', multiple: true },
   username: { type: 'string' },
   'password-stdin': { type: 'boolean' },
@@ -54,12 +57,14 @@ async function clientOptions(v: ParsedValues): Promise<{ options: RegistryOption
   }
   const timeoutMs = positive(str(v.timeout), '--timeout');
   const maxBlob = positive(str(v['max-download-bytes']), '--max-download-bytes');
+  const network = networkOption(v);
   return {
     explicit,
     options: {
       insecureRegistries: insecureRegistriesFromEnv(strs(v['insecure-registry'])),
       allowPrivateNetwork: !!v['allow-private-network'],
       limits: { ...(timeoutMs ? { timeoutMs } : {}), ...(maxBlob ? { maxBlobBytes: maxBlob } : {}) },
+      ...(network ? { network } : {}),
     },
   };
 }

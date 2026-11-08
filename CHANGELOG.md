@@ -2,6 +2,24 @@
 
 ## 0.1.0 (unreleased)
 
+- **Explicit network settings: proxy, host rules, connect/read timeouts**
+  (johnhenry/sitefile#156), for networks that need a proxy and for sitefile
+  Desktop's Settings screen. `--proxy` / `SITEFILE_PROXY` (an `http://` proxy:
+  a CONNECT tunnel for https, absolute form for http; `HTTP(S)_PROXY` is still
+  never read), `--no-proxy` / `SITEFILE_NO_PROXY` (`NO_PROXY` syntax),
+  `--allow-hosts` / `SITEFILE_ALLOW_HOSTS` and `--deny-hosts` /
+  `SITEFILE_DENY_HOSTS` (checked on every hop, registries included; deny beats
+  allow; the new code `E_HOST_BLOCKED` names the rule), and `--connect-timeout`
+  / `--read-timeout` / `SITEFILE_FETCH_TIMEOUT`, on `build`, `validate`,
+  `inspect`, `graph`, `why`, `pull`, `push`, `vendor` and `outdated`. A proxy
+  never widens the fetch policy: the target is resolved and checked against
+  the private-address rule before the proxy is asked. Embedders pass the same
+  settings as `FetchPolicy.network` / `RegistryOptions.network`
+  (`NetworkSettings`, additive in both implementations). docs/CLI.md,
+  "Network"; `test/network.test.ts`, `rust/src/resources/network.rs`, and the
+  `net-proxy*`, `net-no-proxy`, `net-allow-hosts` and `net-deny-hosts`
+  conformance cases. Added in c131eb3 (#162).
+
 - **Library API for embedders** (johnhenry/sitefile#153), found by embedding
   the crate in sitefile Desktop. Rust: `servers::serve_detached`,
   `restart_detached`, `start_detached`, `stop_server`, `resolve_source`,

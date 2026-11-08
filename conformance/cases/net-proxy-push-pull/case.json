@@ -1,0 +1,10 @@
+{
+  "network": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/built.oci.tar", "--allow-private-network", "--no-lockfile", "-t", "${REGISTRY}/conf/proxied-${IMPL}:1"],
+    ["push", "${REGISTRY}/conf/proxied-${IMPL}:1", "--proxy", "${PROXY}"],
+    { "args": ["pull", "${REGISTRY}/conf/proxied-${IMPL}:1", "--proxy", "${PROXY}"], "env": { "SITEFILE_HOME": "${TMP}/home2" } },
+    { "args": ["save", "${REGISTRY}/conf/proxied-${IMPL}:1", "-o", "${OUT}/pulled"], "env": { "SITEFILE_HOME": "${TMP}/home2" } }
+  ],
+  "outputs": [["built.oci.tar", "oci"], ["pulled", "tree"]]
+}

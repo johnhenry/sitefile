@@ -9,4 +9,5 @@ export { BuildMemo, type MemoStats } from './memo.js';
 export { Profiler } from './profile.js';
 export { Tree, makeFile, type FileNode, type ConflictPolicy } from './tree.js';
 export { DEFAULT_ARCHIVE_LIMITS, DEFAULT_FETCH_POLICY, type ArchiveLimits, type FetchPolicy, type Resource } from './resources/types.js';
+export { networkFromEnv, mergeNetwork, networkProblem, hostMatches, type NetworkSettings } from './resources/network.js';
 export { extractArchive } from './resources/archive.js';

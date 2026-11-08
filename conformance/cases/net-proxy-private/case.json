@@ -1,0 +1,6 @@
+{
+  "network": true,
+  "steps": [
+    { "args": ["build", "${CTX}", "-o", "${OUT}/dist"], "env": { "SITEFILE_PROXY": "${PROXY}" } }
+  ]
+}

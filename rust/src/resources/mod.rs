@@ -9,6 +9,7 @@ pub mod ignore;
 pub mod local;
 pub mod lockfile;
 pub mod netpolicy;
+pub mod network;
 pub mod types;
 pub mod vendor;
 pub mod wbn_reader;

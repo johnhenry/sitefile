@@ -82,6 +82,8 @@ impl Resource {
     }
 }
 
+pub use crate::resources::network::NetworkSettings;
+
 /// Network policy for remote resources. Defaults are secure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchPolicy {
@@ -99,6 +101,9 @@ pub struct FetchPolicy {
     /// the default roots (never instead of them). Certificate and hostname
     /// verification stay on.
     pub ca: Option<Vec<u8>>,
+    /// Proxy, host rules and connect/read timeouts (see [`NetworkSettings`]).
+    /// Default: direct connections, every public host, only the total `timeout_ms`.
+    pub network: NetworkSettings,
 }
 
 pub const DEFAULT_FETCH_POLICY: FetchPolicy = FetchPolicy {
@@ -108,6 +113,7 @@ pub const DEFAULT_FETCH_POLICY: FetchPolicy = FetchPolicy {
     timeout_ms: 30_000,
     max_redirects: 5,
     ca: None,
+    network: NetworkSettings::NONE,
 };
 
 impl Default for FetchPolicy {

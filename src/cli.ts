@@ -24,6 +24,7 @@ import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 import { loadSecrets } from './secrets.js';
+import { NETWORK_OPTIONS, networkHelp, networkOption } from './cli/network.js';
 
 const VERSION = SITEFILE_VERSION;
 
@@ -103,6 +104,7 @@ Options:
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
+${networkHelp(25).map((l) => `      ${l}`).join('\n')}
       --json                   machine-readable output (validate, inspect, graph, why)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
@@ -129,6 +131,7 @@ export async function main(
       args: [...argv],
       allowPositionals: true,
       options: {
+        ...NETWORK_OPTIONS,
         file: { type: 'string', short: 'f' },
         target: { type: 'string' },
         out: { type: 'string', short: 'o' },
@@ -246,11 +249,13 @@ export async function main(
   let failed = false;
   let fetched: GitContext | undefined;
   try {
+    const network = networkOption(o);
     const fetchPolicy = {
       allowHttp: !!o['allow-http'],
       allowPrivateNetwork: !!o['allow-private-network'],
       ...(o['max-download-bytes'] ? { maxBytes: positiveInt(o['max-download-bytes'], '--max-download-bytes') } : {}),
       ...(o.timeout ? { timeoutMs: positiveInt(o.timeout, '--timeout') } : {}),
+      ...(network ? { network } : {}),
     };
     if (gitContext) {
       // A Git URL context: fetched into a temporary directory, built from there, then removed.
@@ -264,7 +269,7 @@ export async function main(
         ? new RegistryCache({
             from: cacheFrom.map((r) => parseCacheRef('--cache-from', r)),
             to: cacheTo[0] !== undefined ? parseCacheRef('--cache-to', cacheTo[0]) : undefined,
-            client: (registry) => makeClient(registry, { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []), allowPrivateNetwork: !!o['allow-private-network'] }),
+            client: (registry) => makeClient(registry, { insecureRegistries: insecureRegistriesFromEnv(o['insecure-registry'] ?? []), allowPrivateNetwork: !!o['allow-private-network'], network }),
             limit: cacheLimitFromEnv(),
             warn: (m) => process.stderr.write(`warning: ${m}\n`),
             notice: (m) => process.stderr.write(`${m}\n`),
