@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
+  Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
+  fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
+  ~24, so files no longer arrive as `application/octet-stream` under
+  `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
+  implementations. A `serve` conformance case kind (`"command": "serve"`)
+  compares both servers' answers to raw HTTP requests.
 - **`sitefile diff`** (johnhenry/sitefile#212): files added, removed and
   changed (with sizes, digests and modes) between two images, directories or
   archives, plus the `_redirects`/`_headers` rules added and removed;
@@ -13,6 +20,42 @@
   <dir|archive|image> --manifest <file> [--json]` reports missing, changed and
   extra files and fails with `E_INTEGRITY`. Same bytes from both
   implementations; conformance step cases `steps-verify*`.
+- **JavaScript plugins get a memory limit** (johnhenry/sitefile#157): the
+  plugin process starts with `--max-old-space-size`, set by the new
+  `--plugin-memory <MiB>` flag (default 1024, the same as the wasm linear
+  memory cap, which the flag now sets too; `bake` passes it through). A plugin
+  that passes it fails with `E_PLUGIN: … ran out of memory (more than the N MiB
+  limit)` instead of V8's stack trace. Library: `PluginPolicy.maxMemoryMiB` /
+  `max_memory_mib`.
+- **Live reload works under a strict CSP and leaves fetch()ed HTML alone**
+  (johnhenry/sitefile#181): `serve --watch` injects
+  `<script src="/__sitefile/reload.js"></script>` (a same-origin script that
+  `script-src 'self'` allows) instead of an inline script, and only into page
+  navigations (`Sec-Fetch-Mode: navigate`, else `Sec-Fetch-Dest`, else an
+  `Accept` naming `text/html`), so an HTML fragment loaded with `fetch()` is
+  served unchanged. A `_headers` CSP that still blocks the script or the event
+  stream gets a one-time warning. The client script has one source
+  (`src/reload-client.ts`), which the Rust server compiles in. New watch-mode
+  conformance cases (`conformance/watch.mjs`) compare both servers' responses
+  and events.
+- **FINGERPRINT writes cache headers and SRI** (johnhenry/sitefile#202):
+  EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the
+  fingerprinted files (a `/dir/*` rule when a directory holds only them) and
+  `no-cache` for the pages to `/_headers`, unless `--no-cache-headers` or a
+  HEADER sets `Cache-Control`. `FINGERPRINT … INTEGRITY` adds
+  `integrity="sha384-…"` to the `<script src>` and
+  `<link rel=stylesheet|modulepreload>` tags that load a renamed file. Both
+  implementations, with conformance cases.
+- **Network gating** (johnhenry/sitefile#176): a host refused because it
+  matches no `--allow-hosts` rule now says which flag to add (`; add
+  --allow-hosts <host>`) and carries `needs` (`kind: 'host'`,
+  `NeedsKind::Host`), like a plugin that was not allowed. Opt-in strict mode,
+  `--network strict` or `SITEFILE_NETWORK=strict`, allows only listed hosts
+  (none when none are listed) and sends an `IMPORT … SECRET` only to a host
+  that `--allow-secret-host <id>=<host>` names (`kind: 'secret-host'`). The
+  default stays `open`. With `--json`, a failed command also prints
+  `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
+  error rows include `needs`. Both implementations, with conformance cases.
 
 ## 0.0.2 (2026-11-08)
 

@@ -886,10 +886,11 @@ use `${NAME}`.
     HEADER) lines has `--overwrite`, which replaces the file.
 
 ### Fingerprinting: FINGERPRINT (see `examples/blog/`)
-`FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]` renames assets to
-content-hashed names (`/style.css` becomes `/style.3f2a9c1b0d.css`) and rewrites
-the references to them, so a host can serve them with
-`Cache-Control: public, max-age=31536000, immutable`. Like SITEMAP it runs
+`FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`
+renames assets to content-hashed names (`/style.css` becomes
+`/style.3f2a9c1b0d.css`) and rewrites the references to them, so a host can
+serve them with `Cache-Control: public, max-age=31536000, immutable` (EXPORT
+writes those headers to `/_headers`, see below). Like SITEMAP it runs
 **at its place in the stage** and reads the stage's tree at that point, so put
 it after the pages and assets are written. It is an instruction rather than an
 EXPORT clause because the result is an ordinary tree: later instructions (a
@@ -960,8 +961,45 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   }
   ```
 
-  It is the hook for later steps that need the names (and for subresource
-  integrity, issue #105).
+  It is the hook for later steps that need the names.
+- **`INTEGRITY`** adds Subresource Integrity to the HTML: every `<script>`
+  with a `src` and every `<link>` with an `href` whose `rel` has the token
+  `stylesheet` or `modulepreload` (ASCII case-insensitive), in every `.html`
+  and `.htm` file of the tree, that loads a file this FINGERPRINT renamed gets
+  ` integrity="sha384-<base64>"` (the SHA-384 of the renamed file's final
+  bytes) inserted right after the tag name: `<script src="app.js">` →
+  `<script integrity="sha384-…" src="app.<hash>.js">`. A tag that already has
+  an `integrity` attribute is left alone, and so are other elements
+  (`<img>`, `<link rel=icon>`, `rel=preload`). No `crossorigin` is added:
+  fingerprinted files are files of the site, so they are same-origin, where
+  SRI needs no CORS. Tags are found by the same scanner as references
+  (comments and raw text are skipped).
+- **Cache headers**: when the exported stage holds files a FINGERPRINT renamed,
+  EXPORT adds `Cache-Control` lines to `/_headers` after the HEADER lines:
+  `public, max-age=31536000, immutable` for the renamed files, and `no-cache`
+  for the pages, so a deploy never serves a stale page that names old assets.
+  Each renamed file is covered by a `/dir/*` rule for the topmost directory
+  below the root that holds only renamed files (`/assets/*`), or else by its
+  own URL; pages by `/` (when `/index.html` exists), `/*/` (when a deeper
+  `index.html` exists) and `/*.html`. Pages a host serves without `.html`
+  (pretty URLs such as `/about`) are not matched; add a `HEADER` for them.
+  URLs with spaces or control characters are left out. The lines are not
+  written when any FINGERPRINT of the Sitefile has `--no-cache-headers`, when
+  a `HEADER` sets `Cache-Control` itself (yours win; nothing is mixed), or
+  with `--target`. When there are no HEADER lines and the tree already has a
+  `/_headers` (COPY'd in), it is kept as it is and a warning says the lines
+  were not added. With only these lines, `/_headers` has the origin
+  `Sitefile:<line> FINGERPRINT` (the first FINGERPRINT), and `why /_headers`
+  lists that FINGERPRINT among its inputs.
+
+  ```text
+  /assets/*
+    Cache-Control: public, max-age=31536000, immutable
+  /
+    Cache-Control: no-cache
+  /*.html
+    Cache-Control: no-cache
+  ```
 - **Site files**: a `HEADER` pattern or a `REDIRECT` target that is exactly the
   URL of a file renamed in the exported stage (or the stages it is built
   `FROM`) is written to `/_headers` / `/_redirects` with the new URL

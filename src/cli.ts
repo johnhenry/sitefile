@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import path from 'node:path';
-import { SitefileError, isSitefileError } from './errors.js';
+import { errorJson, SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, sitefileCompression, type BuildOptions } from './executor.js';
 import { LINT_RULES } from './lint.js';
 import { compressionFromExtension, defaultOutName, formatFromExtension } from './export-formats.js';
@@ -81,6 +81,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -110,7 +112,8 @@ Options:
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
 ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
@@ -157,6 +160,7 @@ export async function main(
         'build-arg-file': { type: 'string', multiple: true },
         secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
+        'plugin-memory': { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
@@ -327,8 +331,14 @@ export async function main(
       fetchPolicy,
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(o['vendor-dir'] !== undefined ? { vendorDir: o['vendor-dir'] } : {}),
-      ...(o['plugin-timeout']
-        ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
+      ...(o['plugin-timeout'] || o['plugin-memory']
+        ? {
+            pluginPolicy: {
+              ...(o['plugin-timeout'] ? { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } : {}),
+              ...(o['plugin-memory'] ? { maxMemoryMiB: positiveInt(o['plugin-memory'], '--plugin-memory') } : {}),
+            },
+            ...(o['plugin-timeout'] ? { toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
+          }
         : {}),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
@@ -479,6 +489,8 @@ export async function main(
     failed = true;
     if (isSitefileError(e)) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
+      // With --json, the failure is also machine-readable on stdout (code, span, needs).
+      if (o.json) process.stdout.write(errorJson(e));
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
       return 1;
     }

@@ -80,6 +80,11 @@ fn parse_hop(url: &str) -> Option<Hop> {
     })
 }
 
+/// The host (without IPv6 brackets) and port of an http(s) URL; None when it does not parse.
+pub(crate) fn host_port(url: &str) -> Option<(String, u16)> {
+    parse_hop(url).map(|h| (h.host, h.port))
+}
+
 /// What a URL parsed with the WHATWG parser carries (Git URLs: credentials and query are refused).
 pub(crate) struct UrlParts {
     pub has_credentials: bool,

@@ -33,6 +33,9 @@
 // `sitefile bake <args>` there (so the default sitefile.bake.yaml and relative paths
 // apply); it compares exit code, the whole stdout and stderr, and the tree of `out`
 // (default `dist`) in the copy when it exists.
+// `command: "serve"` starts `sitefile serve` on a directory of the case with both
+// CLIs and compares their answers to a list of raw HTTP requests (format in
+// conformance/servers.mjs, runServeCase).
 // `profile: true` adds `--profile <file>` and requires the same trace from both,
 // ignoring each event's `ts` and `dur` (names, categories, threads, args and order
 // must match; also when the build fails).
@@ -49,6 +52,9 @@
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
 //
+// Watch cases (conformance/watch.mjs) run `serve --watch` with both CLIs and compare the
+// transcript of a script of requests, file edits and event-stream reads.
+//
 // The run prints how many offline and network cases there are.
 //
 // Needs `npm run build` (for lib/) and `cargo build --release` in rust/.
@@ -60,7 +66,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runNetworkCase } from './network.mjs';
-import { startServers } from './servers.mjs';
+import { runServeCase, startServers } from './servers.mjs';
+import { runWatchCases } from './watch.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -255,6 +262,13 @@ try {
       for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
       continue;
     }
+    if (c.command === 'serve') {
+      const res = await runServeCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp });
+      results.push(res);
+      console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
+      if (!res.pass) for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+      continue;
+    }
     if (c.command === 'bake') {
       const res = await runBakeCase(c);
       results.push(res);
@@ -348,6 +362,13 @@ try {
         console.log(`        ${impl.padEnd(4)} exit ${x.code} ${x.spawnError ?? (x.code === 0 ? `${x.output?.files} files ${x.output?.digest}` : x.error)}${x.warnings ? ` [${x.warnings.replace(/\n/g, ' | ')}]` : ''}`);
       }
     }
+  }
+  // serve --watch (conformance/watch.mjs): the same requests, edits and event reads against both servers.
+  for (const res of await runWatchCases({ impls: [['ts', TS], ['rust', RUST]], tmp, only })) {
+    results.push({ name: res.name, compare: res.compare, pass: res.pass });
+    console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${res.name}`);
+    for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+    if (process.env.CONFORMANCE_SHOW_WATCH) console.log(JSON.stringify(res.transcript, null, 1));
   }
 } finally {
   await servers?.close();

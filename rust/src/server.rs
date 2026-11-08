@@ -24,9 +24,13 @@ pub struct SiteServerOptions {
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
     pub server_id: Option<String>,
-    /// `serve --watch`: answer [`RELOAD_PATH`] with an event stream and add
-    /// [`RELOAD_SCRIPT`] to HTML responses. Never set otherwise, and never written to exports.
+    /// `serve --watch`: answer [`RELOAD_PATH`] with an event stream and [`RELOAD_SCRIPT_PATH`]
+    /// with the client script, and add [`RELOAD_SCRIPT`] to HTML navigations. Never set
+    /// otherwise, and never written to exports.
     pub live_reload: Option<Arc<LiveReload>>,
+    /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
+    /// blocks live reload.
+    pub warn: Option<LogFn>,
 }
 
 /// The tree a server answers from; `serve --watch` swaps in each good rebuild.
@@ -34,8 +38,88 @@ pub type SharedTree = Arc<RwLock<Arc<Tree>>>;
 
 /// Reserved for the live-reload event stream while `serve --watch` runs.
 pub const RELOAD_PATH: &str = "/__sitefile/reload";
-/// Added to served HTML (before the last `</body>`, else at the end) under `serve --watch`.
-pub const RELOAD_SCRIPT: &str = "<script>new EventSource(\"/__sitefile/reload\").onmessage=function(){location.reload()}</script>";
+/// Reserved for the live-reload client script ([`reload_client`]) while `serve --watch` runs.
+pub const RELOAD_SCRIPT_PATH: &str = "/__sitefile/reload.js";
+/// Added to navigated HTML (before the last `</body>`, else at the end) under `serve --watch`.
+pub const RELOAD_SCRIPT: &str = "<script src=\"/__sitefile/reload.js\"></script>";
+
+/// The TypeScript module that holds the client script; it is the single source of both servers' bytes.
+const RELOAD_CLIENT_SOURCE: &str = include_str!("../../src/reload-client.ts");
+
+/// The live-reload client script (JavaScript): the text between the `String.raw` backticks of
+/// `src/reload-client.ts`.
+pub fn reload_client() -> &'static str {
+    static CLIENT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let start = RELOAD_CLIENT_SOURCE
+            .find("String.raw`")
+            .map(|i| i + "String.raw`".len())
+            .expect("src/reload-client.ts has a String.raw literal");
+        let end = RELOAD_CLIENT_SOURCE
+            .rfind('`')
+            .filter(|e| *e >= start)
+            .expect("src/reload-client.ts closes its String.raw literal");
+        &RELOAD_CLIENT_SOURCE[start..end]
+    })
+}
+
+/// Whether a request is a page navigation, which gets the reload script: `Sec-Fetch-Mode:
+/// navigate` when the browser sends it, else `Sec-Fetch-Dest` document/iframe/frame, else an
+/// `Accept` naming `text/html`. A `fetch()` of an HTML fragment is none of these.
+pub fn is_navigation(headers: &HashMap<String, String>) -> bool {
+    if let Some(mode) = headers.get("sec-fetch-mode") {
+        return mode.trim().eq_ignore_ascii_case("navigate");
+    }
+    if let Some(dest) = headers.get("sec-fetch-dest") {
+        let d = dest.trim().to_ascii_lowercase();
+        return d == "document" || d == "iframe" || d == "frame";
+    }
+    headers
+        .get("accept")
+        .is_some_and(|a| a.to_ascii_lowercase().contains("text/html"))
+}
+
+/// The directive of a `Content-Security-Policy` value that blocks live reload: `script-src`
+/// when a same-origin script cannot run, `connect-src` when the event stream cannot connect.
+/// Same rules as `cspBlocksReload` in src/server.ts.
+pub fn csp_blocks_reload(value: &str) -> Option<&'static str> {
+    for policy in value.split(',') {
+        let mut directives: Vec<(String, Vec<String>)> = Vec::new();
+        for d in policy.split(';') {
+            let mut tokens = d
+                .split(['\t', '\n', '\x0c', '\r', ' '])
+                .filter(|t| !t.is_empty());
+            let Some(name) = tokens.next() else { continue };
+            let name = name.to_lowercase();
+            if !directives.iter().any(|(n, _)| *n == name) {
+                directives.push((name, tokens.map(|t| t.to_lowercase()).collect()));
+            }
+        }
+        let effective = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|n| directives.iter().find(|(d, _)| d == n).map(|(_, v)| v))
+        };
+        let allows = |sources: Option<&Vec<String>>, script: bool| match sources {
+            None => true,
+            Some(v) => {
+                !(script && v.iter().any(|t| t == "'strict-dynamic'"))
+                    && v.iter()
+                        .any(|t| t == "'self'" || t == "*" || t == "http:" || t == "https:")
+            }
+        };
+        if !allows(
+            effective(&["script-src-elem", "script-src", "default-src"]),
+            true,
+        ) {
+            return Some("script-src");
+        }
+        if !allows(effective(&["connect-src", "default-src"]), false) {
+            return Some("connect-src");
+        }
+    }
+    None
+}
 
 /// Open live-reload streams; [`LiveReload::reload`] tells every page to reload.
 #[derive(Default)]
@@ -44,6 +128,8 @@ pub struct LiveReload {
     changed: Condvar,
     closed: AtomicBool,
     clients: AtomicUsize,
+    /// CSP values already warned about (one warning per policy text).
+    warned_csp: Mutex<std::collections::HashSet<String>>,
 }
 
 impl LiveReload {
@@ -62,6 +148,29 @@ impl LiveReload {
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.changed.notify_all();
+    }
+
+    /// Warn (once per policy text) when a CSP sent with an injected page blocks live reload.
+    fn warn_csp(&self, warn: Option<&LogFn>, served: &str, policy: Option<&str>) {
+        let (Some(warn), Some(policy)) = (warn, policy) else {
+            return;
+        };
+        let Ok(mut seen) = self.warned_csp.lock() else {
+            return;
+        };
+        if seen.contains(policy) {
+            return;
+        }
+        let Some(blocked) = csp_blocks_reload(policy) else {
+            return;
+        };
+        seen.insert(policy.to_string());
+        let what = if blocked == "script-src" {
+            format!("scripts from 'self' ({RELOAD_SCRIPT_PATH})")
+        } else {
+            format!("connections to 'self' ({RELOAD_PATH})")
+        };
+        warn(&format!("live reload: the Content-Security-Policy that _headers sets for {served} does not allow {what}, so open pages will not reload: {policy}"));
     }
 
     /// Open streams.
@@ -595,6 +704,17 @@ pub fn respond(
             None,
         );
     }
+    if options.live_reload.is_some() && raw_path == RELOAD_SCRIPT_PATH {
+        let js = reload_client();
+        return finish(
+            200,
+            owned(vec![
+                ("content-type", "text/javascript; charset=utf-8".into()),
+                ("content-length", js.len().to_string()),
+            ]),
+            Some(js.as_bytes().to_vec()),
+        );
+    }
     let Some(segs) = safe_segments(raw_path) else {
         return page(400, BAD_REQUEST_PAGE, vec![]);
     };
@@ -617,7 +737,16 @@ pub fn respond(
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
         let mime = mime_type_for(served);
-        let live = options.live_reload.is_some() && mime.starts_with("text/html");
+        let live = options.live_reload.is_some()
+            && mime.starts_with("text/html")
+            && is_navigation(headers);
+        if let Some(lr) = options.live_reload.as_ref().filter(|_| live) {
+            let csp = custom
+                .iter()
+                .find(|(k, _)| k == "content-security-policy")
+                .map(|(_, v)| v.as_str());
+            lr.warn_csp(options.warn.as_ref(), served, csp);
+        }
         let body = if live {
             inject_reload_script(&file.bytes)
         } else {
@@ -905,7 +1034,9 @@ fn serve_connection(
         // `servers` probes carry the server's own id; they would only clutter the access log.
         let probe = options.server_id.is_some()
             && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
-        if !probe {
+        // every page load fetches the reload script; it would only clutter the access log
+        let quiet = options.live_reload.is_some() && raw_path_of(&req.url) == RELOAD_SCRIPT_PATH;
+        if !probe && !quiet {
             if let Some(log) = &options.log {
                 log(&format!(
                     "{} {} {} {} {ms:.1}ms",
@@ -1178,6 +1309,7 @@ mod tests {
             })),
             server_id: None,
             live_reload: None,
+            warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -1375,6 +1507,7 @@ mod tests {
             })),
             server_id: Some("abcdef012345".into()),
             live_reload: None,
+            warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
@@ -1627,7 +1760,140 @@ mod tests {
         );
         assert_eq!(inj("<h1>x</h1>"), format!("<h1>x</h1>{RELOAD_SCRIPT}"));
         assert_eq!(inj(""), RELOAD_SCRIPT);
-        assert!(RELOAD_SCRIPT.contains(RELOAD_PATH));
+        assert_eq!(
+            RELOAD_SCRIPT,
+            format!("<script src=\"{RELOAD_SCRIPT_PATH}\"></script>")
+        );
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// What a browser sends for a page navigation (only those get the reload script).
+    fn nav() -> HashMap<String, String> {
+        headers(&[
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ])
+    }
+
+    #[test]
+    fn reload_client_is_the_typescript_literal() {
+        let js = reload_client();
+        assert!(js.starts_with("(function () {"), "{js}");
+        assert!(js.ends_with("})();\n"), "{js}");
+        assert!(!js.contains('`'));
+    }
+
+    #[test]
+    fn is_navigation_mode_then_dest_then_accept() {
+        let n = |p: &[(&str, &str)]| is_navigation(&headers(p));
+        assert!(n(&[("sec-fetch-mode", "navigate")]));
+        assert!(!n(&[
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "document"),
+            ("accept", "text/html")
+        ]));
+        assert!(!n(&[
+            ("sec-fetch-mode", "same-origin"),
+            ("accept", "text/html")
+        ]));
+        assert!(n(&[("sec-fetch-dest", "document")]));
+        assert!(n(&[("sec-fetch-dest", "iframe")]));
+        assert!(!n(&[("sec-fetch-dest", "empty"), ("accept", "text/html")]));
+        assert!(n(&[("accept", "Text/HTML,application/xhtml+xml")]));
+        assert!(!n(&[("accept", "*/*")]));
+        assert!(!n(&[]));
+    }
+
+    #[test]
+    fn csp_blocks_reload_directives() {
+        let c = csp_blocks_reload;
+        assert_eq!(c("script-src 'self'"), None);
+        assert_eq!(c("default-src 'self'"), None);
+        assert_eq!(
+            c("default-src 'none'; script-src 'self'"),
+            Some("connect-src")
+        );
+        assert_eq!(
+            c("default-src 'none'; script-src 'self'; connect-src 'self'"),
+            None
+        );
+        assert_eq!(c("script-src 'nonce-abc'"), Some("script-src"));
+        assert_eq!(c("script-src 'self' 'strict-dynamic'"), Some("script-src"));
+        assert_eq!(
+            c("script-src-elem 'none'; script-src 'self'"),
+            Some("script-src")
+        );
+        assert_eq!(c("SCRIPT-SRC 'SELF'; script-src 'none'"), None);
+        assert_eq!(c("script-src https:; connect-src *"), None);
+        assert_eq!(c("img-src 'none'"), None);
+        assert_eq!(
+            c("script-src 'self', script-src 'none'"),
+            Some("script-src")
+        );
+    }
+
+    #[test]
+    fn live_reload_serves_the_script_and_warns_about_a_blocking_csp() {
+        let warnings = Arc::new(Mutex::new(Vec::<String>::new()));
+        let w2 = warnings.clone();
+        let opts = SiteServerOptions {
+            live_reload: Some(LiveReload::new()),
+            warn: Some(Arc::new(move |m: &str| {
+                w2.lock().unwrap().push(m.to_string())
+            })),
+            ..Default::default()
+        };
+        let tree = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/a.html", "a"),
+                (
+                    "/_headers",
+                    "/*\n  Content-Security-Policy: script-src 'nonce-x'\n",
+                ),
+            ]
+            .iter()
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let none = HashMap::new();
+        let js = handle_request(&tree, &opts, "GET", RELOAD_SCRIPT_PATH, &none);
+        assert_eq!(js.status, 200);
+        assert_eq!(js.body, reload_client().as_bytes());
+        assert_eq!(
+            js.header("content-type"),
+            Some("text/javascript; charset=utf-8")
+        );
+        assert_eq!(js.header("cache-control"), Some("no-cache"));
+        assert_eq!(
+            handle_request(
+                &tree,
+                &SiteServerOptions::default(),
+                "GET",
+                RELOAD_SCRIPT_PATH,
+                &none
+            )
+            .status,
+            404
+        );
+        let cors = headers(&[("sec-fetch-mode", "cors")]);
+        let r = handle_request(&tree, &opts, "GET", "/", &cors);
+        assert_eq!(r.body, b"home", "a fetch() of HTML is untouched");
+        assert!(
+            warnings.lock().unwrap().is_empty(),
+            "only navigations are checked"
+        );
+        handle_request(&tree, &opts, "GET", "/", &nav());
+        handle_request(&tree, &opts, "GET", "/a", &nav());
+        assert_eq!(*warnings.lock().unwrap(), vec![
+            "live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'".to_string()
+        ]);
     }
 
     #[test]
@@ -1637,7 +1903,7 @@ mod tests {
             live_reload: Some(live.clone()),
             ..Default::default()
         };
-        let h = HashMap::new();
+        let h = nav();
         let tree = site();
         let r = handle_request(&tree, &opts, "GET", "/", &h);
         assert_eq!(
@@ -1650,7 +1916,7 @@ mod tests {
         );
         let etag = r.header("etag").unwrap().to_string();
         assert!(etag.ends_with("-live\""));
-        let mut inm = HashMap::new();
+        let mut inm = nav();
         inm.insert("if-none-match".to_string(), etag);
         assert_eq!(handle_request(&tree, &opts, "GET", "/", &inm).status, 304);
         assert_eq!(
@@ -1706,7 +1972,16 @@ mod tests {
         live.reload();
         read_until(&mut c, &mut got, "data: reload\n\n");
         assert_eq!(
-            get(srv.port, "/").body,
+            req(
+                srv.port,
+                "/",
+                "GET",
+                &[
+                    ("sec-fetch-mode", "navigate"),
+                    ("sec-fetch-dest", "document")
+                ]
+            )
+            .body,
             format!("<h1>v2</h1>{RELOAD_SCRIPT}")
         );
         live.close();
@@ -1728,7 +2003,7 @@ mod tests {
             live_reload: Some(LiveReload::new()),
             ..Default::default()
         };
-        let h = HashMap::new();
+        let h = nav();
         let cache: RulesCache = Arc::new(Mutex::new(None));
         let one = mk(&[
             ("/index.html", "home"),

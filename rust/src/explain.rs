@@ -955,9 +955,26 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
         } else {
             (p.headers.iter().map(|h| h.span.line).collect(), "HEADER")
         };
+        let mut inputs: Vec<String> = lines
+            .iter()
+            .map(|l| format!("{} {kind}", w.at(*l)))
+            .collect();
+        // `/_headers` may also hold FINGERPRINT's Cache-Control lines (or only them): with cache_headers set,
+        // no HEADER sets Cache-Control, so the name in the file means they were added.
+        let fp = p.cache_headers.as_ref().filter(|_| {
+            kind == "HEADER" && String::from_utf8_lossy(&a.bytes).contains("  Cache-Control: ")
+        });
+        if let Some(fp) = fp {
+            inputs.push(format!("{} FINGERPRINT", w.at(fp.line)));
+        }
+        let (location, instruction) = match (lines.first(), fp) {
+            (Some(l), _) => (*l, kind),
+            (None, Some(fp)) => (fp.line, "FINGERPRINT"),
+            (None, None) => (0, kind),
+        };
         history.push(WhyEvent {
-            location: w.at(lines[0]),
-            instruction: kind.to_string(),
+            location: w.at(location),
+            instruction: instruction.to_string(),
             stage: stage_display(&p.stages[last], last),
             path: full.clone(),
             action: if before.is_some() {
@@ -966,10 +983,7 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
                 "write"
             },
             digest: a.digest.clone(),
-            inputs: lines
-                .iter()
-                .map(|l| format!("{} {kind}", w.at(*l)))
-                .collect(),
+            inputs,
         });
     }
     Ok(WhyReport {

@@ -32,7 +32,8 @@ use crate::secrets::{load_secrets, process_env};
 use crate::store::short_id;
 use args::{flag, flag_s, parse, string, string_s, strings, strings_s, OptSpec};
 use common::{
-    err, is_safe_integer, js_to_number, out, pretty_json, report, run_command, usage_error, Command,
+    err, is_safe_integer, js_to_number, out, pretty_json, report, report_json, run_command,
+    usage_error, Command,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -144,6 +145,8 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -173,7 +176,8 @@ Options:
       --max-download-bytes <n> per-resource size limit (default {})
       --timeout <ms>           per-resource fetch timeout (default {})
 {network}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
@@ -213,6 +217,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("build-arg-file"),
     strings("secret"),
     string("plugin-timeout"),
+    string("plugin-memory"),
     strings("allow-exec"),
     strings("allow-plugin"),
     flag("allow-plugins"),
@@ -235,6 +240,8 @@ const BUILD_OPTS: &[OptSpec] = &[
     strings("no-proxy"),
     strings("allow-hosts"),
     strings("deny-hosts"),
+    string("network"),
+    strings("allow-secret-host"),
     string("connect-timeout"),
     string("read-timeout"),
     flag("json"),
@@ -544,7 +551,8 @@ fn run_profiled(
         Ok(code) => code,
         Err(e) => {
             failed = true;
-            report(&e)
+            // With --json, the failure is also machine-readable on stdout (code, span, needs).
+            report_json(&e, o.flag("json"))
         }
     };
     // Keep $SITEFILE_HOME under $SITEFILE_CACHE_MAX (never fails the command).
@@ -782,6 +790,9 @@ fn run_build_command(
         let ms = positive_int(t, "--plugin-timeout")?;
         options.plugin_policy.timeout_ms = ms;
         options.tool_policy.timeout_ms = ms;
+    }
+    if let Some(m) = o.str("plugin-memory").filter(|s| !s.is_empty()) {
+        options.plugin_policy.max_memory_mib = positive_int(m, "--plugin-memory")? as usize;
     }
     options.allow_exec = o.strs("allow-exec");
     options.allow_plugin = o.strs("allow-plugin");

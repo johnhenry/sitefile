@@ -3,7 +3,7 @@
 //! Plugins run one Node process each, under Node's permission model:
 //!
 //! ```text
-//! node --permission --allow-fs-read=<plugin folder> --input-type=module -e <runner>
+//! node --permission --allow-fs-read=<plugin folder> --max-old-space-size=<MiB> --input-type=module -e <runner>
 //! ```
 //!
 //! so a plugin can read files in its own folder and nothing else: no writes,
@@ -44,12 +44,24 @@ pub struct PluginPolicy {
     pub timeout_ms: u64,
     /// Largest result accepted from one call (default 64 MiB).
     pub max_output_bytes: usize,
+    /// Memory limit in MiB (default 1024, `--plugin-memory`): a JavaScript plugin's heap
+    /// (`node --max-old-space-size`) and a wasm plugin's linear memory.
+    pub max_memory_mib: usize,
 }
 
 pub const DEFAULT_PLUGIN_POLICY: PluginPolicy = PluginPolicy {
     timeout_ms: 60_000,
     max_output_bytes: 64 * 1024 * 1024,
+    max_memory_mib: 1024,
 };
+
+/// What V8 prints when a heap passes --max-old-space-size (followed by a native stack trace).
+const OUT_OF_MEMORY: &str = "JavaScript heap out of memory";
+
+/// V8's out-of-memory report starts with one of these; it and everything after it is not logged.
+fn is_fatal_report(line: &str) -> bool {
+    line.starts_with("<--- Last few GCs --->") || line.starts_with("FATAL ERROR:")
+}
 
 impl Default for PluginPolicy {
     fn default() -> Self {
@@ -319,6 +331,8 @@ struct PluginProcess {
     rx: Receiver<Msg>,
     stderr: Arc<Mutex<String>>,
     stderr_done: Arc<AtomicBool>,
+    /// V8 reported that the heap passed the memory limit.
+    out_of_memory: Arc<AtomicBool>,
     next_id: u64,
     /// False when the module exports `cache = false`; known once it has loaded.
     cacheable: bool,
@@ -401,6 +415,7 @@ impl PluginProcess {
             rx,
             stderr: Arc::new(Mutex::new(String::new())),
             stderr_done: Arc::new(AtomicBool::new(true)),
+            out_of_memory: Arc::new(AtomicBool::new(false)),
             next_id: 1,
             cacheable: true,
             load: LoadState::Pending,
@@ -416,6 +431,7 @@ impl PluginProcess {
         let spawned = Command::new(&node)
             .arg("--permission")
             .arg(format!("--allow-fs-read={}", dir.display()))
+            .arg(format!("--max-old-space-size={}", policy.max_memory_mib))
             .args([
                 "--disable-warning=ExperimentalWarning",
                 "--input-type=module",
@@ -510,12 +526,18 @@ impl PluginProcess {
         let tail = p.stderr.clone();
         let done = Arc::new(AtomicBool::new(false));
         p.stderr_done = done.clone();
+        let oom = p.out_of_memory.clone();
         thread::spawn(move || {
             let mut pending: Vec<u8> = Vec::new();
             let mut chunk = vec![0u8; 16 * 1024];
-            let flush = |line: &[u8]| {
+            // Set once V8's fatal error report starts: the rest is a native stack trace, not logged.
+            let mut quiet = false;
+            let mut flush = |line: &[u8]| {
                 let l = String::from_utf8_lossy(line);
-                if !l.trim().is_empty() {
+                if is_fatal_report(&l) {
+                    quiet = true;
+                }
+                if !l.trim().is_empty() && !quiet {
                     log(&l);
                 }
             };
@@ -533,6 +555,9 @@ impl PluginProcess {
                             cut += 1;
                         }
                         t.drain(..cut);
+                    }
+                    if t.contains(OUT_OF_MEMORY) {
+                        oom.store(true, Ordering::SeqCst);
                     }
                 }
                 pending.extend_from_slice(&chunk[..n]);
@@ -571,8 +596,23 @@ impl PluginProcess {
 
     /// Stop the process for `reason`; returns the message for pending callers (reason + stderr tail).
     fn fail(&mut self, reason: &str) -> String {
+        let first = self.exited.is_none();
+        let out_of_memory = first && self.out_of_memory.load(Ordering::SeqCst);
         let reason = match &self.exited {
             Some(r) => r.clone(),
+            // The stderr tail would be V8's native stack trace: machine-specific, and no help.
+            None if out_of_memory => {
+                let r = format!(
+                    "ran out of memory (more than the {} MiB limit)",
+                    self.policy.max_memory_mib
+                );
+                self.stderr
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.exited = Some(r.clone());
+                r
+            }
             None => {
                 self.exited = Some(reason.to_string());
                 reason.to_string()
@@ -1228,6 +1268,54 @@ mod tests {
             p,
             "exited with code 3\ndying",
         );
+    }
+
+    #[test]
+    fn a_plugin_that_passes_the_memory_limit_fails_without_the_v8_report() {
+        if !node_available() {
+            return;
+        }
+        // Retained objects grow the heap until V8 gives up at --max-old-space-size (#157).
+        let (root, file) = plugin(
+            "export function transform() { const keep = []; for (;;) keep.push({ n: keep.length, s: String(keep.length) }); }",
+            &[],
+        );
+        let policy = PluginPolicy {
+            max_memory_mib: 32,
+            ..PluginPolicy::default()
+        };
+        let (mut h, logs) = host_with(&file, policy);
+        let t0 = Instant::now();
+        let e = h.call("p", &req("/a"), None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::E_PLUGIN);
+        assert_eq!(
+            e.message(),
+            "PLUGIN p: ran out of memory (more than the 32 MiB limit)"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(30));
+        let logs = logs.lock().unwrap();
+        assert!(
+            !logs.iter().any(|l| l.contains("FATAL ERROR")
+                || l.contains("Last few GCs")
+                || l.contains("node::")),
+            "{logs:?}"
+        );
+        drop(logs);
+        h.close();
+        fs::remove_dir_all(root).unwrap();
+
+        // Within the limit: unaffected.
+        let (root, file) = plugin(
+            "export function transform() { return 'x'.repeat(4 << 20).length + ''; }",
+            &[],
+        );
+        let policy = PluginPolicy {
+            max_memory_mib: 64,
+            ..PluginPolicy::default()
+        };
+        let (mut h, _) = host_with(&file, policy);
+        assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "4194304");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
