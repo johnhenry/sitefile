@@ -1,0 +1,4 @@
+FROM scratch
+IMPORT s FROM ./site.zip AS tree
+COPY s:/site/ /
+EXPORT /

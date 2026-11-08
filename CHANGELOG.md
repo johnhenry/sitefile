@@ -87,6 +87,12 @@
   archives, plus the `_redirects`/`_headers` rules added and removed;
   `--json` and `--exit-code`. Conformance step case `steps-diff`.
 
+- **OS metadata is filtered from archives** (#186): `IMPORT … AS tree` and
+  `serve` of a zip, tar or Web Bundle (and `serve ./dir`) drop `__MACOSX/`,
+  `._*`, `.DS_Store`, `Icon\r`, `Thumbs.db` and `desktop.ini`, with a warning
+  giving the count; `--keep-os-metadata` (`keepOsMetadata`) keeps them. A
+  Finder-made zip is now a single top-level folder. Changes the output (and
+  image ID) of builds that imported such archives. Both implementations.
 - **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
   `build --manifest <file>` and `save --manifest <file>` write every exported
   file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify

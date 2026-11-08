@@ -39,6 +39,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--allow-plugin name` | allow the JavaScript `PLUGIN name` to run; repeatable. A JS `PLUGIN` that is not allowed fails with `E_UNSUPPORTED` at its line, naming the flag to add, before any import is fetched or any plugin process starts. A name that matches no `PLUGIN` is a warning. WebAssembly plugins need no flag. `validate` never runs plugins; `inspect` builds in memory, so it needs the flag like `build`. |
 | `--allow-plugins` | allow every JavaScript `PLUGIN` in the Sitefile. Use it only for a Sitefile you trust as much as its plugin code. |
 | `--no-cache` | do not read or write the TRANSFORM result cache for this build |
+| `--keep-os-metadata` | keep OS metadata files in archives imported `AS tree`. By default `__MACOSX/` (anywhere in the path), AppleDouble `._*` files, `.DS_Store`, Finder's `Icon\r`, and `Thumbs.db` and `desktop.ini` (any case) are dropped, with one warning per import: `IMPORT s: skipped 6 OS metadata files (...); --keep-os-metadata keeps them`. Build-context directories are not filtered (use `.sitefileignore`). |
 | `--strict-pins` | fail with `E_UNPINNED`, before fetching anything, when a remote `IMPORT` has neither `INTEGRITY` nor a `Sitefile.lock` entry, or a registry `FROM image` or the `BASE` image is neither `@sha256:`-pinned nor locked. `validate --strict-pins` and `graph --strict-pins` check the same without building (they read `Sitefile.lock`); with `--provenance` the pins are recorded. Conflicts with `--update-lock`. See [LANGUAGE.md](LANGUAGE.md#remote-sources-and-the-lockfile). |
 | `--cache-from <ref>` | `build` only, repeatable: also look up TRANSFORM results in this [registry cache](#registry-cache) (first match wins) |
 | `--cache-to <ref>` | `build` only, once: after a successful build, push the TRANSFORM results it used to this [registry cache](#registry-cache) |
@@ -536,7 +537,7 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 | `-f, --file`, `--print`, `--json`, `-j, --jobs` | bake's own (see above) |
 | `--build-arg K=V`, `--build-arg-file f` | added to every target: `--build-arg` wins over the bake file's `args` and arg files; `--build-arg-file` files (relative to the current directory) are read after the target's own `arg-files` (a target's `args` still win over them, as `--build-arg` always wins over files) |
 | `--profile <dir>` | one trace per target: `<dir>/<target>.json` |
-| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--node`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
+| `--allow-exec`, `--allow-plugin`, `--allow-plugins`, `--no-cache`, `--cache-from`, `--strict-pins`, `--frozen-lockfile`, `--update-lock`, `--no-lockfile`, `--vendor-dir`, `--allow-http`, `--allow-private-network`, `--allow-hardlinks`, `--keep-os-metadata`, `--max-download-bytes`, `--timeout`, `--plugin-timeout`, `--plugin-memory`, `--node`, `--insecure-registry`, `--force` | passed unchanged to every build (the same conflicts are usage errors up front) |
 | `--cache-to` | refused: each target would replace the results the others pushed. Push from one `sitefile build --cache-to` |
 | `-o`, `-t`, `--format`, `--target`, `--watch` and the image flags (`--base`, `--label`, `--provenance`, ...) | not accepted: set them per target in the bake file (`output`, `tags`, `format`, `target`); watch mode and image options are per build |
 
@@ -1108,7 +1109,11 @@ file only when no image has that name. The format is read from the bytes, never 
 read at start, so `server restart` picks up a new copy. A zip, tar or Web Bundle is extracted with the default
 archive limits (10 000 entries, 500 MiB, a 100:1 compression ratio; `E_ARCHIVE_LIMIT`), refuses unsafe entries
 (absolute or `..` paths, links, devices; `E_ARCHIVE_UNSAFE`), and is served like a directory: its paths as they
-are in the archive (a single top-level folder is kept) and without hidden files except `.well-known`. An OCI
+are in the archive (a single top-level folder is kept) and without hidden files except `.well-known`. A
+directory or a zip, tar or Web Bundle is also served without OS metadata files (`__MACOSX/`, `._*`, `Thumbs.db`,
+`desktop.ini`, `Icon\r`; `.DS_Store` is hidden anyway), with a warning saying how many were skipped;
+`--keep-os-metadata` serves them (it is kept in the server record as `"keepOsMetadata": true` and applies on
+`server restart`). So a Finder-made zip (`site/` plus `__MACOSX/`) serves as the single folder `site/`. An OCI
 archive serves the first image in its `index.json` exactly as that image would be served from the store, after
 every blob it reads is checked against its digest and the site layer against the same limits. A file that is
 none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.

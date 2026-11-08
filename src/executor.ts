@@ -19,7 +19,7 @@ import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { fetchGitCommit, pinnedGitUrl, selectGitPath, type GitLocation, type GitSelection } from './resources/git.js';
-import { extractArchive } from './resources/archive.js';
+import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { writeTar } from './archive-writers.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
@@ -68,6 +68,11 @@ export interface BuildOptions {
   readonly fetchPolicy?: Partial<FetchPolicy>;
   /** Limits for extracting archives imported AS tree. */
   readonly archiveLimits?: Partial<ArchiveLimits>;
+  /**
+   * Keep OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) in archives
+   * imported AS tree, like the CLI's `--keep-os-metadata`. Default false: they are dropped with a warning.
+   */
+  readonly keepOsMetadata?: boolean;
   /** Lockfile path, or false to disable. Default: `Sitefile.lock` next to the Sitefile. */
   readonly lockfile?: string | false;
   /** Fail instead of adding or changing lockfile entries. */
@@ -358,6 +363,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     local,
     policy,
     archiveLimits,
+    keepOsMetadata: !!options.keepOsMetadata,
     lock,
     label,
     warn,
@@ -771,6 +777,7 @@ export async function imageAttestations(
 interface ImportEnv extends RemoteEnv {
   readonly local: LocalContext;
   readonly archiveLimits: ArchiveLimits;
+  readonly keepOsMetadata?: boolean;
   readonly memo?: BuildMemo;
 }
 
@@ -791,7 +798,15 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
   const convertBytes = async (key: string, compute: () => Promise<Resource>): Promise<Resource> => {
     const hit = env.memo?.get<Resource>(key);
     if (hit) return hit;
-    const r = await compute();
+    let r = await compute();
+    // An archive AS tree: OS metadata files are dropped (keepOsMetadata keeps them).
+    if (r.kind === 'tree' && !env.keepOsMetadata) {
+      const { tree, skipped } = withoutOsMetadata(r.tree);
+      if (skipped > 0) {
+        env.warn(osMetadataWarning(`IMPORT ${spec.name}`, skipped));
+        r = { ...r, tree };
+      }
+    }
     env.memo?.set(key, r);
     return r;
   };
