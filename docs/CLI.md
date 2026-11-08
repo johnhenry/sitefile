@@ -643,6 +643,53 @@ OCI registry, like buildx's registry cache. Keys are the local cache's keys (con
 - **Trust**: a result from `--cache-from` is used as if the plugin or tool had produced it. Pull only from a repository
   whose writers you trust (CI pushes, pull requests read).
 
+## File manifests and `sitefile verify`
+
+An image ID covers the whole tree. To check single files of a deployed or extracted copy, write a
+manifest with the export and verify the copy against it later:
+
+```sh
+sitefile build . -o site.zip --manifest site.manifest.json
+unzip site.zip -d /srv/www
+sitefile verify /srv/www --manifest site.manifest.json
+sitefile verify site.zip --manifest site.manifest.json --json
+sitefile save mysite:1 -o out --manifest out.manifest.json
+```
+
+`--manifest <file>` (build and save) writes, next to any export format, every exported file with its
+size and SHA-256, and a Merkle root over them. It is written with the export's destination rules (an
+existing file outside the context needs `--force`), and it may not be inside an exported directory. It
+does not depend on the format: a directory, zip or OCI export of the same build gives the same bytes.
+
+```json
+{
+  "mediaType": "application/vnd.sitefile.manifest.v1+json",
+  "root": "sha256:…",
+  "files": [
+    { "path": "/index.html", "size": 207, "digest": "sha256:…" }
+  ]
+}
+```
+
+`files` is in path order (UTF-16 code units, as JavaScript sorts strings). `root` is the
+[RFC 6962](https://www.rfc-editor.org/rfc/rfc6962#section-2.1) Merkle Tree Hash of the leaves
+`<path> 0x00 <digest>` (UTF-8, the digest written `sha256:<hex>`): a leaf hashes as
+SHA-256(0x00 ‖ leaf), an inner node as SHA-256(0x01 ‖ left ‖ right), split at the largest power of two
+below the count; no files hash as SHA-256 of nothing. One file can be proven against the root with the
+log2(n) sibling hashes on its path, as in a Certificate Transparency inclusion proof.
+
+`sitefile verify <dir|archive|ref|id> [--manifest <file>] [--json]` loads the target and compares it with
+the manifest: a listed file that is absent is `missing`, one with another size or digest is `changed`, a
+file the manifest does not list is `extra`. It prints one line per difference (`OK: N files match <root>`
+when there is none) and fails with `E_INTEGRITY`, exit 1, when there is any. A directory is read like a
+build context: hidden files count, `.git` is skipped, symlinks must stay inside it, and a manifest file
+inside the directory is not counted as extra. An archive (zip, tar, tar.gz, wbn, OCI archive) is read from
+its bytes with the default archive limits. An image needs no manifest: without one, verify checks every
+stored blob against its digest. The manifest itself is checked first: its root must match its files.
+
+`--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
+actual: { size, digest } }], extra: [path] }`.
+
 ## Image store
 
 The store lives in `$SITEFILE_HOME`, or `~/.sitefile`. Tests and scripts should always set `SITEFILE_HOME`.

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
+  `build --manifest <file>` and `save --manifest <file>` write every exported
+  file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify
+  <dir|archive|image> --manifest <file> [--json]` reports missing, changed and
+  extra files and fails with `E_INTEGRITY`. Same bytes from both
+  implementations; conformance step cases `steps-verify*`.
+
 ## 0.0.2 (2026-11-08)
 
 - **Plugin console output keeps its order** (johnhenry/sitefile#164): a

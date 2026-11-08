@@ -43,6 +43,7 @@ pub mod cache_limit;
 pub mod checklinks;
 pub mod export;
 pub mod fingerprint;
+pub mod integrity;
 pub mod links;
 pub mod refs;
 pub mod server;
