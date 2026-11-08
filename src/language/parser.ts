@@ -11,6 +11,7 @@ import {
   type ExportFormat,
   parseExportFormat,
   type OciCompression,
+  type PrecompressFormat,
   parseOciCompression,
   REDIRECT_STATUSES,
   type RedirectStatus,
@@ -71,6 +72,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseHeader(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
+    case 'PRECOMPRESS':
+      return parsePrecompress(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -578,6 +581,35 @@ function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
     ...(flags.has('no-cache-headers') && { noCacheHeaders: true as const }),
     overwrite: flags.has('overwrite'),
   };
+}
+
+/** Sidecar formats PRECOMPRESS knows; only gzip has an encoder (src/deflate.ts, shared with the Rust port). */
+const PRECOMPRESS_FORMATS = ['gzip', 'br', 'zstd'];
+
+/** `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]` */
+function parsePrecompress(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const formats: PrecompressFormat[] = [];
+  for (;;) {
+    const at = c.span;
+    const mark = c.mark();
+    const w = c.word().toLowerCase();
+    if (!PRECOMPRESS_FORMATS.includes(w)) {
+      c.reset(mark);
+      break;
+    }
+    if (w !== 'gzip') {
+      throw c.error('E_UNSUPPORTED', `PRECOMPRESS ${w} is not supported yet: sitefile has no ${w === 'br' ? 'Brotli' : 'Zstandard'} encoder that writes the same bytes in both implementations (use gzip)`, at);
+    }
+    if (formats.includes(w as PrecompressFormat)) throw c.error('E_SYNTAX', `${w} given twice`, at);
+    formats.push(w as PrecompressFormat);
+  }
+  const patterns: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('MIN')) patterns.push(c.operand('path pattern'));
+  if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (PRECOMPRESS /assets/ or PRECOMPRESS gzip /**/*.css)');
+  const min = c.keyword('MIN') ? c.operand('minimum size in bytes') : undefined;
+  c.expectEnd();
+  return { kind: 'PRECOMPRESS', span, formats: formats.length ? formats : ['gzip'], patterns, ...(min ? { min } : {}), overwrite: flags.has('overwrite') };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

@@ -21,17 +21,22 @@ const FIXED_NAMES: [&str; 2] = ["_redirects", "_headers"];
 
 /// Check a FINGERPRINT pattern: an absolute path (NFC) with no control characters; a trailing `/` means `/**`.
 pub fn check_pattern(raw: &str, span: &SourceSpan) -> Result<String> {
+    check_pattern_of(raw, span, "FINGERPRINT")
+}
+
+/// [`check_pattern`] for the patterns of another instruction (`what`, in messages).
+pub fn check_pattern_of(raw: &str, span: &SourceSpan, what: &str) -> Result<String> {
     if raw.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
         return Err(SitefileError::at(
             E_VALIDATION,
-            "FINGERPRINT pattern must not contain control characters",
+            format!("{what} pattern must not contain control characters"),
             span,
         ));
     }
     if !raw.starts_with('/') {
         return Err(SitefileError::at(
             E_VALIDATION,
-            format!("FINGERPRINT pattern '{raw}' must be an absolute path starting with '/' (e.g. /assets/ or /**/*.css)"),
+            format!("{what} pattern '{raw}' must be an absolute path starting with '/' (e.g. /assets/ or /**/*.css)"),
             span,
         ));
     }

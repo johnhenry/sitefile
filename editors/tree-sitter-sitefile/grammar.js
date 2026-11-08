@@ -111,6 +111,7 @@ export default grammar({
         $.redirect_instruction,
         $.header_instruction,
         $.fingerprint_instruction,
+        $.precompress_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -317,6 +318,15 @@ export default grammar({
         repeat1(field('pattern', $._operand)),
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
         optional(kw($, 'INTEGRITY')),
+      ),
+
+    // PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>] (a format word reads as a pattern here)
+    precompress_instruction: ($) =>
+      seq(
+        kw($, 'PRECOMPRESS'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'MIN'), field('min', $._operand))),
       ),
 
     // CHECKLINKS [--warn] [--external]

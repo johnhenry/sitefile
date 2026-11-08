@@ -48,6 +48,10 @@
         "named": true
       },
       {
+        "type": "precompress_instruction",
+        "named": true
+      },
+      {
         "type": "redirect_instruction",
         "named": true
       },
@@ -1527,6 +1531,74 @@
     }
   },
   {
+    "type": "precompress_instruction",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "min": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "redirect_instruction",
     "named": true,
     "fields": {
@@ -2604,6 +2676,10 @@
     "named": false
   },
   {
+    "type": "MIN",
+    "named": false
+  },
+  {
     "type": "OPTIONS",
     "named": false
   },
@@ -2613,6 +2689,10 @@
   },
   {
     "type": "PLUGIN",
+    "named": false
+  },
+  {
+    "type": "PRECOMPRESS",
     "named": false
   },
   {

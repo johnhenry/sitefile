@@ -132,6 +132,13 @@
         "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
       }
     },
+    "_kw_precompress": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Pp][Rr][Ee][Cc][Oo][Mm][Pp][Rr][Ee][Ss][Ss]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -328,6 +335,13 @@
         "value": "[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt]"
       }
     },
+    "_kw_min": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Mm][Ii][Nn]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -517,6 +531,10 @@
         {
           "type": "SYMBOL",
           "name": "fingerprint_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "precompress_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2359,6 +2377,72 @@
               },
               "named": false,
               "value": "INTEGRITY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "precompress_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_precompress"
+          },
+          "named": false,
+          "value": "PRECOMPRESS"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "FIELD",
+            "name": "flag",
+            "content": {
+              "type": "SYMBOL",
+              "name": "flag"
+            }
+          }
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "FIELD",
+            "name": "pattern",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_operand"
+            }
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_min"
+                  },
+                  "named": false,
+                  "value": "MIN"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "min",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
             },
             {
               "type": "BLANK"
