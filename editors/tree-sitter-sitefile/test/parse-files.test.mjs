@@ -16,6 +16,7 @@ import { findSitefiles, grammarDir, parseOk, repoRoot } from './helpers.mjs';
 const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-checklinks-syntax/Sitefile',
   'conformance/cases/err-compression/Sitefile', // COMPRESSION zstd: the grammar accepts any word here
+  'conformance/cases/err-fingerprint-integrity-order/Sitefile', // INTEGRITY before MANIFEST
   'conformance/cases/err-fingerprint-syntax/Sitefile', // FINGERPRINT MANIFEST /m.json: the grammar reads MANIFEST as a pattern
   'conformance/cases/err-copy-chmod/Sitefile', // --chmod=600: the grammar accepts any flag value
   'conformance/cases/err-from-missing-base/Sitefile',

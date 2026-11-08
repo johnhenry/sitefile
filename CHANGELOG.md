@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
+  rebuild changed only existing HTML files, the reload event carries
+  `"morph":true` and pages update in place (scroll, focus and form input
+  stay), falling back to a full reload when their scripts changed. Full
+  reloads keep the scroll position. `--reload full` turns morphing off.
+- **`serve --watch --navigate-to-changed`** (johnhenry/sitefile#199): after a
+  rebuild that changed exactly one page, the reload event carries its URL
+  (`{"type":"reload","path":"/posts/hello/"}`) and open pages go there.
+- **Build-error overlay and Rebuilding badge** (johnhenry/sitefile#198): the
+  `serve --watch` stream sends `{"type":"building"}` when a rebuild starts,
+  `{"type":"error",code,message,file,line,column}` when it fails (also to
+  pages that connect while it is broken) and `{"type":"ok"}` for a good
+  rebuild with identical output. Pages show a badge while rebuilding and a
+  dismissible overlay (in a shadow root) on errors; `--no-overlay` turns
+  both off.
+- **Browser console errors in the `serve --watch` log** (johnhenry/sitefile#174):
+  the live-reload client forwards uncaught errors, unhandled rejections,
+  `console.error` and `console.warn` (`--console`: also `log` and `info`) to
+  `POST /__sitefile/console`, and the server prints them as `browser error: ...`
+  lines. Same-origin only (`Origin` must match `Host`), 16 KiB per message,
+  50 messages per 10 s.
+- **`serve --watch` for a plain directory, with CSS injection**
+  (johnhenry/sitefile#168): `serve --watch ./dir` on a directory without a
+  `Sitefile` (and without `-f`, `--target` or `--build-arg*`) serves it as it
+  is and re-reads it on change. Events are now JSON:
+  `{"type":"reload"}`, or `{"type":"css","paths":[...]}` when only existing
+  stylesheets changed, in which case pages swap the `<link>` instead of
+  reloading (`--no-css-inject` turns that off). A rebuild with identical
+  output sends no event.
+- **`--poll` for watch mode** (johnhenry/sitefile#225): `build --watch` and
+  `serve --watch` take `--poll` (stat polling every 1000 ms instead of file
+  system events, for network shares, Docker bind mounts and WSL) and
+  `--poll-interval <ms>` (implies `--poll`).
+- **Live reload through tunnels and proxies** (johnhenry/sitefile#226): the
+  `/__sitefile/reload` stream is sent with `X-Accel-Buffering: no` and
+  `Cache-Control: no-cache, no-transform`, and the TypeScript server now sends
+  the same `: ping` comment every 15 s as the Rust one, so a buffering or
+  idle-cutting proxy passes events through. The client finds the stream
+  relative to its own URL and, when an answer is not an event stream (a proxy
+  error page), reconnects with backoff (1 s doubling to 30 s).
+- **Live reload gets past caching service workers** (johnhenry/sitefile#229):
+  before reloading after a rebuild, the `serve --watch` client unregisters the
+  page origin's service workers and empties its Cache Storage, so a site with
+  a caching service worker shows the new build. `--keep-service-workers`
+  turns it off.
+- **`sitefile hosts`** (johnhenry/sitefile#176): lists the hosts a build would
+  contact (remote IMPORTs, FROM image registries, the BASE registry) from the
+  plan alone, with what needs each and its status under `--allow-hosts`,
+  `--deny-hosts`, `--network strict` and `--allow-secret-host` (`--json` with
+  `needs`). Nothing is fetched. Both implementations, with a conformance case.
 - **`serve`: `/about/` no longer 404s when only `about.html` exists**
   (johnhenry/sitefile#188): it redirects (`301`, query kept) to the clean URL
   `/about`, in both servers. `/about.html` still answers 200; which spelling
@@ -24,6 +74,48 @@
   `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
   implementations. A `serve` conformance case kind (`"command": "serve"`)
   compares both servers' answers to raw HTTP requests.
+- **File manifests and `sitefile verify`** (johnhenry/sitefile#211):
+  `build --manifest <file>` and `save --manifest <file>` write every exported
+  file's path, size and SHA-256 with an RFC 6962 Merkle root; `sitefile verify
+  <dir|archive|image> --manifest <file> [--json]` reports missing, changed and
+  extra files and fails with `E_INTEGRITY`. Same bytes from both
+  implementations; conformance step cases `steps-verify*`.
+- **JavaScript plugins get a memory limit** (johnhenry/sitefile#157): the
+  plugin process starts with `--max-old-space-size`, set by the new
+  `--plugin-memory <MiB>` flag (default 1024, the same as the wasm linear
+  memory cap, which the flag now sets too; `bake` passes it through). A plugin
+  that passes it fails with `E_PLUGIN: … ran out of memory (more than the N MiB
+  limit)` instead of V8's stack trace. Library: `PluginPolicy.maxMemoryMiB` /
+  `max_memory_mib`.
+- **Live reload works under a strict CSP and leaves fetch()ed HTML alone**
+  (johnhenry/sitefile#181): `serve --watch` injects
+  `<script src="/__sitefile/reload.js"></script>` (a same-origin script that
+  `script-src 'self'` allows) instead of an inline script, and only into page
+  navigations (`Sec-Fetch-Mode: navigate`, else `Sec-Fetch-Dest`, else an
+  `Accept` naming `text/html`), so an HTML fragment loaded with `fetch()` is
+  served unchanged. A `_headers` CSP that still blocks the script or the event
+  stream gets a one-time warning. The client script has one source
+  (`src/reload-client.ts`), which the Rust server compiles in. New watch-mode
+  conformance cases (`conformance/watch.mjs`) compare both servers' responses
+  and events.
+- **FINGERPRINT writes cache headers and SRI** (johnhenry/sitefile#202):
+  EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the
+  fingerprinted files (a `/dir/*` rule when a directory holds only them) and
+  `no-cache` for the pages to `/_headers`, unless `--no-cache-headers` or a
+  HEADER sets `Cache-Control`. `FINGERPRINT … INTEGRITY` adds
+  `integrity="sha384-…"` to the `<script src>` and
+  `<link rel=stylesheet|modulepreload>` tags that load a renamed file. Both
+  implementations, with conformance cases.
+- **Network gating** (johnhenry/sitefile#176): a host refused because it
+  matches no `--allow-hosts` rule now says which flag to add (`; add
+  --allow-hosts <host>`) and carries `needs` (`kind: 'host'`,
+  `NeedsKind::Host`), like a plugin that was not allowed. Opt-in strict mode,
+  `--network strict` or `SITEFILE_NETWORK=strict`, allows only listed hosts
+  (none when none are listed) and sends an `IMPORT … SECRET` only to a host
+  that `--allow-secret-host <id>=<host>` names (`kind: 'secret-host'`). The
+  default stays `open`. With `--json`, a failed command also prints
+  `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
+  error rows include `needs`. Both implementations, with conformance cases.
 
 ## 0.0.2 (2026-11-08)
 

@@ -76,8 +76,8 @@ pub struct Entry {
     pub status: Status,
     /// Images only (BASE and FROM image): a greater version-like tag of the same shape.
     pub newer_tag: Option<String>,
-    /// (code, message)
-    pub error: Option<(String, String)>,
+    /// (code, message, needs): `needs` when the error carries one (E_HOST_BLOCKED: the host to allow).
+    pub error: Option<(String, String, Option<crate::error::Needs>)>,
 }
 
 pub struct Report {
@@ -112,7 +112,10 @@ impl Report {
                     "error".into(),
                     i.error
                         .as_ref()
-                        .map(|(c, msg)| json!({ "code": c, "message": msg }))
+                        .map(|(c, msg, needs)| match needs {
+                            Some(n) => json!({ "code": c, "message": msg, "needs": n.to_json() }),
+                            None => json!({ "code": c, "message": msg }),
+                        })
                         .unwrap_or(Value::Null),
                 );
                 Value::Object(m)
@@ -314,17 +317,23 @@ fn import_rows(
             if loc.commit.is_some() {
                 e.status = Status::DigestOnly;
             } else {
-                let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets)
-                    .and_then(|origin_headers| {
-                        let t = crate::resources::git::GitTransport {
-                            origin_headers: &origin_headers,
-                            ..crate::resources::git::GitTransport::new(
-                                &options.fetch_policy,
-                                Some(&spec.span),
-                            )
-                        };
-                        crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, t)
-                    });
+                let r = secret_headers(
+                    &spec.name,
+                    &spec.secrets,
+                    &spec.span,
+                    &options.secrets,
+                    Some((&loc.repo, &options.fetch_policy.network)),
+                )
+                .and_then(|origin_headers| {
+                    let t = crate::resources::git::GitTransport {
+                        origin_headers: &origin_headers,
+                        ..crate::resources::git::GitTransport::new(
+                            &options.fetch_policy,
+                            Some(&spec.span),
+                        )
+                    };
+                    crate::resources::git::resolve_ref(&loc.repo, &loc.git_ref, t)
+                });
                 match r {
                     Ok(latest) => {
                         e.status = status_of(e.pin.as_deref(), &latest);
@@ -334,6 +343,7 @@ fn import_rows(
                         e.error = Some((
                             err.code.as_str().to_string(),
                             redact_secrets(&err.detail, &options.secrets),
+                            err.needs.clone(),
                         ))
                     }
                 }
@@ -354,8 +364,13 @@ fn import_rows(
             source,
             &imported_stage_refs(&sp.stages),
             &mut |s, loc| {
-                let origin_headers =
-                    secret_headers(&s.name, &s.secrets, &s.span, &options.secrets)?;
+                let origin_headers = secret_headers(
+                    &s.name,
+                    &s.secrets,
+                    &s.span,
+                    &options.secrets,
+                    Some((&loc.repo, &options.fetch_policy.network)),
+                )?;
                 let want = loc.commit.clone().or_else(|| {
                     lock.and_then(|l| l.get_git(&loc.url))
                         .map(|e| e.commit.clone())
@@ -404,6 +419,7 @@ fn import_rows(
                 let error = Some((
                     err.code.as_str().to_string(),
                     redact_secrets(&err.detail, &options.secrets),
+                    err.needs.clone(),
                 ));
                 if has_row {
                     let e = &mut inputs[row_index];
@@ -461,19 +477,24 @@ fn remote_row(
             newer_tag: None,
             error: None,
         };
-        let r = secret_headers(&spec.name, &spec.secrets, &spec.span, &options.secrets).and_then(
-            |origin_headers| {
-                fetch_remote_with(
-                    url,
-                    &options.fetch_policy,
-                    None,
-                    &FetchRequest {
-                        origin_headers,
-                        ..FetchRequest::default()
-                    },
-                )
-            },
-        );
+        let r = secret_headers(
+            &spec.name,
+            &spec.secrets,
+            &spec.span,
+            &options.secrets,
+            Some((url, &options.fetch_policy.network)),
+        )
+        .and_then(|origin_headers| {
+            fetch_remote_with(
+                url,
+                &options.fetch_policy,
+                None,
+                &FetchRequest {
+                    origin_headers,
+                    ..FetchRequest::default()
+                },
+            )
+        });
         match r {
             Ok(f) => {
                 let latest = sha256(&f.bytes);
@@ -484,6 +505,7 @@ fn remote_row(
                 e.error = Some((
                     err.code.as_str().to_string(),
                     redact_secrets(&err.detail, &options.secrets),
+                    err.needs.clone(),
                 ))
             }
         }
@@ -564,7 +586,7 @@ fn image_rows(
         })();
         if let Err(err) = r {
             e.status = Status::Error;
-            e.error = Some((err.code.as_str().to_string(), err.detail));
+            e.error = Some((err.code.as_str().to_string(), err.detail, err.needs));
         }
         e
     };

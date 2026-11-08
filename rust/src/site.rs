@@ -379,6 +379,81 @@ pub fn headers_file<'a>(rules: impl IntoIterator<Item = (&'a str, &'a str, &'a s
         .collect()
 }
 
+// ---------------------------------------------------------------- FINGERPRINT cache headers
+
+/// The `Cache-Control` of a fingerprinted file: its name changes with its content, so it never goes stale.
+pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// The `Cache-Control` of a page: revalidate on every request, so it always names the current assets.
+pub const NO_CACHE: &str = "no-cache";
+
+/// The `/_headers` rules (pattern, value of `Cache-Control`) EXPORT adds for FINGERPRINT (`cacheHeaderRules`
+/// in src/site.ts): `files` are the URL paths of every file in the exported directory, `hashed` the
+/// fingerprinted ones. A fingerprinted file gets [`IMMUTABLE`] through a `/dir/*` rule for the topmost
+/// directory (below the root) that holds only fingerprinted files, or else through its own path; pages get
+/// [`NO_CACHE`] through `/`, `/*/` and `/*.html` (each only when a page it matches exists). Paths with spaces
+/// or control characters are left out. Empty when nothing is fingerprinted.
+pub fn cache_header_rules(
+    files: &[String],
+    hashed: &std::collections::HashSet<String>,
+) -> Vec<(String, &'static str)> {
+    use std::collections::HashMap;
+    let mut sorted: Vec<&String> = files.iter().collect();
+    sorted.sort();
+    let dirs = |f: &str| -> Vec<String> {
+        let segs: Vec<&str> = f.split('/').collect();
+        (2..segs.len()).map(|k| segs[..k].join("/")).collect()
+    };
+    let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for f in &sorted {
+        for d in dirs(f) {
+            let c = counts.entry(d).or_insert((0, 0));
+            c.0 += 1;
+            if hashed.contains(*f) {
+                c.1 += 1;
+            }
+        }
+    }
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    fn add(out: &mut Vec<(String, &'static str)>, pattern: String, value: &'static str) {
+        if !space_or_control(&pattern) && !out.iter().any(|(p, _)| *p == pattern) {
+            out.push((pattern, value));
+        }
+    }
+    for f in &sorted {
+        if !hashed.contains(*f) {
+            continue;
+        }
+        let pattern = dirs(f)
+            .into_iter()
+            .find(|d| {
+                let c = counts[d];
+                c.0 == c.1
+            })
+            .map_or_else(|| (*f).clone(), |d| format!("{d}/*"));
+        add(&mut out, pattern, IMMUTABLE);
+    }
+    if out.is_empty() {
+        return out;
+    }
+    let pages: Vec<&&String> = sorted
+        .iter()
+        .filter(|f| f.to_ascii_lowercase().ends_with(".html"))
+        .collect();
+    if pages.iter().any(|f| f.as_str() == "/index.html") {
+        add(&mut out, "/".into(), NO_CACHE);
+    }
+    if pages
+        .iter()
+        .any(|f| f.as_str() != "/index.html" && f.to_ascii_lowercase().ends_with("/index.html"))
+    {
+        add(&mut out, "/*/".into(), NO_CACHE);
+    }
+    if !pages.is_empty() {
+        add(&mut out, "/*.html".into(), NO_CACHE);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

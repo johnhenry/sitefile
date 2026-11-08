@@ -5,13 +5,15 @@ import { serverCommands, serverSubcommands } from './servers.js';
 import { cacheSubcommands } from './cache.js';
 import { vendorCommands } from './vendor.js';
 import { outdatedCommands } from './outdated.js';
+import { hostsCommands } from './hosts.js';
 import { bakeCommands } from './bake.js';
+import { integrityCommands } from './integrity.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...bakeCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -36,6 +38,12 @@ Images (local store: $SITEFILE_HOME or ~/.sitefile):
   sitefile push <registry/name[:tag]>              push a (tagged) image to an OCI registry
   sitefile pull <[registry/]name[:tag][@digest]>   pull an image (a bare name means Docker Hub)
 
+Integrity:
+  sitefile build [context] --manifest m.json       also write a manifest: every file's size and SHA-256,
+                                                   and their Merkle root (save --manifest too)
+  sitefile verify <dir|archive|ref> --manifest m.json   check a deployed or extracted copy: missing,
+                                                   changed and extra files (exit 1 on any)
+
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
@@ -47,6 +55,10 @@ Offline builds:
 Pins:
   sitefile outdated [context] [--json]             compare remote imports and the BASE image with
                                                    their pins (never changes anything)
+
+Network:
+  sitefile hosts [context] [--json]                list the hosts a build would contact and whether
+                                                   --allow-hosts/--network strict allow them (no fetch)
 
 Build cache (TRANSFORM results: $SITEFILE_HOME/cache/transform):
   sitefile cache info [--json]                     location, entries, size

@@ -396,17 +396,22 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
         },
         "COPY" | "RENDER" | "TRANSFORM" => operation_items(ins, &prior, &prev, ix, &imports, typed),
         "FINGERPRINT" => {
-            // Patterns, then MANIFEST <dest>: offer MANIFEST after at least one pattern, once.
+            // Patterns, then [MANIFEST <dest>] [INTEGRITY], in this order, after at least one pattern.
             let ops: Vec<String> = prior
                 .iter()
                 .skip(1)
                 .filter(|w| !w.text.starts_with("--"))
                 .map(|w| w.upper())
                 .collect();
-            if ops.is_empty() || prev == "MANIFEST" || ops.iter().any(|w| w == "MANIFEST") {
+            let last = ops
+                .iter()
+                .filter_map(|w| FINGERPRINT_CLAUSES.iter().position(|c| w == c))
+                .max();
+            if ops.is_empty() || prev == "MANIFEST" {
                 Vec::new()
             } else {
-                kw_items(FINGERPRINT_CLAUSES.iter().copied(), CIK_KEYWORD)
+                let from = last.map_or(0, |l| l + 1);
+                kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1247,14 +1252,18 @@ mod tests {
         assert_eq!(labels("HEADER --"), ["--overwrite"]);
         // FINGERPRINT: patterns, then MANIFEST once
         assert!(labels("FINGERPRINT ").is_empty());
-        assert_eq!(labels("FINGERPRINT --"), ["--overwrite"]);
-        assert_eq!(labels("FINGERPRINT /assets/ "), ["MANIFEST"]);
+        assert_eq!(
+            labels("FINGERPRINT --"),
+            ["--overwrite", "--no-cache-headers"]
+        );
+        assert_eq!(labels("FINGERPRINT /assets/ "), ["MANIFEST", "INTEGRITY"]);
         assert_eq!(
             labels("FINGERPRINT --overwrite /a/ /b/*.css "),
-            ["MANIFEST"]
+            ["MANIFEST", "INTEGRITY"]
         );
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
-        assert!(labels("FINGERPRINT /a/ MANIFEST /m.json ").is_empty());
+        assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
+        assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);
