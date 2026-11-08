@@ -6,7 +6,7 @@
 //! [`network_from_env`]. Embedders set [`NetworkSettings`] on
 //! `FetchPolicy::network` and `RegistryOptions::network`.
 
-use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
+use crate::error::{ErrorCode::*, Needs, Result, SitefileError, SourceSpan};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -23,6 +23,14 @@ pub struct NetworkSettings {
     pub allow_hosts: Vec<String>,
     /// Hosts never contacted; a deny rule beats an allow rule.
     pub deny_hosts: Vec<String>,
+    /// Strict network mode (`--network strict`, `SITEFILE_NETWORK=strict`):
+    /// every host must match an allow-hosts rule, also when there is none (so
+    /// nothing is contacted), and an `IMPORT … SECRET` needs a
+    /// [`secret_hosts`](Self::secret_hosts) rule for its host.
+    pub strict: bool,
+    /// `<secret id>=<host pattern>` (`--allow-secret-host`): where, in strict
+    /// mode, that secret may be sent.
+    pub secret_hosts: Vec<String>,
     /// Time limit for establishing the TCP connection (to the target, or to the proxy), ms.
     pub connect_timeout_ms: Option<u64>,
     /// Longest wait for data once connected (idle time), ms.
@@ -36,6 +44,8 @@ impl NetworkSettings {
         no_proxy: Vec::new(),
         allow_hosts: Vec::new(),
         deny_hosts: Vec::new(),
+        strict: false,
+        secret_hosts: Vec::new(),
         connect_timeout_ms: None,
         read_timeout_ms: None,
     };
@@ -54,6 +64,8 @@ impl fmt::Debug for NetworkSettings {
             .field("no_proxy", &self.no_proxy)
             .field("allow_hosts", &self.allow_hosts)
             .field("deny_hosts", &self.deny_hosts)
+            .field("strict", &self.strict)
+            .field("secret_hosts", &self.secret_hosts)
             .field("connect_timeout_ms", &self.connect_timeout_ms)
             .field("read_timeout_ms", &self.read_timeout_ms)
             .finish()
@@ -417,12 +429,90 @@ pub fn check_host_rules(
             span.cloned(),
         ));
     }
-    if !network.allow_hosts.is_empty() && first_match(&host, port, &network.allow_hosts).is_none() {
+    if (network.strict || !network.allow_hosts.is_empty())
+        && first_match(&host, port, &network.allow_hosts).is_none()
+    {
+        let mode = if network.strict {
+            " (strict network mode)"
+        } else {
+            ""
+        };
         return Err(SitefileError::new(
             E_HOST_BLOCKED,
-            format!("refusing to connect to {host}: it matches no allow-hosts rule ({shown})"),
+            format!("refusing to connect to {host}: it matches no allow-hosts rule{mode} ({shown}); add --allow-hosts {host}"),
             span.cloned(),
-        ));
+        )
+        .with_needs(Needs::host(host)));
+    }
+    Ok(())
+}
+
+/// True when `host:port` may be contacted under `network`'s host rules (see [`check_host_rules`]).
+pub fn host_allowed(host: &str, port: u16, network: &NetworkSettings) -> bool {
+    let h = normalize_host(host);
+    if first_match(&h, port, &network.deny_hosts).is_some() {
+        return false;
+    }
+    !(network.strict || !network.allow_hosts.is_empty())
+        || first_match(&h, port, &network.allow_hosts).is_some()
+}
+
+/// Split `<id>=<pattern>`; None when malformed.
+fn secret_host_rule(raw: &str) -> Option<(String, String)> {
+    let (id, pattern) = raw.split_once('=')?;
+    let (id, pattern) = (id.trim(), pattern.trim());
+    let mut chars = id.chars();
+    let first_ok = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    parse_pattern(pattern)?;
+    Some((id.to_string(), pattern.to_string()))
+}
+
+/// Before an `IMPORT … SECRET` request to `target` (the import's own origin,
+/// the only one its secrets are sent to): in strict network mode each secret
+/// needs an `--allow-secret-host <id>=<pattern>` that matches the host.
+/// E_HOST_BLOCKED with a `needs`. Nothing is checked outside strict mode, and
+/// a host the host rules refuse is left to the request itself (its
+/// E_HOST_BLOCKED asks for `--allow-hosts` first).
+pub fn check_secret_hosts(
+    import_name: &str,
+    secret_ids: &[&str],
+    target: &str,
+    network: &NetworkSettings,
+    span: Option<&SourceSpan>,
+) -> Result<()> {
+    if !network.strict || secret_ids.is_empty() {
+        return Ok(());
+    }
+    let Some((host, port)) = crate::resources::https::host_port(target) else {
+        return Ok(()); // the request itself reports the bad URL
+    };
+    let host = normalize_host(&host);
+    if !host_allowed(&host, port, network) {
+        return Ok(());
+    }
+    let rules: Vec<(String, String)> = network
+        .secret_hosts
+        .iter()
+        .filter_map(|r| secret_host_rule(r))
+        .collect();
+    for id in secret_ids {
+        if rules
+            .iter()
+            .any(|(rid, p)| rid == id && host_matches(&host, port, p))
+        {
+            continue;
+        }
+        return Err(SitefileError::new(
+            E_HOST_BLOCKED,
+            format!("IMPORT {import_name}: refusing to send secret '{id}' to {host} (strict network mode); add --allow-secret-host {id}={host}"),
+            span.cloned(),
+        )
+        .with_needs(Needs::secret_host(id, &host)));
     }
     Ok(())
 }
@@ -456,6 +546,11 @@ pub fn network_problem(network: &NetworkSettings) -> Option<String> {
             if parse_pattern(p).is_none() {
                 return Some(format!("invalid {name} pattern '{p}': expected *, a host name (example.com, .example.com, *.example.com), an IP address or a CIDR network, optionally with :port"));
             }
+        }
+    }
+    for r in &network.secret_hosts {
+        if secret_host_rule(r).is_none() {
+            return Some(format!("invalid --allow-secret-host '{r}': expected <secret id>=<host pattern> (a pattern as for --allow-hosts)"));
         }
     }
     for (name, v) in [
@@ -515,26 +610,44 @@ pub fn parse_fetch_timeout(raw: &str) -> Result<(Option<u64>, Option<u64>)> {
     Ok((connect, read))
 }
 
+/// Parse a network mode (`open`: false, `strict`: true; empty: None); `what`
+/// names the source in the E_USAGE message.
+pub fn parse_network_mode(raw: &str, what: &str) -> Result<Option<bool>> {
+    match raw.trim() {
+        "" => Ok(None),
+        "open" => Ok(Some(false)),
+        "strict" => Ok(Some(true)),
+        _ => Err(SitefileError::plain(
+            E_USAGE,
+            format!("{what} expects open or strict, got '{raw}'"),
+        )),
+    }
+}
+
 /// Network settings from `SITEFILE_PROXY`, `SITEFILE_NO_PROXY`,
-/// `SITEFILE_ALLOW_HOSTS`, `SITEFILE_DENY_HOSTS` (comma- or space-separated)
-/// and `SITEFILE_FETCH_TIMEOUT`. Empty values are unset. `HTTP_PROXY`,
-/// `HTTPS_PROXY` and `NO_PROXY` are never read.
+/// `SITEFILE_ALLOW_HOSTS`, `SITEFILE_DENY_HOSTS` (comma- or space-separated),
+/// `SITEFILE_FETCH_TIMEOUT` and `SITEFILE_NETWORK` (`open` or `strict`).
+/// Empty values are unset. `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are never read.
 pub fn network_from_env(env: &BTreeMap<String, String>) -> Result<NetworkSettings> {
     let get = |k: &str| env.get(k).map(String::as_str).unwrap_or("");
     let proxy = get("SITEFILE_PROXY").trim();
     let (connect, read) = parse_fetch_timeout(get("SITEFILE_FETCH_TIMEOUT"))?;
+    let strict = parse_network_mode(get("SITEFILE_NETWORK"), "SITEFILE_NETWORK")?.unwrap_or(false);
     Ok(NetworkSettings {
         proxy: (!proxy.is_empty()).then(|| proxy.to_string()),
         no_proxy: split_list(get("SITEFILE_NO_PROXY")),
         allow_hosts: split_list(get("SITEFILE_ALLOW_HOSTS")),
         deny_hosts: split_list(get("SITEFILE_DENY_HOSTS")),
+        strict,
+        secret_hosts: Vec::new(),
         connect_timeout_ms: connect,
         read_timeout_ms: read,
     })
 }
 
 /// `over` on top of `base`: the proxy and timeouts are replaced, the host lists
-/// are joined (duplicates dropped, first occurrence kept).
+/// are joined (duplicates dropped, first occurrence kept), and strict mode is
+/// on when either is strict.
 pub fn merge_network(base: &NetworkSettings, over: &NetworkSettings) -> NetworkSettings {
     let join = |a: &[String], b: &[String]| {
         let mut out: Vec<String> = Vec::new();
@@ -550,6 +663,8 @@ pub fn merge_network(base: &NetworkSettings, over: &NetworkSettings) -> NetworkS
         no_proxy: join(&base.no_proxy, &over.no_proxy),
         allow_hosts: join(&base.allow_hosts, &over.allow_hosts),
         deny_hosts: join(&base.deny_hosts, &over.deny_hosts),
+        strict: base.strict || over.strict,
+        secret_hosts: join(&base.secret_hosts, &over.secret_hosts),
         connect_timeout_ms: over.connect_timeout_ms.or(base.connect_timeout_ms),
         read_timeout_ms: over.read_timeout_ms.or(base.read_timeout_ms),
     }
@@ -631,7 +746,7 @@ mod tests {
         let e = check_host_rules("example.org", 443, &n, "u", None).unwrap_err();
         assert_eq!(
             e.detail,
-            "refusing to connect to example.org: it matches no allow-hosts rule (u)"
+            "refusing to connect to example.org: it matches no allow-hosts rule (u); add --allow-hosts example.org"
         );
     }
 
@@ -722,5 +837,245 @@ mod tests {
         );
         assert!(network_problem(&off).is_none());
         assert!(proxy_for("example.com", 443, &off).unwrap().is_none());
+    }
+
+    fn span() -> SourceSpan {
+        SourceSpan::new("Sitefile", 3, 1)
+    }
+
+    #[test]
+    fn a_host_outside_the_allow_list_carries_needs_host() {
+        use crate::error::NeedsKind;
+        let n = NetworkSettings {
+            allow_hosts: vec!["example.org".into()],
+            ..NetworkSettings::NONE
+        };
+        let e = check_host_rules(
+            "cdn.example.com",
+            443,
+            &n,
+            "https://cdn.example.com/a.css",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.detail, "refusing to connect to cdn.example.com: it matches no allow-hosts rule (https://cdn.example.com/a.css); add --allow-hosts cdn.example.com");
+        let needs = e.needs.unwrap();
+        assert_eq!(
+            (needs.kind, needs.name.as_str(), needs.flag()),
+            (NeedsKind::Host, "cdn.example.com", "--allow-hosts")
+        );
+        assert_eq!(needs.kind.as_str(), "host");
+        assert_eq!(
+            needs.args(),
+            ["--allow-hosts".to_string(), "cdn.example.com".into()]
+        );
+        let e = check_host_rules("CDN.Example.com.", 443, &n, "u", None).unwrap_err();
+        assert_eq!(e.needs.unwrap().name, "cdn.example.com");
+        // A deny-hosts match carries none, also in strict mode.
+        let d = NetworkSettings {
+            allow_hosts: vec!["a.test".into()],
+            deny_hosts: vec!["a.test".into()],
+            strict: true,
+            ..NetworkSettings::NONE
+        };
+        let e = check_host_rules("a.test", 443, &d, "u", None).unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED);
+        assert!(e.needs.is_none());
+    }
+
+    #[test]
+    fn strict_mode_allows_only_listed_hosts() {
+        let strict = NetworkSettings {
+            strict: true,
+            ..NetworkSettings::NONE
+        };
+        assert!(strict.is_set());
+        let e = check_host_rules(
+            "cdn.example.com",
+            443,
+            &strict,
+            "https://cdn.example.com/x",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.detail, "refusing to connect to cdn.example.com: it matches no allow-hosts rule (strict network mode) (https://cdn.example.com/x); add --allow-hosts cdn.example.com");
+        for allow in ["example.com", "*"] {
+            let n = NetworkSettings {
+                allow_hosts: vec![allow.into()],
+                ..strict.clone()
+            };
+            assert!(check_host_rules("cdn.example.com", 443, &n, "u", None).is_ok());
+        }
+        let port = NetworkSettings {
+            allow_hosts: vec!["a.test:443".into()],
+            ..strict.clone()
+        };
+        assert!(check_host_rules("a.test", 8443, &port, "u", None).is_err());
+        assert!(
+            check_host_rules("cdn.example.com", 443, &NetworkSettings::NONE, "u", None).is_ok()
+        );
+        // host_allowed agrees with check_host_rules.
+        for (n, h, want) in [
+            (NetworkSettings::NONE, "a.test", true),
+            (strict.clone(), "a.test", false),
+            (port.clone(), "a.test", true),
+            (
+                NetworkSettings {
+                    deny_hosts: vec!["a.test".into()],
+                    ..NetworkSettings::NONE
+                },
+                "a.test",
+                false,
+            ),
+        ] {
+            assert_eq!(host_allowed(h, 443, &n), want);
+            assert_eq!(check_host_rules(h, 443, &n, "u", None).is_ok(), want);
+        }
+    }
+
+    #[test]
+    fn network_mode_from_the_environment() {
+        let env = |v: &str| BTreeMap::from([("SITEFILE_NETWORK".to_string(), v.to_string())]);
+        assert!(network_from_env(&env("strict")).unwrap().strict);
+        assert!(!network_from_env(&env(" open ")).unwrap().strict);
+        assert!(!network_from_env(&env("")).unwrap().strict);
+        let e = network_from_env(&env("ask")).unwrap_err();
+        assert_eq!(
+            (e.code, e.detail.as_str()),
+            (
+                E_USAGE,
+                "SITEFILE_NETWORK expects open or strict, got 'ask'"
+            )
+        );
+        assert_eq!(
+            parse_network_mode("strict", "--network").unwrap(),
+            Some(true)
+        );
+        assert!(parse_network_mode("Strict", "--network").is_err());
+        let m = merge_network(
+            &NetworkSettings {
+                strict: true,
+                secret_hosts: vec!["a=x.test".into()],
+                ..NetworkSettings::NONE
+            },
+            &NetworkSettings {
+                secret_hosts: vec!["a=x.test".into(), "b=y.test".into()],
+                ..NetworkSettings::NONE
+            },
+        );
+        assert!(m.strict);
+        assert_eq!(m.secret_hosts, ["a=x.test", "b=y.test"]);
+    }
+
+    #[test]
+    fn allow_secret_host_is_id_equals_pattern() {
+        let ok = NetworkSettings {
+            secret_hosts: vec![
+                "tok=api.example.com".into(),
+                "_a1=*.example.com:8443".into(),
+                "k=10.0.0.0/8".into(),
+            ],
+            ..NetworkSettings::NONE
+        };
+        assert!(network_problem(&ok).is_none());
+        for bad in [
+            "tok",
+            "=api.example.com",
+            "tok=",
+            "1tok=a.test",
+            "to-k=a.test",
+            "tok=a b",
+            "tok=a.test/x",
+        ] {
+            let n = NetworkSettings {
+                secret_hosts: vec![bad.into()],
+                ..NetworkSettings::NONE
+            };
+            assert_eq!(
+                network_problem(&n).as_deref(),
+                Some(format!("invalid --allow-secret-host '{bad}': expected <secret id>=<host pattern> (a pattern as for --allow-hosts)").as_str()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_mode_sends_a_secret_only_where_a_rule_allows() {
+        use crate::error::NeedsKind;
+        let strict = NetworkSettings {
+            strict: true,
+            allow_hosts: vec!["example.com".into()],
+            ..NetworkSettings::NONE
+        };
+        let url = "https://api.example.com/v1";
+        let e = check_secret_hosts("data", &["tok"], url, &strict, Some(&span())).unwrap_err();
+        assert_eq!(e.code, E_HOST_BLOCKED);
+        assert_eq!(e.message(), "Sitefile:3:1: IMPORT data: refusing to send secret 'tok' to api.example.com (strict network mode); add --allow-secret-host tok=api.example.com");
+        let needs = e.needs.unwrap();
+        assert_eq!(
+            (needs.kind, needs.name.as_str(), needs.flag()),
+            (
+                NeedsKind::SecretHost,
+                "tok=api.example.com",
+                "--allow-secret-host"
+            )
+        );
+        assert_eq!(needs.kind.as_str(), "secret-host");
+        let with = |rules: &[&str]| NetworkSettings {
+            secret_hosts: rules.iter().map(|s| s.to_string()).collect(),
+            ..strict.clone()
+        };
+        assert!(
+            check_secret_hosts("data", &["tok"], url, &with(&["tok=api.example.com"]), None)
+                .is_ok()
+        );
+        assert!(
+            check_secret_hosts("data", &["tok"], url, &with(&["tok=example.com"]), None).is_ok()
+        );
+        assert!(check_secret_hosts(
+            "data",
+            &["tok"],
+            url,
+            &with(&["other=api.example.com"]),
+            None
+        )
+        .is_err());
+        assert!(
+            check_secret_hosts("data", &["tok"], url, &with(&["tok=evil.test"]), None).is_err()
+        );
+        let e = check_secret_hosts(
+            "data",
+            &["a", "b"],
+            url,
+            &with(&["a=api.example.com"]),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.needs.unwrap().name, "b=api.example.com");
+        // Open mode needs no rule; a host the host rules refuse is left to the request.
+        let open = NetworkSettings {
+            strict: false,
+            ..strict.clone()
+        };
+        assert!(check_secret_hosts("data", &["tok"], url, &open, None).is_ok());
+        assert!(check_secret_hosts("data", &["tok"], url, &NetworkSettings::NONE, None).is_ok());
+        assert!(
+            check_secret_hosts("data", &["tok"], "https://api.example.org/", &strict, None).is_ok()
+        );
+    }
+
+    #[test]
+    fn error_json_has_code_message_span_and_needs() {
+        let e = SitefileError::new(E_HOST_BLOCKED, "refusing", Some(span()))
+            .with_needs(Needs::host("a.test"));
+        assert_eq!(
+            serde_json::to_string(&e.to_json()).unwrap(),
+            r#"{"error":{"code":"E_HOST_BLOCKED","message":"Sitefile:3:1: refusing","span":{"file":"Sitefile","line":3,"column":1},"needs":{"kind":"host","name":"a.test","flag":"--allow-hosts"}}}"#
+        );
+        let plain = SitefileError::plain(E_FETCH, "x");
+        assert_eq!(
+            serde_json::to_string(&plain.to_json()).unwrap(),
+            r#"{"error":{"code":"E_FETCH","message":"x","span":null,"needs":null}}"#
+        );
     }
 }
