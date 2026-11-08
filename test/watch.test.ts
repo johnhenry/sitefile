@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
+import { closeServer, CONSOLE_LIMIT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { isIgnoredChange, pollSnapshot, RebuildScheduler } from '../src/watch.js';
 import { pollOption } from '../src/cli/watch.js';
@@ -94,9 +94,9 @@ test('injectReloadScript inserts before the last </body>, else appends', () => {
 });
 
 test('clientScript passes the session options to the client', () => {
-  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true});\n`);
-  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true});\n`);
-  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false});\n`);
+  assert.equal(clientScript(), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":true,"console":false});\n`);
+  assert.equal(clientScript({ resetServiceWorkers: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":false,"cssInject":true,"console":false});\n`);
+  assert.equal(clientScript({ cssInject: false }), `${RELOAD_CLIENT}({"resetServiceWorkers":true,"cssInject":false,"console":false});\n`);
   assert.equal(new LiveReload({ resetServiceWorkers: false }).script, clientScript({ resetServiceWorkers: false }));
   // the client unregisters service workers and empties Cache Storage before reloading
   assert.match(RELOAD_CLIENT, /getRegistrations\(\)/);
@@ -113,6 +113,71 @@ test('reloadEventFor: nothing, css (only changed stylesheets in both trees) or r
   assert.equal(reloadEventFor(a, t({ '/index.html': 'i', '/a.css': 'a', '/z/b.css': 'b', '/c.css': 'c' }), true), RELOAD_EVENT, 'an added stylesheet');
   assert.equal(reloadEventFor(a, t({ '/index.html': 'i', '/a.css': 'a' }), true), RELOAD_EVENT, 'a removed stylesheet');
   assert.equal(RELOAD_EVENT, '{"type":"reload"}');
+});
+
+test('consoleLines: levels, cleaning, location, stack and --console', () => {
+  assert.deepEqual(consoleLines('{"level":"error","message":"Uncaught TypeError: x\\nis undefined","url":"http://h/app.js","line":3,"col":5}', false), [
+    'browser error: Uncaught TypeError: x is undefined (http://h/app.js:3:5)',
+  ]);
+  assert.deepEqual(consoleLines('{"level":"warn","message":"w","url":"http://h/","line":2}', false), ['browser warn: w (http://h/:2)']);
+  assert.deepEqual(consoleLines('{"level":"warn","message":"w","url":"http://h/","col":2}', false), ['browser warn: w (http://h/)'], 'col needs line');
+  assert.deepEqual(consoleLines('{"level":"error","message":"m","line":1.5,"url":"u"}', false), ['browser error: m (u)']);
+  assert.deepEqual(consoleLines('{"level":"log","message":"hi"}', false), [], 'log needs --console');
+  assert.deepEqual(consoleLines('{"level":"info","message":"hi"}', true), ['browser info: hi']);
+  assert.deepEqual(consoleLines('{"level":"error","message":"E: m","stack":"E: m\\n    at f (a.js:1:2)\\n\\n    at g (b.js:3:4)"}', false), [
+    'browser error: E: m',
+    '    at f (a.js:1:2)',
+    '    at g (b.js:3:4)',
+  ]);
+  const long = consoleLines(JSON.stringify({ level: 'error', message: '\u{1F600}'.repeat(1200) }), false)!;
+  assert.equal(long[0], `browser error: ${'\u{1F600}'.repeat(1000)}...`, 'cut at 1000 code points');
+  const frames = consoleLines(JSON.stringify({ level: 'error', message: 'm', stack: Array.from({ length: 9 }, (_, i) => `at f${i}`).join('\n') }), false)!;
+  assert.equal(frames.length, 6, 'at most 5 stack lines');
+  for (const bad of ['', 'x', '[]', 'null', '{"level":"debug","message":"m"}', '{"message":"m"}']) assert.equal(consoleLines(bad, true), undefined, bad);
+});
+
+test('isSameOriginPost: Origin must be this Host; Sec-Fetch-Site same-origin when sent', () => {
+  assert.equal(isSameOriginPost({ host: '127.0.0.1:8080', origin: 'http://127.0.0.1:8080' }), true);
+  assert.equal(isSameOriginPost({ host: 'x.example', origin: 'https://x.example', 'sec-fetch-site': 'same-origin' }), true);
+  assert.equal(isSameOriginPost({ host: '127.0.0.1:8080', origin: 'http://evil.example' }), false);
+  assert.equal(isSameOriginPost({ host: '127.0.0.1:8080' }), false, 'no Origin');
+  assert.equal(isSameOriginPost({ host: '127.0.0.1:8080', origin: 'http://127.0.0.1:8080', 'sec-fetch-site': 'cross-site' }), false);
+  assert.equal(isSameOriginPost({ host: '127.0.0.1:8080', origin: 'null' }), false);
+});
+
+test('POST /__sitefile/console: same-origin only, size-capped, rate-limited, never access-logged; only under --watch', async () => {
+  const tree = Tree.fromFiles([['/index.html', makeFile(enc('<h1>x</h1>'), 't')]]);
+  const log: string[] = [];
+  const server = createSiteServer(() => tree, { liveReload: new LiveReload(), log: (l) => log.push(l) });
+  const plain = createSiteServer(tree, { log: () => undefined });
+  const { port } = await listen(server, '127.0.0.1', 0);
+  const { port: plainPort } = await listen(plain, '127.0.0.1', 0);
+  const post = (p: number, body: string, headers: Record<string, string> = { origin: `http://127.0.0.1:${p}` }): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port: p, path: '/__sitefile/console', method: 'POST', headers: { 'content-type': 'text/plain', ...headers }, agent: false }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      r.on('error', reject);
+      r.end(body);
+    });
+  try {
+    assert.equal(await post(port, '{"level":"error","message":"Uncaught Error: boom","url":"http://127.0.0.1/app.js","line":1,"col":7}'), 204);
+    assert.deepEqual(log, ['browser error: Uncaught Error: boom (http://127.0.0.1/app.js:1:7)'], 'the message, and no access-log line');
+    assert.equal(await post(port, '{"level":"error","message":"x"}', { origin: 'http://evil.example' }), 403);
+    assert.equal(await post(port, '{"level":"error","message":"x"}', {}), 403, 'no Origin');
+    assert.equal(await post(port, 'not json'), 400);
+    assert.equal(await post(port, JSON.stringify({ level: 'error', message: 'x'.repeat(20000) })), 413);
+    assert.equal((await get(port, '/__sitefile/console')).status, 405);
+    assert.equal(await post(plainPort, '{"level":"error","message":"x"}'), 405, 'only under --watch');
+    log.length = 0;
+    for (let i = 0; i < CONSOLE_LIMIT + 5; i++) await post(port, JSON.stringify({ level: 'warn', message: `w${i}` }));
+    assert.equal(log.length, CONSOLE_LIMIT, 'rate-limited (the first message above was in this window too)');
+    assert.match(log[log.length - 1]!, /^browser: more than 50 console messages in 10 s; dropping the rest$/);
+  } finally {
+    await closeServer(server);
+    await closeServer(plain);
+  }
 });
 
 test('isNavigation: Sec-Fetch-Mode, then Sec-Fetch-Dest, then Accept', () => {
@@ -217,7 +282,7 @@ test('live reload: HTML gets the script (own ETag), other files and non-watch se
     assert.equal(js.status, 200);
     assert.equal(js.body, clientScript());
     assert.ok(js.body.startsWith(RELOAD_CLIENT));
-    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true});\n'));
+    assert.ok(js.body.endsWith('({"resetServiceWorkers":true,"cssInject":true,"console":false});\n'));
     assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(js.headers['cache-control'], 'no-cache');
     assert.equal(Number(js.headers['content-length']), Buffer.byteLength(js.body));
@@ -534,7 +599,7 @@ test('serve --watch --no-css-inject: a stylesheet-only rebuild reloads', async (
   try {
     await w.waitFor(/Watching /);
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(w.stdout())?.[1]);
-    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false\}\);\n$/);
+    assert.match((await get(port, '/__sitefile/reload.js')).body, /"cssInject":false,"console":false\}\);\n$/);
     const ev = await events(port);
     assert.equal(await ev.next(), 'retry: 1000');
     await fs.writeFile(path.join(site, 'public', 'style.css'), 'body{margin:3px}');

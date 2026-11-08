@@ -5,7 +5,8 @@
 //
 // A case: { name, files: { 'rel/path': 'content' }, args?: [...], steps: [...] }. Steps:
 //   { get: '/path', headers?: {...}, method? }  record one response
-//   { post: '/path', body, headers? }           record one response to a POST
+//   { post: '/path', body, headers? }           record one response to a POST (SELF in a header: the server's origin)
+//   { log: true }                               record the `browser ...` lines of stdout so far
 //   { open: true }                              open the event stream (records its headers and first event)
 //   { next: true }                              record the next event
 //   { write: { 'rel/path': 'content' } }        edit files in the context (then wait for the rebuild via next)
@@ -96,6 +97,23 @@ export const WATCH_CASES = [
     args: ['--no-css-inject'],
     steps: [{ get: '/__sitefile/reload.js' }, { open: true }, { write: { 'public/a.css': 'a{color:red}' } }, { next: true }],
   },
+  {
+    name: 'watch/console',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    args: ['--console'],
+    steps: [
+      { get: '/__sitefile/reload.js' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"error","message":"Uncaught Error: boom\\nnext","url":"http://x/app.js","line":3,"col":9,"stack":"Error: boom\\n    at f (app.js:3:9)"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"log","message":"hello","line":2.5}' },
+      { post: '/__sitefile/console', headers: { origin: 'http://evil.example' }, body: '{"level":"error","message":"x"}' },
+      { post: '/__sitefile/console', headers: {}, body: '{"level":"error","message":"x"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"trace"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: 'x'.repeat(17000) },
+      { get: '/__sitefile/console' },
+      { wait: 200 },
+      { log: true },
+    ],
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -182,7 +200,11 @@ async function runOne(c, cmd, work, home) {
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(stdout)?.[1]);
     for (const s of c.steps) {
       if (s.get !== undefined) transcript.push({ step: `${s.method ?? 'GET'} ${s.get}`, ...(await request(port, { method: s.method, path: s.get, headers: s.headers })) });
-      else if (s.post !== undefined) transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers: s.headers, body: s.body })) });
+      else if (s.post !== undefined) {
+        // SELF in a header value is this server's origin.
+        const headers = Object.fromEntries(Object.entries(s.headers ?? {}).map(([k, v]) => [k, v.replace('SELF', `http://127.0.0.1:${port}`)]));
+        transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers, body: s.body })) });
+      } else if (s.log) transcript.push({ step: 'log', lines: stdout.split('\n').filter((l) => l.startsWith('browser')) });
       else if (s.open) {
         events = await openEvents(port);
         transcript.push({ step: 'open', status: events?.status, headers: events?.headers, event: await events?.next() });

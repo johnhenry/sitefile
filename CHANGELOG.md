@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Browser console errors in the `serve --watch` log** (johnhenry/sitefile#174):
+  the live-reload client forwards uncaught errors, unhandled rejections,
+  `console.error` and `console.warn` (`--console`: also `log` and `info`) to
+  `POST /__sitefile/console`, and the server prints them as `browser error: ...`
+  lines. Same-origin only (`Origin` must match `Host`), 16 KiB per message,
+  50 messages per 10 s.
 - **`serve --watch` for a plain directory, with CSS injection**
   (johnhenry/sitefile#168): `serve --watch ./dir` on a directory without a
   `Sitefile` (and without `-f`, `--target` or `--build-arg*`) serves it as it

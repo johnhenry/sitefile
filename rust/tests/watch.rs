@@ -504,7 +504,7 @@ fn serve_watch_no_css_inject_reloads() {
     let port = port_of(&w.stdout());
     assert!(get(port, "/__sitefile/reload.js")
         .2
-        .ends_with("\"cssInject\":false});\n"));
+        .ends_with("\"cssInject\":false,\"console\":false});\n"));
     let mut ev = Events::open(port);
     assert_eq!(ev.next(), "retry: 1000");
     write(site.join("public/style.css"), "body{margin:3px}");

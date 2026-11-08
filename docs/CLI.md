@@ -503,11 +503,11 @@ definition order (inherited ones first), one `arg-file` and one `tag` each, and 
 ## Watch mode
 
 ```
-sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject]
+sitefile build --watch [--poll] [--poll-interval ms] [--no-css-inject] [--console]
                        [context | ./plain-directory] [build options]
 sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [--build-arg K=V]...
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
-                       [--poll] [--poll-interval ms] [--no-css-inject]
+                       [--poll] [--poll-interval ms] [--no-css-inject] [--console]
                        [context | ./plain-directory]
 ```
 
@@ -606,6 +606,18 @@ Only under `serve --watch`:
   from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'`. Host sources are not
   matched (a policy naming only `http://127.0.0.1:8080` is warned about), and a CSP in a `<meta http-equiv>` tag
   is not checked.
+- **Browser console** (`--console` adds `log` and `info`): the client forwards uncaught errors (`error` events),
+  unhandled promise rejections, `console.error` and `console.warn` with
+  `POST /__sitefile/console` (reserved like the other paths; any other method is `405`). The body is JSON
+  `{level, message, stack, url, line, col}`, at most 16 KiB (`413`); anything else is `400`. Only a page of this
+  server may post: `Origin` must be `http://<Host>` or `https://<Host>` and `Sec-Fetch-Site`, when sent,
+  `same-origin` (else `403`; a tunnel that rewrites `Host` therefore drops them). The server answers `204` and
+  writes, to stdout and not as access-log lines,
+  `browser error: Uncaught TypeError: x is undefined (http://127.0.0.1:8080/app.js:3:5)` (runs of control
+  characters become one space; the message is cut at 1000 characters, the URL at 300) followed by up to five stack
+  lines indented by four spaces. At most 50 messages are logged per 10 s; the first one over prints
+  `browser: more than 50 console messages in 10 s; dropping the rest`. The endpoint exists only under `--watch`,
+  and it only ever writes to the log.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`

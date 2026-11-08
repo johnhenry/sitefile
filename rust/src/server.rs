@@ -138,6 +138,8 @@ pub struct LiveReloadOptions {
     /// Swap changed stylesheets in place instead of reloading when only CSS changed
     /// (`--no-css-inject` turns it off).
     pub css_inject: bool,
+    /// Forward the page's `console.log`/`console.info` too, not only errors and warnings (`--console`).
+    pub console: bool,
 }
 
 impl Default for LiveReloadOptions {
@@ -145,6 +147,7 @@ impl Default for LiveReloadOptions {
         LiveReloadOptions {
             reset_service_workers: true,
             css_inject: true,
+            console: false,
         }
     }
 }
@@ -153,11 +156,109 @@ impl Default for LiveReloadOptions {
 /// the same fixed order as `clientScript` in src/server.ts).
 pub fn client_script(options: &LiveReloadOptions) -> String {
     format!(
-        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{}}});\n",
+        "{}({{\"resetServiceWorkers\":{},\"cssInject\":{},\"console\":{}}});\n",
         reload_client(),
         options.reset_service_workers,
-        options.css_inject
+        options.css_inject,
+        options.console
     )
+}
+
+/// Reserved for browser console messages (POST) while `serve --watch` runs.
+pub const CONSOLE_PATH: &str = "/__sitefile/console";
+/// Largest console message body accepted (bytes).
+pub const MAX_CONSOLE_BODY: u64 = 16 * 1024;
+/// At most this many console messages are logged per [`CONSOLE_WINDOW`].
+pub const CONSOLE_LIMIT: u32 = 50;
+pub const CONSOLE_WINDOW: Duration = Duration::from_secs(10);
+
+/// `s` with each run of control characters made one space, trimmed, and cut to `max` chars (then `...`).
+fn clean_text(s: &str, max: usize) -> String {
+    let mut t = String::with_capacity(s.len());
+    let mut in_ctl = false;
+    for c in s.chars() {
+        if (c as u32) < 0x20 || c == '\u{7f}' {
+            if !in_ctl {
+                t.push(' ');
+            }
+            in_ctl = true;
+        } else {
+            t.push(c);
+            in_ctl = false;
+        }
+    }
+    let t = js_trim(&t);
+    if t.chars().count() > max {
+        let cut: String = t.chars().take(max).collect();
+        format!("{cut}...")
+    } else {
+        t.to_string()
+    }
+}
+
+/// The server-log lines for one console message body; same rules as `consoleLines` in src/server.ts.
+pub fn console_lines(body: &str, all: bool) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let o = v.as_object()?;
+    let level = o.get("level").and_then(|l| l.as_str())?;
+    if !["error", "warn", "log", "info"].contains(&level) {
+        return None;
+    }
+    if (level == "log" || level == "info") && !all {
+        return Some(Vec::new());
+    }
+    let message = clean_text(
+        o.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+        1000,
+    );
+    let num = |k: &str| -> Option<u64> {
+        let f = o.get(k)?.as_f64()?;
+        (f.fract() == 0.0 && f >= 0.0 && f <= 9007199254740991.0).then_some(f as u64)
+    };
+    let url = o
+        .get("url")
+        .and_then(|u| u.as_str())
+        .map(|u| clean_text(u, 300))
+        .unwrap_or_default();
+    let line = num("line");
+    let col = line.and(num("col"));
+    let at = if url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({url}{}{})",
+            line.map(|l| format!(":{l}")).unwrap_or_default(),
+            col.map(|c| format!(":{c}")).unwrap_or_default()
+        )
+    };
+    let mut out = vec![format!("browser {level}: {message}{at}")];
+    if let Some(stack) = o.get("stack").and_then(|s| s.as_str()) {
+        out.extend(
+            stack
+                .split('\n')
+                .map(|l| clean_text(l, 300))
+                .filter(|l| !l.is_empty() && *l != message)
+                .take(5)
+                .map(|l| format!("    {l}")),
+        );
+    }
+    Some(out)
+}
+
+/// A console POST comes from a page of this server; same rules as `isSameOriginPost` in src/server.ts.
+pub fn is_same_origin_post(headers: &HashMap<String, String>) -> bool {
+    let (Some(origin), Some(host)) = (headers.get("origin"), headers.get("host")) else {
+        return false;
+    };
+    if host.is_empty() {
+        return false;
+    }
+    if let Some(site) = headers.get("sec-fetch-site") {
+        if !site.trim().eq_ignore_ascii_case("same-origin") {
+            return false;
+        }
+    }
+    *origin == format!("http://{host}") || *origin == format!("https://{host}")
 }
 
 /// The event that tells every page to reload.
@@ -214,6 +315,10 @@ pub struct LiveReload {
     clients: AtomicUsize,
     /// CSP values already warned about (one warning per policy text).
     warned_csp: Mutex<std::collections::HashSet<String>>,
+    /// `--console`: log and info messages are logged too.
+    console: bool,
+    /// Console rate limit: the current window's start and how many messages it has seen.
+    console_window: Mutex<Option<(Instant, u32)>>,
 }
 
 impl LiveReload {
@@ -224,6 +329,7 @@ impl LiveReload {
     pub fn with_options(options: &LiveReloadOptions) -> Arc<LiveReload> {
         Arc::new(LiveReload {
             script: client_script(options),
+            console: options.console,
             ..LiveReload::default()
         })
     }
@@ -231,6 +337,85 @@ impl LiveReload {
     /// The client script for this session.
     pub fn script(&self) -> &str {
         &self.script
+    }
+
+    /// Whether one more console message may be logged now (at most [`CONSOLE_LIMIT`] per
+    /// [`CONSOLE_WINDOW`]), and the notice line the first refused one in a window prints.
+    pub fn admit_console(&self, now: Instant) -> (bool, Option<String>) {
+        let Ok(mut w) = self.console_window.lock() else {
+            return (false, None);
+        };
+        let (start, count) = match *w {
+            Some((start, count)) if now.duration_since(start) < CONSOLE_WINDOW => {
+                (start, count + 1)
+            }
+            _ => (now, 1),
+        };
+        *w = Some((start, count));
+        if count <= CONSOLE_LIMIT {
+            return (true, None);
+        }
+        let notice = (count == CONSOLE_LIMIT + 1).then(|| {
+            format!(
+                "browser: more than {CONSOLE_LIMIT} console messages in 10 s; dropping the rest"
+            )
+        });
+        (false, notice)
+    }
+
+    /// The answer to a request for [`CONSOLE_PATH`]: `body` is the POST body when it was read
+    /// (same origin, a length within [`MAX_CONSOLE_BODY`]).
+    fn console_response(
+        &self,
+        options: &SiteServerOptions,
+        method: &str,
+        headers: &HashMap<String, String>,
+        body: Option<&[u8]>,
+        body_len: u64,
+        chunked: bool,
+    ) -> Response {
+        let mut h: Vec<(String, String)> = vec![
+            ("x-content-type-options".into(), "nosniff".into()),
+            ("cache-control".into(), "no-cache".into()),
+        ];
+        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+            h.push(("x-sitefile-server".into(), id.to_string()));
+        }
+        let res = |status: u16, mut h: Vec<(String, String)>, extra: &[(&str, &str)]| {
+            h.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            Response {
+                status,
+                headers: h,
+                body: Vec::new(),
+            }
+        };
+        if method != "POST" {
+            return res(405, h, &[("allow", "POST"), ("content-length", "0")]);
+        }
+        if !is_same_origin_post(headers) {
+            return res(403, h, &[("content-length", "0")]);
+        }
+        if chunked || body_len > MAX_CONSOLE_BODY {
+            return res(413, h, &[("content-length", "0")]);
+        }
+        let text = String::from_utf8_lossy(body.unwrap_or_default());
+        let Some(lines) = console_lines(&text, self.console) else {
+            return res(400, h, &[("content-length", "0")]);
+        };
+        if !lines.is_empty() {
+            let (ok, notice) = self.admit_console(Instant::now());
+            if let Some(log) = &options.log {
+                if let Some(n) = notice {
+                    log(&n);
+                }
+                if ok {
+                    for l in &lines {
+                        log(l);
+                    }
+                }
+            }
+        }
+        res(204, h, &[])
     }
 
     /// Send `event` (one line of JSON) to every open page.
@@ -1112,10 +1297,29 @@ fn serve_connection(
         };
         let started = Instant::now();
         let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        if req.body_len > 0
+        let console = options
+            .live_reload
+            .as_ref()
+            .filter(|_| raw_path_of(&req.url) == CONSOLE_PATH);
+        let mut body: Option<Vec<u8>> = None;
+        if console.is_some()
+            && req.method == "POST"
+            && is_same_origin_post(&req.headers)
+            && !req.chunked
+            && req.body_len <= MAX_CONSOLE_BODY
+        {
+            let mut buf = vec![0u8; req.body_len as usize];
+            if reader.read_exact(&mut buf).is_err() {
+                break;
+            }
+            body = Some(buf);
+        } else if req.body_len > 0
             && keep
             && io::copy(&mut reader.by_ref().take(req.body_len), &mut io::sink()).is_err()
         {
+            keep = false;
+        }
+        if console.is_some() && (req.chunked || req.body_len > MAX_CONSOLE_BODY) {
             keep = false;
         }
         if let Some(live) = options
@@ -1131,14 +1335,24 @@ fn serve_connection(
             Err(_) => break,
         };
         let site_rules = rules_for(rules, &current);
-        let res = respond(
-            &current,
-            &site_rules,
-            options,
-            &req.method,
-            &req.url,
-            &req.headers,
-        );
+        let res = match console {
+            Some(live) => live.console_response(
+                options,
+                &req.method,
+                &req.headers,
+                body.as_deref(),
+                req.body_len,
+                req.chunked,
+            ),
+            None => respond(
+                &current,
+                &site_rules,
+                options,
+                &req.method,
+                &req.url,
+                &req.headers,
+            ),
+        };
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -1158,7 +1372,9 @@ fn serve_connection(
         let probe = options.server_id.is_some()
             && req.headers.get("x-sitefile-probe") == options.server_id.as_ref();
         // every page load fetches the reload script; it would only clutter the access log
-        let quiet = options.live_reload.is_some() && raw_path_of(&req.url) == RELOAD_SCRIPT_PATH;
+        // nor do console messages (they are logged as `browser ...` lines)
+        let quiet = options.live_reload.is_some()
+            && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
         if !probe && !quiet {
             if let Some(log) = &options.log {
                 log(&format!(
@@ -1912,15 +2128,20 @@ mod tests {
         assert!(!js.contains('`'));
         assert_eq!(
             client_script(&LiveReloadOptions::default()),
-            format!("{js}({{\"resetServiceWorkers\":true,\"cssInject\":true}});\n")
+            format!(
+                "{js}({{\"resetServiceWorkers\":true,\"cssInject\":true,\"console\":false}});\n"
+            )
         );
         let keep = LiveReload::with_options(&LiveReloadOptions {
             reset_service_workers: false,
             css_inject: false,
+            console: true,
         });
         assert_eq!(
             keep.script(),
-            format!("{js}({{\"resetServiceWorkers\":false,\"cssInject\":false}});\n")
+            format!(
+                "{js}({{\"resetServiceWorkers\":false,\"cssInject\":false,\"console\":true}});\n"
+            )
         );
         assert!(js.contains("getRegistrations()") && js.contains("caches.delete(k)"));
     }
@@ -1987,6 +2208,179 @@ mod tests {
             reload
         );
         assert_eq!(RELOAD_EVENT, "{\"type\":\"reload\"}");
+    }
+
+    #[test]
+    fn console_lines_levels_cleaning_location_stack() {
+        let l = |b: &str, all: bool| console_lines(b, all);
+        assert_eq!(
+            l("{\"level\":\"error\",\"message\":\"Uncaught TypeError: x\\nis undefined\",\"url\":\"http://h/app.js\",\"line\":3,\"col\":5}", false),
+            Some(vec!["browser error: Uncaught TypeError: x is undefined (http://h/app.js:3:5)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"line\":2}",
+                false
+            ),
+            Some(vec!["browser warn: w (http://h/:2)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"warn\",\"message\":\"w\",\"url\":\"http://h/\",\"col\":2}",
+                false
+            ),
+            Some(vec!["browser warn: w (http://h/)".to_string()])
+        );
+        assert_eq!(
+            l(
+                "{\"level\":\"error\",\"message\":\"m\",\"line\":1.5,\"url\":\"u\"}",
+                false
+            ),
+            Some(vec!["browser error: m (u)".to_string()])
+        );
+        assert_eq!(
+            l("{\"level\":\"log\",\"message\":\"hi\"}", false),
+            Some(vec![])
+        );
+        assert_eq!(
+            l("{\"level\":\"info\",\"message\":\"hi\"}", true),
+            Some(vec!["browser info: hi".to_string()])
+        );
+        assert_eq!(
+            l("{\"level\":\"error\",\"message\":\"E: m\",\"stack\":\"E: m\\n    at f (a.js:1:2)\\n\\n    at g (b.js:3:4)\"}", false),
+            Some(vec![
+                "browser error: E: m".to_string(),
+                "    at f (a.js:1:2)".to_string(),
+                "    at g (b.js:3:4)".to_string()
+            ])
+        );
+        let long =
+            serde_json::json!({"level": "error", "message": "\u{1F600}".repeat(1200)}).to_string();
+        assert_eq!(
+            l(&long, false).unwrap()[0],
+            format!("browser error: {}...", "\u{1F600}".repeat(1000))
+        );
+        let stack: Vec<String> = (0..9).map(|i| format!("at f{i}")).collect();
+        let frames =
+            serde_json::json!({"level": "error", "message": "m", "stack": stack.join("\n")})
+                .to_string();
+        assert_eq!(l(&frames, false).unwrap().len(), 6);
+        for bad in [
+            "",
+            "x",
+            "[]",
+            "null",
+            "{\"level\":\"debug\",\"message\":\"m\"}",
+            "{\"message\":\"m\"}",
+        ] {
+            assert_eq!(l(bad, true), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn is_same_origin_post_rules() {
+        let o = |p: &[(&str, &str)]| is_same_origin_post(&headers(p));
+        assert!(o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080")
+        ]));
+        assert!(o(&[
+            ("host", "x.example"),
+            ("origin", "https://x.example"),
+            ("sec-fetch-site", "same-origin")
+        ]));
+        assert!(!o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://evil.example")
+        ]));
+        assert!(!o(&[("host", "127.0.0.1:8080")]));
+        assert!(!o(&[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080"),
+            ("sec-fetch-site", "cross-site")
+        ]));
+        assert!(!o(&[("host", "127.0.0.1:8080"), ("origin", "null")]));
+    }
+
+    #[test]
+    fn console_endpoint_over_a_socket() {
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let l2 = log.clone();
+        let opts = SiteServerOptions {
+            live_reload: Some(LiveReload::new()),
+            log: Some(Arc::new(move |m: &str| {
+                l2.lock().unwrap().push(m.to_string())
+            })),
+            ..Default::default()
+        };
+        let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
+        let plain = listen(site(), SiteServerOptions::default(), "127.0.0.1", 0).unwrap();
+        let post = |port: u16, body: &str, origin: Option<&str>| -> u16 {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let host = format!("127.0.0.1:{port}");
+            let o = origin
+                .map(|o| {
+                    format!(
+                        "origin: {}\r\n",
+                        o.replace("SELF", &format!("http://{host}"))
+                    )
+                })
+                .unwrap_or_default();
+            write!(
+                c,
+                "POST /__sitefile/console HTTP/1.1\r\nhost: {host}\r\n{o}content-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut buf = String::new();
+            let _ = c.read_to_string(&mut buf);
+            buf.split(' ').nth(1).unwrap_or("0").parse().unwrap_or(0)
+        };
+        let me = Some("SELF");
+        assert_eq!(
+            post(srv.port, "{\"level\":\"error\",\"message\":\"Uncaught Error: boom\",\"url\":\"http://127.0.0.1/app.js\",\"line\":1,\"col\":7}", me),
+            204
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["browser error: Uncaught Error: boom (http://127.0.0.1/app.js:1:7)".to_string()]
+        );
+        assert_eq!(
+            post(
+                srv.port,
+                "{\"level\":\"error\",\"message\":\"x\"}",
+                Some("http://evil.example")
+            ),
+            403
+        );
+        assert_eq!(
+            post(srv.port, "{\"level\":\"error\",\"message\":\"x\"}", None),
+            403
+        );
+        assert_eq!(post(srv.port, "not json", me), 400);
+        let big = serde_json::json!({"level": "error", "message": "x".repeat(20000)}).to_string();
+        assert_eq!(post(srv.port, &big, me), 413);
+        assert_eq!(get(srv.port, "/__sitefile/console").status, 405);
+        assert_eq!(
+            post(plain.port, "{\"level\":\"error\",\"message\":\"x\"}", me),
+            405
+        );
+        log.lock().unwrap().clear();
+        for i in 0..CONSOLE_LIMIT + 5 {
+            post(
+                srv.port,
+                &format!("{{\"level\":\"warn\",\"message\":\"w{i}\"}}"),
+                me,
+            );
+        }
+        let got = log.lock().unwrap().clone();
+        assert_eq!(got.len(), CONSOLE_LIMIT as usize);
+        assert_eq!(
+            got.last().unwrap(),
+            "browser: more than 50 console messages in 10 s; dropping the rest"
+        );
+        srv.close();
+        plain.close();
     }
 
     #[test]

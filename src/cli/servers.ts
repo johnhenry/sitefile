@@ -124,6 +124,7 @@ const run: Command = {
     '--poll            poll for changes (every 1000 ms) instead of file system events (--watch)',
     '--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)',
     '--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)',
+    '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -141,6 +142,7 @@ const run: Command = {
     poll: { type: 'boolean' },
     'poll-interval': { type: 'string' },
     'no-css-inject': { type: 'boolean' },
+    console: { type: 'boolean' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -193,7 +195,7 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console'] as const;
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -219,7 +221,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   let current: Tree = Tree.empty;
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console });
   /** Serve `next` and tell open pages what changed. */
   const swap = (next: Tree): void => {
     const event = started ? reloadEventFor(current, next, cssInject) : undefined;
