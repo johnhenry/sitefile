@@ -2,6 +2,7 @@ import { SitefileError } from './errors.js';
 import { cborArray, cborBytes, cborMap, cborText, cborUint } from './cbor.js';
 import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules, type ServeHeaders, type ServeRedirect } from './serve-rules.js';
 import type { Tree } from './tree.js';
+import { MIME_TYPES } from './mime-data.js';
 
 /**
  * Unsigned Web Bundle, format version "b2"
@@ -30,40 +31,15 @@ import type { Tree } from './tree.js';
 const MAGIC = Buffer.from('f09f8c90f09f93a6', 'hex');
 const VERSION = Buffer.from([0x62, 0x32, 0x00, 0x00]);
 
-const TEXT_CHARSET = '; charset=utf-8';
+/** Content types by extension (tools/gen-mime.mjs; the same table as rust/src/mime_data.rs). */
+const MIME: ReadonlyMap<string, string> = new Map(MIME_TYPES);
 
-const MIME: Readonly<Record<string, string>> = {
-  html: 'text/html' + TEXT_CHARSET,
-  htm: 'text/html' + TEXT_CHARSET,
-  css: 'text/css' + TEXT_CHARSET,
-  js: 'text/javascript' + TEXT_CHARSET,
-  mjs: 'text/javascript' + TEXT_CHARSET,
-  json: 'application/json' + TEXT_CHARSET,
-  svg: 'image/svg+xml' + TEXT_CHARSET,
-  txt: 'text/plain' + TEXT_CHARSET,
-  xml: 'application/xml' + TEXT_CHARSET,
-  webmanifest: 'application/manifest+json' + TEXT_CHARSET,
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  avif: 'image/avif',
-  ico: 'image/x-icon',
-  wasm: 'application/wasm',
-  woff: 'font/woff',
-  woff2: 'font/woff2',
-  pdf: 'application/pdf',
-  mp4: 'video/mp4',
-  webm: 'video/webm',
-  mp3: 'audio/mpeg',
-};
-
+/** The content type `serve` and Web Bundle export give a path (`application/octet-stream` when unknown). */
 export function mimeTypeFor(path: string): string {
   const base = path.slice(path.lastIndexOf('/') + 1);
   const dot = base.lastIndexOf('.');
   const ext = dot < 0 ? '' : base.slice(dot + 1).toLowerCase();
-  return MIME[ext] ?? 'application/octet-stream';
+  return MIME.get(ext) ?? 'application/octet-stream';
 }
 
 /** An absolute https URL ending in `/`, without credentials, query or fragment. Returns its normalized form. */

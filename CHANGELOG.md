@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
+  Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
+  fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
+  ~24, so files no longer arrive as `application/octet-stream` under
+  `nosniff`. One generated table (`tools/gen-mime.mjs`) feeds both
+  implementations. A `serve` conformance case kind (`"command": "serve"`)
+  compares both servers' answers to raw HTTP requests.
 - **Live reload works under a strict CSP and leaves fetch()ed HTML alone**
   (johnhenry/sitefile#181): `serve --watch` injects
   `<script src="/__sitefile/reload.js"></script>` (a same-origin script that

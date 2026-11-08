@@ -868,7 +868,12 @@ to `image` (`imageId`) and `dir` (`path`).
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`; otherwise a directory `/dir` redirects (`301`)
   to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
-  page); `content-type` from the extension;
+  page); `content-type` from the extension (case-insensitive) through one table shared by both implementations
+  and by Web Bundle export: `tools/gen-mime.mjs` writes `src/mime-data.ts` and `rust/src/mime_data.rs` (types
+  from nginx's `mime.types`, else the IANA registrations: HTML, CSS, JavaScript including `.cjs`, JSON and
+  source maps, XML/XSLT, feeds, WebVTT, CSV, Markdown, YAML, TOML, fonts, images, audio, video, HLS/DASH,
+  glTF, Web Bundles and common archives); text types get `; charset=utf-8`; any other extension is
+  `application/octet-stream`;
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
   `x-content-type-options: nosniff`. Paths are percent-decoded per segment; `..`, an encoded `/`, NUL, control
   characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
