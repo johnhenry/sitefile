@@ -885,10 +885,8 @@ pub fn plan_with(
                 let rules = rules
                     .iter()
                     .map(|(allow, p, _)| {
-                        let what = format!(
-                            "ROBOTS {} path",
-                            if *allow { "ALLOW" } else { "DISALLOW" }
-                        );
+                        let what =
+                            format!("ROBOTS {} path", if *allow { "ALLOW" } else { "DISALLOW" });
                         Ok((
                             *allow,
                             check_site_path(&evaluate_operand(p, &vars)?, &what, &p.span)?,
@@ -934,15 +932,24 @@ pub fn plan_with(
                 } else if date.seconds - now < 30 * 86400 {
                     warnings.push(format!("{}:{}: SECURITY_TXT EXPIRES {raw} is less than 30 days away; set a later date before it passes", program.file, span.line));
                 }
-                let uris = |ops: &[Operand], field: &str, schemes: &[&str]| -> Result<Vec<String>> {
+                let uris = |ops: &[Operand],
+                            field: &str,
+                            schemes: &[&str]|
+                 -> Result<Vec<String>> {
                     ops.iter()
-                        .map(|o| check_field_uri(&evaluate_operand(o, &vars)?, field, schemes, &o.span))
+                        .map(|o| {
+                            check_field_uri(&evaluate_operand(o, &vars)?, field, schemes, &o.span)
+                        })
                         .collect()
                 };
                 let text = security_txt(
                     &uris(contact, "CONTACT", &["mailto:", "tel:", "https://"])?,
                     &date.text,
-                    &uris(encryption, "ENCRYPTION", &["https://", "openpgp4fpr:", "dns:"])?,
+                    &uris(
+                        encryption,
+                        "ENCRYPTION",
+                        &["https://", "openpgp4fpr:", "dns:"],
+                    )?,
                     &uris(policy, "POLICY", &["https://"])?,
                 );
                 let dest = file_dest(

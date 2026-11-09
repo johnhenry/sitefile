@@ -8,8 +8,8 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    ROBOTS_CLAUSES, SECURITY_TXT_CLAUSES,
-    INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    INSTRUCTIONS, REDIRECT_CLAUSES, ROBOTS_CLAUSES, SECRET_FORMS, SECURITY_TXT_CLAUSES,
+    SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -423,7 +423,8 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 .filter(|w| !w.text.starts_with("--"))
                 .map(|w| w.upper())
                 .collect();
-            if ["ALLOW", "DISALLOW", "TO"].contains(&prev.as_str()) || ops.iter().any(|w| w == "TO") {
+            if ["ALLOW", "DISALLOW", "TO"].contains(&prev.as_str()) || ops.iter().any(|w| w == "TO")
+            {
                 Vec::new()
             } else if ops.iter().any(|w| w == "SITEMAP") {
                 kw_items(["TO"], CIK_KEYWORD)
@@ -443,10 +444,9 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 Vec::new()
             } else {
                 kw_items(
-                    SECURITY_TXT_CLAUSES
-                        .iter()
-                        .copied()
-                        .filter(|c| !((*c == "EXPIRES" || *c == "TO") && ops.iter().any(|w| w == c))),
+                    SECURITY_TXT_CLAUSES.iter().copied().filter(|c| {
+                        !((*c == "EXPIRES" || *c == "TO") && ops.iter().any(|w| w == c))
+                    }),
                     CIK_KEYWORD,
                 )
             }

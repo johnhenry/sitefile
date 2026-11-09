@@ -405,7 +405,10 @@ mod tests {
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
             ("ROBOTS", &crate::language::parser::ROBOTS_CLAUSES[..]),
-            ("SECURITY_TXT", &crate::language::parser::SECURITY_TXT_CLAUSES[..]),
+            (
+                "SECURITY_TXT",
+                &crate::language::parser::SECURITY_TXT_CLAUSES[..],
+            ),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

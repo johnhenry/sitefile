@@ -478,7 +478,12 @@ pub fn robots_txt(rules: &[(bool, String)], sitemaps: &[String]) -> String {
 }
 
 /// A security.txt URI field: one of `schemes` (lowercase, with their `:` or `://`), no spaces or control characters.
-pub fn check_field_uri(raw: &str, field: &str, schemes: &[&str], span: &SourceSpan) -> Result<String> {
+pub fn check_field_uri(
+    raw: &str,
+    field: &str,
+    schemes: &[&str],
+    span: &SourceSpan,
+) -> Result<String> {
     let lower = raw.to_lowercase();
     if space_or_control(raw)
         || !schemes
