@@ -16,7 +16,12 @@ fn media_type(p: &str) -> String {
     if is_page(p) {
         return "application/xhtml+xml".into();
     }
-    mime_type_for(p).split(';').next().unwrap_or("").trim().to_string()
+    mime_type_for(p)
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// `&` not starting an entity becomes `&amp;`; `<`, `>` and `"` are escaped.
@@ -30,7 +35,10 @@ fn escape_xml(s: &str) -> String {
                 let entity = {
                     let (body, ok) = if rest.first() == Some(&b'#') {
                         if rest.get(1) == Some(&b'x') {
-                            let n = rest[2..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
+                            let n = rest[2..]
+                                .iter()
+                                .take_while(|c| c.is_ascii_hexdigit())
+                                .count();
                             (2 + n, n > 0)
                         } else {
                             let n = rest[1..].iter().take_while(|c| c.is_ascii_digit()).count();
@@ -112,16 +120,26 @@ fn lang_of(bytes: &[u8]) -> Option<String> {
                 continue;
             }
             let rest = &tag[j + c.len_utf8()..];
-            let name_len = if rest.get(..8).is_some_and(|t| t.eq_ignore_ascii_case("xml:lang")) {
+            let name_len = if rest
+                .get(..8)
+                .is_some_and(|t| t.eq_ignore_ascii_case("xml:lang"))
+            {
                 8
-            } else if rest.get(..4).is_some_and(|t| t.eq_ignore_ascii_case("lang")) {
+            } else if rest
+                .get(..4)
+                .is_some_and(|t| t.eq_ignore_ascii_case("lang"))
+            {
                 4
             } else {
                 continue;
             };
             let v = rest[name_len..].trim_start();
-            let Some(v) = v.strip_prefix('=') else { continue };
-            let Some(v) = v.trim_start().strip_prefix('"') else { continue };
+            let Some(v) = v.strip_prefix('=') else {
+                continue;
+            };
+            let Some(v) = v.trim_start().strip_prefix('"') else {
+                continue;
+            };
             let n = v
                 .bytes()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == b'-')
@@ -296,8 +314,17 @@ mod tests {
             crate::digest::sha256(&write_epub(&t, Some(1_700_000_000)).unwrap()),
             "sha256:9c5b0679da673591050204e35c34787d35d19fabfb4212f72fd0c449f69b1bda"
         );
-        assert_eq!(escape_xml("a & b &amp; &#1; &#x1F; &#X1; <"), "a &amp; b &amp; &#1; &#x1F; &amp;#X1; &lt;");
-        assert_eq!(title_of(b"<TITLE lang=x>  A \n B </title>"), Some("A B".into()));
-        assert_eq!(lang_of(b"<html xmlns=\"x\"\n  LANG = \"pt-BR\">"), Some("pt-BR".into()));
+        assert_eq!(
+            escape_xml("a & b &amp; &#1; &#x1F; &#X1; <"),
+            "a &amp; b &amp; &#1; &#x1F; &amp;#X1; &lt;"
+        );
+        assert_eq!(
+            title_of(b"<TITLE lang=x>  A \n B </title>"),
+            Some("A B".into())
+        );
+        assert_eq!(
+            lang_of(b"<html xmlns=\"x\"\n  LANG = \"pt-BR\">"),
+            Some("pt-BR".into())
+        );
     }
 }

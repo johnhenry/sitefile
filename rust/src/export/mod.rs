@@ -1,8 +1,8 @@
 pub mod archive_writers;
 pub mod attest;
 pub mod car;
-pub mod exporter;
 pub mod epub;
+pub mod exporter;
 pub mod formats;
 pub mod incremental;
 pub mod oci;
