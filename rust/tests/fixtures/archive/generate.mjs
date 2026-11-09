@@ -614,6 +614,68 @@ const tarOf = (...entries) =>
     ...entries.flatMap(([n, type, data]) => [tarHeader({ name: B(n), type, size: data.length, magic: 'ustar\u000000' }), data, pad512(data.length)]),
     Buffer.alloc(1024),
   ]);
+/**
+ * A stored zip of `[name, data, { flags, extra, method, body, crc, localName, localMethod, localSizes, offset }]`
+ * entries, honest unless told otherwise (`local*` lie in the local header only, `offset` in the central one).
+ */
+function zipOf(...entries) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const [n, data, o = {}] of entries) {
+    const name = B(n);
+    const extra = o.extra ?? Buffer.alloc(0);
+    const body = o.body ?? data;
+    const l = Buffer.alloc(30);
+    l.writeUInt32LE(0x04034b50, 0);
+    l.writeUInt16LE(20, 4);
+    const lname = o.localName ? B(o.localName) : name;
+    const [lc, lu] = o.localSizes ?? [body.length, data.length];
+    l.writeUInt16LE(o.flags ?? 0, 6);
+    l.writeUInt16LE(o.localMethod ?? o.method ?? 0, 8);
+    l.writeUInt32LE(o.crc ?? crc32(data), 14);
+    l.writeUInt32LE(lc, 18);
+    l.writeUInt32LE(lu, 22);
+    l.writeUInt16LE(lname.length, 26);
+    l.writeUInt16LE(extra.length, 28);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0);
+    c.writeUInt16LE((3 << 8) | 20, 4);
+    c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(o.flags ?? 0, 8);
+    c.writeUInt16LE(o.method ?? 0, 10);
+    c.writeUInt32LE(o.crc ?? crc32(data), 16);
+    c.writeUInt32LE(body.length, 20);
+    c.writeUInt32LE(data.length, 24);
+    c.writeUInt16LE(name.length, 28);
+    c.writeUInt16LE(extra.length, 30);
+    c.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    c.writeUInt32LE(o.offset ?? offset, 42);
+    local.push(l, lname, extra, body);
+    central.push(c, name, extra);
+    offset += 30 + lname.length + extra.length + body.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, cd, end]);
+}
+/** Info-ZIP Unicode Path extra field (0x7075) for raw name `raw`, naming `unicode`. */
+function unicodePath(raw, unicode, { crc = crc32(B(raw)), version = 1 } = {}) {
+  const u = B(unicode);
+  const f = Buffer.alloc(9);
+  f.writeUInt16LE(0x7075, 0);
+  f.writeUInt16LE(5 + u.length, 2);
+  f[4] = version;
+  f.writeUInt32LE(crc, 5);
+  return Buffer.concat([f, u]);
+}
+const CP437_ALL = Buffer.from(Array.from({ length: 128 }, (_, i) => 0x80 + i));
+
 /** Regressions and boundaries, always in the committed fixture. */
 const EDGE = [
   // A pax record without a length prefix's space after a complete record (TypeScript looped forever).
@@ -629,6 +691,38 @@ const EDGE = [
   () => Buffer.alloc(1024),
   () => gzipSync(Buffer.alloc(1024)),
   () => gzipSync(tarOf(['big', '0', Buffer.alloc(1_200_000)])),
+  // Zip names (#182): CP437 without bit 11, UTF-8 with it, UTF-8 without it, the 0x7075 Unicode Path field.
+  () => zipOf([CP437_ALL, B('all of CP437')], [Buffer.from([0x63, 0x61, 0x66, 0x82]), B('caf\u00e9 in CP437')]),
+  () => zipOf([CP437_ALL, B('flagged: lossy UTF-8'), { flags: 0x800 }]),
+  () => zipOf([B('caf\u00e9.txt'), B('UTF-8 without the flag')], [B('\u{1f600}'), B('x'), { flags: 0x800 }]),
+  () => zipOf([Buffer.from([0x82]), B('a'), { extra: unicodePath(Buffer.from([0x82]), 'caf\u00e9/\u00e9t\u00e9.txt') }]),
+  () => zipOf([Buffer.from([0x82]), B('a'), { extra: Buffer.concat([B('UT\u0005\u0000\u0001\u0000\u0000\u0000\u0000'), unicodePath(Buffer.from([0x82]), 'right.txt')]) }]),
+  () => zipOf([Buffer.from([0x82]), B('bad crc'), { extra: unicodePath(Buffer.from([0x82]), 'wrong.txt', { crc: 1 }) }]),
+  () => zipOf([Buffer.from([0x82]), B('version 2'), { extra: unicodePath(Buffer.from([0x82]), 'wrong.txt', { version: 2 }) }]),
+  () => zipOf([Buffer.from([0x82]), B('invalid UTF-8'), { extra: Buffer.concat([unicodePath(Buffer.from([0x82]), 'x').subarray(0, 9), Buffer.from([0xff])]).fill(6, 2, 3).fill(0, 3, 4) }]),
+  () => zipOf([B('ascii.txt'), B('flag set: the field is ignored'), { flags: 0x800, extra: unicodePath(B('ascii.txt'), 'other.txt') }]),
+  () => zipOf([Buffer.from([0x82]), B('truncated field'), { extra: unicodePath(Buffer.from([0x82]), 'x.txt').subarray(0, 12) }]),
+  () => zipOf([Buffer.from([0x82, 0x2f, 0x2e, 0x2e, 0x2f, 0x78]), B('unsafe after decoding')]),
+  () => zipOf([Buffer.from([0x82]), B('unsafe via 0x7075'), { extra: unicodePath(Buffer.from([0x82]), '../evil') }]),
+  () => zipOf([Buffer.from([0x82]), B('1')], [B('\u00e9'), B('2')]),
+  // CRC-32 (#183): a stored entry with a flipped byte, a deflated one with a wrong CRC, an empty one.
+  () => zipOf([B('index.html'), B('<h1>hello</h1>'), { body: B('<H1>hello</h1>') }]),
+  () => zipOf([B('a.txt'), B('hello hello hello'), { method: 8, body: deflateRawSync(B('hello hello hello')), crc: 0x12345678 }]),
+  () => zipOf([B('ok.txt'), B('fine')], [B('empty'), B(''), { crc: 1 }]),
+  // Local headers vs the central directory, and overlapping entries (#184).
+  () => zipOf([B('index.html'), B('hi'), { localName: 'evil.html' }]),
+  () => zipOf([B('index.html'), B('hi'), { localName: 'INDEX.HTML' }]),
+  () => zipOf([B('a.txt'), B('hi'), { localMethod: 8 }]),
+  () => zipOf([B('a.txt'), B('hi'), { localSizes: [2, 3] }]),
+  () => zipOf([B('a.txt'), B('hi'), { flags: 8, localSizes: [0, 0] }]), // data descriptor: local sizes may be 0
+  () => zipOf([B('a.txt'), B('hi'), { flags: 8, localSizes: [7, 7] }]),
+  () => zipOf([B('a.txt'), B('hello')], [B('a.txt'), B('hello'), { offset: 0 }]), // two records, one local entry
+  // b.txt's local header and data lie inside a.txt's data (a non-recursive zip bomb's overlap).
+  () => zipOf([B('a.txt'), zipOf([B('b.txt'), B('x')]).subarray(0, 36)], [B('b.txt'), B('x'), { offset: 35 }]),
+  () => zipOf([B('d/'), B('')], [B('d/x'), B('y')]),
+  // Python zipfile, force_zip64=True: 0xffffffff local sizes with a local ZIP64 field; seekable and streamed (data descriptors).
+  () => Buffer.from('UEsDBC0AAAAIAAAAIVATjxBo//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAsAAAAAAAAACwAAAAAAAACzyTC0y8i00QdSAFBLAwQtAAAACAAAACFQe8wlO///////////CgAUAHNpdGUvYS5jc3MBABAAlgAAAAAAAAAIAAAAAAAAAEusrk0cfAgAUEsBAi0DLQAAAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0AAAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAUwAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAJAAAAAAAA==', 'base64'),
+  () => Buffer.from('UEsDBC0ACAAIAAAAIVAAAAAA//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAAAAAAAAAAAAAAAAAAAAACzyTC0y8i00QdSAFBLBwgTjxBoCwAAAAAAAAALAAAAAAAAAFBLAwQtAAgACAAAACFQAAAAAP//////////CgAUAHNpdGUvYS5jc3MBABAAAAAAAAAAAAAAAAAAAAAAAEusrk0cfAgAUEsHCHvMJTsIAAAAAAAAAJYAAAAAAAAAUEsBAi0DLQAIAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0ACAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAWQAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAMAAAAAAAA==', 'base64'),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

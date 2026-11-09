@@ -15,6 +15,19 @@
   not created yet. Sources are relative to the servers file. Server records
   gain an optional `project` field. Both implementations, with conformance
   cases.
+- **Zip local headers are cross-checked** (#184): a local header whose name,
+  compression method or sizes (without a data descriptor) differ from the
+  central directory, or entries whose bytes overlap, are `E_ARCHIVE_UNSAFE`,
+  so sitefile never extracts different files than `unzip` or a browser would.
+  Directory entries' local headers are now checked too. Both implementations.
+- **Zip CRC-32 check** (#183): every extracted zip entry is checked against
+  its central-directory CRC-32; a mismatch is `E_ARCHIVE` naming the entry
+  (`IMPORT … AS tree`, `serve x.zip`). Both implementations.
+- **Zip names without the UTF-8 flag** (#182): names without general-purpose
+  bit 11 are read from the Info-ZIP Unicode Path field (0x7075) when its CRC
+  matches, else as UTF-8 when valid, else as CP437 (they used to become
+  U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
+  `serve x.zip`, in both implementations.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input
