@@ -1,0 +1,58 @@
+{
+  "command": "serve",
+  "args": [
+    "--html-handling",
+    "drop-slash"
+  ],
+  "requests": [
+    {
+      "target": "/about",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/about/?q=1",
+      "expect": {
+        "status": 307,
+        "headers": {
+          "location": "/about?q=1"
+        }
+      }
+    },
+    {
+      "target": "/docs",
+      "expect": {
+        "status": 200,
+        "body": "docs\n"
+      }
+    },
+    {
+      "target": "/docs/",
+      "expect": {
+        "status": 307,
+        "headers": {
+          "location": "/docs"
+        }
+      }
+    },
+    {
+      "target": "/docs/index.html",
+      "expect": {
+        "status": 307,
+        "headers": {
+          "location": "/docs"
+        }
+      }
+    },
+    {
+      "target": "/index.html",
+      "expect": {
+        "status": 307,
+        "headers": {
+          "location": "/"
+        }
+      }
+    }
+  ]
+}

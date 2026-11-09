@@ -177,12 +177,13 @@ pub enum ExportFormat {
     Car,
     Html,
     Mhtml,
+    Warc,
     Epub,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 10] = [
+    pub const ALL: [ExportFormat; 11] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -192,6 +193,7 @@ impl ExportFormat {
         ExportFormat::Car,
         ExportFormat::Html,
         ExportFormat::Mhtml,
+        ExportFormat::Warc,
         ExportFormat::Epub,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
@@ -213,6 +215,7 @@ impl ExportFormat {
             ExportFormat::Car => "car",
             ExportFormat::Html => "html",
             ExportFormat::Mhtml => "mhtml",
+            ExportFormat::Warc => "warc",
             ExportFormat::Epub => "epub",
         }
     }
