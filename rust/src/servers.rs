@@ -473,7 +473,12 @@ fn probe_tls(host: &str) -> Option<rustls::ClientConnection> {
             c: &CertificateDer<'_>,
             d: &rustls::DigitallySignedStruct,
         ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls12_signature(m, c, d, &self.0.signature_verification_algorithms)
+            rustls::crypto::verify_tls12_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
         }
         fn verify_tls13_signature(
             &self,
@@ -481,7 +486,12 @@ fn probe_tls(host: &str) -> Option<rustls::ClientConnection> {
             c: &CertificateDer<'_>,
             d: &rustls::DigitallySignedStruct,
         ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(m, c, d, &self.0.signature_verification_algorithms)
+            rustls::crypto::verify_tls13_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
         }
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
             self.0.signature_verification_algorithms.supported_schemes()
@@ -494,7 +504,12 @@ fn probe_tls(host: &str) -> Option<rustls::ClientConnection> {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AnyCert(provider)))
         .with_no_client_auth();
-    let name = ServerName::try_from(host.trim_start_matches('[').trim_end_matches(']').to_string()).ok()?;
+    let name = ServerName::try_from(
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
+    )
+    .ok()?;
     rustls::ClientConnection::new(Arc::new(config), name).ok()
 }
 
