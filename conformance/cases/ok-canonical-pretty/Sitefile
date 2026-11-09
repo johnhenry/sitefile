@@ -1,0 +1,5 @@
+# CANONICAL PRETTY: no .html in the URL.
+FROM scratch
+COPY ./public/ /
+CANONICAL BASE http://Example.org PRETTY
+EXPORT /

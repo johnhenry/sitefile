@@ -45,16 +45,65 @@ function utf8Compare(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 }
 
+const SITEMAP_HEAD = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+const SITEMAP_TAIL = '</urlset>\n';
+
+/** The sitemaps.org limits of one sitemap file: 50,000 URLs and 50 MiB (52,428,800 bytes) uncompressed. */
+export const SITEMAP_LIMITS = { urls: 50_000, bytes: 52_428_800 } as const;
+
 /** sitemaps.org XML for every `.html` file in the tree except `/404.html`, sorted by path. */
 export function sitemapXml(tree: Tree, base: string): string {
-  const paths = tree
+  return SITEMAP_HEAD + sitemapEntries(tree, base).join('') + SITEMAP_TAIL;
+}
+
+function sitemapEntries(tree: Tree, base: string): string[] {
+  return tree
     .entries()
     .map(([p]) => p)
     .filter((p) => p.endsWith('.html') && p !== '/404.html')
-    .sort(utf8Compare);
-  let out = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-  for (const p of paths) out += `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc></url>\n`;
-  return out + '</urlset>\n';
+    .sort(utf8Compare)
+    .map((p) => `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc></url>\n`);
+}
+
+/** `/sitemap.xml` -> `/sitemap-2.xml`: the n-th part of a split sitemap (before the extension, or at the end). */
+export function sitemapPart(dest: string, n: number): string {
+  const slash = dest.lastIndexOf('/');
+  const dot = dest.lastIndexOf('.');
+  return dot > slash + 1 ? `${dest.slice(0, dot)}-${n}${dest.slice(dot)}` : `${dest}-${n}`;
+}
+
+/**
+ * The sitemap files for the tree: one at `dest` when it is within `limits`, or else a sitemap index at
+ * `dest` and the parts (`sitemapPart`) it lists, each with at most `limits.urls` URLs and `limits.bytes`
+ * bytes (a part is closed when the next URL would pass either limit).
+ */
+export function sitemapFiles(tree: Tree, base: string, dest: string, limits: { urls: number; bytes: number } = SITEMAP_LIMITS): Array<[string, string]> {
+  const entries = sitemapEntries(tree, base);
+  const frame = utf8Length(SITEMAP_HEAD) + utf8Length(SITEMAP_TAIL);
+  const sizes = entries.map(utf8Length);
+  const total = frame + sizes.reduce((a, b) => a + b, 0);
+  if (entries.length <= limits.urls && total <= limits.bytes) return [[dest, SITEMAP_HEAD + entries.join('') + SITEMAP_TAIL]];
+  const parts: string[][] = [];
+  let cur: string[] = [];
+  let bytes = frame;
+  entries.forEach((e, i) => {
+    if (cur.length > 0 && (cur.length >= limits.urls || bytes + sizes[i]! > limits.bytes)) {
+      parts.push(cur);
+      cur = [];
+      bytes = frame;
+    }
+    cur.push(e);
+    bytes += sizes[i]!;
+  });
+  if (cur.length > 0) parts.push(cur);
+  const out: Array<[string, string]> = parts.map((p, i) => [sitemapPart(dest, i + 1), SITEMAP_HEAD + p.join('') + SITEMAP_TAIL]);
+  let index = '<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+  for (const [p] of out) index += `  <sitemap><loc>${xmlEscape(pageUrl(base, p))}</loc></sitemap>\n`;
+  return [[dest, index + '</sitemapindex>\n'], ...out];
+}
+
+function utf8Length(s: string): number {
+  return Buffer.byteLength(s, 'utf8');
 }
 
 // ---------------------------------------------------------------- dates

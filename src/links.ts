@@ -485,6 +485,79 @@ export function integrityTags(text: string): IntegrityTag[] {
   return out;
 }
 
+/**
+ * Where a canonical link goes in an HTML text: the offset of its first `</head` end tag, `'has'` when a
+ * `<link>` whose `rel` has the token `canonical` (ASCII case-insensitive) comes before it, or undefined when
+ * there is no `</head>`. Comments, declarations and raw text are skipped as in {@link scanHtml}.
+ */
+export function canonicalSlot(text: string): number | 'has' | undefined {
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const lt = text.indexOf('<', i);
+    if (lt === -1) break;
+    i = lt;
+    const next = text[i + 1];
+    if (text.startsWith('<!--', i)) {
+      const j = text.indexOf('-->', i + 4);
+      i = j === -1 ? n : j + 3;
+      continue;
+    }
+    if (next === '/') {
+      const end = i + 6;
+      if (lowerAscii(text.slice(i + 2, end)) === 'head' && (end >= n || isWs(text[end]) || text[end] === '/' || text[end] === '>')) return i;
+    }
+    if (next === '!' || next === '?' || next === '/') {
+      const j = text.indexOf('>', i + 2);
+      i = j === -1 ? n : j + 1;
+      continue;
+    }
+    if (!isAlpha(next)) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && !isWs(text[j]) && text[j] !== '/' && text[j] !== '>') j++;
+    const tag = lowerAscii(text.slice(i + 1, j));
+    i = j;
+    let rel: string | undefined;
+    for (;;) {
+      while (i < n && (isWs(text[i]) || text[i] === '/')) i++;
+      if (i >= n) break;
+      if (text[i] === '>') {
+        i++;
+        break;
+      }
+      const nameStart = i;
+      i++;
+      while (i < n && !isWs(text[i]) && text[i] !== '/' && text[i] !== '>' && text[i] !== '=') i++;
+      const name = lowerAscii(text.slice(nameStart, i));
+      let k = i;
+      while (k < n && isWs(text[k])) k++;
+      if (text[k] !== '=') continue;
+      i = k + 1;
+      while (i < n && isWs(text[i])) i++;
+      const q = text[i];
+      let start: number;
+      let end: number;
+      if (q === '"' || q === "'") {
+        start = i + 1;
+        const close = text.indexOf(q, start);
+        end = close === -1 ? n : close;
+        i = close === -1 ? n : close + 1;
+      } else {
+        start = i;
+        while (i < n && !isWs(text[i]) && text[i] !== '>') i++;
+        end = i;
+      }
+      if (name === 'rel' && rel === undefined) rel = text.slice(start, end);
+    }
+    if (tag === 'link' && rel !== undefined && lowerAscii(decodeHtmlText(rel)).split(/[ \t\n\r\f]+/).includes('canonical')) return 'has';
+    if (RAW_TEXT.has(tag)) i = indexOfCloseTag(text, tag, i);
+  }
+  return undefined;
+}
+
 /** Where `</tag` (ASCII case-insensitive, followed by whitespace, `/` or `>`) starts at or after `from`; the end of the text if nowhere. */
 function indexOfCloseTag(text: string, tag: string, from: number): number {
   let i = from;

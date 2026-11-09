@@ -6,6 +6,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { byteRange, cacheControlFor, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
+import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -639,8 +640,11 @@ test('serve: _redirects: exact paths, splats, rewrites, 404s, shadowing and forc
     assert.equal(r.status, 404);
     assert.equal(r.body, 'custom 404');
     assert.equal((await req(port, '/about')).body, 'about page', 'a file shadows a rule without !');
-    assert.equal((await req(port, '/users/1')).status, 404, 'placeholders are not supported');
-    assert.equal((await req(port, '/x')).status, 404, 'conditions are not supported');
+    r = await req(port, '/users/a%20b');
+    assert.equal(r.status, 301, 'a placeholder matches one segment');
+    assert.equal(r.headers.location, '/u/a%20b');
+    assert.equal((await req(port, '/users/1/2')).status, 404, 'but only one');
+    assert.equal((await req(port, '/x')).status, 404, 'Country= needs --country');
     assert.equal((await req(port, '/bad')).status, 404, 'control characters drop the rule');
     assert.equal((await req(port, '/_redirects')).status, 404, 'the rules files are not served');
     assert.equal((await req(port, '/_headers')).status, 404);
@@ -667,6 +671,98 @@ test('serve: _headers: glob patterns, joined values, protected names and invalid
     assert.equal(r.status, 304);
     assert.equal(r.headers['cache-control'], 'public, max-age=60, immutable');
   });
+});
+
+// johnhenry/sitefile#193
+test('serve: _redirects: placeholders, query matching, conditions, 410/451, warnings and log notes', async () => {
+  const files = {
+    '/index.html': 'home',
+    '/gone.html': 'gone',
+    '/es/index.html': 'hola',
+    '/docs/404.html': 'docs 404',
+    '/docs/a/index.html': 'a',
+    '/_redirects': [
+      '/blog/:year/:slug /posts/:year/:slug 301',
+      '/store id=:id /items/:id 302',
+      '/search q=cats /cats 302',
+      '/old-store id=:id /new?item=:id 301',
+      '/lang / 302 Language=es,pt-BR',
+      '/ab /b-variant 302 Cookie=ab_test',
+      '/geo /nz 302! Country=nz,au',
+      '/removed /gone.html 410',
+      '/legal /gone.html 451',
+      '/files/* /f/:splat/:nope 301',
+      '/a/*/b /c',
+      '/x /y 999',
+      '/admin /secret 200! Role=admin',
+      '/q bad=%zz /y',
+      '/z /y 301 Planet=mars',
+    ].join('\n'),
+    '/_headers': '  X-Orphan: 1\n/*\n  ! X-Detach\n  Content-Length: 1\n  Bad Name: x\nnot-a-path\n',
+  };
+  const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  assert.deepEqual(siteFileWarnings(t), [
+    "_redirects:11: ignored: '*' is only supported as the last segment of the source",
+    '_redirects:12: ignored: unsupported status (supported: 200, 301, 302, 303, 307, 308, 404, 410, 451)',
+    '_redirects:13: ignored: Role= conditions need Netlify Identity and are not supported',
+    '_redirects:14: ignored: bad query parameter (expected name=value or name=:placeholder)',
+    '_redirects:15: ignored: unsupported condition (supported: Language=, Country=, Cookie=)',
+    '_headers:1: ignored: a header line without a path line above it',
+    "_headers:3: ignored: '! Name' detach lines are not supported",
+    '_headers:4: ignored: the server sets this header itself',
+    '_headers:5: ignored: invalid header name',
+    "_headers:6: ignored: a path pattern must start with '/' (indent header lines)",
+  ]);
+  const log: string[] = [];
+  const s = createSiteServer(t, { country: 'NZ', log: (l) => log.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    let r = await req(port, '/blog/2024/hello');
+    assert.equal(r.headers.location, '/posts/2024/hello');
+    r = await req(port, '/store?id=7&x=1');
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.location, '/items/7', 'a query-matching rule passes on only what its target names');
+    assert.equal((await req(port, '/store')).status, 404, 'the parameter is required');
+    assert.equal((await req(port, '/search?q=cats')).headers.location, '/cats');
+    assert.equal((await req(port, '/search?q=dogs')).status, 404);
+    assert.equal((await req(port, '/old-store?id=a%20b')).headers.location, '/new?item=a%20b');
+    assert.equal((await req(port, '/lang', 'GET', { 'accept-language': 'fr;q=1, es-MX;q=0.8' })).status, 302);
+    assert.equal((await req(port, '/lang', 'GET', { 'accept-language': 'pt-br' })).status, 302);
+    assert.equal((await req(port, '/lang', 'GET', { 'accept-language': 'es;q=0, pt' })).status, 404, 'q=0 refuses, pt is not pt-BR');
+    assert.equal((await req(port, '/ab', 'GET', { cookie: 'x=1; ab_test=b' })).status, 302);
+    assert.equal((await req(port, '/ab', 'GET', { cookie: 'ab_test_2=1' })).status, 404);
+    assert.equal((await req(port, '/geo')).headers.location, '/nz');
+    r = await req(port, '/removed');
+    assert.equal(r.status, 410);
+    assert.equal(r.body, 'gone');
+    assert.equal((await req(port, '/legal')).status, 451);
+    assert.equal((await req(port, '/files/a/b%20c')).headers.location, '/f/a/b%20c/:nope', 'unknown names stay as written');
+    r = await req(port, '/docs/a/missing');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'docs 404', 'the nearest 404.html');
+    assert.equal((await req(port, '/docs/missing/')).body, 'docs 404');
+    assert.match((await req(port, '/elsewhere')).body, /404 Not Found/, 'no root 404.html: the built-in page');
+  } finally {
+    await closeServer(s);
+  }
+  assert.match(log[0]!, /^GET \/blog\/2024\/hello 301 0 [0-9.]+ms \u2192 \/posts\/2024\/hello \(_redirects:1\)$/);
+  assert.ok(log.some((l) => l.endsWith(' \u2192 /gone.html (_redirects:8)')), log.join('\n'));
+  assert.ok(log.some((l) => /^GET \/store 404 \d+ [0-9.]+ms$/.test(l)), 'no note when no rule applied');
+  // Without --country, Country= never matches.
+  await withTree(files, {}, async (port) => assert.equal((await req(port, '/geo')).status, 404));
+});
+
+test('serve --strict-site-files refuses a site with ignored lines; --country is checked', async () => {
+  const dir = await tmpDir();
+  await fs.writeFile(path.join(dir, 'index.html'), 'x');
+  await fs.writeFile(path.join(dir, '_redirects'), '/a/*/b /c\n');
+  const r = await runCli(dir, ['serve', '--strict-site-files', dir + '/']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /warning: _redirects:1: ignored: '\*' is only supported as the last segment of the source\n/);
+  assert.match(r.stderr, /error\[E_VALIDATION\]: 1 line of _redirects\/_headers is ignored \(--strict-site-files\)/);
+  const bad = await runCli(dir, ['serve', '--country', 'nzl', dir + '/']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /--country expects a two-letter country code such as nz, got 'nzl'/);
 });
 
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };

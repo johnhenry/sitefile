@@ -133,6 +133,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             cors: false,
             isolate: None,
             cache: None,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }
