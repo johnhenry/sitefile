@@ -71,6 +71,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseHeader(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
+    case 'CANONICAL':
+      return parseCanonical(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -578,6 +580,15 @@ function parseFingerprint(c: Cursor, span: SourceSpan): Instruction {
     ...(flags.has('no-cache-headers') && { noCacheHeaders: true as const }),
     overwrite: flags.has('overwrite'),
   };
+}
+
+/** `CANONICAL BASE <url> [PRETTY]` */
+function parseCanonical(c: Cursor, span: SourceSpan): Instruction {
+  c.expectKeyword('BASE');
+  const base = c.operand('base URL');
+  const pretty = c.keyword('PRETTY');
+  c.expectEnd();
+  return { kind: 'CANONICAL', span, base, pretty };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

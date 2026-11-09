@@ -1,0 +1,12 @@
+{
+  "command": "serve",
+  "log": true,
+  "expectLog": [
+    "warning: _redirects:2: ignored: '*' is only supported as the last segment of the source",
+    "warning: _redirects:6: ignored: expected 'from [name=value...] to [status] [conditions]'",
+    "warning: _headers:4: ignored: the server sets this header itself"
+  ],
+  "requests": [
+    { "target": "/ok", "expect": { "status": 200, "body": "home\n", "headers": { "x-ok": "yes" } } }
+  ]
+}

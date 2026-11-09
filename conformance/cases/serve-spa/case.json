@@ -1,0 +1,14 @@
+{
+  "command": "serve",
+  "args": ["--spa", "--spa-exclude", "/api/*"],
+  "requests": [
+    { "target": "/users/jane.doe", "headers": { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" }, "expect": { "status": 200, "body": "root shell\n" } },
+    { "target": "/users/jane.doe", "headers": { "accept": "text/html,application/xhtml+xml,*/*;q=0.8" }, "expect": { "status": 200, "body": "root shell\n" } },
+    { "target": "/assets/app.js", "headers": { "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script", "accept": "*/*" }, "expect": { "status": 404 } },
+    { "target": "/assets/app.js", "headers": { "accept": "*/*" }, "expect": { "status": 404 } },
+    { "target": "/some/route", "expect": { "status": 404 } },
+    { "target": "/admin/users/5", "headers": { "sec-fetch-mode": "navigate" }, "expect": { "status": 200, "body": "admin shell\n" } },
+    { "target": "/api/missing", "headers": { "sec-fetch-mode": "navigate" }, "expect": { "status": 404 } },
+    { "target": "/app.js", "expect": { "status": 200, "body": "console.log(1)\n" } }
+  ]
+}

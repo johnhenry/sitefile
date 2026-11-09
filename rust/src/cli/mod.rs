@@ -143,6 +143,8 @@ Options:
                                (default gzip; none: plain tar), or the whole wbn (default none; gzip:
                                gzip(application/webbundle), also chosen by -o *.wbn.gz)
       --oci-compression <c>    the same as --compression, for oci only
+      --oci-layers <n>         split the oci image's files over n layers (1-64, default 1) by a hash of each
+                               path, so pushing a new version uploads only the layers that changed
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -229,6 +231,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("base-url"),
     string("oci-root"),
     string("oci-compression"),
+    string("oci-layers"),
     string("compression"),
     strings("label"),
     flag("git-labels"),
@@ -770,6 +773,24 @@ fn run_build_command(
             )));
         }
     }
+    let mut oci_layers: Option<usize> = None;
+    if let Some(raw) = o.str("oci-layers") {
+        if command != "build" {
+            return Ok(usage_error("--oci-layers is only for build"));
+        }
+        let n = if !raw.is_empty() && raw.len() <= 2 && raw.bytes().all(|c| c.is_ascii_digit()) {
+            raw.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+        if !(1..=crate::export::oci::MAX_OCI_LAYERS).contains(&n) {
+            return Ok(usage_error(&format!(
+                "--oci-layers expects an integer from 1 to {}, got '{raw}'",
+                crate::export::oci::MAX_OCI_LAYERS
+            )));
+        }
+        oci_layers = Some(n);
+    }
     let mut oci_compression = None;
     if let Some(c) = o.str("oci-compression") {
         oci_compression = OciCompression::parse(c);
@@ -956,6 +977,7 @@ fn run_build_command(
                 context_dir: context.to_string(),
                 oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
+                oci_layers,
                 platform: o.str("platform").map(str::to_string),
                 labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
@@ -984,6 +1006,7 @@ fn run_build_command(
                 base_url: o.str("base-url").map(str::to_string),
                 oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
+                oci_layers,
                 wbn_compression,
                 image_labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
