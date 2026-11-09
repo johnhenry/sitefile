@@ -1161,7 +1161,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--host-profile host] [--html-handling mode] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1311,6 +1311,29 @@ on disk after the server started answers `500` for the entries that changed (`se
   is a plain host name or address with a port (otherwise nothing is rewritten). Under `serve --watch` it is
   **on by default** with the build's EXPORT BASE URL, else its first SITEMAP or FEED BASE (re-read after each
   good build); `--no-rewrite-base` turns that off. Kept in the server record as `rewriteBase`.
+- **Host profiles.** `--host-profile netlify|cloudflare|vercel|github-pages|firebase` routes like that host,
+  so links that work locally work (or break) the same way in production; `--html-handling
+  auto|force-slash|drop-slash|none` (Cloudflare's modes) picks the canonical page URLs on its own, or replaces
+  a profile's. Without either flag sitefile's own rules (above) apply.
+
+  | `--html-handling` | `/about` (about.html) | `/about.html` | `/about/` (only about.html) | `/docs` (docs/index.html) | `/docs/index.html` |
+  | --- | --- | --- | --- | --- | --- |
+  | `auto` | served | → `/about` | → `/about` | → `/docs/` | → `/docs/` |
+  | `force-slash` | → `/about/` | → `/about/` | served | → `/docs/` | → `/docs/` |
+  | `drop-slash` | served | → `/about` | → `/about` | served | → `/docs` |
+  | `none` | 404 | served | 404 | 404 | served (and `/docs/`) |
+
+  | `--host-profile` | HTML handling | redirect status | reads `_redirects`/`_headers` | not found |
+  | --- | --- | --- | --- | --- |
+  | `netlify` | `auto` | 301 | yes | nearest `404.html` |
+  | `cloudflare` | `auto` | 307 | yes | nearest `404.html`, else `/index.html` with 200 (an SPA) |
+  | `vercel` | `none` | 308 | no (served as files) | `/404.html` |
+  | `github-pages` | sitefile's, but `/about/` with only `about.html` is 404 | 301 | no (served as files) | `/404.html` |
+  | `firebase` | `none` | 301 | no (served as files) | `/404.html` |
+
+  `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
+  without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
+  read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

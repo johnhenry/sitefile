@@ -109,7 +109,7 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "EXPORT",
-        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
+        "EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]",
         "Exports `<path>` of the last stage. Exactly one, and the last instruction. The CLI's `--out`, `--format` and `--base-url` override it.",
     ),
 ];
@@ -191,10 +191,10 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("PRECACHE", "TO", "`TO <dest>`: the manifest file (default `/sw-manifest.json`; with only INTO, none is written)."),
     ("PRECACHE", "INTO", "`INTO <service-worker>`: a file of the stage whose first `self.__WB_MANIFEST` becomes the manifest (Workbox `injectManifest`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
-    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs) or mhtml (index.html and its assets as one MHTML file)."),
+    ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs) mhtml (index.html and its assets as one MHTML file) or warc (a web archive of every file at BASE)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
-    ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci and wbn only): how the oci site layer is stored, or whether the wbn is gzipped."),
+    ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci, wbn and warc only): how the oci site layer is stored, whether the wbn is gzipped, or whether each warc record is."),
     ("EXPORT", "FOR", "`FOR <host>`: write the REDIRECT and HEADER rules as that host reads them: netlify (`_redirects`, `_headers`), cloudflare, vercel (Build Output API v3), firebase, azure (staticwebapp.config.json), github-pages (.nojekyll, CNAME) or s3. A rule the host cannot express is an error (a warning with --lossy)."),
 ];
 
@@ -277,6 +277,7 @@ const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("car", "An IPFS CARv1 file (UnixFS, CIDv1); its root CID is the one `ipfs add -r --hidden --cid-version=1` prints."),
     ("html", "`index.html` as one file, every asset it references inlined as a `data:` URI."),
     ("mhtml", "`index.html` and its assets as one MHTML (multipart/related) file; `BASE` sets the parts' URLs."),
+    ("warc", "A WARC/1.1 web archive of every file at `BASE`; `COMPRESSION gzip` gzips each record."),
 ];
 
 const COMPRESSIONS: &[(&str, &str)] = &[

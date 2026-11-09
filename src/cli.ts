@@ -54,11 +54,12 @@ Options:
                                a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml
+                               .warc .warc.gz),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
@@ -79,7 +80,7 @@ Options:
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
       --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
-      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml);
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml, warc);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
       --secret id=<id>,env=<VAR> | id=<id>,src=<file>
@@ -354,10 +355,10 @@ export async function main(
     // The default destination depends on the format, which the Sitefile may set.
     // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)
     const sitefilePlan =
-      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
+      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn' || formatOverride === 'warc') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
     const sitefileFormat = formatOverride ? undefined : sitefilePlan?.exportFormat;
     const defaultFormat = formatOverride ?? sitefileFormat ?? 'directory';
-    const defaultCompression = defaultFormat === 'wbn' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, 'wbn') : undefined)) : undefined;
+    const defaultCompression = defaultFormat === 'wbn' || defaultFormat === 'warc' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, defaultFormat) : undefined)) : undefined;
     // A Git context's default destination is in the current directory, not the temporary checkout.
     const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(defaultFormat, defaultCompression));
     run.wrote?.push(out);
@@ -409,10 +410,10 @@ export async function main(
     if (command === 'build' && compression !== undefined) {
       const fmt = (o.tag ?? []).length && !o.out ? 'oci' : (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat);
       if (fmt === 'oci') ociCompression = compression;
-      else if (fmt === 'wbn') wbnCompression = compression;
-      else return usageError(`--compression applies only to oci and wbn exports, not ${fmt}`);
+      else if (fmt === 'wbn' || fmt === 'warc') wbnCompression = compression;
+      else return usageError(`--compression applies only to oci, wbn and warc exports, not ${fmt}`);
     }
-    if (formatOverride === 'wbn' && o.out) wbnCompression ??= compressionFromExtension(o.out, 'wbn');
+    if ((formatOverride === 'wbn' || formatOverride === 'warc') && o.out) wbnCompression ??= compressionFromExtension(o.out, formatOverride);
 
     switch (command) {
       case 'build': {
