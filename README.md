@@ -530,12 +530,12 @@ not published: the npm versions still behave as the rest of that row says.
 | --- | --- | --- | --- |
 | fileable, loose output | sitefile | `COPY ./generated/ /` | Works |
 | fileable, `encode="zip"` | sitefile | `IMPORT gen FROM ./site.zip AS tree`, then `COPY gen:/ /` | Works (same output as loose) |
-| fileable, `encode="wbn"` | sitefile | `IMPORT … AS tree` | **Not yet:** it's gzip around a Web Bundle, and `AS tree` reads only plain bundles ([#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| fileable, `encode="wbn"` | sitefile | `IMPORT … AS tree` | **Fixed on main, in the next release:** `AS tree` reads the gzip around the Web Bundle ([#141](https://github.com/johnhenry/sitefile/issues/141)); 0.0.3 and earlier fail with `gzip content is not a tar archive` |
 | fileable tree, rendered during a build | Sitefile | a JavaScript `TRANSFORM` plugin calling fileable's in-memory `toFiles()` | An example on main, not part of the npm package: [`examples/fileable/`](examples/fileable/) ([#145](https://github.com/johnhenry/sitefile/issues/145)). fileable is vendored into the plugin folder; `cmd`, local `src=` and `env://` fail with `E_PLUGIN` |
 | sitefile, `EXPORT / AS wbn BASE <url>` | packfile | `fromWebBundle(buffer, { baseURL })` from `@johnhenry/packfile/web-bundle`, then `createRouter(files)` | Works; tested here (`test/packfile-interop.test.ts`), and packfile's own tests read a bundle written by sitefile 0.0.0 |
 | sitefile `.wbn` | packfile `fromArchive()` | with 0.0.0 / 0.2.0: gzip it, and export with `BASE https://packfile.invalid/` | Works with that workaround. **Fixed on main, in the next release:** `EXPORT … AS wbn COMPRESSION gzip` (or `-o site.wbn.gz`) writes the gzip ([#143](https://github.com/johnhenry/sitefile/issues/143)), and `fromArchive()` takes a `baseURL` or the origin of the bundle's primary URL, so any `BASE` reads back ([packfile#18](https://github.com/johnhenry/packfile/issues/18)) |
 | sitefile `HEADER` / `REDIRECT` | packfile `createWebBundleRouter()` | -- | **Not applied in 0.0.0:** only the `/_headers` and `/_redirects` files are in the bundle. **Fixed on main, in the next release:** each response carries its HEADER values, and exact-path 301/302/303/307/308 REDIRECTs are 3xx responses with `location` ([#144](https://github.com/johnhenry/sitefile/issues/144)). Splats, `200` rewrites and `404` rules stay in `/_redirects` only |
-| packfile `toArchive()` | sitefile | `IMPORT … AS tree` | **Not yet** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)) |
+| packfile `toArchive()` | sitefile | `IMPORT … AS tree` | **Fixed on main, in the next release** (same as fileable's `.wbn`, [#141](https://github.com/johnhenry/sitefile/issues/141)); tested here (`test/packfile-interop.test.ts`) |
 
 Gotchas when serving a Sitefile bundle with packfile:
 

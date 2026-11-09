@@ -1,0 +1,7 @@
+{
+  "copy": {
+    "fileable.wbn": "test/fixtures/gzip-wbn/fileable-encode-wbn.wbn",
+    "packfile.wbn": "test/fixtures/gzip-wbn/packfile-toarchive.wbn"
+  },
+  "expectPaths": ["/fileable/index.html", "/fileable/about/index.html", "/fileable/css/site.css", "/packfile/index.html", "/packfile/about/index.html", "/packfile/css/site.css"]
+}
