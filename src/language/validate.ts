@@ -55,6 +55,16 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [ins.ext, ins.type];
     case 'FINGERPRINT':
       return [...ins.patterns, ...(ins.manifest ? [ins.manifest] : [])];
+    case 'CANONICAL':
+      return [ins.base];
+    case 'PRECOMPRESS':
+      return [...ins.patterns, ...(ins.min ? [ins.min] : [])];
+    case 'ROBOTS':
+      return [...ins.rules.map((r) => r.path), ...(ins.dest ? [ins.dest] : [])];
+    case 'SECURITY_TXT':
+      return [...ins.contact, ins.expires, ...ins.encryption, ...ins.policy, ...(ins.dest ? [ins.dest] : [])];
+    case 'PRECACHE':
+      return [...ins.patterns, ...(ins.dest ? [ins.dest] : []), ...(ins.into ? [ins.into] : [])];
     case 'CHECKLINKS':
       return [];
     case 'EXPORT':
@@ -278,6 +288,11 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'HEADER':
       case 'MIME':
       case 'FINGERPRINT':
+      case 'CANONICAL':
+      case 'PRECOMPRESS':
+      case 'ROBOTS':
+      case 'SECURITY_TXT':
+      case 'PRECACHE':
       case 'CHECKLINKS':
         break;
       case 'EXPORT':

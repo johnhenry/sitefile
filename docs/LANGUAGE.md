@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -815,7 +815,7 @@ properties:
   width, height and a `srcset`. See `docs/PLUGINS.md` ("The image plugin")
   and `examples/image/`.
 
-### Site files: SITEMAP, FEED, REDIRECT and HEADER (see `examples/blog/`)
+### Site files: SITEMAP, FEED, ROBOTS, SECURITY_TXT, REDIRECT and HEADER (see `examples/blog/`, `examples/robots/`)
 Common files a static host reads, generated from the tree and the imports.
 Every one takes `--overwrite` (see Writes and conflicts) and operands that may
 use `${NAME}`.
@@ -828,6 +828,26 @@ use `${NAME}`.
   `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
   segment is percent-encoded like `encodeURIComponent`, and the result is XML
   escaped. There is no `lastmod` (the output depends only on the tree).
+  Above the [protocol's limits](https://www.sitemaps.org/protocol.html) of
+  50,000 URLs or 50 MiB (52,428,800 bytes) the destination becomes a
+  **sitemap index** (`<sitemapindex>`, one `<sitemap><loc>` per part) and the
+  URLs go to numbered parts next to it, `/sitemap-1.xml`, `/sitemap-2.xml`, …
+  (`-N` before the last extension), in path order; a part is closed when the
+  next URL would pass either limit. Search engines and `ROBOTS … SITEMAP`
+  then use the index.
+- `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical" href="…">`
+  right before the first `</head>` of every `.html`/`.htm` page of the
+  **current stage's tree at that point** that is below the EXPORT path (other
+  than `/404.html` there), is valid UTF-8 and has no `<link>` whose `rel`
+  has the token `canonical` before that `</head>` (yours win). The URL is
+  `<base>` and the page's path below the EXPORT path, encoded like a sitemap
+  entry (`…/index.html` becomes `…/`); `PRETTY` also drops `.html` (`/about.html`
+  → `<base>/about`), for hosts that serve pages without the extension. A page
+  with no `</head>` is left alone, and one warning names those pages. Comments
+  and the contents of `<script>` and the other raw-text elements are skipped,
+  as when references are scanned. The rewritten pages get the origin
+  `Sitefile:<line> CANONICAL`. Alternate-language links (`hreflang`) are not
+  written yet.
 - `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
@@ -858,6 +878,38 @@ use `${NAME}`.
     non-empty `author`, `summary` from a non-empty `excerpt`, and
     `content type="html"` from `content` (the rendered Markdown). `TITLE`
     defaults to the BASE URL. Characters XML 1.0 forbids become U+FFFD.
+- `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`
+  (clauses in this order; ALLOW and DISALLOW repeat, mixed) writes a
+  [robots.txt](https://www.rfc-editor.org/rfc/rfc9309) (default `/robots.txt`)
+  with one group for every crawler: `User-agent: *`, then an `Allow:` or
+  `Disallow:` line per rule in source order, or an empty `Disallow:` (allow
+  everything) when there are none. Paths are absolute, without spaces or
+  control characters (`E_VALIDATION`); `*` and `$` pass through as robots.txt
+  wildcards. `SITEMAP` adds, after a blank line, a `Sitemap: <url>` line for
+  every SITEMAP instruction of the Sitefile, in source order and also those
+  after the ROBOTS line (`<base><dest>`, as the sitemap writes its own
+  locations; duplicates once); with no SITEMAP it is `E_VALIDATION`. Like
+  SITEMAP it writes the file at its place in the stage:
+
+  ```text
+  User-agent: *
+  Disallow: /drafts/
+
+  Sitemap: https://example.com/sitemap.xml
+  ```
+- `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`
+  (clauses in any order; CONTACT, ENCRYPTION and POLICY repeat) writes an
+  [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116) file (default
+  `/.well-known/security.txt`): the `Contact:` lines, `Expires:`, then the
+  `Encryption:` and `Policy:` lines, in source order. CONTACT and EXPIRES are
+  required (`E_VALIDATION`, as RFC 9116 requires both). A CONTACT is a
+  `mailto:`, `tel:` or `https://` URI, an ENCRYPTION an `https://`,
+  `openpgp4fpr:` or `dns:` URI, and a POLICY an `https://` URL, none with
+  spaces (`E_VALIDATION`). EXPIRES is a date (`YYYY-MM-DD`, written as
+  `…T00:00:00Z`) or an RFC 3339 date-time, as FEED reads dates; a duration
+  (`P1Y`, `365d`) is not accepted, since it would make the file depend on the
+  day of the build. A date in the past, or less than 30 days away, prints a
+  warning (validate and build). The file is not signed.
 - `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]` and
   `HEADER [--overwrite] <path-pattern> <Name>: <value …>` accumulate, **in
   source order and from every stage**, into `/_redirects` and `/_headers` in
@@ -870,8 +922,10 @@ use `${NAME}`.
     always written; the default is 301). `from` must be an absolute path and
     `to` an absolute path or an `http(s)://host…` URL; neither may contain
     spaces or control characters (`E_VALIDATION`). Host syntax such as
-    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
-    understands exact paths and a trailing `/*` (docs/CLI.md). `EXPORT … AS
+    `/blog/:year/:slug`, `/blog/*` and `:splat` is passed through as written;
+    `sitefile serve` understands placeholders and a trailing `/*`
+    (docs/CLI.md), and `validate` warns about a line it would ignore
+    (`serve-ignored`). `EXPORT … AS
     wbn` also bakes exact-path REDIRECTs into 3xx responses and HEADER values
     into each response (see **wbn** under Export formats).
   - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
@@ -1030,6 +1084,70 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
 
+### Precompressed sidecars: PRECOMPRESS (see `examples/precompress/`)
+`PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes a gzip
+sidecar `<file>.gz` next to each matching file, for servers that send it in
+place of the file to clients that accept gzip (nginx `gzip_static`, Caddy
+`file_server precompressed`, sirv, http-server `--gzip`). Like FINGERPRINT it
+runs **at its place in the stage** on the tree at that point, so put it after
+the files it compresses (and after a FINGERPRINT, so the hashed names get
+sidecars).
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below; `PRECOMPRESS /` is the whole tree). Patterns that
+  match nothing print a warning.
+- **Which files**: only compressible types, by extension (ASCII
+  case-insensitive): `html htm css js mjs cjs json map xml svg txt md csv tsv
+  webmanifest rss atom ics vtt yaml yml toml wasm ttf otf eot ico`. Already
+  compressed formats (images other than SVG, `woff2`, video, archives) are left
+  alone. A file needs at least `MIN` bytes (an operand, a whole number;
+  default **1024**), and its sidecar is written only when it is smaller than
+  the file.
+- **Formats**: `gzip` (the default, and the only one so far). `br` and `zstd`
+  are `E_UNSUPPORTED`: sitefile has no Brotli or Zstandard encoder that writes
+  the same bytes in both implementations without a new dependency.
+- **Deterministic**: the sidecar is a gzip member with a fixed header (no
+  modification time, no file name) around the shared deflate encoder
+  (`src/deflate.ts`, `rust/src/deflate.rs`) that zip, tar.gz and OCI layers use,
+  so both implementations write the same bytes on every run.
+- Sidecars keep the file's mode and get the origin `Sitefile:<line> PRECOMPRESS`;
+  `why` shows `<file> (compressed)` as the input. A sidecar path that already
+  holds different content is `E_CONFLICT` unless `--overwrite`. In watch mode an
+  unchanged step is reused only when the whole tree before it is unchanged (like
+  SITEMAP).
+
+### Precache manifest: PRECACHE (see `examples/precache/`)
+`PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`
+(clauses in this order) lists files for a service worker to precache, in the
+format Workbox's `precacheAndRoute` reads (`injectManifest`). It runs **at
+its place in the stage** on the tree at that point, so put it after the files
+and after any FINGERPRINT.
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below); patterns that match nothing print a warning.
+- **Entries**: every matching file below the EXPORT path (other than the
+  manifest and the service worker themselves), sorted by URL: `url` is its
+  path below the EXPORT path, percent-encoded like a rewritten reference
+  (`/img/a%20b.png`), and `revision` the first 10 hex digits of its SHA-256,
+  or `null` for a file a FINGERPRINT of the stage (or the stages it is built
+  `FROM`) renamed, since its name already changes with its content.
+- **`TO <dest>`** (default `/sw-manifest.json`) writes the JSON array, one
+  entry per line:
+
+  ```json
+  [
+    {"url": "/index.html", "revision": "3f2a9c1b0d"},
+    {"url": "/style.5e1b0c2a9f.css", "revision": null}
+  ]
+  ```
+- **`INTO <service-worker>`** replaces the first `self.__WB_MANIFEST` in that
+  file of the stage (UTF-8 text) with the same array, as `workbox
+  injectManifest` does; a missing file or placeholder is `E_VALIDATION`. With
+  only INTO, no manifest file is written. sitefile writes no service worker of
+  its own.
+- The manifest follows the conflict rules (`--overwrite`); the service worker
+  is replaced. Both get the origin `Sitefile:<line> PRECACHE`.
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and
@@ -1096,6 +1214,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
 | `sitemap-order` | a `SITEMAP` followed, in the same stage, by an instruction writing a `.html` file it therefore does not list. |
 | `shadowed-write` | a `RENDER` (without `FOR`) or inline `COPY` whose file a later `RENDER`/inline `COPY` in the same stage replaces with `--overwrite`, so the first write has no effect. |
+| `serve-ignored` | a `REDIRECT` or `HEADER` (without `${…}` in it) whose `_redirects`/`_headers` line `sitefile serve` would ignore, with the reason (e.g. `*` in the middle of a path, or a header the server sets itself such as `Content-Length`). |
 
 The unnamed non-final stage warning (above) is a planner warning, printed by `build` too; it is not a lint rule.
 
@@ -1571,8 +1690,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`. The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`; not `.html`, which stays a directory name), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1591,7 +1710,9 @@ the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
+- **zip**: raw deflate (stored when deflate does not shrink the entry, and always for already-compressed media by
+  extension: png, jpg/jpeg, gif, webp, avif, heic, jxl, woff/woff2, mp3, m4a, aac, ogg/oga, opus, flac, mp4, m4v,
+  webm, mov, mkv, zip, gz, tgz, br, zst, xz, bz2, 7z, rar, wbn; tar.gz and OCI layers are unchanged), CRC-32, central directory, UTF-8 names (flag bit 11), an
   extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
   same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
   the external attributes (version made by = 3 << 8). No zip64 is written: more than
@@ -1627,6 +1748,13 @@ and tar timestamps instead.
   are never written into the image (`--provenance` records the non-secret
   ones in a separate attestation, [CLI.md](CLI.md#attestations)). The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
+  `--oci-layers <n>` (build only, 1 to 64, default 1) splits the site's files over `n` layers instead
+  of one: a file goes to layer `u32be(sha256(path)[0..4]) mod n` (its path in the exported tree), each
+  layer is a deterministic tar of its files under the root (with the root's parent directories), and the
+  config carries `dev.sitefile.layers=<n>`. A push after changing a few files then uploads only the
+  layers holding them (with 8 layers, a one-file change re-uploads about an eighth of the site). The
+  store, `save`, `serve`, `push`, `pull` and `FROM image` read the files from all `n` site layers. The
+  default stays one layer, so existing image IDs do not change.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
   layout, below); any other `--out` with `--format oci` is an *OCI layout
   directory*: `oci-layout`, `index.json` (one manifest entry, annotated
@@ -1762,6 +1890,22 @@ and tar timestamps instead.
   `https://site.invalid/`), the page first. Root-relative references (`/css/a.css`) resolve to parts only
   when the base is an origin (`https://example.com/`). The boundary is fixed and the file has no date, so
   the output depends only on the tree.
+
+- **warc**: a [WARC/1.1](https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1/)
+  web archive (ISO 28500) of the site at `BASE` (required, from here or `--base-url`; an https URL
+  ending in `/`). A `warcinfo` record comes first, then, in path order, one `response` record per file
+  at `<BASE><path>` (percent-encoded): `HTTP/1.1 200 OK` with the Content-Type of the Web Bundle MIME
+  table (or the site's `_headers`), `Content-Length`, and every `_headers` rule that matches the path, in
+  file order. `_headers` and `_redirects` themselves are not recorded. An `index.html` is recorded again
+  at its directory's URL (`<BASE>`, `<BASE>docs/`), which replay tools request. `WARC-Payload-Digest` and
+  `WARC-Block-Digest` are `sha256:<hex>`; record IDs are version-8 UUIDs derived from the record, and
+  every `WARC-Date` is `SOURCE_DATE_EPOCH` (default `1970-01-01T00:00:00Z`), so the same build gives the
+  same bytes. `COMPRESSION gzip` (or `-o site.warc.gz`) writes every record as its own gzip member, the
+  usual `.warc.gz` layout. WARCs are also read: `IMPORT x FROM site.warc AS tree` (plain or gzipped) and
+  `sitefile serve site.warc` take the `200` responses of the first response's host, a URL ending in `/`
+  as that directory's `index.html`, the first record of each path; paths are checked like archive entries
+  (`E_ARCHIVE_UNSAFE`) and the archive limits apply. WACZ (a zip of WARCs with an index) is not written
+  yet.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

@@ -7,6 +7,108 @@
   source order with HEADER), which `serve`, the hosts and `EXPORT … AS wbn`
   use. Both implementations, with conformance cases. The CLI's `--mime` flag
   is not part of this change.
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
+- **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
+  route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
+  (canonical page URLs and their redirect status, whether `_redirects` and
+  `_headers` are read, which 404 answers, Cloudflare's SPA fallback), or pick
+  Cloudflare's `auto`, `force-slash`, `drop-slash` or `none` directly. Kept in
+  the server record. Both implementations, with a conformance case per mode.
+- **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
+  URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
+  a preview with absolute self-links stays local. On by default in
+  `serve --watch` (from EXPORT, SITEMAP or FEED BASE; `--no-rewrite-base`
+  turns it off); never applied to exports. Both implementations.
+- **`serve -d` printed its `Started …` line twice** (a merge of
+  johnhenry/sitefile#195): it is printed once, with the `--base` URL.
+- **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
+  <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
+  SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>
+  [ENCRYPTION <uri>]… [POLICY <uri>]…` writes an RFC 9116
+  `/.well-known/security.txt`, rejects a missing Contact or Expires and warns
+  when Expires is near or past. Both implementations, with conformance cases;
+  example `examples/robots`.
+- **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
+  `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
+  response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept
+  in the server record. Both servers.
+- **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
+  on every response (`_headers` still wins) and `OPTIONS` preflights answered
+  with `204`; kept in the server record. Both servers.
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
+- **PRECOMPRESS writes `.gz` sidecars** (johnhenry/sitefile#203):
+  `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes
+  `<file>.gz` next to matching text files of at least MIN bytes (default 1024)
+  when smaller, with the shared deterministic deflate encoder, for nginx
+  `gzip_static` and Caddy `precompressed`. `br` and `zstd` are rejected as not
+  supported yet. Both implementations, with conformance cases; example
+  `examples/precompress`.
+- **`serve` in a terminal** (johnhenry/sitefile#224): single keys in a
+  foreground `serve` or `serve --watch`:
+  - `o` opens the browser;
+  - `u` prints the local URL, plus the network URL and its QR code when
+    bound to every interface;
+  - `r` rebuilds, or re-reads a served directory;
+  - `c` clears the screen;
+  - `q` quits;
+  - `h` lists the keys.
+
+  `--open[=path]` opens the browser at start (`$BROWSER`, else the system
+  default). `--qr` prints a QR code of the network URL. The QR encoder is
+  shared by both implementations: they check the same golden fixtures and
+  the standard's format and version bits.
+
+- **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
+  a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
+  gets its slash, everything else is 404, and the server's redirects and
+  `_redirects` path targets stay under it. `serve --watch` defaults it to the
+  path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
+  Both implementations.
+- **`import-config` reads what serve now understands** (johnhenry/sitefile#204,
+  after #193): `:placeholders` in sources and targets (Netlify, Vercel `:name`
+  segments, Firebase `:name` and `:name*`), Netlify `query` and `conditions`
+  (`Language`, `Country`, `Cookie`), and statuses 410 and 451 are now
+  translated rather than listed as unsupported. A target `:name` that the
+  source does not capture is still refused.
+
+- **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
+  app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
+  else `Accept: text/html`), never subresources, so `/users/jane.doe` works
+  and a missing script stays 404. The shell is the nearest `200.html`
+  (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
+  <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
+  implementations.
+- **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
+  404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
+  `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
+  (`/store id=:id /items/:id`), `Language=`, `Cookie=` and `Country=`
+  conditions (`--country` sets the country), statuses 410 and 451, and a
+  `404.html` in the nearest directory. Every `_redirects`/`_headers` line it
+  ignores is a warning with its line and reason (`--strict-site-files` makes
+  them an error), `validate` warns about REDIRECT/HEADER lines serve would
+  ignore (lint rule `serve-ignored`), and the access log names the rule that
+  answered (`→ /new (_redirects:3)`).
+- **CANONICAL links and split sitemaps** (johnhenry/sitefile#218):
+  `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical">` before
+  `</head>` of every page that has none (PRETTY drops `.html`), and SITEMAP
+  writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
+  Both implementations, with conformance cases; example `examples/canonical`.
+  hreflang alternates are not done yet.
+- **`--oci-layers <n>`** (johnhenry/sitefile#214): split an oci image's files
+  over `n` site layers (1-64, by a hash of each path) so pushing a new version
+  uploads only the layers whose files changed; `dev.sitefile.layers` in the
+  config marks them, and every reader (store, save, serve, push, pull,
+  `FROM image`) merges them. Default unchanged (one layer, same image IDs).
+  Both implementations; conformance `example/blog:oci-layers-*`,
+  `case/steps-oci-layers`.
 - **Identical `--help` in both CLIs**: the `--node` line now reads "default
   $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
   default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
@@ -70,6 +172,12 @@
   matches, else as UTF-8 when valid, else as CP437 (they used to become
   U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
   `serve x.zip`, in both implementations.
+- **Zip export stores already-compressed media** (#203, writer half): png,
+  jpg, webp, avif, woff2, mp4, zip, gz and similar extensions are stored
+  without running deflate, so exports of media-heavy sites are faster. Zip
+  bytes change only for such entries that deflate had shrunk slightly; tar.gz
+  and OCI layers (image IDs) are unchanged. Both implementations, with a
+  byte-for-byte conformance case (`zip-stored-media`).
 - **Zip export writes the extended timestamp** (#187): every entry carries the
   0x5455 "UT" extra field (mtime only) in its local and central header, so
   `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
@@ -77,6 +185,21 @@
   `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
   deterministic and identical across the TypeScript and Rust writers (their
   byte-for-byte fixtures are updated together). Image IDs are not affected.
+- **Compression Dictionary Transport, experimental** (johnhenry/sitefile#215):
+  `build --experimental-dictionary <previous>` adds `Use-As-Dictionary`
+  headers for scripts, styles, JSON, wasm and HTML, and a `<path>.dcz`
+  Zstandard delta against the previous build for each that changed;
+  `serve` answers `Available-Dictionary` + `Accept-Encoding: dcz` with it.
+  A small deterministic Zstandard encoder shared by both implementations
+  (`src/zstd.ts`, `rust/src/zstd.rs`); frames decode with libzstd.
+  Conformance cases `steps-dictionary`, `serve-dictionary`.
+- **WARC export, import and serve** (johnhenry/sitefile#206, WARC part):
+  `EXPORT / AS warc BASE <url>` writes a deterministic WARC/1.1 file (one
+  `response` record per file with its `_headers`, directory indexes at their
+  directory URL; `COMPRESSION gzip` or `-o x.warc.gz` gzips each record);
+  `IMPORT … AS tree` and `sitefile serve` read `.warc` and `.warc.gz`. Both
+  implementations; conformance cases `ok-warc`, `ok-warc-gzip`,
+  `ok-warc-import`. WACZ follows once the zip writer work lands.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

@@ -1,0 +1,25 @@
+# import-config with what sitefile serve reads since #193: placeholders, query parameters, conditions, 410 and 451.
+[[redirects]]
+from = "/s"
+to = "/s/:v"
+query = { v = ":v", lang = "en" }
+[[redirects]]
+from = "/fr/*"
+to = "/fr/index.html"
+status = 200
+conditions = { Language = ["fr", "fr-CA"], Country = "FR", Cookie = "beta" }
+[[redirects]]
+from = "/old"
+to = "/gone.html"
+status = 410
+[[redirects]]
+from = "/x"
+to = "/451.html"
+status = 451
+[[redirects]]
+from = "/r"
+to = "/s"
+conditions = { Role = "admin" }
+[[redirects]]
+from = "/p/:id"
+to = "/q/:other"

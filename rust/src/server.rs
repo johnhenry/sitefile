@@ -18,8 +18,13 @@ pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct SiteServerOptions {
-    /// Fall back to `/index.html` for unknown extension-less paths (single-page apps).
+    /// Single-page apps: answer a page navigation ([`is_navigation`]) for a path nothing else
+    /// answers with the nearest app shell ([`spa_fallback`]). Never for subresources.
     pub spa: bool,
+    /// `--spa-exclude`: request paths (`*` matches any characters) that never fall back.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`.
+    pub spa_fallback: Option<String>,
     /// One access-log line per request: `METHOD /path STATUS BYTES MSms`.
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
@@ -35,6 +40,29 @@ pub struct SiteServerOptions {
     /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
     /// blocks live reload.
     pub warn: Option<LogFn>,
+    /// DNS-rebinding guard: when set, a request whose `Host` is not `localhost`, a `*.localhost`
+    /// name, an IP address or a name this list allows gets `403` ([`host_allowed`]). `*` allows
+    /// every host; `None`: no check (the CLI always sets it).
+    pub allowed_hosts: Option<Vec<String>>,
+    /// `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and
+    /// `OPTIONS` preflights answered with `204`.
+    pub cors: bool,
+    /// `--isolate`: cross-origin isolation on every response: `Cross-Origin-Opener-Policy:
+    /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
+    /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+    pub isolate: Option<String>,
+    /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+    /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
+    /// watched server takes it from the last good build); [`normalize_base`] makes the value.
+    pub base: Option<BaseFn>,
+    /// `--rewrite-base`: the production URL ([`normalize_production_url`]) that HTML, CSS and XML
+    /// responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+    pub rewrite_base: Option<BaseFn>,
+    /// `--host-profile` / `--html-handling`: behave like a static host ([`host_profile`]). `None`:
+    /// sitefile's own rules.
+    pub profile: Option<RoutingProfile>,
+    /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
+    pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
     /// place, [`crate::resources::archive::open_zip_file`]).
     pub content: Option<Arc<dyn SiteContent>>,
@@ -501,19 +529,14 @@ impl LiveReload {
         body_len: u64,
         chunked: bool,
     ) -> Response {
-        let mut h: Vec<(String, String)> = vec![
-            ("x-content-type-options".into(), "nosniff".into()),
-            ("cache-control".into(), "no-cache".into()),
-        ];
-        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-            h.push(("x-sitefile-server".into(), id.to_string()));
-        }
+        let h = base_headers(options);
         let res = |status: u16, mut h: Vec<(String, String)>, extra: &[(&str, &str)]| {
             h.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             Response {
                 status,
                 headers: h,
                 body: Vec::new(),
+                note: None,
             }
         };
         if method != "POST" {
@@ -611,6 +634,12 @@ impl LiveReload {
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
         }
+        if options.cors {
+            head.push_str("access-control-allow-origin: *\r\n");
+        }
+        for (k, v) in isolation_headers(options) {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
         for (k, v) in STREAM_HEADERS {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -689,6 +718,85 @@ pub fn inject_reload_script(html: &[u8]) -> Vec<u8> {
 /// The origin form of a request target: an absolute-form target (`http://host/path?q`, RFC 9112
 /// section 3.2.2) loses its scheme and authority (`/path?q`, or `/` for an empty path); any other
 /// target is returned as it is. The authority is not checked.
+/// Whether `s` is a dotted-decimal IPv4 address.
+fn is_ipv4(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 4
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 3
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u32>().is_ok_and(|n| n <= 255)
+        })
+}
+
+/// The DNS-rebinding guard of [`SiteServerOptions::allowed_hosts`] (`hostAllowed` in
+/// src/server.ts): whether a `Host` header value may be answered.
+pub fn host_allowed(allowed: Option<&[String]>, host: Option<&str>) -> bool {
+    let (Some(allowed), Some(host)) = (allowed, host) else {
+        return true;
+    };
+    if allowed.iter().any(|e| e == "*") {
+        return true;
+    }
+    // Node keeps the first of repeated Host headers; ours are joined with ", ".
+    let h = host.split(',').next().unwrap_or("").trim();
+    if h.is_empty() {
+        return true;
+    }
+    let port_ok = |p: &str| {
+        p.is_empty() || (p.starts_with(':') && p[1..].bytes().all(|b| b.is_ascii_digit()))
+    };
+    if let Some(rest) = h.strip_prefix('[') {
+        return match rest.find(']') {
+            Some(close) => {
+                close > 0
+                    && rest[..close]
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+                    && port_ok(&rest[close + 1..])
+            }
+            None => false,
+        };
+    }
+    // `^(.*?)(:[0-9]*)?$`: the port is the shortest `:digits` suffix that leaves the rest.
+    let name = h
+        .match_indices(':')
+        .map(|(i, _)| i)
+        .find(|&i| port_ok(&h[i..]))
+        .map_or(h, |i| &h[..i]);
+    let mut name = name.to_ascii_lowercase();
+    if name.ends_with('.') {
+        name.pop();
+    }
+    if is_ipv4(&name) || name == "localhost" || name.ends_with(".localhost") {
+        return true;
+    }
+    allowed.iter().any(|e| match e.strip_prefix('.') {
+        Some(base) => name == base || name.ends_with(e.as_str()),
+        None => name == *e,
+    })
+}
+
+/// An `--allowed-host` value, lowercased: `*`, or a host name (letters, digits, `-`, `.`; a
+/// leading `.` for subdomains). `None` when invalid.
+pub fn parse_allowed_host(value: &str) -> Option<String> {
+    let v = value.trim().to_ascii_lowercase();
+    if v == "*" {
+        return Some(v);
+    }
+    let body = v.strip_prefix('.').unwrap_or(&v);
+    let body = body.strip_suffix('.').unwrap_or(body);
+    let ok = !body.is_empty()
+        && body.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
+    ok.then(|| v.strip_suffix('.').unwrap_or(&v).to_string())
+}
+
 pub fn origin_form(target: &str) -> std::borrow::Cow<'_, str> {
     let b = target.as_bytes();
     let scheme = if b.len() >= 7 && b[..7].eq_ignore_ascii_case(b"http://") {
@@ -716,6 +824,45 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// The headers every response starts with (`base` in src/server.ts).
+fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    let mut base: Vec<(String, String)> = vec![
+        ("x-content-type-options".into(), "nosniff".into()),
+        ("cache-control".into(), "no-cache".into()),
+    ];
+    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+        base.push(("x-sitefile-server".into(), id.to_string()));
+    }
+    if options.cors {
+        base.push(("access-control-allow-origin".into(), "*".into()));
+    }
+    base.extend(isolation_headers(options));
+    base
+}
+
+/// The `--isolate` headers ([`SiteServerOptions::isolate`]).
+fn isolation_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    match &options.isolate {
+        Some(coep) => vec![
+            ("cross-origin-opener-policy".into(), "same-origin".into()),
+            ("cross-origin-embedder-policy".into(), coep.clone()),
+            ("cross-origin-resource-policy".into(), "same-origin".into()),
+        ],
+        None => Vec::new(),
+    }
+}
+
+/// `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of
+/// header names (`preflightHeaders` in src/server.ts).
+fn preflight_headers(value: Option<&str>) -> Option<String> {
+    let v = value?.trim();
+    let ok = !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" \t,!#$%&'*+-.^_`|~".contains(&b));
+    ok.then(|| v.to_string())
+}
+
+const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
@@ -1033,6 +1180,278 @@ fn etag_matches(header: Option<&str>, etag: &str) -> bool {
     })
 }
 
+/// The app shell a `--spa` navigation to a missing path gets: `fallback` when given
+/// (`--spa-fallback`), else the `200.html` (Surge) or `index.html` of the request's directory or
+/// the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` before
+/// `/index.html` (port of `spaFallback`).
+pub fn spa_fallback(
+    segs: &[String],
+    trailing: bool,
+    is_file: &dyn Fn(&str) -> bool,
+    fallback: Option<&str>,
+) -> Option<String> {
+    if let Some(f) = fallback {
+        return is_file(f).then(|| f.to_string());
+    }
+    let dirs = if trailing {
+        segs
+    } else {
+        &segs[..segs.len().saturating_sub(1)]
+    };
+    for n in (0..=dirs.len()).rev() {
+        let dir: String = dirs[..n].iter().map(|d| format!("{d}/")).collect();
+        for name in ["200.html", "index.html"] {
+            let p = format!("/{dir}{name}");
+            if is_file(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// `--html-handling` (Cloudflare's names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlHandling {
+    Auto,
+    ForceSlash,
+    DropSlash,
+    None,
+}
+
+impl HtmlHandling {
+    pub const NAMES: [&'static str; 4] = ["auto", "force-slash", "drop-slash", "none"];
+    pub fn parse(s: &str) -> Option<HtmlHandling> {
+        match s {
+            "auto" => Some(HtmlHandling::Auto),
+            "force-slash" => Some(HtmlHandling::ForceSlash),
+            "drop-slash" => Some(HtmlHandling::DropSlash),
+            "none" => Some(HtmlHandling::None),
+            _ => None,
+        }
+    }
+}
+
+pub const HOST_PROFILES: [&str; 5] = [
+    "netlify",
+    "cloudflare",
+    "vercel",
+    "github-pages",
+    "firebase",
+];
+
+/// Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotFound {
+    Nearest,
+    Root,
+    Index,
+}
+
+/// Sitefile's own rules only: `/about/` with only `about.html` redirects to `/about`, or is 404.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashHtml {
+    Redirect,
+    NotFound,
+}
+
+/// How a server routes like a static host (port of `RoutingProfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingProfile {
+    /// Canonical page URLs; `None` keeps sitefile's own rules.
+    pub html_handling: Option<HtmlHandling>,
+    pub redirect_status: u16,
+    /// Whether `/_redirects` and `/_headers` are read (and hidden).
+    pub site_files: bool,
+    pub not_found: NotFound,
+    pub slash_html: SlashHtml,
+}
+
+/// The routing of a host profile, with `--html-handling` replacing its HTML handling (port of
+/// `hostProfile`, which has the table).
+pub fn host_profile(name: Option<&str>, html_handling: Option<HtmlHandling>) -> RoutingProfile {
+    use HtmlHandling as H;
+    let p = |h, status, site_files, not_found, slash_html| RoutingProfile {
+        html_handling: h,
+        redirect_status: status,
+        site_files,
+        not_found,
+        slash_html,
+    };
+    let base = match name {
+        Some("netlify") => p(
+            Some(H::Auto),
+            301,
+            true,
+            NotFound::Nearest,
+            SlashHtml::Redirect,
+        ),
+        Some("cloudflare") => p(
+            Some(H::Auto),
+            307,
+            true,
+            NotFound::Index,
+            SlashHtml::Redirect,
+        ),
+        Some("vercel") => p(
+            Some(H::None),
+            308,
+            false,
+            NotFound::Root,
+            SlashHtml::Redirect,
+        ),
+        Some("github-pages") => p(None, 301, false, NotFound::Root, SlashHtml::NotFound),
+        Some("firebase") => p(
+            Some(H::None),
+            301,
+            false,
+            NotFound::Root,
+            SlashHtml::Redirect,
+        ),
+        _ => p(None, 307, true, NotFound::Nearest, SlashHtml::Redirect),
+    };
+    match html_handling {
+        Some(h) => RoutingProfile {
+            html_handling: Some(h),
+            ..base
+        },
+        None => base,
+    }
+}
+
+/// The server's routing profile for the flags (`None`: sitefile's own rules).
+pub fn routing_for(
+    host_profile_name: Option<&str>,
+    html_handling: Option<&str>,
+) -> Option<RoutingProfile> {
+    if host_profile_name.is_none() && html_handling.is_none() {
+        return None;
+    }
+    Some(host_profile(
+        host_profile_name,
+        html_handling.and_then(HtmlHandling::parse),
+    ))
+}
+
+/// A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port.
+fn is_safe_host(h: &str) -> bool {
+    let (name, port) = if let Some(rest) = h.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let inner = &rest[..end];
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return false;
+        }
+        ("x", &rest[end + 1..])
+    } else {
+        match h.find(':') {
+            Some(i) => (&h[..i], &h[i..]),
+            None => (h, ""),
+        }
+    };
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok = port.is_empty()
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+    name_ok && port_ok
+}
+
+/// Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG).
+pub fn is_rebased_type(mime: &str) -> bool {
+    mime.starts_with("text/html")
+        || mime.starts_with("text/css")
+        || mime.split(';').next().unwrap_or("").contains("xml")
+}
+
+/// A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query
+/// or fragment, or `None` when it is not an http(s) URL with a host (port of `normalizeProductionUrl`).
+pub fn normalize_production_url(raw: &str) -> Option<String> {
+    let raw = &raw[..raw.find(['?', '#']).unwrap_or(raw.len())];
+    let n = http_prefix(raw);
+    if n == 0 || raw.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let rest = &raw[n..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    if host_end == 0 {
+        return None;
+    }
+    let path = rest[host_end..].trim_end_matches('/');
+    Some(format!("{}{}{path}", &raw[..n], &rest[..host_end]))
+}
+
+/// `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+/// the next byte cannot continue a host or path segment (port of `rewriteBaseUrls`).
+pub fn rewrite_base_urls(body: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let f = from.as_bytes();
+    if f.is_empty() {
+        return body.to_vec();
+    }
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with(f) {
+            let next = body.get(i + f.len()).copied();
+            let continues = next.is_some_and(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b':' | b'%' | b'-')
+            });
+            out.extend_from_slice(if continues { f } else { to.as_bytes() });
+            i += f.len();
+        } else {
+            out.push(body[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The `--base` of a server, read per request.
+pub type BaseFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for
+/// none, or `None` when it is not a safe absolute path. The path of a URL
+/// (`https://user.github.io/repo/`) is taken as well (port of `normalizeBase`).
+pub fn normalize_base(raw: &str) -> Option<String> {
+    let n = http_prefix(raw);
+    let p = if n > 0 {
+        let rest = &raw[n..];
+        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let after = &rest[auth_end..];
+        if after.starts_with('/') {
+            &after[..after.find(['?', '#']).unwrap_or(after.len())]
+        } else {
+            "/"
+        }
+    } else {
+        raw
+    };
+    let segs = if p.starts_with('/') {
+        safe_segments(p)
+    } else {
+        safe_segments(&format!("/{p}"))
+    }?;
+    if segs.is_empty() {
+        return Some("/".into());
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    Some(format!("/{}/", enc.join("/")))
+}
+
+/// A tree path with each segment percent-encoded like encodeURIComponent.
+fn encode_path(p: &str) -> String {
+    let enc: Vec<String> = p.split('/').map(encode_uri_component).collect();
+    enc.join("/")
+}
+
 fn printable(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
@@ -1053,6 +1472,8 @@ pub struct Response {
     /// Lowercase header names, in order.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// What answered, for the access log (` → /new (_redirects:3)`), when a rule did.
+    pub note: Option<String>,
 }
 
 impl Response {
@@ -1067,6 +1488,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
@@ -1075,10 +1497,13 @@ fn reason(status: u16) -> &'static str {
         206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         500 => "Internal Server Error",
         416 => "Range Not Satisfiable",
+        410 => "Gone",
+        451 => "Unavailable For Legal Reasons",
         _ => "",
     }
 }
@@ -1086,16 +1511,68 @@ fn reason(status: u16) -> &'static str {
 // ---------------------------------------------------------------- _redirects and _headers
 // (src/serve-rules.ts)
 
+/// A segment of a `_redirects` source: a literal (decoded) or a `:placeholder`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedirectSegment {
+    Lit(String),
+    Param(String),
+}
+
+/// A `_redirects` condition: `language`, `country` or `cookie` and its values (ASCII-lowercased
+/// for language and country; cookie names as written).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedirectCondition {
+    pub key: &'static str,
+    pub values: Vec<String>,
+}
+
 /// A `_redirects` rule `serve` understands (docs/CLI.md, "serve").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeRedirect {
-    /// Decoded path without a trailing slash (`/` for the root); for a splat rule, the prefix before `/*` (`""` for `/*`).
+    /// 1-based line in `_redirects` (for the access log).
+    pub line: usize,
+    /// Decoded path without a trailing slash (`/` for the root), placeholders written `:name`; for a
+    /// splat rule, the prefix before `/*` (`""` for `/*`).
     pub from: String,
+    pub segments: Vec<RedirectSegment>,
     pub splat: bool,
+    /// Query parameters the request must have: `(name, value)` (decoded); a value `:name` captures it.
+    pub query: Vec<(String, String)>,
     pub to: String,
     pub status: u16,
     /// `301!`: applies even when a file exists at the path.
     pub force: bool,
+    pub conditions: Vec<RedirectCondition>,
+}
+
+impl ServeRedirect {
+    /// A rule that depends on nothing but the path: no placeholders, query parameters or conditions.
+    pub fn is_plain(&self) -> bool {
+        self.query.is_empty()
+            && self.conditions.is_empty()
+            && self
+                .segments
+                .iter()
+                .all(|s| matches!(s, RedirectSegment::Lit(_)))
+    }
+}
+
+/// A line of `_redirects` or `_headers` that `serve` ignores, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredLine {
+    pub line: usize,
+    pub reason: String,
+}
+
+/// What a request offers a rule's query parameters and conditions.
+#[derive(Debug, Clone, Default)]
+pub struct RedirectRequest<'a> {
+    /// The query string with its `?` (`""` when none).
+    pub search: &'a str,
+    pub accept_language: Option<&'a str>,
+    pub cookie: Option<&'a str>,
+    /// `serve --country`.
+    pub country: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1117,19 +1594,37 @@ const PROTECTED_HEADERS: [&str; 9] = [
     "content-range",
     "last-modified",
 ];
-const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
+pub const SERVE_STATUSES: [u16; 9] = [200, 301, 302, 303, 307, 308, 404, 410, 451];
+
+/// Statuses that serve the target path's file with that status instead of redirecting.
+pub fn is_rewrite_status(s: u16) -> bool {
+    matches!(s, 200 | 404 | 410 | 451)
+}
+
+/// `^[A-Za-z_][A-Za-z0-9_]*$`
+fn is_placeholder(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && (b[0].is_ascii_alphabetic() || b[0] == b'_')
+        && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
 
 /// `^https?://[^/]` (case-insensitive).
 fn is_http_url(s: &str) -> bool {
+    let n = http_prefix(s);
+    n > 0 && s.as_bytes().get(n).is_some_and(|b| *b != b'/')
+}
+
+/// The length of a leading `http://` or `https://` (any case), else 0.
+fn http_prefix(s: &str) -> usize {
     let lower = s.get(..8).unwrap_or(s).to_ascii_lowercase();
-    let n = if lower.starts_with("https://") {
+    if lower.starts_with("https://") {
         8
     } else if lower.starts_with("http://") {
         7
     } else {
-        return false;
-    };
-    s.as_bytes().get(n).is_some_and(|b| *b != b'/')
+        0
+    }
 }
 
 /// JavaScript's `String.prototype.trim` whitespace (the characters that matter in these files).
@@ -1137,101 +1632,249 @@ pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
-/// Parse `_redirects`: `from to [status[!]]` per line, `#` comments. Supported: exact paths and a
-/// trailing `/*` with `:splat` in the target; statuses 301, 302, 303, 307, 308 (redirect), 200
-/// (rewrite) and 404. Other lines (placeholders, conditions, query matching) are ignored.
-pub fn parse_redirect_rules(text: &str) -> Vec<ServeRedirect> {
+/// `decodeURIComponent` after `+` becomes a space (form encoding), or `None` when malformed.
+fn decode_query_part(s: &str) -> Option<String> {
+    decode_uri_component(&s.replace('+', " "))
+}
+
+/// The decoded `name=value` pairs of a query string (without its `?`); malformed pairs are skipped.
+pub fn parse_query(q: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for line in text.split('\n') {
-        let t = js_trim(line);
-        if t.is_empty() || t.starts_with('#') {
-            continue;
+    for part in q.split('&').filter(|p| !p.is_empty()) {
+        let (n, v) = part.split_once('=').unwrap_or((part, ""));
+        if let (Some(n), Some(v)) = (decode_query_part(n), decode_query_part(v)) {
+            out.push((n, v));
         }
-        let fields: Vec<&str> = t.split([' ', '\t']).filter(|f| !f.is_empty()).collect();
-        if fields.len() < 2 || fields.len() > 3 {
-            continue;
-        }
-        let (from, to, st) = (
-            fields[0],
-            fields[1],
-            fields.get(2).copied().unwrap_or("301"),
-        );
-        let force = st.ends_with('!');
-        let code = if force { &st[..st.len() - 1] } else { st };
-        let Some(status) = (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| code.parse::<u16>().ok())
-            .flatten()
-        else {
-            continue;
-        };
-        if !SERVE_STATUSES.contains(&status) {
-            continue;
-        }
-        if to.is_empty()
-            || !to.bytes().all(|b| (0x21..=0x7e).contains(&b))
-            || !(to.starts_with('/') || is_http_url(to))
-        {
-            continue;
-        }
-        if (status == 200 || status == 404) && !to.starts_with('/') {
-            continue;
-        }
-        if !from.starts_with('/') {
-            continue;
-        }
-        let splat = from == "/*" || from.ends_with("/*");
-        let prefix = if splat { &from[..from.len() - 2] } else { from };
-        if prefix.contains('*') || prefix.split('/').any(|seg| seg.starts_with(':')) {
-            continue;
-        }
-        let Some(segs) = safe_segments(if prefix.is_empty() { "/" } else { prefix }) else {
-            continue;
-        };
-        let decoded = format!("/{}", segs.join("/"));
-        let from = if splat && decoded == "/" {
-            String::new()
-        } else {
-            decoded
-        };
-        out.push(ServeRedirect {
-            from,
-            splat,
-            to: to.to_string(),
-            status,
-            force,
-        });
     }
     out
 }
 
+fn is_target_field(f: &str) -> bool {
+    f.starts_with('/') || http_prefix(f) > 0
+}
+
+/// `^[0-9]{3}!?$`
+fn is_status_field(f: &str) -> bool {
+    let d = f.strip_suffix('!').unwrap_or(f);
+    d.len() == 3 && d.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Parse `_redirects` (Netlify / Cloudflare Pages): `from [name=value…] to [status[!]] [Key=values…]`
+/// per line, `#` comments. Supported: literal segments, `:placeholders` (one segment each) and a
+/// trailing `/*` (`:splat`); query parameters, literal or `:placeholder`; statuses 301, 302, 303,
+/// 307, 308 (redirect), 200 (rewrite), 404, 410 and 451 (the target's file with that status);
+/// conditions `Language=`, `Country=` and `Cookie=`. Every other line is in the second list, with why.
+pub fn parse_redirects(text: &str) -> (Vec<ServeRedirect>, Vec<IgnoredLine>) {
+    let mut rules = Vec::new();
+    let mut ignored = Vec::new();
+    for (index, raw) in text.split('\n').enumerate() {
+        let t = js_trim(raw);
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        match parse_redirect_line(t, index + 1) {
+            Ok(r) => rules.push(r),
+            Err(reason) => ignored.push(IgnoredLine {
+                line: index + 1,
+                reason,
+            }),
+        }
+    }
+    (rules, ignored)
+}
+
+/// One non-comment line: its rule, or why it is ignored.
+fn parse_redirect_line(t: &str, line: usize) -> std::result::Result<ServeRedirect, String> {
+    let fields: Vec<&str> = t.split([' ', '\t']).filter(|f| !f.is_empty()).collect();
+    let from = fields[0];
+    let mut k = 1;
+    let mut query = Vec::new();
+    while k < fields.len() && !is_target_field(fields[k]) {
+        let f = fields[k];
+        let Some(i) = f.find('=').filter(|i| *i > 0) else {
+            break;
+        };
+        let (name, value) = (decode_query_part(&f[..i]), decode_query_part(&f[i + 1..]));
+        match (name, value) {
+            (Some(n), Some(v)) if !v.starts_with(':') || is_placeholder(&v[1..]) => {
+                query.push((n, v))
+            }
+            _ => {
+                return Err("bad query parameter (expected name=value or name=:placeholder)".into())
+            }
+        }
+        k += 1;
+    }
+    if k >= fields.len() {
+        return Err("expected 'from [name=value...] to [status] [conditions]'".into());
+    }
+    let to = fields[k];
+    k += 1;
+    let mut st = "301";
+    if k < fields.len() && is_status_field(fields[k]) {
+        st = fields[k];
+        k += 1;
+    }
+    let mut conditions = Vec::new();
+    for f in &fields[k..] {
+        let Some(i) = f.find('=').filter(|i| *i > 0) else {
+            return Err("unexpected field (expected a status, then Key=value conditions)".into());
+        };
+        let key = f[..i].to_ascii_lowercase();
+        let values: Vec<&str> = f[i + 1..].split(',').filter(|x| !x.is_empty()).collect();
+        let key: &'static str = match key.as_str() {
+            "role" => {
+                return Err("Role= conditions need Netlify Identity and are not supported".into())
+            }
+            "language" => "language",
+            "country" => "country",
+            "cookie" => "cookie",
+            _ => {
+                return Err(
+                    "unsupported condition (supported: Language=, Country=, Cookie=)".into(),
+                )
+            }
+        };
+        if values.is_empty() {
+            return Err("a condition needs at least one value".into());
+        }
+        conditions.push(RedirectCondition {
+            key,
+            values: values
+                .iter()
+                .map(|v| {
+                    if key == "cookie" {
+                        v.to_string()
+                    } else {
+                        v.to_ascii_lowercase()
+                    }
+                })
+                .collect(),
+        });
+    }
+    let force = st.ends_with('!');
+    let status: u16 = st.trim_end_matches('!').parse().unwrap_or(0);
+    if !SERVE_STATUSES.contains(&status) {
+        let list: Vec<String> = SERVE_STATUSES.iter().map(|s| s.to_string()).collect();
+        return Err(format!(
+            "unsupported status (supported: {})",
+            list.join(", ")
+        ));
+    }
+    if !to.bytes().all(|b| (0x21..=0x7e).contains(&b)) || !(to.starts_with('/') || is_http_url(to))
+    {
+        return Err(
+            "the target must be an absolute path or an http(s) URL, in printable ASCII".into(),
+        );
+    }
+    if is_rewrite_status(status) && !to.starts_with('/') {
+        return Err(format!(
+            "status {status} needs a path target (proxying to a URL is not supported)"
+        ));
+    }
+    if !from.starts_with('/') {
+        return Err("the source must be a path starting with '/'".into());
+    }
+    let splat = from == "/*" || from.ends_with("/*");
+    let prefix = if splat { &from[..from.len() - 2] } else { from };
+    let mut segments = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    for raw in prefix.split('/').filter(|s| !s.is_empty()) {
+        if raw.contains('*') {
+            return Err("'*' is only supported as the last segment of the source".into());
+        }
+        if let Some(name) = raw.strip_prefix(':') {
+            if !is_placeholder(name) {
+                return Err("bad placeholder (expected :name of letters, digits and _)".into());
+            }
+            if name == "splat" {
+                return Err(":splat is the value of a trailing '*', not a placeholder".into());
+            }
+            if names.contains(&name) {
+                return Err("a placeholder is used twice in the source".into());
+            }
+            names.push(name);
+            segments.push(RedirectSegment::Param(name.to_string()));
+            continue;
+        }
+        let Some(mut seg) = safe_segments(&format!("/{raw}")) else {
+            return Err("the source is not a valid path".into());
+        };
+        segments.push(RedirectSegment::Lit(seg.remove(0)));
+    }
+    let shown: Vec<String> = segments
+        .iter()
+        .map(|s| match s {
+            RedirectSegment::Lit(l) => l.clone(),
+            RedirectSegment::Param(p) => format!(":{p}"),
+        })
+        .collect();
+    let shown = format!("/{}", shown.join("/"));
+    Ok(ServeRedirect {
+        line,
+        from: if splat && shown == "/" {
+            String::new()
+        } else {
+            shown
+        },
+        segments,
+        splat,
+        query,
+        to: to.to_string(),
+        status,
+        force,
+        conditions,
+    })
+}
+
+/// [`parse_redirects`]' rules.
+pub fn parse_redirect_rules(text: &str) -> Vec<ServeRedirect> {
+    parse_redirects(text).0
+}
+
 /// Parse `_headers`: a path pattern line (`*` matches anything), then indented `Name: value` lines.
-pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
+/// Every other line is in the second list, with why.
+pub fn parse_headers(text: &str) -> (Vec<ServeHeaders>, Vec<IgnoredLine>) {
     let mut out: Vec<ServeHeaders> = Vec::new();
+    let mut ignored = Vec::new();
     let mut cur = false;
-    for raw in text.split('\n') {
+    for (index, raw) in text.split('\n').enumerate() {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         let t = js_trim(line);
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
+        let mut skip = |reason: &str| {
+            ignored.push(IgnoredLine {
+                line: index + 1,
+                reason: reason.to_string(),
+            })
+        };
         if line.starts_with([' ', '\t']) {
+            if !cur {
+                skip("a header line without a path line above it");
+                continue;
+            }
+            if t.starts_with('!') {
+                skip("'! Name' detach lines are not supported");
+                continue;
+            }
             let Some(i) = t.find(':').filter(|i| *i > 0) else {
+                skip("expected 'Name: value'");
                 continue;
             };
-            if !cur {
-                continue;
-            }
             let name = js_trim(&t[..i]).to_ascii_lowercase();
             let value = js_trim(&t[i + 1..]);
-            if !crate::site::is_token(&name)
-                || !value
-                    .bytes()
-                    .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
-                || PROTECTED_HEADERS.contains(&name.as_str())
+            if !crate::site::is_token(&name) {
+                skip("invalid header name");
+            } else if !value
+                .bytes()
+                .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
             {
-                continue;
-            }
-            if let Some(last) = out.last_mut() {
+                skip("the value must be printable ASCII");
+            } else if PROTECTED_HEADERS.contains(&name.as_str()) {
+                skip("the server sets this header itself");
+            } else if let Some(last) = out.last_mut() {
                 last.headers.push((name, value.to_string()));
             }
             continue;
@@ -1242,6 +1885,38 @@ pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
                 pattern: t.to_string(),
                 headers: Vec::new(),
             });
+        } else {
+            skip("a path pattern must start with '/' (indent header lines)");
+        }
+    }
+    (out, ignored)
+}
+
+/// [`parse_headers`]' rules.
+pub fn parse_header_rules(text: &str) -> Vec<ServeHeaders> {
+    parse_headers(text).0
+}
+
+/// The warnings for a tree's `/_redirects` and `/_headers` lines `serve` ignores, one per line:
+/// `_redirects:3: ignored: <reason>`.
+/// `content` reads files a zip served in place holds only as digests.
+pub fn site_file_warnings(tree: &Tree, content: Option<&dyn SiteContent>) -> Vec<String> {
+    let mut out = Vec::new();
+    let text = |p: &str| {
+        tree.get(p).map(|f| match content.and_then(|c| c.read(p)) {
+            Some(Ok(b)) => String::from_utf8_lossy(&b).into_owned(),
+            Some(Err(_)) => String::new(),
+            None => String::from_utf8_lossy(&f.bytes).into_owned(),
+        })
+    };
+    if let Some(t) = text("/_redirects") {
+        for i in parse_redirects(&t).1 {
+            out.push(format!("_redirects:{}: ignored: {}", i.line, i.reason));
+        }
+    }
+    if let Some(t) = text("/_headers") {
+        for i in parse_headers(&t).1 {
+            out.push(format!("_headers:{}: ignored: {}", i.line, i.reason));
         }
     }
     out
@@ -1287,19 +1962,144 @@ pub fn headers_for(rules: &[ServeHeaders], path: &str) -> Vec<(String, String)> 
     out
 }
 
-/// The remainder a rule matches for `path` (`""` for the prefix itself), or `None`.
-pub fn match_redirect<'p>(r: &ServeRedirect, path: &'p str) -> Option<&'p str> {
-    if !r.splat {
-        return (path == r.from).then_some("");
+/// Set `name` in captured values (replacing an earlier value).
+fn set_capture(caps: &mut Vec<(String, String)>, name: &str, value: String) {
+    match caps.iter_mut().find(|(n, _)| n == name) {
+        Some(c) => c.1 = value,
+        None => caps.push((name.to_string(), value)),
     }
-    if r.from.is_empty() {
-        return Some(&path[1..]);
+}
+
+/// The values a rule's source captures from `path` (decoded, no trailing slash): each placeholder,
+/// and `splat` (the remainder, `""` for the prefix itself) for a splat rule; `None` when it does
+/// not match.
+pub fn match_redirect(r: &ServeRedirect, path: &str) -> Option<Vec<(String, String)>> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let n = r.segments.len();
+    if if r.splat {
+        segs.len() < n
+    } else {
+        segs.len() != n
+    } {
+        return None;
     }
-    if path == r.from {
-        return Some("");
+    let mut caps = Vec::new();
+    for (s, got) in r.segments.iter().zip(&segs) {
+        match s {
+            RedirectSegment::Param(p) => set_capture(&mut caps, p, got.to_string()),
+            RedirectSegment::Lit(l) if l == got => {}
+            RedirectSegment::Lit(_) => return None,
+        }
     }
-    path.strip_prefix(r.from.as_str())
-        .and_then(|rest| rest.strip_prefix('/'))
+    if r.splat {
+        set_capture(&mut caps, "splat", segs[n..].join("/"));
+    }
+    Some(caps)
+}
+
+/// Whether `Accept-Language` names a language a `Language=` value matches (`en` matches `en-GB`).
+fn language_matches(values: &[String], header: &str) -> bool {
+    for part in header.split(',') {
+        let mut it = part.split(';');
+        let tag = it.next().unwrap_or("");
+        let q = it
+            .map(js_trim)
+            .find(|p| p.starts_with("q=") || p.starts_with("Q="));
+        if let Some(q) = q {
+            let v = &q[2..];
+            let zero = v == "0"
+                || v.strip_prefix("0.")
+                    .is_some_and(|z| z.len() <= 3 && z.bytes().all(|b| b == b'0'));
+            if zero {
+                continue;
+            }
+        }
+        let t = js_trim(tag).to_ascii_lowercase();
+        if !t.is_empty()
+            && values
+                .iter()
+                .any(|v| t == *v || t.starts_with(&format!("{v}-")))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a `Cookie` header has a cookie with one of these names.
+fn cookie_matches(names: &[String], header: &str) -> bool {
+    header.split(';').any(|c| {
+        c.find('=')
+            .filter(|i| *i > 0)
+            .is_some_and(|i| names.iter().any(|n| n == js_trim(&c[..i])))
+    })
+}
+
+/// [`match_redirect`], then the rule's query parameters (adding their captures) and conditions.
+pub fn match_rule(
+    r: &ServeRedirect,
+    path: &str,
+    req: &RedirectRequest,
+) -> Option<Vec<(String, String)>> {
+    let mut caps = match_redirect(r, path)?;
+    if !r.query.is_empty() {
+        let pairs = parse_query(req.search.get(1..).unwrap_or(""));
+        for (name, value) in &r.query {
+            let hit = pairs.iter().find(|(n, _)| n == name)?;
+            if let Some(cap) = value.strip_prefix(':') {
+                set_capture(&mut caps, cap, hit.1.clone());
+            } else if hit.1 != *value {
+                return None;
+            }
+        }
+    }
+    for c in &r.conditions {
+        let ok = match c.key {
+            "language" => language_matches(&c.values, req.accept_language.unwrap_or("")),
+            "country" => req
+                .country
+                .is_some_and(|k| c.values.contains(&k.to_ascii_lowercase())),
+            _ => cookie_matches(&c.values, req.cookie.unwrap_or("")),
+        };
+        if !ok {
+            return None;
+        }
+    }
+    Some(caps)
+}
+
+/// A rule's target with `:name` (letters, digits and `_`, the longest run) replaced by the captured
+/// value, percent-encoded like encodeURIComponent; `:splat` keeps its slashes. Other names stay.
+pub fn substitute_target(to: &str, caps: &[(String, String)]) -> String {
+    let b = to.as_bytes();
+    let mut out = String::with_capacity(to.len());
+    let mut i = 0;
+    while i < b.len() {
+        let start_ok = b
+            .get(i + 1)
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
+        if b[i] != b':' || !start_ok {
+            let ch = to[i..].chars().next().unwrap_or(' ');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let mut j = i + 1;
+        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+            j += 1;
+        }
+        let name = &to[i + 1..j];
+        match caps.iter().find(|(n, _)| n == name) {
+            Some((_, v)) if name == "splat" => {
+                let enc: Vec<String> = v.split('/').map(encode_uri_component).collect();
+                out.push_str(&enc.join("/"));
+            }
+            Some((_, v)) => out.push_str(&encode_uri_component(v)),
+            None => out.push_str(&to[i..j]),
+        }
+        i = j;
+    }
+    out
 }
 
 /// The rules a tree's `/_redirects` and `/_headers` define (parsed once per server).
@@ -1380,13 +2180,11 @@ pub fn respond(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Response {
-    let mut base: Vec<(String, String)> = vec![
-        ("x-content-type-options".into(), "nosniff".into()),
-        ("cache-control".into(), "no-cache".into()),
-    ];
-    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-        base.push(("x-sitefile-server".into(), id.to_string()));
-    }
+    // A profile whose host has no `_redirects`/`_headers` neither reads nor hides them.
+    let site_files = options.profile.is_none_or(|p| p.site_files);
+    let no_rules = SiteRules::default();
+    let rules = if site_files { rules } else { &no_rules };
+    let base = base_headers(options);
     let finish = |status: u16, extra: Vec<(String, String)>, body: Option<Vec<u8>>| -> Response {
         let mut headers = base.clone();
         for (k, v) in extra {
@@ -1402,6 +2200,7 @@ pub fn respond(
             status,
             headers,
             body,
+            note: None,
         }
     };
     let owned = |v: Vec<(&str, String)>| -> Vec<(String, String)> {
@@ -1416,8 +2215,33 @@ pub fn respond(
         finish(status, h, Some(html.as_bytes().to_vec()))
     };
 
+    // DNS rebinding: a page on another name must not read this server (before anything else).
+    if !host_allowed(
+        options.allowed_hosts.as_deref(),
+        headers.get("host").map(String::as_str),
+    ) {
+        return page(403, FORBIDDEN_HOST_PAGE, vec![]);
+    }
+    if options.cors && method == "OPTIONS" {
+        // A CORS preflight: any path, nothing is looked up.
+        let mut h = owned(vec![("access-control-allow-methods", "GET, HEAD".into())]);
+        if let Some(v) = preflight_headers(
+            headers
+                .get("access-control-request-headers")
+                .map(String::as_str),
+        ) {
+            h.push(("access-control-allow-headers".into(), v));
+        }
+        h.push(("access-control-max-age".into(), "600".into()));
+        return finish(204, h, None);
+    }
     if method != "GET" && method != "HEAD" {
-        return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
+        let allow = if options.cors {
+            "GET, HEAD, OPTIONS"
+        } else {
+            "GET, HEAD"
+        };
+        return page(405, METHOD_PAGE, owned(vec![("allow", allow.into())]));
     }
     let url = origin_form(url);
     let url = url.as_ref();
@@ -1458,10 +2282,51 @@ pub fn respond(
             Some(js.as_bytes().to_vec()),
         );
     }
-    let Some(segs) = safe_segments(raw_path) else {
+    let Some(all_segs) = safe_segments(raw_path) else {
         return page(400, BAD_REQUEST_PAGE, vec![]);
     };
     let trailing = raw_path.ends_with('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    let base_now = match &options.base {
+        Some(b) => b(),
+        None => None,
+    };
+    let base_segs = base_now
+        .as_deref()
+        .and_then(safe_segments)
+        .unwrap_or_default();
+    // The `--base` prefix of generated `Location`s (`""` without one), percent-encoded.
+    let mount = if base_segs.is_empty() {
+        String::new()
+    } else {
+        let enc: Vec<String> = base_segs.iter().map(|s| encode_uri_component(s)).collect();
+        format!("/{}", enc.join("/"))
+    };
+    let mut segs = all_segs.clone();
+    if !base_segs.is_empty() {
+        let inside = all_segs.len() >= base_segs.len()
+            && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let to_mount = |status: u16| {
+            finish(
+                status,
+                owned(vec![
+                    ("location", format!("{mount}/{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            )
+        };
+        if inside && all_segs.len() == base_segs.len() && !trailing {
+            return to_mount(301);
+        }
+        if !inside && all_segs.is_empty() {
+            return to_mount(302);
+        }
+        if !inside {
+            return page(404, NOT_FOUND_PAGE, vec![]);
+        }
+        segs = all_segs[base_segs.len()..].to_vec();
+    }
     let vpath = format!("/{}", segs.join("/"));
     // `_headers` patterns match the request path (with its trailing slash).
     let custom = headers_for(
@@ -1475,7 +2340,8 @@ pub fn respond(
             }
         ),
     );
-    let is_file = |p: &str| tree.is_file(p) && p != "/_redirects" && p != "/_headers";
+    let is_file =
+        |p: &str| tree.is_file(p) && !(site_files && (p == "/_redirects" || p == "/_headers"));
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
@@ -1490,9 +2356,30 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
+        let prod_now = options.rewrite_base.as_ref().and_then(|f| f());
+        let rebase = match (prod_now, headers.get("host")) {
+            (Some(from), Some(host)) if is_rebased_type(mime) && is_safe_host(host) => {
+                Some((from, format!("http://{host}{mount}")))
+            }
+            _ => None,
+        };
+        // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+        let delta = if live || rebase.is_some() {
+            None
+        } else {
+            crate::dictionary::delta_for(
+                tree,
+                served,
+                headers.get("available-dictionary").map(String::as_str),
+                headers.get("accept-encoding").map(String::as_str),
+            )
+        };
+        let dictionary_vary = tree.is_file(&format!("{served}.dcz"));
         // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
         // range request: ranges are served from the identity body).
         let deflated = if !live
+            && delta.is_none()
+            && rebase.is_none()
             && !headers.contains_key("range")
             && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
         {
@@ -1516,16 +2403,30 @@ pub fn respond(
                 return page(500, ERROR_PAGE, vec![]);
             }
         };
+        let body = match &rebase {
+            Some((from, to)) => rewrite_base_urls(&body, from, to),
+            None => body,
+        };
         let body = if live {
             inject_reload_script(&body)
         } else {
             body
         };
+        let vary_on = if dictionary_vary {
+            "accept-encoding, available-dictionary"
+        } else {
+            "accept-encoding"
+        };
         let encoding: Vec<(String, String)> = if deflated.is_some() {
             owned(vec![
                 ("content-encoding", "gzip".into()),
-                ("vary", "accept-encoding".into()),
+                ("vary", vary_on.into()),
             ])
+        } else {
+            vec![]
+        };
+        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
@@ -1538,12 +2439,14 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page and a gzip response are other representations of the file: they get their own ETags.
+        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}{}\"",
+            "\"{}{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
+            if rebase.is_some() { "-rebased" } else { "" },
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" }
+            if deflated.is_some() { "-gzip" } else { "" },
+            if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
@@ -1552,6 +2455,7 @@ pub fn respond(
         let not_modified = || {
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -1572,6 +2476,20 @@ pub fn respond(
                 return not_modified();
             }
         }
+        // The delta is sent whole (no byte ranges of an encoded body).
+        if let Some(d) = delta {
+            let mut h = owned(vec![
+                ("content-type", mime.into()),
+                ("content-length", d.len().to_string()),
+            ]);
+            h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
+            h.push(("content-encoding".into(), "dcz".into()));
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            return finish(200, h, Some(d.to_vec()));
+        }
+        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
@@ -1624,36 +2542,52 @@ pub fn respond(
         }
         None
     };
+    let rule_request = RedirectRequest {
+        search,
+        accept_language: headers.get("accept-language").map(String::as_str),
+        cookie: headers.get("cookie").map(String::as_str),
+        country: options.country.as_deref(),
+    };
     // Apply the first matching `_redirects` rule (forced ones, or the others).
     let redirect = |forced: bool| -> Option<Response> {
         for r in rules.redirects.iter().filter(|r| r.force == forced) {
-            let Some(rest) = match_redirect(r, &vpath) else {
+            let Some(caps) = match_rule(r, &vpath, &rule_request) else {
                 continue;
             };
-            let target = if r.splat {
-                let enc: Vec<String> = rest.split('/').map(encode_uri_component).collect();
-                r.to.replace(":splat", &enc.join("/"))
-            } else {
-                r.to.clone()
-            };
-            if r.status != 200 && r.status != 404 {
-                let location = if target.contains('?') {
+            let target = substitute_target(&r.to, &caps);
+            if !is_rewrite_status(r.status) {
+                // A rule that matches query parameters passes on only what its target names.
+                let target = if target.starts_with('/') {
+                    format!("{mount}{target}")
+                } else {
+                    target
+                };
+                let location = if target.contains('?') || !r.query.is_empty() {
                     target
                 } else {
                     format!("{target}{search}")
                 };
-                return Some(finish(
+                let note = format!(" \u{2192} {location} (_redirects:{})", r.line);
+                let mut res = finish(
                     r.status,
                     owned(vec![("location", location), ("content-length", "0".into())]),
                     None,
-                ));
+                );
+                res.note = Some(note);
+                return Some(res);
             }
-            // 200 (rewrite) and 404: serve the target path's file with that status.
+            // 200 (rewrite), 404, 410 and 451: serve the target path's file with that status.
             let tpath = target.split('?').next().unwrap_or("");
             let served = safe_segments(tpath)
                 .and_then(|t| resolve(&format!("/{}", t.join("/")), tpath.ends_with('/')));
             if let Some(served) = served {
-                return Some(send_file(r.status, &served));
+                let mut res = send_file(r.status, &served);
+                res.note = Some(format!(
+                    " \u{2192} {} (_redirects:{})",
+                    encode_path(&served),
+                    r.line
+                ));
+                return Some(res);
             }
         }
         None
@@ -1662,10 +2596,88 @@ pub fn respond(
     if let Some(res) = redirect(true) {
         return res;
     }
-    let mut served = resolve(&vpath, trailing);
-    if served.is_none() && !trailing && tree.is_directory(&vpath) {
+    let handling = options.profile.as_ref().and_then(|p| p.html_handling);
+    let mut served: Option<String> = None;
+    if let (Some(handling), Some(profile)) = (handling, options.profile.as_ref()) {
+        // `--html-handling` (Cloudflare's modes): one canonical spelling per page, the others redirect to it.
+        let go = |to: &[String], slash: bool| -> Response {
+            let path = if to.is_empty() {
+                "/".to_string()
+            } else {
+                let enc: Vec<String> = to.iter().map(|s| encode_uri_component(s)).collect();
+                format!("/{}{}", enc.join("/"), if slash { "/" } else { "" })
+            };
+            finish(
+                profile.redirect_status,
+                owned(vec![
+                    ("location", format!("{mount}{path}{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            )
+        };
+        let last = segs.last().map(String::as_str);
+        let index = if vpath == "/" {
+            "/index.html".to_string()
+        } else {
+            format!("{vpath}/index.html")
+        };
+        let has_index = is_file(&index);
+        let html = format!("{vpath}.html");
+        let has_html = !segs.is_empty() && is_file(&html);
+        if let Some(last) = last.filter(|l| {
+            !trailing && l.ends_with(".html") && is_file(&vpath) && handling != HtmlHandling::None
+        }) {
+            // `/x.html` and `/x/index.html` are spelled out: send them to the clean form.
+            let dir = &segs[..segs.len() - 1];
+            if last == "index.html" {
+                return go(dir, !dir.is_empty() && handling != HtmlHandling::DropSlash);
+            }
+            let mut to = dir.to_vec();
+            to.push(last[..last.len() - ".html".len()].to_string());
+            return go(&to, handling == HtmlHandling::ForceSlash);
+        }
+        if !trailing && is_file(&vpath) {
+            served = Some(vpath.clone());
+        } else if handling == HtmlHandling::None {
+            served = (trailing && has_index).then(|| index.clone());
+        } else if segs.is_empty() {
+            served = has_index.then(|| index.clone());
+        } else if handling == HtmlHandling::Auto {
+            if has_index {
+                if !trailing {
+                    return go(&segs, true);
+                }
+                served = Some(index.clone());
+            } else if has_html {
+                if trailing {
+                    return go(&segs, false);
+                }
+                served = Some(html.clone());
+            }
+        } else if has_index || has_html {
+            let slash = handling == HtmlHandling::ForceSlash;
+            if trailing != slash {
+                return go(&segs, slash);
+            }
+            served = Some(if slash {
+                if has_index {
+                    index.clone()
+                } else {
+                    html.clone()
+                }
+            } else if has_html {
+                html.clone()
+            } else {
+                index.clone()
+            });
+        }
+    } else {
+        served = resolve(&vpath, trailing);
+    }
+    if handling.is_none() && served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}/{search}", enc.join("/"));
+        let location = format!("{mount}/{}/{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
@@ -1679,27 +2691,64 @@ pub fn respond(
     }
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in
     // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
-    if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
+    let slash_html_redirects = options
+        .profile
+        .as_ref()
+        .is_none_or(|p| p.slash_html == SlashHtml::Redirect);
+    if handling.is_none()
+        && slash_html_redirects
+        && served.is_none()
+        && trailing
+        && !segs.is_empty()
+        && is_file(&format!("{vpath}.html"))
+    {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}{search}", enc.join("/"));
+        let location = format!("{mount}/{}{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
             None,
         );
     }
-    if served.is_none() && options.spa {
-        let last = segs.last().map(String::as_str).unwrap_or("");
-        let has_ext = last.rfind('.').is_some_and(|i| i + 1 < last.len());
-        if !has_ext && is_file("/index.html") {
-            served = Some("/index.html".into());
+    if served.is_none() && options.spa && is_navigation(headers) {
+        let req_path = format!(
+            "{vpath}{}",
+            if trailing && !segs.is_empty() {
+                "/"
+            } else {
+                ""
+            }
+        );
+        if !options.spa_exclude.iter().any(|g| glob_match(g, &req_path)) {
+            served = spa_fallback(&segs, trailing, &is_file, options.spa_fallback.as_deref());
         }
     }
     if let Some(served) = served {
         return send_file(200, &served);
     }
-    if is_file("/404.html") {
-        return send_file(404, "/404.html");
+    // The nearest 404.html: in the request's directory, then each parent up to the root (only the
+    // root one for a profile whose host does not look further).
+    let dirs = if trailing {
+        &segs[..]
+    } else {
+        &segs[..segs.len().saturating_sub(1)]
+    };
+    let not_found_mode = options.profile.as_ref().map(|p| p.not_found);
+    let deepest = if not_found_mode == Some(NotFound::Root) {
+        0
+    } else {
+        dirs.len()
+    };
+    for n in (0..=deepest).rev() {
+        let not_found: String = dirs[..n].iter().map(|d| format!("/{d}")).collect();
+        let not_found = format!("{not_found}/404.html");
+        if is_file(&not_found) {
+            return send_file(404, &not_found);
+        }
+    }
+    // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
+    if not_found_mode == Some(NotFound::Index) && is_file("/index.html") {
+        return send_file(200, "/index.html");
     }
     page(404, NOT_FOUND_PAGE, custom.clone())
 }
@@ -1833,10 +2882,14 @@ fn serve_connection(
         };
         let started = Instant::now();
         let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let host_ok = host_allowed(
+            options.allowed_hosts.as_deref(),
+            req.headers.get("host").map(String::as_str),
+        );
         let console = options
             .live_reload
             .as_ref()
-            .filter(|_| raw_path_of(&req.url) == CONSOLE_PATH);
+            .filter(|_| host_ok && raw_path_of(&req.url) == CONSOLE_PATH);
         let mut body: Option<Vec<u8>> = None;
         if console.is_some()
             && req.method == "POST"
@@ -1858,11 +2911,9 @@ fn serve_connection(
         if console.is_some() && (req.chunked || req.body_len > MAX_CONSOLE_BODY) {
             keep = false;
         }
-        if let Some(live) = options
-            .live_reload
-            .as_ref()
-            .filter(|_| req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH)
-        {
+        if let Some(live) = options.live_reload.as_ref().filter(|_| {
+            host_ok && req.method == "GET" && raw_path_of(&origin_form(&req.url)) == RELOAD_PATH
+        }) {
             live.stream(&mut out, options); // not access-logged: one long request per open page
             break;
         }
@@ -1937,11 +2988,12 @@ fn serve_connection(
         if !probe && !quiet {
             if let Some(log) = &options.log {
                 log(&format!(
-                    "{} {} {} {} {ms:.1}ms",
+                    "{} {} {} {} {ms:.1}ms{}",
                     req.method,
                     printable(&req.url),
                     res.status,
-                    res.body.len()
+                    res.body.len(),
+                    res.note.as_deref().unwrap_or("")
                 ));
             }
         }
@@ -2209,7 +3261,7 @@ mod tests {
             live_reload: None,
             last_modified: None,
             warn: None,
-            content: None,
+            ..Default::default()
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2268,13 +3320,70 @@ mod tests {
     }
 
     #[test]
-    fn spa_fallback_only_for_extensionless_paths() {
+    fn spa_fallback_by_navigation() {
+        let doc = [
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
         with_server(true, |port, _| {
-            let r = get(port, "/some/client/route");
+            let r = req(port, "/some/client/route", "GET", &doc);
             assert_eq!((r.status, r.body.as_str()), (200, "<h1>home</h1>"));
-            assert_eq!(get(port, "/missing.js").status, 404);
+            assert_eq!(
+                req(port, "/users/jane.doe", "GET", &doc).body,
+                "<h1>home</h1>"
+            );
+            assert_eq!(
+                req(
+                    port,
+                    "/users/jane.doe",
+                    "GET",
+                    &[("accept", "text/html,*/*")]
+                )
+                .status,
+                200
+            );
+            let script = [
+                ("sec-fetch-mode", "no-cors"),
+                ("sec-fetch-dest", "script"),
+                ("accept", "*/*"),
+            ];
+            assert_eq!(req(port, "/assets/app.js", "GET", &script).status, 404);
+            assert_eq!(get(port, "/some/route").status, 404);
+            assert_eq!(req(port, "/about/team", "GET", &doc).body, "<h1>about</h1>");
             assert_eq!(get(port, "/app.js").body, "console.log(1)");
         });
+        // (johnhenry/sitefile#194) 200.html, nested app roots, exclusions and --spa-fallback.
+        let t = Tree::from_files(
+            [
+                ("/index.html", "root"),
+                ("/200.html", "surge shell"),
+                ("/admin/index.html", "admin"),
+                ("/api/x.json", "{}"),
+                ("/app.html", "app"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let h: HashMap<String, String> = doc
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let opts = SiteServerOptions {
+            spa: true,
+            spa_exclude: vec!["/api/*".into(), "/admin/raw".into()],
+            ..Default::default()
+        };
+        let nav = |o: &SiteServerOptions, u: &str| handle_request(&t, o, "GET", u, &h);
+        assert_eq!(body(&nav(&opts, "/route")), "surge shell");
+        assert_eq!(body(&nav(&opts, "/admin/users/5")), "admin");
+        assert_eq!(nav(&opts, "/api/missing").status, 404);
+        assert_eq!(nav(&opts, "/admin/raw").status, 404);
+        let one = SiteServerOptions {
+            spa: true,
+            spa_fallback: Some("/app.html".into()),
+            ..Default::default()
+        };
+        assert_eq!(body(&nav(&one, "/admin/users/5")), "app");
     }
 
     #[test]
@@ -2384,6 +3493,123 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn isolate_flag() {
+        let t = site();
+        let h = HashMap::new();
+        for coep in ["require-corp", "credentialless"] {
+            let opts = SiteServerOptions {
+                isolate: Some(coep.into()),
+                ..Default::default()
+            };
+            for p in ["/", "/missing"] {
+                let r = handle_request(&t, &opts, "GET", p, &h);
+                assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
+                assert_eq!(r.header("cross-origin-embedder-policy"), Some(coep));
+                assert_eq!(
+                    r.header("cross-origin-resource-policy"),
+                    Some("same-origin")
+                );
+            }
+        }
+        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/", &h);
+        assert_eq!(r.header("cross-origin-embedder-policy"), None);
+    }
+
+    #[test]
+    fn cors_flag() {
+        let t = site();
+        let opts = SiteServerOptions {
+            cors: true,
+            ..Default::default()
+        };
+        let mut h = HashMap::new();
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.header("access-control-allow-origin"), Some("*"));
+        h.insert(
+            "access-control-request-headers".to_string(),
+            "x-a, x-b".to_string(),
+        );
+        let p = handle_request(&t, &opts, "OPTIONS", "/x", &h);
+        assert_eq!(p.status, 204);
+        assert_eq!(p.header("access-control-allow-headers"), Some("x-a, x-b"));
+        assert_eq!(p.header("content-length"), None);
+        assert_eq!(
+            handle_request(&t, &opts, "POST", "/", &h).header("allow"),
+            Some("GET, HEAD, OPTIONS")
+        );
+        let plain = SiteServerOptions::default();
+        assert_eq!(handle_request(&t, &plain, "OPTIONS", "/", &h).status, 405);
+        assert_eq!(
+            preflight_headers(Some(" x-a,x-b ")).as_deref(),
+            Some("x-a,x-b")
+        );
+        assert_eq!(preflight_headers(Some("a\"b")), None);
+    }
+
+    #[test]
+    fn host_allow_list() {
+        let allowed: Vec<String> = vec!["example.com".into(), ".dev.test".into()];
+        let a = Some(allowed.as_slice());
+        for h in [
+            None,
+            Some(""),
+            Some("localhost"),
+            Some("LocalHost:80"),
+            Some("x.localhost"),
+            Some("localhost."),
+            Some("127.0.0.1:8080"),
+            Some("10.0.0.7"),
+            Some("[::1]:8080"),
+            Some("example.com"),
+            Some("EXAMPLE.com.:1"),
+            Some("dev.test"),
+            Some("a.dev.test"),
+            Some("localhost, evil.example"),
+        ] {
+            assert!(host_allowed(a, h), "{h:?}");
+        }
+        for h in [
+            "evil.example",
+            "www.example.com",
+            "notdev.test",
+            "localhost.evil",
+            "1.2.3.4.evil",
+            "999.1.1.1",
+            "[::1",
+            "[fe80::1%25en0]",
+            "a:b:80",
+        ] {
+            assert!(!host_allowed(a, Some(h)), "{h}");
+        }
+        assert!(host_allowed(None, Some("evil.example")));
+        assert!(host_allowed(Some(&["*".to_string()]), Some("evil.example")));
+        assert_eq!(
+            parse_allowed_host("Example.COM.").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            parse_allowed_host(".dev.test").as_deref(),
+            Some(".dev.test")
+        );
+        assert_eq!(parse_allowed_host("*").as_deref(), Some("*"));
+        for bad in ["", ".", "a..b", "a b", "a:80", "http://a", "*.a"] {
+            assert_eq!(parse_allowed_host(bad), None, "{bad}");
+        }
+        let t = site();
+        let opts = SiteServerOptions {
+            allowed_hosts: Some(allowed.clone()),
+            ..Default::default()
+        };
+        let mut h = HashMap::new();
+        h.insert("host".to_string(), "evil.example".to_string());
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.status, 403);
+        assert!(body(&r).contains("--allowed-host"));
+        h.insert("host".to_string(), "www.dev.test".to_string());
+        assert_eq!(handle_request(&t, &opts, "GET", "/", &h).status, 200);
     }
 
     #[test]
@@ -2561,7 +3787,7 @@ mod tests {
             live_reload: None,
             last_modified: None,
             warn: None,
-            content: None,
+            ..Default::default()
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
@@ -2750,10 +3976,261 @@ mod tests {
             "about page",
             "a file shadows a rule without !"
         );
-        for path in ["/users/1", "/x", "/bad", "/_redirects", "/_headers"] {
+        assert_eq!(
+            at(&t, "/users/a%20b").header("location"),
+            Some("/u/a%20b"),
+            "a placeholder matches one segment"
+        );
+        for path in ["/users/1/2", "/x", "/bad", "/_redirects", "/_headers"] {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#192 (test/server.test.ts)
+    #[test]
+    fn host_profiles_and_html_handling() {
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/about.html", "about"),
+                ("/docs/index.html", "docs"),
+                ("/_redirects", "/old /about 301\n"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let with = |profile: RoutingProfile| SiteServerOptions {
+            profile: Some(profile),
+            ..Default::default()
+        };
+        let loc = |o: &SiteServerOptions, u: &str| {
+            let r = handle_request(&t, o, "GET", u, &HashMap::new());
+            match r.header("location") {
+                Some(l) => format!("{} {l}", r.status),
+                None => r.status.to_string(),
+            }
+        };
+        let cf = with(host_profile(Some("cloudflare"), None));
+        assert_eq!(loc(&cf, "/about.html"), "307 /about");
+        assert_eq!(loc(&cf, "/about/"), "307 /about");
+        assert_eq!(loc(&cf, "/docs"), "307 /docs/");
+        assert_eq!(loc(&cf, "/docs/index.html"), "307 /docs/");
+        assert_eq!(loc(&cf, "/old"), "301 /about");
+        assert_eq!(
+            body(&handle_request(&t, &cf, "GET", "/nope", &HashMap::new())),
+            "home"
+        );
+        let gh = with(host_profile(Some("github-pages"), None));
+        assert_eq!(loc(&gh, "/about"), "200");
+        assert_eq!(loc(&gh, "/about/"), "404");
+        assert_eq!(loc(&gh, "/old"), "404");
+        assert_eq!(loc(&gh, "/_redirects"), "200");
+        let drop = with(host_profile(None, Some(HtmlHandling::DropSlash)));
+        assert_eq!(loc(&drop, "/docs"), "200");
+        assert_eq!(loc(&drop, "/docs/"), "307 /docs");
+        assert_eq!(loc(&drop, "/about.html"), "307 /about");
+        let v = with(host_profile(Some("vercel"), Some(HtmlHandling::ForceSlash)));
+        assert_eq!(loc(&v, "/about"), "308 /about/");
+        assert_eq!(loc(&v, "/about/"), "200");
+    }
+
+    // johnhenry/sitefile#196 (test/server.test.ts)
+    #[test]
+    fn rewrite_base_urls_in_text_responses() {
+        assert_eq!(
+            normalize_production_url("https://example.com/blog/?x#y").as_deref(),
+            Some("https://example.com/blog")
+        );
+        assert_eq!(
+            normalize_production_url("https://example.com").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(normalize_production_url("/blog"), None);
+        let r = rewrite_base_urls(
+            b"https://e.x/b/a https://e.x/bc https://e.x/b https://e.x/b.x https://e.x/b?q",
+            "https://e.x/b",
+            "http://h:1",
+        );
+        assert_eq!(
+            String::from_utf8(r).unwrap(),
+            "http://h:1/a https://e.x/bc http://h:1 https://e.x/b.x http://h:1?q"
+        );
+        assert!(is_safe_host("localhost:8000") && is_safe_host("[::1]:80"));
+        assert!(!is_safe_host("evil\"><script>") && !is_safe_host("a:b"));
+        let t = Tree::from_files(
+            [
+                ("/index.html", "<a href=\"https://e.x/b/about\">x</a>"),
+                ("/a.css", "url(https://e.x/b/i.png)"),
+                ("/t.txt", "https://e.x/b/"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            rewrite_base: Some(Arc::new(|| Some("https://e.x/b".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str, host: &str| {
+            let h: HashMap<String, String> = [("host".to_string(), host.to_string())].into();
+            handle_request(&t, &opts, "GET", u, &h)
+        };
+        let r = get("/", "h:1");
+        assert_eq!(body(&r), "<a href=\"http://h:1/about\">x</a>");
+        assert!(r.header("etag").unwrap().ends_with("-rebased\""));
+        assert_eq!(body(&get("/a.css", "h:1")), "url(http://h:1/i.png)");
+        assert_eq!(body(&get("/t.txt", "h:1")), "https://e.x/b/");
+        assert_eq!(
+            body(&get("/", "evil\"><script>")),
+            "<a href=\"https://e.x/b/about\">x</a>"
+        );
+    }
+
+    // johnhenry/sitefile#195 (test/server.test.ts)
+    #[test]
+    fn base_path_mount() {
+        assert_eq!(normalize_base("repo").as_deref(), Some("/repo/"));
+        assert_eq!(normalize_base("/a b//c/").as_deref(), Some("/a%20b/c/"));
+        assert_eq!(
+            normalize_base("https://user.github.io/repo/?x").as_deref(),
+            Some("/repo/")
+        );
+        assert_eq!(normalize_base("https://example.com").as_deref(), Some("/"));
+        assert_eq!(normalize_base("/../x"), None);
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/docs/index.html", "docs"),
+                ("/about.html", "about"),
+                ("/404.html", "site 404"),
+                ("/_redirects", "/old /about 301\n/ext https://e.x/ 302\n"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            base: Some(Arc::new(|| Some("/repo/".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &HashMap::new());
+        let r = get("/?q=1");
+        assert_eq!((r.status, r.header("location")), (302, Some("/repo/?q=1")));
+        let r = get("/repo");
+        assert_eq!((r.status, r.header("location")), (301, Some("/repo/")));
+        assert_eq!(body(&get("/repo/")), "home");
+        assert_eq!(body(&get("/repo/about")), "about");
+        assert_eq!(get("/repo/docs").header("location"), Some("/repo/docs/"));
+        assert_eq!(get("/repo/about/").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/old").header("location"), Some("/repo/about"));
+        assert_eq!(get("/repo/ext").header("location"), Some("https://e.x/"));
+        let r = get("/repo/missing");
+        assert_eq!((r.status, body(&r)), (404, "site 404"));
+        let r = get("/about");
+        assert_eq!(r.status, 404);
+        assert!(body(&r).contains("404 Not Found"));
+        assert_eq!(get("/repository/").status, 404);
+    }
+
+    // johnhenry/sitefile#193 (the same site as test/server.test.ts)
+    #[test]
+    fn redirects_placeholders_queries_conditions_and_warnings() {
+        let redirects = [
+            "/blog/:year/:slug /posts/:year/:slug 301",
+            "/store id=:id /items/:id 302",
+            "/search q=cats /cats 302",
+            "/old-store id=:id /new?item=:id 301",
+            "/lang / 302 Language=es,pt-BR",
+            "/ab /b-variant 302 Cookie=ab_test",
+            "/geo /nz 302! Country=nz,au",
+            "/removed /gone.html 410",
+            "/legal /gone.html 451",
+            "/files/* /f/:splat/:nope 301",
+            "/a/*/b /c",
+            "/x /y 999",
+            "/admin /secret 200! Role=admin",
+            "/q bad=%zz /y",
+            "/z /y 301 Planet=mars",
+        ]
+        .join("\n");
+        let headers =
+            "  X-Orphan: 1\n/*\n  ! X-Detach\n  Content-Length: 1\n  Bad Name: x\nnot-a-path\n";
+        let files: Vec<(&str, String)> = vec![
+            ("/index.html", "home".into()),
+            ("/gone.html", "gone".into()),
+            ("/es/index.html", "hola".into()),
+            ("/docs/404.html", "docs 404".into()),
+            ("/docs/a/index.html", "a".into()),
+            ("/_redirects", redirects),
+            ("/_headers", headers.into()),
+        ];
+        let t = Tree::from_files(
+            files
+                .into_iter()
+                .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap();
+        assert_eq!(
+            site_file_warnings(&t, None),
+            [
+                "_redirects:11: ignored: '*' is only supported as the last segment of the source",
+                "_redirects:12: ignored: unsupported status (supported: 200, 301, 302, 303, 307, 308, 404, 410, 451)",
+                "_redirects:13: ignored: Role= conditions need Netlify Identity and are not supported",
+                "_redirects:14: ignored: bad query parameter (expected name=value or name=:placeholder)",
+                "_redirects:15: ignored: unsupported condition (supported: Language=, Country=, Cookie=)",
+                "_headers:1: ignored: a header line without a path line above it",
+                "_headers:3: ignored: '! Name' detach lines are not supported",
+                "_headers:4: ignored: the server sets this header itself",
+                "_headers:5: ignored: invalid header name",
+                "_headers:6: ignored: a path pattern must start with '/' (indent header lines)",
+            ]
+        );
+        let opts = SiteServerOptions {
+            country: Some("NZ".into()),
+            ..Default::default()
+        };
+        let get = |u: &str, h: &[(&str, &str)]| {
+            let h: HashMap<String, String> = h
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            handle_request(&t, &opts, "GET", u, &h)
+        };
+        let loc = |u: &str| get(u, &[]).header("location").map(str::to_string);
+        let r = get("/blog/2024/hello", &[]);
+        assert_eq!(r.header("location"), Some("/posts/2024/hello"));
+        assert_eq!(
+            r.note.as_deref(),
+            Some(" \u{2192} /posts/2024/hello (_redirects:1)")
+        );
+        assert_eq!(loc("/store?id=7&x=1").as_deref(), Some("/items/7"));
+        assert_eq!(get("/store", &[]).status, 404);
+        assert_eq!(get("/store", &[]).note, None);
+        assert_eq!(loc("/search?q=cats").as_deref(), Some("/cats"));
+        assert_eq!(get("/search?q=dogs", &[]).status, 404);
+        assert_eq!(
+            loc("/old-store?id=a%20b").as_deref(),
+            Some("/new?item=a%20b")
+        );
+        let al = |v: &str| get("/lang", &[("accept-language", v)]).status;
+        assert_eq!(al("fr;q=1, es-MX;q=0.8"), 302);
+        assert_eq!(al("pt-br"), 302);
+        assert_eq!(al("es;q=0, pt"), 404);
+        assert_eq!(get("/ab", &[("cookie", "x=1; ab_test=b")]).status, 302);
+        assert_eq!(get("/ab", &[("cookie", "ab_test_2=1")]).status, 404);
+        assert_eq!(loc("/geo").as_deref(), Some("/nz"));
+        let r = get("/removed", &[]);
+        assert_eq!((r.status, body(&r)), (410, "gone"));
+        assert_eq!(
+            r.note.as_deref(),
+            Some(" \u{2192} /gone.html (_redirects:8)")
+        );
+        assert_eq!(get("/legal", &[]).status, 451);
+        assert_eq!(loc("/files/a/b%20c").as_deref(), Some("/f/a/b%20c/:nope"));
+        let r = get("/docs/a/missing", &[]);
+        assert_eq!((r.status, body(&r)), (404, "docs 404"));
+        assert_eq!(body(&get("/docs/missing/", &[])), "docs 404");
+        assert!(body(&get("/elsewhere", &[])).contains("404 Not Found"));
+        assert_eq!(at(&t, "/geo").status, 404, "Country= needs --country");
     }
 
     #[test]

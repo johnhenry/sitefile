@@ -15,15 +15,15 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'MIME', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'MIME', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
   /** The LET-only type of an html fragment (`LET name: html`). */
   fragmentType: 'html',
-  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml'],
+  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc'],
   compressions: ['gzip', 'none'],
   escapeModes: ['none', 'html'],
   /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
@@ -38,6 +38,10 @@ export const KEYWORDS = {
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
     FINGERPRINT: ['overwrite', 'no-cache-headers'],
+    PRECOMPRESS: ['overwrite'],
+    ROBOTS: ['overwrite'],
+    SECURITY_TXT: ['overwrite'],
+    PRECACHE: ['overwrite'],
     CHECKLINKS: ['warn', 'external'],
   },
 };
@@ -376,6 +380,11 @@ export function buildGrammar() {
           instruction('TOOL', [head('entity.name.function.tool')]),
           instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
           instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST', 'INTEGRITY']), { include: '#operands' }]),
+          instruction('CANONICAL', [kw(['BASE', 'PRETTY']), { include: '#operands' }]),
+          instruction('PRECOMPRESS', [...flags('PRECOMPRESS'), kw(['MIN']), { include: '#operands' }]),
+          instruction('ROBOTS', [...flags('ROBOTS'), kw(['ALLOW', 'DISALLOW', 'SITEMAP', 'TO']), { include: '#operands' }]),
+          instruction('SECURITY_TXT', [...flags('SECURITY_TXT'), kw(['CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'TO']), { include: '#operands' }]),
+          instruction('PRECACHE', [...flags('PRECACHE'), kw(['TO', 'INTO']), { include: '#operands' }]),
           instruction('MIME', [{ include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [

@@ -56,12 +56,27 @@ pub mod ann {
     pub const FILES: &str = "dev.sitefile.files";
     pub const SIZE: &str = "dev.sitefile.size";
     pub const STORED: &str = "dev.sitefile.created";
+    /// The number of site layers (`--oci-layers`, issue #214); absent means one.
+    pub const LAYERS: &str = "dev.sitefile.layers";
     pub const BASE_NAME: &str = "org.opencontainers.image.base.name";
     pub const BASE_DIGEST: &str = "org.opencontainers.image.base.digest";
     pub const CONTAINERD_NAME: &str = "io.containerd.image.name";
 }
 
 const EPOCH_ISO: &str = "1970-01-01T00:00:00Z";
+
+/// Most site layers `--oci-layers` accepts.
+pub const MAX_OCI_LAYERS: usize = 64;
+
+/// The site layer (0-based, of `n`) a file belongs to: the first 4 bytes of SHA-256 of its path, mod n.
+pub fn layer_of(path: &str, n: usize) -> usize {
+    if n <= 1 {
+        return 0;
+    }
+    use sha2::Digest;
+    let h = sha2::Sha256::digest(path.as_bytes());
+    (u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize) % n
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct OciOptions {
@@ -80,6 +95,8 @@ pub struct OciOptions {
     pub base: Option<BaseImage>,
     /// Site layer encoding (default gzip). Base layers are kept as they are.
     pub compression: OciCompression,
+    /// Split the site's files over this many layers (`None`: one), by a hash of each path.
+    pub layers: Option<usize>,
 }
 
 /// A resolved base image: one platform manifest, its config and layers.
@@ -128,6 +145,8 @@ pub struct OciImage {
     pub root: String,
     /// Layers below the site layer (from BASE), normalized to OCI media types.
     pub base_layers: Vec<Descriptor>,
+    /// With `layers` > 1: the site layers after the first, (digest, bytes), in layer order.
+    pub extra_layers: Vec<(String, Vec<u8>)>,
 }
 
 /// The blobs a standalone layout needs (borrowed from an [`OciImage`] or the store).
@@ -139,6 +158,8 @@ pub struct LayoutParts<'a> {
     pub config_digest: &'a str,
     pub layer_bytes: &'a [u8],
     pub layer_digest: &'a str,
+    /// Further site layers (`--oci-layers`), (digest, bytes).
+    pub extra_layers: &'a [(String, Vec<u8>)],
 }
 
 impl OciImage {
@@ -150,6 +171,7 @@ impl OciImage {
             config_digest: &self.config_digest,
             layer_bytes: &self.layer_bytes,
             layer_digest: &self.layer_digest,
+            extra_layers: &self.extra_layers,
         }
     }
 }
@@ -225,29 +247,45 @@ fn obj(v: Option<&Value>) -> Option<&Map<String, Value>> {
 pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
     let root = normalize_oci_root(options.root.as_deref())?;
     let (os, arch) = parse_platform(options.platform.as_deref())?;
-    let layer_tree = Tree::from_files(tree.mounted_at(&root))?;
     let segs: Vec<&str> = if root == "/" {
         vec![]
     } else {
         root[1..].split('/').collect()
     };
     let dirs: Vec<String> = (0..segs.len()).map(|i| segs[..=i].join("/")).collect();
-    let tar = write_tar(
-        &layer_tree,
-        &WriterOptions {
-            epoch: Some(options.epoch.unwrap_or(0)),
-            dirs,
-        },
-    )?;
     let uncompressed = options.compression == OciCompression::None;
-    let diff_id = sha256(&tar);
-    let (layer_bytes, layer_digest) = if uncompressed {
-        (tar, diff_id.clone())
-    } else {
-        let gz = gzip_tar(&tar);
-        let d = sha256(&gz);
-        (gz, d)
-    };
+    let n = options.layers.unwrap_or(1);
+    if !(1..=MAX_OCI_LAYERS).contains(&n) {
+        return Err(SitefileError::plain(
+            E_USAGE,
+            format!("--oci-layers expects an integer from 1 to {MAX_OCI_LAYERS}"),
+        ));
+    }
+    // Every layer carries the root's parent directories; with one layer this is the image it always was.
+    let mut parts: Vec<Vec<(String, Node)>> = vec![Vec::new(); n];
+    for (p, f) in tree.entries() {
+        parts[layer_of(p, n)].push((p.clone(), f.clone()));
+    }
+    // (bytes, digest, diff_id) per site layer.
+    let mut site: Vec<(Vec<u8>, String, String)> = Vec::new();
+    for files in parts {
+        let layer_tree = Tree::from_files(Tree::from_files(files)?.mounted_at(&root))?;
+        let tar = write_tar(
+            &layer_tree,
+            &WriterOptions {
+                epoch: Some(options.epoch.unwrap_or(0)),
+                dirs: dirs.clone(),
+            },
+        )?;
+        let diff_id = sha256(&tar);
+        if uncompressed {
+            site.push((tar, diff_id.clone(), diff_id));
+        } else {
+            let gz = gzip_tar(&tar);
+            let d = sha256(&gz);
+            site.push((gz, d, diff_id));
+        }
+    }
     let size: u64 = tree.entries().map(|(_, f)| f.bytes.len() as u64).sum();
 
     let empty = Map::new();
@@ -266,6 +304,9 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
         m.insert(k.to_string(), Value::String(v.to_string()));
     };
     set(&mut labels, ann::ROOT, &root);
+    if n > 1 {
+        set(&mut labels, ann::LAYERS, &n.to_string());
+    }
     for (k, v) in [
         (ann::TITLE, &options.title),
         (ann::SOURCE, &options.source),
@@ -328,7 +369,9 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
     inner.insert("Labels".into(), Value::Object(labels));
     cfg.insert("config".into(), Value::Object(inner));
     let mut diff_ids = base_diff_ids;
-    diff_ids.push(Value::String(diff_id.clone()));
+    for (_, _, d) in &site {
+        diff_ids.push(Value::String(d.clone()));
+    }
     cfg.insert(
         "rootfs".into(),
         serde_json::json!({ "type": "layers", "diff_ids": diff_ids }),
@@ -360,7 +403,14 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
     } else {
         media::LAYER
     };
-    layers.push(serde_json::json!({ "mediaType": layer_type, "digest": layer_digest, "size": layer_bytes.len() }));
+    for (bytes, digest, _) in &site {
+        layers.push(
+            serde_json::json!({ "mediaType": layer_type, "digest": digest, "size": bytes.len() }),
+        );
+    }
+    let mut site = site.into_iter();
+    let (layer_bytes, layer_digest, diff_id) = site.next().expect("at least one site layer");
+    let extra_layers: Vec<(String, Vec<u8>)> = site.map(|(b, d, _)| (d, b)).collect();
     let manifest = serde_json::json!({
         "schemaVersion": 2,
         "mediaType": media::MANIFEST,
@@ -378,6 +428,7 @@ pub fn build_oci_image(tree: &Tree, options: &OciOptions) -> Result<OciImage> {
         layer_digest,
         diff_id,
         root,
+        extra_layers,
         base_layers,
     })
 }
@@ -553,8 +604,10 @@ pub fn layout_tree(
     blobs.insert(img.manifest_digest.into(), img.manifest_bytes.to_vec());
     blobs.insert(img.config_digest.into(), img.config_bytes.to_vec());
     blobs.insert(img.layer_digest.into(), img.layer_bytes.to_vec());
-    for (d, b) in base_blobs
+    for (d, b) in img
+        .extra_layers
         .iter()
+        .chain(base_blobs.iter())
         .chain(referrers.iter().flat_map(|r| r.blobs.iter()))
     {
         blobs.insert(d.clone(), b.clone());
@@ -710,10 +763,34 @@ pub fn parse_config(bytes: &[u8]) -> std::result::Result<ParsedConfig, String> {
 /// one of an image that carries the `dev.sitefile.root` label (built with
 /// BASE). `None` when the image is not a Sitefile image.
 pub fn site_layer_index(m: &ParsedManifest, cfg: &ParsedConfig) -> Option<usize> {
+    site_layer_indices(m, cfg).first().copied()
+}
+
+/// Indices of every layer holding site files: the last `dev.sitefile.layers` layers (`--oci-layers`),
+/// else the one [`site_layer_index`] names; empty when the image is not a Sitefile image.
+pub fn site_layer_indices(m: &ParsedManifest, cfg: &ParsedConfig) -> Vec<usize> {
+    if let (Some(raw), true) = (
+        cfg.labels.get(ann::LAYERS),
+        cfg.labels.contains_key(ann::ROOT),
+    ) {
+        let ok = !raw.is_empty()
+            && raw.len() <= 2
+            && raw.bytes().all(|c| c.is_ascii_digit())
+            && !raw.starts_with('0');
+        let n = if ok {
+            raw.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+        if n < 1 || n > MAX_OCI_LAYERS || n > m.layers.len() {
+            return Vec::new();
+        }
+        return (m.layers.len() - n..m.layers.len()).collect();
+    }
     match m.layers.len() {
-        1 => Some(0),
-        n if n > 1 && cfg.labels.contains_key(ann::ROOT) => Some(n - 1),
-        _ => None,
+        1 => vec![0],
+        n if n > 1 && cfg.labels.contains_key(ann::ROOT) => vec![n - 1],
+        _ => Vec::new(),
     }
 }
 
@@ -740,57 +817,81 @@ pub fn extract_image_files_at(
     origin: &str,
     root_override: Option<&str>,
 ) -> Result<Tree> {
-    let idx = site_layer_index(m, cfg);
-    let layer = idx.and_then(|i| m.layers.get(i));
-    let (Some(idx), Some(layer)) = (
-        idx,
-        layer.filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR),
-    ) else {
+    extract_site_layers(m, cfg, &[layer_bytes], origin, root_override)
+}
+
+/// Decode every site layer of an image (`blobs` in [`site_layer_indices`] order), verifying each
+/// layer digest and diff_id, and merge their files (upper layers win, as in a container).
+pub fn extract_site_layers(
+    m: &ParsedManifest,
+    cfg: &ParsedConfig,
+    blobs: &[&[u8]],
+    origin: &str,
+    root_override: Option<&str>,
+) -> Result<Tree> {
+    let indices = site_layer_indices(m, cfg);
+    let all_ok = indices.iter().all(|&i| {
+        m.layers
+            .get(i)
+            .is_some_and(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)
+    });
+    if indices.is_empty() || indices.len() != blobs.len() || !all_ok {
         return Err(SitefileError::plain(
             E_STORE,
             format!("{origin}: not a Sitefile image (only single-layer tar or tar+gzip images, or images built with BASE, hold site files)"),
         ));
-    };
-    if sha256(layer_bytes) != layer.digest || layer_bytes.len() as u64 != layer.size {
-        return Err(SitefileError::plain(
-            E_STORE,
-            format!("{origin}: layer blob does not match its digest"),
-        ));
-    }
-    let limit = MAX_LAYER_BYTES + (MAX_LAYER_ENTRIES as u64 + 2) * 4 * 512;
-    let mut tar = Vec::new();
-    if layer.media_type == media::LAYER_TAR {
-        tar.extend_from_slice(&layer_bytes[..layer_bytes.len().min(limit as usize + 1)]);
-    } else {
-        let mut dec = flate2::read::GzDecoder::new(layer_bytes).take(limit + 1);
-        if dec.read_to_end(&mut tar).is_err() {
-            return Err(SitefileError::plain(
-                E_STORE,
-                format!("{origin}: layer is not valid gzip"),
-            ));
-        }
-    }
-    if tar.len() as u64 > limit {
-        return Err(SitefileError::plain(
-            E_ARCHIVE_LIMIT,
-            format!("{origin}: archive expands beyond {MAX_LAYER_BYTES} bytes"),
-        ));
-    }
-    if cfg.diff_ids.get(idx).map(String::as_str) != Some(sha256(&tar).as_str()) {
-        return Err(SitefileError::plain(
-            E_STORE,
-            format!("{origin}: layer content does not match the config diff_id"),
-        ));
     }
     let root = root_override
         .unwrap_or_else(|| cfg.labels.get(ann::ROOT).map(String::as_str).unwrap_or("/"));
-    let limits = ArchiveLimits {
-        max_entries: MAX_LAYER_ENTRIES as u64,
-        max_total_bytes: MAX_LAYER_BYTES,
-        max_ratio: u64::MAX,
-    };
-    let all = extract_archive(&tar, origin, &limits, None)?;
-    Ok(all.subtree(&normalize_virtual(root, None, "path")?.path))
+    let mut files: Vec<(String, Node)> = Vec::new();
+    for (k, &idx) in indices.iter().enumerate() {
+        let layer = &m.layers[idx];
+        let layer_bytes = blobs[k];
+        if sha256(layer_bytes) != layer.digest || layer_bytes.len() as u64 != layer.size {
+            return Err(SitefileError::plain(
+                E_STORE,
+                format!("{origin}: layer blob does not match its digest"),
+            ));
+        }
+        let limit = MAX_LAYER_BYTES + (MAX_LAYER_ENTRIES as u64 + 2) * 4 * 512;
+        let mut tar = Vec::new();
+        if layer.media_type == media::LAYER_TAR {
+            tar.extend_from_slice(&layer_bytes[..layer_bytes.len().min(limit as usize + 1)]);
+        } else {
+            let mut dec = flate2::read::GzDecoder::new(layer_bytes).take(limit + 1);
+            if dec.read_to_end(&mut tar).is_err() {
+                return Err(SitefileError::plain(
+                    E_STORE,
+                    format!("{origin}: layer is not valid gzip"),
+                ));
+            }
+        }
+        if tar.len() as u64 > limit {
+            return Err(SitefileError::plain(
+                E_ARCHIVE_LIMIT,
+                format!("{origin}: archive expands beyond {MAX_LAYER_BYTES} bytes"),
+            ));
+        }
+        if cfg.diff_ids.get(idx).map(String::as_str) != Some(sha256(&tar).as_str()) {
+            return Err(SitefileError::plain(
+                E_STORE,
+                format!("{origin}: layer content does not match the config diff_id"),
+            ));
+        }
+        let limits = ArchiveLimits {
+            max_entries: MAX_LAYER_ENTRIES as u64,
+            max_total_bytes: MAX_LAYER_BYTES,
+            max_ratio: u64::MAX,
+        };
+        let all = extract_archive(&tar, origin, &limits, None)?;
+        let root_path = normalize_virtual(root, None, "path")?.path;
+        files.extend(
+            all.subtree(&root_path)
+                .entries()
+                .map(|(p, n)| (p.clone(), n.clone())),
+        );
+    }
+    Tree::empty().with_files(files, crate::tree::ConflictPolicy::Overwrite, None)
 }
 
 // ------------------------------------------------------------ metadata
@@ -1540,4 +1641,44 @@ mod tests {
     const TS_CONFIG: &str = r#"{"architecture":"amd64","config":{"Labels":{"dev.sitefile.root":"/srv/www","org.example.team":"web","org.opencontainers.image.revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","org.opencontainers.image.source":"https://example.com/r.git","org.opencontainers.image.title":"demo"}},"created":"2023-11-14T22:13:20Z","history":[{"author":"sitefile","comment":"static site files","created":"2023-11-14T22:13:20Z","created_by":"sitefile"}],"os":"linux","rootfs":{"diff_ids":["sha256:258f521e8b16cd73e7241edb0b75726cf7fb470db86d67635c1a3545cf272b8c"],"type":"layers"}}"#;
     const TS_MANIFEST: &str = r#"{"annotations":{"dev.sitefile.files":"3","dev.sitefile.size":"27","org.opencontainers.image.title":"demo"},"config":{"digest":"CONFIG_DIGEST","mediaType":"application/vnd.oci.image.config.v1+json","size":564},"layers":[{"digest":"LAYER_DIGEST","mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","size":LAYER_SIZE}],"mediaType":"application/vnd.oci.image.manifest.v1+json","schemaVersion":2}"#;
     const TS_INDEX: &str = r#"{"manifests":[{"annotations":{"io.containerd.image.name":"localhost:5000/blog:2","org.opencontainers.image.ref.name":"2"},"digest":"MANIFEST_DIGEST","mediaType":"application/vnd.oci.image.manifest.v1+json","size":MANIFEST_SIZE}],"mediaType":"application/vnd.oci.image.index.v1+json","schemaVersion":2}"#;
+
+    #[test]
+    fn split_layers_match_typescript() {
+        let files: Vec<(String, Node)> = (0..300)
+            .map(|i| {
+                (
+                    format!("/p/{i}.html"),
+                    make_file(
+                        format!("page {i} {}", "x".repeat(1000)).into_bytes(),
+                        "t",
+                        0o644,
+                    ),
+                )
+            })
+            .collect();
+        let tree = Tree::from_files(files).unwrap();
+        let opts = OciOptions {
+            layers: Some(8),
+            ..Default::default()
+        };
+        let img = build_oci_image(&tree, &opts).unwrap();
+        assert_eq!(
+            img.manifest_digest,
+            "sha256:843be3d07775a1256d6ae168592309510b39d8937e4782f7c9544c8487d8922d"
+        );
+        assert_eq!(layer_of("/p/42.html", 8), 7);
+        assert_eq!(layer_of("/index.html", 64), 5);
+        assert_eq!(img.extra_layers.len(), 7);
+        let m = parse_manifest(&img.manifest_bytes).unwrap();
+        let cfg = parse_config(&img.config_bytes).unwrap();
+        assert_eq!(site_layer_indices(&m, &cfg), (0..8).collect::<Vec<_>>());
+        let mut blobs: Vec<&[u8]> = vec![&img.layer_bytes];
+        blobs.extend(img.extra_layers.iter().map(|(_, b)| b.as_slice()));
+        let back = extract_site_layers(&m, &cfg, &blobs, "x", None).unwrap();
+        assert_eq!(back.digest(), tree.digest());
+        // The default is the single-layer image.
+        let one = build_oci_image(&tree, &OciOptions::default()).unwrap();
+        assert!(one.extra_layers.is_empty());
+        assert_eq!(parse_manifest(&one.manifest_bytes).unwrap().layers.len(), 1);
+    }
 }

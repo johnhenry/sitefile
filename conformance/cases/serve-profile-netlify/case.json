@@ -1,0 +1,80 @@
+{
+  "command": "serve",
+  "args": [
+    "--host-profile",
+    "netlify"
+  ],
+  "requests": [
+    {
+      "target": "/about",
+      "expect": {
+        "status": 200,
+        "body": "about\n"
+      }
+    },
+    {
+      "target": "/about.html",
+      "expect": {
+        "status": 301,
+        "headers": {
+          "location": "/about"
+        }
+      }
+    },
+    {
+      "target": "/about/",
+      "expect": {
+        "status": 301,
+        "headers": {
+          "location": "/about"
+        }
+      }
+    },
+    {
+      "target": "/docs",
+      "expect": {
+        "status": 301,
+        "headers": {
+          "location": "/docs/"
+        }
+      }
+    },
+    {
+      "target": "/docs/",
+      "expect": {
+        "status": 200,
+        "body": "docs\n"
+      }
+    },
+    {
+      "target": "/docs/index.html",
+      "expect": {
+        "status": 301,
+        "headers": {
+          "location": "/docs/"
+        }
+      }
+    },
+    {
+      "target": "/old",
+      "expect": {
+        "status": 301,
+        "headers": {
+          "location": "/about"
+        }
+      }
+    },
+    {
+      "target": "/nope",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/_redirects",
+      "expect": {
+        "status": 404
+      }
+    }
+  ]
+}

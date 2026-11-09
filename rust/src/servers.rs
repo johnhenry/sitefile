@@ -28,8 +28,7 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    blob_path_of, decode_index, extract_image_files, media, parse_config, parse_manifest,
-    site_layer_index,
+    blob_path_of, decode_index, media, parse_config, parse_manifest, site_layer_indices,
 };
 use crate::resources::archive::{
     extract_archive, open_zip_file, os_metadata_warning, without_os_metadata,
@@ -80,6 +79,40 @@ pub struct ServerState {
     pub image: String,
     pub source: ServerSource,
     pub spa: bool,
+    /// `--spa-exclude`: request paths that never fall back (absent: none).
+    #[serde(default, rename = "spaExclude", skip_serializing_if = "Vec::is_empty")]
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html).
+    #[serde(
+        default,
+        rename = "spaFallback",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spa_fallback: Option<String>,
+    /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// `--rewrite-base`: the production URL replaced by the local one in HTML, CSS and XML.
+    #[serde(
+        default,
+        rename = "rewriteBase",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rewrite_base: Option<String>,
+    /// `--host-profile`: netlify, cloudflare, vercel, github-pages or firebase.
+    #[serde(
+        default,
+        rename = "hostProfile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host_profile: Option<String>,
+    /// `--html-handling`: auto, force-slash, drop-slash or none.
+    #[serde(
+        default,
+        rename = "htmlHandling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub html_handling: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -87,6 +120,25 @@ pub struct ServerState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names (localhost names and IP addresses are always allowed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolate: Option<String>,
+    /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting.
+    #[serde(
+        default,
+        rename = "strictSiteFiles",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub strict_site_files: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -296,7 +348,11 @@ impl ServerRegistry {
             state: s.clone(),
             status: if running { "running" } else { "exited" },
             url: if s.ready {
-                url_of(&s.host, s.port)
+                format!(
+                    "{}{}",
+                    url_of(&s.host, s.port),
+                    &s.base.as_deref().unwrap_or("/")[1..]
+                )
             } else {
                 String::new()
             },
@@ -484,8 +540,13 @@ fn load_archive(
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     check_archive_file(file, limits)?;
     let bytes = fs::read(file).map_err(|_| unreadable())?;
-    let tree = extract_archive(&bytes, &origin, limits, None)?;
-    if tree.is_file("/oci-layout") {
+    let warc = crate::warc::looks_like_warc(&bytes);
+    let tree = if warc {
+        crate::warc::read_warc(&bytes, &origin, limits, None)?
+    } else {
+        extract_archive(&bytes, &origin, limits, None)?
+    };
+    if !warc && tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
     }
     if hidden {
@@ -624,19 +685,28 @@ fn oci_archive_tree(layout: &Tree, origin: &str, limits: &ArchiveLimits) -> Resu
         .map_err(|_| bad("OCI archive's first manifest is not an image manifest".into()))?;
     let cfg = parse_config(&blob(&m.config.digest, m.config.size)?)
         .map_err(|_| bad("OCI archive's image config is corrupt".into()))?;
-    let layer = site_layer_index(&m, &cfg)
-        .and_then(|i| m.layers.get(i))
-        .filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR);
-    let layer_bytes = match layer {
-        Some(l) => {
+    let layers: Vec<&crate::export::oci::Descriptor> = site_layer_indices(&m, &cfg)
+        .into_iter()
+        .map(|i| &m.layers[i])
+        .collect();
+    // An empty list makes extract_site_layers report "not a Sitefile image".
+    let mut blobs: Vec<Vec<u8>> = Vec::new();
+    if layers
+        .iter()
+        .all(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)
+    {
+        for l in &layers {
             let b = blob(&l.digest, l.size)?;
-            // Hold the site layer to the archive limits before it is fully decoded.
+            // Hold each site layer to the archive limits before it is fully decoded.
             extract_archive(&b, origin, limits, None)?;
-            b
+            blobs.push(b);
         }
-        None => Vec::new(), // extract_image_files reports "not a Sitefile image"
-    };
-    extract_image_files(&m, &cfg, &layer_bytes, origin)
+    }
+    if layers.is_empty() {
+        blobs.push(Vec::new());
+    }
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    crate::export::oci::extract_site_layers(&m, &cfg, &refs, origin, None)
 }
 
 /// The tree a server state serves.
@@ -831,6 +901,32 @@ pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)
     }
 }
 
+/// Warn about every `_redirects`/`_headers` line `serve` ignores; with `strict`
+/// (`--strict-site-files`) any such line is then an error (port of `checkSiteFiles`).
+pub fn check_site_files(
+    tree: &Tree,
+    strict: bool,
+    warn: &dyn Fn(&str),
+    content: Option<&dyn crate::server::SiteContent>,
+) -> Result<()> {
+    let ignored = crate::server::site_file_warnings(tree, content);
+    for m in &ignored {
+        warn(m);
+    }
+    let n = ignored.len();
+    if strict && n > 0 {
+        return Err(SitefileError::plain(
+            E_VALIDATION,
+            format!(
+                "{n} line{} of _redirects/_headers {} ignored (--strict-site-files)",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "is" } else { "are" }
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// A detached server to start ([`serve_detached`]): `serve -d`'s arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedServe {
@@ -843,8 +939,30 @@ pub struct DetachedServe {
     pub bind: Bind,
     /// `--spa`.
     pub spa: bool,
+    /// `--spa-exclude`.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`.
+    pub spa_fallback: Option<String>,
+    /// `--base` (normalized; `None` for `/`).
+    pub base: Option<String>,
+    /// `--rewrite-base` (normalized).
+    pub rewrite_base: Option<String>,
+    /// `--host-profile`.
+    pub host_profile: Option<String>,
+    /// `--html-handling`.
+    pub html_handling: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
+    /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
+    pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy (`require-corp` or `credentialless`).
+    pub isolate: Option<String>,
+    /// `--country`.
+    pub country: Option<String>,
+    /// `--strict-site-files`.
+    pub strict_site_files: bool,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -860,7 +978,18 @@ impl DetachedServe {
             name: None,
             bind: parse_publish(None)?,
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
+            base: None,
+            rewrite_base: None,
+            host_profile: None,
+            html_handling: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
+            isolate: None,
+            country: None,
+            strict_site_files: false,
             project: None,
         })
     }
@@ -893,7 +1022,21 @@ pub fn serve_detached_with(
         keep_os_metadata: serve.keep_os_metadata,
         warn: Some(warn),
     };
-    load_served_site(&reg.store, &serve.source, &options)?; // fail fast on a bad image, directory or archive
+    // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
+    let site = load_served_site(&reg.store, &serve.source, &options)?;
+    let routing = crate::server::routing_for(
+        serve.host_profile.as_deref(),
+        serve.html_handling.as_deref(),
+    );
+    if routing.is_none_or(|p| p.site_files) {
+        check_site_files(
+            &site.tree,
+            serve.strict_site_files,
+            warn,
+            site.content.as_deref(),
+        )?;
+    }
+    drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -901,7 +1044,18 @@ pub fn serve_detached_with(
         image: serve.label.clone(),
         source: serve.source.clone(),
         spa: serve.spa,
+        spa_exclude: serve.spa_exclude.clone(),
+        spa_fallback: serve.spa_fallback.clone(),
+        base: serve.base.clone(),
+        rewrite_base: serve.rewrite_base.clone(),
+        host_profile: serve.host_profile.clone(),
+        html_handling: serve.html_handling.clone(),
         keep_os_metadata: serve.keep_os_metadata,
+        allowed_hosts: serve.allowed_hosts.clone(),
+        cors: serve.cors,
+        isolate: serve.isolate.clone(),
+        country: serve.country.clone(),
+        strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1110,7 +1264,18 @@ mod tests {
                 path: "/tmp/site".into(),
             },
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
+            base: None,
+            rewrite_base: None,
+            host_profile: None,
+            html_handling: None,
             keep_os_metadata: false,
+            allowed_hosts: Vec::new(),
+            cors: false,
+            isolate: None,
+            country: None,
+            strict_site_files: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

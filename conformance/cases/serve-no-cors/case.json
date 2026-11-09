@@ -1,0 +1,7 @@
+{
+  "command": "serve",
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 200, "headers": { "access-control-allow-origin": null } } },
+    { "method": "OPTIONS", "target": "/a.txt", "expect": { "status": 405, "headers": { "allow": "GET, HEAD" } } }
+  ]
+}

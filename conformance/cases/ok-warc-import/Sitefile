@@ -1,0 +1,5 @@
+# IMPORT ... AS tree from a .warc.gz written by sitefile.
+FROM scratch
+IMPORT site FROM ./site.warc.gz AS tree
+COPY site: /
+EXPORT / AS directory

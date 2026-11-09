@@ -18,6 +18,7 @@ import {
   parseConfig,
   parseManifest,
   siteLayerIndex,
+  siteLayerIndices,
   type IndexEntry,
   type OciOptions,
   type ParsedConfig,
@@ -315,6 +316,7 @@ export class Store {
     const img = buildOciImage(tree, options);
     return this.withLock(async () => {
       await this.putBlob(img.layerDigest, img.layerBytes);
+      for (const [d, b] of img.extraLayers ?? []) await this.putBlob(d, b);
       await this.putBlob(img.configDigest, img.configBytes);
       await this.putBlob(img.manifestDigest, img.manifestBytes);
       const entries = await this.readIndex();
@@ -361,10 +363,11 @@ export class Store {
   async loadTree(id: string, o: { readonly origin?: string; readonly root?: string } = {}): Promise<Tree> {
     const d = await this.details(id);
     const origin = o.origin ?? `image:${shortId(id)}`;
-    const layer = d.manifest.layers[siteLayerIndex(d.manifest, d.config)];
-    if (!layer) throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (it has ${d.manifest.layers.length} layers and no site layer)`);
-    const bytes = await this.readBlob(layer.digest, layer.size);
-    return extractImageFiles(d.manifest, d.config, bytes, origin, o.root);
+    const layers = siteLayerIndices(d.manifest, d.config).map((i) => d.manifest.layers[i]!);
+    if (layers.length === 0) throw new SitefileError('E_STORE', `${origin}: not a Sitefile image (it has ${d.manifest.layers.length} layers and no site layer)`);
+    const blobs: Uint8Array[] = [];
+    for (const l of layers) blobs.push(await this.readBlob(l.digest, l.size));
+    return extractImageFiles(d.manifest, d.config, blobs, origin, o.root);
   }
 
   /**

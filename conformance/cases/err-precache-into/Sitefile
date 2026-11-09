@@ -1,0 +1,4 @@
+FROM scratch
+COPY ./public/ /
+PRECACHE / INTO /app.js
+EXPORT /
