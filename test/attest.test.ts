@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { ATTEST, EMPTY_DIGEST, isSecretArgName, referrersTag } from '../src/attest.js';
+import { ATTEST, EMPTY_DIGEST, isSecretArgName, referrersTag, SITEFILE_VERSION } from '../src/attest.js';
 import { sha256 } from '../src/digest.js';
 import { parseManifest } from '../src/oci.js';
 import { extractArchive } from '../src/resources/archive.js';
@@ -93,7 +93,7 @@ test('--provenance/--sbom: attestations are referrers of an unchanged image, det
     { name: 'sitefile', uri: 'Sitefile', digest: { sha256: sitefileDigest.slice(7) } },
     { name: 'import:css', uri: './public/style.css', digest: { sha256: cssDigest.slice(7) } },
   ]);
-  assert.deepEqual(prov.predicate.runDetails, { builder: { id: ATTEST.builderId, version: { sitefile: '0.1.0' } } });
+  assert.deepEqual(prov.predicate.runDetails, { builder: { id: ATTEST.builderId, version: { sitefile: SITEFILE_VERSION } } });
 
   const sbom = statementOf(a.json, a.index.manifests[2]!.digest).predicate;
   assert.equal(sbom.bomFormat, 'CycloneDX');

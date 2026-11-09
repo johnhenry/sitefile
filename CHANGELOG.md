@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The version comes from `package.json`** (johnhenry/sitefile#146): `sitefile --version`, the help
+  text and the builder version in build attestations said `0.1.0` in both implementations. TypeScript
+  now reads `package.json`; Rust reports `rust/Cargo.toml`'s version (now `0.0.5`), and tests on both
+  sides (`test/version.test.ts`, `rust/tests/version.rs`) fail when it differs from `package.json`.
+  New conformance case `version`. **Attestation bytes change**: `--provenance` statements record the
+  real version (`runDetails.builder.version.sitefile`, as does the SBOM's tool component), so their
+  digests and OCI referrer digests differ from earlier builds, and will change with every release.
+  Image IDs are unchanged.
+
 ## 0.0.5 (2026-11-09)
 
 - **`PRECOMPRESS br`** (johnhenry/sitefile#203): Brotli sidecars `<file>.br`, alone or with gzip

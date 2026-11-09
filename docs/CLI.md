@@ -1124,8 +1124,9 @@ part of the site.
   `resolvedDependencies` lists the Sitefile with its sha256, every `IMPORT` (`import:<name>`, its URI, the digest the
   build used: for remote ones the one pinned in `Sitefile.lock`, with the final URL after redirects as
   `downloadLocation`; for local directories the tree digest `inspect` prints) and the `BASE` image with its manifest
-  digest; `runDetails.builder` is `{"id": "https://github.com/johnhenry/sitefile", "version": {"sitefile": "0.1.0"}}`
-  (the same for both implementations, whose output is byte-identical).
+  digest; `runDetails.builder` is `{"id": "https://github.com/johnhenry/sitefile", "version": {"sitefile": "<version>"}}`,
+  where `<version>` is the package version that `sitefile --version` prints (the same for both implementations,
+  whose output is byte-identical, so attestation digests change with each release).
   **Build args whose name has a `_`-separated word like `key`, `token`, `password`, `passwd`, `pword`, `secret`,
   `auth`, `apikey` or `credential(s)` (`API_TOKEN`, `DB_PASSWORD`) are never recorded**: only their names, in
   `externalParameters.redactedArgs`. Other build-arg values are recorded: do not pass secrets in build args.
