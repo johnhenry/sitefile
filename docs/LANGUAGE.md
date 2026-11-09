@@ -582,7 +582,10 @@ line and column.
   entries in URL order. `content` is the body as text for textual responses
   (text/*, JSON, XML, JavaScript, SVG) that are valid UTF-8.
 - `AS tree` on a `.wbn` file unpacks the bundle into files (detected by its
-  magic bytes, like tar and zip): URL pathnames become paths (`…/` →
+  magic bytes, like tar and zip; a gzip-wrapped bundle, as
+  `@johnhenry/fileable`'s `encode="wbn"`, `@johnhenry/packfile`'s `toArchive()`
+  and `EXPORT … AS wbn COMPRESSION gzip` write it, is unpacked the same way,
+  with the limits applied to the decompressed bundle): URL pathnames become paths (`…/` →
   `…/index.html`), percent-decoded; if the bundle mixes origins each path is
   prefixed with `/<host>`. Only status-200 responses become files. Unsafe
   paths are `E_ARCHIVE_UNSAFE`; the archive limits apply.
@@ -1699,7 +1702,7 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip), and zip (stored and deflate, including ZIP64 records: the zip64
+  tgz (gzip; a gzip stream that holds a Web Bundle is read as one), and zip (stored and deflate, including ZIP64 records: the zip64
   end record and locator and the 0x0001 extra field, as streaming writers add
   them even to small archives; no encryption). Anything
   else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR

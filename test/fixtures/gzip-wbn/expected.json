@@ -1,0 +1,18 @@
+{
+  "fileable-encode-wbn.wbn": {
+    "tree": "sha256:d1ad0d70af6ac28998b9ff5da3bc47ffd6bb0ca9ce931f14ae60c76337a90812",
+    "files": {
+      "/about/index.html": "sha256:3fc557d15e2108a348b353585d23b0f11c965ddc6c4e3019dc7b9cfa5dc5f6d1",
+      "/css/site.css": "sha256:6d6068180a5c710c68c8ee0e290cb9b37b3450492d3f9e3ae46083deb152fbcf",
+      "/index.html": "sha256:1041b816fedba05ba0fe39d68a2500acdd3a9ca033c935bf8311b433157d4b06"
+    }
+  },
+  "packfile-toarchive.wbn": {
+    "tree": "sha256:d1ad0d70af6ac28998b9ff5da3bc47ffd6bb0ca9ce931f14ae60c76337a90812",
+    "files": {
+      "/about/index.html": "sha256:3fc557d15e2108a348b353585d23b0f11c965ddc6c4e3019dc7b9cfa5dc5f6d1",
+      "/css/site.css": "sha256:6d6068180a5c710c68c8ee0e290cb9b37b3450492d3f9e3ae46083deb152fbcf",
+      "/index.html": "sha256:1041b816fedba05ba0fe39d68a2500acdd3a9ca033c935bf8311b433157d4b06"
+    }
+  }
+}

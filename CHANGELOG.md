@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`IMPORT … AS tree` reads gzip-wrapped Web Bundles** (johnhenry/sitefile#141): after
+  gunzip, a Web Bundle is unpacked like a plain `.wbn` instead of failing with `gzip
+  content is not a tar archive`, so bundles written by `@johnhenry/fileable`
+  (`encode="wbn"`), `@johnhenry/packfile`'s `toArchive()` and `EXPORT … AS wbn COMPRESSION
+  gzip` import. Checked-in fixtures from both tools (`test/fixtures/gzip-wbn`) are read
+  by both implementations and a conformance case.
+
 ## 0.0.3 (2026-11-09)
 
 - **`serve` keys under `--tls-cert`, and `u`'s network URLs** (johnhenry/sitefile#300): `o` and `u`

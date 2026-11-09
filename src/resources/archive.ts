@@ -19,7 +19,7 @@ const TAR_OVERHEAD_PER_ENTRY = 4 * 512;
 type Add = (name: string, kind: 'file' | 'dir', bytes: Uint8Array, mode: number) => void;
 
 /**
- * Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2) archive into a Tree. The format is detected
+ * Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2, plain or gzip-wrapped) archive into a Tree. The format is detected
  * from magic bytes, never from the name. Nothing is inflated beyond the limits,
  * and unsafe entries (absolute or `..` paths, backslashes, NUL, symlinks, hard
  * links, devices) are rejected, not skipped. A single top-level directory is
@@ -34,9 +34,11 @@ export async function extractArchive(
   if (isWebBundle(bytes)) return webBundleToTree(readWebBundle(bytes, origin, limits, span), origin, span);
   const { add, files } = collector(origin, limits, span, true);
   if (isGzip(bytes)) {
-    const tar = await gunzip(bytes, origin, limits, span);
-    if (!isTar(tar)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
-    readTar(tar, origin, limits, span, add);
+    const inner = await gunzip(bytes, origin, limits, span);
+    // gzip(application/webbundle), as @johnhenry/fileable (encode="wbn") and packfile's toArchive() write it
+    if (isWebBundle(inner)) return webBundleToTree(readWebBundle(inner, origin, limits, span), origin, span);
+    if (!isTar(inner)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
+    readTar(inner, origin, limits, span, add);
   } else if (isZip(bytes)) {
     await readZip(bytes, origin, limits, span, add);
   } else if (isTar(bytes)) {

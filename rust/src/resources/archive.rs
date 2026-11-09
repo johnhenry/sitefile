@@ -95,7 +95,7 @@ fn corrupt(origin: &str, why: impl AsRef<str>, span: Option<&SourceSpan>) -> Sit
     )
 }
 
-/// Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2) archive into a Tree. The format is detected
+/// Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2, plain or gzip-wrapped) archive into a Tree. The format is detected
 /// from magic bytes, never from the name. Nothing is inflated beyond the limits,
 /// and unsafe entries (absolute or `..` paths, backslashes, NUL, symlinks, hard
 /// links, devices) are rejected, not skipped. A single top-level directory is
@@ -120,15 +120,23 @@ pub fn extract_archive(
         retain: true,
     };
     if is_gzip(bytes) {
-        let tar = gunzip(bytes, origin, limits, span)?;
-        if !is_tar(&tar) {
+        let inner = gunzip(bytes, origin, limits, span)?;
+        // gzip(application/webbundle), as @johnhenry/fileable (encode="wbn") and packfile's toArchive() write it
+        if is_web_bundle(&inner) {
+            return web_bundle_to_tree(
+                &read_web_bundle(&inner, origin, limits, span)?,
+                origin,
+                span,
+            );
+        }
+        if !is_tar(&inner) {
             return Err(SitefileError::new(
                 E_TYPE,
                 format!("{origin}: gzip content is not a tar archive"),
                 span.cloned(),
             ));
         }
-        read_tar(&tar, &mut c)?;
+        read_tar(&inner, &mut c)?;
     } else if is_zip(bytes) {
         read_zip(bytes, &mut c)?;
     } else if is_tar(bytes) {
@@ -1402,6 +1410,56 @@ pub(crate) mod tests {
         }
         assert_eq!(trees[0].digest(), trees[1].digest());
         assert_eq!(trees[0].digest(), trees[2].digest());
+    }
+
+    #[test]
+    fn gzip_wrapped_web_bundles_from_fileable_and_packfile() {
+        // test/fixtures/gzip-wbn: written by @johnhenry/fileable (encode="wbn") and packfile's
+        // toArchive(); expected.json is shared with test/archive.test.ts (johnhenry/sitefile#141).
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/fixtures/gzip-wbn");
+        let expected: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("expected.json")).unwrap())
+                .unwrap();
+        let expected = expected.as_object().unwrap();
+        assert_eq!(expected.len(), 2);
+        for (name, want) in expected {
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            assert_eq!(&bytes[..2], &[0x1f, 0x8b], "{name} is gzip");
+            let t = extract_archive(&bytes, name, &L, None).unwrap();
+            let files: serde_json::Map<String, serde_json::Value> = t
+                .entries()
+                .map(|(p, n)| (p.clone(), serde_json::Value::String(n.digest.clone())))
+                .collect();
+            assert_eq!(&serde_json::Value::Object(files), &want["files"], "{name}");
+            assert_eq!(t.digest(), want["tree"].as_str().unwrap(), "{name}");
+        }
+        // the bundle's own limits apply to the decompressed stream
+        let bundle = std::fs::read(dir.join("packfile-toarchive.wbn")).unwrap();
+        let limited =
+            |l: ArchiveLimits| extract_archive(&bundle, "packfile", &l, None).unwrap_err();
+        let e = limited(ArchiveLimits {
+            max_entries: 2,
+            ..L.clone()
+        });
+        assert_eq!(
+            (e.code, e.message()),
+            (
+                ErrorCode::E_ARCHIVE_LIMIT,
+                "packfile: web bundle has more than 2 entries".to_string()
+            )
+        );
+        let e = limited(ArchiveLimits {
+            max_total_bytes: 20,
+            ..L.clone()
+        });
+        assert_eq!(
+            (e.code, e.message()),
+            (
+                ErrorCode::E_ARCHIVE_LIMIT,
+                "packfile: web bundle expands beyond 20 bytes".to_string()
+            )
+        );
     }
 
     #[test]

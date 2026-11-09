@@ -1,0 +1,8 @@
+# Gzip-wrapped Web Bundles, as @johnhenry/fileable (<Dir encode="wbn">) and
+# @johnhenry/packfile's toArchive() write them (johnhenry/sitefile#141).
+FROM scratch
+IMPORT f FROM ./fileable.wbn AS tree
+IMPORT p FROM ./packfile.wbn AS tree
+COPY f:/ /fileable/
+COPY p:/ /packfile/
+EXPORT /
