@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
+  bytes` on file responses; a single `Range` on `GET` gets `206` with
+  `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
+  and `HEAD` are handled; multiple ranges are ignored (the whole file). Both
+  servers; `_headers` cannot set `accept-ranges` or `content-range`.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

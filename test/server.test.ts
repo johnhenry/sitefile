@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -185,6 +185,51 @@ test('absolute-form request targets are served by their path and query (johnhenr
   assert.equal(originForm('http://h'), '/');
   assert.equal(originForm('/a'), '/a');
   assert.equal(originForm('*'), '*');
+});
+
+test('byte ranges: 206 with Content-Range, 416, If-Range, HEAD and ignored multi-ranges (johnhenry/sitefile#166)', async () => {
+  await withTree({ '/v.txt': '0123456789', '/empty.txt': '' }, {}, async (port) => {
+    const full = await req(port, '/v.txt');
+    assert.equal(full.status, 200);
+    assert.equal(full.headers['accept-ranges'], 'bytes');
+    const etag = String(full.headers.etag);
+    const r = (range: string, extra: Record<string, string> = {}, method = 'GET') => req(port, '/v.txt', method, { range, ...extra });
+    let a = await r('bytes=2-4');
+    assert.equal(a.status, 206);
+    assert.equal(a.body, '234');
+    assert.equal(a.headers['content-range'], 'bytes 2-4/10');
+    assert.equal(a.headers['content-length'], '3');
+    assert.equal(a.headers['content-type'], 'text/plain; charset=utf-8');
+    assert.equal(a.headers.etag, etag);
+    assert.equal((await r('bytes=7-')).body, '789');
+    assert.equal((await r('bytes=-3')).body, '789');
+    assert.equal((await r('bytes=-30')).headers['content-range'], 'bytes 0-9/10');
+    assert.equal((await r('bytes=8-100')).headers['content-range'], 'bytes 8-9/10');
+    a = await r('bytes=10-');
+    assert.equal(a.status, 416);
+    assert.equal(a.headers['content-range'], 'bytes */10');
+    assert.equal(a.body, '');
+    assert.equal((await r('bytes=-0')).status, 416);
+    assert.equal((await req(port, '/empty.txt', 'GET', { range: 'bytes=0-' })).status, 416);
+    for (const ignored of ['bytes=0-1,4-5', 'bytes=5-2', 'items=0-1', 'bytes=a-b', 'bytes=1']) {
+      const x = await r(ignored);
+      assert.equal(x.status, 200, ignored);
+      assert.equal(x.body, '0123456789', ignored);
+    }
+    assert.equal((await r('bytes=0-0', { 'if-range': etag })).status, 206);
+    assert.equal((await r('bytes=0-0', { 'if-range': '"other"' })).status, 200);
+    assert.equal((await r('bytes=0-0', { 'if-range': `W/${etag}` })).status, 200, 'If-Range is a strong comparison');
+    assert.equal((await r('bytes=0-0', { 'if-none-match': etag })).status, 304);
+    const head = await r('bytes=0-1', {}, 'HEAD');
+    assert.equal(head.status, 200);
+    assert.equal(head.headers['content-length'], '10');
+    assert.equal(head.headers['accept-ranges'], 'bytes');
+  });
+  assert.deepEqual(byteRange('bytes=0-', 5), [0, 4]);
+  assert.deepEqual(byteRange(' BYTES= 1 - 2 ', 5), [1, 2]);
+  assert.deepEqual(byteRange('bytes=0-99999999999999999999', 5), [0, 4]);
+  assert.equal(byteRange('bytes=99999999999999999999-', 5), 'unsatisfiable');
+  assert.equal(byteRange(undefined, 5), undefined);
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

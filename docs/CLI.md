@@ -1139,6 +1139,14 @@ to `image` (`imageId`) and `dir` (`path`).
   `oauth-authorization-server` and `nodeinfo` under `/.well-known/` are `application/json`, `/.well-known/webfinger`
   is `application/jrd+json`, `/.well-known/host-meta` is `application/xrd+xml` (`_headers` can still override);
   `ETag` is the file digest and `If-None-Match` gives `304`; `cache-control: no-cache`;
+  **byte ranges**: file responses send `Accept-Ranges: bytes`, and a `GET` with one range (`Range: bytes=a-b`,
+  `bytes=a-` or `bytes=-n`) gets `206 Partial Content` with `Content-Range: bytes a-b/size` and those bytes (an
+  end past the file is clamped); a range starting at or past the end (or `bytes=-0`, or any range of an empty
+  file) is `416` with `Content-Range: bytes */size`. `If-Range` must equal the ETag exactly (strong comparison;
+  a date or other value gets the whole file with `200`), and `If-None-Match` is checked first. Several ranges
+  (`bytes=0-1,5-6`), other units and malformed values are ignored (the whole file, `200`), as RFC 9110 allows;
+  `HEAD` ignores `Range` and reports the full length. Under `serve --watch` a range applies to the page as
+  sent (with the reload script). `404` pages are never ranged;
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
@@ -1157,9 +1165,9 @@ to `image` (`imageId`) and `dir` (`path`).
     with characters outside printable ASCII.
   - `_headers`: a path pattern line (`*` matches any characters, `/` included), then indented `Name: value`
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
-    with `, `. They are added to file, `304` and `404` responses (not to redirects) and can replace
+    with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
-    `keep-alive` and `transfer-encoding` cannot be set. Lines with an invalid name or a control character in
+    `keep-alive`, `transfer-encoding`, `accept-ranges` and `content-range` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
