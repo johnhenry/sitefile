@@ -351,6 +351,181 @@ pub fn path_inside(dir: &str, file: &str) -> Option<String> {
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffFile {
+    pub path: String,
+    pub size: u64,
+    pub digest: String,
+    /// `644` or `755`.
+    pub mode: String,
+}
+
+impl DiffFile {
+    fn json(&self) -> Value {
+        json!({ "path": self.path, "size": self.size, "digest": self.digest, "mode": self.mode })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiffReport {
+    pub added: Vec<DiffFile>,
+    pub removed: Vec<DiffFile>,
+    pub changed: Vec<(DiffFile, DiffFile)>,
+    /// (`/_redirects` | `/_headers`, added rules, removed rules), in that file order.
+    pub rules: Vec<(String, Vec<String>, Vec<String>)>,
+}
+
+const RULE_FILES: [&str; 2] = ["/_redirects", "/_headers"];
+
+/// The rules of a `_redirects` or `_headers` file (see `ruleLines` in integrity.ts).
+pub fn rule_lines(file: &str, bytes: Option<&[u8]>) -> Vec<String> {
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    for raw in text.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let t = raw.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if file == "/_redirects" {
+            out.push(
+                t.split([' ', '\t'])
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        } else if !raw.starts_with([' ', '\t']) {
+            current = Some(t.to_string());
+        } else {
+            out.push(format!("{} {t}", current.as_deref().unwrap_or("(no path)")));
+        }
+    }
+    out
+}
+
+/// Lines of `a` not matched one for one in `b`, in `a`'s order.
+fn minus(a: &[String], b: &[String]) -> Vec<String> {
+    let mut left: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for l in b {
+        *left.entry(l.as_str()).or_default() += 1;
+    }
+    a.iter()
+        .filter(|l| match left.get_mut(l.as_str()) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                false
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect()
+}
+
+fn file_of(p: &str, n: &crate::tree::Node) -> DiffFile {
+    DiffFile {
+        path: p.to_string(),
+        size: n.bytes.len() as u64,
+        digest: n.digest.clone(),
+        mode: format!("{:o}", n.mode),
+    }
+}
+
+/// Files added, removed and changed (digest or mode) going from `a` to `b`, in path order.
+pub fn diff_trees(a: &Tree, b: &Tree) -> DiffReport {
+    let mut paths: Vec<&String> = a.entries().map(|(p, _)| p).collect();
+    paths.extend(b.entries().map(|(p, _)| p).filter(|p| a.get(p).is_none()));
+    paths.sort_by(|x, y| x.encode_utf16().cmp(y.encode_utf16()));
+    let mut r = DiffReport::default();
+    for p in paths {
+        match (a.get(p), b.get(p)) {
+            (None, Some(y)) => r.added.push(file_of(p, y)),
+            (Some(x), None) => r.removed.push(file_of(p, x)),
+            (Some(x), Some(y)) if x.digest != y.digest || x.mode != y.mode => {
+                r.changed.push((file_of(p, x), file_of(p, y)))
+            }
+            _ => {}
+        }
+    }
+    for f in RULE_FILES {
+        let (x, y) = (a.get(f), b.get(f));
+        if (x.is_none() && y.is_none()) || x.map(|n| &n.digest) == y.map(|n| &n.digest) {
+            continue;
+        }
+        let before = rule_lines(f, x.map(|n| &n.bytes[..]));
+        let after = rule_lines(f, y.map(|n| &n.bytes[..]));
+        let (added, removed) = (minus(&after, &before), minus(&before, &after));
+        if !added.is_empty() || !removed.is_empty() {
+            r.rules.push((f.to_string(), added, removed));
+        }
+    }
+    r
+}
+
+impl DiffReport {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && self.rules.is_empty()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut rules = Map::new();
+        for (f, added, removed) in &self.rules {
+            rules.insert(f.clone(), json!({ "added": added, "removed": removed }));
+        }
+        json!({
+            "added": self.added.iter().map(DiffFile::json).collect::<Vec<_>>(),
+            "removed": self.removed.iter().map(DiffFile::json).collect::<Vec<_>>(),
+            "changed": self.changed.iter().map(|(x, y)| json!({ "path": x.path, "before": x.json(), "after": y.json() })).collect::<Vec<_>>(),
+            "rules": Value::Object(rules),
+        })
+    }
+
+    /// `A|D|C <path>` lines (with sizes), then rule changes, then a summary line.
+    pub fn text(&self) -> String {
+        let mut lines: Vec<(&str, String)> = Vec::new();
+        for f in &self.added {
+            lines.push((&f.path, format!("A  {}  ({} B)", f.path, f.size)));
+        }
+        for f in &self.removed {
+            lines.push((&f.path, format!("D  {}  ({} B)", f.path, f.size)));
+        }
+        for (x, y) in &self.changed {
+            let mode = if x.mode != y.mode {
+                format!(", mode {} -> {}", x.mode, y.mode)
+            } else {
+                String::new()
+            };
+            lines.push((
+                &x.path,
+                format!("C  {}  ({} B -> {} B{mode})", x.path, x.size, y.size),
+            ));
+        }
+        lines.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+        let mut out: Vec<String> = lines.into_iter().map(|(_, l)| l).collect();
+        for (f, added, removed) in &self.rules {
+            for l in removed {
+                out.push(format!("-  {f}: {l}"));
+            }
+            for l in added {
+                out.push(format!("+  {f}: {l}"));
+            }
+        }
+        out.push(format!(
+            "{} added, {} removed, {} changed",
+            self.added.len(),
+            self.removed.len(),
+            self.changed.len()
+        ));
+        out.join("\n") + "\n"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +536,17 @@ mod tests {
             size: 1,
             digest: d.into(),
         }
+    }
+
+    #[test]
+    fn rule_lines_flatten_headers() {
+        let h = b"# c\n/a\n  X-A: 1\n\n/b\n\tX-B:  2 \n";
+        assert_eq!(
+            rule_lines("/_headers", Some(h)),
+            vec!["/a X-A: 1", "/b X-B:  2"]
+        );
+        let r = b"/x   /y  301\r\n# no\n";
+        assert_eq!(rule_lines("/_redirects", Some(r)), vec!["/x /y 301"]);
     }
 
     #[test]

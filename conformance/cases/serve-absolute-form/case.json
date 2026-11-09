@@ -1,0 +1,14 @@
+{
+  "command": "serve",
+  "requests": [
+    { "target": "http://example.com/a.txt", "expect": { "status": 200, "body": "a\n" } },
+    { "target": "http://example.com", "expect": { "status": 200, "body": "<h1>home</h1>\n" } },
+    { "target": "HTTPS://Example.COM:8443?x=1", "expect": { "status": 200, "body": "<h1>home</h1>\n" } },
+    { "target": "http://example.com/about/", "expect": { "status": 200, "body": "<h1>about</h1>\n" } },
+    { "target": "http://example.com/about?x=1", "expect": { "status": 301, "headers": { "location": "/about/?x=1" } } },
+    { "method": "HEAD", "target": "http://example.com/a.txt", "expect": { "status": 200, "headers": { "content-length": "2" }, "body": "" } },
+    { "target": "http://example.com/..%2f", "expect": { "status": 400 } },
+    { "target": "ftp://example.com/a.txt", "expect": { "status": 400 } },
+    { "target": "/a.txt", "expect": { "status": 200, "body": "a\n" } }
+  ]
+}

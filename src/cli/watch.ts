@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SitefileError } from '../errors.js';
 import { resolveStoreHome } from '../store.js';
-import { isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
+import { DEFAULT_POLL_MS, isIgnoredChange, RebuildScheduler, resolveReal, watchPaths } from '../watch.js';
 
 export interface BuildOutcome {
   /** CLI exit code of the build: 0 ok, 1 build error (already printed), 2 usage error (already printed). */
@@ -21,12 +21,29 @@ export interface WatchLoopOptions {
   readonly build: () => Promise<BuildOutcome>;
   /** After the first build, before the "Watching" line (serve starts listening here). */
   readonly onStarted?: () => Promise<void>;
+  /** `--poll`: poll every this many milliseconds instead of using file system events. */
+  readonly pollMs?: number;
+  /** `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages). */
+  readonly plain?: boolean;
   /** For tests: resolves to stop the loop (default: SIGINT or SIGTERM). */
   readonly stop?: Promise<void>;
 }
 
+/**
+ * `--poll` / `--poll-interval <ms>` (the interval implies polling): the poll interval in
+ * milliseconds, or undefined for file system events. Throws E_USAGE for a bad interval.
+ */
+export function pollOption(poll: boolean | undefined, interval: string | undefined): number | undefined {
+  if (interval === undefined) return poll ? DEFAULT_POLL_MS : undefined;
+  const n = /^[0-9]{1,9}$/.test(interval) ? Number(interval) : NaN;
+  if (!(n >= 10)) throw new SitefileError('E_USAGE', `--poll-interval expects a whole number of milliseconds (10 or more), got '${interval}'`);
+  return n;
+}
+
 const MSG_CHANGE = 'Change detected, rebuilding\n';
 const MSG_FAILED = 'Build failed; keeping the last good output\n';
+const MSG_CHANGE_PLAIN = 'Change detected, re-reading\n';
+const MSG_FAILED_PLAIN = 'Read failed; serving the last good copy\n';
 
 function signalled(): Promise<void> {
   return new Promise((resolve) => {
@@ -57,7 +74,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
   const scheduler = new RebuildScheduler(async (changed) => {
     if (!first) {
       if (!changed.some(relevant)) return; // only our own writes
-      process.stdout.write(MSG_CHANGE);
+      process.stdout.write(o.plain ? MSG_CHANGE_PLAIN : MSG_CHANGE);
     }
     const r = await o.build();
     for (const w of r.wrote ?? []) {
@@ -65,7 +82,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
       ignored.add(await resolveReal(w));
     }
     if (!first) {
-      if (r.code !== 0) process.stderr.write(MSG_FAILED);
+      if (r.code !== 0) process.stderr.write(o.plain ? MSG_FAILED_PLAIN : MSG_FAILED);
       return;
     }
     first = false;
@@ -85,6 +102,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
     onChange: (p) => {
       if (relevant(p)) scheduler.notify(p);
     },
+    ...(o.pollMs !== undefined ? { pollMs: o.pollMs, ignore: (p: string) => !relevant(p) } : {}),
   });
   void (o.stop ?? signalled()).then(() => finish(0));
   try {

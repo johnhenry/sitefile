@@ -1,0 +1,12 @@
+# sitefile hosts (issue #176): the hosts a build would contact, from the plan only
+# (nothing is fetched), with their status under the host rules and what they need.
+FROM scratch AS shared
+IMPORT css FROM ${HTTPS}/style.css
+IMPORT note FROM ${HTTPS}/private/note.txt AS text SECRET tok AS BEARER
+IMPORT repo FROM git+${HTTPS}/repo.git#v1:site
+IMPORT theme FROM git+${HTTPS}/stages.git#main AS sitefile
+IMPORT local FROM ./Sitefile AS text
+STAGE img FROM image ${REGISTRY}/conf/site:1
+FROM image example.com:8443/team/site@sha256:0000000000000000000000000000000000000000000000000000000000000000
+CHECKLINKS --external
+EXPORT / AS oci BASE nginx:alpine
