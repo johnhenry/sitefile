@@ -9,6 +9,11 @@
   them one `E_PATH_PORTABLE` error. A CHECKLINKS broken link whose target
   differs from a file only in case names that file. Both implementations, with
   conformance cases.
+- **CSP: Content-Security-Policy from inline hashes** (johnhenry/sitefile#219):
+  `CSP [POLICY <policy>] [META]` writes a per-page policy to `/_headers` (or a
+  `<meta>` with META) that allows each page's inline scripts and styles by
+  their SHA-256 instead of `'unsafe-inline'`. Both implementations, with
+  conformance cases; example `examples/csp`.
 - **Development 404s and what-answered log notes** (johnhenry/sitefile#201):
   a foreground or `--watch` server lists near misses on its 404 page
   (letter-case differences, `_redirects` rules that matched the path but not

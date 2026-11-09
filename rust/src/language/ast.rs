@@ -519,6 +519,13 @@ pub enum Instruction {
         into: Option<Operand>,
         overwrite: bool,
     },
+    /// `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the hashes of
+    /// its inline scripts and styles (at EXPORT).
+    Csp {
+        span: SourceSpan,
+        policy: Option<Operand>,
+        meta: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -561,6 +568,7 @@ impl Instruction {
             | Instruction::Robots { span, .. }
             | Instruction::SecurityTxt { span, .. }
             | Instruction::Precache { span, .. }
+            | Instruction::Csp { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -587,6 +595,7 @@ impl Instruction {
             Instruction::Robots { .. } => "ROBOTS",
             Instruction::SecurityTxt { .. } => "SECURITY_TXT",
             Instruction::Precache { .. } => "PRECACHE",
+            Instruction::Csp { .. } => "CSP",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

@@ -46,6 +46,7 @@ pub mod resources;
 pub mod cache_limit;
 pub mod canonical;
 pub mod checklinks;
+pub mod csp;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;

@@ -167,6 +167,13 @@
         "value": "[Pp][Rr][Ee][Cc][Aa][Cc][Hh][Ee]"
       }
     },
+    "_kw_csp": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Cc][Ss][Pp]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -433,6 +440,13 @@
         "value": "[Ii][Nn][Tt][Oo]"
       }
     },
+    "_kw_meta": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Mm][Ee][Tt][Aa]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -459,13 +473,6 @@
       "content": {
         "type": "PATTERN",
         "value": "[Aa][Ss][Ss][Ee][Rr][Tt]"
-      }
-    },
-    "_kw_meta": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Mm][Ee][Tt][Aa]"
       }
     },
     "_kw_exec": {
@@ -642,6 +649,10 @@
         {
           "type": "SYMBOL",
           "name": "precache_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "csp_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2961,6 +2972,67 @@
                   }
                 }
               ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "csp_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_csp"
+          },
+          "named": false,
+          "value": "CSP"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_policy"
+                  },
+                  "named": false,
+                  "value": "POLICY"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "policy",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_meta"
+              },
+              "named": false,
+              "value": "META"
             },
             {
               "type": "BLANK"

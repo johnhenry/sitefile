@@ -11,6 +11,7 @@ use crate::base_image::{
 use crate::build_args::BuildArgs;
 use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::csp::csp_pages;
 use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
@@ -1372,6 +1373,36 @@ fn with_site_rules(
             }
         }
     }
+    // CSP: Content-Security-Policy lines after those, or with META a <meta> in each page.
+    let mut csp_rules: Vec<(String, String)> = Vec::new();
+    if let Some(c) = &p.csp {
+        let origin = format!("{label}:{} CSP", c.span.line);
+        let r = csp_pages(&tree, &p.export_path, &c.policy, c.meta, &origin);
+        if !r.headless.is_empty() {
+            let count = if r.headless.len() == 1 {
+                "1 page has".to_string()
+            } else {
+                format!("{} pages have", r.headless.len())
+            };
+            warn(&format!(
+                "{origin}: {count} no <head>, so no policy was added: {}",
+                r.headless.join(", ")
+            ));
+        }
+        if !r.pages.is_empty() {
+            tree = tree.with_files(r.pages, ConflictPolicy::Overwrite, Some(&c.span))?;
+        }
+        let none_yet = p.headers.is_empty() && auto.is_empty();
+        if !r.rules.is_empty() && none_yet && tree.is_file(&headers_path) {
+            warn(&format!("{origin}: {headers_path} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META"));
+        } else if !r.rules.is_empty() {
+            if none_yet {
+                header_rules = vec![(false, &c.span)];
+                header_kind = "CSP";
+            }
+            csp_rules = r.rules;
+        }
+    }
     let headers = headers_file(
         p.headers
             .iter()
@@ -1380,6 +1411,11 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            )
+            .chain(
+                csp_rules
+                    .iter()
+                    .map(|(pattern, v)| (pattern.as_str(), "Content-Security-Policy", v.as_str())),
             ),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
