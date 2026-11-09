@@ -1,0 +1,9 @@
+{
+  "steps": [
+    ["import-config", "${CTX}/netlify.toml", "--json"],
+    ["import-config", "${CTX}/vercel.json", "--json"],
+    ["import-config", "${CTX}/firebase.json", "--json"],
+    ["import-config", "${CTX}/firebase.json"]
+  ],
+  "stdout": true
+}

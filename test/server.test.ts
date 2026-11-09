@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -301,6 +301,73 @@ test('Last-Modified, If-Modified-Since and 103 Early Hints (johnhenry/sitefile#2
   assert.deepEqual(earlyHints('</a>; title="a b"; rel=preload'), []);
 });
 
+test('Host allow-list: DNS rebinding guard (johnhenry/sitefile#190)', async () => {
+  const s = createSiteServer(tree, { allowedHosts: ['example.com', '.dev.test'] });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/')).status, 200, 'the default 127.0.0.1:<port> Host');
+    const bad = await req(port, '/', 'GET', { host: 'evil.example' });
+    assert.equal(bad.status, 403);
+    assert.match(bad.body, /--allowed-host/);
+    assert.equal((await req(port, '/', 'GET', { host: 'www.dev.test' })).status, 200);
+    assert.equal((await req(port, '/', 'GET', { host: 'app.localhost:5173' })).status, 200);
+  } finally {
+    await closeServer(s);
+  }
+  const allowed = ['example.com', '.dev.test'];
+  for (const h of [undefined, '', 'localhost', 'LocalHost:80', 'x.localhost', 'localhost.', '127.0.0.1:8080', '10.0.0.7', '[::1]:8080', '[fe80::1%25en0]', 'example.com', 'EXAMPLE.com.:1', 'dev.test', 'a.dev.test']) {
+    assert.equal(hostAllowed(allowed, h), !String(h).includes('%25'), String(h));
+  }
+  for (const h of ['evil.example', 'www.example.com', 'notdev.test', 'localhost.evil', '1.2.3.4.evil', '999.1.1.1', '[::1', 'a:b:80']) assert.equal(hostAllowed(allowed, h), false, h);
+  assert.equal(hostAllowed(undefined, 'evil.example'), true, 'no list: no check');
+  assert.equal(hostAllowed(['*'], 'evil.example'), true);
+  assert.equal(parseAllowedHost('Example.COM.'), 'example.com');
+  assert.equal(parseAllowedHost('.dev.test'), '.dev.test');
+  assert.equal(parseAllowedHost('*'), '*');
+  for (const bad of ['', '.', 'a..b', 'a b', 'a:80', 'http://a', '*.a']) assert.equal(parseAllowedHost(bad), undefined, bad);
+});
+
+test('--cors: Access-Control-Allow-Origin and OPTIONS preflights (johnhenry/sitefile#171)', async () => {
+  const s = createSiteServer(tree, { cors: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], '*');
+    assert.equal((await req(port, '/missing')).headers['access-control-allow-origin'], '*');
+    const pre = await req(port, '/app.js', 'OPTIONS', { 'access-control-request-headers': 'x-a, x-b' });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers['access-control-allow-methods'], 'GET, HEAD');
+    assert.equal(pre.headers['access-control-allow-headers'], 'x-a, x-b');
+    assert.equal((await req(port, '/app.js', 'POST')).headers.allow, 'GET, HEAD, OPTIONS');
+  } finally {
+    await closeServer(s);
+  }
+  await withServer({}, async (port) => {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], undefined);
+    assert.equal((await req(port, '/app.js', 'OPTIONS')).status, 405);
+  });
+  assert.equal(preflightHeaders(' x-a,x-b '), 'x-a,x-b');
+  assert.equal(preflightHeaders('a"b'), undefined);
+  assert.equal(preflightHeaders(''), undefined);
+});
+
+test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)', async () => {
+  for (const coep of ['require-corp', 'credentialless'] as const) {
+    const s = createSiteServer(tree, { isolate: coep });
+    const { port } = await listen(s, '127.0.0.1', 0);
+    try {
+      for (const p of ['/app.js', '/missing']) {
+        const r = await req(port, p);
+        assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin');
+        assert.equal(r.headers['cross-origin-embedder-policy'], coep);
+        assert.equal(r.headers['cross-origin-resource-policy'], 'same-origin');
+      }
+    } finally {
+      await closeServer(s);
+    }
+  }
+  await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
+});
+
 test('an access log line is written per request: method path status bytes ms', async () => {
   await withServer({}, async (port, log) => {
     await req(port, '/app.js');
@@ -348,6 +415,18 @@ async function poll<T>(fn: () => Promise<T | undefined>, ms = 8000): Promise<T> 
   }
 }
 
+test('serve -d --base prints one Started line with the base', async () => {
+  const home = await tmpDir();
+  homes.push(home);
+  const dir = await tmpDir();
+  await fs.writeFile(path.join(dir, 'index.html'), 'x');
+  const r = await runCli(home, ['serve', '-d', '--name', 'based', '--base', '/repo/', dir + '/']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout.match(/^Started /gm)?.length, 1, r.stdout);
+  assert.match(r.stdout, /^Started based \([0-9a-f]{12}\) serving .* at http:\/\/127\.0\.0\.1:\d+\/repo\/\n$/);
+  await runCli(home, ['server', 'rm', '-f', 'based']);
+});
+
 test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real port', async () => {
   const home = await tmpDir();
   homes.push(home);
@@ -357,6 +436,7 @@ test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real por
   assert.equal(r.code, 0, r.stderr);
   const m = /Started web \(([0-9a-f]{12})\) serving life at (http:\/\/127\.0\.0\.1:(\d+)\/)/.exec(r.stdout);
   assert.ok(m, r.stdout);
+  assert.equal(r.stdout.match(/^Started /gm)?.length, 1, 'one Started line (the #283 merge printed two)');
   const [, id, url, port] = m!;
   assert.equal((await fetch(url!)).status, 200);
   assert.match(await (await fetch(url! + 'about/')).text(), /About/);

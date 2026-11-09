@@ -65,18 +65,25 @@ test('every rule written is one serve applies as written', async () => {
   }
 });
 
-test('netlify: status, force, splats; placeholders, conditions, query and 410 are listed', () => {
+test('netlify: status, force, splats, placeholders, query parameters, conditions, 410 and 451', () => {
   const c = run(
     '[[redirects]]\nfrom = "/a"\nto = "/b"\n[[redirects]]\nfrom = "/x/*"\nto = "/y/:splat"\nstatus = 200\nforce = true\n[[redirects]]\nfrom = "/p/:id"\nto = "/q/:id"\n[[redirects]]\nfrom = "/s"\nto = "/t/:id"\n[[redirects]]\nfrom = "/q"\nto = "/r"\nquery = { a = ":a" }\n[[redirects]]\nfrom = "/a/*/b"\nto = "/c"\n[[redirects]]\nfrom = "/o"\nto = "/n"\nstatus = 418\n',
     'netlify',
   );
-  assert.deepEqual(c.redirects, ['/a /b 301', '/x/* /y/:splat 200!']);
+  assert.deepEqual(c.redirects, ['/a /b 301', '/x/* /y/:splat 200!', '/p/:id /q/:id 301', '/q a=:a /r 301']);
   assert.deepEqual(c.unsupported, [
-    { entry: 'redirects[2]', reason: ':placeholders are not supported yet (johnhenry/sitefile#193)' },
-    { entry: 'redirects[3]', reason: ':placeholders are not supported yet (johnhenry/sitefile#193)' },
-    { entry: 'redirects[4]', reason: 'query matching is not supported' },
+    { entry: 'redirects[3]', reason: ':id in the target is not in the source' },
     { entry: 'redirects[5]', reason: '* is supported only as a trailing /*' },
     { entry: 'redirects[6]', reason: 'status 418 is not supported' },
+  ]);
+  const q = run(
+    '[[redirects]]\nfrom = "/s"\nto = "/s/:v"\nquery = { v = ":v", lang = "en" }\n[[redirects]]\nfrom = "/fr/*"\nto = "/fr/index.html"\nstatus = 200\nconditions = { Language = ["fr", "fr-CA"], Country = "FR" }\n[[redirects]]\nfrom = "/old"\nto = "/gone.html"\nstatus = 410\n[[redirects]]\nfrom = "/x"\nto = "/451.html"\nstatus = 451\n[[redirects]]\nfrom = "/r"\nto = "/s"\nconditions = { Role = "admin" }\n[[redirects]]\nfrom = "/h"\nto = "https://p.example/"\nstatus = 200\nheaders = { X = "1" }\n',
+    'netlify',
+  );
+  assert.deepEqual(q.redirects, ['/s v=:v lang=en /s/:v 301', '/fr/* /fr/index.html 200 Language=fr,fr-CA Country=FR', '/old /gone.html 410', '/x /451.html 451']);
+  assert.deepEqual(q.unsupported, [
+    { entry: 'redirects[4]', reason: 'conditions on Role are not supported' },
+    { entry: 'redirects[5]', reason: 'proxy headers and signing are not supported' },
   ]);
   const h = run('[[headers]]\nfor = "/*"\n[headers.values]\nETag = "x"\n[[headers]]\nfor = "/a"\n[headers.values]\nX-A = "1"\n[[headers]]\nfor = "/a"\n[headers.values]\nX-B = "2"\n', 'netlify');
   assert.deepEqual(h.unsupported, [{ entry: 'headers[0]', reason: 'ETag cannot be set by _headers' }]);
@@ -90,6 +97,7 @@ test('vercel: path-to-regexp sources, permanent, has/missing, proxies', () => {
       redirects: [
         { source: '/a', destination: '/b', permanent: true },
         { source: '/d/:rest*', destination: '/e/:rest*' },
+        { source: '/p/:id/edit', destination: '/q/:id' },
         { source: '/f/:rest*', destination: 'https://x.example/:rest' },
         { source: '/g', destination: '/h', statusCode: 302 },
         { source: '/i', destination: '/j', missing: [{ type: 'cookie', key: 'c' }] },
@@ -99,10 +107,10 @@ test('vercel: path-to-regexp sources, permanent, has/missing, proxies', () => {
     }),
     'vercel',
   );
-  assert.deepEqual(c.redirects, ['/a /b 308', '/d/* /e/:splat 308', '/f/* https://x.example/:splat 308', '/g /h 302', '/app/* /app/:splat 200']);
+  assert.deepEqual(c.redirects, ['/a /b 308', '/d/* /e/:splat 308', '/p/:id/edit /q/:id 308', '/f/* https://x.example/:splat 308', '/g /h 302', '/app/* /app/:splat 200']);
   assert.deepEqual(c.unsupported.map((u) => [u.entry, u.reason]), [
-    ['redirects[4]', 'conditions are not supported'],
-    ['redirects[5]', 'regular expressions are not supported'],
+    ['redirects[5]', 'conditions are not supported'],
+    ['redirects[6]', 'regular expressions are not supported'],
   ]);
 });
 

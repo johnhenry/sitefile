@@ -229,6 +229,37 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", Some(operand(base))),
             ("pretty", Some(json!(pretty))),
         ]),
+        Instruction::Precompress { span: sp, formats, patterns, min, overwrite } => obj(vec![
+            ("kind", s("PRECOMPRESS")),
+            ("span", Some(span(sp))),
+            ("formats", Some(json!(formats))),
+            ("patterns", Some(Value::Array(patterns.iter().map(operand).collect()))),
+            ("min", min.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::Robots { span: sp, rules, sitemap, dest, overwrite } => obj(vec![
+            ("kind", s("ROBOTS")),
+            ("span", Some(span(sp))),
+            (
+                "rules",
+                Some(Value::Array(
+                    rules.iter().map(|(a, p, r)| json!({ "allow": a, "path": operand(p), "span": span(r) })).collect(),
+                )),
+            ),
+            ("sitemap", Some(json!(sitemap))),
+            ("dest", dest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
+        Instruction::SecurityTxt { span: sp, contact, expires, encryption, policy, dest, overwrite } => obj(vec![
+            ("kind", s("SECURITY_TXT")),
+            ("span", Some(span(sp))),
+            ("contact", Some(Value::Array(contact.iter().map(operand).collect()))),
+            ("expires", Some(operand(expires))),
+            ("encryption", Some(Value::Array(encryption.iter().map(operand).collect()))),
+            ("policy", Some(Value::Array(policy.iter().map(operand).collect()))),
+            ("dest", dest.as_ref().map(operand)),
+            ("overwrite", Some(json!(overwrite))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

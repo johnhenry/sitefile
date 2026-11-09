@@ -1,0 +1,1 @@
+{"hosting":{"redirects":[{"source":"/p/:id","destination":"/q/:id"},{"source":"/a/:x/:rest*","destination":"/b/:x/:rest"},{"source":"/c/**","destination":"/d"}],"rewrites":[{"source":"/u/:id","destination":"/user.html"}],"headers":[{"source":"/u/:id","headers":[{"key":"X","value":"1"}]}]}}
