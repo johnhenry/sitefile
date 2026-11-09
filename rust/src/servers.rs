@@ -76,6 +76,16 @@ pub struct ServerState {
     pub image: String,
     pub source: ServerSource,
     pub spa: bool,
+    /// `--spa-exclude`: request paths that never fall back (absent: none).
+    #[serde(default, rename = "spaExclude", skip_serializing_if = "Vec::is_empty")]
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html).
+    #[serde(
+        default,
+        rename = "spaFallback",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spa_fallback: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -790,6 +800,10 @@ pub struct DetachedServe {
     pub bind: Bind,
     /// `--spa`.
     pub spa: bool,
+    /// `--spa-exclude`.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`.
+    pub spa_fallback: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
     /// `--country`.
@@ -811,6 +825,8 @@ impl DetachedServe {
             name: None,
             bind: parse_publish(None)?,
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,
@@ -856,6 +872,8 @@ pub fn serve_detached_with(
         image: serve.label.clone(),
         source: serve.source.clone(),
         spa: serve.spa,
+        spa_exclude: serve.spa_exclude.clone(),
+        spa_fallback: serve.spa_fallback.clone(),
         keep_os_metadata: serve.keep_os_metadata,
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
@@ -1066,6 +1084,8 @@ mod tests {
                 path: "/tmp/site".into(),
             },
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
             keep_os_metadata: false,
             country: None,
             strict_site_files: false,

@@ -1086,7 +1086,7 @@ TypeScript CLI prints a usage error pointing to `rust/target/release/sitefile ls
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--country cc] [--strict-site-files] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--country cc] [--strict-site-files] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1161,8 +1161,19 @@ to `image` (`imageId`) and `dir` (`path`).
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
-  characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
-  file extension (a missing `/app.js` stays `404`).
+  characters and backslashes are `400`. **`--spa`** (single-page apps) answers a missing path with
+  the app shell only for **page navigations**: `Sec-Fetch-Mode: navigate` when the browser sends it, else
+  `Sec-Fetch-Dest` `document`/`iframe`/`frame`, else an `Accept` naming `text/html` (as Cloudflare and Vite
+  decide). Subresources never fall back, whatever the path looks like, so `/users/jane.doe` is served the
+  app while a missing `/assets/app.js` stays `404` instead of HTML (the "Expected a JavaScript module
+  script" error). The shell is the `200.html` (Surge's name) or `index.html` of the request's directory or
+  the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` (a nested app) before
+  `/index.html`. `--spa-exclude <glob>` (repeatable; `*` matches any characters, as in `_headers`, against
+  the request path) never falls back (Azure Static Web Apps' `navigationFallback.exclude`), e.g.
+  `--spa-exclude '/api/*'`. `--spa-fallback <path>` (implies `--spa`) names the one file every fallback
+  serves, e.g. `--spa-fallback /app.html`; a path the site lacks is warned about at start. A fallback comes
+  after files, clean URLs, directories and `_redirects` rules; the server record keeps `spaExclude` and
+  `spaFallback`.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

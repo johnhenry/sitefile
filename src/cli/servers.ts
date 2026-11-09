@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor, safeSegments } from '../server.js';
 import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -31,6 +31,27 @@ export function parsePublish(spec: string | undefined): { host: string; port: nu
 }
 
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
+
+/** `--spa`, `--spa-exclude` and `--spa-fallback` (which implies `--spa`), as server options. */
+export function spaOptions(v: ParsedValues): { spa: boolean; spaExclude?: string[]; spaFallback?: string } {
+  const exclude = strs(v['spa-exclude']);
+  for (const g of exclude) if (!g.startsWith('/')) usage(`--spa-exclude expects a path pattern starting with '/', got '${g}'`);
+  const raw = str(v['spa-fallback']);
+  let fallback: string | undefined;
+  if (raw !== undefined) {
+    const segs = safeSegments('/' + raw.replace(/^\/+/, ''));
+    if (!segs || segs.length === 0) usage(`--spa-fallback expects a file of the site such as /200.html, got '${raw}'`);
+    fallback = '/' + segs.join('/');
+  }
+  const spa = !!v.spa || fallback !== undefined;
+  if (!spa && exclude.length > 0) usage('--spa-exclude needs --spa');
+  return { spa, ...(exclude.length > 0 ? { spaExclude: exclude } : {}), ...(fallback !== undefined ? { spaFallback: fallback } : {}) };
+}
+
+/** A warning when `--spa-fallback` names a file the site does not have. */
+function warnSpaFallback(tree: Tree, fallback: string | undefined, warn: (m: string) => void): void {
+  if (fallback !== undefined && !tree.isFile(fallback)) warn(`--spa-fallback ${fallback} is not a file of the site, so navigations to missing paths get 404`);
+}
 
 /** `--country`: an ISO 3166-1 alpha-2 code (any case). */
 export function parseCountry(v: string | undefined): string | undefined {
@@ -120,7 +141,9 @@ const run: Command = {
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
-    '--spa             serve /index.html for unknown paths without a file extension',
+    '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
+    '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
+    '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
@@ -145,6 +168,8 @@ const run: Command = {
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    'spa-exclude': { type: 'string', multiple: true },
+    'spa-fallback': { type: 'string' },
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
@@ -169,6 +194,7 @@ const run: Command = {
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
+    const spa = spaOptions(v);
     const country = parseCountry(str(v.country));
     const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
@@ -182,8 +208,9 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       checkSiteFiles(tree, strictSiteFiles, warn);
+      warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
+      const server = createSiteServer(tree, { ...spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -192,7 +219,7 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, country, strictSiteFiles }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, ...spa, keepOsMetadata, country, strictSiteFiles }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
     return 0;
   },
@@ -205,6 +232,10 @@ export interface DetachedServe {
   readonly name?: string | undefined;
   readonly bind: { readonly host: string; readonly port: number };
   readonly spa: boolean;
+  /** `--spa-exclude`. */
+  readonly spaExclude?: readonly string[] | undefined;
+  /** `--spa-fallback`. */
+  readonly spaFallback?: string | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
   /** `--country`. */
@@ -230,6 +261,8 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     image: d.label,
     source: d.source,
     spa: d.spa,
+    ...(d.spaExclude !== undefined && d.spaExclude.length > 0 ? { spaExclude: [...d.spaExclude] } : {}),
+    ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
@@ -291,6 +324,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
+  const spa = spaOptions(v);
   const country = parseCountry(str(v.country));
   const strictSiteFiles = !!v['strict-site-files'];
   /** The site-file warnings last printed: a rebuild repeats them only when they change. */
@@ -318,7 +352,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { ...spa, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
