@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
+  404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
+  `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
+  (`/store id=:id /items/:id`), `Language=`, `Cookie=` and `Country=`
+  conditions (`--country` sets the country), statuses 410 and 451, and a
+  `404.html` in the nearest directory. Every `_redirects`/`_headers` line it
+  ignores is a warning with its line and reason (`--strict-site-files` makes
+  them an error), `validate` warns about REDIRECT/HEADER lines serve would
+  ignore (lint rule `serve-ignored`), and the access log names the rule that
+  answered (`→ /new (_redirects:3)`).
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

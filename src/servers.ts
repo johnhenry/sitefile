@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
+import { siteFileWarnings } from './serve-rules.js';
 import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
 import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { LocalContext } from './resources/local.js';
@@ -35,6 +36,10 @@ export interface ServerState {
   readonly spa: boolean;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
+  /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
+  readonly country?: string;
+  /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
+  readonly strictSiteFiles?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
@@ -285,5 +290,18 @@ export async function loadServedTree(store: Store, source: ServerState['source']
       return loadDirectoryTree(source.path, options);
     case 'archive':
       return loadArchiveTree(source.path, DEFAULT_ARCHIVE_LIMITS, options);
+  }
+}
+
+/**
+ * Warn about every `_redirects`/`_headers` line `serve` ignores; with `strict` (`--strict-site-files`)
+ * any such line is then an error.
+ */
+export function checkSiteFiles(tree: Tree, strict: boolean, warn: (m: string) => void): void {
+  const ignored = siteFileWarnings(tree);
+  for (const m of ignored) warn(m);
+  if (strict && ignored.length > 0) {
+    const n = ignored.length;
+    throw new SitefileError('E_VALIDATION', `${n} line${n === 1 ? '' : 's'} of _redirects/_headers ${n === 1 ? 'is' : 'are'} ignored (--strict-site-files)`);
   }
 }

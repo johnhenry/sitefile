@@ -870,8 +870,10 @@ use `${NAME}`.
     always written; the default is 301). `from` must be an absolute path and
     `to` an absolute path or an `http(s)://host…` URL; neither may contain
     spaces or control characters (`E_VALIDATION`). Host syntax such as
-    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
-    understands exact paths and a trailing `/*` (docs/CLI.md). `EXPORT … AS
+    `/blog/:year/:slug`, `/blog/*` and `:splat` is passed through as written;
+    `sitefile serve` understands placeholders and a trailing `/*`
+    (docs/CLI.md), and `validate` warns about a line it would ignore
+    (`serve-ignored`). `EXPORT … AS
     wbn` also bakes exact-path REDIRECTs into 3xx responses and HEADER values
     into each response (see **wbn** under Export formats).
   - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
@@ -1085,6 +1087,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
 | `sitemap-order` | a `SITEMAP` followed, in the same stage, by an instruction writing a `.html` file it therefore does not list. |
 | `shadowed-write` | a `RENDER` (without `FOR`) or inline `COPY` whose file a later `RENDER`/inline `COPY` in the same stage replaces with `--overwrite`, so the first write has no effect. |
+| `serve-ignored` | a `REDIRECT` or `HEADER` (without `${…}` in it) whose `_redirects`/`_headers` line `sitefile serve` would ignore, with the reason (e.g. `*` in the middle of a path, or a header the server sets itself such as `Content-Length`). |
 
 The unnamed non-final stage warning (above) is a planner warning, printed by `build` too; it is not a lint rule.
 

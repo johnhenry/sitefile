@@ -7,7 +7,7 @@ import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
-import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
+import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -31,6 +31,14 @@ export function parsePublish(spec: string | undefined): { host: string; port: nu
 }
 
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
+
+/** `--country`: an ISO 3166-1 alpha-2 code (any case). */
+export function parseCountry(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  if (!/^[A-Za-z]{2}$/.test(v)) usage(`--country expects a two-letter country code such as nz, got '${v}'`);
+  return v;
+}
+
 
 async function isFile(p: string): Promise<boolean> {
   return fs.stat(p).then((s) => s.isFile(), () => false);
@@ -113,6 +121,8 @@ const run: Command = {
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
+    '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
@@ -135,6 +145,8 @@ const run: Command = {
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    country: { type: 'string' },
+    'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
@@ -157,6 +169,8 @@ const run: Command = {
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
+    const country = parseCountry(str(v.country));
+    const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -167,7 +181,8 @@ const run: Command = {
     const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
-      const server = createSiteServer(tree, { spa: !!v.spa, log: (l) => process.stdout.write(`${l}\n`) });
+      checkSiteFiles(tree, strictSiteFiles, warn);
+      const server = createSiteServer(tree, { spa: !!v.spa, ...(country !== undefined ? { country } : {}), log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -175,7 +190,8 @@ const run: Command = {
       return 0;
     }
 
-    await loadServedTree(store, source, { keepOsMetadata, warn }); // fail fast on a bad image, directory or archive
+    // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
+    checkSiteFiles(await loadServedTree(store, source, { keepOsMetadata, warn }), strictSiteFiles, warn);
     const reg = await ServerRegistry.open(store);
     const { id, name: finalName } = await reg.allocate(name);
     const state: ServerState = {
@@ -185,6 +201,8 @@ const run: Command = {
       source,
       spa: !!v.spa,
       ...(keepOsMetadata ? { keepOsMetadata } : {}),
+      ...(country !== undefined ? { country } : {}),
+      ...(strictSiteFiles ? { strictSiteFiles } : {}),
       bind,
       host: bind.host,
       port: bind.port,
@@ -229,6 +247,18 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
+  const country = parseCountry(str(v.country));
+  const strictSiteFiles = !!v['strict-site-files'];
+  /** The site-file warnings last printed: a rebuild repeats them only when they change. */
+  let lastSiteWarnings = '';
+  const siteFiles = (tree: Tree): void => {
+    const shown: string[] = [];
+    checkSiteFiles(tree, false, (m) => shown.push(m));
+    const text = shown.join('\n');
+    if (text !== lastSiteWarnings) for (const m of shown) process.stderr.write(`warning: ${m}\n`);
+    lastSiteWarnings = text;
+    checkSiteFiles(tree, strictSiteFiles, () => undefined);
+  };
   if (reloadMode !== 'full' && reloadMode !== 'morph') usage(`--reload expects full or morph, got '${reloadMode}'`);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
@@ -242,7 +272,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     current = next;
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, ...(country !== undefined ? { country } : {}), liveReload: live, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -256,6 +286,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           if (plain) {
             const tree = await loadDirectoryTree(context);
             process.stdout.write(`Read ${tree.size} file${tree.size === 1 ? '' : 's'} (${tree.digest()})\n`);
+            siteFiles(tree);
             swap(tree);
             return { code: 0 };
           }
@@ -273,6 +304,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
           });
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
+          siteFiles(r.output);
           swap(r.output);
           return { code: 0 };
         } catch (e) {

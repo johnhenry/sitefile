@@ -259,7 +259,10 @@ export async function startServers(root, dir) {
 // bytes. A request is `{ method = "GET", target, headers = {}, expect }`; `target`
 // is sent as written (so an absolute-form target works). `expect` checks both
 // answers: `status`, `headers` (name → exact value, or null for absent), `body`
-// (exact text) and `interim` (the list of 1xx statuses).
+// (exact text) and `interim` (the list of 1xx statuses). With `"log": true` the CLIs'
+// stdout and stderr (the Serving line, warnings and access log) must match too, after
+// the port and each request's time (`1.2ms`) are replaced by fixed text; `expectLog`
+// lists lines both logs must contain.
 
 const IGNORED_HEADERS = new Set(['date', 'connection', 'keep-alive']);
 
@@ -316,6 +319,7 @@ function startServe(cmd, argv, env, cwd) {
       resolve({
         port: Number(m[1]),
         stop: () => new Promise((r) => (child.exitCode !== null ? r() : (child.once('exit', () => r()), child.kill()))),
+        output: () => ({ out, err }),
       });
     });
     child.on('exit', (code) => {
@@ -337,6 +341,7 @@ const show = (r) =>
 export async function runServeCase(c, { impls, tmp }) {
   const detail = [];
   const answers = {};
+  const logs = {};
   for (const [impl, cmd] of impls) {
     const home = path.join(tmp, impl, '.home');
     await fs.mkdir(home, { recursive: true });
@@ -345,11 +350,23 @@ export async function runServeCase(c, { impls, tmp }) {
       server = await startServe(cmd, ['serve', ...(c.args ?? []), `./${c.site ?? 'site'}`], { SITEFILE_HOME: home, ...(c.env ?? {}) }, c.context);
       answers[impl] = [];
       for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
+      // The access-log line of the last request is written after its answer.
+      if (c.log) await new Promise((r) => setTimeout(r, 200));
     } catch (e) {
       detail.push(`${impl}: ${e.message}`);
     } finally {
       await server?.stop();
     }
+    if (c.log && server) {
+      const { out, err } = server.output();
+      const norm = (t) => t.replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:PORT').replace(/ \d+\.\dms/g, ' Tms');
+      logs[impl] = `stdout:\n${norm(out)}stderr:\n${norm(err)}`;
+    }
+  }
+  if (c.log && detail.length === 0) {
+    const [a, b] = impls.map(([impl]) => logs[impl]);
+    if (a !== b) detail.push(`logs differ\nts:\n${a}\nrust:\n${b}`);
+    for (const [impl] of impls) for (const line of c.expectLog ?? []) if (!logs[impl].split('\n').includes(line)) detail.push(`${impl}: log has no line ${JSON.stringify(line)}\n${logs[impl]}`);
   }
   if (detail.length === 0) {
     c.requests.forEach((r, i) => {
