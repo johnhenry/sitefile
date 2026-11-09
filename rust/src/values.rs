@@ -270,7 +270,7 @@ fn write_js_json(out: &mut String, v: &Value, sort: bool, indent: Option<usize>,
 }
 
 /// A canonical array index ("0", "9", "10" … "4294967294"), as ECMAScript defines one.
-fn array_index(k: &str) -> Option<u32> {
+pub(crate) fn array_index(k: &str) -> Option<u32> {
     if k.is_empty() || (k.len() > 1 && k.starts_with('0')) || !k.bytes().all(|b| b.is_ascii_digit())
     {
         return None;

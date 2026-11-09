@@ -1,0 +1,17 @@
+{
+  "steps": [
+    ["import-config", "${CTX}/netlify.toml"],
+    ["import-config", "${CTX}/netlify.toml", "--json"],
+    ["import-config", "${CTX}/vercel.json"],
+    ["import-config", "${CTX}/vercel.json", "--json"],
+    ["import-config", "${CTX}/firebase.json", "--redirects"],
+    ["import-config", "${CTX}/firebase.json", "--json"],
+    ["import-config", "${CTX}/staticwebapp.config.json"],
+    ["import-config", "${CTX}/staticwebapp.config.json", "--json"],
+    ["import-config", "${CTX}/wrangler.toml", "--json"],
+    ["import-config", "${CTX}/htaccess", "--format", "htaccess"],
+    ["import-config", "${CTX}/htaccess", "--format", "htaccess", "--json"],
+    ["import-config", "${CTX}/bad.toml", "--format", "netlify"]
+  ],
+  "stdout": true
+}
