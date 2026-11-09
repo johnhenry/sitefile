@@ -136,6 +136,9 @@ pub struct ServerState {
     /// `--tls-key`: its private key (absolute path; never copied).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<String>,
+    /// `--compress`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compress: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -909,6 +912,8 @@ pub struct DetachedServe {
     /// `--tls-cert`, `--tls-key`, absolute paths.
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
+    /// `--compress`.
+    pub compress: bool,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -941,6 +946,7 @@ impl DetachedServe {
             expires: None,
             tls_cert: None,
             tls_key: None,
+            compress: false,
             project: None,
         })
     }
@@ -998,6 +1004,7 @@ pub fn serve_detached_with(
         expires: serve.expires.clone(),
         tls_cert: serve.tls_cert.clone(),
         tls_key: serve.tls_key.clone(),
+        compress: serve.compress,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1222,6 +1229,7 @@ mod tests {
             expires: None,
             tls_cert: None,
             tls_key: None,
+            compress: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

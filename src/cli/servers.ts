@@ -133,6 +133,7 @@ const run: Command = {
     '--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)',
     '--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)',
     '--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied',
+    '--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -175,6 +176,7 @@ const run: Command = {
     'deny-ip': { type: 'string', multiple: true },
     'stop-after': { type: 'string' },
     'tls-cert': { type: 'string' },
+    compress: { type: 'boolean' },
     'tls-key': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
@@ -216,7 +218,7 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       const bp = sharing.server.basePath;
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
@@ -230,7 +232,7 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}) }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}`);
     return 0;
   },
@@ -272,6 +274,8 @@ export interface DetachedServe {
   readonly denyIp?: string[] | undefined;
   /** `--stop-after`: when the server stops (ISO time). */
   readonly expires?: string | undefined;
+  /** `--compress`. */
+  readonly compress?: boolean | undefined;
   /** `--tls-cert`, `--tls-key`, absolute paths. */
   readonly tlsCert?: string | undefined;
   readonly tlsKey?: string | undefined;
@@ -308,6 +312,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.denyIp !== undefined ? { denyIp: d.denyIp } : {}),
     ...(d.expires !== undefined ? { expires: d.expires } : {}),
     ...(d.tlsCert !== undefined ? { tlsCert: d.tlsCert, tlsKey: d.tlsKey } : {}),
+    ...(d.compress ? { compress: true } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -550,7 +555,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,

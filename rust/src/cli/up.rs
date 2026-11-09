@@ -145,6 +145,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             expires: None,
             tls_cert: None,
             tls_key: None,
+            compress: false,
             project: Some(project.clone()),
         });
     }

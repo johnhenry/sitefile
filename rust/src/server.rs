@@ -72,6 +72,11 @@ pub struct SiteServerOptions {
     pub client_info: bool,
     /// `--tls-cert`, `--tls-key`: serve HTTPS ([`tls_config`]).
     pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// `--compress`: gzip compressible files of at least 1024 bytes on the fly when no
+    /// precompressed variant exists.
+    pub compress: bool,
+    /// gzip output by file digest (at most 256 files), shared by the server's connections.
+    pub gzip_cache: GzipCache,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -1240,6 +1245,56 @@ fn parse_text_request(rest: &str) -> Option<(&str, &str, u16, usize, f64, Option
     ))
 }
 
+/// [`SiteServerOptions::gzip_cache`].
+pub type GzipCache = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
+
+/// Whether an `Accept-Encoding` value accepts `coding` (`acceptsEncoding` in src/server.ts).
+pub fn accepts_encoding(header: Option<&str>, coding: &str) -> bool {
+    let Some(h) = header else { return false };
+    let mut star: Option<bool> = None;
+    for part in h.split(',') {
+        let mut it = part.split(';').map(js_trim);
+        let name = it.next().unwrap_or("").to_ascii_lowercase();
+        let mut q = 1.0f64;
+        for p in it {
+            let b = p.as_bytes();
+            if b.first().is_some_and(|c| *c == b'q' || *c == b'Q') {
+                let rest = p[1..].trim_start_matches([' ', '\t']);
+                if let Some(v) = rest.strip_prefix('=') {
+                    let v = v.trim_start_matches([' ', '\t']);
+                    if !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit() || c == b'.') {
+                        q = v.parse().unwrap_or(f64::NAN);
+                    }
+                }
+            }
+        }
+        let ok = q.is_finite() && q > 0.0;
+        if name == coding {
+            return ok;
+        }
+        if name == "*" {
+            star = Some(ok);
+        }
+    }
+    star.unwrap_or(false)
+}
+
+/// Media types worth compressing (`isCompressible` in src/server.ts).
+pub fn is_compressible(mime: &str) -> bool {
+    let t = mime.split(';').next().unwrap_or("").trim();
+    t.starts_with("text/")
+        || t.ends_with("+json")
+        || t.ends_with("+xml")
+        || [
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/wasm",
+            "image/svg+xml",
+        ]
+        .contains(&t)
+}
+
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1687,7 +1742,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 10] = [
+const PROTECTED_HEADERS: [&str; 11] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -1698,6 +1753,7 @@ const PROTECTED_HEADERS: [&str; 10] = [
     "content-range",
     "last-modified",
     "www-authenticate",
+    "content-encoding",
 ];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
@@ -2138,11 +2194,50 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
+        // Content-Encoding: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first),
+        // else gzip on the fly under --compress. Range requests and live pages are always identity.
+        let ae = headers.get("accept-encoding").map(String::as_str);
+        let (br_path, gz_path) = (format!("{served}.br"), format!("{served}.gz"));
+        let (has_br, has_gz) = (is_file(&br_path), is_file(&gz_path));
+        let on_the_fly = options.compress && is_compressible(mime) && file.bytes.len() >= 1024;
+        let negotiated = !live && (has_br || has_gz || on_the_fly);
+        let mut coding: Option<&str> = None;
+        let mut sent: Vec<u8> = Vec::new();
+        if negotiated && !headers.contains_key("range") {
+            if has_br && accepts_encoding(ae, "br") {
+                coding = Some("br");
+                sent = tree.get(&br_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+            } else if has_gz && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                sent = tree.get(&gz_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+            } else if on_the_fly && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                let mut cache = options.gzip_cache.lock().unwrap_or_else(|p| p.into_inner());
+                let z = match cache.get(&file.digest) {
+                    Some(z) => z.clone(),
+                    None => {
+                        if cache.len() >= 256 {
+                            cache.clear();
+                        }
+                        let z = Arc::new(crate::deflate::gzip(&file.bytes));
+                        cache.insert(file.digest.clone(), z.clone());
+                        z
+                    }
+                };
+                sent = z.to_vec();
+            }
+        }
+        let vary: Vec<(String, String)> = if negotiated {
+            vec![("vary".into(), "Accept-Encoding".into())]
+        } else {
+            Vec::new()
+        };
         // An injected page is a different representation of the file: give it its own ETag.
         let etag = format!(
-            "\"{}{}\"",
+            "\"{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
-            if live { "-live" } else { "" }
+            if live { "-live" } else { "" },
+            coding.map(|c| format!("-{c}")).unwrap_or_default()
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
@@ -2153,6 +2248,7 @@ pub fn respond(
             h.extend(custom.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
+            h.extend(vary.iter().cloned());
             finish(304, h, None)
         };
         if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
@@ -2182,10 +2278,12 @@ pub fn respond(
         } else {
             None
         };
+        h.extend(vary.iter().cloned());
         h.push(("accept-ranges".into(), "bytes".into()));
         match range {
             Some(ByteRange::Unsatisfiable) => {
                 let mut h: Vec<(String, String)> = custom.clone();
+                h.extend(vary.iter().cloned());
                 h.push(("accept-ranges".into(), "bytes".into()));
                 h.push(("content-range".into(), format!("bytes */{}", body.len())));
                 h.push(("content-length".into(), "0".into()));
@@ -2200,7 +2298,14 @@ pub fn respond(
                 ));
                 finish(206, h, Some(part))
             }
-            None => finish(200, h, Some(body)),
+            None => match coding {
+                Some(c) => {
+                    h[1] = ("content-length".into(), sent.len().to_string());
+                    h.push(("content-encoding".into(), c.into()));
+                    finish(200, h, Some(sent))
+                }
+                None => finish(200, h, Some(body)),
+            },
         }
     };
     // The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash.
@@ -3010,6 +3115,8 @@ mod tests {
             noindex: false,
             client_info: false,
             tls: None,
+            compress: false,
+            gzip_cache: Default::default(),
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -3299,6 +3406,37 @@ mod tests {
             "https://127.0.0.1:1/"
         );
         assert_eq!(with_scheme("http://a/".into(), false), "http://a/");
+    }
+
+    #[test]
+    fn compression_negotiation() {
+        assert!(!accepts_encoding(Some("gzip;q=0, *"), "gzip"));
+        assert!(accepts_encoding(Some("*"), "br"));
+        assert!(accepts_encoding(Some("BR;Q=0.1"), "br"));
+        assert!(!accepts_encoding(None, "br"));
+        assert!(is_compressible("image/svg+xml; charset=utf-8"));
+        assert!(!is_compressible("image/png"));
+        let t = Tree::from_files(
+            [("/a.css", "a{}".to_string()), ("/a.css.br", "BR".into()), ("/big.txt", "x".repeat(2000))]
+                .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            compress: true,
+            ..Default::default()
+        };
+        let ask = |p: &str, ae: &str| {
+            let mut h = HashMap::new();
+            h.insert("accept-encoding".to_string(), ae.to_string());
+            handle_request(&t, &opts, "GET", p, &h)
+        };
+        let r = ask("/a.css", "br");
+        assert_eq!(r.header("content-encoding"), Some("br"));
+        assert_eq!(r.body, b"BR");
+        assert!(r.header("etag").unwrap().ends_with("-br\""));
+        let z = ask("/big.txt", "gzip");
+        assert_eq!(z.header("content-encoding"), Some("gzip"));
+        assert_eq!(z.body, crate::deflate::gzip("x".repeat(2000).as_bytes()));
     }
 
     #[test]
@@ -3690,6 +3828,8 @@ mod tests {
             noindex: false,
             client_info: false,
             tls: None,
+            compress: false,
+            gzip_cache: Default::default(),
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

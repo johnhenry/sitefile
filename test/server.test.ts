@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { acceptsEncoding, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -522,6 +522,41 @@ test('--tls-cert/--tls-key: HTTPS with a certificate (johnhenry/sitefile#170)', 
     await closeServer(s);
     pki.dispose();
   }
+});
+
+test('compression: precompressed variants, --compress, Vary and per-encoding ETags (johnhenry/sitefile#167)', async () => {
+  const { gunzipSync } = await import('node:zlib');
+  const big = 'x'.repeat(2000);
+  const t = Tree.fromFiles(
+    Object.entries({ '/a.css': 'a{}', '/a.css.br': 'BR', '/big.txt': big }).map(([p, c]) => [p, makeFile(enc(c), 't')] as const),
+  );
+  const s = createSiteServer(t, { compress: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const br = await req(port, '/a.css', 'GET', { 'accept-encoding': 'br' });
+    assert.equal(br.headers['content-encoding'], 'br');
+    assert.equal(br.body, 'BR');
+    assert.match(String(br.headers.etag), /-br"$/);
+    assert.equal(br.headers.vary, 'Accept-Encoding');
+    const raw = await new Promise<Buffer>((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port, path: '/big.txt', headers: { 'accept-encoding': 'gzip' }, agent: false }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.equal(gunzipSync(raw).toString(), big);
+  } finally {
+    await closeServer(s);
+  }
+  assert.equal(acceptsEncoding('gzip;q=0, *', 'gzip'), false);
+  assert.equal(acceptsEncoding('*', 'br'), true);
+  assert.equal(acceptsEncoding('BR;Q=0.1', 'br'), true);
+  assert.equal(acceptsEncoding(undefined, 'br'), false);
+  assert.equal(isCompressible('image/svg+xml; charset=utf-8'), true);
+  assert.equal(isCompressible('image/png'), false);
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

@@ -379,6 +379,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("deny-ip"),
     string("stop-after"),
     string("tls-cert"),
+    flag("compress"),
     string("tls-key"),
     flag("watch"),
     string_s("file", 'f'),
@@ -441,6 +442,7 @@ pub const SERVE: Command = Command {
         "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
         "--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)",
         "--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied",
+        "--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -538,7 +540,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 noindex: sharing.noindex,
                 client_info: true,
                 tls: worker_tls(&state)?,
+                compress: state.compress,
+                gzip_cache: Default::default(),
                 tls: tls.clone(),
+                compress: v.flag("compress"),
+                gzip_cache: Default::default(),
             },
             &bind.host,
             bind.port,
@@ -599,6 +605,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
             tls_cert: tls_paths.as_ref().map(|p| p.0.clone()),
             tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
+            compress: v.flag("compress"),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
                 crate::store::iso_of_time(
                     std::time::SystemTime::now() + Duration::from_secs(*secs),
@@ -800,6 +807,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             noindex: sharing.noindex,
             client_info: true,
             tls: tls.clone(),
+            compress: v.flag("compress"),
+            gzip_cache: Default::default(),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);

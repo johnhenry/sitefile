@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` compression** (johnhenry/sitefile#167): precompressed `<path>.br`
+  / `<path>.gz` variants by `Accept-Encoding` (br first), `--compress` for gzip
+  on the fly (byte-identical in both servers), `Vary: Accept-Encoding`, an ETag
+  per encoding; ranges stay identity.
 - **`serve --tls-cert/--tls-key`** (johnhenry/sitefile#170): HTTPS with your
   certificate (mkcert works), `https://` URLs, paths kept in the server record,
   liveness probe over TLS. No CA is created. HTTP/1.1 only. Both servers (Rust

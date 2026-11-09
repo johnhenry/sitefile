@@ -1184,6 +1184,14 @@ to `image` (`imageId`) and `dir` (`path`).
   for you to make, e.g. with mkcert (`mkcert -install && mkcert 192.168.1.20 localhost`, then
   `--tls-cert 192.168.1.20+1.pem --tls-key 192.168.1.20+1-key.pem`). HTTP/2 is not offered (both servers speak
   HTTP/1.1 over TLS). The Rust server uses rustls, already in its build for HTTPS imports.
+- **Compression.** When the site has `<path>.br` or `<path>.gz` next to `<path>` and the request's
+  `Accept-Encoding` accepts it (listed or `*` with a q-value above 0; br is preferred), that file is sent with
+  `Content-Encoding`, the original's `Content-Type` and `Vary: Accept-Encoding`; the `.br`/`.gz` files stay servable
+  by their own names. `--compress` also gzips compressible files (`text/*`, JSON, XML, SVG, JavaScript, wasm,
+  `+json`/`+xml`) of 1 KiB or more on the fly when no variant exists, with the shared deflate encoder of both
+  implementations, cached by file digest. Each encoding has its own ETag (`"<digest>-br"`, `"<digest>-gzip"`), so
+  `If-None-Match` matches per encoding. Range requests and live-reload pages are served identity. `_headers` cannot
+  set `content-encoding`. There is no on-the-fly brotli. Stored in the server record (`compress`).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

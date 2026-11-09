@@ -68,6 +68,8 @@ export interface ServerState {
   /** `--tls-cert`, `--tls-key`: HTTPS with these PEM files, read at every start (absent: HTTP). */
   readonly tlsCert?: string;
   readonly tlsKey?: string;
+  /** `--compress` (absent: false). */
+  readonly compress?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
