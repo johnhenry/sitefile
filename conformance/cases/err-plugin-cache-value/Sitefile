@@ -1,0 +1,5 @@
+FROM scratch
+# export const cache must be true (deterministic) or false (never cached).
+PLUGIN up FROM ./plugins/up.mjs
+TRANSFORM ./a.txt WITH up TO /a.txt
+EXPORT /

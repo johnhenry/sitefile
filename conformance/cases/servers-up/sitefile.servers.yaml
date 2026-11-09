@@ -1,0 +1,7 @@
+# sitefile up/down/ps (issue #223)
+servers:
+  docs:
+    source: ./docs
+  app:
+    source: ./app
+    spa: true

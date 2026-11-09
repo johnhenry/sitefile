@@ -7,13 +7,15 @@ import { vendorCommands } from './vendor.js';
 import { outdatedCommands } from './outdated.js';
 import { hostsCommands } from './hosts.js';
 import { bakeCommands } from './bake.js';
+import { upCommands } from './up.js';
+import { importConfigCommands } from './import-config.js';
 import { integrityCommands } from './integrity.js';
 
 /**
  * Image-store and site-server commands. They live outside cli.ts' build/validate/inspect
  * parser: each has its own options and `--help`.
  */
-const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands].filter(([k]) => !k.includes(' ')));
+const TOP: ReadonlyMap<string, Command> = new Map([...imageCommands, ...serverCommands, ...registryCommands, ...vendorCommands, ...outdatedCommands, ...hostsCommands, ...bakeCommands, ...integrityCommands, ...upCommands, ...importConfigCommands].filter(([k]) => !k.includes(' ')));
 
 export const EXTRA_COMMANDS: readonly string[] = [...TOP.keys(), 'image', 'server', 'cache', 'lsp'];
 
@@ -50,6 +52,11 @@ Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
 
+Host config files:
+  sitefile import-config <file> [--json]           translate netlify.toml, vercel.json, firebase.json,
+                                                   staticwebapp.config.json, wrangler.toml or .htaccess
+                                                   into _redirects and _headers
+
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
                                                    vendor/sitefile; builds then read them from there
@@ -74,6 +81,9 @@ Serving sites (detached servers are tracked by name):
   sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
+  sitefile up [-f sitefile.servers.yaml]           start every server of a servers file (detached, idempotent)
+  sitefile down [-f file]                          stop and remove the servers it started
+  sitefile ps [-f file] [--json]                   list them: running, exited or not created
 
 Editor support:
   sitefile lsp [--stdio]                           language server over stdio (Rust build only; docs/LSP.md)

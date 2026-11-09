@@ -50,14 +50,17 @@ pub mod precache;
 pub mod refs;
 pub mod server;
 pub mod servers;
+pub mod servers_file;
 pub mod site;
 pub mod store;
+pub mod toml;
 
 // Build, plugins, registry and CLI
 pub mod base_image;
 pub mod cli;
 pub mod executor;
 pub mod explain;
+pub mod host_config;
 pub mod hosts;
 pub mod memo;
 pub mod outdated;
