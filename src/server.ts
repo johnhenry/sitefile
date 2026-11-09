@@ -346,6 +346,41 @@ export function originForm(target: string): string {
   return rest.startsWith('/') ? rest : '/' + rest;
 }
 
+/** A `bytes=` value's number: digits only; more than 15 digits counts as larger than any file. */
+function rangeNumber(s: string): number | undefined {
+  if (!/^[0-9]+$/.test(s)) return undefined;
+  return s.length > 15 ? Number.POSITIVE_INFINITY : Number(s);
+}
+
+/**
+ * The byte range a `Range` header asks of a body of `size` bytes: `[start, end]` (inclusive),
+ * `'unsatisfiable'` (416), or undefined when the header is absent, malformed, not in bytes, or
+ * asks for several ranges (those are ignored: the whole body is sent, as RFC 9110 allows).
+ */
+export function byteRange(header: string | undefined, size: number): [number, number] | 'unsatisfiable' | undefined {
+  if (header === undefined) return undefined;
+  const v = header.trim();
+  if (v.slice(0, 6).toLowerCase() !== 'bytes=') return undefined;
+  const spec = v.slice(6).trim();
+  if (spec.includes(',')) return undefined;
+  const dash = spec.indexOf('-');
+  if (dash === -1) return undefined;
+  const first = spec.slice(0, dash).trim();
+  const last = spec.slice(dash + 1).trim();
+  if (first === '') {
+    const n = rangeNumber(last);
+    if (n === undefined) return undefined;
+    if (n === 0 || size === 0) return 'unsatisfiable';
+    return [Math.max(0, size - n), size - 1];
+  }
+  const start = rangeNumber(first);
+  if (start === undefined) return undefined;
+  const end = last === '' ? Number.POSITIVE_INFINITY : rangeNumber(last);
+  if (end === undefined || end < start) return undefined;
+  if (start >= size) return 'unsatisfiable';
+  return [start, Math.min(end, size - 1)];
+}
+
 function etagMatches(header: string | undefined, etag: string): boolean {
   if (header === undefined) return false;
   if (header.trim() === '*') return true;
@@ -480,7 +515,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       // An injected page is a different representation of the file: give it its own ETag.
       const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
       if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag }, body);
+      // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
+      const ifRange = req.headers['if-range'] as string | undefined;
+      const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
+      if (range === 'unsatisfiable') {
+        return finish(416, { ...custom, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
+      }
+      if (range !== undefined) {
+        const [start, end] = range;
+        const part = body.subarray(start, end + 1);
+        return finish(
+          206,
+          { 'content-type': type, 'content-length': part.byteLength, ...custom, etag, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          part,
+        );
+      }
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
