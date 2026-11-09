@@ -130,6 +130,17 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(dest)
             .map(|o| (o, false))
             .collect(),
+        Instruction::Precache {
+            patterns,
+            dest,
+            into,
+            ..
+        } => patterns
+            .iter()
+            .chain(dest)
+            .chain(into)
+            .map(|o| (o, false))
+            .collect(),
         Instruction::Sitemap { base, dest, .. } => std::iter::once(base)
             .chain(dest)
             .map(|o| (o, false))
@@ -702,6 +713,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             | Instruction::Precompress { .. }
             | Instruction::Robots { .. }
             | Instruction::SecurityTxt { .. }
+            | Instruction::Precache { .. }
             | Instruction::CheckLinks { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}

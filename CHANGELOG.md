@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
   route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
   (canonical page URLs and their redirect status, whether `_redirects` and

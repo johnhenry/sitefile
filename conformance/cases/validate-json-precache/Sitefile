@@ -1,0 +1,9 @@
+# PRECACHE: revisions, null for fingerprinted files, URLs below the EXPORT path, injection into a service worker.
+STAGE assets
+COPY ./public/ /www/
+COPY ./public/outside.txt /outside.txt
+FINGERPRINT /www/css/
+FROM assets
+PRECACHE /www/ /outside.txt TO /www/precache-manifest.json INTO /www/sw.js
+PRECACHE --overwrite /www/**/*.png
+EXPORT /www

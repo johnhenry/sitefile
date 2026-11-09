@@ -505,6 +505,14 @@ pub enum Instruction {
         dest: Option<Operand>,
         overwrite: bool,
     },
+    /// `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache manifest.
+    Precache {
+        span: SourceSpan,
+        patterns: Vec<Operand>,
+        dest: Option<Operand>,
+        into: Option<Operand>,
+        overwrite: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -544,6 +552,7 @@ impl Instruction {
             | Instruction::Precompress { span, .. }
             | Instruction::Robots { span, .. }
             | Instruction::SecurityTxt { span, .. }
+            | Instruction::Precache { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -569,6 +578,7 @@ impl Instruction {
             Instruction::Precompress { .. } => "PRECOMPRESS",
             Instruction::Robots { .. } => "ROBOTS",
             Instruction::SecurityTxt { .. } => "SECURITY_TXT",
+            Instruction::Precache { .. } => "PRECACHE",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }
