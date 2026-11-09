@@ -34,6 +34,11 @@ export interface SiteServerOptions {
   readonly lastModified?: () => number | undefined;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
+  /**
+   * `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+   * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
+   */
+  readonly base?: string | (() => string | undefined);
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
 }
@@ -467,6 +472,18 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
   return undefined;
 }
 
+/**
+ * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
+ * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
+ */
+export function normalizeBase(raw: string): string | undefined {
+  const m = /^https?:\/\/[^/?#]*(\/[^?#]*)?/i.exec(raw);
+  const p = m ? (m[1] ?? '/') : raw;
+  const segs = safeSegments(p.startsWith('/') ? p : '/' + p);
+  if (!segs) return undefined;
+  return segs.length === 0 ? '/' : `/${segs.map(encodeURIComponent).join('/')}/`;
+}
+
 /** A tree path with each segment percent-encoded like encodeURIComponent. */
 function encodePath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/');
@@ -592,9 +609,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(js) }, js, true);
     }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
-    const segs = safeSegments(rawPath);
-    if (!segs) return page(400, BAD_REQUEST_PAGE);
+    const allSegs = safeSegments(rawPath);
+    if (!allSegs) return page(400, BAD_REQUEST_PAGE);
     const trailingSlash = rawPath.endsWith('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    const baseNow = typeof options.base === 'function' ? options.base() : options.base;
+    const baseSegs = baseNow === undefined ? [] : (safeSegments(baseNow) ?? []);
+    /** The `--base` prefix of generated `Location`s (`''` without one), percent-encoded. */
+    const mount = baseSegs.length === 0 ? '' : '/' + baseSegs.map(encodeURIComponent).join('/');
+    let segs = allSegs;
+    if (baseSegs.length > 0) {
+      const inside = baseSegs.every((b, i) => allSegs[i] === b);
+      if (inside && allSegs.length === baseSegs.length && !trailingSlash) return finish(301, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside && allSegs.length === 0) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside) return page(404, NOT_FOUND_PAGE);
+      segs = allSegs.slice(baseSegs.length);
+    }
     const vpath = '/' + segs.join('/');
     // `_headers` patterns match the request path (with its trailing slash).
     const custom = headersFor(headerRules, vpath + (trailingSlash && segs.length > 0 ? '/' : ''));
@@ -656,7 +686,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const target = substituteTarget(r.to, caps);
         if (!isRewriteStatus(r.status)) {
           // A rule that matches query parameters passes on only what its target names.
-          const location = target.includes('?') || r.query.length > 0 ? target : target + search;
+          const mounted = target.startsWith('/') ? mount + target : target;
+          const location = mounted.includes('?') || r.query.length > 0 ? mounted : mounted + search;
           note = ` \u2192 ${location} (_redirects:${r.line})`;
           finish(r.status, { location, 'content-length': 0 }, undefined);
           return true;
@@ -677,14 +708,14 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (redirect(true)) return;
     let served = resolve(vpath, trailingSlash);
     if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
-      const location = '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
-      const location = '/' + segs.map(encodeURIComponent).join('/') + search;
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {

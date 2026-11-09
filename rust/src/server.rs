@@ -40,6 +40,10 @@ pub struct SiteServerOptions {
     /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
     /// blocks live reload.
     pub warn: Option<LogFn>,
+    /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+    /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
+    /// watched server takes it from the last good build); [`normalize_base`] makes the value.
+    pub base: Option<BaseFn>,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
 }
@@ -1020,6 +1024,38 @@ pub fn spa_fallback(
     None
 }
 
+/// The `--base` of a server, read per request.
+pub type BaseFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for
+/// none, or `None` when it is not a safe absolute path. The path of a URL
+/// (`https://user.github.io/repo/`) is taken as well (port of `normalizeBase`).
+pub fn normalize_base(raw: &str) -> Option<String> {
+    let n = http_prefix(raw);
+    let p = if n > 0 {
+        let rest = &raw[n..];
+        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let after = &rest[auth_end..];
+        if after.starts_with('/') {
+            &after[..after.find(['?', '#']).unwrap_or(after.len())]
+        } else {
+            "/"
+        }
+    } else {
+        raw
+    };
+    let segs = if p.starts_with('/') {
+        safe_segments(p)
+    } else {
+        safe_segments(&format!("/{p}"))
+    }?;
+    if segs.is_empty() {
+        return Some("/".into());
+    }
+    let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
+    Some(format!("/{}/", enc.join("/")))
+}
+
 /// A tree path with each segment percent-encoded like encodeURIComponent.
 fn encode_path(p: &str) -> String {
     let enc: Vec<String> = p.split('/').map(encode_uri_component).collect();
@@ -1814,10 +1850,50 @@ pub fn respond(
             Some(js.as_bytes().to_vec()),
         );
     }
-    let Some(segs) = safe_segments(raw_path) else {
+    let Some(all_segs) = safe_segments(raw_path) else {
         return page(400, BAD_REQUEST_PAGE, vec![]);
     };
     let trailing = raw_path.ends_with('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    let base_now = match &options.base {
+        Some(b) => b(),
+        None => None,
+    };
+    let base_segs = base_now
+        .as_deref()
+        .and_then(safe_segments)
+        .unwrap_or_default();
+    // The `--base` prefix of generated `Location`s (`""` without one), percent-encoded.
+    let mount = if base_segs.is_empty() {
+        String::new()
+    } else {
+        let enc: Vec<String> = base_segs.iter().map(|s| encode_uri_component(s)).collect();
+        format!("/{}", enc.join("/"))
+    };
+    let mut segs = all_segs.clone();
+    if !base_segs.is_empty() {
+        let inside = all_segs.len() >= base_segs.len() && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let to_mount = |status: u16| {
+            finish(
+                status,
+                owned(vec![
+                    ("location", format!("{mount}/{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            )
+        };
+        if inside && all_segs.len() == base_segs.len() && !trailing {
+            return to_mount(301);
+        }
+        if !inside && all_segs.is_empty() {
+            return to_mount(302);
+        }
+        if !inside {
+            return page(404, NOT_FOUND_PAGE, vec![]);
+        }
+        segs = all_segs[base_segs.len()..].to_vec();
+    }
     let vpath = format!("/{}", segs.join("/"));
     // `_headers` patterns match the request path (with its trailing slash).
     let custom = headers_for(
@@ -1958,6 +2034,11 @@ pub fn respond(
             let target = substitute_target(&r.to, &caps);
             if !is_rewrite_status(r.status) {
                 // A rule that matches query parameters passes on only what its target names.
+                let target = if target.starts_with('/') {
+                    format!("{mount}{target}")
+                } else {
+                    target
+                };
                 let location = if target.contains('?') || !r.query.is_empty() {
                     target
                 } else {
@@ -1995,7 +2076,7 @@ pub fn respond(
     let mut served = resolve(&vpath, trailing);
     if served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}/{search}", enc.join("/"));
+        let location = format!("{mount}/{}/{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
@@ -2011,7 +2092,7 @@ pub fn respond(
     // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}{search}", enc.join("/"));
+        let location = format!("{mount}/{}{search}", enc.join("/"));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
