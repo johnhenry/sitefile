@@ -53,6 +53,8 @@ export interface ServerState {
   readonly logFile: string;
   readonly ready: boolean;
   readonly error?: string;
+  /** The servers file (`sitefile up`) that started it, by real path; absent for `serve -d`. */
+  readonly project?: string;
 }
 
 export interface ServerView extends ServerState {
