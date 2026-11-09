@@ -147,6 +147,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             tls_key: None,
             compress: false,
             throttle: None,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

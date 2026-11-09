@@ -3,7 +3,7 @@ import https from 'node:https';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
+import { headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { gzip } from './deflate.js';
@@ -31,6 +31,8 @@ export interface SiteServerOptions {
   readonly lastModified?: () => number | undefined;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
+  /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
+  readonly country?: string;
   /**
    * DNS-rebinding guard: when set, a request whose `Host` is not `localhost`, a `*.localhost` name,
    * an IP address or a name this list allows gets `403` ({@link hostAllowed}). `*` allows every
@@ -439,6 +441,9 @@ export interface AccessLogEntry {
   /** `Content-Range` of a `206`/`416`, else undefined. */
   readonly range?: string;
   /** The client address (`--log-ip`, or a non-loopback client with client info), else undefined. */
+  /** What answered, as the `_redirects` log note (` → /new (_redirects:3)`), else undefined. */
+  readonly note?: string;
+  /** The client address (`--log-ip`), else undefined. */
   readonly remote?: string;
   /** The client's device ({@link deviceOf}), for non-loopback clients with client info. */
   readonly device?: string;
@@ -452,13 +457,14 @@ export interface AccessLogEntry {
  */
 export function accessLogLine(format: 'text' | 'json', e: AccessLogEntry): string {
   const target = printable(e.target);
-  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.remote !== undefined ? ` ${e.remote}` : ''}${e.device !== undefined ? ` ${e.device}` : ''}`;
+  if (format === 'text') return `${e.method} ${target} ${e.status} ${e.bytes} ${e.ms.toFixed(1)}ms${e.note ?? ''}${e.remote !== undefined ? ` ${e.remote}` : ''}${e.device !== undefined ? ` ${e.device}` : ''}`;
   const q = target.indexOf('?');
   const path = q === -1 ? target : target.slice(0, q);
   const query = q === -1 ? '' : target.slice(q + 1);
   return (
     `{"type":"request","ts":${JSON.stringify(e.ts)},"method":${JSON.stringify(e.method)},"path":${JSON.stringify(path)},"query":${JSON.stringify(query)},` +
     `"status":${e.status},"bytes":${e.bytes},"ms":${e.ms.toFixed(1)},"encoding":"identity","range":${e.range === undefined ? 'null' : JSON.stringify(e.range)}` +
+    `${e.note !== undefined ? `,"note":${JSON.stringify(e.note.replace(/^ \u2192 /, ''))}` : ''}` +
     `${e.remote !== undefined ? `,"remote":${JSON.stringify(e.remote)}` : ''}${e.device !== undefined ? `,"device":${JSON.stringify(e.device)}` : ''}}`
   );
 }
@@ -785,6 +791,11 @@ function etagMatches(header: string | undefined, etag: string): boolean {
   return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
 }
 
+/** A tree path with each segment percent-encoded like encodeURIComponent. */
+function encodePath(p: string): string {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
 function printable(s: string): string {
   return s.replace(/[^\x21-\x7e]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).slice(0, 512);
 }
@@ -855,6 +866,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const target = req.url ?? '/';
     const url = originForm(target);
     let bytes = 0;
+    /** What answered, for the access log (` → /new (_redirects:3)`), when a rule did. */
+    let note = '';
     const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
       // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
@@ -905,6 +918,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
           ...(range !== undefined ? { range: String(range) } : {}),
           ...(options.logIp || shared ? { remote: req.socket.remoteAddress ?? '' } : {}),
           ...(shared ? { device: deviceOf(req.headers['user-agent']) } : {}),
+          ...(note !== '' ? { note } : {}),
+          ...(options.logIp ? { remote: req.socket.remoteAddress ?? '' } : {}),
         }),
       );
     };
@@ -1062,23 +1077,32 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       }
       return undefined;
     };
+    const one = (k: string): string | undefined => {
+      const v = req.headers[k];
+      return Array.isArray(v) ? v.join(', ') : v;
+    };
+    const ruleRequest = { search, acceptLanguage: one('accept-language'), cookie: one('cookie'), country: options.country };
     /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
     const redirect = (forced: boolean): boolean => {
       for (const r of redirects) {
         if (r.force !== forced) continue;
-        const rest = matchRedirect(r, vpath);
-        if (rest === undefined) continue;
-        const target = r.splat ? r.to.split(':splat').join(rest.split('/').map(encodeURIComponent).join('/')) : r.to;
-        if (r.status !== 200 && r.status !== 404) {
-          finish(r.status, { location: loc(target.includes('?') ? target : target + search), 'content-length': 0 }, undefined);
+        const caps = matchRule(r, vpath, ruleRequest);
+        if (caps === undefined) continue;
+        const target = substituteTarget(r.to, caps);
+        if (!isRewriteStatus(r.status)) {
+          // A rule that matches query parameters passes on only what its target names.
+          const location = loc(target.includes('?') || r.query.length > 0 ? target : target + search);
+          note = ` \u2192 ${location} (_redirects:${r.line})`;
+          finish(r.status, { location, 'content-length': 0 }, undefined);
           return true;
         }
-        // 200 (rewrite) and 404: serve the target path's file with that status.
+        // 200 (rewrite), 404, 410 and 451: serve the target path's file with that status.
         const tq = target.indexOf('?');
         const tpath = tq === -1 ? target : target.slice(0, tq);
         const tsegs = safeSegments(tpath);
         const served = tsegs ? resolve('/' + tsegs.join('/'), tpath.endsWith('/')) : undefined;
         if (served === undefined) continue;
+        note = ` \u2192 ${encodePath(served)} (_redirects:${r.line})`;
         sendFile(r.status, served);
         return true;
       }
@@ -1100,7 +1124,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
     if (served !== undefined) return sendFile(200, served);
-    if (isFile('/404.html')) return sendFile(404, '/404.html');
+    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    const dirs = trailingSlash ? segs : segs.slice(0, -1);
+    for (let n = dirs.length; n >= 0; n--) {
+      const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
+      if (isFile(notFound)) return sendFile(404, notFound);
+    }
     page(404, NOT_FOUND_PAGE, custom);
   };
 
