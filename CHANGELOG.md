@@ -13,6 +13,9 @@
   rest are `#[cfg(unix)]`), and release-binaries.yml a `x86_64-pc-windows-msvc` zip with
   `sitefile.exe`, `LICENSE` and `README.md`, included in `SHA256SUMS`. docs/RUST.md, "Windows",
   lists every difference.
+
+## 0.0.6 (2026-11-09)
+
 - **`pattern` in schemas** (johnhenry/sitefile#135): a property rule can say
   `pattern: '^[a-z0-9-]+$'`; string values (and each element of a list) must match it, like JSON
   Schema's `pattern`. Patterns are a subset of JavaScript regular expressions (`u` flag: literals,
@@ -27,8 +30,6 @@
   reads them, DRAFTS applied) and reports `E_SCHEMA` and friends at the IMPORT line or SCHEMA clause,
   without a build. Remote and Git imports are skipped (the server never fetches); an edit clears
   these diagnostics until the next save. docs/LSP.md describes it.
-
-## Unreleased
 
 - **The version comes from `package.json`** (johnhenry/sitefile#146): `sitefile --version`, the help
   text and the builder version in build attestations said `0.1.0` in both implementations. TypeScript
