@@ -1509,6 +1509,7 @@ pub fn oci_options(
         compression: compression
             .or(sitefile_compression(&result.plan, ExportFormat::Oci))
             .unwrap_or_default(),
+        layers: None,
     })
 }
 
