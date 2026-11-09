@@ -1429,9 +1429,18 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
         // Declared either way: no warning.
         for (src, cacheable) in [
-            ("export const cache = true; export function transform() { return 'x'; }", true),
-            ("export default { apiVersion: 1, cache: true, transform: () => 'x' };", true),
-            ("export const cache = false; export function transform() { return 'x'; }", false),
+            (
+                "export const cache = true; export function transform() { return 'x'; }",
+                true,
+            ),
+            (
+                "export default { apiVersion: 1, cache: true, transform: () => 'x' };",
+                true,
+            ),
+            (
+                "export const cache = false; export function transform() { return 'x'; }",
+                false,
+            ),
         ] {
             let (root, file) = plugin(src, &[]);
             let (mut h, logs) = host_with(&file, PluginPolicy::default());
