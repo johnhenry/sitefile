@@ -337,7 +337,7 @@ const run: Command = {
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
-      const quit = await terminal(v, addr, base, warn, async () => {
+      const quit = await terminal(v, addr, base, tls.scheme, warn, async () => {
         if (source.kind !== 'dir') {
           process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
           return;
@@ -519,11 +519,12 @@ async function terminal(
   v: ParsedValues,
   addr: { host: string; port: number },
   base: string | undefined,
+  scheme: 'http' | 'https',
   warn: (m: string) => void,
   restart: () => Promise<void>,
 ): Promise<{ promise: Promise<void>; stop: () => void }> {
-  const urls = await serveUrls(addr.host, addr.port, base);
-  if (v.qr) process.stdout.write(qrText(urls.network ?? urls.local));
+  const urls = serveUrls(addr.host, addr.port, base, scheme);
+  if (v.qr) process.stdout.write(qrText(urls.network[0] ?? urls.local));
   const open = str(v.open);
   if (open !== undefined) openBrowser(openUrl(urls.local, open), warn);
   let resolve!: () => void;
@@ -854,7 +855,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         started = true;
         if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
         else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
-        quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
+        quit = await terminal(v, addr, base, tls.scheme, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
         void quit.promise.then(() => quitNow());
       },
     });

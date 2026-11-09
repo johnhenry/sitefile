@@ -1316,7 +1316,8 @@ on disk after the server started answers `500` for the entries that changed (`se
 - **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
   at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
   `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
-  [::]:…` also `  Network: …`, this machine's address on its default route, with a QR code of it), `r`
+  [::]:…` also a `  Network: …` line per interface address, the same list as the start line, with a QR
+  code of the first; `https://` under `--tls-cert`), `r`
   rebuilds (`--watch`, as if a file had changed) or re-reads a served directory (an image or archive file
   is read only at start: `Nothing to re-read: …`), `c` clears the screen, `q` (or Ctrl-C, Ctrl-D) quits,
   and `h` lists the keys. Reading keys puts the terminal in raw mode for the session; it is restored on
@@ -1327,7 +1328,7 @@ on disk after the server started answers `500` for the entries that changed (`se
   with the URL as its only argument and no shell, else `open` (macOS), `rundll32
   url.dll,FileProtocolHandler` (Windows, TypeScript CLI) or `xdg-open`. A browser that fails to start is a
   warning. `--qr` prints a QR code (byte mode, error correction M, in half-block characters with a quiet
-  zone) of the network URL when bound to every interface, else of the local URL, under the URL line. Both
+  zone) of the first network URL when bound to every interface, else of the local URL, under the URL line. Both
   are for a foreground server: with `-d` they are a usage error.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to

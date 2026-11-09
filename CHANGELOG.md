@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve` keys under `--tls-cert`, and `u`'s network URLs** (johnhenry/sitefile#300): `o` and `u`
+  use `https://` for an HTTPS server, and `u` lists every interface address (the start line's
+  `Network:` list) instead of only the default route's. Both implementations.
 - **`serve --mime ext=type` and `--mime-file mime.types`** (the CLI half of
   johnhenry/sitefile#220): custom content types before the built-in table,
   kept in the server record. Both servers.
