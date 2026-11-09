@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
+  file responses carry `Last-Modified` (image: when it was stored; directory:
+  newest file mtime; archive: its mtime; `--watch`: the build time), and
+  `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
+  `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
+  response with those links (HTTP/1.1 `GET` only). Both servers.
 - **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
   bytes` on file responses; a single `Range` on `GET` gets `206` with
   `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)

@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -230,6 +230,43 @@ test('byte ranges: 206 with Content-Range, 416, If-Range, HEAD and ignored multi
   assert.deepEqual(byteRange('bytes=0-99999999999999999999', 5), [0, 4]);
   assert.equal(byteRange('bytes=99999999999999999999-', 5), 'unsatisfiable');
   assert.equal(byteRange(undefined, 5), undefined);
+});
+
+test('Last-Modified, If-Modified-Since and 103 Early Hints (johnhenry/sitefile#228)', async () => {
+  const t = Tree.fromFiles(
+    Object.entries({ '/index.html': '<h1>x</h1>', '/a.css': 'a{}', '/_headers': '/\n  Link: </a.css>; rel=preload; as=style\n' }).map(([p, c]) => [p, makeFile(enc(c), 't')] as const),
+  );
+  const at = 1700000000;
+  const s = createSiteServer(t, { lastModified: () => at });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const r = await req(port, '/a.css');
+    assert.equal(r.headers['last-modified'], 'Tue, 14 Nov 2023 22:13:20 GMT');
+    assert.equal((await req(port, '/a.css', 'GET', { 'if-modified-since': 'Tue, 14 Nov 2023 22:13:20 GMT' })).status, 304);
+    assert.equal((await req(port, '/a.css', 'GET', { 'if-modified-since': 'Tue, 14 Nov 2023 22:13:19 GMT' })).status, 200);
+    assert.equal((await req(port, '/a.css', 'GET', { 'if-modified-since': 'Tue, 14 Nov 2023 22:13:20 GMT', 'if-none-match': '"x"' })).status, 200);
+    assert.equal((await req(port, '/missing')).headers['last-modified'], undefined);
+    // The 103 comes first on the wire.
+    const raw = await new Promise<string>((resolve, reject) => {
+      const c = net.connect(port, '127.0.0.1', () => c.write('GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n'));
+      let d = '';
+      c.on('data', (x) => (d += x));
+      c.on('close', () => resolve(d));
+      c.on('error', reject);
+    });
+    assert.match(raw, /^HTTP\/1\.1 103 Early Hints\r\nLink: <\/a\.css>; rel=preload; as=style\r\n\r\nHTTP\/1\.1 200 OK/i);
+  } finally {
+    await closeServer(s);
+  }
+  assert.equal(httpDate(0), 'Thu, 01 Jan 1970 00:00:00 GMT');
+  assert.equal(parseHttpDate('Sun, 06 Nov 1994 08:49:37 GMT'), 784111777);
+  for (const bad of ['Mon, 06 Nov 1994 08:49:37 GMT', 'Sunday, 06-Nov-94 08:49:37 GMT', 'Sun Nov  6 08:49:37 1994', 'Sun, 31 Nov 1994 08:49:37 GMT', 'Sun, 06 Nov 1994 24:00:00 GMT']) {
+    assert.equal(parseHttpDate(bad), undefined, bad);
+  }
+  assert.deepEqual(earlyHints('</a.css>; rel=preload; as=style, </b.js>; rel=stylesheet, <https://c.example>; REL="preconnect"'), ['</a.css>; rel=preload; as=style', '<https://c.example>; REL="preconnect"']);
+  assert.deepEqual(earlyHints('</a,b.css>; rel=preload'), ['</a,b.css>; rel=preload']);
+  assert.deepEqual(earlyHints('garbage rel=preload'), []);
+  assert.deepEqual(earlyHints('</a>; title="a b"; rel=preload'), []);
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

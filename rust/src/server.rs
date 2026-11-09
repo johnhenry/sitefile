@@ -28,10 +28,16 @@ pub struct SiteServerOptions {
     /// with the client script, and add [`RELOAD_SCRIPT`] to HTML navigations. Never set
     /// otherwise, and never written to exports.
     pub live_reload: Option<Arc<LiveReload>>,
+    /// When the served files last changed (Unix seconds), read per request: sent as
+    /// `Last-Modified` on file responses, and `If-Modified-Since` (without `If-None-Match`)
+    /// gives `304`. `None`: neither.
+    pub last_modified: Option<LastModifiedFn>,
     /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
     /// blocks live reload.
     pub warn: Option<LogFn>,
 }
+
+pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
 
 /// The tree a server answers from; `serve --watch` swaps in each good rebuild.
 pub type SharedTree = Arc<RwLock<Arc<Tree>>>;
@@ -710,6 +716,197 @@ pub fn safe_segments(raw_path: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
+const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (month 1..=12).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// An IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110 section 5.6.7) for Unix seconds.
+pub fn http_date(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // civil_from_days (Howard Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{}, {d:02} {} {y:04} {:02}:{:02}:{:02} GMT",
+        DAYS[(days + 4).rem_euclid(7) as usize],
+        MONTHS[(m - 1) as usize],
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// Unix seconds of an IMF-fixdate, or `None` for anything else (the obsolete formats too).
+pub fn parse_http_date(value: &str) -> Option<i64> {
+    let v = value.trim();
+    let b = v.as_bytes();
+    if b.len() != 29 || &v[3..5] != ", " || &v[25..] != " GMT" {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let t = v.get(r)?;
+        if !t.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    };
+    if b[7] != b' ' || b[11] != b' ' || b[16] != b' ' || b[19] != b':' || b[22] != b':' {
+        return None;
+    }
+    let wd = DAYS.iter().position(|d| *d == &v[0..3])?;
+    let month = MONTHS.iter().position(|m| *m == &v[8..11])? as i64 + 1;
+    let (day, year) = (num(5..7)?, num(12..16)?);
+    let (h, mi, se) = (num(17..19)?, num(20..22)?, num(23..25)?);
+    if day < 1 || h > 23 || mi > 59 || se > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    // The day must exist in that month and fall on the weekday given.
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_len = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if day > month_len[(month - 1) as usize] || (days + 4).rem_euclid(7) as usize != wd {
+        return None;
+    }
+    Some(days * 86_400 + h * 3600 + mi * 60 + se)
+}
+
+/// One link-value as Node's `writeEarlyHints` accepts it (`LINK_VALUE` in src/server.ts):
+/// `<uri>` then `; param[=value]` pairs, a quoted value without whitespace, `;` or `"`.
+fn is_link_value(p: &str) -> bool {
+    let ws =
+        |c: char| c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c';
+    let Some(rest) = p.strip_prefix('<') else {
+        return false;
+    };
+    let Some(close) = rest.find('>') else {
+        return false;
+    };
+    if rest[..close].contains(['\r', '\n']) {
+        return false;
+    }
+    let mut it = rest[close + 1..].chars().peekable();
+    loop {
+        while it.peek().is_some_and(|c| ws(*c)) {
+            it.next();
+        }
+        match it.next() {
+            None => return true,
+            Some(';') => {}
+            Some(_) => return false,
+        }
+        while it.peek().is_some_and(|c| ws(*c)) {
+            it.next();
+        }
+        let mut token = String::new();
+        while let Some(&c) = it.peek() {
+            if c == ';' || c == '"' || ws(c) {
+                break;
+            }
+            token.push(c);
+            it.next();
+        }
+        if token.is_empty() {
+            return false;
+        }
+        if it.peek() == Some(&'"') {
+            // `name="value"`: the quote must follow `=` after a non-empty name.
+            if !(token.len() >= 2 && token.ends_with('=')) {
+                return false;
+            }
+            it.next();
+            loop {
+                match it.next() {
+                    Some('"') => break,
+                    Some(c) if c == ';' || ws(c) => return false,
+                    Some(_) => {}
+                    None => return false,
+                }
+            }
+            if it.peek().is_some_and(|c| !(ws(*c) || *c == ';')) {
+                return false;
+            }
+        }
+    }
+}
+
+/// The link-values of a `Link` header that become `103 Early Hints`: split at commas outside
+/// `<…>` and quotes, kept when well formed and `rel=preload` or `rel=preconnect`.
+pub fn early_hints(link: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let (mut angle, mut quote) = (false, false);
+    for c in link.chars() {
+        if c == '<' && !quote {
+            angle = true;
+        } else if c == '>' && !quote {
+            angle = false;
+        } else if c == '"' && !angle {
+            quote = !quote;
+        }
+        if c == ',' && !angle && !quote {
+            parts.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    parts.push(cur);
+    parts
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| {
+            if !is_link_value(p) {
+                return false;
+            }
+            let v: String = p
+                .to_ascii_lowercase()
+                .chars()
+                .filter(|c| *c != ' ' && *c != '\t')
+                .collect();
+            [
+                "rel=preload",
+                "rel=\"preload\"",
+                "rel=preconnect",
+                "rel=\"preconnect\"",
+            ]
+            .iter()
+            .any(|t| v.contains(t))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// What a `Range` header asks of a body (see [`byte_range`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteRange {
@@ -857,7 +1054,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 8] = [
+const PROTECTED_HEADERS: [&str; 9] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -866,6 +1063,7 @@ const PROTECTED_HEADERS: [&str; 8] = [
     "location",
     "accept-ranges",
     "content-range",
+    "last-modified",
 ];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
@@ -1247,12 +1445,34 @@ pub fn respond(
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
             if live { "-live" } else { "" }
         );
-        if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
+        let modified = options.last_modified.as_ref().and_then(|f| f());
+        let lm: Vec<(String, String)> = modified
+            .map(|m| vec![("last-modified".to_string(), http_date(m))])
+            .unwrap_or_default();
+        let not_modified = || {
             let mut h: Vec<(String, String)> = custom.clone();
-            h.push(("etag".into(), etag));
-            return finish(304, h, None);
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            finish(304, h, None)
+        };
+        if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
+            return not_modified();
+        }
+        // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
+        let since = if headers.contains_key("if-none-match") {
+            None
+        } else {
+            headers
+                .get("if-modified-since")
+                .and_then(|v| parse_http_date(v))
+        };
+        if let (Some(m), Some(since)) = (modified, since) {
+            if m <= since {
+                return not_modified();
+            }
         }
         h.push(("etag".into(), etag.clone()));
+        h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
         let if_range_ok = headers
             .get("if-range")
@@ -1388,6 +1608,8 @@ const MAX_DISCARD_BODY: u64 = 1 << 20;
 
 struct Request {
     method: String,
+    /// HTTP/1.1 or later (`103 Early Hints` is only sent then).
+    http11: bool,
     url: String,
     headers: HashMap<String, String>,
     keep_alive: bool,
@@ -1476,6 +1698,7 @@ fn read_request(
     };
     Ok(Some(Ok(Request {
         method: method.into(),
+        http11: version != "HTTP/1.0",
         url: url.into(),
         headers,
         keep_alive,
@@ -1565,6 +1788,29 @@ fn serve_connection(
                 &req.headers,
             ),
         };
+        // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
+        let hints = match res.header("link") {
+            Some(l)
+                if res.status == 200
+                    && req.method == "GET"
+                    && req.http11
+                    && res
+                        .header("content-type")
+                        .is_some_and(|t| t.starts_with("text/html")) =>
+            {
+                early_hints(l)
+            }
+            _ => Vec::new(),
+        };
+        if !hints.is_empty() {
+            let _ = out.write_all(
+                format!(
+                    "HTTP/1.1 103 Early Hints\r\nlink: {}\r\n\r\n",
+                    hints.join(", ")
+                )
+                .as_bytes(),
+            );
+        }
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -1860,6 +2106,7 @@ mod tests {
             })),
             server_id: None,
             live_reload: None,
+            last_modified: None,
             warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
@@ -1979,6 +2226,62 @@ mod tests {
                 "application/octet-stream"
             );
         });
+    }
+
+    #[test]
+    fn http_dates_and_early_hints() {
+        assert_eq!(http_date(0), "Thu, 01 Jan 1970 00:00:00 GMT");
+        assert_eq!(http_date(1_700_000_000), "Tue, 14 Nov 2023 22:13:20 GMT");
+        assert_eq!(http_date(951_782_400), "Tue, 29 Feb 2000 00:00:00 GMT");
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_http_date(&http_date(951_782_400)), Some(951_782_400));
+        for bad in [
+            "Mon, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+            "Sun, 31 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+        ] {
+            assert_eq!(parse_http_date(bad), None, "{bad}");
+        }
+        assert_eq!(
+            early_hints("</a.css>; rel=preload; as=style, </b.js>; rel=stylesheet, <https://c.example>; REL=\"preconnect\""),
+            vec!["</a.css>; rel=preload; as=style", "<https://c.example>; REL=\"preconnect\""]
+        );
+        assert_eq!(
+            early_hints("</a,b.css>; rel=preload"),
+            vec!["</a,b.css>; rel=preload"]
+        );
+        assert!(early_hints("garbage rel=preload").is_empty());
+        assert!(early_hints("</a>; title=\"a b\"; rel=preload").is_empty());
+
+        let t = Tree::from_files([("/a.css".to_string(), make_file(b"a{}".to_vec(), "t", 0o644))])
+            .unwrap();
+        let opts = SiteServerOptions {
+            last_modified: Some(Arc::new(|| Some(1_700_000_000))),
+            ..Default::default()
+        };
+        let ask = |extra: &[(&str, &str)]| {
+            let h: HashMap<String, String> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            handle_request(&t, &opts, "GET", "/a.css", &h)
+        };
+        assert_eq!(
+            ask(&[]).header("last-modified"),
+            Some("Tue, 14 Nov 2023 22:13:20 GMT")
+        );
+        let ims = ("if-modified-since", "Tue, 14 Nov 2023 22:13:20 GMT");
+        assert_eq!(ask(&[ims]).status, 304);
+        assert_eq!(
+            ask(&[("if-modified-since", "Tue, 14 Nov 2023 22:13:19 GMT")]).status,
+            200
+        );
+        assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
     }
 
     #[test]
@@ -2154,6 +2457,7 @@ mod tests {
             })),
             server_id: Some("abcdef012345".into()),
             live_reload: None,
+            last_modified: None,
             warn: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
