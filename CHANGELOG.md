@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
   <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
   SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>

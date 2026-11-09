@@ -225,6 +225,16 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
+    /// A precache manifest of the files matching `patterns` (checked, NFC) below `root` (the EXPORT path),
+    /// written to `dest` and/or injected into the service worker `into`.
+    Precache {
+        patterns: Vec<String>,
+        dest: Option<String>,
+        into: Option<String>,
+        root: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
     /// `redirects` every REDIRECT source in the Sitefile.
     CheckLinks {
@@ -301,6 +311,7 @@ impl Operation {
             | Operation::Canonical { span, .. }
             | Operation::Precompress { span, .. }
             | Operation::TextFile { span, .. }
+            | Operation::Precache { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
@@ -315,6 +326,7 @@ impl Operation {
             Operation::Canonical { .. } => "CANONICAL",
             Operation::Precompress { .. } => "PRECOMPRESS",
             Operation::TextFile { keyword, .. } => keyword,
+            Operation::Precache { .. } => "PRECACHE",
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
@@ -1024,6 +1036,41 @@ pub fn plan_with(
                     span: span.clone(),
                 });
             }
+            Instruction::Precache {
+                span,
+                patterns,
+                dest,
+                into,
+                overwrite,
+            } => {
+                let patterns = patterns
+                    .iter()
+                    .map(|o| check_pattern_of(&evaluate_operand(o, &vars)?, &o.span, "PRECACHE"))
+                    .collect::<Result<Vec<_>>>()?;
+                let into = match into {
+                    Some(i) => Some(file_dest(Some(i), &vars, "", "PRECACHE INTO")?),
+                    None => None,
+                };
+                let dest = if dest.is_some() || into.is_none() {
+                    Some(file_dest(
+                        dest.as_ref(),
+                        &vars,
+                        "/sw-manifest.json",
+                        "PRECACHE",
+                    )?)
+                } else {
+                    None
+                };
+                // `root` is the EXPORT path, filled in below.
+                operations(&mut stages, span)?.push(Operation::Precache {
+                    patterns,
+                    dest,
+                    into,
+                    root: "/".into(),
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
             Instruction::CheckLinks {
                 span,
                 warn,
@@ -1183,9 +1230,9 @@ pub fn plan_with(
     for st in &mut stages {
         for op in &mut st.operations {
             match op {
-                Operation::Fingerprint { root: r, .. } | Operation::Canonical { root: r, .. } => {
-                    *r = root.clone()
-                }
+                Operation::Fingerprint { root: r, .. }
+                | Operation::Canonical { root: r, .. }
+                | Operation::Precache { root: r, .. } => *r = root.clone(),
                 Operation::CheckLinks {
                     root: r,
                     redirects: rs,
@@ -1767,6 +1814,25 @@ impl Operation {
             } => {
                 m.insert("dest".into(), json!(dest));
                 m.insert("text".into(), json!(text));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Precache {
+                patterns,
+                dest,
+                into,
+                root,
+                overwrite,
+                span,
+            } => {
+                m.insert("patterns".into(), json!(patterns));
+                if let Some(d) = dest {
+                    m.insert("dest".into(), json!(d));
+                }
+                if let Some(i) = into {
+                    m.insert("into".into(), json!(i));
+                }
+                m.insert("root".into(), json!(root));
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }

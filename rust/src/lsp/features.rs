@@ -8,8 +8,8 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    INSTRUCTIONS, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES, ROBOTS_CLAUSES, SECRET_FORMS,
-    SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    INSTRUCTIONS, PRECACHE_CLAUSES, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES, ROBOTS_CLAUSES,
+    SECRET_FORMS, SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -482,6 +482,29 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                     SECURITY_TXT_CLAUSES.iter().copied().filter(|c| {
                         !((*c == "EXPIRES" || *c == "TO") && ops.iter().any(|w| w == c))
                     }),
+                    CIK_KEYWORD,
+                )
+            }
+        }
+        "PRECACHE" => {
+            // Patterns, then [TO <dest>] [INTO <service-worker>], in this order.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            let last = ops
+                .iter()
+                .filter_map(|w| PRECACHE_CLAUSES.iter().position(|c| w == c))
+                .max();
+            if ops.is_empty() || PRECACHE_CLAUSES.contains(&prev.as_str()) {
+                Vec::new()
+            } else {
+                kw_items(
+                    PRECACHE_CLAUSES[last.map_or(0, |l| l + 1)..]
+                        .iter()
+                        .copied(),
                     CIK_KEYWORD,
                 )
             }
@@ -1368,6 +1391,12 @@ mod tests {
             labels("SECURITY_TXT EXPIRES 2099-01-01 "),
             ["CONTACT", "ENCRYPTION", "POLICY", "TO"]
         );
+        // PRECACHE: patterns, then TO, then INTO
+        assert!(labels("PRECACHE ").is_empty());
+        assert_eq!(labels("PRECACHE /assets/ "), ["TO", "INTO"]);
+        assert!(labels("PRECACHE /a/ TO ").is_empty());
+        assert_eq!(labels("PRECACHE /a/ TO /m.json "), ["INTO"]);
+        assert!(labels("PRECACHE /a/ INTO /sw.js ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);
