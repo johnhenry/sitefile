@@ -1,0 +1,19 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "redirects": [
+    { "source": "/old", "destination": "/new" },
+    { "source": "/docs/:path*", "destination": "/guide/:path*", "permanent": false },
+    { "source": "/u/:id", "destination": "/users/:id" },
+    { "source": "/x", "destination": "/y", "statusCode": 301, "has": [{ "type": "query", "key": "a" }] }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" },
+    { "source": "/api/:path*", "destination": "https://api.example.com/:path*" }
+  ],
+  "headers": [
+    { "source": "/(.*)", "headers": [{ "key": "X-Content-Type-Options", "value": "nosniff" }] },
+    { "source": "/fonts/:file*", "headers": [{ "key": "Cache-Control", "value": "max-age=31536000" }] },
+    { "source": "/(.*)\\.js", "headers": [{ "key": "X-JS", "value": "1" }] }
+  ]
+}
