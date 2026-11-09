@@ -68,6 +68,7 @@
 {"dir":"conformance/cases/err-pages-group-type","args":[],"code":0,"stdout":"Sitefile: OK (1 import, 1 operation)\n","stderr":"warning: Sitefile:2: [render-escape] RENDER writes /t/${t.key}.html without --escape=html, so substituted values are not HTML-escaped (add --escape=html, or --escape=none if that is intended)\n"},
 {"dir":"conformance/cases/err-pages-size","args":[],"code":1,"stdout":"","stderr":"error[E_VALIDATION]: Sitefile:3:58: RENDER … PAGE: '0' is not a page size (a whole number from 1 to 999999999)\n"},
 {"dir":"conformance/cases/err-path-escape","args":[],"code":1,"stdout":"","stderr":"error[E_PATH_ESCAPE]: Sitefile:2:6: local path '../outside' escapes the build context\n"},
+{"dir":"conformance/cases/err-plugin-cache-value","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 1 operation)\n","stderr":""},
 {"dir":"conformance/cases/err-plugin-folder-integrity","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 1 operation)\n","stderr":""},
 {"dir":"conformance/cases/err-plugin-folder-symlink","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 1 operation)\n","stderr":""},
 {"dir":"conformance/cases/err-plugin-memory","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 1 operation)\n","stderr":""},

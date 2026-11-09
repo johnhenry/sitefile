@@ -2,12 +2,27 @@
 
 ## Unreleased
 
+- **Identical `--help` in both CLIs**: the `--node` line now reads "default
+  $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
+  default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
+  the Rust binary), and that is now listed in docs/RUST.md "Known
+  differences". `save --help` in the Rust binary now lists `car`, `html` and
+  `mhtml` too. A `help-text` conformance case compares every command's help.
 - **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
   file responses carry `Last-Modified` (image: when it was stored; directory:
   newest file mtime; archive: its mtime; `--watch`: the build time), and
   `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
   `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
   response with those links (HTTP/1.1 `GET` only). Both servers.
+- **`sitefile import-config`** (johnhenry/sitefile#204): translates
+  netlify.toml, vercel.json, firebase.json, staticwebapp.config.json,
+  wrangler.toml/.json (`[assets]`) and an `.htaccess` subset into the
+  `_redirects` and `_headers` that `sitefile serve` understands today. Every
+  rule written is checked against serve's parser. Placeholders, conditions,
+  regular expressions, proxies and settings with no `_redirects` form are
+  listed as unsupported, never half translated. `--json` lists both. It reads
+  the TOML files with a small TOML subset shared by both implementations.
+  Fixtures for every format are conformance cases.
 - **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
   bytes` on file responses; a single `Range` on `GET` gets `206` with
   `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
@@ -21,6 +36,13 @@
   not created yet. Sources are relative to the servers file. Server records
   gain an optional `project` field. Both implementations, with conformance
   cases.
+- **`serve x.zip` serves in place** (#213): the zip is checked and indexed at
+  start and each entry is read from the file per request, so memory stays
+  flat for large zips; responses are unchanged, except that gzip clients get
+  deflated entries passed through as `content-encoding: gzip` (no
+  re-encoding). Library: `openZipFile`/`openZipArchive`/`loadServedSite` and
+  `SiteServerOptions.content` (Rust: `open_zip_file`, `open_zip_archive`,
+  `load_served_site`, `SiteServerOptions::content`). Both implementations.
 - **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
   RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
   with what to convert it to. (zstd decoding is not added: the Rust side has
@@ -43,6 +65,13 @@
   matches, else as UTF-8 when valid, else as CP437 (they used to become
   U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
   `serve x.zip`, in both implementations.
+- **Zip export writes the extended timestamp** (#187): every entry carries the
+  0x5455 "UT" extra field (mtime only) in its local and central header, so
+  `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
+  the DOS time as local time). **This changes zip export bytes**: every
+  `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
+  deterministic and identical across the TypeScript and Rust writers (their
+  byte-for-byte fixtures are updated together). Image IDs are not affected.
 - **`EXPORT … AS swbn KEY <secret-id>`** (johnhenry/sitefile#207): a Signed
   Web Bundle for Isolated Web Apps, signed with an Ed25519 PEM key passed as
   `--secret id=<id>,src=key.pem` (never stored). The output is
@@ -50,7 +79,6 @@
   The Rust port has a small RFC 8032 Ed25519 of its own (no new crate).
   `--secret` values may now contain line breaks; a value used as an HTTP
   header still may not. Conformance cases `ok-swbn`, `err-swbn-*`.
-
 - **WARC export, import and serve** (johnhenry/sitefile#206, WARC part):
   `EXPORT / AS warc BASE <url>` writes a deterministic WARC/1.1 file (one
   `response` record per file with its `_headers`, directory indexes at their

@@ -6,6 +6,7 @@ use crate::resources::types::ArchiveLimits;
 use crate::resources::wbn_reader::{is_web_bundle, read_web_bundle, web_bundle_to_tree};
 use crate::tree::{make_file, Node, Tree};
 use flate2::{Decompress, FlushDecompress, Status};
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// Below this many output bytes the ratio limit is not enforced (tar block padding compresses extremely well).
@@ -28,6 +29,8 @@ struct Collector<'a> {
     file_paths: HashSet<String>,
     dirs: HashSet<String>,
     total: u64,
+    /// False: keep only digests (the bytes are read again on demand, [`open_zip_file`]).
+    retain: bool,
 }
 
 impl Collector<'_> {
@@ -65,10 +68,16 @@ impl Collector<'_> {
                 self.span,
             ));
         }
-        self.files.push((
-            path.clone(),
-            make_file(data.to_vec(), format!("{}:{name}", self.origin), mode),
-        ));
+        let node = make_file(data.to_vec(), format!("{}:{name}", self.origin), mode);
+        let node = if self.retain {
+            node
+        } else {
+            std::sync::Arc::new(crate::tree::FileNode {
+                bytes: std::sync::Arc::from(Vec::<u8>::new()),
+                ..(*node).clone()
+            })
+        };
+        self.files.push((path.clone(), node));
         self.file_paths.insert(path);
         Ok(())
     }
@@ -108,6 +117,7 @@ pub fn extract_archive(
         file_paths: HashSet::new(),
         dirs: HashSet::new(),
         total: 0,
+        retain: true,
     };
     if is_gzip(bytes) {
         let tar = gunzip(bytes, origin, limits, span)?;
@@ -606,10 +616,11 @@ fn parse_pax(
 
 // ------------------------------------------------------------------- zip
 
+#[derive(Clone)]
 struct ZipEntry {
     name: String,
-    /// Offset and length of the raw name in the central directory.
-    raw_name: (usize, usize),
+    /// The name's bytes in the central directory.
+    raw_name: Vec<u8>,
     method: u16,
     crc: u32,
     csize: u64,
@@ -700,33 +711,77 @@ fn u64le(b: &[u8], i: usize) -> u64 {
     u64::from_le_bytes(b[i..i + 8].try_into().unwrap())
 }
 
-fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
-    let (origin, span, limits) = (c.origin, c.span, *c.limits);
+/// Random access to a zip's bytes: in memory, or a file read on demand ([`open_zip_file`]).
+pub(crate) trait ZipSource {
+    fn size(&self) -> usize;
+    /// `len` bytes at `at`; the caller has checked that they are inside the source.
+    fn read(&self, at: usize, len: usize) -> Result<Cow<'_, [u8]>>;
+    fn u16_at(&self, at: usize) -> Result<u16> {
+        Ok(u16le(&self.read(at, 2)?, 0))
+    }
+    fn u32_at(&self, at: usize) -> Result<u32> {
+        Ok(u32le(&self.read(at, 4)?, 0))
+    }
+    fn u64_at(&self, at: usize) -> Result<u64> {
+        Ok(u64le(&self.read(at, 8)?, 0))
+    }
+}
+
+struct MemorySource<'a>(&'a [u8]);
+
+impl ZipSource for MemorySource<'_> {
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+    fn read(&self, at: usize, len: usize) -> Result<Cow<'_, [u8]>> {
+        Ok(Cow::Borrowed(&self.0[at..at + len]))
+    }
+}
+
+/// Where one zip entry's data is, after [`zip_index`] checked its headers.
+#[derive(Clone)]
+struct ZipSpan {
+    e: ZipEntry,
+    start: usize,
+}
+
+/// Read and check a zip's central directory and local headers (no entry data):
+/// sizes and counts against the limits, ZIP64 records, names, unsafe entry
+/// types, local headers that disagree with the central directory, overlapping
+/// entries. In central-directory order.
+fn zip_index(
+    src: &dyn ZipSource,
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Vec<ZipSpan>> {
     let bad = |why: String| corrupt(origin, why, span);
+    let len = src.size();
     let mut eocd: Option<usize> = None;
-    if b.len() >= 22 {
-        let hi = b.len() - 22;
-        let lo = hi.saturating_sub(0xffff);
-        for i in (lo..=hi).rev() {
-            if u32le(b, i) == 0x06054b50 {
-                eocd = Some(i);
+    if len >= 22 {
+        // The end record is in the last 22 + 65535 bytes (its comment is at most 65535 bytes).
+        let from = (len - 22).saturating_sub(0xffff);
+        let tail = src.read(from, len - from)?;
+        for i in (0..=tail.len() - 22).rev() {
+            if u32le(&tail, i) == 0x06054b50 {
+                eocd = Some(from + i);
                 break;
             }
         }
     }
     let eocd = eocd.ok_or_else(|| bad("zip end-of-central-directory record not found".into()))?;
-    let mut count = u16le(b, eocd + 10) as u64;
-    let mut p0 = u32le(b, eocd + 16) as u64;
+    let mut count = src.u16_at(eocd + 10)? as u64;
+    let mut p0 = src.u32_at(eocd + 16)? as u64;
     // ZIP64 (APPNOTE 4.3.14-4.3.15): a locator right before the end record points at the zip64 end
     // record, whose counts and offsets replace the 16- and 32-bit ones. Streaming writers add it even to small archives.
-    if eocd >= 20 && u32le(b, eocd - 20) == 0x07064b50 {
-        let r = u64le(b, eocd - 12);
-        if b.len() < 56 || r > (b.len() - 56) as u64 || u32le(b, r as usize) != 0x06064b50 {
+    if eocd >= 20 && src.u32_at(eocd - 20)? == 0x07064b50 {
+        let r = src.u64_at(eocd - 12)?;
+        if len < 56 || r > (len - 56) as u64 || src.u32_at(r as usize)? != 0x06064b50 {
             return Err(bad("corrupt zip64 end-of-central-directory record".into()));
         }
         let r = r as usize;
-        count = u64le(b, r + 32);
-        p0 = u64le(b, r + 48);
+        count = src.u64_at(r + 32)?;
+        p0 = src.u64_at(r + 48)?;
     }
     if count > limits.max_entries {
         return Err(limit(
@@ -739,38 +794,37 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
     let mut list: Vec<ZipEntry> = Vec::new();
     let mut declared: u64 = 0;
     // Past the end: any offset that cannot hold a record.
-    let mut p = usize::try_from(p0).unwrap_or(usize::MAX).min(b.len());
+    let mut p = usize::try_from(p0).unwrap_or(usize::MAX).min(len);
     for _ in 0..count {
-        if p + 46 > b.len() || u32le(b, p) != 0x02014b50 {
+        if p + 46 > len || src.u32_at(p)? != 0x02014b50 {
             return Err(bad("corrupt zip central directory".into()));
         }
-        let name_len = u16le(b, p + 28) as usize;
-        let advance = 46 + name_len + u16le(b, p + 30) as usize + u16le(b, p + 32) as usize;
-        if p + advance > b.len() {
+        let name_len = src.u16_at(p + 28)? as usize;
+        let extra_len = src.u16_at(p + 30)? as usize;
+        let advance = 46 + name_len + extra_len + src.u16_at(p + 32)? as usize;
+        if p + advance > len {
             return Err(bad("corrupt zip central directory".into()));
         }
-        let unix = u16le(b, p + 4) >> 8 == 3;
-        let attr = u32le(b, p + 38) >> 16;
+        let unix = src.u16_at(p + 4)? >> 8 == 3;
+        let attr = src.u32_at(p + 38)? >> 16;
         let file_type = attr & 0o170000;
-        let extra_len = u16le(b, p + 30) as usize;
-        let name = zip_name(
-            &b[p + 46..p + 46 + name_len],
-            u16le(b, p + 8),
-            &b[p + 46 + name_len..p + 46 + name_len + extra_len],
-        );
+        let flags = src.u16_at(p + 8)?;
+        let raw_name = src.read(p + 46, name_len)?.into_owned();
+        let extra = src.read(p + 46 + name_len, extra_len)?;
+        let name = zip_name(&raw_name, flags, &extra);
         let mut e = ZipEntry {
-            raw_name: (p + 46, name_len),
-            method: u16le(b, p + 10),
-            crc: u32le(b, p + 16),
-            csize: u32le(b, p + 20) as u64,
-            usize_: u32le(b, p + 24) as u64,
-            local: u32le(b, p + 42) as u64,
+            raw_name,
+            method: src.u16_at(p + 10)?,
+            crc: src.u32_at(p + 16)?,
+            csize: src.u32_at(p + 20)? as u64,
+            usize_: src.u32_at(p + 24)? as u64,
+            local: src.u32_at(p + 42)? as u64,
             mode: if unix { attr & 0o7777 } else { 0o644 },
             // Some tools mark directories only by mode, without a trailing slash.
             is_dir: name.ends_with('/') || (unix && file_type == 0o040000),
             name,
         };
-        if u16le(b, p + 8) & 1 != 0 {
+        if flags & 1 != 0 {
             return Err(bad(format!(
                 "encrypted zip entry '{}' is not supported",
                 e.name
@@ -779,7 +833,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         // ZIP64 extra field (0x0001): the 64-bit values of the fields that are 0xffffffff, in this order.
         const MAX: u64 = 0xffff_ffff;
         if e.usize_ == MAX || e.csize == MAX || e.local == MAX {
-            let z = extra_field(&b[p + 46 + name_len..p + 46 + name_len + extra_len], 0x0001);
+            let z = extra_field(&extra, 0x0001);
             let mut at = 0usize;
             let name = e.name.clone();
             let mut next = || -> Result<u64> {
@@ -823,7 +877,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         ));
     }
     if declared
-        > (b.len() as u64)
+        > (len as u64)
             .saturating_mul(limits.max_ratio)
             .max(RATIO_FLOOR)
     {
@@ -843,36 +897,36 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
             span.cloned(),
         )
     };
-    // (entry, local header offset, data start, data end)
-    let mut spans: Vec<(&ZipEntry, usize, usize, usize)> = Vec::with_capacity(list.len());
-    for e in &list {
+    // (index into list, local header offset, data start, data end)
+    let mut spans: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(list.len());
+    for (i, e) in list.iter().enumerate() {
         // Past the end: any offset that cannot hold a header.
-        let h = usize::try_from(e.local).unwrap_or(usize::MAX).min(b.len());
-        if h + 30 > b.len() || u32le(b, h) != 0x04034b50 {
+        let h = usize::try_from(e.local).unwrap_or(usize::MAX).min(len);
+        if h + 30 > len || src.u32_at(h)? != 0x04034b50 {
             return Err(bad(format!("corrupt zip local header for '{}'", e.name)));
         }
-        let name_len = u16le(b, h + 26) as usize;
-        let start = h + 30 + name_len + u16le(b, h + 28) as usize;
-        if start as u64 + e.csize > b.len() as u64 {
+        let name_len = src.u16_at(h + 26)? as usize;
+        let start = h + 30 + name_len + src.u16_at(h + 28)? as usize;
+        if start as u64 + e.csize > len as u64 {
             return Err(bad(format!("truncated zip entry '{}'", e.name)));
         }
-        let (at, len) = e.raw_name;
-        if b[h + 30..h + 30 + name_len] != b[at..at + len] {
+        if *src.read(h + 30, name_len)? != *e.raw_name {
             return Err(unsafe_(e, "its local header has a different name"));
         }
-        if u16le(b, h + 8) != e.method {
+        if src.u16_at(h + 8)? != e.method {
             return Err(unsafe_(
                 e,
                 "its local header has a different compression method",
             ));
         }
         // With a data descriptor (bit 3) the local sizes may be zero; the descriptor follows the data.
-        if u16le(b, h + 6) & 8 == 0 {
-            let mut csize = u32le(b, h + 18) as u64;
-            let mut usize_ = u32le(b, h + 22) as u64;
+        if src.u16_at(h + 6)? & 8 == 0 {
+            let mut csize = src.u32_at(h + 18)? as u64;
+            let mut usize_ = src.u32_at(h + 22)? as u64;
             if csize == 0xffff_ffff || usize_ == 0xffff_ffff {
                 // A local ZIP64 extra field holds both sizes (APPNOTE 4.5.3); Python's force_zip64 writes one.
-                if let Some(z) = extra_field(&b[h + 30 + name_len..start], 0x0001) {
+                let local_extra = src.read(h + 30 + name_len, start - (h + 30 + name_len))?;
+                if let Some(z) = extra_field(&local_extra, 0x0001) {
                     if z.len() >= 16 {
                         (usize_, csize) = (u64le(z, 0), u64le(z, 8));
                     }
@@ -882,7 +936,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                 return Err(unsafe_(e, "its local header has different sizes"));
             }
         }
-        spans.push((e, h, start, start + e.csize as usize));
+        spans.push((i, h, start, start + e.csize as usize));
     }
     let mut by_offset = spans.clone();
     by_offset.sort_by_key(|s| s.1);
@@ -890,53 +944,214 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         let (prev, cur) = (w[0], w[1]);
         if cur.1 < prev.3 {
             return Err(unsafe_(
-                cur.0,
-                &format!("its data overlaps entry '{}'", prev.0.name),
+                &list[cur.0],
+                &format!("its data overlaps entry '{}'", list[prev.0].name),
             ));
         }
     }
+    let starts: Vec<usize> = spans.iter().map(|s| s.2).collect();
+    Ok(list
+        .into_iter()
+        .zip(starts)
+        .map(|(e, start)| ZipSpan { e, start })
+        .collect())
+}
 
-    for &(e, _, start, _) in &spans {
-        if e.is_dir {
-            c.add(&e.name, Kind::Dir, &[], 0o755)?;
-            continue;
-        }
-        let raw = &b[start..start + e.csize as usize];
-        let data: Vec<u8> = match e.method {
-            0 => raw.to_vec(),
-            8 => {
-                // Headers can lie: never inflate more than the declared size.
-                match inflate_like_node(raw, false, e.usize_.max(1)) {
-                    Inflated::Done(d) => d,
-                    Inflated::TooLarge => return Err(too_large(origin, false, &limits, span)),
-                    Inflated::Corrupt => return Err(bad("corrupt compressed data".into())),
-                }
-            }
-            m => {
-                return Err(bad(format!(
-                    "zip entry '{}' uses unsupported compression method {m}",
-                    e.name
-                )))
-            }
-        };
-        if data.len() as u64 != e.usize_ {
-            return Err(bad(format!(
-                "zip entry '{}' size does not match its header",
-                e.name
-            )));
-        }
-        // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
-        let mut crc = flate2::Crc::new();
-        crc.update(&data);
-        if crc.sum() != e.crc {
-            return Err(bad(format!(
-                "zip entry '{}' fails its CRC-32 check",
-                e.name
-            )));
-        }
-        c.add(&e.name, Kind::File, &data, e.mode)?;
+/// Check an inflated (or stored) entry against its header: size and CRC-32.
+fn check_zip_data(data: &[u8], e: &ZipEntry, bad: &dyn Fn(String) -> SitefileError) -> Result<()> {
+    if data.len() as u64 != e.usize_ {
+        return Err(bad(format!(
+            "zip entry '{}' size does not match its header",
+            e.name
+        )));
+    }
+    // Inflate cannot notice a corrupt stored entry; the CRC-32 can.
+    let mut crc = flate2::Crc::new();
+    crc.update(data);
+    if crc.sum() != e.crc {
+        return Err(bad(format!(
+            "zip entry '{}' fails its CRC-32 check",
+            e.name
+        )));
     }
     Ok(())
+}
+
+/// An entry's bytes, inflated (never beyond its declared size) and checked.
+fn zip_data(
+    src: &dyn ZipSource,
+    s: &ZipSpan,
+    origin: &str,
+    limits: &ArchiveLimits,
+    span: Option<&SourceSpan>,
+) -> Result<Vec<u8>> {
+    let bad = |why: String| corrupt(origin, why, span);
+    let e = &s.e;
+    let raw = src.read(s.start, e.csize as usize)?;
+    let data: Vec<u8> = match e.method {
+        0 => raw.into_owned(),
+        8 => {
+            // Headers can lie: never inflate more than the declared size.
+            match inflate_like_node(&raw, false, e.usize_.max(1)) {
+                Inflated::Done(d) => d,
+                Inflated::TooLarge => return Err(too_large(origin, false, limits, span)),
+                Inflated::Corrupt => return Err(bad("corrupt compressed data".into())),
+            }
+        }
+        m => {
+            return Err(bad(format!(
+                "zip entry '{}' uses unsupported compression method {m}",
+                e.name
+            )))
+        }
+    };
+    check_zip_data(&data, e, &bad)?;
+    Ok(data)
+}
+
+fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
+    let (origin, span, limits) = (c.origin, c.span, *c.limits);
+    let src = MemorySource(b);
+    for s in zip_index(&src, origin, &limits, span)? {
+        if s.e.is_dir {
+            c.add(&s.e.name, Kind::Dir, &[], 0o755)?;
+            continue;
+        }
+        let data = zip_data(&src, &s, origin, &limits, span)?;
+        c.add(&s.e.name, Kind::File, &data, s.e.mode)?;
+    }
+    Ok(())
+}
+
+/// A zip entry's raw deflate stream, for a gzip response ([`ZipFile::deflated`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deflated {
+    pub deflate: Vec<u8>,
+    pub crc: u32,
+    pub size: u64,
+}
+
+struct FileSource {
+    file: std::fs::File,
+    size: usize,
+    origin: String,
+}
+
+impl ZipSource for FileSource {
+    fn size(&self) -> usize {
+        self.size
+    }
+    fn read(&self, at: usize, len: usize) -> Result<Cow<'_, [u8]>> {
+        use std::os::unix::fs::FileExt;
+        let mut buf = vec![0u8; len];
+        self.file.read_exact_at(&mut buf, at as u64).map_err(|_| {
+            SitefileError::plain(
+                E_ARCHIVE,
+                format!("{}: the file changed while it was read", self.origin),
+            )
+        })?;
+        Ok(Cow::Owned(buf))
+    }
+}
+
+/// A zip file served without holding its contents ([`open_zip_file`]).
+pub struct ZipFile {
+    /// The archive's files; their `bytes` are empty (read them with [`ZipFile::read`]), digests and modes are real.
+    pub tree: Tree,
+    src: FileSource,
+    by_path: std::collections::HashMap<String, ZipSpan>,
+}
+
+impl ZipFile {
+    /// The bytes of a file of `tree`, read from the zip again and checked; `None` for other paths.
+    pub fn read(&self, path: &str) -> Option<Result<Vec<u8>>> {
+        let s = self.by_path.get(path)?;
+        let changed = || {
+            SitefileError::plain(
+                E_ARCHIVE,
+                format!(
+                    "{}: zip entry '{}' changed since the server started",
+                    self.src.origin, s.e.name
+                ),
+            )
+        };
+        Some((|| {
+            let raw = self.src.read(s.start, s.e.csize as usize)?;
+            let data = if s.e.method == 8 {
+                match inflate_like_node(&raw, false, s.e.usize_.max(1)) {
+                    Inflated::Done(d) => d,
+                    _ => return Err(changed()),
+                }
+            } else {
+                raw.into_owned()
+            };
+            check_zip_data(&data, &s.e, &|_| changed())?;
+            Ok(data)
+        })())
+    }
+
+    /// A deflated file's raw deflate stream with its CRC-32 and size (for gzip responses).
+    pub fn deflated(&self, path: &str) -> Option<Deflated> {
+        let s = self.by_path.get(path)?;
+        if s.e.method != 8 {
+            return None;
+        }
+        let deflate = self
+            .src
+            .read(s.start, s.e.csize as usize)
+            .ok()?
+            .into_owned();
+        Some(Deflated {
+            deflate,
+            crc: s.e.crc,
+            size: s.e.usize_,
+        })
+    }
+}
+
+/// Open a zip file for serving without extracting it into memory: the central
+/// directory and local headers are read and checked as [`extract_archive`]
+/// checks them, and every entry is inflated once (one at a time) for its
+/// CRC-32, digest and the limits. Afterwards only the entry index is held;
+/// [`ZipFile::read`] reads an entry from the file on demand.
+pub fn open_zip_file(
+    file: &std::path::Path,
+    origin: &str,
+    limits: &ArchiveLimits,
+) -> Result<ZipFile> {
+    let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
+    let f = std::fs::File::open(file).map_err(|_| unreadable())?;
+    let size = f.metadata().map_err(|_| unreadable())?.len() as usize;
+    let src = FileSource {
+        file: f,
+        size,
+        origin: origin.to_string(),
+    };
+    let mut c = Collector {
+        origin,
+        limits,
+        span: None,
+        files: Vec::new(),
+        file_paths: HashSet::new(),
+        dirs: HashSet::new(),
+        total: 0,
+        retain: false,
+    };
+    let mut by_path = std::collections::HashMap::new();
+    for s in zip_index(&src, origin, limits, None)? {
+        if s.e.is_dir {
+            c.add(&s.e.name, Kind::Dir, &[], 0o755)?;
+            continue;
+        }
+        let data = zip_data(&src, &s, origin, limits, None)?;
+        c.add(&s.e.name, Kind::File, &data, s.e.mode)?;
+        by_path.insert(archive_path(&s.e.name, None)?, s);
+    }
+    Ok(ZipFile {
+        tree: Tree::from_files(c.files)?,
+        src,
+        by_path,
+    })
 }
 
 #[cfg(test)]

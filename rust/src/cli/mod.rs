@@ -9,6 +9,7 @@ pub mod common;
 pub mod git_context;
 pub mod hosts;
 pub mod images;
+pub mod import_config;
 pub mod integrity;
 pub mod network;
 pub mod outdated;
@@ -66,6 +67,11 @@ Integrity:
 Variants:
   sitefile bake [targets...] [-f file] [--print]   build several targets (matrix, groups) from
                                                    sitefile.bake.yaml; --print shows the plan
+
+Host config files:
+  sitefile import-config <file> [--json]           translate netlify.toml, vercel.json, firebase.json,
+                                                   staticwebapp.config.json, wrangler.toml or .htaccess
+                                                   into _redirects and _headers
 
 Offline builds:
   sitefile vendor [context] [--vendor-dir dir]     download remote imports and the BASE image into
@@ -159,7 +165,7 @@ Options:
       --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
                                plugin's linear memory (default 1024)
       --node <path>            the Node binary JavaScript plugins run on (absolute path; default
-                               $SITEFILE_NODE, else node on PATH); must be >= 26
+                               $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -295,6 +301,7 @@ const TOP: &[&Command] = &[
     &up::UP,
     &up::DOWN,
     &up::PS,
+    &import_config::IMPORT_CONFIG,
 ];
 
 struct Group {
