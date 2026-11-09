@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, normalizeBase, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, hostAllowed, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -299,6 +299,32 @@ test('Last-Modified, If-Modified-Since and 103 Early Hints (johnhenry/sitefile#2
   assert.deepEqual(earlyHints('</a,b.css>; rel=preload'), ['</a,b.css>; rel=preload']);
   assert.deepEqual(earlyHints('garbage rel=preload'), []);
   assert.deepEqual(earlyHints('</a>; title="a b"; rel=preload'), []);
+});
+
+test('Host allow-list: DNS rebinding guard (johnhenry/sitefile#190)', async () => {
+  const s = createSiteServer(tree, { allowedHosts: ['example.com', '.dev.test'] });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/')).status, 200, 'the default 127.0.0.1:<port> Host');
+    const bad = await req(port, '/', 'GET', { host: 'evil.example' });
+    assert.equal(bad.status, 403);
+    assert.match(bad.body, /--allowed-host/);
+    assert.equal((await req(port, '/', 'GET', { host: 'www.dev.test' })).status, 200);
+    assert.equal((await req(port, '/', 'GET', { host: 'app.localhost:5173' })).status, 200);
+  } finally {
+    await closeServer(s);
+  }
+  const allowed = ['example.com', '.dev.test'];
+  for (const h of [undefined, '', 'localhost', 'LocalHost:80', 'x.localhost', 'localhost.', '127.0.0.1:8080', '10.0.0.7', '[::1]:8080', '[fe80::1%25en0]', 'example.com', 'EXAMPLE.com.:1', 'dev.test', 'a.dev.test']) {
+    assert.equal(hostAllowed(allowed, h), !String(h).includes('%25'), String(h));
+  }
+  for (const h of ['evil.example', 'www.example.com', 'notdev.test', 'localhost.evil', '1.2.3.4.evil', '999.1.1.1', '[::1', 'a:b:80']) assert.equal(hostAllowed(allowed, h), false, h);
+  assert.equal(hostAllowed(undefined, 'evil.example'), true, 'no list: no check');
+  assert.equal(hostAllowed(['*'], 'evil.example'), true);
+  assert.equal(parseAllowedHost('Example.COM.'), 'example.com');
+  assert.equal(parseAllowedHost('.dev.test'), '.dev.test');
+  assert.equal(parseAllowedHost('*'), '*');
+  for (const bad of ['', '.', 'a..b', 'a b', 'a:80', 'http://a', '*.a']) assert.equal(parseAllowedHost(bad), undefined, bad);
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

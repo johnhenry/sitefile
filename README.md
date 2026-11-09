@@ -431,6 +431,10 @@ tools are code, and run only when you name them on the command line.
   read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **`serve` answers only local names.** A request whose `Host` is not
+  `localhost`, `*.localhost` or an IP address is refused (`403`), so a web page
+  that DNS-rebinds its name to `127.0.0.1` cannot read a local server;
+  `--allowed-host` adds names ([docs/CLI.md](docs/CLI.md#site-servers)).
 - **Caches are trusted.** A TRANSFORM cache hit (local, or from
   `--cache-from <registry>`) is used as if the plugin had returned it, and the
   Rust build loads compiled wasm modules from `$SITEFILE_HOME/cache/wasm` as

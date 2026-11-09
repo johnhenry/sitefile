@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
 - **PRECOMPRESS writes `.gz` sidecars** (johnhenry/sitefile#203):
   `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes
   `<file>.gz` next to matching text files of at least MIN bytes (default 1024)
