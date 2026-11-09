@@ -1812,8 +1812,7 @@ and tar timestamps instead.
   SHA-512 of the bundle, the block without signatures and the signature attributes. Ed25519 is
   deterministic, so the same tree and key give the same bytes; the output matches `wbn-sign` 0.3.1
   byte for byte. The tree should hold `/.well-known/manifest.webmanifest` for Chrome to install it.
-  The Rust port signs with its own Ed25519 (RFC 8032, tested against the RFC's vectors; not constant
-  time, which matters little for a key signing one local build). A `--secret` value may contain line
+  The Rust port signs with `ring`'s Ed25519 (already in the build through rustls). A `--secret` value may contain line
   breaks (a PEM key); one used as an HTTP header (`IMPORT … SECRET`) may not (`E_SECRET`).
 
 File output safety (same rules as directories, plus): `--out` that is, or
