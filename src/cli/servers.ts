@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -6,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, type Cidr, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import { Store } from '../store.js';
@@ -126,6 +127,10 @@ const run: Command = {
     '--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored',
     '--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)',
     '--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)',
+    '--random-route    serve the site only under a random secret path (printed in the URL)',
+    '--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)',
+    '--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)',
+    '--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -163,6 +168,10 @@ const run: Command = {
     auth: { type: 'string', multiple: true },
     'auth-file': { type: 'string' },
     'max-connections-per-ip': { type: 'string' },
+    'random-route': { type: 'boolean' },
+    'allow-ip': { type: 'string', multiple: true },
+    'deny-ip': { type: 'string', multiple: true },
+    'stop-after': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -190,6 +199,7 @@ const run: Command = {
     const logging = loggingOf(v);
     const auth = await authOf(v, bind.host);
     const perIp = perIpOf(v);
+    const sharing = sharingOf(v, bind.host);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -201,18 +211,22 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
-      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
-      await waitForSignal();
+      const bp = sharing.server.basePath;
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, bp)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp)}`);
+      const stop = sharing.stopAfter;
+      const timer = stop === undefined ? undefined : new Promise<string>((r) => setTimeout(() => r('stop-after'), stop.seconds * 1000).unref());
+      const why = await Promise.race([waitForSignal(), ...(timer ? [timer] : [])]);
+      if (why === 'stop-after') process.stdout.write(`Stopping: --stop-after ${stop!.text} reached\n`);
       await closeServer(server);
       return 0;
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath)}\n${networkLines(up.host, up.port, up.basePath)}`);
     return 0;
   },
 };
@@ -246,6 +260,13 @@ export interface DetachedServe {
   readonly authFile?: string | undefined;
   /** `--max-connections-per-ip` (absent: no limit). */
   readonly maxConnectionsPerIp?: number | undefined;
+  /** `--random-route` prefix. */
+  readonly basePath?: string | undefined;
+  /** `--allow-ip`, `--deny-ip` blocks as given. */
+  readonly allowIp?: string[] | undefined;
+  readonly denyIp?: string[] | undefined;
+  /** `--stop-after`: when the server stops (ISO time). */
+  readonly expires?: string | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -274,6 +295,10 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.auth !== undefined ? { auth: d.auth } : {}),
     ...(d.authFile !== undefined ? { authFile: d.authFile } : {}),
     ...(d.maxConnectionsPerIp ? { maxConnectionsPerIp: d.maxConnectionsPerIp } : {}),
+    ...(d.basePath !== undefined ? { basePath: d.basePath } : {}),
+    ...(d.allowIp !== undefined ? { allowIp: d.allowIp } : {}),
+    ...(d.denyIp !== undefined ? { denyIp: d.denyIp } : {}),
+    ...(d.expires !== undefined ? { expires: d.expires } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -351,9 +376,9 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
 }
 
 /** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
-function networkLines(host: string, port: number): string {
+function networkLines(host: string, port: number, basePath?: string): string {
   return networkUrls(host, port)
-    .map((u) => `  Network: ${u}\n`)
+    .map((u) => `  Network: ${withBase(u, basePath)}\n`)
     .join('');
 }
 
@@ -374,6 +399,62 @@ async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: Bas
   return {
     server: new BasicAuth([...entries, ...fromFile]),
     record: { ...(entries.length > 0 ? { auth: entries } : {}), ...(authFile !== undefined ? { authFile: path.resolve(authFile) } : {}) },
+  };
+}
+
+/** A server URL (`http://host:port/`) under a --random-route prefix. */
+function withBase(url: string, basePath: string | undefined): string {
+  return basePath === undefined ? url : `${url.slice(0, -1)}${basePath}/`;
+}
+
+/** The URL a server is reached at locally (its --random-route prefix included). */
+export function siteUrl(host: string, port: number, basePath?: string): string {
+  return withBase(formatUrl(host, port), basePath);
+}
+
+/**
+ * `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after`, and the sharing defaults: `noindex` on a non-loopback bind and
+ * client info (address, device) in the access log of non-loopback clients.
+ */
+function sharingOf(
+  v: ParsedValues,
+  bindHost: string,
+): {
+  server: { basePath?: string; ipRules?: { allow: Cidr[]; deny: Cidr[] }; noindex?: true; clientInfo: true };
+  record: { basePath?: string; allowIp?: string[]; denyIp?: string[]; expires?: string };
+  stopAfter?: { seconds: number; text: string };
+} {
+  const cidrs = (flag: string): { text: string[]; parsed: Cidr[] } => {
+    const text = strs(v[flag]);
+    return {
+      text,
+      parsed: text.map((t) => {
+        const c = parseCidr(t);
+        if (c === undefined) usage(`--${flag}: invalid address or CIDR block '${t}'`);
+        return c;
+      }),
+    };
+  };
+  const allow = cidrs('allow-ip');
+  const deny = cidrs('deny-ip');
+  const basePath = v['random-route'] ? `/${randomBytes(12).toString('hex')}` : undefined;
+  const raw = str(v['stop-after']);
+  let stopAfter: { seconds: number; text: string } | undefined;
+  if (raw !== undefined) {
+    const m = /^([0-9]{1,6})(s|m|h|d)$/.exec(raw);
+    if (!m || Number(m[1]) === 0) usage(`--stop-after expects a duration like 90s, 30m, 2h or 1d, not '${raw}'`);
+    stopAfter = { seconds: Number(m[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[m[2] as 's' | 'm' | 'h' | 'd'], text: raw };
+  }
+  const ipRules = allow.parsed.length + deny.parsed.length > 0 ? { allow: allow.parsed, deny: deny.parsed } : undefined;
+  return {
+    server: { ...(basePath ? { basePath } : {}), ...(ipRules ? { ipRules } : {}), ...(!isLoopback(bindHost) ? { noindex: true as const } : {}), clientInfo: true },
+    record: {
+      ...(basePath ? { basePath } : {}),
+      ...(allow.text.length > 0 ? { allowIp: allow.text } : {}),
+      ...(deny.text.length > 0 ? { denyIp: deny.text } : {}),
+      ...(stopAfter ? { expires: new Date(Date.now() + stopAfter.seconds * 1000).toISOString() } : {}),
+    },
+    ...(stopAfter ? { stopAfter } : {}),
   };
 }
 
@@ -413,6 +494,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const logging = loggingOf(v);
   const auth = await authOf(v, bind.host);
   const perIp = perIpOf(v);
+  if (v['stop-after'] !== undefined) usage('--stop-after does not apply to --watch');
+  const sharing = sharingOf(v, bind.host);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -439,7 +522,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -483,8 +566,9 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, formatUrl(addr.host, addr.port))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
+        const bp = sharing.server.basePath;
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, bp))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, bp)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp)}`);
       },
     });
   } finally {
@@ -686,7 +770,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.basePath)}\n${networkLines(up.host, up.port, up.basePath)}`);
     return 0;
   },
 };

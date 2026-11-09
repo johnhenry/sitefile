@@ -57,6 +57,13 @@ export interface ServerState {
   readonly authFile?: string;
   /** `--max-connections-per-ip` (absent: no limit). */
   readonly maxConnectionsPerIp?: number;
+  /** `--random-route`: the secret prefix the site answers under (absent: none). */
+  readonly basePath?: string;
+  /** `--allow-ip` / `--deny-ip` blocks as given (absent: none). */
+  readonly allowIp?: readonly string[];
+  readonly denyIp?: readonly string[];
+  /** `--stop-after`: when the server stops itself (ISO time; absent: never). */
+  readonly expires?: string;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
@@ -164,9 +171,9 @@ export class ServerRegistry {
     return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
   }
 }
-function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {
+function urlOf(s: Pick<ServerState, 'host' | 'port' | 'basePath'>): string {
   const shown = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}/`;
+  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}${s.basePath ?? ''}/`;
 }
 
 export function pidAlive(pid: number): boolean {

@@ -117,6 +117,18 @@ pub struct ServerState {
     /// `--max-connections-per-ip` (0: no limit).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub max_connections_per_ip: usize,
+    /// `--random-route`: the secret prefix the site answers under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_path: Option<String>,
+    /// `--allow-ip` blocks as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_ip: Option<Vec<String>>,
+    /// `--deny-ip` blocks as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_ip: Option<Vec<String>>,
+    /// `--stop-after`: when the server stops itself (ISO time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -326,7 +338,11 @@ impl ServerRegistry {
             state: s.clone(),
             status: if running { "running" } else { "exited" },
             url: if s.ready {
-                url_of(&s.host, s.port)
+                let u = url_of(&s.host, s.port);
+                match &s.base_path {
+                    Some(p) => format!("{}{p}/", &u[..u.len() - 1]),
+                    None => u,
+                }
             } else {
                 String::new()
             },
@@ -815,6 +831,13 @@ pub struct DetachedServe {
     pub auth_file: Option<String>,
     /// `--max-connections-per-ip` (0: no limit).
     pub max_connections_per_ip: usize,
+    /// `--random-route` prefix.
+    pub base_path: Option<String>,
+    /// `--allow-ip`, `--deny-ip` blocks as given.
+    pub allow_ip: Option<Vec<String>>,
+    pub deny_ip: Option<Vec<String>>,
+    /// `--stop-after`: when the server stops (ISO time).
+    pub expires: Option<String>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -841,6 +864,10 @@ impl DetachedServe {
             auth: Vec::new(),
             auth_file: None,
             max_connections_per_ip: 0,
+            base_path: None,
+            allow_ip: None,
+            deny_ip: None,
+            expires: None,
             project: None,
         })
     }
@@ -892,6 +919,10 @@ pub fn serve_detached_with(
         auth: serve.auth.clone(),
         auth_file: serve.auth_file.clone(),
         max_connections_per_ip: serve.max_connections_per_ip,
+        base_path: serve.base_path.clone(),
+        allow_ip: serve.allow_ip.clone(),
+        deny_ip: serve.deny_ip.clone(),
+        expires: serve.expires.clone(),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1110,6 +1141,10 @@ mod tests {
             auth: Vec::new(),
             auth_file: None,
             max_connections_per_ip: 0,
+            base_path: None,
+            allow_ip: None,
+            deny_ip: None,
+            expires: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
