@@ -1,0 +1,11 @@
+# EXPORT ... FOR s3 (issue #205): the host's own files, rules it cannot express left out with --lossy.
+FROM ./site
+REDIRECT /old /new
+REDIRECT /legacy/* /guide/:splat STATUS 302
+REDIRECT /u/:id /users/:id
+REDIRECT /blog/* /posts/:splat
+REDIRECT /away https://example.com/x STATUS 308
+HEADER /* X-Frame-Options: DENY
+HEADER /assets/* Cache-Control: max-age=60
+HEADER /assets/* Cache-Control: immutable
+EXPORT / BASE https://www.example.com/ FOR s3

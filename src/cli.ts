@@ -114,6 +114,8 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lossy                  with EXPORT ... FOR <host>: leave out, with a warning, REDIRECT and HEADER
+                               rules the host cannot express (default: an error)
       --strict-paths           fail (E_PATH_PORTABLE) instead of warning when an exported path cannot be
                                written on Windows, or starts with '_' and there is no /.nojekyll
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
@@ -192,6 +194,7 @@ export async function main(
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'strict-pins': { type: 'boolean' },
+        lossy: { type: 'boolean' },
         'strict-paths': { type: 'boolean' },
         'lint-disable': { type: 'string', multiple: true },
         'no-lockfile': { type: 'boolean' },
@@ -399,6 +402,7 @@ export async function main(
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       strictPins: !!o['strict-pins'],
+      lossy: !!o.lossy,
       strictPaths: !!o['strict-paths'],
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),

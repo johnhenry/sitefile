@@ -384,6 +384,7 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 OciCompression::ALL.map(OciCompression::as_str),
                 CIK_ENUM_MEMBER,
             ),
+            "FOR" => kw_items(crate::language::ast::EXPORT_HOSTS, CIK_ENUM_MEMBER),
             "BASE" | "AT" => Vec::new(),
             _ if n >= 2 => {
                 // Clauses come in order: offer the ones after the last one used.
@@ -1230,8 +1231,9 @@ mod tests {
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
         assert_eq!(
             labels("EXPORT / AS oci BASE x "),
-            ["AT", "COMPRESSION", "KEY"]
+            ["AT", "COMPRESSION", "KEY", "FOR"]
         );
+        assert_eq!(labels("EXPORT / FOR "), crate::language::ast::EXPORT_HOSTS);
         assert_eq!(labels("EXPORT / AS oci COMPRESSION "), ["gzip", "none"]);
         assert_eq!(labels("RENDER --escape="), ["none", "html"]);
         assert_eq!(labels("ARG N: "), ["string", "number", "boolean"]);

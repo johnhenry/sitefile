@@ -1,0 +1,2 @@
+FROM ./site
+EXPORT / FOR heroku

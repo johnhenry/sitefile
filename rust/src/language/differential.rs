@@ -314,7 +314,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("value", Some(Value::Array(value.iter().map(operand).collect()))),
             ("overwrite", Some(json!(overwrite))),
         ]),
-        Instruction::Export { span: sp, path, format, base, at, compression, key } => obj(vec![
+        Instruction::Export { span: sp, path, format, base, at, compression, key, for_host } => obj(vec![
             ("kind", s("EXPORT")),
             ("span", Some(span(sp))),
             ("path", Some(operand(path))),
@@ -323,6 +323,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("at", at.as_ref().map(operand)),
             ("compression", compression.as_ref().map(|(v, cs)| json!({ "value": v.as_str(), "span": span(cs) }))),
             ("key", key.as_ref().map(|(id, ks)| json!({ "id": id, "span": span(ks) }))),
+            ("forHost", for_host.as_ref().map(|(v, hs)| json!({ "value": v, "span": span(hs) }))),
         ]),
     }
 }

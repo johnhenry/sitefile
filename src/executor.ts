@@ -50,6 +50,7 @@ import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { canonical } from './canonical.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
+import { exportForHost, type HostHeader, type HostRedirect } from './export-for.js';
 import { portabilityProblems } from './portable.js';
 import { precache } from './precache.js';
 import { precompress } from './precompress.js';
@@ -98,6 +99,11 @@ export interface BuildOptions {
    * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
    */
   readonly strictPins?: boolean;
+  /**
+   * `EXPORT … FOR <host>`: leave out, with a warning, the REDIRECT and HEADER rules the host cannot express
+   * (default: they are E_EXPORT errors).
+   */
+  readonly lossy?: boolean;
   /** `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings. */
   readonly strictPaths?: boolean;
   /** Maximum imports resolved at once (default 4). */
@@ -553,8 +559,9 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label, currentRenames, warn);
-  const output = tree.subtree(p.exportPath);
+  const site = withSiteRules(tree, p, label, currentRenames, warn, !!options.lossy);
+  tree = site.tree;
+  const output = site.output ?? tree.subtree(p.exportPath);
   const portability = portabilityProblems(output.entries().map(([f]) => f).sort((a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))));
   if (portability.length > 0 && options.strictPaths) {
     throw new SitefileError('E_PATH_PORTABLE', `EXPORT ${p.exportPath}: ${portability.length === 1 ? 'a path is' : `${portability.length} paths are`} not portable (--strict-paths):${portability.map((m) => `\n  ${m}`).join('')}`);
@@ -2405,7 +2412,7 @@ async function transformFiles(
  * Content-Security-Policy for every exported page: lines after those, or with META a `<meta>` in each page
  * (see {@link cspPages}).
  */
-function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void, lossy: boolean): { tree: Tree; output?: Tree } {
   const url = new Map<string, string>();
   for (const [from, to] of renames) {
     const a = urlBelow(p.exportPath, from);
@@ -2431,6 +2438,7 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
       }
     }
   }
+  const autoTo = headers.length;
   if (p.csp) {
     const origin = `${label}:${p.csp.span.line} CSP`;
     const r = cspPages(tree, p.exportPath, p.csp.policy, p.csp.meta, origin);
@@ -2446,6 +2454,21 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
       headers.push(...r.rules);
     }
   }
+  // EXPORT … FOR <host> (not netlify, whose files these are; not with --target, which exports the raw tree).
+  const host = p.target === undefined ? p.exportFor : undefined;
+  if (host && host.host !== 'netlify') {
+    // headers: the HEADER lines (p.headers, in order), FINGERPRINT's cache headers, then CSP's.
+    const autoFrom = p.headers.length;
+    const hostRedirects: HostRedirect[] = redirects.map((r) => ({ from: r.from, to: r.to, status: r.status, span: r.span }));
+    const autoSpan = p.cacheHeaders?.span ?? host.span;
+    const hostHeaders: HostHeader[] = headers.map((h, i) => ({ pattern: h.pattern, name: h.name, value: h.value, span: i < autoFrom ? (p.headers[i] as { span: SourceSpan }).span : i < autoTo ? autoSpan : (p.csp?.span ?? host.span), auto: i >= autoFrom && i < autoTo }));
+    const r = exportForHost(host.host, tree.subtree(p.exportPath), hostRedirects, hostHeaders, { label, lossy, warn, base: p.exportBase, span: host.span });
+    if (host.host !== 'cloudflare') return { tree, output: r.output };
+    // Cloudflare: the same files, without the rules it refused.
+    redirects.splice(0, redirects.length, ...redirects.filter((_, i) => r.redirects.includes(hostRedirects[i] as HostRedirect)));
+    const keep = headers.filter((_, i) => r.headers.includes(hostHeaders[i] as HostHeader));
+    headers.splice(0, headers.length, ...keep);
+  }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
     { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
     { name: '_headers', text: headersFile(headers), rules: headerRules, kind: headerKind },
@@ -2457,7 +2480,7 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
     const node = makeFile(new TextEncoder().encode(f.text), `${label}:${first.span.line} ${f.kind}`);
     tree = tree.withFiles([[joinVirtual(p.exportPath, f.name), node]], policy, first.span);
   }
-  return tree;
+  return { tree };
 }
 
 /** The URL path of a tree path below the exported directory, or undefined outside it. */

@@ -92,6 +92,19 @@ pub(crate) struct UrlParts {
     pub has_query: bool,
 }
 
+/// Host (lowercase), path, and whether the query and fragment are non-empty, of an http(s) URL.
+pub(crate) fn url_site_parts(url: &str) -> Option<(String, String, bool, bool)> {
+    let req = ureq::get(url);
+    let ru = req.request_url().ok()?;
+    let u = ru.as_url();
+    Some((
+        u.host_str()?.to_ascii_lowercase(),
+        u.path().to_string(),
+        u.query().is_some_and(|q| !q.is_empty()),
+        u.fragment().is_some_and(|f| !f.is_empty()),
+    ))
+}
+
 /// Parse an http(s) URL; None when it does not parse.
 pub(crate) fn url_parts(url: &str) -> Option<UrlParts> {
     let req = ureq::get(url);

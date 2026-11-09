@@ -4365,6 +4365,20 @@
               }
             },
             {
+              "match": "(?<![^\\s])((?i:FOR))(?:\\s+(?:((?i:netlify|cloudflare|vercel|firebase|azure|github-pages|s3))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.language.export-host.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.export-host.sitefile"
+                }
+              }
+            },
+            {
               "match": "(?<![^\\s])((?i:BASE|AT|KEY))(?=\\s|$)",
               "captures": {
                 "1": {

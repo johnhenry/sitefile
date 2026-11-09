@@ -415,6 +415,9 @@ pub struct Plan {
     pub export_compression: Option<OciCompression>,
     /// `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key.
     pub export_key: Option<String>,
+    /// `FOR <host>` of EXPORT and its span: which host's files the REDIRECT and HEADER rules become
+    /// (None: `_redirects` and `_headers`).
+    pub export_for: Option<(String, SourceSpan)>,
     /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
     pub redirects: Vec<RedirectSpec>,
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
@@ -516,6 +519,7 @@ pub fn plan_with(
     let mut export_root = None;
     let mut export_compression = None;
     let mut export_key = None;
+    let mut export_for: Option<(String, SourceSpan)> = None;
 
     fn bind(
         vars: &mut Env,
@@ -1233,6 +1237,7 @@ pub fn plan_with(
                 at,
                 compression,
                 key,
+                for_host,
                 span,
             } => {
                 export_path = Some(
@@ -1294,6 +1299,27 @@ pub fn plan_with(
                     ));
                 }
                 export_key = key.as_ref().map(|(k, _)| k.clone());
+                if let Some((host, hspan)) = for_host {
+                    if !matches!(
+                        format,
+                        ExportFormat::Directory
+                            | ExportFormat::Zip
+                            | ExportFormat::Tar
+                            | ExportFormat::Tgz
+                    ) {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!(
+                                "EXPORT ... FOR applies only to AS directory, zip, tar and tgz, not {}",
+                                format.as_str()
+                            ),
+                            hspan,
+                        ));
+                    }
+                    export_for = Some((host.clone(), hspan.clone()));
+                } else {
+                    export_for = None;
+                }
             }
         }
     }
@@ -1397,6 +1423,7 @@ pub fn plan_with(
         export_root,
         export_compression,
         export_key,
+        export_for,
         redirects,
         headers,
         cache_headers,

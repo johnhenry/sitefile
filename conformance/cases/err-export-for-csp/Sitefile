@@ -1,0 +1,5 @@
+# EXPORT ... FOR github-pages with CSP: GitHub Pages cannot set headers, so the CSP line is the error (--lossy leaves it out).
+FROM scratch
+COPY ./public/ /
+CSP
+EXPORT / FOR github-pages
