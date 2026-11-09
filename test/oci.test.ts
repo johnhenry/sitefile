@@ -178,7 +178,7 @@ test('EXPORT ... COMPRESSION: parsed for oci (and wbn), rejected elsewhere or fo
   assert.equal(r1.code, 1);
   assert.match(r1.stderr, /E_SYNTAX.*:3:29: unknown compression 'zstd' \(expected gzip or none\)/);
   const zip = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS zip COMPRESSION none\n');
-  assert.match((await runCli(home, ['validate', zip])).stderr, /E_VALIDATION.*COMPRESSION applies only to AS oci and AS wbn/);
+  assert.match((await runCli(home, ['validate', zip])).stderr, /E_VALIDATION.*COMPRESSION applies only to AS oci, AS wbn and AS warc/);
   const ok = await makeSite({}, 'FROM scratch\nCOPY ./public/ /\nEXPORT / AS oci AT /srv/site COMPRESSION None\n');
   const out = path.join(await tmpDir(), 'site.oci.tar');
   const layerType = async (args: string[]) => {

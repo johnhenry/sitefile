@@ -1,0 +1,8 @@
+# PRECACHE: the list of files a service worker precaches for offline use, in the format
+# Workbox reads, injected into the service worker (and written as a file too).
+FROM scratch
+COPY ./public/ /
+# The stylesheet gets a hashed name, so its entry needs no revision.
+FINGERPRINT /style.css
+PRECACHE /index.html /offline.html /style.*.css TO /precache-manifest.json INTO /sw.js
+EXPORT /

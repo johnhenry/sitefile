@@ -28,6 +28,8 @@ export type ErrorCode =
   | 'E_HARDLINK'
   /** Two paths equal under Unicode simple case folding, or two context names equal after NFC. */
   | 'E_PATH_COLLISION'
+  /** An exported path other systems or hosts cannot hold, under --strict-paths. */
+  | 'E_PATH_PORTABLE'
   // composition
   | 'E_CONFLICT'
   // remote resources

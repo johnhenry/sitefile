@@ -112,6 +112,12 @@ export default grammar({
         $.header_instruction,
         $.fingerprint_instruction,
         $.canonical_instruction,
+        $.precompress_instruction,
+        $.robots_instruction,
+        $.security_txt_instruction,
+        $.precache_instruction,
+        $.csp_instruction,
+        $.mime_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -324,10 +330,62 @@ export default grammar({
     canonical_instruction: ($) =>
       seq(kw($, 'CANONICAL'), kw($, 'BASE'), field('base', $._operand), optional(kw($, 'PRETTY'))),
 
+    // PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>] (a format word reads as a pattern here)
+    precompress_instruction: ($) =>
+      seq(
+        kw($, 'PRECOMPRESS'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'MIN'), field('min', $._operand))),
+      ),
+
+    // ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]
+    robots_instruction: ($) =>
+      seq(
+        kw($, 'ROBOTS'),
+        repeat(field('flag', $.flag)),
+        repeat(choice(seq(kw($, 'ALLOW'), field('allow', $._operand)), seq(kw($, 'DISALLOW'), field('disallow', $._operand)))),
+        optional(kw($, 'SITEMAP')),
+        optional(seq(kw($, 'TO'), field('dest', $._operand))),
+      ),
+
+    // SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>] (any order)
+    security_txt_instruction: ($) =>
+      seq(
+        kw($, 'SECURITY_TXT'),
+        repeat(field('flag', $.flag)),
+        repeat(
+          choice(
+            seq(kw($, 'CONTACT'), field('contact', $._operand)),
+            seq(kw($, 'EXPIRES'), field('expires', $._operand)),
+            seq(kw($, 'ENCRYPTION'), field('encryption', $._operand)),
+            seq(kw($, 'POLICY'), field('policy', $._operand)),
+            seq(kw($, 'TO'), field('dest', $._operand)),
+          ),
+        ),
+      ),
+
+    // PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]
+    precache_instruction: ($) =>
+      seq(
+        kw($, 'PRECACHE'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'TO'), field('dest', $._operand))),
+        optional(seq(kw($, 'INTO'), field('into', $._operand))),
+      ),
+
+    // CSP [POLICY <policy>] [META]
+    csp_instruction: ($) =>
+      seq(kw($, 'CSP'), optional(seq(kw($, 'POLICY'), field('policy', $._operand))), optional(kw($, 'META'))),
+
+    // MIME <.ext> <type/subtype>
+    mime_instruction: ($) => seq(kw($, 'MIME'), field('extension', $._operand), field('type', $._operand)),
+
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),
 
-    // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]
+    // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]
     export_instruction: ($) =>
       seq(
         kw($, 'EXPORT'),
@@ -336,6 +394,7 @@ export default grammar({
         optional(seq(kw($, 'BASE'), field('base', $._operand))),
         optional(seq(kw($, 'AT'), field('root', $._operand))),
         optional(seq(kw($, 'COMPRESSION'), field('compression', alias($._value_word, $.compression)))),
+        optional(seq(kw($, 'KEY'), field('key', $.identifier))),
       ),
 
     // RUN, REMOVE, … are rejected by the parser (E_UNSUPPORTED).

@@ -1,6 +1,7 @@
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { sha256 } from '../digest.js';
 import { extractArchive } from './archive.js';
+import { looksLikeWarc, readWarc } from '../warc.js';
 import { markdownDocument } from './documents.js';
 import { bundleValue } from './bundle-data.js';
 import { readWebBundle } from './wbn-reader.js';
@@ -36,7 +37,8 @@ export async function bytesToResource(
     info.resolvedUrl === undefined ? { uri: info.uri, digest } : { uri: info.uri, resolvedUrl: info.resolvedUrl, digest };
   if (kind === 'tree') {
     // The provenance digest is that of the archive bytes, which is what pins and the lockfile cover.
-    return { kind: 'tree', tree: await extractArchive(bytes, info.uri, archiveLimits, span), provenance };
+    const tree = looksLikeWarc(bytes) ? readWarc(bytes, info.uri, archiveLimits, span) : await extractArchive(bytes, info.uri, archiveLimits, span);
+    return { kind: 'tree', tree, provenance };
   }
   if (kind === 'markdown') {
     return { kind: 'value', format: 'markdown', value: markdownDocument(bytes, '/' + info.basename, info.uri, span), provenance };

@@ -108,7 +108,10 @@ test('loadSecrets: env= and src= (one trailing newline dropped); errors never sh
   assert.equal(await code(['id=a,env=NOPE']), 'E_SECRET');
   assert.equal(await code([`id=a,src=${path.join(dir, 'missing')}`]), 'E_SECRET');
   assert.equal(await code(['id=a,env=V'], { V: '' }), 'E_SECRET');
-  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\r\nX-Injected: 1` }), 'E_SECRET');
+  // Line breaks are allowed in a value (a PEM key) but never sent as a header (see test/swbn.test.ts);
+  // other control characters are refused.
+  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\r\nX-Injected: 1` }), 'ok');
+  assert.equal(await code(['id=a,env=V'], { V: `${SECRET}\u0000` }), 'E_SECRET');
   assert.equal(redactSecrets(`a ${SECRET} b ${SECRET}`, s), 'a *** b ***');
 });
 
@@ -124,7 +127,7 @@ test('a secret is sent as the named header (or Bearer), only to the import origi
   const landing = seen.find((s) => s.port === 'other')!;
   assert.equal(landing.headers['x-api-key'], undefined);
   assert.equal(landing.headers.authorization, undefined);
-  assert.ok(warnings.includes('--secret extra is not used by any IMPORT … SECRET'), warnings.join('\n'));
+  assert.ok(warnings.includes('--secret extra is not used by any IMPORT … SECRET or EXPORT … KEY'), warnings.join('\n'));
   await assert.rejects(build({ contextDir: ctx, fetchPolicy: { allowHttp: true, allowPrivateNetwork: true }, onWarning: () => {} }), (e: unknown) => isSitefileError(e, 'E_SECRET') && /secret 'k' was not given/.test((e as Error).message));
   // The memo (incremental rebuild keys) holds no secret.
   const memo = new BuildMemo();

@@ -1,0 +1,33 @@
+{
+  "command": "serve",
+  "args": [
+    "--host-profile",
+    "firebase"
+  ],
+  "requests": [
+    {
+      "target": "/about",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/about.html",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/docs/",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/old",
+      "expect": {
+        "status": 404
+      }
+    }
+  ]
+}

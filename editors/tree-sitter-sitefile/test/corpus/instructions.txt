@@ -283,6 +283,7 @@ EXPORT /
 EXPORT / AS directory
 EXPORT / AS oci BASE docker.io/library/nginx:1.27 AT /usr/share/nginx/html COMPRESSION none
 EXPORT /site.tar.gz AS tar.gz
+EXPORT / AS swbn KEY iwa
 
 ---
 
@@ -300,7 +301,11 @@ EXPORT /site.tar.gz AS tar.gz
     (compression))
   (export_instruction
     (path)
-    (export_format)))
+    (export_format))
+  (export_instruction
+    (path)
+    (export_format)
+    (identifier)))
 
 ==================
 Unsupported instructions
@@ -468,6 +473,95 @@ canonical base ${URL} pretty
     (word
       (substitution
         (identifier)))))
+
+================================================================================
+PRECOMPRESS with a format, patterns and MIN
+================================================================================
+
+PRECOMPRESS gzip /assets/ /**/*.html MIN 256
+precompress --overwrite /
+
+---
+
+(source_file
+  (precompress_instruction
+    (word)
+    (path)
+    (path)
+    (word))
+  (precompress_instruction
+    (flag
+      (flag_name))
+    (path)))
+
+================================================================================
+ROBOTS and SECURITY_TXT
+================================================================================
+
+ROBOTS DISALLOW /drafts/ ALLOW /drafts/ok.html SITEMAP
+robots
+SECURITY_TXT CONTACT mailto:a@example.com EXPIRES 2099-01-01 POLICY https://example.com/p TO /s.txt
+
+---
+
+(source_file
+  (robots_instruction
+    (path)
+    (path))
+  (robots_instruction)
+  (security_txt_instruction
+    (word)
+    (word)
+    (url)
+    (path)))
+
+================================================================================
+PRECACHE with TO and INTO
+================================================================================
+
+PRECACHE --overwrite /assets/ /index.html TO /sw-manifest.json INTO /sw.js
+PRECACHE /
+
+---
+
+(source_file
+  (precache_instruction
+    (flag
+      (flag_name))
+    (path)
+    (path)
+    (path)
+    (path))
+  (precache_instruction
+    (path)))
+
+================================================================================
+CSP with and without POLICY and META
+================================================================================
+
+CSP
+CSP POLICY "default-src 'self'" META
+
+---
+
+(source_file
+  (csp_instruction)
+  (csp_instruction
+    (string
+      (string_content))))
+
+================================================================================
+MIME
+================================================================================
+
+MIME .usdz model/vnd.usdz+zip
+
+---
+
+(source_file
+  (mime_instruction
+    (word)
+    (word)))
 
 ================================================================================
 CHECKLINKS with and without flags

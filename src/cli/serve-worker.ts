@@ -2,7 +2,7 @@
 // Detached server process spawned by `sitefile serve -d` / `restart`.
 // Usage: node serve-worker.js <server id>. State and logs live in $SITEFILE_HOME/servers.
 import { SitefileError } from '../errors.js';
-import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, startedLogLine, stoppedLogLine } from '../server.js';
+import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, startedLogLine, stoppedLogLine, routingFor } from '../server.js';
 import { loadServedTree, servedLastModified, ServerRegistry, loadServedSite, checkSiteFiles } from '../servers.js';
 
 let json = false; // `--log-format json`: every line is a JSON object
@@ -19,9 +19,9 @@ async function main(): Promise<void> {
   json = state.logFormat === 'json';
   try {
     const { tree, content } = await loadServedSite(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
-    checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
+    if (routingFor(state)?.siteFiles !== false) checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
     const modified = await servedLastModified(reg.store, state.source);
-    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}) });
+    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}), ...(state.rewriteBase !== undefined ? { rewriteBase: state.rewriteBase } : {}), ...(routingFor(state) ? { profile: routingFor(state)! } : {}) });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
     const url = `${formatUrl(addr.host, addr.port)}${(state.base ?? '/').slice(1)}`;

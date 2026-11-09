@@ -11,6 +11,7 @@ use crate::base_image::{
 use crate::build_args::BuildArgs;
 use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::csp::csp_pages;
 use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
@@ -46,6 +47,8 @@ use crate::plugins::host::{
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
 use crate::plugins::wasm::check_wasm_plugin_in;
+use crate::precache::{precache, PrecacheOp};
+use crate::precompress::{precompress, PrecompressOp};
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
 use crate::render::{
@@ -126,6 +129,8 @@ pub struct BuildOptions {
     /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
     /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
     pub strict_pins: bool,
+    /// `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings.
+    pub strict_paths: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -243,6 +248,7 @@ impl Default for BuildOptions {
             update_lock: false,
             vendor_dir: None,
             strict_pins: false,
+            strict_paths: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             node: None,
@@ -688,12 +694,15 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
         .imports
         .iter()
         .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .chain(p.export_key.as_deref())
         .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
         if !used.contains(id) {
-            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+            warn(&format!(
+                "--secret {id} is not used by any IMPORT … SECRET or EXPORT … KEY"
+            ));
         }
     }
 }
@@ -1216,6 +1225,26 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     }
     let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
     let output = tree.subtree(&p.export_path);
+    let paths: Vec<String> = output.entries().map(|(f, _)| f.clone()).collect();
+    let portability = crate::portable::portability_problems(&paths);
+    if !portability.is_empty() && options.strict_paths {
+        let count = if portability.len() == 1 {
+            "a path is".to_string()
+        } else {
+            format!("{} paths are", portability.len())
+        };
+        let listed: String = portability.iter().map(|m| format!("\n  {m}")).collect();
+        return Err(SitefileError::plain(
+            E_PATH_PORTABLE,
+            format!(
+                "EXPORT {}: {count} not portable (--strict-paths):{listed}",
+                p.export_path
+            ),
+        ));
+    }
+    for m in &portability {
+        warn(&format!("EXPORT {}: {m}", p.export_path));
+    }
     if output.is_empty() {
         warn(&match &p.target {
             None => format!("EXPORT {} contains no files", p.export_path),
@@ -1319,7 +1348,7 @@ fn with_site_rules(
     let mut auto: Vec<(String, &str)> = Vec::new();
     let mut header_rules: Vec<(bool, &SourceSpan)> =
         p.headers.iter().map(|h| (h.overwrite, &h.span)).collect();
-    let mut header_kind = "HEADER";
+    let mut header_kind = p.headers.first().map_or("HEADER", |h| h.instruction);
     let headers_path = join_virtual(&p.export_path, "_headers");
     if let (Some(fp), false) = (&p.cache_headers, urls.is_empty()) {
         let files: Vec<String> = tree
@@ -1344,6 +1373,36 @@ fn with_site_rules(
             }
         }
     }
+    // CSP: Content-Security-Policy lines after those, or with META a <meta> in each page.
+    let mut csp_rules: Vec<(String, String)> = Vec::new();
+    if let Some(c) = &p.csp {
+        let origin = format!("{label}:{} CSP", c.span.line);
+        let r = csp_pages(&tree, &p.export_path, &c.policy, c.meta, &origin);
+        if !r.headless.is_empty() {
+            let count = if r.headless.len() == 1 {
+                "1 page has".to_string()
+            } else {
+                format!("{} pages have", r.headless.len())
+            };
+            warn(&format!(
+                "{origin}: {count} no <head>, so no policy was added: {}",
+                r.headless.join(", ")
+            ));
+        }
+        if !r.pages.is_empty() {
+            tree = tree.with_files(r.pages, ConflictPolicy::Overwrite, Some(&c.span))?;
+        }
+        let none_yet = p.headers.is_empty() && auto.is_empty();
+        if !r.rules.is_empty() && none_yet && tree.is_file(&headers_path) {
+            warn(&format!("{origin}: {headers_path} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META"));
+        } else if !r.rules.is_empty() {
+            if none_yet {
+                header_rules = vec![(false, &c.span)];
+                header_kind = "CSP";
+            }
+            csp_rules = r.rules;
+        }
+    }
     let headers = headers_file(
         p.headers
             .iter()
@@ -1352,6 +1411,11 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            )
+            .chain(
+                csp_rules
+                    .iter()
+                    .map(|(pattern, v)| (pattern.as_str(), "Content-Security-Policy", v.as_str())),
             ),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
@@ -1389,6 +1453,9 @@ fn with_site_rules(
 /// Overrides for where and how the export is written.
 #[derive(Debug, Clone, Default)]
 pub struct ExportTarget {
+    /// `--experimental-dictionary`: the previous build's files; the export gets `.dcz` deltas
+    /// against them and `Use-As-Dictionary` headers (crate::dictionary).
+    pub dictionary_from: Option<Tree>,
     /// Overrides the Sitefile's EXPORT format.
     pub format: Option<ExportFormat>,
     /// Overrides the Sitefile's EXPORT ... BASE (wbn).
@@ -1426,8 +1493,12 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// car: the root CID (CIDv1, base32).
     pub root_cid: Option<String>,
+    /// swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`).
+    pub web_bundle_id: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
+    /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
+    pub dictionary_deltas: Option<Vec<String>>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -1640,6 +1711,24 @@ pub fn build_to_directory(
 }
 
 fn export_build(
+    mut result: BuildResult,
+    format: ExportFormat,
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
+    let mut deltas = None;
+    if let Some(previous) = &target.dictionary_from {
+        let (tree, d) = crate::dictionary::add_dictionary_deltas(&result.output, previous)?;
+        result.output = tree;
+        deltas = Some(d);
+    }
+    let mut exported = export_build_inner(result, format, options, out_dir, target)?;
+    exported.dictionary_deltas = deltas;
+    Ok(exported)
+}
+
+fn export_build_inner(
     result: BuildResult,
     format: ExportFormat,
     options: &BuildOptions,
@@ -1703,7 +1792,9 @@ fn export_build(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
+                web_bundle_id: None,
                 incremental: None,
+                dictionary_deltas: None,
             });
         }
         let written = export_directory(
@@ -1719,7 +1810,9 @@ fn export_build(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
+            web_bundle_id: None,
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     if !is_archive_format(format) {
@@ -1736,7 +1829,43 @@ fn export_build(
             file_digest: None,
             manifest_digest: None,
             root_cid: None,
+            web_bundle_id: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
+        });
+    }
+    if format == ExportFormat::Swbn {
+        let key_id = if result.plan.export_format == ExportFormat::Swbn {
+            result.plan.export_key.clone()
+        } else {
+            None
+        };
+        let Some(key_id) = key_id else {
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+            ));
+        };
+        let Some(pem) = options.secrets.get(&key_id) else {
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("EXPORT ... KEY {key_id}: no --secret id={key_id} was given"),
+            ));
+        };
+        let (data, id) =
+            crate::export::swbn::write_signed_web_bundle(&result.output, pem, &key_id)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: None,
+            web_bundle_id: Some(id),
+            incremental: None,
+            dictionary_deltas: None,
         });
     }
     if format == ExportFormat::Car {
@@ -1750,7 +1879,9 @@ fn export_build(
             file_digest: Some(sha256(&data)),
             manifest_digest: None,
             root_cid: Some(root),
+            web_bundle_id: None,
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     let data = encode_tree(
@@ -1765,10 +1896,10 @@ fn export_build(
                 .base_url
                 .clone()
                 .or_else(|| result.plan.export_base.clone()),
-            compression: if format == ExportFormat::Wbn {
+            compression: if matches!(format, ExportFormat::Wbn | ExportFormat::Warc) {
                 target
                     .wbn_compression
-                    .or(sitefile_compression(&result.plan, ExportFormat::Wbn))
+                    .or(sitefile_compression(&result.plan, format))
             } else {
                 None
             },
@@ -1784,7 +1915,9 @@ fn export_build(
         file_digest: Some(digest),
         manifest_digest: None,
         root_cid: None,
+        web_bundle_id: None,
         incremental: None,
+        dictionary_deltas: None,
     })
 }
 
@@ -4382,6 +4515,14 @@ impl<'a> Exec<'a> {
                 let out = self.canonical(op, tree, &*self.warn.clone())?;
                 return Ok((out, String::new(), None));
             }
+            if let Operation::Precompress { .. } = op {
+                let out = self.precompress(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
+            if let Operation::Precache { .. } = op {
+                let out = self.precache(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
             if let Operation::CheckLinks { .. } = op {
                 self.check_links(op, &tree, &*self.warn.clone())?;
                 return Ok((tree, String::new(), None));
@@ -4472,6 +4613,54 @@ impl<'a> Exec<'a> {
                 outer(m)
             };
             let out = self.canonical(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Precompress { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged; a hit prints its warnings again.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.precompress(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Precache { .. } = op {
+            // The chain key covers the stage's earlier steps, so also what its FINGERPRINTs renamed.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.precache(op, tree, &record)?;
             let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
             lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
             return Ok((out, key, Some("miss")));
@@ -4589,6 +4778,52 @@ impl<'a> Exec<'a> {
         canonical(tree, &op, &origin, warn)
     }
 
+    fn precompress(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Precompress {
+            patterns,
+            min,
+            overwrite,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} PRECOMPRESS", self.label, span.line);
+        let op = PrecompressOp {
+            patterns,
+            min: *min,
+            overwrite: *overwrite,
+            span,
+        };
+        precompress(tree, &op, &origin, warn)
+    }
+
+    fn precache(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Precache {
+            patterns,
+            dest,
+            into,
+            root,
+            overwrite,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} PRECACHE", self.label, span.line);
+        let fingerprinted: HashSet<String> = self.renames.values().cloned().collect();
+        let op = PrecacheOp {
+            patterns,
+            dest: dest.as_deref(),
+            into: into.as_deref(),
+            root,
+            overwrite: *overwrite,
+            span,
+        };
+        precache(tree, &op, &fingerprinted, &origin, warn)
+    }
+
     fn sitemap(&self, op: &Operation, tree: Tree) -> Result<Tree> {
         let Operation::Sitemap {
             base,
@@ -4626,12 +4861,30 @@ impl<'a> Exec<'a> {
                 let files = self.feed_files(op)?;
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
+            Operation::TextFile { dest, text, .. } => {
+                // The planner wrote the text; it reads nothing.
+                let key = memoized.then(|| memo_key(&["text", op_id]));
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files: Files = vec![(
+                    dest.clone(),
+                    make_file(text.clone().into_bytes(), origin, 0o644),
+                )];
+                Ok(self.memo_store(key, files, Vec::new(), true))
+            }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => {
                 unreachable!("FINGERPRINT reads the tree: execute_op runs it")
             }
             Operation::Canonical { .. } => {
                 unreachable!("CANONICAL reads the tree: execute_op runs it")
+            }
+            Operation::Precompress { .. } => {
+                unreachable!("PRECOMPRESS reads the tree: execute_op runs it")
+            }
+            Operation::Precache { .. } => {
+                unreachable!("PRECACHE reads the tree: execute_op runs it")
             }
             Operation::CheckLinks { .. } => {
                 unreachable!("CHECKLINKS reads the tree: execute_op runs it")
@@ -5920,7 +6173,10 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Transform { overwrite, .. }
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
-        | Operation::Fingerprint { overwrite, .. } => *overwrite,
+        | Operation::Fingerprint { overwrite, .. }
+        | Operation::Precompress { overwrite, .. }
+        | Operation::TextFile { overwrite, .. }
+        | Operation::Precache { overwrite, .. } => *overwrite,
         Operation::CheckLinks { .. } | Operation::Canonical { .. } => false,
     }
 }

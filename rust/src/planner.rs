@@ -3,14 +3,16 @@
 
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::fingerprint::check_pattern;
+use crate::fingerprint::{check_pattern, check_pattern_of};
 use crate::language::ast::{
     imported_stage, stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction,
     OciCompression, Operand, Program, Source, StageRef, TemplatePart, ValueType,
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path,
+    check_base_url, check_csp_policy, check_field_uri, check_header_name, check_header_value,
+    check_mime_extension, check_mime_type, check_redirect_target, check_site_path, page_url,
+    parse_feed_date, robots_txt, security_txt,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -182,7 +184,20 @@ pub struct HeaderSpec {
     pub value: String,
     pub overwrite: bool,
     pub span: SourceSpan,
+    /// `HEADER`, or `MIME` for a MIME line (a `Content-Type` rule); names it in origins and `why`.
+    pub instruction: &'static str,
 }
+
+/// A CSP, evaluated: the base policy (checked) and whether it goes into `<meta>` elements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CspSpec {
+    pub policy: String,
+    pub meta: bool,
+    pub span: SourceSpan,
+}
+
+/// CSP's base policy when POLICY is not given.
+pub const DEFAULT_CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
@@ -204,6 +219,34 @@ pub enum Operation {
         base: String,
         pretty: bool,
         root: String,
+        span: SourceSpan,
+    },
+    /// Write a `.gz` sidecar for each file matching `patterns` (checked, NFC) that is compressible, has at
+    /// least `min` bytes and gets smaller.
+    Precompress {
+        formats: Vec<String>,
+        patterns: Vec<String>,
+        min: u64,
+        overwrite: bool,
+        span: SourceSpan,
+    },
+    /// A file whose text the planner wrote: `keyword` is `ROBOTS` (`/robots.txt`) or `SECURITY_TXT`
+    /// (`/.well-known/security.txt`).
+    TextFile {
+        keyword: &'static str,
+        dest: String,
+        text: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
+    /// A precache manifest of the files matching `patterns` (checked, NFC) below `root` (the EXPORT path),
+    /// written to `dest` and/or injected into the service worker `into`.
+    Precache {
+        patterns: Vec<String>,
+        dest: Option<String>,
+        into: Option<String>,
+        root: String,
+        overwrite: bool,
         span: SourceSpan,
     },
     /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
@@ -280,6 +323,9 @@ impl Operation {
             | Operation::Sitemap { span, .. }
             | Operation::Fingerprint { span, .. }
             | Operation::Canonical { span, .. }
+            | Operation::Precompress { span, .. }
+            | Operation::TextFile { span, .. }
+            | Operation::Precache { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
@@ -292,6 +338,9 @@ impl Operation {
             Operation::Sitemap { .. } => "SITEMAP",
             Operation::Fingerprint { .. } => "FINGERPRINT",
             Operation::Canonical { .. } => "CANONICAL",
+            Operation::Precompress { .. } => "PRECOMPRESS",
+            Operation::TextFile { keyword, .. } => keyword,
+            Operation::Precache { .. } => "PRECACHE",
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
@@ -364,6 +413,8 @@ pub struct Plan {
     pub export_root: Option<String>,
     /// `COMPRESSION` clause of EXPORT ... AS oci or wbn (None: gzip for oci, none for wbn).
     pub export_compression: Option<OciCompression>,
+    /// `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key.
+    pub export_key: Option<String>,
     /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
     pub redirects: Vec<RedirectSpec>,
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
@@ -372,6 +423,8 @@ pub struct Plan {
     /// for the fingerprinted files and the pages to `/_headers`: the Sitefile has a FINGERPRINT, none says
     /// `--no-cache-headers`, and no HEADER sets `Cache-Control` itself.
     pub cache_headers: Option<SourceSpan>,
+    /// The CSP instruction (any stage): EXPORT adds a policy for every exported page.
+    pub csp: Option<CspSpec>,
     pub warnings: Vec<String>,
     /// `--target <stage>`: the build stops after this stage and exports its whole tree (see [`target_plan`]).
     pub target: Option<String>,
@@ -403,6 +456,7 @@ pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
     p.redirects.clear();
     p.headers.clear();
     p.cache_headers = None;
+    p.csp = None;
     p.target = Some(name.to_string());
     Ok(p)
 }
@@ -447,6 +501,12 @@ pub fn plan_with(
     let mut headers = Vec::new();
     // Each FINGERPRINT's span, and whether it allows the Cache-Control lines.
     let mut fingerprints: Vec<(SourceSpan, bool)> = Vec::new();
+    let mut sitemap_urls: Vec<String> = Vec::new();
+    // ROBOTS … SITEMAP: (stage, operation index + 1, rules, span), completed once every SITEMAP is planned.
+    let mut robots: Vec<(usize, usize, Vec<(bool, String)>, SourceSpan)> = Vec::new();
+    let ops_len = |stages: &[Stage]| stages.last().map_or(0, |s| s.operations.len());
+    let mut csp: Option<CspSpec> = None;
+    let mut mimes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -455,6 +515,7 @@ pub fn plan_with(
     let mut export_base = None;
     let mut export_root = None;
     let mut export_compression = None;
+    let mut export_key = None;
 
     fn bind(
         vars: &mut Env,
@@ -834,9 +895,33 @@ pub fn plan_with(
                 let base =
                     check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/sitemap.xml", "SITEMAP")?;
+                sitemap_urls.push(page_url(&base, &dest));
                 operations(&mut stages, span)?.push(Operation::Sitemap {
                     base,
                     dest,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
+            Instruction::Precompress {
+                span,
+                formats,
+                patterns,
+                min,
+                overwrite,
+            } => {
+                let patterns = patterns
+                    .iter()
+                    .map(|o| check_pattern_of(&evaluate_operand(o, &vars)?, &o.span, "PRECOMPRESS"))
+                    .collect::<Result<Vec<_>>>()?;
+                let min = match min {
+                    Some(m) => min_size(m, &vars)?,
+                    None => DEFAULT_PRECOMPRESS_MIN,
+                };
+                operations(&mut stages, span)?.push(Operation::Precompress {
+                    formats: formats.clone(),
+                    patterns,
+                    min,
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
@@ -879,6 +964,153 @@ pub fn plan_with(
                     base,
                     pretty: *pretty,
                     root: "/".into(),
+                    span: span.clone(),
+                });
+            }
+            Instruction::Robots {
+                span,
+                rules,
+                sitemap,
+                dest,
+                overwrite,
+            } => {
+                let rules = rules
+                    .iter()
+                    .map(|(allow, p, _)| {
+                        let what =
+                            format!("ROBOTS {} path", if *allow { "ALLOW" } else { "DISALLOW" });
+                        Ok((
+                            *allow,
+                            check_site_path(&evaluate_operand(p, &vars)?, &what, &p.span)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let dest = file_dest(dest.as_ref(), &vars, "/robots.txt", "ROBOTS")?;
+                let ops = operations(&mut stages, span)?;
+                ops.push(Operation::TextFile {
+                    keyword: "ROBOTS",
+                    dest,
+                    text: robots_txt(&rules, &[]),
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+                // The Sitemap lines name every SITEMAP of the Sitefile, also later ones: filled in below.
+                if *sitemap {
+                    robots.push((stages.len() - 1, ops_len(&stages), rules, span.clone()));
+                }
+            }
+            Instruction::SecurityTxt {
+                span,
+                contact,
+                expires,
+                encryption,
+                policy,
+                dest,
+                overwrite,
+            } => {
+                let raw = evaluate_operand(expires, &vars)?;
+                let Some(date) = parse_feed_date(&raw) else {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("SECURITY_TXT EXPIRES '{raw}' must be a date (YYYY-MM-DD) or an RFC 3339 date-time; durations are not accepted, so the file is the same on every build"),
+                        &expires.span,
+                    ));
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                if date.seconds <= now {
+                    warnings.push(format!("{}:{}: SECURITY_TXT EXPIRES {raw} is in the past, so security.txt is already stale (RFC 9116); set a later date", program.file, span.line));
+                } else if date.seconds - now < 30 * 86400 {
+                    warnings.push(format!("{}:{}: SECURITY_TXT EXPIRES {raw} is less than 30 days away; set a later date before it passes", program.file, span.line));
+                }
+                let uris = |ops: &[Operand],
+                            field: &str,
+                            schemes: &[&str]|
+                 -> Result<Vec<String>> {
+                    ops.iter()
+                        .map(|o| {
+                            check_field_uri(&evaluate_operand(o, &vars)?, field, schemes, &o.span)
+                        })
+                        .collect()
+                };
+                let text = security_txt(
+                    &uris(contact, "CONTACT", &["mailto:", "tel:", "https://"])?,
+                    &date.text,
+                    &uris(
+                        encryption,
+                        "ENCRYPTION",
+                        &["https://", "openpgp4fpr:", "dns:"],
+                    )?,
+                    &uris(policy, "POLICY", &["https://"])?,
+                );
+                let dest = file_dest(
+                    dest.as_ref(),
+                    &vars,
+                    "/.well-known/security.txt",
+                    "SECURITY_TXT",
+                )?;
+                operations(&mut stages, span)?.push(Operation::TextFile {
+                    keyword: "SECURITY_TXT",
+                    dest,
+                    text,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
+            Instruction::Precache {
+                span,
+                patterns,
+                dest,
+                into,
+                overwrite,
+            } => {
+                let patterns = patterns
+                    .iter()
+                    .map(|o| check_pattern_of(&evaluate_operand(o, &vars)?, &o.span, "PRECACHE"))
+                    .collect::<Result<Vec<_>>>()?;
+                let into = match into {
+                    Some(i) => Some(file_dest(Some(i), &vars, "", "PRECACHE INTO")?),
+                    None => None,
+                };
+                let dest = if dest.is_some() || into.is_none() {
+                    Some(file_dest(
+                        dest.as_ref(),
+                        &vars,
+                        "/sw-manifest.json",
+                        "PRECACHE",
+                    )?)
+                } else {
+                    None
+                };
+                // `root` is the EXPORT path, filled in below.
+                operations(&mut stages, span)?.push(Operation::Precache {
+                    patterns,
+                    dest,
+                    into,
+                    root: "/".into(),
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
+            Instruction::Csp { span, policy, meta } => {
+                if let Some(prior) = &csp {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!(
+                            "CSP given twice (line {} already sets the policy)",
+                            prior.span.line
+                        ),
+                        span,
+                    ));
+                }
+                let policy = match policy {
+                    Some(o) => check_csp_policy(&evaluate_operand(o, &vars)?, &o.span)?,
+                    None => DEFAULT_CSP.to_string(),
+                };
+                csp = Some(CspSpec {
+                    policy,
+                    meta: *meta,
                     span: span.clone(),
                 });
             }
@@ -966,6 +1198,32 @@ pub fn plan_with(
                     value,
                     overwrite: *overwrite,
                     span: span.clone(),
+                    instruction: "HEADER",
+                });
+            }
+            Instruction::Mime {
+                span,
+                ext,
+                media_type,
+            } => {
+                let e = check_mime_extension(&evaluate_operand(ext, &vars)?, &ext.span)?;
+                if let Some(prior) = mimes.get(&e) {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("MIME {e} given twice (line {prior} already sets its type)"),
+                        &ext.span,
+                    ));
+                }
+                mimes.insert(e.clone(), span.line);
+                let value =
+                    check_mime_type(&evaluate_operand(media_type, &vars)?, &media_type.span)?;
+                headers.push(HeaderSpec {
+                    pattern: format!("/*{e}"),
+                    name: "Content-Type".into(),
+                    value,
+                    overwrite: false,
+                    span: span.clone(),
+                    instruction: "MIME",
                 });
             }
             Instruction::Export {
@@ -974,7 +1232,8 @@ pub fn plan_with(
                 base,
                 at,
                 compression,
-                ..
+                key,
+                span,
             } => {
                 export_path = Some(
                     normalize_virtual(
@@ -1004,10 +1263,13 @@ pub fn plan_with(
                     export_root = None;
                 }
                 if let Some((v, cspan)) = compression {
-                    if !matches!(format, ExportFormat::Oci | ExportFormat::Wbn) {
+                    if !matches!(
+                        format,
+                        ExportFormat::Oci | ExportFormat::Wbn | ExportFormat::Warc
+                    ) {
                         return Err(SitefileError::at(
                             E_VALIDATION,
-                            "EXPORT ... COMPRESSION applies only to AS oci and AS wbn",
+                            "EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc",
                             cspan,
                         ));
                     }
@@ -1015,17 +1277,64 @@ pub fn plan_with(
                 } else {
                     export_compression = None;
                 }
+                if let Some((_, kspan)) = key {
+                    if *format != ExportFormat::Swbn {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "EXPORT ... KEY applies only to AS swbn",
+                            kspan,
+                        ));
+                    }
+                }
+                if *format == ExportFormat::Swbn && key.is_none() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        "EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key",
+                        span,
+                    ));
+                }
+                export_key = key.as_ref().map(|(k, _)| k.clone());
             }
         }
     }
 
+    for (si, end, rules, span) in robots {
+        if sitemap_urls.is_empty() {
+            return Err(SitefileError::at(
+                E_VALIDATION,
+                "ROBOTS … SITEMAP: the Sitefile has no SITEMAP to point to (add SITEMAP BASE <url>, or leave out SITEMAP)",
+                &span,
+            ));
+        }
+        let mut unique: Vec<String> = Vec::new();
+        for u in &sitemap_urls {
+            if !unique.contains(u) {
+                unique.push(u.clone());
+            }
+        }
+        if let Operation::TextFile { text, .. } = &mut stages[si].operations[end - 1] {
+            *text = robots_txt(&rules, &unique);
+        }
+    }
+    if let (Some(c), Some(h)) = (
+        &csp,
+        headers
+            .iter()
+            .find(|h: &&HeaderSpec| h.name.eq_ignore_ascii_case("content-security-policy")),
+    ) {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("CSP and the HEADER on line {} both set Content-Security-Policy; keep one (put your policy in CSP POLICY \"…\")", h.span.line),
+            &c.span,
+        ));
+    }
     let root = export_path.clone().unwrap_or_else(|| "/".into());
     for st in &mut stages {
         for op in &mut st.operations {
             match op {
-                Operation::Fingerprint { root: r, .. } | Operation::Canonical { root: r, .. } => {
-                    *r = root.clone()
-                }
+                Operation::Fingerprint { root: r, .. }
+                | Operation::Canonical { root: r, .. }
+                | Operation::Precache { root: r, .. } => *r = root.clone(),
                 Operation::CheckLinks {
                     root: r,
                     redirects: rs,
@@ -1087,15 +1396,39 @@ pub fn plan_with(
         export_base,
         export_root,
         export_compression,
+        export_key,
         redirects,
         headers,
         cache_headers,
+        csp,
         warnings,
         target: None,
     })
 }
 
 /// `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default.
+/// PRECOMPRESS leaves smaller files alone: below about 1 KiB compression saves little.
+pub const DEFAULT_PRECOMPRESS_MIN: u64 = 1024;
+
+/// `PRECOMPRESS … MIN <bytes>`: a whole number of bytes (`^(0|[1-9][0-9]{0,9})$`).
+fn min_size(op: &Operand, vars: &Env) -> Result<u64> {
+    let raw = evaluate_operand(op, vars)?;
+    let b = raw.as_bytes();
+    let ok = raw == "0"
+        || (!b.is_empty()
+            && b.len() <= 10
+            && (b'1'..=b'9').contains(&b[0])
+            && b.iter().all(u8::is_ascii_digit));
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("PRECOMPRESS … MIN: '{raw}' is not a size (a whole number of bytes from 0 to 9999999999)"),
+            &op.span,
+        ));
+    }
+    Ok(raw.parse().unwrap_or(0))
+}
+
 fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Result<String> {
     let Some(op) = op else {
         return Ok(fallback.to_string());
@@ -1563,6 +1896,50 @@ impl Operation {
                 m.insert("root".into(), json!(root));
                 m.insert("span".into(), span_json(span));
             }
+            Operation::Precompress {
+                formats,
+                patterns,
+                min,
+                overwrite,
+                span,
+            } => {
+                m.insert("formats".into(), json!(formats));
+                m.insert("patterns".into(), json!(patterns));
+                m.insert("min".into(), json!(min));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::TextFile {
+                dest,
+                text,
+                overwrite,
+                span,
+                ..
+            } => {
+                m.insert("dest".into(), json!(dest));
+                m.insert("text".into(), json!(text));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Precache {
+                patterns,
+                dest,
+                into,
+                root,
+                overwrite,
+                span,
+            } => {
+                m.insert("patterns".into(), json!(patterns));
+                if let Some(d) = dest {
+                    m.insert("dest".into(), json!(d));
+                }
+                if let Some(i) = into {
+                    m.insert("into".into(), json!(i));
+                }
+                m.insert("root".into(), json!(root));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
             Operation::Sitemap {
                 base,
                 dest,
@@ -2011,7 +2388,7 @@ mod tests {
             &[],
             E_VALIDATION,
             2,
-            "EXPORT ... COMPRESSION applies only to AS oci and AS wbn",
+            "EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc",
         );
         let p = plan_of(
             "FROM scratch\nEXPORT / AS wbn BASE https://x.test/ COMPRESSION gzip",

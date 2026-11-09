@@ -6,14 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
+import type { Plan } from '../planner.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
 import { watchMemo } from '../memo.js';
 import { pollOption, watchLoop } from './watch.js';
+import { CLEAR, KEYS_HELP, KEYS_HINT, openBrowser, openUrl, qrText, readKeys, serveUrls, urlsText } from './serve-keys.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -70,6 +72,31 @@ export function exportBasePath(exportBase: string | undefined): string | undefin
   const b = normalizeBase(exportBase);
   return b === '/' ? undefined : b;
 }
+
+/** `--rewrite-base <url>`: the production URL, normalized; usage error when it is not an http(s) URL. */
+export function parseRewriteBase(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const u = normalizeProductionUrl(v);
+  if (u === undefined) usage(`--rewrite-base expects the production URL such as https://example.com/, got '${v}'`);
+  return u;
+}
+
+/** A build's production URL (`serve --watch`): its EXPORT BASE when that is an http(s) URL, else the first SITEMAP or FEED BASE. */
+export function productionUrl(plan: Plan): string | undefined {
+  if (plan.exportBase !== undefined && /^https?:\/\//i.test(plan.exportBase)) return normalizeProductionUrl(plan.exportBase);
+  for (const st of plan.stages) for (const op of st.operations) if (op.kind === 'SITEMAP' || op.kind === 'FEED') return normalizeProductionUrl(op.base);
+  return undefined;
+}
+
+/** `--host-profile` and `--html-handling`, checked: the names, or usage errors. */
+export function profileOptions(v: ParsedValues): { hostProfile?: HostProfileName; htmlHandling?: HtmlHandling } {
+  const p = str(v['host-profile']);
+  const h = str(v['html-handling']);
+  if (p !== undefined && !(HOST_PROFILES as readonly string[]).includes(p)) usage(`--host-profile expects one of ${HOST_PROFILES.join(', ')}, got '${p}'`);
+  if (h !== undefined && !(HTML_HANDLINGS as readonly string[]).includes(h)) usage(`--html-handling expects one of ${HTML_HANDLINGS.join(', ')}, got '${h}'`);
+  return { ...(p !== undefined ? { hostProfile: p as HostProfileName } : {}), ...(h !== undefined ? { htmlHandling: h as HtmlHandling } : {}) };
+}
+
 
 /** `--country`: an ISO 3166-1 alpha-2 code (any case). */
 export function parseCountry(v: string | undefined): string | undefined {
@@ -174,9 +201,15 @@ const run: Command = {
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
     '--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL\'s path)',
+    '--rewrite-base <url>         replace this production URL with the local one in served HTML, CSS and XML (--watch: on by default, from EXPORT/SITEMAP/FEED BASE)',
+    '--no-rewrite-base            --watch: leave production URLs as they are',
+    '--host-profile <host>        route like netlify, cloudflare, vercel, github-pages or firebase (clean URLs, site files, 404s)',
+    '--html-handling <mode>       auto, force-slash, drop-slash or none: canonical page URLs (Cloudflare\'s modes)',
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
+    '--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)',
+    '--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
@@ -201,11 +234,17 @@ const run: Command = {
     'spa-exclude': { type: 'string', multiple: true },
     'spa-fallback': { type: 'string' },
     base: { type: 'string' },
+    'host-profile': { type: 'string' },
+    'html-handling': { type: 'string' },
+    'rewrite-base': { type: 'string' },
+    'no-rewrite-base': { type: 'boolean' },
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
     'allowed-host': { type: 'string', multiple: true },
     cors: { type: 'boolean' },
+    open: { type: 'string' },
+    qr: { type: 'boolean' },
     isolate: { type: 'boolean' },
     coep: { type: 'string' },
     'max-age': { type: 'string' },
@@ -241,6 +280,9 @@ const run: Command = {
     const logging = loggingOf(v);
     const spa = spaOptions(v);
     const base = parseBase(str(v.base));
+    const rewriteBase = parseRewriteBase(str(v['rewrite-base']));
+    const profiles = profileOptions(v);
+    const profile = routingFor(profiles);
     const country = parseCountry(str(v.country));
     const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
@@ -253,21 +295,35 @@ const run: Command = {
     const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
       const { tree, content, close } = await loadServedSite(store, source, { keepOsMetadata, warn });
-      checkSiteFiles(tree, strictSiteFiles, warn, content);
+      if (profile?.siteFiles !== false) checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
+      let current = tree;
+      const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
-      await waitForSignal();
+      const quit = await terminal(v, addr, base, warn, async () => {
+        if (source.kind !== 'dir') {
+          process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
+          return;
+        }
+        const next = await loadServedSite(store, source, { keepOsMetadata, warn });
+        checkSiteFiles(next.tree, false, warn, next.content);
+        current = next.tree;
+        next.close();
+        process.stdout.write(`Re-read ${label} (${current.size} files)\n`);
+      });
+      await Promise.race([waitForSignal(), quit.promise]);
+      quit.stop();
       await closeServer(server);
       close();
       return 0;
     }
 
+    if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, country, strictSiteFiles, ...spa, base }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n${networkLines(up.host, up.port, up.base)}`);
     return 0;
   },
@@ -286,6 +342,12 @@ export interface DetachedServe {
   readonly spaFallback?: string | undefined;
   /** `--base` (normalized; undefined for `/`). */
   readonly base?: string | undefined;
+  /** `--rewrite-base` (normalized). */
+  readonly rewriteBase?: string | undefined;
+  /** `--host-profile`. */
+  readonly hostProfile?: HostProfileName | undefined;
+  /** `--html-handling`. */
+  readonly htmlHandling?: HtmlHandling | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
   /** `--allowed-host` names. */
@@ -318,7 +380,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
   // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
   const site = await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
   try {
-    checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
+    if (routingFor(d)?.siteFiles !== false) checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
   } finally {
     site.close();
   }
@@ -332,6 +394,9 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.spaExclude !== undefined && d.spaExclude.length > 0 ? { spaExclude: [...d.spaExclude] } : {}),
     ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
     ...(d.base !== undefined ? { base: d.base } : {}),
+    ...(d.rewriteBase !== undefined ? { rewriteBase: d.rewriteBase } : {}),
+    ...(d.hostProfile !== undefined ? { hostProfile: d.hostProfile } : {}),
+    ...(d.htmlHandling !== undefined ? { htmlHandling: d.htmlHandling } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
     ...(d.cors ? { cors: true } : {}),
@@ -376,8 +441,40 @@ export async function restartDetached(reg: ServerRegistry, s: ServerState, grace
   });
 }
 
+/**
+ * After the server listens: `--qr`, `--open[=path]`, then single keys (a terminal, see serve-keys.ts).
+ * `promise` resolves on `q`; `stop` stops reading keys.
+ */
+async function terminal(
+  v: ParsedValues,
+  addr: { host: string; port: number },
+  base: string | undefined,
+  warn: (m: string) => void,
+  restart: () => Promise<void>,
+): Promise<{ promise: Promise<void>; stop: () => void }> {
+  const urls = await serveUrls(addr.host, addr.port, base);
+  if (v.qr) process.stdout.write(qrText(urls.network ?? urls.local));
+  const open = str(v.open);
+  if (open !== undefined) openBrowser(openUrl(urls.local, open), warn);
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  let busy = Promise.resolve();
+  const stop = readKeys((a) => {
+    busy = busy.then(async () => {
+      if (a === 'quit') resolve();
+      else if (a === 'help') process.stdout.write(KEYS_HELP);
+      else if (a === 'clear') process.stdout.write(CLEAR);
+      else if (a === 'urls') process.stdout.write(urlsText(urls));
+      else if (a === 'open') openBrowser(openUrl(urls.local, open ?? '/'), warn);
+      else await restart();
+    });
+  });
+  if (stop) process.stdout.write(KEYS_HINT);
+  return { promise, stop: stop ?? (() => undefined) };
+}
+
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload', 'no-rewrite-base'] as const;
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -461,11 +558,18 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const baseFlag = parseBase(str(v.base));
   /** `--base`, else the path of the last good build's EXPORT BASE URL. */
   let base = baseFlag;
+  const rewriteFlag = parseRewriteBase(str(v['rewrite-base']));
+  const noRewrite = !!v['no-rewrite-base'];
+  if (noRewrite && rewriteFlag !== undefined) usage('--rewrite-base and --no-rewrite-base cannot be combined');
+  /** `--rewrite-base`, else (unless --no-rewrite-base) the last good build's production URL. */
+  let rewriteBase = noRewrite ? undefined : rewriteFlag;
+  const profile = routingFor(profileOptions(v));
   const country = parseCountry(str(v.country));
   const strictSiteFiles = !!v['strict-site-files'];
   /** The site-file warnings last printed: a rebuild repeats them only when they change. */
   let lastSiteWarnings = '';
   const siteFiles = (tree: Tree): void => {
+    if (profile?.siteFiles === false) return;
     const shown: string[] = [];
     checkSiteFiles(tree, false, (m) => shown.push(m));
     const text = shown.join('\n');
@@ -488,10 +592,16 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
+  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+  const control: { rebuild?: () => void } = {};
+  let quit: { promise: Promise<void>; stop: () => void } | undefined;
+  let quitNow!: () => void;
+  const quitting = new Promise<void>((r) => (quitNow = r));
   try {
     return await watchLoop({
       context,
+      control,
+      stop: Promise.race([waitForSignal().then(() => undefined), quitting]),
       ...(pollMs !== undefined ? { pollMs } : {}),
       ...(file ? { sitefile: file } : {}),
       ...(plain ? { plain } : {}),
@@ -522,6 +632,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
           siteFiles(r.output);
           if (baseFlag === undefined) base = exportBasePath(r.plan.exportBase);
+          if (!noRewrite && rewriteFlag === undefined) rewriteBase = productionUrl(r.plan);
           swap(r.output);
           return { code: 0 };
         } catch (e) {
@@ -537,9 +648,12 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         started = true;
         if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base))}\n`);
         else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
+        quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
+        void quit.promise.then(() => quitNow());
       },
     });
   } finally {
+    quit?.stop();
     if (started) await closeServer(server);
   }
 }
