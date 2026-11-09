@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/sitefile",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Docker-inspired static artifact builder: compose immutable file trees from local and remote sources, render templates, and export a deployable site. No container runtime, no shell, no runtime dependencies.",
   "keywords": [
     "static-site",

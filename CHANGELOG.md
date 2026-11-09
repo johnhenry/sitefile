@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 (2026-11-09)
 
 - **`serve -d --watch ./dir`, and pages reload after a server restart** (johnhenry/sitefile#304):
   a detached server can watch a plain directory (no Sitefile): it re-reads it on change and
