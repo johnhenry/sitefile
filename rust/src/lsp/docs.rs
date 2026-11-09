@@ -152,7 +152,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     (
         "IMPORT",
         "SCHEMA",
-        "`SCHEMA <file>`: a local `.yaml`/`.json` schema every document (markdown frontmatter, or each element of a json/yaml/csv list) must match: `required: [title, date]` and `properties:` with a type (string, number, boolean, date, list; `items` for list elements) or an `enum`. A mismatch fails the build with `E_SCHEMA`, naming the document, the key, what was expected and what was found.",
+        "`SCHEMA <file>`: a local `.yaml`/`.json` schema every document (markdown frontmatter, or each element of a json/yaml/csv list) must match: `required: [title, date]` and `properties:` with a type (string, number, boolean, date, list; `items` for list elements), an `enum` and/or a `pattern` (a JavaScript-style regular expression subset, such as `'^[a-z0-9-]+$'`). A mismatch fails the build with `E_SCHEMA`, naming the document, the key, what was expected and what was found.",
     ),
     (
         "IMPORT",

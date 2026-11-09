@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`pattern` in schemas** (johnhenry/sitefile#135): a property rule can say
+  `pattern: '^[a-z0-9-]+$'`; string values (and each element of a list) must match it, like JSON
+  Schema's `pattern`. Patterns are a subset of JavaScript regular expressions (`u` flag: literals,
+  classes, `.`, `\d \w \s`, `* + ? {n,m}`, groups, `|`, `^ $`) run by a small engine written for
+  both implementations (`src/pattern.ts`, `rust/src/pattern.rs`; no new dependency), linear-time
+  (a Pike VM). Invalid patterns are `E_SCHEMA` with the position and reason. Shared test vectors
+  (`rust/tests/fixtures/pattern/vectors.json`), a seeded differential fixture (`fuzz.json`) and a
+  check that every accepted pattern means what JavaScript's `RegExp` means. `examples/blog`'s schema
+  checks tag names with one.
+
+## Unreleased
+
 - **The version comes from `package.json`** (johnhenry/sitefile#146): `sitefile --version`, the help
   text and the builder version in build attestations said `0.1.0` in both implementations. TypeScript
   now reads `package.json`; Rust reports `rust/Cargo.toml`'s version (now `0.0.5`), and tests on both

@@ -1,0 +1,5 @@
+IMPORT items FROM ./items.yaml AS yaml SCHEMA ./s.yaml
+RENDER <<T TO /i.txt
+${#each items as i}${i.name};${/each}
+T
+EXPORT /

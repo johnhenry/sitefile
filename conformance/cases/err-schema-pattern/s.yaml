@@ -1,0 +1,5 @@
+required: [name]
+properties:
+  name: {type: string, pattern: '^\w|é'}
+  code: {pattern: '^[A-Z]{2}-\d{2}$'}
+  tags: {type: list, items: string, pattern: '^(?:[a-z]\d?)+$'}

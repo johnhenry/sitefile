@@ -140,3 +140,22 @@ test('SCHEMA in an imported Sitefile (AS sitefile) is read from its own context'
   await rejects({ ...files, 'blog/posts/a.md': post('date: 2026-01-01\n') }, 'E_SCHEMA', "IMPORT posts: document '/a.md' has no 'title' (required by schema './post.schema.yaml')");
   assert.throws(() => parseProgram('IMPORT t FROM ./t AS sitefile SCHEMA ./s.yaml\nEXPORT /'), (e: unknown) => isSitefileError(e, 'E_VALIDATION'));
 });
+
+test('SCHEMA pattern: strings and list items must match; invalid patterns are E_SCHEMA', async () => {
+  const schema = "properties:\n  handle: {pattern: '^[a-z0-9-]+$'}\n  tags: {type: list, items: string, pattern: '^\\w+$'}\n  code: {type: string, enum: [ab1, cd], pattern: '\\d'}\n";
+  const ok = await run(site(MD, { 'a.md': post('title: A\nhandle: hello-world\ntags: [x, y_2]\ncode: ab1\n'), 'b.md': post('title: B\n') }, schema));
+  assert.equal(new TextDecoder().decode(ok.output.get('/i.html')?.bytes), 'A;B;\n');
+  await rejects(site(MD, { 'a.md': post('handle: Hello World\n') }, schema), 'E_SCHEMA', "IMPORT posts: document '/a.md' has 'handle' string 'Hello World'; it should match the pattern '^[a-z0-9-]+$'");
+  await rejects(site(MD, { 'a.md': post('handle: 12\n') }, schema), 'E_SCHEMA', "IMPORT posts: document '/a.md' has 'handle' number 12; it should be a string matching the pattern '^[a-z0-9-]+$'");
+  await rejects(site(MD, { 'a.md': post('tags: [ok, not ok]\n') }, schema), 'E_SCHEMA', "IMPORT posts: document '/a.md' has 'tags' item 2 string 'not ok'; it should match the pattern '^\\w+$'");
+  // enum is checked before pattern.
+  await rejects(site(MD, { 'a.md': post('code: cd\n') }, schema), 'E_SCHEMA', "IMPORT posts: document '/a.md' has 'code' string 'cd'; it should match the pattern '\\d'");
+  await rejects(site(MD, { 'a.md': post('code: x1\n') }, schema), 'E_SCHEMA', "IMPORT posts: document '/a.md' has 'code' string 'x1'; it should be one of ab1, cd");
+  // CSV cells are strings.
+  await rejects({ 's.json': JSON.stringify({ properties: { zip: { pattern: '^\\d{5}$' } } }), 'p.csv': 'zip\n12345\n1234\n', Sitefile: 'IMPORT c FROM ./p.csv AS csv SCHEMA ./s.json\nEXPORT /' }, 'E_SCHEMA', "IMPORT c: document '#2' has 'zip' string '1234'; it should match the pattern '^\\d{5}$'");
+  const one = (s: string): Record<string, string> => site(MD, { 'a.md': post('title: A\n') }, s);
+  await rejects(one("properties:\n  a: {pattern: '[a-'}\n"), 'E_SCHEMA', "IMPORT posts: schema './post.schema.yaml' property 'a': pattern '[a-' is invalid at character 1: unterminated character class");
+  await rejects(one("properties:\n  a: {pattern: 'a(?=b)'}\n"), 'E_SCHEMA', "IMPORT posts: schema './post.schema.yaml' property 'a': pattern 'a(?=b)' is invalid at character 2: unsupported group '(?' (only ( … ) and (?: … ) are supported)");
+  await rejects(one('properties:\n  a: {pattern: [x]}\n'), 'E_SCHEMA', "IMPORT posts: schema './post.schema.yaml' property 'a': pattern must be a string (a regular expression)");
+  await rejects(one('properties:\n  a: {min: 1}\n'), 'E_SCHEMA', "IMPORT posts: schema './post.schema.yaml' property 'a': unknown key 'min' (expected type, items, enum or pattern)");
+});

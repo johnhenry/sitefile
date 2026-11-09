@@ -4,6 +4,7 @@
 
 use crate::documents::num;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
+use crate::pattern::{compile_pattern, Pattern};
 use crate::site::parse_feed_date;
 use crate::values::js_number;
 use serde_json::{Map, Value};
@@ -49,6 +50,8 @@ pub struct SchemaRule {
     pub ty: Option<SchemaType>,
     pub items: Option<SchemaType>,
     pub allowed: Option<Vec<Value>>,
+    /// `pattern`: strings (or a list's items) must match it somewhere (`pattern.rs`).
+    pub pattern: Option<Pattern>,
 }
 
 /// A compiled schema; `label` names its file in messages.
@@ -127,18 +130,19 @@ pub fn compile_schema(value: &Value, label: &str, what: &str, span: &SourceSpan)
                     ty: Some(type_name(rule, &TYPES, "type")?),
                     items: None,
                     allowed: None,
+                    pattern: None,
                 });
                 continue;
             }
             let Value::Object(r) = rule else {
                 return Err(fail(format!(
-                    "{at} expected a type name or a mapping with type, items or enum"
+                    "{at} expected a type name or a mapping with type, items, enum or pattern"
                 )));
             };
             for k in r.keys() {
-                if k != "type" && k != "items" && k != "enum" {
+                if k != "type" && k != "items" && k != "enum" && k != "pattern" {
                     return Err(fail(format!(
-                        "{at} unknown key '{k}' (expected type, items or enum)"
+                        "{at} unknown key '{k}' (expected type, items, enum or pattern)"
                     )));
                 }
             }
@@ -173,11 +177,26 @@ pub fn compile_schema(value: &Value, label: &str, what: &str, span: &SourceSpan)
                 },
                 None => None,
             };
+            let pattern = match r.get("pattern") {
+                None => None,
+                Some(Value::String(src)) => match compile_pattern(src) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        return Err(fail(format!("{at} pattern '{src}' is invalid {e}")));
+                    }
+                },
+                Some(_) => {
+                    return Err(fail(format!(
+                        "{at} pattern must be a string (a regular expression)"
+                    )))
+                }
+            };
             properties.push(SchemaRule {
                 key: key.clone(),
                 ty,
                 items,
                 allowed,
+                pattern,
             });
         }
     }
@@ -219,6 +238,18 @@ fn has_type(v: &Value, t: SchemaType, csv: bool) -> bool {
         }
         SchemaType::Date => v.as_str().is_some_and(|s| parse_feed_date(s).is_some()),
         SchemaType::List => v.is_array(),
+    }
+}
+
+/// Why a value fails a `pattern`, or `None` when it matches. Only strings can match.
+fn pattern_mismatch(v: &Value, p: &Pattern) -> Option<String> {
+    match v.as_str() {
+        None => Some(format!(
+            "it should be a string matching the pattern '{}'",
+            p.source
+        )),
+        Some(s) if p.matches(s) => None,
+        Some(_) => Some(format!("it should match the pattern '{}'", p.source)),
     }
 }
 
@@ -332,14 +363,30 @@ fn check_document(
                         ));
                     }
                 }
+                if let Some(m) = rule
+                    .pattern
+                    .as_ref()
+                    .and_then(|p| pattern_mismatch(item, p))
+                {
+                    return fail(format!(
+                        "has '{key}' item {} {}; {m}",
+                        j + 1,
+                        describe(item)
+                    ));
+                }
             }
-        } else if let Some(a) = &rule.allowed {
-            if !in_enum(v, a, csv) {
-                return fail(format!(
-                    "has '{key}' {}; it should be one of {}",
-                    describe(v),
-                    enum_text(a)
-                ));
+        } else {
+            if let Some(a) = &rule.allowed {
+                if !in_enum(v, a, csv) {
+                    return fail(format!(
+                        "has '{key}' {}; it should be one of {}",
+                        describe(v),
+                        enum_text(a)
+                    ));
+                }
+            }
+            if let Some(m) = rule.pattern.as_ref().and_then(|p| pattern_mismatch(v, p)) {
+                return fail(format!("has '{key}' {}; {m}", describe(v)));
             }
         }
     }
@@ -394,8 +441,28 @@ mod tests {
         );
         assert_eq!(err(json!({"properties": {"a": {"type": "list", "items": "list"}}})), "IMPORT p: schema './s.yaml' property 'a': unknown items type 'list' (expected string, number, boolean or date)");
         assert_eq!(err(json!({"properties": {"a": {"enum": []}}})), "IMPORT p: schema './s.yaml' property 'a': enum must be a non-empty list of strings, numbers or booleans");
-        assert_eq!(err(json!({"properties": {"a": {"min": 1}}})), "IMPORT p: schema './s.yaml' property 'a': unknown key 'min' (expected type, items or enum)");
-        assert_eq!(err(json!({"properties": {"a": 1}})), "IMPORT p: schema './s.yaml' property 'a': expected a type name or a mapping with type, items or enum");
+        assert_eq!(err(json!({"properties": {"a": {"min": 1}}})), "IMPORT p: schema './s.yaml' property 'a': unknown key 'min' (expected type, items, enum or pattern)");
+        assert_eq!(err(json!({"properties": {"a": 1}})), "IMPORT p: schema './s.yaml' property 'a': expected a type name or a mapping with type, items, enum or pattern");
+    }
+
+    #[test]
+    fn patterns() {
+        let s = json!({"properties": {"h": {"pattern": "^[a-z0-9-]+$"}, "tags": {"type": "list", "items": "string", "pattern": "^\\w+$"}, "code": {"enum": ["ab1", "cd"], "pattern": "\\d"}}});
+        assert_eq!(
+            check(
+                &s,
+                json!({"h": "hello-world", "tags": ["x", "y_2"], "code": "ab1"}),
+                false
+            ),
+            Ok(())
+        );
+        assert_eq!(check(&s, json!({"h": "Hello World"}), false), Err("E_SCHEMA: IMPORT p: document '#1' has 'h' string 'Hello World'; it should match the pattern '^[a-z0-9-]+$'".into()));
+        assert_eq!(check(&s, json!({"h": 12}), false), Err("E_SCHEMA: IMPORT p: document '#1' has 'h' number 12; it should be a string matching the pattern '^[a-z0-9-]+$'".into()));
+        assert_eq!(check(&s, json!({"tags": ["ok", "not ok"]}), false), Err("E_SCHEMA: IMPORT p: document '#1' has 'tags' item 2 string 'not ok'; it should match the pattern '^\\w+$'".into()));
+        assert_eq!(check(&s, json!({"code": "cd"}), false), Err("E_SCHEMA: IMPORT p: document '#1' has 'code' string 'cd'; it should match the pattern '\\d'".into()));
+        let err = |v: Value| compile(v).unwrap_err().detail;
+        assert_eq!(err(json!({"properties": {"a": {"pattern": "[a-"}}})), "IMPORT p: schema './s.yaml' property 'a': pattern '[a-' is invalid at character 1: unterminated character class");
+        assert_eq!(err(json!({"properties": {"a": {"pattern": ["x"]}}})), "IMPORT p: schema './s.yaml' property 'a': pattern must be a string (a regular expression)");
     }
 
     #[test]

@@ -1,0 +1,7 @@
+- name: alpha
+  code: AB-12
+  tags: [x, y2]
+- name: béta
+  code: CD-99
+  tags: []
+- name: gamma

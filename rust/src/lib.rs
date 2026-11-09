@@ -37,6 +37,7 @@ pub mod frontmatter;
 pub mod markdown;
 pub mod media;
 pub mod pages;
+pub mod pattern;
 pub mod render;
 pub mod schema;
 pub mod yaml;
