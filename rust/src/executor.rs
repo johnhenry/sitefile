@@ -11,6 +11,7 @@ use crate::base_image::{
 use crate::build_args::BuildArgs;
 use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::csp::csp_pages;
 use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
@@ -690,12 +691,15 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
         .imports
         .iter()
         .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .chain(p.export_key.as_deref())
         .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
         if !used.contains(id) {
-            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+            warn(&format!(
+                "--secret {id} is not used by any IMPORT … SECRET or EXPORT … KEY"
+            ));
         }
     }
 }
@@ -1346,6 +1350,36 @@ fn with_site_rules(
             }
         }
     }
+    // CSP: Content-Security-Policy lines after those, or with META a <meta> in each page.
+    let mut csp_rules: Vec<(String, String)> = Vec::new();
+    if let Some(c) = &p.csp {
+        let origin = format!("{label}:{} CSP", c.span.line);
+        let r = csp_pages(&tree, &p.export_path, &c.policy, c.meta, &origin);
+        if !r.headless.is_empty() {
+            let count = if r.headless.len() == 1 {
+                "1 page has".to_string()
+            } else {
+                format!("{} pages have", r.headless.len())
+            };
+            warn(&format!(
+                "{origin}: {count} no <head>, so no policy was added: {}",
+                r.headless.join(", ")
+            ));
+        }
+        if !r.pages.is_empty() {
+            tree = tree.with_files(r.pages, ConflictPolicy::Overwrite, Some(&c.span))?;
+        }
+        let none_yet = p.headers.is_empty() && auto.is_empty();
+        if !r.rules.is_empty() && none_yet && tree.is_file(&headers_path) {
+            warn(&format!("{origin}: {headers_path} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META"));
+        } else if !r.rules.is_empty() {
+            if none_yet {
+                header_rules = vec![(false, &c.span)];
+                header_kind = "CSP";
+            }
+            csp_rules = r.rules;
+        }
+    }
     let headers = headers_file(
         p.headers
             .iter()
@@ -1354,6 +1388,11 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            )
+            .chain(
+                csp_rules
+                    .iter()
+                    .map(|(pattern, v)| (pattern.as_str(), "Content-Security-Policy", v.as_str())),
             ),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
@@ -1431,6 +1470,8 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// car: the root CID (CIDv1, base32).
     pub root_cid: Option<String>,
+    /// swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`).
+    pub web_bundle_id: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
     /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
@@ -1728,6 +1769,7 @@ fn export_build_inner(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
+                web_bundle_id: None,
                 incremental: None,
                 dictionary_deltas: None,
             });
@@ -1745,6 +1787,7 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1763,7 +1806,42 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: None,
             root_cid: None,
+            web_bundle_id: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
+        });
+    }
+    if format == ExportFormat::Swbn {
+        let key_id = if result.plan.export_format == ExportFormat::Swbn {
+            result.plan.export_key.clone()
+        } else {
+            None
+        };
+        let Some(key_id) = key_id else {
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+            ));
+        };
+        let Some(pem) = options.secrets.get(&key_id) else {
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("EXPORT ... KEY {key_id}: no --secret id={key_id} was given"),
+            ));
+        };
+        let (data, id) =
+            crate::export::swbn::write_signed_web_bundle(&result.output, pem, &key_id)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: None,
+            web_bundle_id: Some(id),
+            incremental: None,
             dictionary_deltas: None,
         });
     }
@@ -1778,6 +1856,7 @@ fn export_build_inner(
             file_digest: Some(sha256(&data)),
             manifest_digest: None,
             root_cid: Some(root),
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1813,6 +1892,7 @@ fn export_build_inner(
         file_digest: Some(digest),
         manifest_digest: None,
         root_cid: None,
+        web_bundle_id: None,
         incremental: None,
         dictionary_deltas: None,
     })

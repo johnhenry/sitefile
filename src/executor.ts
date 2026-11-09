@@ -1,4 +1,5 @@
 import { addDictionaryDeltas } from './dictionary.js';
+import { writeSignedWebBundle } from './swbn.js';
 import { encodeCar } from './car.js';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
@@ -52,6 +53,7 @@ import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.j
 import { precache } from './precache.js';
 import { precompress } from './precompress.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
+import { cspPages } from './csp.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -701,6 +703,8 @@ export interface ExportedBuild extends BuildResult {
   readonly manifestDigest?: string;
   /** car: the root CID (CIDv1, base32). */
   readonly rootCid?: string;
+  /** swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`). */
+  readonly webBundleId?: string;
   /** Watch mode: set when the directory export applied only the changes (src/exporter.ts). */
   readonly incremental?: { readonly written: number; readonly removed: number };
 }
@@ -758,6 +762,15 @@ async function exportBuild(
   if (!isArchiveFormat(format)) {
     const written = await exportDirectory(result.output, options.outDir, { ...exportOptions, ...(exportState ? { incremental: exportState } : {}) });
     return { ...result, format, outDir: written.outDir, ...(written.incremental ? { incremental: written.incremental } : {}) };
+  }
+  if (format === 'swbn') {
+    const keyId = result.plan.exportFormat === 'swbn' ? result.plan.exportKey : undefined;
+    if (keyId === undefined) throw new SitefileError('E_VALIDATION', "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret");
+    const pem = options.secrets?.get(keyId);
+    if (pem === undefined) throw new SitefileError('E_SECRET', `EXPORT ... KEY ${keyId}: no --secret id=${keyId} was given`);
+    const signed = writeSignedWebBundle(result.output, pem, keyId);
+    const written = await exportFile(signed.bytes, options.outDir, exportOptions);
+    return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(signed.bytes), webBundleId: signed.id };
   }
   if (format === 'car') {
     const car = encodeCar(result.output);
@@ -937,7 +950,8 @@ export interface RemoteEnv {
 export function warnUnusedSecrets(p: Plan, secrets: Secrets | undefined, warn: (m: string) => void): void {
   if (!secrets) return;
   const used = new Set(p.imports.flatMap((s) => (s.secrets ?? []).map((x) => x.id)));
-  for (const id of [...secrets.keys()].sort()) if (!used.has(id)) warn(`--secret ${id} is not used by any IMPORT … SECRET`);
+  if (p.exportKey !== undefined) used.add(p.exportKey);
+  for (const id of [...secrets.keys()].sort()) if (!used.has(id)) warn(`--secret ${id} is not used by any IMPORT … SECRET or EXPORT … KEY`);
 }
 
 /**
@@ -2379,7 +2393,9 @@ async function transformFiles(
  * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
  * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
  * names its new URL. Unless the plan turns them off, the renamed files (and the pages) also get
- * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}).
+ * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}). A CSP adds a
+ * Content-Security-Policy for every exported page: lines after those, or with META a `<meta>` in each page
+ * (see {@link cspPages}).
  */
 function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
   const url = new Map<string, string>();
@@ -2405,6 +2421,21 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
         headerRules = [{ overwrite: false, span: p.cacheHeaders.span }];
         headerKind = 'FINGERPRINT';
       }
+    }
+  }
+  if (p.csp) {
+    const origin = `${label}:${p.csp.span.line} CSP`;
+    const r = cspPages(tree, p.exportPath, p.csp.policy, p.csp.meta, origin);
+    if (r.headless.length > 0) warn(`${origin}: ${r.headless.length === 1 ? '1 page has' : `${r.headless.length} pages have`} no <head>, so no policy was added: ${r.headless.join(', ')}`);
+    if (r.pages.length > 0) tree = tree.withFiles(r.pages, 'overwrite', p.csp.span);
+    if (r.rules.length > 0 && headers.length === 0 && tree.isFile(headersPath)) {
+      warn(`${origin}: ${headersPath} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META`);
+    } else if (r.rules.length > 0) {
+      if (headers.length === 0) {
+        headerRules = [{ overwrite: false, span: p.csp.span }];
+        headerKind = 'CSP';
+      }
+      headers.push(...r.rules);
     }
   }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [

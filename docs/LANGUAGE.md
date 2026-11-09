@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -328,7 +328,9 @@ These pin down what the draft above leaves open. Tests cover each rule.
   Any other value is `E_SYNTAX`. `--compression` overrides it (and
   `--oci-compression`, for oci); it belongs to the EXPORT's own format, so
   `--format wbn` on an `AS oci COMPRESSION …` Sitefile does not inherit it.
-  The clauses come in this order: `AS`, `BASE`, `AT`, `COMPRESSION`.
+  `KEY <secret-id>` (swbn only, and required there; otherwise `E_VALIDATION`) names the build secret
+  that holds the signing key (see *swbn* below).
+  The clauses come in this order: `AS`, `BASE`, `AT`, `COMPRESSION`, `KEY`.
   The CLI's `--out` picks the host destination and `--format` / `--base-url`
   override the Sitefile's `AS` / `BASE`.
 - `RUN` is rejected: the MVP never runs shell commands.
@@ -1148,6 +1150,40 @@ and after any FINGERPRINT.
 - The manifest follows the conflict rules (`--overwrite`); the service worker
   is replaced. Both get the origin `Sitefile:<line> PRECACHE`.
 
+### Content Security Policy: CSP (see `examples/csp/`)
+`CSP [POLICY <policy>] [META]` gives every exported page a
+[Content-Security-Policy](https://developer.mozilla.org/docs/Web/HTTP/CSP)
+that allows its own inline `<script>` and `<style>` elements by hash, so the
+policy needs no `'unsafe-inline'`. Like HEADER it may appear in any stage
+(once: a second CSP is `E_VALIDATION`) and is applied **at EXPORT**, to the
+final pages of the exported directory.
+
+- **Base policy**: `POLICY <policy>` (one operand, so quote it; no control
+  characters or commas, `E_VALIDATION`), default
+  `default-src 'self'; base-uri 'self'; object-src 'none'`.
+- **Hashes**: for each `.html`/`.htm` page (valid UTF-8), the SHA-256 (base64)
+  of the exact text of every `<script>` without a `src` and every `<style>`,
+  found by the reference scanner (comments and other raw text skipped). The
+  `'sha256-…'` sources, deduplicated in page order, are appended to the base's
+  `script-src` / `style-src` directive, or added as `script-src 'self' …` /
+  `style-src 'self' …` when the base has none and the page has such
+  elements. Directives are written joined with `; `. Inline event handlers
+  (`onclick=`), `style=` attributes and `javascript:` URLs are not hashed (CSP
+  would need `'unsafe-hashes'`), so a strict policy blocks them; so is the
+  live-reload script `serve --watch` injects (johnhenry/sitefile#181).
+- **Where**: by default as `Content-Security-Policy` lines in `/_headers`
+  after the HEADER lines, one block per page URL: `/a/index.html` as `/a/` and
+  `/a/index.html`, `/b.html` as `/b.html` and `/b` (pretty URLs), other pages
+  by their path (URLs with spaces are left out). A HEADER that sets
+  `Content-Security-Policy` too is `E_VALIDATION`. With no HEADER lines and a
+  COPY'd `/_headers` already in the tree, that file is kept and a warning says
+  the lines were not added. With **`META`**, each page instead gets
+  `<meta http-equiv="Content-Security-Policy" content="…">` right after its
+  `<head>` start tag (pages without one are left alone, with a warning); a
+  `<meta>` policy cannot set `frame-ancestors` or reporting.
+- `--target` writes no policies (like the other EXPORT site files). `why` on a
+  page or on `/_headers` shows the CSP line.
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and
@@ -1690,8 +1726,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`; not `.html`, which stays a directory name), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`), `dist.swbn`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`, `.swbn`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1906,6 +1942,21 @@ and tar timestamps instead.
   as that directory's `index.html`, the first record of each path; paths are checked like archive entries
   (`E_ARCHIVE_UNSAFE`) and the archive limits apply. WACZ (a zip of WARCs with an index) is not written
   yet.
+
+- **swbn**: a [Signed Web Bundle](https://github.com/WICG/webpackage/blob/main/explainers/integrity-signature.md)
+  for an [Isolated Web App](https://github.com/WICG/isolated-web-apps). `EXPORT / AS swbn KEY iwa` with
+  `--secret id=iwa,src=key.pem`, where `key.pem` is an unencrypted Ed25519 private key in PEM, PKCS #8
+  (`openssl genpkey -algorithm ed25519 -out key.pem`); anything else is `E_SECRET`, and a missing secret
+  is `E_SECRET` too. The key is only read, never written to the output, the lockfile, caches or traces.
+  The Web Bundle ID is the lower-case, unpadded base32 of the public key and the suffix `00 01 02`;
+  `build` prints it (`web bundle id …`), and the app's origin is `isolated-app://<id>/`. The bundle is
+  the tree's Web Bundle (b2, as `AS wbn`) at that origin, preceded by the v2 integrity block
+  `[magic, "2b\0\0", {webBundleId}, [[{ed25519PublicKey}, signature]]]`, signed over the length-prefixed
+  SHA-512 of the bundle, the block without signatures and the signature attributes. Ed25519 is
+  deterministic, so the same tree and key give the same bytes; the output matches `wbn-sign` 0.3.1
+  byte for byte. The tree should hold `/.well-known/manifest.webmanifest` for Chrome to install it.
+  The Rust port signs with `ring`'s Ed25519 (already in the build through rustls). A `--secret` value may contain line
+  breaks (a PEM key); one used as an HTTP header (`IMPORT … SECRET`) may not (`E_SECRET`).
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

@@ -47,7 +47,7 @@ sitefile why <path> [context] [--json] [--target stage]
 | `--plugin-memory MiB` | memory limit for each plugin: a JavaScript plugin's heap (`node --max-old-space-size`), a wasm plugin's linear memory (default 1024). A plugin that passes it fails with `E_PLUGIN` |
 | `--node path` | the Node binary JavaScript plugins run on: an absolute path, at least Node 26 (default `$SITEFILE_NODE`, else the Node running the TypeScript CLI or `node` on `PATH` for the Rust binary; [PLUGINS.md](PLUGINS.md#which-node-runs-plugins)) |
 | `--lint-disable rule[,rule…]` | `validate` only, repeatable: turn [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) off for this run (`all` turns every rule off). An unknown rule id is a usage error. |
-| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
+| `--secret id=<id>,env=<VAR>` / `--secret id=<id>,src=<file>` | a build secret for `IMPORT … SECRET <id> AS HEADER <Name>` / `AS BEARER`, or the signing key of `EXPORT … AS swbn KEY <id>` (repeatable; also on `vendor` and `outdated`). Sent only to that import's origin and redacted (`***`) from every message; see [LANGUAGE.md](LANGUAGE.md#build-secrets---secret-import--secret). |
 
 `validate` also prints **lint warnings** (`warning: Sitefile:4: [render-escape] RENDER writes /index.html without
 --escape=html, …`), after the planner's warnings and before the result line; they never change the exit code.
@@ -1333,6 +1333,14 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
   without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
   read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
+- **Development 404s.** A foreground or `--watch` server (not `-d`, and not one bound to `0.0.0.0`/`::`) answers
+  a miss that no `404.html` covers with a page listing near misses: files whose path differs only in letter
+  case from the path, `<path>.html` or `<path>/index.html` (they work on a case-insensitive disk such as
+  macOS's, not on a host), and `_redirects` rules whose source matches but whose query parameters or
+  conditions do not. Without near misses it is the plain page.
+- **What answered** is noted at the end of the access-log line: `→ /about.html (clean URL)`,
+  `→ /app/index.html (spa fallback)`, `→ /docs/404.html`, `→ /index.html (no 404.html)` (Cloudflare
+  profile), and `→ <target> (_redirects:3)` for a rule. Index files and exact paths get no note.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

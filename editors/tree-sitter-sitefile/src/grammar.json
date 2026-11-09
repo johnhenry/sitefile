@@ -167,6 +167,13 @@
         "value": "[Pp][Rr][Ee][Cc][Aa][Cc][Hh][Ee]"
       }
     },
+    "_kw_csp": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Cc][Ss][Pp]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -314,6 +321,13 @@
         "value": "[Cc][Oo][Mm][Pp][Rr][Ee][Ss][Ss][Ii][Oo][Nn]"
       }
     },
+    "_kw_key": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Kk][Ee][Yy]"
+      }
+    },
     "_kw_link": {
       "type": "TOKEN",
       "content": {
@@ -426,6 +440,13 @@
         "value": "[Ii][Nn][Tt][Oo]"
       }
     },
+    "_kw_meta": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Mm][Ee][Tt][Aa]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -452,13 +473,6 @@
       "content": {
         "type": "PATTERN",
         "value": "[Aa][Ss][Ss][Ee][Rr][Tt]"
-      }
-    },
-    "_kw_meta": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Mm][Ee][Tt][Aa]"
       }
     },
     "_kw_exec": {
@@ -635,6 +649,10 @@
         {
           "type": "SYMBOL",
           "name": "precache_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "csp_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2962,6 +2980,67 @@
         }
       ]
     },
+    "csp_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_csp"
+          },
+          "named": false,
+          "value": "CSP"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_policy"
+                  },
+                  "named": false,
+                  "value": "POLICY"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "policy",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_meta"
+              },
+              "named": false,
+              "value": "META"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
     "checklinks_instruction": {
       "type": "SEQ",
       "members": [
@@ -3128,6 +3207,36 @@
                     },
                     "named": true,
                     "value": "compression"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_key"
+                  },
+                  "named": false,
+                  "value": "KEY"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "key",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
                   }
                 }
               ]

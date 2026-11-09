@@ -207,6 +207,8 @@ export interface ExportInstruction {
    * or whether the whole Web Bundle is gzipped (default none).
    */
   readonly compression?: { readonly value: OciCompression; readonly span: SourceSpan };
+  /** `KEY <secret-id>` (`swbn` only): the build secret holding the Ed25519 signing key. */
+  readonly key?: { readonly id: string; readonly span: SourceSpan };
 }
 
 /**
@@ -223,8 +225,8 @@ export function parseOciCompression(name: string): OciCompression | undefined {
   return (OCI_COMPRESSIONS as readonly string[]).includes(n) ? (n as OciCompression) : undefined;
 }
 
-export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml' | 'warc';
-export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc'];
+export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml' | 'warc' | 'swbn';
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn'];
 
 /** Parse a format name (`tar.gz` is an alias for `tgz`); undefined if unknown. */
 export function parseExportFormat(name: string): ExportFormat | undefined {
@@ -444,6 +446,17 @@ export interface PrecacheInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the SHA-256 of
+ * each of its inline scripts and styles; written to `/_headers` at EXPORT, or with META as a `<meta>`.
+ */
+export interface CspInstruction {
+  readonly kind: 'CSP';
+  readonly span: SourceSpan;
+  readonly policy?: Operand;
+  readonly meta: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -476,6 +489,7 @@ export type Instruction =
   | RobotsInstruction
   | SecurityTxtInstruction
   | PrecacheInstruction
+  | CspInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

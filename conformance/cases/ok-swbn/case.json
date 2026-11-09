@@ -1,0 +1,1 @@
+{ "out": "site.swbn", "compare": "bytes", "args": ["--secret", "id=iwa,src=test/fixtures/swbn/rfc8032-test-key.pem"] }

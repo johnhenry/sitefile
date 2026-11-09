@@ -46,6 +46,13 @@ fn header_value_ok(v: &str) -> bool {
     !v.is_empty() && v.chars().all(|c| c == '\t' || (' '..='~').contains(&c))
 }
 
+/// What a secret may hold: printable ASCII, tabs and line breaks (a PEM key for EXPORT ... KEY).
+fn secret_value_ok(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars()
+            .all(|c| matches!(c, '\t' | '\n' | '\r') || (' '..='~').contains(&c))
+}
+
 /// Parse `--secret` flags: `id=<id>,env=<VAR>` or `id=<id>,src=<file>` (relative to the working
 /// directory; one trailing newline is dropped). Messages never include a value.
 pub fn load_secrets(flags: &[String], env: &dyn Fn(&str) -> Option<String>) -> Result<Secrets> {
@@ -111,10 +118,10 @@ pub fn load_secrets(flags: &[String], env: &dyn Fn(&str) -> Option<String>) -> R
                 format!("--secret id={id} is empty"),
             ));
         }
-        if !header_value_ok(&value) {
+        if !secret_value_ok(&value) {
             return Err(SitefileError::plain(
                 E_SECRET,
-                format!("--secret id={id} cannot be sent in an HTTP header (only printable ASCII, spaces and tabs)"),
+                format!("--secret id={id} must be printable ASCII (spaces, tabs and line breaks allowed)"),
             ));
         }
         out.push((id, value));
@@ -178,6 +185,16 @@ pub fn secret_headers(
                 span,
             ));
         };
+        if !header_value_ok(v) {
+            return Err(SitefileError::at(
+                E_SECRET,
+                format!(
+                    "IMPORT {name}: secret '{}' cannot be sent in an HTTP header (only printable ASCII, spaces and tabs)",
+                    s.id
+                ),
+                span,
+            ));
+        }
         let value = if s.bearer {
             format!("Bearer {v}")
         } else {
@@ -210,6 +227,7 @@ mod tests {
             "API_TOKEN" => Some("tok-secret-value".into()),
             "EMPTY" => Some(String::new()),
             "CRLF" => Some("a\r\nX-Injected: 1".into()),
+            "NUL" => Some("a\0b".into()),
             _ => None,
         }
     }
@@ -260,7 +278,23 @@ mod tests {
         assert_eq!(code(&["id=a,env=NOPE"]), "E_SECRET");
         assert_eq!(code(&["id=a,src=/nonexistent/secret/file"]), "E_SECRET");
         assert_eq!(code(&["id=a,env=EMPTY"]), "E_SECRET");
-        assert_eq!(code(&["id=a,env=CRLF"]), "E_SECRET");
+        // Line breaks are allowed in a value (a PEM key) but never sent as a header; other control
+        // characters are refused.
+        assert_eq!(code(&["id=a,env=CRLF"]), "ok");
+        assert_eq!(code(&["id=a,env=NUL"]), "E_SECRET");
+        let crlf = load_secrets(&["id=a,env=CRLF".to_string()], &env).unwrap();
+        let refs = [SecretRef {
+            id: "a".into(),
+            header: "X-Key".into(),
+            bearer: false,
+        }];
+        let span = SourceSpan::new("Sitefile", 1, 1);
+        assert_eq!(
+            secret_headers("api", &refs, &span, &crlf, None)
+                .unwrap_err()
+                .code,
+            E_SECRET
+        );
     }
 
     #[test]

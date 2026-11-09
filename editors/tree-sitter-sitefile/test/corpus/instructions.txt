@@ -283,6 +283,7 @@ EXPORT /
 EXPORT / AS directory
 EXPORT / AS oci BASE docker.io/library/nginx:1.27 AT /usr/share/nginx/html COMPRESSION none
 EXPORT /site.tar.gz AS tar.gz
+EXPORT / AS swbn KEY iwa
 
 ---
 
@@ -300,7 +301,11 @@ EXPORT /site.tar.gz AS tar.gz
     (compression))
   (export_instruction
     (path)
-    (export_format)))
+    (export_format))
+  (export_instruction
+    (path)
+    (export_format)
+    (identifier)))
 
 ==================
 Unsupported instructions
@@ -529,6 +534,21 @@ PRECACHE /
     (path))
   (precache_instruction
     (path)))
+
+================================================================================
+CSP with and without POLICY and META
+================================================================================
+
+CSP
+CSP POLICY "default-src 'self'" META
+
+---
+
+(source_file
+  (csp_instruction)
+  (csp_instruction
+    (string
+      (string_content))))
 
 ================================================================================
 MIME
