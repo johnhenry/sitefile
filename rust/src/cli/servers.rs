@@ -1088,10 +1088,6 @@ pub fn serve_worker(id: &str) -> i32 {
                             .collect(),
                     )
                 }),
-                throttle: state
-                    .throttle
-                    .as_deref()
-                    .and_then(crate::server::parse_throttle),
                 content: site.content,
             },
             &state.bind.host,
