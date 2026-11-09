@@ -133,6 +133,44 @@ pub fn extract_archive(
     Tree::from_files(c.files)
 }
 
+/// OS metadata that archivers and file managers add next to real files: macOS
+/// resource forks (`__MACOSX/`, AppleDouble `._name`), Finder's `.DS_Store` and
+/// custom folder `Icon\r`, and Windows' `Thumbs.db` and `desktop.ini`
+/// (case-insensitive, as Windows writes them).
+pub fn is_os_metadata(path: &str) -> bool {
+    if path.split('/').any(|s| s == "__MACOSX") {
+        return true;
+    }
+    let base = path.rsplit('/').next().unwrap_or("");
+    base.starts_with("._")
+        || base == ".DS_Store"
+        || base == "Icon\r"
+        || base.eq_ignore_ascii_case("thumbs.db")
+        || base.eq_ignore_ascii_case("desktop.ini")
+}
+
+/// `tree` without its OS metadata files ([`is_os_metadata`]), and how many were dropped.
+pub fn without_os_metadata(tree: Tree) -> Result<(Tree, usize)> {
+    let skipped = tree.entries().filter(|(p, _)| is_os_metadata(p)).count();
+    if skipped == 0 {
+        return Ok((tree, 0));
+    }
+    let kept: Vec<(String, Node)> = tree
+        .entries()
+        .filter(|(p, _)| !is_os_metadata(p))
+        .map(|(p, n)| (p.clone(), n.clone()))
+        .collect();
+    Ok((Tree::from_files(kept)?, skipped))
+}
+
+/// The warning for [`without_os_metadata`] dropping `skipped` files of `what`.
+pub fn os_metadata_warning(what: &str, skipped: usize) -> String {
+    format!(
+        "{what}: skipped {skipped} OS metadata {} (__MACOSX, ._*, .DS_Store, Thumbs.db, desktop.ini, Icon\\r); --keep-os-metadata keeps them",
+        if skipped == 1 { "file" } else { "files" }
+    )
+}
+
 fn is_gzip(b: &[u8]) -> bool {
     b.len() > 2 && b[0] == 0x1f && b[1] == 0x8b
 }
@@ -824,7 +862,13 @@ pub(crate) mod tests {
             };
             let name = e.name.as_bytes();
             let usize_ = e.fake_size.unwrap_or(e.data.len() as u32);
+            let crc = {
+                let mut c = flate2::Crc::new();
+                c.update(&e.data);
+                c.sum()
+            };
             let mut l = vec![0u8; 30];
+            l[14..18].copy_from_slice(&crc.to_le_bytes());
             l[0..4].copy_from_slice(&0x04034b50u32.to_le_bytes());
             l[4..6].copy_from_slice(&20u16.to_le_bytes());
             l[8..10].copy_from_slice(&(if e.deflate { 8u16 } else { 0 }).to_le_bytes());
@@ -836,6 +880,7 @@ pub(crate) mod tests {
             c[4..6].copy_from_slice(&((3u16 << 8) | 20).to_le_bytes());
             c[6..8].copy_from_slice(&20u16.to_le_bytes());
             c[10..12].copy_from_slice(&(if e.deflate { 8u16 } else { 0 }).to_le_bytes());
+            c[16..20].copy_from_slice(&crc.to_le_bytes());
             c[20..24].copy_from_slice(&(body.len() as u32).to_le_bytes());
             c[24..28].copy_from_slice(&usize_.to_le_bytes());
             c[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
@@ -1405,6 +1450,70 @@ pub(crate) mod tests {
             inflate_like_node(&gz[..gz.len() - 4], true, 20_000),
             Inflated::Corrupt
         ));
+    }
+
+    /// What Finder's "Compress" makes of a folder `site` (plus Windows' and Finder's per-folder files).
+    pub(crate) fn finder_zip() -> Vec<u8> {
+        let dir = |n: &str| ZipIn {
+            name: n.into(),
+            mode: Some(0o040755),
+            ..Default::default()
+        };
+        zip(&[
+            dir("site/"),
+            ZipIn {
+                deflate: true,
+                ..ze("site/index.html", "<h1>hi</h1>")
+            },
+            ze("site/.DS_Store", "Bud1"),
+            ze("site/Icon\r", ""),
+            ze("site/img/Thumbs.db", "x"),
+            ze("site/img/Desktop.ini", "x"),
+            ze("site/img/a.png", "png"),
+            dir("__MACOSX/"),
+            dir("__MACOSX/site/"),
+            ze("__MACOSX/site/._index.html", "Mac OS X"),
+            ze("__MACOSX/site/img/._a.png", "Mac OS X"),
+        ])
+    }
+
+    #[test]
+    fn os_metadata_is_recognized() {
+        for p in [
+            "/__MACOSX/a",
+            "/x/__MACOSX/y",
+            "/._a.html",
+            "/d/._x",
+            "/.DS_Store",
+            "/d/Icon\r",
+            "/THUMBS.DB",
+            "/d/Desktop.ini",
+        ] {
+            assert!(is_os_metadata(p), "{p:?}");
+        }
+        for p in [
+            "/index.html",
+            "/_a",
+            "/.well-known/x",
+            "/Icon",
+            "/thumbs.db.bak",
+            "/__MACOSX.txt",
+            "/a.DS_Store",
+            "/.ds_store_x",
+        ] {
+            assert!(!is_os_metadata(p), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn a_finder_zip_loses_its_os_metadata_and_is_a_single_folder() {
+        let (tree, skipped) = without_os_metadata(x(&finder_zip()).unwrap()).unwrap();
+        assert_eq!(skipped, 6);
+        assert_eq!(paths(&tree), ["/site/img/a.png", "/site/index.html"]);
+        assert_eq!(
+            os_metadata_warning("IMPORT s", 6),
+            "IMPORT s: skipped 6 OS metadata files (__MACOSX, ._*, .DS_Store, Thumbs.db, desktop.ini, Icon\\r); --keep-os-metadata keeps them"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { importedStageRefs, plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportedStageRef, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
-import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
+import { cacheKey, digestFolder, pluginFolderIntegrity, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, fileRefs, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
@@ -19,7 +19,7 @@ import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { fetchGitCommit, pinnedGitUrl, selectGitPath, type GitLocation, type GitSelection } from './resources/git.js';
-import { extractArchive } from './resources/archive.js';
+import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { writeTar } from './archive-writers.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
@@ -69,6 +69,11 @@ export interface BuildOptions {
   readonly fetchPolicy?: Partial<FetchPolicy>;
   /** Limits for extracting archives imported AS tree. */
   readonly archiveLimits?: Partial<ArchiveLimits>;
+  /**
+   * Keep OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) in archives
+   * imported AS tree, like the CLI's `--keep-os-metadata`. Default false: they are dropped with a warning.
+   */
+  readonly keepOsMetadata?: boolean;
   /** Lockfile path, or false to disable. Default: `Sitefile.lock` next to the Sitefile. */
   readonly lockfile?: string | false;
   /** Fail instead of adding or changing lockfile entries. */
@@ -92,6 +97,11 @@ export interface BuildOptions {
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
   readonly pluginPolicy?: Partial<PluginPolicy>;
+  /**
+   * `--node` / `SITEFILE_NODE`: the absolute path of the Node binary JavaScript plugins run on
+   * (default: the Node running sitefile). Checked to be at least MIN_NODE before the first plugin starts.
+   */
+  readonly node?: string;
   /** Permit hard-linked files in the context (you assert they are safe). Default false. */
   readonly allowHardlinks?: boolean;
   /**
@@ -356,6 +366,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     local,
     policy,
     archiveLimits,
+    keepOsMetadata: !!options.keepOsMetadata,
     lock,
     label,
     warn,
@@ -408,7 +419,10 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local, ...(unit !== undefined ? { import: unit } : {}) });
     return r;
   };
-  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
+  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn, {
+    ...(options.node !== undefined ? { node: options.node } : {}),
+    ...(options.onNotice ? { onNotice: options.onNotice } : {}),
+  });
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
   const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy };
@@ -771,6 +785,7 @@ export async function imageAttestations(
 interface ImportEnv extends RemoteEnv {
   readonly local: LocalContext;
   readonly archiveLimits: ArchiveLimits;
+  readonly keepOsMetadata?: boolean;
   readonly memo?: BuildMemo;
 }
 
@@ -791,7 +806,15 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
   const convertBytes = async (key: string, compute: () => Promise<Resource>): Promise<Resource> => {
     const hit = env.memo?.get<Resource>(key);
     if (hit) return hit;
-    const r = await compute();
+    let r = await compute();
+    // An archive AS tree: OS metadata files are dropped (keepOsMetadata keeps them).
+    if (r.kind === 'tree' && !env.keepOsMetadata) {
+      const { tree, skipped } = withoutOsMetadata(r.tree);
+      if (skipped > 0) {
+        env.warn(osMetadataWarning(`IMPORT ${spec.name}`, skipped));
+        r = { ...r, tree };
+      }
+    }
     env.memo?.set(key, r);
     return r;
   };
@@ -1777,9 +1800,9 @@ function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: E
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
 async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost, allowed: (spec: PluginSpec) => void): Promise<void> {
   const { real, bytes } = await local.realFile(spec.path, spec.span);
-  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
   if (real.endsWith('.wasm')) {
-    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed, and INTEGRITY pins the module.
+    if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
     checkWasmPlugin(spec.name, bytes, spec.span);
     host.register(spec.name, real, spec.span, bytes);
     return;
@@ -1793,6 +1816,16 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
       `PLUGIN ${spec.name}: put the plugin in its own folder (e.g. ./plugins/${path.basename(real)}); a plugin can read every file next to it`,
       spec.span,
     );
+  }
+  // It can read and import everything in its folder, so INTEGRITY pins the whole folder (#158).
+  if (spec.integrity) {
+    const dir = path.dirname(real);
+    const shown = `./${path.relative(local.root, dir).split(path.sep).join('/')}/`;
+    const r = await pluginFolderIntegrity(dir);
+    if ('problem' in r) throw new SitefileError('E_INTEGRITY', `PLUGIN ${spec.name}: INTEGRITY pins the plugin's folder ${shown}, which ${r.problem}`, spec.span);
+    if (r.digest !== spec.integrity.toLowerCase()) {
+      throw new SitefileError('E_INTEGRITY', `integrity mismatch for ${shown} (PLUGIN ${spec.name}'s folder: INTEGRITY covers every file in it): expected ${spec.integrity}, got ${r.digest}`, spec.span);
+    }
   }
   host.register(spec.name, real, spec.span);
 }

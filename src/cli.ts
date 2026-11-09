@@ -17,7 +17,7 @@ import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { SITEFILE_VERSION } from './attest.js';
-import { watchLoop } from './cli/watch.js';
+import { pollOption, watchLoop } from './cli/watch.js';
 import { Profiler } from './profile.js';
 import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
@@ -83,6 +83,8 @@ Options:
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
       --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
                                plugin's linear memory (default 1024)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else the Node running sitefile); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -111,6 +113,8 @@ Options:
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
+      --keep-os-metadata       keep __MACOSX, ._*, .DS_Store, Thumbs.db and desktop.ini in archives
+                               imported AS tree (default: skipped with a warning)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
 ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
@@ -119,6 +123,9 @@ ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -163,6 +170,7 @@ export async function main(
         secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
         'plugin-memory': { type: 'string' },
+        node: { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
@@ -180,11 +188,14 @@ export async function main(
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
         'allow-hardlinks': { type: 'boolean' },
+        'keep-os-metadata': { type: 'boolean' },
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
+        poll: { type: 'boolean' },
+        'poll-interval': { type: 'string' },
         profile: { type: 'string' },
         manifest: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
@@ -233,13 +244,21 @@ export async function main(
     if (o['no-cache']) return usageError('--no-cache cannot be combined with --cache-from or --cache-to');
     if (cacheTo.length > 1) return usageError('--cache-to can be given only once');
   }
+  if (!o.watch && (o.poll || o['poll-interval'] !== undefined)) return usageError(`--${o['poll-interval'] !== undefined ? 'poll-interval' : 'poll'} needs --watch`);
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
+    let pollMs: number | undefined;
+    try {
+      pollMs = pollOption(o.poll, o['poll-interval']);
+    } catch (e) {
+      return usageError((e as SitefileError).detail);
+    }
     try {
       const memo = watchMemo();
       return await watchLoop({
         context: contextArg,
+        ...(pollMs !== undefined ? { pollMs } : {}),
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {
@@ -343,6 +362,7 @@ export async function main(
             ...(o['plugin-timeout'] ? { toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
           }
         : {}),
+      ...pluginNode(o.node),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
       allowAllPlugins: !!o['allow-plugins'],
@@ -350,6 +370,7 @@ export async function main(
       ...(remoteCache ? { remoteCache } : {}),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
+      keepOsMetadata: !!o['keep-os-metadata'],
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
       ...(o.base !== undefined ? { baseImage: o.base } : {}),
       // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
@@ -513,6 +534,14 @@ export async function main(
       }
     }
   }
+}
+
+/** `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path. */
+function pluginNode(flag: string | undefined): { node?: string } {
+  const [value, from] = flag !== undefined ? [flag, '--node'] : [process.env['SITEFILE_NODE'] || undefined, 'SITEFILE_NODE'];
+  if (value === undefined) return {};
+  if (!path.isAbsolute(value)) throw new SitefileError('E_USAGE', `${from} expects an absolute path to a Node binary, got '${value}'`);
+  return { node: value };
 }
 
 /** True when `file` would be written inside the directory `dir` (lexically, from the cwd). */
