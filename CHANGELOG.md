@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **WACZ export** (johnhenry/sitefile#206, WACZ part): `EXPORT / AS wacz BASE
+  <url>` (or `-o site.wacz`) writes a deterministic WACZ 1.1.1 package that
+  ReplayWeb.page opens: the site's WARC as `archive/data.warc.gz` (the same
+  bytes as `AS warc COMPRESSION gzip`), a sorted CDXJ index with each record's
+  offset and length, `pages/pages.jsonl` with every HTML page and its
+  `<title>`, and `datapackage.json` with `datapackage-digest.json`. Both
+  implementations; conformance case `ok-wacz`.
 - **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
   a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
   gets its slash, everything else is 404, and the server's redirects and

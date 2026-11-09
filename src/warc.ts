@@ -42,7 +42,7 @@ function recordId(seed: string): string {
   return `<urn:uuid:${h.slice(0, 8)}-${h.slice(8, 12)}-${v}-${variant}-${h.slice(20, 32)}>`;
 }
 
-function isoDate(epoch: number | undefined): string {
+export function isoDate(epoch: number | undefined): string {
   if (epoch === undefined) return DATE_ZERO;
   return new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
@@ -71,19 +71,31 @@ export interface WarcOptions {
   readonly compression?: 'gzip' | 'none' | undefined;
 }
 
+/** One WARC record and, for a response, what an index needs (WACZ). */
+export interface WarcRecord {
+  readonly bytes: Uint8Array;
+  readonly response?: { readonly uri: string; readonly path: string; readonly type: string; readonly digest: string };
+}
+
 /** `EXPORT … AS warc`: the tree as WARC/1.1 records (see the top of this file). */
 export function writeWarc(tree: Tree, options: WarcOptions): Uint8Array {
+  const records = warcRecords(tree, options).map((r) => r.bytes);
+  return options.compression === 'gzip' ? concat(records.map((r) => gzip(r))) : concat(records);
+}
+
+/** The records {@link writeWarc} writes, in order. */
+export function warcRecords(tree: Tree, options: WarcOptions): WarcRecord[] {
   if (options.baseUrl === undefined || options.baseUrl === '') {
     throw new SitefileError('E_VALIDATION', "warc export needs a base URL: use 'EXPORT <path> AS warc BASE https://example.com/' or --base-url");
   }
   const base = validateBaseUrl(options.baseUrl);
   const date = isoDate(options.epoch);
   const rules = parseHeaderRules(new TextDecoder().decode(tree.get('/_headers')?.bytes ?? new Uint8Array(0)));
-  const records: Uint8Array[] = [];
+  const records: WarcRecord[] = [];
   const info = enc.encode(`software: sitefile${CRLF}format: WARC File Format 1.1${CRLF}`);
   const infoId = recordId(`warcinfo\0${base}`);
-  records.push(
-    record(
+  records.push({
+    bytes: record(
       [
         ['WARC-Type', 'warcinfo'],
         ['WARC-Record-ID', infoId],
@@ -92,15 +104,15 @@ export function writeWarc(tree: Tree, options: WarcOptions): Uint8Array {
       ],
       info,
     ),
-  );
-  const response = (uri: string, path: string, node: FileNode): Uint8Array => {
+  });
+  const response = (uri: string, path: string, node: FileNode): WarcRecord => {
     const headers = headersFor(rules, path);
     const type = headers['content-type'] ?? mimeTypeFor(path);
     const lines = ['HTTP/1.1 200 OK', `Content-Type: ${type}`, `Content-Length: ${node.bytes.byteLength}`];
     for (const [k, v] of Object.entries(headers)) if (k !== 'content-type') lines.push(`${k}: ${v}`);
     const block = concat([enc.encode(lines.join(CRLF) + CRLF + CRLF), node.bytes]);
     const blockDigest = `sha256:${sha256Hex(block)}`;
-    return record(
+    const bytes = record(
       [
         ['WARC-Type', 'response'],
         ['WARC-Record-ID', recordId(`response\0${uri}\0${blockDigest}`)],
@@ -113,6 +125,7 @@ export function writeWarc(tree: Tree, options: WarcOptions): Uint8Array {
       ],
       block,
     );
+    return { bytes, response: { uri, path, type, digest: `sha256:${sha256Hex(node.bytes)}` } };
   };
   for (const [p, n] of tree.entries()) {
     if (SKIP.has(p)) continue;
@@ -122,7 +135,7 @@ export function writeWarc(tree: Tree, options: WarcOptions): Uint8Array {
       records.push(response(base + encodePath(dir.slice(1)), p, n));
     }
   }
-  return options.compression === 'gzip' ? concat(records.map((r) => gzip(r))) : concat(records);
+  return records;
 }
 
 /** True when `bytes` start a WARC file, plain or gzipped (the gzip is inflated to check). */
