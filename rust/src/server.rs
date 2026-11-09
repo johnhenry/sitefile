@@ -1327,7 +1327,8 @@ pub fn parse_throttle(value: &str) -> Option<Throttle> {
         Some((r, l)) => (r, Some(l)),
         None => (value, None),
     };
-    let digits = |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    let digits =
+        |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
     if !digits(rate, 7) || latency.is_some_and(|l| !digits(l, 5)) {
         return None;
     }
@@ -1347,13 +1348,18 @@ fn is_mime_value(t: &str) -> bool {
         let b = s.as_bytes();
         !b.is_empty()
             && b[0].is_ascii_alphanumeric()
-            && b.iter().all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+            && b.iter()
+                .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
     };
     let (main, params) = match t.find(';') {
         Some(i) => (&t[..i], Some(&t[i..])),
         None => (t, None),
     };
-    let main = if params.is_some() { main.trim_end_matches(' ') } else { main };
+    let main = if params.is_some() {
+        main.trim_end_matches(' ')
+    } else {
+        main
+    };
     let Some((a, b)) = main.split_once('/') else {
         return false;
     };
@@ -1472,7 +1478,8 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
     ok.then(|| v.to_string())
 }
 
-const FORBIDDEN_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n";
+const FORBIDDEN_PAGE: &str =
+    "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n";
 const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
@@ -2343,10 +2350,16 @@ pub fn respond(
         if negotiated && !headers.contains_key("range") {
             if has_br && accepts_encoding(ae, "br") {
                 coding = Some("br");
-                sent = tree.get(&br_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+                sent = tree
+                    .get(&br_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
             } else if has_gz && accepts_encoding(ae, "gzip") {
                 coding = Some("gzip");
-                sent = tree.get(&gz_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+                sent = tree
+                    .get(&gz_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
             } else if on_the_fly && accepts_encoding(ae, "gzip") {
                 coding = Some("gzip");
                 let mut cache = options.gzip_cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -2560,9 +2573,7 @@ struct Request {
 }
 
 /// Read one request head. `Ok(None)` on a clean EOF before any byte.
-fn read_request(
-    r: &mut BufReader<Conn>,
-) -> io::Result<Option<std::result::Result<Request, ()>>> {
+fn read_request(r: &mut BufReader<Conn>) -> io::Result<Option<std::result::Result<Request, ()>>> {
     let mut head: Vec<u8> = Vec::new();
     loop {
         let mut line = Vec::new();
@@ -2675,17 +2686,18 @@ fn serve_connection(
             _ => break,
         };
         let started = Instant::now();
-        let mut keep =
-            !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let mut keep = !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
         let ip_ok = ip_allowed(options.ip_rules.as_ref(), peer.as_deref().unwrap_or(""));
         let host_ok = ip_ok
             && !busy
             && host_allowed(
-            options.allowed_hosts.as_deref(),
-            req.headers.get("host").map(String::as_str),
-        ) && options.auth.as_ref().is_none_or(|a| {
-            a.allows(first_value(req.headers.get("authorization")))
-        });
+                options.allowed_hosts.as_deref(),
+                req.headers.get("host").map(String::as_str),
+            )
+            && options
+                .auth
+                .as_ref()
+                .is_none_or(|a| a.allows(first_value(req.headers.get("authorization"))));
         let console = options
             .live_reload
             .as_ref()
@@ -2808,7 +2820,10 @@ fn serve_connection(
             Some(t) => {
                 std::thread::sleep(Duration::from_millis(t.latency_ms));
                 let slice = (t.bytes_per_second / 10).max(1) as usize;
-                let mut ok = out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_ok();
+                let mut ok = out
+                    .write_all(head.as_bytes())
+                    .and_then(|_| out.flush())
+                    .is_ok();
                 let mut chunks = res.body.chunks(slice).peekable();
                 while ok {
                     let Some(c) = chunks.next() else { break };
@@ -2935,7 +2950,8 @@ pub fn listen_shared(
             // --max-connections-per-ip: count this client's open connections.
             let ip = stream.peer_addr().ok().map(|a| a.ip());
             let limited = ip.filter(|ip| {
-                options.max_connections_per_ip > 0 && (options.limit_loopback || !is_loopback_ip(ip))
+                options.max_connections_per_ip > 0
+                    && (options.limit_loopback || !is_loopback_ip(ip))
             });
             let busy = match limited {
                 Some(ip) => {
@@ -3090,7 +3106,11 @@ const AF_INET6: u16 = 10;
 /// # Safety
 /// `sa` points to a readable `struct sockaddr`.
 unsafe fn sa_family(sa: *const u8) -> u16 {
-    if cfg!(any(target_os = "macos", target_os = "ios", target_os = "freebsd")) {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    )) {
         u16::from(*sa.add(1))
     } else {
         u16::from_ne_bytes([*sa, *sa.add(1)])
@@ -3454,7 +3474,9 @@ mod tests {
         assert!(network_addresses("127.0.0.1").is_empty());
         assert!(network_addresses("::1").is_empty());
         let v4 = network_addresses("0.0.0.0");
-        assert!(v4.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| !ip.is_loopback())));
+        assert!(v4.iter().all(|a| a
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| !ip.is_loopback())));
         let mut sorted = v4.clone();
         sorted.sort();
         assert_eq!(v4, sorted);
@@ -3465,7 +3487,9 @@ mod tests {
             .all(|a| a.contains(':') && !a.starts_with("fe8") && a != "::1"));
         assert_eq!(
             network_urls("0.0.0.0", 8080),
-            v4.iter().map(|a| format!("http://{a}:8080/")).collect::<Vec<_>>()
+            v4.iter()
+                .map(|a| format!("http://{a}:8080/"))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3515,8 +3539,14 @@ mod tests {
         assert_eq!(get("/app.js").status, 404);
         assert_eq!(get("/s3cr3t/app.js").status, 200);
         let r = get("/s3cr3t?x=1");
-        assert_eq!((r.status, r.header("location")), (301, Some("/s3cr3t/?x=1")));
-        assert_eq!(get("/s3cr3t/about").header("location"), Some("/s3cr3t/about/"));
+        assert_eq!(
+            (r.status, r.header("location")),
+            (301, Some("/s3cr3t/?x=1"))
+        );
+        assert_eq!(
+            get("/s3cr3t/about").header("location"),
+            Some("/s3cr3t/about/")
+        );
         assert_eq!(get("/s3cr3tx/app.js").status, 404);
         assert_eq!(r.header("x-robots-tag"), Some("noindex"));
         assert_eq!(ip_bytes("10.1.2.3"), Some(vec![10, 1, 2, 3]));
@@ -3544,10 +3574,15 @@ mod tests {
             assert_eq!(parse_cidr(bad), None, "{bad}");
         }
         assert_eq!(
-            device_of(Some("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)")),
+            device_of(Some(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+            )),
             "iPhone"
         );
-        assert_eq!(device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")), "Mac");
+        assert_eq!(
+            device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")),
+            "Mac"
+        );
         assert_eq!(device_of(None), "other");
     }
 
@@ -3573,8 +3608,12 @@ mod tests {
         assert!(is_compressible("image/svg+xml; charset=utf-8"));
         assert!(!is_compressible("image/png"));
         let t = Tree::from_files(
-            [("/a.css", "a{}".to_string()), ("/a.css.br", "BR".into()), ("/big.txt", "x".repeat(2000))]
-                .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+            [
+                ("/a.css", "a{}".to_string()),
+                ("/a.css.br", "BR".into()),
+                ("/big.txt", "x".repeat(2000)),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
         )
         .unwrap();
         let opts = SiteServerOptions {
@@ -3643,7 +3682,14 @@ mod tests {
             parse_mime_flag("bin=application/x-a; charset=binary").map(|p| p.1),
             Some("application/x-a; charset=binary".into())
         );
-        for bad in ["ts", "=video/mp2t", "ts=video", "ts=/x", "a.b=x/y", "ts=vid eo/x"] {
+        for bad in [
+            "ts",
+            "=video/mp2t",
+            "ts=video",
+            "ts=/x",
+            "a.b=x/y",
+            "ts=vid eo/x",
+        ] {
             assert_eq!(parse_mime_flag(bad), None, "{bad}");
         }
         let m = parse_mime_types(
