@@ -376,7 +376,7 @@ export default grammar({
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),
 
-    // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]
+    // EXPORT <path> [AS format] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]
     export_instruction: ($) =>
       seq(
         kw($, 'EXPORT'),
@@ -385,6 +385,7 @@ export default grammar({
         optional(seq(kw($, 'BASE'), field('base', $._operand))),
         optional(seq(kw($, 'AT'), field('root', $._operand))),
         optional(seq(kw($, 'COMPRESSION'), field('compression', alias($._value_word, $.compression)))),
+        optional(seq(kw($, 'KEY'), field('key', $.identifier))),
       ),
 
     // RUN, REMOVE, … are rejected by the parser (E_UNSUPPORTED).

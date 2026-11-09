@@ -178,12 +178,13 @@ pub enum ExportFormat {
     Html,
     Mhtml,
     Warc,
+    Swbn,
     Wacz,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 11] = [
+    pub const ALL: [ExportFormat; 12] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -194,6 +195,7 @@ impl ExportFormat {
         ExportFormat::Html,
         ExportFormat::Mhtml,
         ExportFormat::Warc,
+        ExportFormat::Swbn,
         ExportFormat::Wacz,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
@@ -216,6 +218,7 @@ impl ExportFormat {
             ExportFormat::Html => "html",
             ExportFormat::Mhtml => "mhtml",
             ExportFormat::Warc => "warc",
+            ExportFormat::Swbn => "swbn",
             ExportFormat::Wacz => "wacz",
         }
     }
@@ -533,6 +536,8 @@ pub enum Instruction {
         at: Option<Operand>,
         /// `COMPRESSION gzip|none` (oci only) and the span of its value.
         compression: Option<(OciCompression, SourceSpan)>,
+        /// `KEY <secret-id>` (swbn only) and its span.
+        key: Option<(String, SourceSpan)>,
     },
 }
 

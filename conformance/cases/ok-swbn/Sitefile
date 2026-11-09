@@ -1,0 +1,9 @@
+# EXPORT ... AS swbn KEY: a Signed Web Bundle (the key is RFC 8032's published test key), byte for byte.
+FROM scratch
+COPY <<HTML /index.html
+<!doctype html><title>iwa</title><p>isolated</p>
+HTML
+COPY <<JSON /.well-known/manifest.webmanifest
+{"name":"Sitefile IWA","start_url":"/","version":"1.0.0"}
+JSON
+EXPORT / AS swbn KEY iwa
