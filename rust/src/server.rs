@@ -57,6 +57,56 @@ pub struct SiteServerOptions {
     pub quiet: bool,
     /// `--auth`, `--auth-file`: every request needs one of these credentials, else `401`.
     pub auth: Option<Arc<crate::serve_auth::BasicAuth>>,
+    /// Where file contents come from when the tree holds only digests (a zip served in
+    /// place, [`crate::resources::archive::open_zip_file`]).
+    pub content: Option<Arc<dyn SiteContent>>,
+}
+
+/// Contents read on demand ([`SiteServerOptions::content`]).
+pub trait SiteContent: Send + Sync {
+    /// A file's bytes (`None`: use the node's).
+    fn read(&self, path: &str) -> Option<Result<Vec<u8>>>;
+    /// A deflated file's raw deflate stream, sent as `content-encoding: gzip` to clients that accept it.
+    fn deflated(&self, path: &str) -> Option<crate::resources::archive::Deflated>;
+}
+
+impl SiteContent for crate::resources::archive::ZipFile {
+    fn read(&self, path: &str) -> Option<Result<Vec<u8>>> {
+        crate::resources::archive::ZipFile::read(self, path)
+    }
+    fn deflated(&self, path: &str) -> Option<crate::resources::archive::Deflated> {
+        crate::resources::archive::ZipFile::deflated(self, path)
+    }
+}
+
+/// Whether an `accept-encoding` header accepts gzip (`gzip` or `x-gzip` with a non-zero q).
+pub fn accepts_gzip(header: Option<&str>) -> bool {
+    let Some(header) = header else {
+        return false;
+    };
+    header.split(',').any(|part| {
+        let mut it = part.trim().split(';');
+        let name = it.next().unwrap_or("").trim().to_ascii_lowercase();
+        if name != "gzip" && name != "x-gzip" {
+            return false;
+        }
+        match it
+            .map(str::trim)
+            .find(|x| x.len() >= 2 && x[..2].eq_ignore_ascii_case("q="))
+        {
+            None => true,
+            Some(q) => crate::cli::common::js_to_number(&q[2..]) > 0.0,
+        }
+    })
+}
+
+/// A gzip member around a raw deflate stream: fixed header (no name, mtime 0, OS unknown), CRC-32 and size.
+pub fn gzip_member(deflate: &[u8], crc: u32, size: u64) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    out.extend_from_slice(deflate);
+    out.extend(crc.to_le_bytes());
+    out.extend(((size % (1u64 << 32)) as u32).to_le_bytes());
+    out
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -1032,6 +1082,7 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
 
 const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
+const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
 /// `decodeURIComponent`, or `None` where it would throw.
@@ -1395,6 +1446,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        500 => "Internal Server Error",
         416 => "Range Not Satisfiable",
         _ => "",
     }
@@ -1451,7 +1503,7 @@ fn is_http_url(s: &str) -> bool {
 }
 
 /// JavaScript's `String.prototype.trim` whitespace (the characters that matter in these files).
-fn js_trim(s: &str) -> &str {
+pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
@@ -1629,9 +1681,17 @@ pub struct SiteRules {
 
 impl SiteRules {
     pub fn from_tree(tree: &Tree) -> SiteRules {
+        SiteRules::from_tree_with(tree, None)
+    }
+    /// The rules, reading `/_redirects` and `/_headers` through `content` when given.
+    pub fn from_tree_with(tree: &Tree, content: Option<&dyn SiteContent>) -> SiteRules {
         let text = |p: &str| {
             tree.get(p)
-                .map(|f| String::from_utf8_lossy(&f.bytes).into_owned())
+                .map(|f| match content.and_then(|c| c.read(p)) {
+                    Some(Ok(b)) => String::from_utf8_lossy(&b).into_owned(),
+                    Some(Err(_)) => String::new(),
+                    None => String::from_utf8_lossy(&f.bytes).into_owned(),
+                })
                 .unwrap_or_default()
         };
         SiteRules {
@@ -1644,7 +1704,11 @@ impl SiteRules {
 /// The parsed rules of the tree a server last served (a watched server swaps trees).
 type RulesCache = Arc<Mutex<Option<(Arc<Tree>, Arc<SiteRules>)>>>;
 
-fn rules_for(cache: &RulesCache, tree: &Arc<Tree>) -> Arc<SiteRules> {
+fn rules_for(
+    cache: &RulesCache,
+    tree: &Arc<Tree>,
+    content: Option<&dyn SiteContent>,
+) -> Arc<SiteRules> {
     let mut slot = match cache.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -1654,7 +1718,7 @@ fn rules_for(cache: &RulesCache, tree: &Arc<Tree>) -> Arc<SiteRules> {
             return r.clone();
         }
     }
-    let r = Arc::new(SiteRules::from_tree(tree));
+    let r = Arc::new(SiteRules::from_tree_with(tree, content));
     *slot = Some((tree.clone(), r.clone()));
     r
 }
@@ -1669,7 +1733,7 @@ pub fn handle_request(
 ) -> Response {
     respond(
         tree,
-        &SiteRules::from_tree(tree),
+        &SiteRules::from_tree_with(tree, options.content.as_deref()),
         options,
         method,
         url,
@@ -1828,10 +1892,44 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
-        let body = if live {
-            inject_reload_script(&file.bytes)
+        // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
+        // range request: ranges are served from the identity body).
+        let deflated = if !live
+            && !headers.contains_key("range")
+            && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
+        {
+            options.content.as_ref().and_then(|c| c.deflated(served))
         } else {
-            file.bytes.to_vec()
+            None
+        };
+        let read = match &deflated {
+            Some(d) => Ok(gzip_member(&d.deflate, d.crc, d.size)),
+            None => match options.content.as_ref().and_then(|c| c.read(served)) {
+                Some(r) => r,
+                None => Ok(file.bytes.to_vec()),
+            },
+        };
+        let body = match read {
+            Ok(b) => b,
+            Err(e) => {
+                if let Some(log) = &options.log {
+                    log(&format!("error: {}", e.message()));
+                }
+                return page(500, ERROR_PAGE, vec![]);
+            }
+        };
+        let body = if live {
+            inject_reload_script(&body)
+        } else {
+            body
+        };
+        let encoding: Vec<(String, String)> = if deflated.is_some() {
+            owned(vec![
+                ("content-encoding", "gzip".into()),
+                ("vary", "accept-encoding".into()),
+            ])
+        } else {
+            vec![]
         };
         let cc: Vec<(String, String)> = if status == 200 {
             cache_control_for(mime, options.cache.as_ref())
@@ -1845,22 +1943,25 @@ pub fn respond(
             ("content-length", body.len().to_string()),
         ]);
         h.extend(cc.iter().cloned());
+        h.extend(encoding.iter().cloned());
         h.extend(custom.iter().cloned());
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page is a different representation of the file: give it its own ETag.
+        // An injected page and a gzip response are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}\"",
+            "\"{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
-            if live { "-live" } else { "" }
+            if live { "-live" } else { "" },
+            if deflated.is_some() { "-gzip" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
             .map(|m| vec![("last-modified".to_string(), http_date(m))])
             .unwrap_or_default();
         let not_modified = || {
-            let mut h: Vec<(String, String)> = cc.clone();
+            let mut h: Vec<(String, String)> = encoding.clone();
+            h.extend(cc.iter().cloned());
             h.extend(custom.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
@@ -2147,9 +2248,10 @@ fn serve_connection(
         let host_ok = host_allowed(
             options.allowed_hosts.as_deref(),
             req.headers.get("host").map(String::as_str),
-        ) && options.auth.as_ref().is_none_or(|a| {
-            a.allows(first_value(req.headers.get("authorization")))
-        });
+        ) && options
+            .auth
+            .as_ref()
+            .is_none_or(|a| a.allows(first_value(req.headers.get("authorization"))));
         let console = options
             .live_reload
             .as_ref()
@@ -2185,7 +2287,7 @@ fn serve_connection(
             Ok(t) => t.clone(),
             Err(_) => break,
         };
-        let site_rules = rules_for(rules, &current);
+        let site_rules = rules_for(rules, &current, options.content.as_deref());
         let res = match console {
             Some(live) => live.console_response(
                 options,
@@ -2464,7 +2566,11 @@ const AF_INET6: u16 = 10;
 /// # Safety
 /// `sa` points to a readable `struct sockaddr`.
 unsafe fn sa_family(sa: *const u8) -> u16 {
-    if cfg!(any(target_os = "macos", target_os = "ios", target_os = "freebsd")) {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    )) {
         u16::from(*sa.add(1))
     } else {
         u16::from_ne_bytes([*sa, *sa.add(1)])
@@ -2628,6 +2734,7 @@ mod tests {
             log_ip: false,
             quiet: false,
             auth: None,
+            content: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2809,7 +2916,9 @@ mod tests {
         assert!(network_addresses("127.0.0.1").is_empty());
         assert!(network_addresses("::1").is_empty());
         let v4 = network_addresses("0.0.0.0");
-        assert!(v4.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| !ip.is_loopback())));
+        assert!(v4.iter().all(|a| a
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| !ip.is_loopback())));
         let mut sorted = v4.clone();
         sorted.sort();
         assert_eq!(v4, sorted);
@@ -2820,7 +2929,9 @@ mod tests {
             .all(|a| a.contains(':') && !a.starts_with("fe8") && a != "::1"));
         assert_eq!(
             network_urls("0.0.0.0", 8080),
-            v4.iter().map(|a| format!("http://{a}:8080/")).collect::<Vec<_>>()
+            v4.iter()
+                .map(|a| format!("http://{a}:8080/"))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3205,6 +3316,7 @@ mod tests {
             log_ip: false,
             quiet: false,
             auth: None,
+            content: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
@@ -4157,7 +4269,14 @@ mod tests {
             ("/404.html", "<p>gone</p></body>"),
             ("/_redirects", "/a /b 302\n"),
         ]);
-        let r = respond(&one, &rules_for(&cache, &one), &opts, "GET", "/missing", &h);
+        let r = respond(
+            &one,
+            &rules_for(&cache, &one, None),
+            &opts,
+            "GET",
+            "/missing",
+            &h,
+        );
         assert_eq!(r.status, 404);
         assert_eq!(
             String::from_utf8(r.body.clone()).unwrap(),
@@ -4168,11 +4287,12 @@ mod tests {
             Some(r.body.len().to_string().as_str())
         );
         assert_eq!(
-            respond(&one, &rules_for(&cache, &one), &opts, "GET", "/a", &h).header("location"),
+            respond(&one, &rules_for(&cache, &one, None), &opts, "GET", "/a", &h)
+                .header("location"),
             Some("/b")
         );
         let two = mk(&[("/index.html", "v2"), ("/_redirects", "/a /c 301\n")]);
-        let r = respond(&two, &rules_for(&cache, &two), &opts, "GET", "/a", &h);
+        let r = respond(&two, &rules_for(&cache, &two, None), &opts, "GET", "/a", &h);
         assert_eq!((r.status, r.header("location")), (301, Some("/c")));
     }
 }

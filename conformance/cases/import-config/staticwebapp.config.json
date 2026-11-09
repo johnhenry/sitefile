@@ -1,0 +1,13 @@
+{
+  "routes": [
+    { "route": "/old", "redirect": "/new", "statusCode": 301 },
+    { "route": "/legacy/*", "redirect": "/" },
+    { "route": "/profile", "rewrite": "/profile.html", "headers": { "Cache-Control": "no-store" } },
+    { "route": "/admin/*", "allowedRoles": ["admin"] },
+    { "route": "/images/*.{png,jpg}", "headers": { "Cache-Control": "max-age=3600" } }
+  ],
+  "navigationFallback": { "rewrite": "/index.html", "exclude": ["/images/*"] },
+  "responseOverrides": { "404": { "rewrite": "/404.html" }, "401": { "redirect": "/login" } },
+  "globalHeaders": { "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'self'" },
+  "mimeTypes": { ".json": "text/json" }
+}
