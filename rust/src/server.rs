@@ -927,7 +927,9 @@ pub fn log_line_as_json(line: &str) -> String {
     if let Some(sig) = rest
         .strip_prefix("received ")
         .and_then(|r| r.strip_suffix(", shutting down"))
-        .filter(|s| s.len() > 3 && s.starts_with("SIG") && s[3..].bytes().all(|b| b.is_ascii_uppercase()))
+        .filter(|s| {
+            s.len() > 3 && s.starts_with("SIG") && s[3..].bytes().all(|b| b.is_ascii_uppercase())
+        })
     {
         return stopped_log_line(ts, sig);
     }
@@ -1015,9 +1017,8 @@ fn isolation_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
 fn preflight_headers(value: Option<&str>) -> Option<String> {
     let v = value?.trim();
     let ok = !v.is_empty()
-        && v.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b" \t,!#$%&'*+-.^_`|~".contains(&b)
-        });
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" \t,!#$%&'*+-.^_`|~".contains(&b));
     ok.then(|| v.to_string())
 }
 
@@ -2224,11 +2225,7 @@ fn serve_connection(
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
         if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                let remote = if options.log_ip {
-                    peer.clone()
-                } else {
-                    None
-                };
+                let remote = if options.log_ip { peer.clone() } else { None };
                 log(&access_log_line(
                     options.log_json,
                     &AccessLogEntry {
@@ -2746,7 +2743,10 @@ mod tests {
             cache_control_for(html, Some(&c(None, false, Some(0)))).as_deref(),
             Some("public, max-age=0")
         );
-        assert_eq!(cache_control_for("text/css", Some(&c(None, false, Some(5)))), None);
+        assert_eq!(
+            cache_control_for("text/css", Some(&c(None, false, Some(5)))),
+            None
+        );
         assert_eq!(
             cache_control_for("image/png", Some(&c(Some(5), true, None))).as_deref(),
             Some("public, max-age=5, immutable")
@@ -2782,7 +2782,10 @@ mod tests {
                 let r = handle_request(&t, &opts, "GET", p, &h);
                 assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
                 assert_eq!(r.header("cross-origin-embedder-policy"), Some(coep));
-                assert_eq!(r.header("cross-origin-resource-policy"), Some("same-origin"));
+                assert_eq!(
+                    r.header("cross-origin-resource-policy"),
+                    Some("same-origin")
+                );
             }
         }
         let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/", &h);
@@ -2799,7 +2802,10 @@ mod tests {
         let mut h = HashMap::new();
         let r = handle_request(&t, &opts, "GET", "/", &h);
         assert_eq!(r.header("access-control-allow-origin"), Some("*"));
-        h.insert("access-control-request-headers".to_string(), "x-a, x-b".to_string());
+        h.insert(
+            "access-control-request-headers".to_string(),
+            "x-a, x-b".to_string(),
+        );
         let p = handle_request(&t, &opts, "OPTIONS", "/x", &h);
         assert_eq!(p.status, 204);
         assert_eq!(p.header("access-control-allow-headers"), Some("x-a, x-b"));
@@ -2810,7 +2816,10 @@ mod tests {
         );
         let plain = SiteServerOptions::default();
         assert_eq!(handle_request(&t, &plain, "OPTIONS", "/", &h).status, 405);
-        assert_eq!(preflight_headers(Some(" x-a,x-b ")).as_deref(), Some("x-a,x-b"));
+        assert_eq!(
+            preflight_headers(Some(" x-a,x-b ")).as_deref(),
+            Some("x-a,x-b")
+        );
         assert_eq!(preflight_headers(Some("a\"b")), None);
     }
 
