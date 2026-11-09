@@ -45,6 +45,8 @@ export interface ServerState {
   readonly logFile: string;
   readonly ready: boolean;
   readonly error?: string;
+  /** The servers file (`sitefile up`) that started it, by real path; absent for `serve -d`. */
+  readonly project?: string;
 }
 
 export interface ServerView extends ServerState {
@@ -287,5 +289,40 @@ export async function loadServedTree(store: Store, source: ServerState['source']
       return loadDirectoryTree(source.path, options);
     case 'archive':
       return loadArchiveTree(source.path, DEFAULT_ARCHIVE_LIMITS, options);
+  }
+}
+
+/**
+ * When a server's files last changed, in Unix seconds (`Last-Modified`): for an image, when it was
+ * first stored (never older than its files, unlike the config's `created`, which is the Unix epoch
+ * unless SOURCE_DATE_EPOCH is set); for a directory, the newest modification time of the files it
+ * serves (hidden entries but `.well-known` are skipped, symbolic links to files followed); for an
+ * archive, the file's modification time. Undefined when there is none.
+ */
+export async function servedLastModified(store: Store, source: ServerState['source']): Promise<number | undefined> {
+  const secs = (ms: number): number => Math.floor(ms / 1000);
+  switch (source.kind) {
+    case 'image': {
+      const ms = Date.parse((await store.details(source.imageId)).created);
+      return Number.isNaN(ms) ? undefined : secs(ms);
+    }
+    case 'archive':
+      return secs((await fs.stat(source.path)).mtimeMs);
+    case 'dir': {
+      let newest: number | undefined;
+      const walk = async (dir: string): Promise<void> => {
+        for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+          if (e.name.startsWith('.') && e.name !== '.well-known') continue;
+          const p = path.join(dir, e.name);
+          if (e.isDirectory()) await walk(p);
+          else if (e.isFile() || e.isSymbolicLink()) {
+            const st = await fs.stat(p).catch(() => undefined);
+            if (st?.isFile()) newest = Math.max(newest ?? 0, secs(st.mtimeMs));
+          }
+        }
+      };
+      await walk(source.path);
+      return newest;
+    }
   }
 }

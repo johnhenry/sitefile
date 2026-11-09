@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
+  file responses carry `Last-Modified` (image: when it was stored; directory:
+  newest file mtime; archive: its mtime; `--watch`: the build time), and
+  `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
+  `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
+  response with those links (HTTP/1.1 `GET` only). Both servers.
+- **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
+  bytes` on file responses; a single `Range` on `GET` gets `206` with
+  `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
+  and `HEAD` are handled; multiple ranges are ignored (the whole file). Both
+  servers; `_headers` cannot set `accept-ranges` or `content-range`.
+- **`sitefile up`, `down` and `ps`** (johnhenry/sitefile#223): a servers file
+  (`sitefile.servers.yaml`, `.yml` or `.json`) names several detached servers
+  (`source`, `publish`, `spa`). `up` starts them all, idempotently: it leaves
+  running ones alone, restarts exited ones and replaces changed ones. `down`
+  stops and removes the ones it started, and `ps` lists them, including those
+  not created yet. Sources are relative to the servers file. Server records
+  gain an optional `project` field. Both implementations, with conformance
+  cases.
+- **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
+  RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
+  with what to convert it to. (zstd decoding is not added: the Rust side has
+  no zstd decoder without a new dependency; see #221.) Both implementations.
+- **ZIP64 zips are read** (#185): the zip64 end record and locator and the
+  0x0001 extra field (central and local) are read, so zips from Python's
+  `force_zip64`, Java, Go and Node `archiver` with `forceZip64` import and
+  serve; the archive limits still refuse large ones. Writing ZIP64 stays
+  unsupported. Both implementations.
+- **Zip local headers are cross-checked** (#184): a local header whose name,
+  compression method or sizes (without a data descriptor) differ from the
+  central directory, or entries whose bytes overlap, are `E_ARCHIVE_UNSAFE`,
+  so sitefile never extracts different files than `unzip` or a browser would.
+  Directory entries' local headers are now checked too. Both implementations.
+- **Zip CRC-32 check** (#183): every extracted zip entry is checked against
+  its central-directory CRC-32; a mismatch is `E_ARCHIVE` naming the entry
+  (`IMPORT … AS tree`, `serve x.zip`). Both implementations.
+- **Zip names without the UTF-8 flag** (#182): names without general-purpose
+  bit 11 are read from the Info-ZIP Unicode Path field (0x7075) when its CRC
+  matches, else as UTF-8 when valid, else as CP437 (they used to become
+  U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
+  `serve x.zip`, in both implementations.
 - **`EXPORT … AS swbn KEY <secret-id>`** (johnhenry/sitefile#207): a Signed
   Web Bundle for Isolated Web Apps, signed with an Ed25519 PEM key passed as
   `--secret id=<id>,src=key.pem` (never stored). The output is
@@ -164,6 +205,15 @@
   default stays `open`. With `--json`, a failed command also prints
   `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
   error rows include `needs`. Both implementations, with conformance cases.
+- **JavaScript plugins declare whether they may be cached**
+  (johnhenry/sitefile#160): `export const cache = true` says a plugin is
+  deterministic; `cache = false` opts out as before; any other value fails
+  with `E_PLUGIN`. A JS plugin that exports neither is still cached, with one
+  warning per build when results are cached or memoized. The examples' JS
+  plugins export `cache = true`. docs/PLUGINS.md now says that module state
+  carries over between calls and lists what is trusted as-is (`--cache-from`
+  results, the local TRANSFORM cache, the Rust wasm module cache); the README
+  security model links it.
 - **`INTEGRITY` on a JavaScript plugin pins its folder** (johnhenry/sitefile#158):
   a JS plugin can read and import every file in its folder, so its
   `INTEGRITY` is now the folder digest (`sha256:` + the digest the TRANSFORM

@@ -1,0 +1,6 @@
+servers:
+  docs:
+    source: ./docs
+  bad:
+    source: ./app
+    publish: 99999

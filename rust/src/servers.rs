@@ -93,6 +93,9 @@ pub struct ServerState {
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The servers file (`sitefile up`) that started it, by real path; None for `serve -d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,6 +580,56 @@ pub fn load_served_tree_with(
     }
 }
 
+/// When a server's files last changed, in Unix seconds (`Last-Modified`): for an image, when it
+/// was first stored (never older than its files, unlike the config's `created`); for a directory,
+/// the newest modification time of the files it serves (hidden entries but `.well-known` skipped,
+/// symbolic links to files followed); for an archive, the file's modification time. `None` when
+/// there is none. Same rules as `servedLastModified` in src/servers.ts.
+pub fn served_last_modified(store: &Store, source: &ServerSource) -> Option<i64> {
+    fn secs(t: std::time::SystemTime) -> Option<i64> {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+    }
+    fn walk(dir: &Path, newest: &mut Option<i64>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') && name != ".well-known" {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            let p = e.path();
+            if ft.is_dir() {
+                walk(&p, newest);
+            } else if ft.is_file() || ft.is_symlink() {
+                if let Ok(m) = fs::metadata(&p) {
+                    if m.is_file() {
+                        if let Some(t) = m.modified().ok().and_then(secs) {
+                            *newest = Some(newest.map_or(t, |n| n.max(t)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match source {
+        ServerSource::Image { image_id } => {
+            let created = store.details(image_id).ok()?.created;
+            crate::cli::common::parse_iso(&created).map(|ms| ms.div_euclid(1000))
+        }
+        ServerSource::Archive { path } => fs::metadata(path).ok()?.modified().ok().and_then(secs),
+        ServerSource::Dir { path } => {
+            let mut newest = None;
+            walk(Path::new(path), &mut newest);
+            newest
+        }
+    }
+}
+
 /// `-p` value: `port`, `host:port` or `[v6]:port`. Default (`None`) bind is
 /// 127.0.0.1 with a free port; `localhost` means 127.0.0.1. Errors are `E_USAGE`.
 pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
@@ -639,7 +692,7 @@ pub fn looks_like_dir(arg: &str) -> bool {
 }
 
 /// An archive file source: labelled by its absolute path, stored by its real path.
-fn archive_source(arg: &str) -> (String, ServerSource) {
+pub fn archive_source(arg: &str) -> (String, ServerSource) {
     let file = crate::export::exporter::resolve_path(Path::new(arg));
     let real = fs::canonicalize(&file).unwrap_or(file.clone());
     (
@@ -650,7 +703,7 @@ fn archive_source(arg: &str) -> (String, ServerSource) {
     )
 }
 
-fn is_regular_file(p: &str) -> bool {
+pub fn is_regular_file(p: &str) -> bool {
     fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
 }
 
@@ -713,6 +766,8 @@ pub struct DetachedServe {
     pub spa: bool,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
+    /// The servers file it belongs to (`sitefile up`), by real path.
+    pub project: Option<String>,
 }
 
 impl DetachedServe {
@@ -727,6 +782,7 @@ impl DetachedServe {
             bind: parse_publish(None)?,
             spa: false,
             keep_os_metadata: false,
+            project: None,
         })
     }
 }
@@ -775,6 +831,7 @@ pub fn serve_detached_with(
         log_file: reg.log_path(&id).display().to_string(),
         ready: false,
         error: None,
+        project: serve.project.clone(),
     };
     reg.write(&state)?;
     match start_detached(reg, &state, worker_exe) {
@@ -985,6 +1042,7 @@ mod tests {
             log_file: reg.log_path(id).to_string_lossy().into_owned(),
             ready: false,
             error: None,
+            project: None,
         }
     }
 
