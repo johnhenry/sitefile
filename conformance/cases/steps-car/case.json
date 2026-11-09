@@ -1,8 +1,8 @@
 {
   "stdout": true,
   "steps": [
-    ["build", "${CTX}", "-o", "${OUT}/site.car", "--no-lockfile", "-t", "car-${IMPL}:1"],
-    ["save", "car-${IMPL}:1", "-o", "${OUT}/saved.car"]
+    ["build", "${CTX}", "-o", "${OUT}/site.car", "--no-lockfile", "-t", "car-site:1"],
+    ["save", "car-site:1", "-o", "${OUT}/saved.car"]
   ],
   "outputs": [["site.car", "bytes"], ["saved.car", "bytes"]]
 }
