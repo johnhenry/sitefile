@@ -4,8 +4,8 @@
 import { readFile } from 'node:fs/promises';
 import { SitefileError } from '../errors.js';
 import { BasicAuth, parseHtpasswd } from '../serve-auth.js';
-import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, parseCidr, startedLogLine, stoppedLogLine, routingFor } from '../server.js';
-import { loadServedSite, servedLastModified, ServerRegistry, loadServedTree, checkSiteFiles } from '../servers.js';
+import { closeServer, createSiteServer, formatUrl, jsonLogLine, listen, parseCidr, parseThrottle, startedLogLine, stoppedLogLine, routingFor } from '../server.js';
+import { loadServedTree, servedLastModified, ServerRegistry, loadServedSite, checkSiteFiles } from '../servers.js';
 
 let json = false; // `--log-format json`: every line is a JSON object
 const stamp = (m: string): void => {
@@ -28,10 +28,11 @@ async function main(): Promise<void> {
     if (routingFor(state)?.siteFiles !== false) checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
     const modified = await servedLastModified(reg.store, state.source);
     const authEntries = [...(state.auth ?? []), ...(state.authFile !== undefined ? parseHtpasswd(await readFile(state.authFile, 'utf8'), state.authFile) : [])];
-    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, ...(authEntries.length > 0 || state.authFile !== undefined ? { auth: new BasicAuth(authEntries) } : {}), ...(state.maxConnectionsPerIp ? { maxConnectionsPerIp: state.maxConnectionsPerIp } : {}), ...(state.hideBase ? { hideBase: true } : {}), ...(ipRules ? { ipRules } : {}), ...(loopback ? {} : { noindex: true }), clientInfo: true, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}), ...(state.rewriteBase !== undefined ? { rewriteBase: state.rewriteBase } : {}), ...(routingFor(state) ? { profile: routingFor(state)! } : {}) });
+    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), ...(state.cache ? { cache: state.cache } : {}), ...(json ? { logFormat: 'json' as const } : {}), logIp: !!state.logIp, quiet: !!state.quiet, ...(authEntries.length > 0 || state.authFile !== undefined ? { auth: new BasicAuth(authEntries) } : {}), ...(state.maxConnectionsPerIp ? { maxConnectionsPerIp: state.maxConnectionsPerIp } : {}), ...(state.hideBase ? { hideBase: true } : {}), ...(ipRules ? { ipRules } : {}), ...(loopback ? {} : { noindex: true }), clientInfo: true, compress: !!state.compress, ...(state.mime ? { mime: new Map(Object.entries(state.mime)) } : {}), ...(state.throttle !== undefined && parseThrottle(state.throttle) ? { throttle: parseThrottle(state.throttle)! } : {}), ...(state.tlsCert !== undefined && state.tlsKey !== undefined ? { tls: { cert: await readFile(state.tlsCert), key: await readFile(state.tlsKey) } } : {}), serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}), ...(state.rewriteBase !== undefined ? { rewriteBase: state.rewriteBase } : {}), ...(routingFor(state) ? { profile: routingFor(state)! } : {}) });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
-    const url = `${formatUrl(addr.host, addr.port)}${(state.base ?? '/').slice(1)}`;
+    const root = formatUrl(addr.host, addr.port, state.tlsCert !== undefined ? 'https' : 'http');
+    const url = `${root}${(state.base ?? '/').slice(1)}`;
     if (json) stamp(startedLogLine(new Date().toISOString(), state.image, tree.size, url));
     else stamp(`serving ${state.image} (${tree.size} files) at ${url}`);
     const stop = (signal: string) => (): void => {

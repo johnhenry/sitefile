@@ -169,8 +169,12 @@ pub fn production_url(plan: &crate::planner::Plan) -> Option<String> {
 }
 
 /// The URL a server answers at: its origin and `--base`.
-fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
-    format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
+fn site_url(host: &str, port: u16, base: Option<&str>, tls: bool) -> String {
+    format!(
+        "{}{}",
+        crate::server::with_scheme(format_url(host, port), tls),
+        &base.unwrap_or("/")[1..]
+    )
 }
 
 /// `--host-profile` and `--html-handling`, checked: (profile, handling).
@@ -326,11 +330,48 @@ fn per_ip_of(v: &Parsed) -> Result<usize> {
 }
 
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
-fn network_lines(host: &str, port: u16, base: Option<&str>) -> String {
+fn network_lines(host: &str, port: u16, base: Option<&str>, tls: bool) -> String {
     crate::server::network_urls(host, port)
-        .iter()
-        .map(|u| format!("  Network: {u}{}\n", &base.unwrap_or("/")[1..]))
+        .into_iter()
+        .map(|u| {
+            format!(
+                "  Network: {}{}\n",
+                crate::server::with_scheme(u, tls),
+                &base.unwrap_or("/")[1..]
+            )
+        })
         .collect()
+}
+
+/// `--tls-cert`, `--tls-key` (or `SITEFILE_TLS_CERT`, `SITEFILE_TLS_KEY`): the server's TLS
+/// configuration and the absolute paths the record keeps (`tlsOf` in src/cli/servers.ts).
+#[allow(clippy::type_complexity)]
+fn tls_of(v: &Parsed) -> Result<(Option<Arc<rustls::ServerConfig>>, Option<(String, String)>)> {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    let cert = v
+        .str("tls-cert")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_CERT"));
+    let key = v
+        .str("tls-key")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_KEY"));
+    let (cert, key) = match (cert, key) {
+        (None, None) => return Ok((None, None)),
+        (Some(c), Some(k)) => (c, k),
+        _ => return usage("--tls-cert and --tls-key go together"),
+    };
+    let read = |f: &str, flag: &str| -> Result<Vec<u8>> {
+        std::fs::read(f)
+            .map_err(|_| SitefileError::plain(E_USAGE, format!("--{flag}: cannot read {f}")))
+    };
+    let config = crate::server::tls_config(&read(&cert, "tls-cert")?, &read(&key, "tls-key")?)?;
+    let abs = |f: String| {
+        std::path::absolute(&f)
+            .map(|p| p.display().to_string())
+            .unwrap_or(f)
+    };
+    Ok((Some(config), Some((abs(cert), abs(key)))))
 }
 
 /// `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after` (`sharingOf` in src/cli/servers.ts).
@@ -342,6 +383,64 @@ struct Sharing {
     allow_text: Vec<String>,
     deny_text: Vec<String>,
     stop_after: Option<(u64, String)>,
+}
+
+/// `--throttle`: the spec as given and its limits.
+fn throttle_of(v: &Parsed) -> Result<Option<(String, crate::server::Throttle)>> {
+    let Some(spec) = v.str("throttle") else {
+        return Ok(None);
+    };
+    match crate::server::parse_throttle(spec) {
+        Some(t) => Ok(Some((spec.to_string(), t))),
+        None => usage(format!(
+            "--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '{spec}'"
+        )),
+    }
+}
+
+/// `--mime-file` entries, then `--mime` values, in order (`mimeOf` in src/cli/servers.ts).
+fn mime_of(v: &Parsed) -> Result<Option<Vec<(String, String)>>> {
+    let file = v.str("mime-file");
+    let flags = v.strs("mime");
+    if file.is_none() && flags.is_empty() {
+        return Ok(None);
+    }
+    let mut out = match file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--mime-file: cannot read {f}"));
+            };
+            crate::server::parse_mime_types(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    for f in flags {
+        let Some((ext, t)) = crate::server::parse_mime_flag(&f) else {
+            return usage(format!("--mime expects ext=type/subtype, not '{f}'"));
+        };
+        match out.iter_mut().find(|(k, _)| *k == ext) {
+            Some(slot) => slot.1 = t,
+            None => out.push((ext, t)),
+        }
+    }
+    Ok(Some(out))
+}
+
+fn mime_map(pairs: &[(String, String)]) -> Arc<std::collections::HashMap<String, String>> {
+    Arc::new(pairs.iter().cloned().collect())
+}
+
+/// The start message's `  Throttle: …` line (none without --throttle).
+fn throttle_line(spec: Option<&str>) -> String {
+    match spec.and_then(crate::server::parse_throttle) {
+        Some(t) => format!(
+            "  Throttle: {} ({} kbit/s, {} ms latency)\n",
+            spec.unwrap_or(""),
+            t.bytes_per_second / 125,
+            t.latency_ms
+        ),
+        None => String::new(),
+    }
 }
 
 fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
@@ -473,6 +572,12 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("allow-ip"),
     strings("deny-ip"),
     string("stop-after"),
+    string("tls-cert"),
+    flag("compress"),
+    string("throttle"),
+    strings("mime"),
+    string("mime-file"),
+    string("tls-key"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -533,6 +638,12 @@ pub const SERVE: Command = Command {
         "--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)",
         "--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)",
         "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
+        "--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)",
+        "--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied",
+        "--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)",
+        "--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)",
+        "--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)",
+        "--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
@@ -590,6 +701,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
     let per_ip = per_ip_of(v)?;
     let sharing = sharing_of(v, &bind.host)?;
+    let (tls, tls_paths) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = match &sharing.random_base {
         Some(b) => Some(b.clone()),
@@ -667,6 +781,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 ip_rules: sharing.ip_rules.clone(),
                 noindex: sharing.noindex,
                 client_info: true,
+                tls: tls.clone(),
+                compress: v.flag("compress"),
+                gzip_cache: Default::default(),
+                throttle: throttle.as_ref().map(|t| t.1),
+                mime: mime.as_deref().map(mime_map),
                 content: site.content,
                 ..Default::default()
             },
@@ -680,14 +799,15 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &label,
                     n,
-                    &site_url(&server.host, server.port, base.as_deref())
+                    &site_url(&server.host, server.port, base.as_deref(), tls.is_some())
                 )
             ));
         } else {
             out(&format!(
-                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                site_url(&server.host, server.port, base.as_deref()),
-                network_lines(&server.host, server.port, base.as_deref())
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
+                site_url(&server.host, server.port, base.as_deref(), tls.is_some()),
+                network_lines(&server.host, server.port, base.as_deref(), tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
             ));
         }
         let restart: Box<dyn Fn() + Send> = {
@@ -791,6 +911,15 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             hide_base: sharing.random_base.is_some(),
             allow_ip: (!sharing.allow_text.is_empty()).then(|| sharing.allow_text.clone()),
             deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
+            tls_cert: tls_paths.as_ref().map(|p| p.0.clone()),
+            tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
+            compress: v.flag("compress"),
+            throttle: throttle.as_ref().map(|t| t.0.clone()),
+            mime: mime.as_ref().map(|m| {
+                m.iter()
+                    .map(|(k, t)| (k.clone(), Value::String(t.clone())))
+                    .collect()
+            }),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
                 crate::store::iso_of_time(std::time::SystemTime::now() + Duration::from_secs(*secs))
             }),
@@ -802,11 +931,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         &warn,
     )?;
     out(&format!(
-        "Started {} ({}) serving {label} at {}\n{}",
+        "Started {} ({}) serving {label} at {}\n{}{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base.as_deref()),
-        network_lines(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        network_lines(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        throttle_line(up.throttle.as_deref())
     ));
     Ok(0)
 }
@@ -831,6 +961,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--stop-after does not apply to --watch");
     }
     let sharing = sharing_of(v, &bind.host)?;
+    let (tls, _) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -1061,6 +1194,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             ip_rules: sharing.ip_rules.clone(),
             noindex: sharing.noindex,
             client_info: true,
+            tls: tls.clone(),
+            compress: v.flag("compress"),
+            gzip_cache: Default::default(),
+            throttle: throttle.as_ref().map(|t| t.1),
+            mime: mime.as_deref().map(mime_map),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -1073,14 +1211,15 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &context,
                     n,
-                    &site_url(&s.host, s.port, current_base.as_deref())
+                    &site_url(&s.host, s.port, current_base.as_deref(), tls.is_some())
                 )
             ));
         } else {
             out(&format!(
-                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                site_url(&s.host, s.port, current_base.as_deref()),
-                network_lines(&s.host, s.port, current_base.as_deref())
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
+                site_url(&s.host, s.port, current_base.as_deref(), tls.is_some()),
+                network_lines(&s.host, s.port, current_base.as_deref(), tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
             ));
         }
         let rebuild = rebuild.clone();
@@ -1122,6 +1261,17 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         s.close();
     }
     Ok(code)
+}
+
+/// A detached server's TLS configuration, from the PEM files its record names (read at every start).
+fn worker_tls(state: &ServerState) -> Result<Option<Arc<rustls::ServerConfig>>> {
+    let (Some(c), Some(k)) = (&state.tls_cert, &state.tls_key) else {
+        return Ok(None);
+    };
+    let read = |f: &String| {
+        std::fs::read(f).map_err(|e| SitefileError::plain(E_SERVER, format!("{f}: {e}")))
+    };
+    Ok(Some(crate::server::tls_config(&read(c)?, &read(k)?)?))
 }
 
 /// A detached server's checker: its verifiers and its htpasswd file, read again at every start.
@@ -1272,6 +1422,20 @@ pub fn serve_worker(id: &str) -> i32 {
                     || state.bind.host == "::1"
                     || state.bind.host.starts_with("127.")),
                 client_info: true,
+                tls: worker_tls(&state)?,
+                compress: state.compress,
+                gzip_cache: Default::default(),
+                throttle: state
+                    .throttle
+                    .as_deref()
+                    .and_then(crate::server::parse_throttle),
+                mime: state.mime.as_ref().map(|m| {
+                    Arc::new(
+                        m.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string())))
+                            .collect(),
+                    )
+                }),
                 content: site.content,
                 ..Default::default()
             },
@@ -1291,13 +1455,13 @@ pub fn serve_worker(id: &str) -> i32 {
                 &now_iso(),
                 &state.image,
                 n,
-                &site_url(&host, port, state.base.as_deref()),
+                &site_url(&host, port, state.base.as_deref(), state.tls_cert.is_some()),
             ));
         } else {
             stamp(&format!(
                 "serving {} ({n} files) at {}",
                 state.image,
-                site_url(&host, port, state.base.as_deref())
+                site_url(&host, port, state.base.as_deref(), state.tls_cert.is_some())
             ));
         }
         Ok(server)
@@ -1381,6 +1545,9 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 // A server bound to all interfaces also lists the URLs other machines use.
                 let net = if s.status == "running" {
                     crate::server::network_urls(&s.state.host, s.state.port)
+                        .into_iter()
+                        .map(|u| crate::server::with_scheme(u, s.state.tls_cert.is_some()))
+                        .collect()
                 } else {
                     Vec::new()
                 };
@@ -1611,8 +1778,8 @@ fn run_restart(v: &Parsed) -> Result<i32> {
         up.name,
         up.id,
         up.image,
-        site_url(&up.host, up.port, up.base.as_deref()),
-        network_lines(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some()),
+        network_lines(&up.host, up.port, up.base.as_deref(), up.tls_cert.is_some())
     ));
     Ok(0)
 }

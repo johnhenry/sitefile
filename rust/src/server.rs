@@ -75,6 +75,17 @@ pub struct SiteServerOptions {
     pub noindex: bool,
     /// Add the client address and device to access-log lines of non-loopback clients.
     pub client_info: bool,
+    /// `--tls-cert`, `--tls-key`: serve HTTPS ([`tls_config`]).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// `--compress`: gzip compressible files of at least 1024 bytes on the fly when no
+    /// precompressed variant exists.
+    pub compress: bool,
+    /// gzip output by file digest (at most 256 files), shared by the server's connections.
+    pub gzip_cache: GzipCache,
+    /// `--throttle`: response bandwidth and latency ([`parse_throttle`]).
+    pub throttle: Option<Throttle>,
+    /// `--mime`, `--mime-file`: content types by lowercase extension, checked before the table.
+    pub mime: Option<Arc<HashMap<String, String>>>,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -656,7 +667,7 @@ impl LiveReload {
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
     /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
     /// 15 s keeps idle connections from being cut (and finds clients that went away).
-    fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
+    fn stream(&self, out: &mut Conn, options: &SiteServerOptions) {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
@@ -851,6 +862,96 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// A served connection: plain TCP, or a TLS session over it (`--tls-cert`). Clones share the
+/// socket and the session; the connection loop reads and writes from one thread.
+pub struct Conn {
+    tcp: TcpStream,
+    tls: Option<Arc<Mutex<rustls::ServerConnection>>>,
+}
+
+impl Conn {
+    fn try_clone(&self) -> io::Result<Conn> {
+        Ok(Conn {
+            tcp: self.tcp.try_clone()?,
+            tls: self.tls.clone(),
+        })
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.tcp.peer_addr()
+    }
+    fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        self.tcp.set_read_timeout(d)
+    }
+    fn set_nodelay(&self, on: bool) -> io::Result<()> {
+        self.tcp.set_nodelay(on)
+    }
+    fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
+        if let Some(t) = &self.tls {
+            if let Ok(mut c) = t.lock() {
+                c.send_close_notify();
+                let _ = c.complete_io(&mut self.tcp);
+            }
+        }
+        self.tcp.shutdown(how)
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.read(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).read(buf)
+            }
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.write(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).write(buf)
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match &self.tls {
+            None => self.tcp.flush(),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).flush()
+            }
+        }
+    }
+}
+
+/// The TLS configuration of `--tls-cert`/`--tls-key`: a PEM certificate chain and private key.
+pub fn tls_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<rustls::ServerConfig>> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let bad = |m: String| SitefileError::plain(E_USAGE, m);
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| bad(format!("--tls-cert: not a PEM certificate: {e}")))?;
+    if certs.is_empty() {
+        return Err(bad("--tls-cert: no certificate in the file".into()));
+    }
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| bad(format!("--tls-key: not a PEM private key: {e}")))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| bad(format!("TLS: {e}")))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| bad(format!("--tls-key does not match --tls-cert: {e}")))?;
+    Ok(Arc::new(config))
+}
+
 /// A parsed CIDR block: 4 or 16 address bytes and a prefix length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cidr {
@@ -1225,6 +1326,183 @@ fn parse_text_request(rest: &str) -> Option<(&str, &str, u16, usize, f64, Option
         ms.parse().ok()?,
         parts.get(5).copied(),
     ))
+}
+
+/// [`SiteServerOptions::gzip_cache`].
+pub type GzipCache = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
+
+/// Whether an `Accept-Encoding` value accepts `coding` (`acceptsEncoding` in src/server.ts).
+pub fn accepts_encoding(header: Option<&str>, coding: &str) -> bool {
+    let Some(h) = header else { return false };
+    let mut star: Option<bool> = None;
+    for part in h.split(',') {
+        let mut it = part.split(';').map(js_trim);
+        let name = it.next().unwrap_or("").to_ascii_lowercase();
+        let mut q = 1.0f64;
+        for p in it {
+            let b = p.as_bytes();
+            if b.first().is_some_and(|c| *c == b'q' || *c == b'Q') {
+                let rest = p[1..].trim_start_matches([' ', '\t']);
+                if let Some(v) = rest.strip_prefix('=') {
+                    let v = v.trim_start_matches([' ', '\t']);
+                    if !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit() || c == b'.') {
+                        q = v.parse().unwrap_or(f64::NAN);
+                    }
+                }
+            }
+        }
+        let ok = q.is_finite() && q > 0.0;
+        if name == coding {
+            return ok;
+        }
+        if name == "*" {
+            star = Some(ok);
+        }
+    }
+    star.unwrap_or(false)
+}
+
+/// Media types worth compressing (`isCompressible` in src/server.ts).
+pub fn is_compressible(mime: &str) -> bool {
+    let t = mime.split(';').next().unwrap_or("").trim();
+    t.starts_with("text/")
+        || t.ends_with("+json")
+        || t.ends_with("+xml")
+        || [
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/wasm",
+            "image/svg+xml",
+        ]
+        .contains(&t)
+}
+
+/// `--throttle` limits (`Throttle` in src/server.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Throttle {
+    pub bytes_per_second: u64,
+    pub latency_ms: u64,
+}
+
+/// `3g`, `slow-3g` (Chrome DevTools' presets) or `<kbit/s>[/<latency ms>]`.
+pub fn parse_throttle(value: &str) -> Option<Throttle> {
+    match value {
+        "3g" => {
+            return Some(Throttle {
+                bytes_per_second: 200_000,
+                latency_ms: 150,
+            })
+        }
+        "slow-3g" => {
+            return Some(Throttle {
+                bytes_per_second: 50_000,
+                latency_ms: 400,
+            })
+        }
+        _ => {}
+    }
+    let (rate, latency) = match value.split_once('/') {
+        Some((r, l)) => (r, Some(l)),
+        None => (value, None),
+    };
+    let digits =
+        |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(rate, 7) || latency.is_some_and(|l| !digits(l, 5)) {
+        return None;
+    }
+    let kbps: u64 = rate.parse().ok()?;
+    if kbps == 0 {
+        return None;
+    }
+    Some(Throttle {
+        bytes_per_second: kbps * 125,
+        latency_ms: latency.map(|l| l.parse().unwrap_or(0)).unwrap_or(0),
+    })
+}
+
+/// A content type `--mime` accepts (`MIME_VALUE` in src/server.ts).
+fn is_mime_value(t: &str) -> bool {
+    let tok = |s: &str| {
+        let b = s.as_bytes();
+        !b.is_empty()
+            && b[0].is_ascii_alphanumeric()
+            && b.iter()
+                .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+    };
+    let (main, params) = match t.find(';') {
+        Some(i) => (&t[..i], Some(&t[i..])),
+        None => (t, None),
+    };
+    let main = if params.is_some() {
+        main.trim_end_matches(' ')
+    } else {
+        main
+    };
+    let Some((a, b)) = main.split_once('/') else {
+        return false;
+    };
+    tok(a) && tok(b) && params.is_none_or(|p| p.bytes().all(|c| (0x20..=0x7e).contains(&c)))
+}
+
+fn mime_ext(e: &str) -> Option<String> {
+    let ext = e.strip_prefix('.').unwrap_or(e).to_ascii_lowercase();
+    (!ext.is_empty()
+        && ext
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_+-".contains(&c)))
+    .then_some(ext)
+}
+
+/// `--mime ext=type` (`parseMimeFlag` in src/server.ts).
+pub fn parse_mime_flag(value: &str) -> Option<(String, String)> {
+    let i = value.find('=').filter(|i| *i > 0)?;
+    let ext = mime_ext(&value[..i])?;
+    let t = value[i + 1..].trim();
+    is_mime_value(t).then(|| (ext, t.to_string()))
+}
+
+/// A `mime.types` file (`parseMimeTypes` in src/server.ts), in file order.
+pub fn parse_mime_types(text: &str, origin: &str) -> Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (n, raw) in text.split('\n').enumerate() {
+        let mut line = raw.split('#').next().unwrap_or("").to_string();
+        let lead = line.trim_start_matches([' ', '\t']);
+        if let Some(rest) = lead.strip_prefix("types") {
+            if !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+                line = format!(" {rest}");
+            }
+        }
+        let line: String = line
+            .chars()
+            .map(|c| if matches!(c, '{' | '}' | ';') { ' ' } else { c })
+            .collect();
+        let line = js_trim(&line);
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split([' ', '\t']).filter(|p| !p.is_empty());
+        let t = parts.next().unwrap_or("");
+        if !is_mime_value(t) {
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("{origin}:{}: not a content type: {t}", n + 1),
+            ));
+        }
+        for e in parts {
+            let Some(ext) = mime_ext(e) else {
+                return Err(SitefileError::plain(
+                    E_USAGE,
+                    format!("{origin}:{}: not an extension: {e}", n + 1),
+                ));
+            };
+            match out.iter_mut().find(|(k, _)| *k == ext) {
+                Some(slot) => slot.1 = t.to_string(),
+                None => out.push((ext, t.to_string())),
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
@@ -2092,7 +2370,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 10] = [
+const PROTECTED_HEADERS: [&str; 11] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -2103,6 +2381,7 @@ const PROTECTED_HEADERS: [&str; 10] = [
     "content-range",
     "last-modified",
     "www-authenticate",
+    "content-encoding",
 ];
 pub const SERVE_STATUSES: [u16; 9] = [200, 301, 302, 303, 307, 308, 404, 410, 451];
 
@@ -2868,7 +3147,19 @@ pub fn respond(
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
-        let mime = mime_type_for(served);
+        let ext = served
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .skip(1)
+            .last()
+            .map(str::to_ascii_lowercase);
+        let custom_type = ext.and_then(|e| options.mime.as_ref().and_then(|m| m.get(&e).cloned()));
+        let mime: &str = match &custom_type {
+            Some(t) => t.as_str(),
+            None => mime_type_for(served),
+        };
         let live = options.live_reload.is_some()
             && mime.starts_with("text/html")
             && is_navigation(headers);
@@ -2935,30 +3226,68 @@ pub fn respond(
         } else {
             body
         };
+        // Otherwise: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first), else gzip on
+        // the fly under --compress. Range requests, live pages, rebased pages and deltas are never compressed here.
+        let plain = deflated.is_none() && delta.is_none() && rebase.is_none() && status == 200;
+        let ae = headers.get("accept-encoding").map(String::as_str);
+        let (br_path, gz_path) = (format!("{served}.br"), format!("{served}.gz"));
+        let (has_br, has_gz) = (plain && is_file(&br_path), plain && is_file(&gz_path));
+        let on_the_fly = plain && options.compress && is_compressible(mime) && body.len() >= 1024;
+        let negotiated = !live && (has_br || has_gz || on_the_fly);
+        let mut coding: Option<&str> = None;
+        let mut body = body;
+        if negotiated && !headers.contains_key("range") {
+            if has_br && accepts_encoding(ae, "br") {
+                coding = Some("br");
+                body = tree
+                    .get(&br_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
+            } else if has_gz && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                body = tree
+                    .get(&gz_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
+            } else if on_the_fly && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                let mut cache = options.gzip_cache.lock().unwrap_or_else(|p| p.into_inner());
+                let z = match cache.get(&file.digest) {
+                    Some(z) => z.clone(),
+                    None => {
+                        if cache.len() >= 256 {
+                            cache.clear();
+                        }
+                        let z = Arc::new(crate::deflate::gzip(&body));
+                        cache.insert(file.digest.clone(), z.clone());
+                        z
+                    }
+                };
+                body = z.to_vec();
+            }
+        }
         let vary_on = if dictionary_vary {
             "accept-encoding, available-dictionary"
         } else {
             "accept-encoding"
         };
-        let encoding: Vec<(String, String)> = if deflated.is_some() {
-            owned(vec![
-                ("content-encoding", "gzip".into()),
-                ("vary", vary_on.into()),
-            ])
+        let vary: Vec<(String, String)> = if deflated.is_some() || negotiated || dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
+        let mut encoding: Vec<(String, String)> = match (&deflated, coding) {
+            (Some(_), _) => owned(vec![("content-encoding", "gzip".into())]),
+            (None, Some(c)) => owned(vec![("content-encoding", c.into())]),
+            (None, None) => vec![],
+        };
+        encoding.extend(vary.iter().cloned());
         let cc: Vec<(String, String)> = if status == 200 {
             cache_control_for(mime, options.cache.as_ref())
                 .map(|v| vec![("cache-control".to_string(), v)])
                 .unwrap_or_default()
         } else {
             Vec::new()
-        };
-        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
-            owned(vec![("vary", vary_on.into())])
-        } else {
-            vec![]
         };
         let mut h = owned(vec![
             ("content-type", mime.into()),
@@ -2970,13 +3299,18 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
+        // An injected page, a rebased page, a compressed response and a delta are other representations of
+        // the file: they get their own ETags.
         let etag = format!(
             "\"{}{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
             if rebase.is_some() { "-rebased" } else { "" },
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" },
+            if deflated.is_some() {
+                "-gzip".to_string()
+            } else {
+                coding.map(|c| format!("-{c}")).unwrap_or_default()
+            },
             if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
@@ -2987,7 +3321,6 @@ pub fn respond(
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(cc.iter().cloned());
             h.extend(custom.iter().cloned());
-            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -3022,7 +3355,6 @@ pub fn respond(
             h.extend(lm.iter().cloned());
             return finish(200, h, Some(d.to_vec()));
         }
-        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
@@ -3038,6 +3370,7 @@ pub fn respond(
         match range {
             Some(ByteRange::Unsatisfiable) => {
                 let mut h: Vec<(String, String)> = custom.clone();
+                h.extend(vary.iter().cloned());
                 h.push(("accept-ranges".into(), "bytes".into()));
                 h.push(("content-range".into(), format!("bytes */{}", body.len())));
                 h.push(("content-length".into(), "0".into()));
@@ -3327,9 +3660,7 @@ struct Request {
 }
 
 /// Read one request head. `Ok(None)` on a clean EOF before any byte.
-fn read_request(
-    r: &mut BufReader<TcpStream>,
-) -> io::Result<Option<std::result::Result<Request, ()>>> {
+fn read_request(r: &mut BufReader<Conn>) -> io::Result<Option<std::result::Result<Request, ()>>> {
     let mut head: Vec<u8> = Vec::new();
     loop {
         let mut line = Vec::new();
@@ -3417,7 +3748,7 @@ fn read_request(
 }
 
 fn serve_connection(
-    stream: TcpStream,
+    stream: Conn,
     tree: &SharedTree,
     rules: &RulesCache,
     options: &SiteServerOptions,
@@ -3568,11 +3899,31 @@ fn serve_connection(
         } else {
             "connection: close\r\n\r\n"
         });
-        let ok = out
-            .write_all(head.as_bytes())
-            .and_then(|_| out.write_all(&res.body))
-            .and_then(|_| out.flush())
-            .is_ok();
+        let ok = match options.throttle {
+            None => out
+                .write_all(head.as_bytes())
+                .and_then(|_| out.write_all(&res.body))
+                .and_then(|_| out.flush())
+                .is_ok(),
+            // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+            Some(t) => {
+                std::thread::sleep(Duration::from_millis(t.latency_ms));
+                let slice = (t.bytes_per_second / 10).max(1) as usize;
+                let mut ok = out
+                    .write_all(head.as_bytes())
+                    .and_then(|_| out.flush())
+                    .is_ok();
+                let mut chunks = res.body.chunks(slice).peekable();
+                while ok {
+                    let Some(c) = chunks.next() else { break };
+                    ok = out.write_all(c).and_then(|_| out.flush()).is_ok();
+                    if ok && chunks.peek().is_some() {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                ok
+            }
+        };
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         // `servers` probes carry the server's own id; they would only clutter the access log.
         let probe = options.server_id.is_some()
@@ -3709,7 +4060,18 @@ pub fn listen_shared(
                 per_ip.clone(),
             );
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &rules, &options, busy);
+                let conn = Conn {
+                    tls: options.tls.as_ref().and_then(|cfg| {
+                        rustls::ServerConnection::new(cfg.clone())
+                            .ok()
+                            .map(|c| Arc::new(Mutex::new(c)))
+                    }),
+                    tcp: stream,
+                };
+                if options.tls.is_some() && conn.tls.is_none() {
+                    return;
+                }
+                serve_connection(conn, &tree, &rules, &options, busy);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
                 }
@@ -3899,6 +4261,14 @@ pub fn network_urls(bind_host: &str, port: u16) -> Vec<String> {
         .iter()
         .map(|a| format_url(a, port))
         .collect()
+}
+
+/// `http://` URL made `https://` for a TLS server.
+pub fn with_scheme(url: String, tls: bool) -> String {
+    match url.strip_prefix("http://").filter(|_| tls) {
+        Some(rest) => format!("https://{rest}"),
+        None => url,
+    }
 }
 
 pub fn format_url(host: &str, port: u16) -> String {
@@ -4349,6 +4719,123 @@ mod tests {
             "Mac"
         );
         assert_eq!(device_of(None), "other");
+    }
+
+    #[test]
+    fn tls_config_errors() {
+        let e = tls_config(b"not pem", b"").err().unwrap();
+        assert!(e.message().contains("--tls-cert"), "{}", e.message());
+        let cert = b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+        assert!(tls_config(cert, b"no key").is_err());
+        assert_eq!(
+            with_scheme("http://127.0.0.1:1/".into(), true),
+            "https://127.0.0.1:1/"
+        );
+        assert_eq!(with_scheme("http://a/".into(), false), "http://a/");
+    }
+
+    #[test]
+    fn compression_negotiation() {
+        assert!(!accepts_encoding(Some("gzip;q=0, *"), "gzip"));
+        assert!(accepts_encoding(Some("*"), "br"));
+        assert!(accepts_encoding(Some("BR;Q=0.1"), "br"));
+        assert!(!accepts_encoding(None, "br"));
+        assert!(is_compressible("image/svg+xml; charset=utf-8"));
+        assert!(!is_compressible("image/png"));
+        let t = Tree::from_files(
+            [
+                ("/a.css", "a{}".to_string()),
+                ("/a.css.br", "BR".into()),
+                ("/big.txt", "x".repeat(2000)),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            compress: true,
+            ..Default::default()
+        };
+        let ask = |p: &str, ae: &str| {
+            let mut h = HashMap::new();
+            h.insert("accept-encoding".to_string(), ae.to_string());
+            handle_request(&t, &opts, "GET", p, &h)
+        };
+        let r = ask("/a.css", "br");
+        assert_eq!(r.header("content-encoding"), Some("br"));
+        assert_eq!(r.body, b"BR");
+        assert!(r.header("etag").unwrap().ends_with("-br\""));
+        let z = ask("/big.txt", "gzip");
+        assert_eq!(z.header("content-encoding"), Some("gzip"));
+        assert_eq!(z.body, crate::deflate::gzip("x".repeat(2000).as_bytes()));
+    }
+
+    #[test]
+    fn throttle_bandwidth_and_latency() {
+        assert_eq!(
+            parse_throttle("80/100"),
+            Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 100
+            })
+        );
+        assert_eq!(parse_throttle("slow-3g").map(|t| t.latency_ms), Some(400));
+        for bad in ["0", "fast", "80/", "/100", "-1"] {
+            assert_eq!(parse_throttle(bad), None, "{bad}");
+        }
+        let t = Tree::from_files([(
+            "/big.bin".to_string(),
+            make_file(vec![0u8; 15000], "t", 0o644),
+        )])
+        .unwrap();
+        let opts = SiteServerOptions {
+            throttle: Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 200,
+            }),
+            ..Default::default()
+        };
+        let srv = listen(Arc::new(t), opts, "127.0.0.1", 0).unwrap();
+        let start = std::time::Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+        c.write_all(b"GET /big.bin HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n")
+            .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).unwrap();
+        let ms = start.elapsed().as_millis();
+        assert!(buf.len() > 15000);
+        assert!((1500..4000).contains(&ms), "took {ms} ms");
+        srv.close();
+    }
+
+    #[test]
+    fn mime_flags() {
+        assert_eq!(
+            parse_mime_flag(".TS=video/mp2t"),
+            Some(("ts".into(), "video/mp2t".into()))
+        );
+        assert_eq!(
+            parse_mime_flag("bin=application/x-a; charset=binary").map(|p| p.1),
+            Some("application/x-a; charset=binary".into())
+        );
+        for bad in [
+            "ts",
+            "=video/mp2t",
+            "ts=video",
+            "ts=/x",
+            "a.b=x/y",
+            "ts=vid eo/x",
+        ] {
+            assert_eq!(parse_mime_flag(bad), None, "{bad}");
+        }
+        let m = parse_mime_types(
+            "types {\n  model/vnd.usdz+zip usdz;\n  application/x-types a b; # c\n}\ntext/x-apache  .ap\n",
+            "f",
+        )
+        .unwrap();
+        let keys: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["usdz", "a", "b", "ap"]);
+        assert_eq!(m[1].1, "application/x-types");
+        assert!(parse_mime_types("notatype ext", "f").is_err());
     }
 
     #[test]

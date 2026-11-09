@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
@@ -6,6 +7,7 @@ import { globMatch, headersFor, isRewriteStatus, matchRedirect, type RedirectReq
 import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
+import { gzip } from './deflate.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
 import type { BasicAuth } from './serve-auth.js';
@@ -92,6 +94,14 @@ export interface SiteServerOptions {
   readonly noindex?: boolean;
   /** Add the client address and device (from `User-Agent`) to access-log lines of non-loopback clients. */
   readonly clientInfo?: boolean;
+  /** `--tls-cert`, `--tls-key`: serve HTTPS with this PEM certificate chain and private key. */
+  readonly tls?: { readonly cert: string | Uint8Array; readonly key: string | Uint8Array };
+  /** `--compress`: gzip compressible files of at least 1024 bytes on the fly when no precompressed variant exists. */
+  readonly compress?: boolean;
+  /** `--throttle`: response bandwidth (bytes per second) and latency added before each response. */
+  readonly throttle?: Throttle;
+  /** `--mime`, `--mime-file`: content types by lowercase extension, checked before the built-in table. */
+  readonly mime?: ReadonlyMap<string, string>;
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -520,6 +530,84 @@ export function logLineAsJson(line: string): string {
   const stopped = /^received (SIG[A-Z]+), shutting down$/.exec(rest);
   if (stopped) return stoppedLogLine(ts, stopped[1]!);
   return jsonLogLine(ts, rest);
+}
+
+/**
+ * Whether an `Accept-Encoding` value accepts `coding`: listed (or `*`) with a q-value above 0, ASCII
+ * case-insensitive; an explicit entry wins over `*`.
+ */
+export function acceptsEncoding(header: string | undefined, coding: string): boolean {
+  if (header === undefined) return false;
+  let star: boolean | undefined;
+  for (const part of header.split(',')) {
+    const [name, ...params] = part.split(';').map((x) => x.trim());
+    const n = (name ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+    let q = 1;
+    for (const p of params) {
+      const m = /^[qQ][ \t]*=[ \t]*([0-9.]+)$/.exec(p);
+      if (m) q = Number(m[1]);
+    }
+    const ok = Number.isFinite(q) && q > 0;
+    if (n === coding) return ok;
+    if (n === '*') star = ok;
+  }
+  return star ?? false;
+}
+
+/** Media types worth compressing: `text/*`, JSON, XML, SVG, JavaScript, wasm and `+json`/`+xml` types. */
+export function isCompressible(type: string): boolean {
+  const t = (type.split(';')[0] ?? '').trim();
+  return t.startsWith('text/') || t.endsWith('+json') || t.endsWith('+xml') || ['application/json', 'application/xml', 'application/javascript', 'application/wasm', 'image/svg+xml'].includes(t);
+}
+
+/** `--throttle` limits ({@link parseThrottle}). */
+export interface Throttle {
+  readonly bytesPerSecond: number;
+  readonly latencyMs: number;
+}
+
+/** Presets: Chrome DevTools' "3G" (1.6 Mbit/s, 150 ms) and "Slow 3G" (400 kbit/s, 400 ms). */
+export const THROTTLE_PRESETS: Readonly<Record<string, Throttle>> = {
+  '3g': { bytesPerSecond: 200_000, latencyMs: 150 },
+  'slow-3g': { bytesPerSecond: 50_000, latencyMs: 400 },
+};
+
+/** `3g`, `slow-3g` or `<kbit/s>[/<latency ms>]`, else undefined. */
+export function parseThrottle(value: string): Throttle | undefined {
+  const preset = THROTTLE_PRESETS[value];
+  if (preset) return preset;
+  const m = /^([0-9]{1,7})(?:\/([0-9]{1,5}))?$/.exec(value);
+  if (!m || Number(m[1]) === 0) return undefined;
+  return { bytesPerSecond: Number(m[1]) * 125, latencyMs: Number(m[2] ?? 0) };
+}
+
+/** A content type `--mime` accepts: `type/subtype`, then optional parameters, printable ASCII. */
+const MIME_VALUE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*( *;[\x20-\x7e]*)?$/;
+
+/** `--mime ext=type` (a leading `.` is dropped; the extension is lowercased), else undefined. */
+export function parseMimeFlag(value: string): [string, string] | undefined {
+  const i = value.indexOf('=');
+  if (i <= 0) return undefined;
+  const ext = value.slice(0, i).replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const type = value.slice(i + 1).trim();
+  return /^[a-z0-9_+-]+$/.test(ext) && MIME_VALUE.test(type) ? [ext, type] : undefined;
+}
+
+/** A `mime.types` file (nginx `types { type ext ...; }` or Apache `type ext ...` lines; `#` comments): ext → type. */
+export function parseMimeTypes(text: string, origin: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [n, raw] of text.split('\n').entries()) {
+    const line = raw.replace(/#.*$/, '').replace(/^[ \t]*types\b/, ' ').replace(/[{};]/g, ' ').trim();
+    if (line === '') continue;
+    const [type, ...exts] = line.split(/[ \t]+/);
+    if (type === undefined || !MIME_VALUE.test(type)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not a content type: ${type ?? ''}`);
+    for (const e of exts) {
+      const ext = e.replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+      if (!/^[a-z0-9_+-]+$/.test(ext)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not an extension: ${e}`);
+      out.set(ext, type);
+    }
+  }
+  return out;
 }
 
 /** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
@@ -981,6 +1069,17 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     options.warn(`live reload: the Content-Security-Policy that _headers sets for ${served} does not allow ${what}, so open pages will not reload: ${policy}`);
   };
 
+  /** --compress: gzip output by file digest (at most 256 files), so a file is compressed once. */
+  const gzipCache = new Map<string, Uint8Array>();
+  const gzipped = (digest: string, bytes: Uint8Array): Uint8Array => {
+    let out = gzipCache.get(digest);
+    if (out === undefined) {
+      if (gzipCache.size >= 256) gzipCache.clear();
+      out = gzip(bytes);
+      gzipCache.set(digest, out);
+    }
+    return out;
+  };
   /** Connections over --max-connections-per-ip: they get one 503. */
   const busy = new WeakSet<object>();
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
@@ -1002,12 +1101,29 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const hints = earlyHints(link);
         if (hints.length > 0) res.writeEarlyHints({ link: hints });
       }
-      res.writeHead(status, { ...base, ...headers });
-      if (buf !== undefined && method !== 'HEAD' && status !== 304) {
-        bytes = buf.byteLength;
-        res.end(buf);
+      const send = buf !== undefined && method !== 'HEAD' && status !== 304 ? buf : undefined;
+      if (send !== undefined) bytes = send.byteLength;
+      const t = options.throttle;
+      if (t === undefined) {
+        res.writeHead(status, { ...base, ...headers });
+        res.end(send);
       } else {
-        res.end();
+        // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+        const slice = Math.max(1, Math.floor(t.bytesPerSecond / 10));
+        setTimeout(() => {
+          res.writeHead(status, { ...base, ...headers });
+          if (send === undefined) return void res.end();
+          let at = 0;
+          const next = (): void => {
+            if (res.destroyed) return;
+            const end = Math.min(send.byteLength, at + slice);
+            res.write(send.subarray(at, end));
+            at = end;
+            if (at >= send.byteLength) res.end();
+            else setTimeout(next, 100);
+          };
+          next();
+        }, t.latencyMs);
       }
       const ms = Number((process.hrtime.bigint() - started) / 1000n) / 1000;
       if (quiet) return;
@@ -1122,7 +1238,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
 
     const sendFile = (status: number, served: string): void => {
       const file = tree.get(served)!;
-      const type = mimeTypeFor(served);
+      const ext = served.slice(served.lastIndexOf('/') + 1).split('.').slice(1).pop()?.replace(/[A-Z]/g, (c) => c.toLowerCase());
+      const type = (ext !== undefined ? options.mime?.get(ext) : undefined) ?? mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
       const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
@@ -1143,39 +1260,54 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       }
       if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
+      // Otherwise: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first), else gzip on the fly
+      // under --compress. Range requests, live pages, rebased pages and deltas are never compressed here.
+      const ae = req.headers['accept-encoding'];
+      const plain = !deflated && !delta && !rebase && status === 200;
+      const hasBr = plain && isFile(`${served}.br`);
+      const hasGz = plain && isFile(`${served}.gz`);
+      const onTheFly = plain && !!options.compress && isCompressible(type) && body.byteLength >= 1024;
+      const negotiated = !live && (hasBr || hasGz || onTheFly);
+      let coding: 'br' | 'gzip' | undefined;
+      if (negotiated && req.headers.range === undefined) {
+        if (hasBr && acceptsEncoding(ae, 'br')) [coding, body] = ['br', tree.get(`${served}.br`)!.bytes];
+        else if (hasGz && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', tree.get(`${served}.gz`)!.bytes];
+        else if (onTheFly && acceptsEncoding(ae, 'gzip')) [coding, body] = ['gzip', gzipped(file.digest, body)];
+      }
       const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
-      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
-      const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
+      const vary: Record<string, string> = deflated || negotiated || dictionaryVary ? { vary: varyOn } : {};
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', ...vary } : coding ? { 'content-encoding': coding, ...vary } : vary;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
       const preview = cacheControlFor(type, options.cache);
       const cc: Record<string, string> = preview === undefined ? {} : { 'cache-control': preview };
-      // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
+      // An injected page, a rebased page, a compressed response and a delta are other representations of the
+      // file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : coding ? `-${coding}` : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...cc, ...custom, ...vary, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...cc, ...custom, ...vary, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...cc, ...custom, etag, ...lm }, undefined);
       // The delta is sent whole (no byte ranges of an encoded body).
       if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...cc, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
       if (range === 'unsatisfiable') {
-        return finish(416, { ...custom, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
+        return finish(416, { ...custom, ...vary, 'accept-ranges': 'bytes', 'content-range': `bytes */${body.byteLength}`, 'content-length': 0 }, undefined);
       }
       if (range !== undefined) {
         const [start, end] = range;
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...cc, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...cc, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {
@@ -1292,7 +1424,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     page(404, misses.length === 0 ? NOT_FOUND_PAGE : nearMissPage(vpath, misses, mount), custom);
   };
 
-  const server = http.createServer(handler);
+  // HTTPS when a certificate is given (same handler; an https.Server has the http.Server API).
+  const server = options.tls
+    ? (https.createServer({ cert: Buffer.from(options.tls.cert), key: Buffer.from(options.tls.key) }, handler) as unknown as http.Server)
+    : http.createServer(handler);
   const limit = options.maxConnectionsPerIp ?? 0;
   if (limit > 0) {
     const perIp = new Map<string, number>();
@@ -1364,11 +1499,11 @@ export function networkAddresses(bindHost: string): string[] {
 }
 
 /** {@link networkAddresses} as URLs. */
-export function networkUrls(bindHost: string, port: number): string[] {
-  return networkAddresses(bindHost).map((a) => formatUrl(a, port));
+export function networkUrls(bindHost: string, port: number, scheme: 'http' | 'https' = 'http'): string[] {
+  return networkAddresses(bindHost).map((a) => formatUrl(a, port, scheme));
 }
 
-export function formatUrl(host: string, port: number): string {
+export function formatUrl(host: string, port: number, scheme: 'http' | 'https' = 'http'): string {
   const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
+  return `${scheme}://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
 }

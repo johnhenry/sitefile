@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import tls from 'node:tls';
 import net from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -268,13 +269,13 @@ export async function startServers(root, dir) {
 const IGNORED_HEADERS = new Set(['date', 'connection', 'keep-alive']);
 
 /** Send one raw HTTP/1.1 request; resolve with { interim, status, headers, body }. */
-function rawRequest(port, { method = 'GET', target, headers = {}, version = '1.1' }) {
+function rawRequest(port, { method = 'GET', target, headers = {}, version = '1.1' }, secure = false) {
   return new Promise((resolve, reject) => {
-    const sock = net.connect(port, '127.0.0.1');
+    const sock = secure ? tls.connect({ port, host: '127.0.0.1', rejectUnauthorized: false }) : net.connect(port, '127.0.0.1');
     const chunks = [];
     const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === 'host');
     const lines = [`${method} ${target} HTTP/${version}`, ...(hasHost ? [] : [`host: 127.0.0.1:${port}`]), ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`), 'connection: close', '', ''];
-    sock.on('connect', () => sock.write(lines.join('\r\n')));
+    sock.on(secure ? 'secureConnect' : 'connect', () => sock.write(lines.join('\r\n')));
     sock.on('data', (d) => chunks.push(d));
     sock.on('error', reject);
     sock.setTimeout(10000, () => sock.destroy(new Error(`timeout: ${method} ${target}`)));
@@ -315,7 +316,7 @@ function startServe(cmd, argv, env, cwd) {
     child.stderr.on('data', (d) => (err += d));
     child.stdout.on('data', (d) => {
       out += d;
-      const m = /(?: at |"url":")http:\/\/127\.0\.0\.1:(\d+)\//.exec(out);
+      const m = /(?: at |"url":")https?:\/\/127\.0\.0\.1:(\d+)\//.exec(out);
       if (!m) return;
       clearTimeout(timer);
       resolve({
@@ -340,8 +341,19 @@ const show = (r) =>
   ].join('\n');
 
 /** Run a `command: "serve"` case with both CLIs. Returns { name, compare, pass, detail, ts, rust }. */
-export async function runServeCase(c, { impls, tmp }) {
+export async function runServeCase(c, { impls, tmp, root }) {
   const detail = [];
+  // "tls": true serves HTTPS with a throwaway certificate (test/helpers/tls.ts; needs openssl).
+  let tlsArgs = [];
+  let pki;
+  if (c.tls) {
+    const { createTestPki } = await import(pathToFileURL(path.join(root, 'lib', 'test', 'helpers', 'tls.js')).href);
+    pki = createTestPki();
+    const { cert, key } = pki.issue('IP:127.0.0.1,DNS:localhost');
+    await fs.writeFile(path.join(tmp, 'serve-cert.pem'), cert);
+    await fs.writeFile(path.join(tmp, 'serve-key.pem'), key);
+    tlsArgs = ['--tls-cert', path.join(tmp, 'serve-cert.pem'), '--tls-key', path.join(tmp, 'serve-key.pem')];
+  }
   const answers = {};
   const logs = {};
   for (const [impl, cmd] of impls) {
@@ -349,9 +361,9 @@ export async function runServeCase(c, { impls, tmp }) {
     await fs.mkdir(home, { recursive: true });
     let server;
     try {
-      server = await startServe(cmd, ['serve', ...(c.args ?? []), `./${c.site ?? 'site'}`], { SITEFILE_HOME: home, ...(c.env ?? {}) }, c.context);
+      server = await startServe(cmd, ['serve', ...(c.args ?? []), ...tlsArgs, `./${c.site ?? 'site'}`], { SITEFILE_HOME: home, ...(c.env ?? {}) }, c.context);
       answers[impl] = [];
-      for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
+      for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r, !!c.tls));
       // The access-log line of the last request is written after its answer.
       if (c.log) await new Promise((r) => setTimeout(r, 600));
     } catch (e) {
@@ -401,6 +413,7 @@ export async function runServeCase(c, { impls, tmp }) {
       }
     });
   }
+  pki?.dispose();
   const summary = (impl) => ({ requests: c.requests.length, statuses: (answers[impl] ?? []).map((a) => a.status) });
   return { name: c.name, compare: 'serve', pass: detail.length === 0, detail, ts: summary('ts'), rust: summary('rust') };
 }

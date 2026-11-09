@@ -166,6 +166,21 @@ pub struct ServerState {
     /// `--stop-after`: when the server stops itself (ISO time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
+    /// `--tls-cert`: HTTPS with this PEM certificate chain (absolute path, read at every start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    /// `--tls-key`: its private key (absolute path; never copied).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
+    /// `--compress`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compress: bool,
+    /// `--throttle` as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttle: Option<String>,
+    /// `--mime`, `--mime-file`: extension → content type (file order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<serde_json::Map<String, serde_json::Value>>,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -387,7 +402,7 @@ impl ServerRegistry {
             url: if s.ready {
                 format!(
                     "{}{}",
-                    url_of(&s.host, s.port),
+                    crate::server::with_scheme(url_of(&s.host, s.port), s.tls_cert.is_some()),
                     &s.base.as_deref().unwrap_or("/")[1..]
                 )
             } else {
@@ -458,17 +473,93 @@ pub fn is_running(s: &ServerState) -> bool {
         probe_host(&s.host),
         s.id
     );
-    if c.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
     let mut buf = Vec::new();
-    let _ = c.take(64 * 1024).read_to_end(&mut buf);
+    if s.tls_cert.is_some() {
+        // Over HTTPS the probe skips certificate checks: it only reads this server's own id header.
+        let Some(mut tls) = probe_tls(probe_host(&s.host)) else {
+            return false;
+        };
+        let mut st = rustls::Stream::new(&mut tls, &mut c);
+        if st.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+        let _ = st.take(64 * 1024).read_to_end(&mut buf);
+    } else {
+        if c.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+        let _ = c.take(64 * 1024).read_to_end(&mut buf);
+    }
     let text = String::from_utf8_lossy(&buf);
     let head = text.split("\r\n\r\n").next().unwrap_or("");
     head.split("\r\n").skip(1).any(|l| match l.split_once(':') {
         Some((k, v)) => k.trim().eq_ignore_ascii_case("x-sitefile-server") && v.trim() == s.id,
         None => false,
     })
+}
+
+/// A TLS client for the liveness probe that accepts any certificate (it only reads the server's
+/// own id header, from a server this registry started).
+fn probe_tls(host: &str) -> Option<rustls::ClientConnection> {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    #[derive(Debug)]
+    struct AnyCert(Arc<rustls::crypto::CryptoProvider>);
+    impl ServerCertVerifier for AnyCert {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer<'_>,
+            _: &[CertificateDer<'_>],
+            _: &ServerName<'_>,
+            _: &[u8],
+            _: UnixTime,
+        ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            m: &[u8],
+            c: &CertificateDer<'_>,
+            d: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+        fn verify_tls13_signature(
+            &self,
+            m: &[u8],
+            c: &CertificateDer<'_>,
+            d: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AnyCert(provider)))
+        .with_no_client_auth();
+    let name = ServerName::try_from(
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
+    )
+    .ok()?;
+    rustls::ClientConnection::new(Arc::new(config), name).ok()
 }
 
 /// Load a directory into a Tree through the sandboxed local reader (symlinks
@@ -1017,6 +1108,15 @@ pub struct DetachedServe {
     pub deny_ip: Option<Vec<String>>,
     /// `--stop-after`: when the server stops (ISO time).
     pub expires: Option<String>,
+    /// `--tls-cert`, `--tls-key`, absolute paths.
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    /// `--compress`.
+    pub compress: bool,
+    /// `--throttle` as given.
+    pub throttle: Option<String>,
+    /// `--mime`, `--mime-file`: extension → content type.
+    pub mime: Option<serde_json::Map<String, serde_json::Value>>,
     /// `--country`.
     pub country: Option<String>,
     /// `--strict-site-files`.
@@ -1057,6 +1157,11 @@ impl DetachedServe {
             allow_ip: None,
             deny_ip: None,
             expires: None,
+            tls_cert: None,
+            tls_key: None,
+            compress: false,
+            throttle: None,
+            mime: None,
             country: None,
             strict_site_files: false,
             project: None,
@@ -1134,6 +1239,11 @@ pub fn serve_detached_with(
         allow_ip: serve.allow_ip.clone(),
         deny_ip: serve.deny_ip.clone(),
         expires: serve.expires.clone(),
+        tls_cert: serve.tls_cert.clone(),
+        tls_key: serve.tls_key.clone(),
+        compress: serve.compress,
+        throttle: serve.throttle.clone(),
+        mime: serve.mime.clone(),
         country: serve.country.clone(),
         strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
@@ -1365,6 +1475,11 @@ mod tests {
             allow_ip: None,
             deny_ip: None,
             expires: None,
+            tls_cert: None,
+            tls_key: None,
+            compress: false,
+            throttle: None,
+            mime: None,
             country: None,
             strict_site_files: false,
             bind: Bind {

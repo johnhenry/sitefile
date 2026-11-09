@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
+import { acceptsEncoding, parseMimeFlag, parseMimeTypes, parseThrottle, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase, normalizeProductionUrl, rewriteBaseUrls, hostProfile } from '../src/server.js';
 import type { RoutingProfile } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
@@ -531,6 +531,104 @@ test('sharing safety: random route, IP rules, noindex, client info (johnhenry/si
   assert.equal(deviceOf('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'), 'iPhone');
   assert.equal(deviceOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)'), 'Mac');
   assert.equal(deviceOf(undefined), 'other');
+});
+
+test('--tls-cert/--tls-key: HTTPS with a certificate (johnhenry/sitefile#170)', async (t) => {
+  const { createTestPki, opensslAvailable } = await import('./helpers/tls.js');
+  if (!opensslAvailable()) return t.skip('openssl is not installed');
+  const pki = createTestPki();
+  const { cert, key } = pki.issue('IP:127.0.0.1');
+  const s = createSiteServer(tree, { tls: { cert, key } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const https = await import('node:https');
+    const body = await new Promise<string>((resolve, reject) => {
+      const r = https.request({ host: '127.0.0.1', port, path: '/app.js', ca: pki.caCert, agent: false }, (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => resolve(d));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.equal(body, 'console.log(1)');
+  } finally {
+    await closeServer(s);
+    pki.dispose();
+  }
+});
+
+test('compression: precompressed variants, --compress, Vary and per-encoding ETags (johnhenry/sitefile#167)', async () => {
+  const { gunzipSync } = await import('node:zlib');
+  const big = 'x'.repeat(2000);
+  const t = Tree.fromFiles(
+    Object.entries({ '/a.css': 'a{}', '/a.css.br': 'BR', '/big.txt': big }).map(([p, c]) => [p, makeFile(enc(c), 't')] as const),
+  );
+  const s = createSiteServer(t, { compress: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const br = await req(port, '/a.css', 'GET', { 'accept-encoding': 'br' });
+    assert.equal(br.headers['content-encoding'], 'br');
+    assert.equal(br.body, 'BR');
+    assert.match(String(br.headers.etag), /-br"$/);
+    assert.equal(br.headers.vary, 'accept-encoding');
+    const raw = await new Promise<Buffer>((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port, path: '/big.txt', headers: { 'accept-encoding': 'gzip' }, agent: false }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.equal(gunzipSync(raw).toString(), big);
+  } finally {
+    await closeServer(s);
+  }
+  assert.equal(acceptsEncoding('gzip;q=0, *', 'gzip'), false);
+  assert.equal(acceptsEncoding('*', 'br'), true);
+  assert.equal(acceptsEncoding('BR;Q=0.1', 'br'), true);
+  assert.equal(acceptsEncoding(undefined, 'br'), false);
+  assert.equal(isCompressible('image/svg+xml; charset=utf-8'), true);
+  assert.equal(isCompressible('image/png'), false);
+});
+
+test('--throttle: bandwidth and latency within tolerance (johnhenry/sitefile#227)', async () => {
+  assert.deepEqual(parseThrottle('3g'), { bytesPerSecond: 200000, latencyMs: 150 });
+  assert.deepEqual(parseThrottle('slow-3g'), { bytesPerSecond: 50000, latencyMs: 400 });
+  assert.deepEqual(parseThrottle('80/100'), { bytesPerSecond: 10000, latencyMs: 100 });
+  assert.deepEqual(parseThrottle('80'), { bytesPerSecond: 10000, latencyMs: 0 });
+  for (const bad of ['0', 'fast', '80/', '/100', '-1']) assert.equal(parseThrottle(bad), undefined, bad);
+  const t = Tree.fromFiles([['/big.bin', makeFile(new Uint8Array(15000), 't')]]);
+  const s = createSiteServer(t, { throttle: { bytesPerSecond: 10000, latencyMs: 200 } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const start = Date.now();
+    const r = await req(port, '/big.bin');
+    const ms = Date.now() - start;
+    assert.equal(r.status, 200);
+    // 15 000 bytes at 10 000 B/s in 1 000-byte slices every 100 ms, plus 200 ms latency: about 1.6 s.
+    assert.ok(ms >= 1500 && ms < 4000, `took ${ms} ms`);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('--mime and --mime-file (johnhenry/sitefile#220)', async () => {
+  assert.deepEqual(parseMimeFlag('.TS=video/mp2t'), ['ts', 'video/mp2t']);
+  assert.deepEqual(parseMimeFlag('bin=application/x-a; charset=binary'), ['bin', 'application/x-a; charset=binary']);
+  for (const bad of ['ts', '=video/mp2t', 'ts=video', 'ts=/x', 'a.b=x/y', 'ts=vid eo/x']) assert.equal(parseMimeFlag(bad), undefined, bad);
+  const m = parseMimeTypes('types {\n  model/vnd.usdz+zip usdz;\n  application/x-types a b; # c\n}\ntext/x-apache  .ap\n', 'f');
+  assert.deepEqual([...m], [['usdz', 'model/vnd.usdz+zip'], ['a', 'application/x-types'], ['b', 'application/x-types'], ['ap', 'text/x-apache']]);
+  assert.throws(() => parseMimeTypes('notatype ext', 'f'), /f:1/);
+  const t = Tree.fromFiles([['/x.usdz', makeFile(enc('x'), 't')]]);
+  const s = createSiteServer(t, { mime: m });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/x.usdz')).headers['content-type'], 'model/vnd.usdz+zip');
+  } finally {
+    await closeServer(s);
+  }
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

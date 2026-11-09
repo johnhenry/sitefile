@@ -1,0 +1,233 @@
+{
+  "command": "serve",
+  "args": [
+    "--compress"
+  ],
+  "requests": [
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "gzip, deflate, br"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "br",
+          "vary": "accept-encoding",
+          "content-type": "text/css; charset=utf-8"
+        },
+        "body": "BR-BYTES"
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "gzip"
+        },
+        "body": "GZ-BYTES"
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "br;q=0, gzip;q=0.5"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "gzip"
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "*;q=0"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null,
+          "vary": "accept-encoding"
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null,
+          "vary": "accept-encoding"
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "*"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "br"
+        }
+      }
+    },
+    {
+      "method": "HEAD",
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "br"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "br",
+          "content-length": "8"
+        },
+        "body": ""
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "br",
+        "range": "bytes=0-3"
+      },
+      "expect": {
+        "status": 206,
+        "headers": {
+          "content-encoding": null,
+          "vary": "accept-encoding"
+        },
+        "body": "body"
+      }
+    },
+    {
+      "target": "/app.css.br",
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null
+        },
+        "body": "BR-BYTES"
+      }
+    },
+    {
+      "target": "/only-gz.js",
+      "headers": {
+        "accept-encoding": "br, gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "gzip"
+        },
+        "body": "GZ2"
+      }
+    },
+    {
+      "target": "/big.txt",
+      "headers": {
+        "accept-encoding": "gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "gzip",
+          "vary": "accept-encoding"
+        }
+      }
+    },
+    {
+      "target": "/big.txt",
+      "headers": {
+        "accept-encoding": "br"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null
+        }
+      }
+    },
+    {
+      "target": "/small.txt",
+      "headers": {
+        "accept-encoding": "gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null,
+          "vary": null
+        }
+      }
+    },
+    {
+      "target": "/logo.png",
+      "headers": {
+        "accept-encoding": "gzip"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": null
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "br"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "etag": "\"0824fed15248329f15aa7e18128f974c3265fb861acd54a15dbefc577f18f1df-br\""
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "br",
+        "if-none-match": "\"0824fed15248329f15aa7e18128f974c3265fb861acd54a15dbefc577f18f1df-br\""
+      },
+      "expect": {
+        "status": 304,
+        "headers": {
+          "vary": "accept-encoding"
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "accept-encoding": "gzip",
+        "if-none-match": "\"0824fed15248329f15aa7e18128f974c3265fb861acd54a15dbefc577f18f1df-br\""
+      },
+      "expect": {
+        "status": 200,
+        "headers": {
+          "content-encoding": "gzip"
+        }
+      }
+    },
+    {
+      "target": "/app.css",
+      "headers": {
+        "if-none-match": "\"0824fed15248329f15aa7e18128f974c3265fb861acd54a15dbefc577f18f1df\""
+      },
+      "expect": {
+        "status": 304
+      }
+    }
+  ]
+}

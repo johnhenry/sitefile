@@ -1259,6 +1259,32 @@ on disk after the server started answers `500` for the entries that changed (`se
   - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
   - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
     (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
+- **HTTPS.** `--tls-cert <pem> --tls-key <pem>` (or `SITEFILE_TLS_CERT` / `SITEFILE_TLS_KEY`) serve HTTPS: a phone
+  on the LAN then gets a secure context (service workers, `crypto.subtle`, clipboard, camera). The printed URLs,
+  `servers` and the log say `https://`. The files are read at start and the record keeps only their absolute paths
+  (`tlsCert`, `tlsKey`), so `server restart` and detached servers read them again; the key is never logged or
+  copied into the store. sitefile does not create or install a CA: trusting a root certificate is a system change
+  for you to make, e.g. with mkcert (`mkcert -install && mkcert 192.168.1.20 localhost`, then
+  `--tls-cert 192.168.1.20+1.pem --tls-key 192.168.1.20+1-key.pem`). HTTP/2 is not offered (both servers speak
+  HTTP/1.1 over TLS). The Rust server uses rustls, already in its build for HTTPS imports.
+- **Compression.** When the site has `<path>.br` or `<path>.gz` next to `<path>` and the request's
+  `Accept-Encoding` accepts it (listed or `*` with a q-value above 0; br is preferred), that file is sent with
+  `Content-Encoding`, the original's `Content-Type` and `Vary: Accept-Encoding`; the `.br`/`.gz` files stay servable
+  by their own names. `--compress` also gzips compressible files (`text/*`, JSON, XML, SVG, JavaScript, wasm,
+  `+json`/`+xml`) of 1 KiB or more on the fly when no variant exists, with the shared deflate encoder of both
+  implementations, cached by file digest. Each encoding has its own ETag (`"<digest>-br"`, `"<digest>-gzip"`), so
+  `If-None-Match` matches per encoding. Range requests and live-reload pages are served identity. `_headers` cannot
+  set `content-encoding`. There is no on-the-fly brotli. Stored in the server record (`compress`).
+- **`--throttle <3g|slow-3g|kbit[/ms]>`** slows every response down like a mobile network (for a phone on the
+  LAN, where browser devtools throttling does not reach): it waits the latency, then sends the body in 100 ms
+  slices of the bandwidth. `3g` is 1600 kbit/s and 150 ms, `slow-3g` 400 kbit/s and 400 ms (Chrome DevTools'
+  presets); `400/400` gives both numbers. The start message shows it (`  Throttle: 3g (1600 kbit/s, 150 ms
+  latency)`), and the record keeps it (`throttle`). The live-reload stream is not throttled.
+- **Custom content types.** `--mime <ext=type>` (repeatable; `.usdz=model/vnd.usdz+zip`, `ts=video/mp2t`; a leading
+  `.` is dropped, the extension is case-insensitive, the type is sent as written) and `--mime-file <mime.types>` (an
+  nginx `types { type ext ...; }` or Apache `type ext ...` file; `#` comments) are checked before the built-in
+  table; a `--mime` value wins over the file. The Sitefile instruction `MIME` (it writes `_headers` rules) is the
+  way to ship types with a site. Stored in the server record (`mime`, extension → type).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

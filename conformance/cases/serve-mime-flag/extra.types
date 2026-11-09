@@ -1,0 +1,5 @@
+# custom
+types {
+    model/vnd.usdz+zip  usdz;
+    application/x-game  bin dat;
+}
