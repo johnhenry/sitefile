@@ -17,6 +17,8 @@
   (fingerprint_instruction)
   (canonical_instruction)
   (precompress_instruction)
+  (robots_instruction)
+  (security_txt_instruction)
   (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)

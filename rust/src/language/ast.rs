@@ -485,6 +485,26 @@ pub enum Instruction {
         min: Option<Operand>,
         overwrite: bool,
     },
+    /// `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt`;
+    /// `rules` are (allow, path, span) in source order.
+    Robots {
+        span: SourceSpan,
+        rules: Vec<(bool, Operand, SourceSpan)>,
+        sitemap: bool,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`:
+    /// an RFC 9116 `/.well-known/security.txt`.
+    SecurityTxt {
+        span: SourceSpan,
+        contact: Vec<Operand>,
+        expires: Operand,
+        encryption: Vec<Operand>,
+        policy: Vec<Operand>,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -522,6 +542,8 @@ impl Instruction {
             | Instruction::Fingerprint { span, .. }
             | Instruction::Canonical { span, .. }
             | Instruction::Precompress { span, .. }
+            | Instruction::Robots { span, .. }
+            | Instruction::SecurityTxt { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -545,6 +567,8 @@ impl Instruction {
             Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Canonical { .. } => "CANONICAL",
             Instruction::Precompress { .. } => "PRECOMPRESS",
+            Instruction::Robots { .. } => "ROBOTS",
+            Instruction::SecurityTxt { .. } => "SECURITY_TXT",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

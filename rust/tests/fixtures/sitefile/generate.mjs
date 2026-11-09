@@ -152,6 +152,10 @@ const INSTRUCTIONS = {
   CANONICAL: () => `CANONICAL ${maybe(pick(['BASE ', 'base ', '']), 0.9)}${pick(['https://e.x/', 'https://e.x', 'e.x', '${x}', '""', 'ftp://e.x'])}${maybe(pick([' PRETTY', ' pretty', ' PRETTY x', ' x']), 0.4)}`,
   PRECOMPRESS: () =>
     `PRECOMPRESS ${flags(['--overwrite', '--bogus'])}${maybe(() => pick(['gzip ', 'GZIP ', 'br ', 'zstd ', 'gzip gzip ', 'gzip br ']), 0.5)}${Array.from({ length: int(3) }, () => pick(['/assets/', '/**/*.css', '/', 'assets/', '/${x}/', '"/q r/"', 'MIN', 'gzip'])).join(' ')}${maybe(() => ` MIN ${pick(['0', '1024', '01', '-1', '1k', '${n}', '', '99999999999', '10 x'])}`, 0.4)}`,
+  ROBOTS: () =>
+    `ROBOTS ${flags(['--overwrite', '--bogus'])}${Array.from({ length: int(3) }, () => `${pick(['ALLOW', 'DISALLOW', 'allow'])} ${pick(['/a/', '/*.json$', 'a', '/${x}', '"/q r"', ''])}`).join(' ')}${maybe(' SITEMAP', 0.4)}${maybe(() => ` TO ${pick(PATHS)}`, 0.3)}${maybe(() => pick([' SITEMAP ALLOW /a', ' BOGUS', ' TO /a TO /b']), 0.1)}`,
+  SECURITY_TXT: () =>
+    `SECURITY_TXT ${flags(['--overwrite'])}${Array.from({ length: int(5) }, () => pick(['CONTACT mailto:a@e.x', 'CONTACT tel:+1', 'CONTACT https://e.x', 'CONTACT ftp://e.x', 'CONTACT', 'EXPIRES 2099-01-01', 'EXPIRES 2099-13-01', 'EXPIRES P1Y', 'EXPIRES ${x}', 'ENCRYPTION openpgp4fpr:AB', 'ENCRYPTION http://e.x', 'POLICY https://e.x/p', 'POLICY mailto:a', 'TO /s.txt', 'BOGUS'])).join(' ')}`,
   CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
@@ -167,7 +171,7 @@ const INSTRUCTIONS = {
 const WEIGHTS = { COPY: 4, RENDER: 3, ARG: 2, LET: 2, IMPORT: 2, TRANSFORM: 2, RUN: 0.3, NOT_YET: 0.3, UNKNOWN: 0.4, DIRECTIVE: 0.3, LINT: 0.4 };
 /** Keywords mutations may splice in. */
 const WORDS = [
-  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CANONICAL', 'PRETTY', 'PRECOMPRESS', 'MIN', 'gzip', 'CHECKLINKS', 'sitefile', 'ARG', '+',
+  'FROM', 'STAGE', 'image', 'IMAGE', 'AS', 'TO', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'INTEGRITY', 'SORT', 'BY', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'BASE', 'AT', 'COMPRESSION', 'scratch', 'EXPORT', 'COPY', 'SITEMAP', 'FEED', 'LINK', 'TITLE', 'REDIRECT', 'STATUS', 'HEADER', 'FINGERPRINT', 'MANIFEST', 'CANONICAL', 'PRETTY', 'PRECOMPRESS', 'MIN', 'gzip', 'ROBOTS', 'ALLOW', 'DISALLOW', 'SECURITY_TXT', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'CHECKLINKS', 'sitefile', 'ARG', '+',
   // Case mapping that differs between ASCII and Unicode rules.
   'ſtage', 'İmport', 'ſcratch', 'ﬁ', 'COPẎ', 'ΣΑΣ', 'ß', 'Expoʀt',
 ];
@@ -324,6 +328,8 @@ function validProgram() {
     () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
     () => `CANONICAL BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' PRETTY')}`,
     () => `PRECOMPRESS ${maybe('--overwrite ')}${maybe('gzip ')}${pick(['/', '/assets/', '/**/*.html /*.css'])}${maybe(() => ` MIN ${pick(['0', '256', '${n}'])}`)}`,
+    () => `ROBOTS${maybe(' DISALLOW /drafts/')}${maybe(' ALLOW /')}${maybe(' SITEMAP')}`,
+    () => `SECURITY_TXT CONTACT ${pick(['mailto:s@e.x', 'https://e.x/r'])} EXPIRES ${pick(['2099-01-01', '2099-01-01T00:00:00Z'])}${maybe(' POLICY https://e.x/p')}`,
     () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
     stage,
   ];

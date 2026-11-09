@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
+  <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
+  SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>
+  [ENCRYPTION <uri>]… [POLICY <uri>]…` writes an RFC 9116
+  `/.well-known/security.txt`, rejects a missing Contact or Expires and warns
+  when Expires is near or past. Both implementations, with conformance cases;
+  example `examples/robots`.
 - **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
   `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
   response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept

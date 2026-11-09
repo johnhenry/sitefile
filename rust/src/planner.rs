@@ -10,7 +10,8 @@ use crate::language::ast::{
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_header_name, check_header_value, check_redirect_target, check_site_path,
+    check_base_url, check_field_uri, check_header_name, check_header_value, check_redirect_target,
+    check_site_path, page_url, parse_feed_date, robots_txt, security_txt,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -215,6 +216,15 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
+    /// A file whose text the planner wrote: `keyword` is `ROBOTS` (`/robots.txt`) or `SECURITY_TXT`
+    /// (`/.well-known/security.txt`).
+    TextFile {
+        keyword: &'static str,
+        dest: String,
+        text: String,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// Report the references in the tree's HTML and CSS files that point at nothing; `root` is the EXPORT path and
     /// `redirects` every REDIRECT source in the Sitefile.
     CheckLinks {
@@ -290,6 +300,7 @@ impl Operation {
             | Operation::Fingerprint { span, .. }
             | Operation::Canonical { span, .. }
             | Operation::Precompress { span, .. }
+            | Operation::TextFile { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
         }
@@ -303,6 +314,7 @@ impl Operation {
             Operation::Fingerprint { .. } => "FINGERPRINT",
             Operation::Canonical { .. } => "CANONICAL",
             Operation::Precompress { .. } => "PRECOMPRESS",
+            Operation::TextFile { keyword, .. } => keyword,
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
         }
@@ -458,6 +470,10 @@ pub fn plan_with(
     let mut headers = Vec::new();
     // Each FINGERPRINT's span, and whether it allows the Cache-Control lines.
     let mut fingerprints: Vec<(SourceSpan, bool)> = Vec::new();
+    let mut sitemap_urls: Vec<String> = Vec::new();
+    // ROBOTS … SITEMAP: (stage, operation index + 1, rules, span), completed once every SITEMAP is planned.
+    let mut robots: Vec<(usize, usize, Vec<(bool, String)>, SourceSpan)> = Vec::new();
+    let ops_len = |stages: &[Stage]| stages.last().map_or(0, |s| s.operations.len());
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -845,6 +861,7 @@ pub fn plan_with(
                 let base =
                     check_base_url(&evaluate_operand(base, &vars)?, "SITEMAP BASE", &base.span)?;
                 let dest = file_dest(dest.as_ref(), &vars, "/sitemap.xml", "SITEMAP")?;
+                sitemap_urls.push(page_url(&base, &dest));
                 operations(&mut stages, span)?.push(Operation::Sitemap {
                     base,
                     dest,
@@ -913,6 +930,97 @@ pub fn plan_with(
                     base,
                     pretty: *pretty,
                     root: "/".into(),
+                    span: span.clone(),
+                });
+            }
+            Instruction::Robots {
+                span,
+                rules,
+                sitemap,
+                dest,
+                overwrite,
+            } => {
+                let rules = rules
+                    .iter()
+                    .map(|(allow, p, _)| {
+                        let what =
+                            format!("ROBOTS {} path", if *allow { "ALLOW" } else { "DISALLOW" });
+                        Ok((
+                            *allow,
+                            check_site_path(&evaluate_operand(p, &vars)?, &what, &p.span)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let dest = file_dest(dest.as_ref(), &vars, "/robots.txt", "ROBOTS")?;
+                let ops = operations(&mut stages, span)?;
+                ops.push(Operation::TextFile {
+                    keyword: "ROBOTS",
+                    dest,
+                    text: robots_txt(&rules, &[]),
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+                // The Sitemap lines name every SITEMAP of the Sitefile, also later ones: filled in below.
+                if *sitemap {
+                    robots.push((stages.len() - 1, ops_len(&stages), rules, span.clone()));
+                }
+            }
+            Instruction::SecurityTxt {
+                span,
+                contact,
+                expires,
+                encryption,
+                policy,
+                dest,
+                overwrite,
+            } => {
+                let raw = evaluate_operand(expires, &vars)?;
+                let Some(date) = parse_feed_date(&raw) else {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("SECURITY_TXT EXPIRES '{raw}' must be a date (YYYY-MM-DD) or an RFC 3339 date-time; durations are not accepted, so the file is the same on every build"),
+                        &expires.span,
+                    ));
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                if date.seconds <= now {
+                    warnings.push(format!("{}:{}: SECURITY_TXT EXPIRES {raw} is in the past, so security.txt is already stale (RFC 9116); set a later date", program.file, span.line));
+                } else if date.seconds - now < 30 * 86400 {
+                    warnings.push(format!("{}:{}: SECURITY_TXT EXPIRES {raw} is less than 30 days away; set a later date before it passes", program.file, span.line));
+                }
+                let uris = |ops: &[Operand],
+                            field: &str,
+                            schemes: &[&str]|
+                 -> Result<Vec<String>> {
+                    ops.iter()
+                        .map(|o| {
+                            check_field_uri(&evaluate_operand(o, &vars)?, field, schemes, &o.span)
+                        })
+                        .collect()
+                };
+                let text = security_txt(
+                    &uris(contact, "CONTACT", &["mailto:", "tel:", "https://"])?,
+                    &date.text,
+                    &uris(
+                        encryption,
+                        "ENCRYPTION",
+                        &["https://", "openpgp4fpr:", "dns:"],
+                    )?,
+                    &uris(policy, "POLICY", &["https://"])?,
+                );
+                let dest = file_dest(
+                    dest.as_ref(),
+                    &vars,
+                    "/.well-known/security.txt",
+                    "SECURITY_TXT",
+                )?;
+                operations(&mut stages, span)?.push(Operation::TextFile {
+                    keyword: "SECURITY_TXT",
+                    dest,
+                    text,
+                    overwrite: *overwrite,
                     span: span.clone(),
                 });
             }
@@ -1053,6 +1161,24 @@ pub fn plan_with(
         }
     }
 
+    for (si, end, rules, span) in robots {
+        if sitemap_urls.is_empty() {
+            return Err(SitefileError::at(
+                E_VALIDATION,
+                "ROBOTS … SITEMAP: the Sitefile has no SITEMAP to point to (add SITEMAP BASE <url>, or leave out SITEMAP)",
+                &span,
+            ));
+        }
+        let mut unique: Vec<String> = Vec::new();
+        for u in &sitemap_urls {
+            if !unique.contains(u) {
+                unique.push(u.clone());
+            }
+        }
+        if let Operation::TextFile { text, .. } = &mut stages[si].operations[end - 1] {
+            *text = robots_txt(&rules, &unique);
+        }
+    }
     let root = export_path.clone().unwrap_or_else(|| "/".into());
     for st in &mut stages {
         for op in &mut st.operations {
@@ -1629,6 +1755,18 @@ impl Operation {
                 m.insert("formats".into(), json!(formats));
                 m.insert("patterns".into(), json!(patterns));
                 m.insert("min".into(), json!(min));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::TextFile {
+                dest,
+                text,
+                overwrite,
+                span,
+                ..
+            } => {
+                m.insert("dest".into(), json!(dest));
+                m.insert("text".into(), json!(text));
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }

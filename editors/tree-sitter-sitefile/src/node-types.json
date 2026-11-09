@@ -64,6 +64,14 @@
         "named": true
       },
       {
+        "type": "robots_instruction",
+        "named": true
+      },
+      {
+        "type": "security_txt_instruction",
+        "named": true
+      },
+      {
         "type": "sitemap_instruction",
         "named": true
       },
@@ -1891,6 +1899,100 @@
     }
   },
   {
+    "type": "robots_instruction",
+    "named": true,
+    "fields": {
+      "allow": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "dest": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "disallow": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "secret_clause",
     "named": true,
     "fields": {
@@ -1910,6 +2012,152 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "security_txt_instruction",
+    "named": true,
+    "fields": {
+      "contact": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "dest": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "encryption": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "expires": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "policy": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
             "named": true
           }
         ]
@@ -2588,6 +2836,10 @@
     "named": false
   },
   {
+    "type": "ALLOW",
+    "named": false
+  },
+  {
     "type": "ARG",
     "named": false
   },
@@ -2636,6 +2888,10 @@
     "named": false
   },
   {
+    "type": "CONTACT",
+    "named": false
+  },
+  {
     "type": "COPY",
     "named": false
   },
@@ -2644,11 +2900,23 @@
     "named": false
   },
   {
+    "type": "DISALLOW",
+    "named": false
+  },
+  {
     "type": "DRAFTS",
     "named": false
   },
   {
+    "type": "ENCRYPTION",
+    "named": false
+  },
+  {
     "type": "EXEC",
+    "named": false
+  },
+  {
+    "type": "EXPIRES",
     "named": false
   },
   {
@@ -2732,6 +3000,10 @@
     "named": false
   },
   {
+    "type": "POLICY",
+    "named": false
+  },
+  {
     "type": "PRECOMPRESS",
     "named": false
   },
@@ -2752,6 +3024,10 @@
     "named": false
   },
   {
+    "type": "ROBOTS",
+    "named": false
+  },
+  {
     "type": "RUN",
     "named": false
   },
@@ -2761,6 +3037,10 @@
   },
   {
     "type": "SECRET",
+    "named": false
+  },
+  {
+    "type": "SECURITY_TXT",
     "named": false
   },
   {
