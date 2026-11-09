@@ -19,6 +19,7 @@
   (header_instruction)
   (fingerprint_instruction)
   (canonical_instruction)
+  (languages_instruction)
   (precompress_instruction)
   (robots_instruction)
   (security_txt_instruction)

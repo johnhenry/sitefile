@@ -553,8 +553,9 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
                        [--build-arg-file f]... [--no-cache] [--no-lockfile] [--keep-service-workers]
                        [--poll] [--poll-interval ms] [--no-css-inject] [--console]
                        [--no-overlay] [--navigate-to-changed]
-                       [--reload full|morph] [context | ./plain-directory]
-sitefile serve -d --watch [--name n] [-p [host:]port] [--poll] [--poll-interval ms] [serve options] [./plain-directory]
+                       [--reload full|morph] [--sync[=scroll]] [context | ./plain-directory]
+sitefile serve -d --watch [--name n] [-p [host:]port] [--poll] [--poll-interval ms] [--sync[=scroll]]
+                       [serve options] [./plain-directory]
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -575,7 +576,7 @@ something in it changes and live-reloads open pages (stylesheet swaps included),
 debounce; `--poll`/`--poll-interval` work as below (in the Rust CLI the interval replaces its 100 ms scan). Its log
 gets `Change detected, re-reading`, `Read N files (sha256:...)`, and on failure the `error[CODE]: ...` line and
 `Read failed; serving the last good copy` (each with its time stamp); open pages show the error until a good read.
-The record keeps `"watch": true` and `pollMs`, so `server restart` (and anything that restarts from the record)
+The record keeps `"watch": true`, `pollMs` and `sync`, so `server restart` (and anything that restarts from the record)
 watches again. Every other `serve -d` option applies (`--name`, `--spa`, `--base`, `--auth`, `--stop-after`, ...).
 Refused: a directory with a `Sitefile` (`error: -d --watch serves a plain directory, and <dir> has a Sitefile:
 build it with serve --watch in the foreground`), and the build and page-script flags (`-f`, `--target`,
@@ -704,6 +705,37 @@ Only under `serve --watch` (and `serve -d --watch`):
   lines indented by four spaces. At most 50 messages are logged per 10 s; the first one over prints
   `browser: more than 50 console messages in 10 s; dropping the rest`. The endpoint exists only under `--watch`,
   and it only ever writes to the log.
+- **Synced browsing** (`--sync`, off by default; `serve --watch` and `serve -d --watch`): every open page
+  reports where it is, and when a person navigates in one page the others follow; `--sync=scroll` mirrors
+  scrolling too. The value is given only as `--sync=scroll` (a bare `--sync` mirrors navigation; anything else is
+  `error: --sync takes no value or =scroll, got '<value>'`). Without `--sync` the client script reports nothing
+  and the paths below are not reserved.
+  - Each tab gets a random ID (16 hex digits, kept in its `sessionStorage`) and opens its event stream as
+    `/__sitefile/reload?client=<id>`. Once the stream is open, and after `pushState`, `replaceState`, `popstate`
+    and `hashchange`, it sends `POST /__sitefile/client` with JSON `{id, url, title, nav, scroll}`: `url` is the
+    path and fragment only (never the query string, where GET forms put their contents), `title` the
+    `document.title`, `nav` true when the person went to another URL (not on a reload, a reconnect, a new tab, or
+    a page another tab led to), and with `--sync=scroll` `scroll`, how far across and down the page is, in
+    1/10000ths of its scrollable size (reported at most every 250 ms). No form contents, keys or cookies are
+    read or sent.
+  - Same rules as the console endpoint: same origin only (`403`), at most 4 KiB (`413`), anything else `400`
+    (`id` 16 lowercase hex digits, `url` path-absolute printable ASCII of at most 2048 characters, `scroll` two
+    whole numbers 0 to 10000), other methods `405`. A page whose stream is not open gets `404`; one page may send
+    60 reports per 10 s (more get `429`); at most 64 pages are tracked. Not access-logged.
+  - A report with `nav` sends `{"type":"navigate","url":"/docs/#intro"}` to every other page, which goes there
+    (only the fragment changes when the path is the same) unless a form field or an editable element has focus;
+    a scroll report sends `{"type":"scroll","url":"/docs/","x":0,"y":5000}`, which pages showing the same path
+    follow. A page never gets its own events.
+  - **Connected pages**: `GET /__sitefile/clients` (also `HEAD`) answers
+    `{"clients":[{"id","url","title","remote","device","since","lastSeen"}]}` (`application/json`, `no-store`;
+    `device` as in the access log, `since` and `lastSeen` ISO times; `url` is empty until the first report), by
+    `since`, for pages whose stream is open. Only for a loopback client that sends no `Origin` and no
+    `Sec-Fetch-*` header (Sitefile Desktop, `curl`): a page, even one on this machine, gets `403`, so pages never
+    learn about each other. `--auth`, the Host check and `--allow-ip` apply first, as to every path.
+  - **Log lines** (not access-log lines, so `--quiet` keeps them): a page's first report and each change of URL
+    write `client connect <id> <url> <remote> <device>` / `client navigate ...`, and with `--log-format json`
+    `{"type":"client","ts","event","id","url","title","remote","device"}` (`event` `connect` or `navigate`;
+    `title` only when not empty). Leaving is not logged: read `/__sitefile/clients` for who is connected now.
 - Nothing is injected without `--watch`, and the script is never part of a build's output or an export.
 
 Change detection differs by implementation, the behaviour above does not: the TypeScript CLI uses `fs.watch`
@@ -895,7 +927,7 @@ the manifest: a listed file that is absent is `missing`, one with another size o
 file the manifest does not list is `extra`. It prints one line per difference (`OK: N files match <root>`
 when there is none) and fails with `E_INTEGRITY`, exit 1, when there is any. A directory is read like a
 build context: hidden files count, `.git` is skipped, symlinks must stay inside it, and a manifest file
-inside the directory is not counted as extra. An archive (zip, tar, tar.gz, wbn, OCI archive) is read from
+inside the directory is not counted as extra. An archive (zip, tar, tar.gz, tar.zst, wbn, OCI archive) is read from
 its bytes with the default archive limits. An image needs no manifest: without one, verify checks every
 stored blob against its digest. The manifest itself is checked first: its root must match its files.
 
@@ -938,7 +970,7 @@ sitefile build . -o dist-v2 --experimental-dictionary dist-v1     # or: --experi
 ## Comparing builds: `sitefile diff`
 
 `sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
-a directory, an archive file (zip, tar, tar.gz, wbn, OCI archive) or an image reference or ID, read the
+a directory, an archive file (zip, tar, tar.gz, tar.zst, wbn, OCI archive) or an image reference or ID, read the
 way `verify` reads it (hidden files count, `.git` is skipped). Files are compared by digest and mode, never
 by timestamp:
 
@@ -1199,7 +1231,7 @@ served (`--json` calls it `site`).
 `../` or `/`, or ending in `/`) read once at start through the sandboxed local reader: a symlink leaving the
 directory is an error, and hidden files (`.git`, `.env`, ... except `.well-known`) are not served.
 
-`serve` also serves an **archive file**: `sitefile serve site.zip`, `./site.tar`, `site.tgz` (`.tar.gz`),
+`serve` also serves an **archive file**: `sitefile serve site.zip`, `./site.tar`, `site.tgz` (`.tar.gz`), `site.tar.zst` (`.tzst`),
 `site.wbn`, or an OCI image archive (`site.oci.tar`, as `build -o x.oci.tar` and `save` write it). A path-like
 argument (as above) that is a regular file is an archive; a bare name is an image reference first, and an archive
 file only when no image has that name. The format is read from the bytes, never the extension, and the file is
@@ -1213,9 +1245,9 @@ directory or a zip, tar or Web Bundle is also served without OS metadata files (
 `server restart`). So a Finder-made zip (`site/` plus `__MACOSX/`) serves as the single folder `site/`. An OCI
 archive serves the first image in its `index.json` exactly as that image would be served from the store, after
 every blob it reads is checked against its digest and the site layer against the same limits. A file that is
-none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, zip or web bundle)`.
-An xz, zstd or bzip2 stream (`.tar.xz`, `.tar.zst`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
-what to do: `(it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip)`.
+none of these is `error[E_TYPE]: <file>: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)`.
+An xz or bzip2 stream (`.tar.xz`, `.tar.bz2`), a 7z or a RAR archive is named instead, with
+what to do: `(it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip)`.
 In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
 to `image` (`imageId`) and `dir` (`path`).
 A zip is served **in place**: its central directory and local headers are checked at start and every entry is
@@ -1253,12 +1285,15 @@ on disk after the server started answers `500` for the entries that changed (`se
   host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
 - **Basic authentication (for sharing).** `--auth user:password` (repeatable; `SITEFILE_SERVE_AUTH=user:password`
   keeps it out of shell history and `ps`) and `--auth-file <htpasswd>` (`user:{SHA}…` lines as `htpasswd -s`
-  writes them; bcrypt, `$apr1$`, crypt and plain-text entries are refused, bcrypt support is a follow-up) make every
+  writes them, or bcrypt `user:$2y$…` lines as `htpasswd -B` writes them, `$2a$` and `$2b$` too, cost 4 to 31;
+  `$apr1$`, crypt, plain-text and malformed bcrypt entries are refused with `E_USAGE` naming the line) make every
   request, the live-reload endpoints included, need `Authorization: Basic`; otherwise the answer is `401` with
   `WWW-Authenticate: Basic realm="sitefile", charset="UTF-8"` (and the server-id header, so `servers` still
   detects it). Passwords are compared in constant time and never stored: the record keeps a PBKDF2-SHA256
   verifier per `--auth` user (`auth`) and the htpasswd path (`authFile`, read at every start); `servers --json`
-  shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
+  shows `auth: true`, never the entries. A good `Authorization` value is remembered by the running server,
+  so bcrypt's cost is paid once per credential, but every wrong password costs a full bcrypt run (and holds the
+  TypeScript server's event loop while it runs): for `serve`, a low cost such as `htpasswd -B -C 5` is enough. Logs never contain the `Authorization` header. On a non-loopback bind a
   warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
   `www-authenticate`.
 - **`--max-connections-per-ip <n>`** caps the connections one non-loopback client may hold open (default `0`, no
@@ -1327,6 +1362,8 @@ on disk after the server started answers `500` for the entries that changed (`se
     `Content-Encoding` sent (`identity` until compression lands).
   - `{"type":"started","ts","site","files","url"}` when the server listens (instead of the `Serving …` line),
     `{"type":"stopped","ts","signal"}` when a detached server shuts down.
+  - `{"type":"client","ts","event","id","url","title","remote","device"}` for a page under `--watch --sync`
+    (see Watch mode, "Synced browsing").
   - any other line: `{"type":"warning"|"error"|"message","ts","message"}` (`warning: …` and `error…` lines get those
     types).
   Under `--watch` the access log, browser console lines and the start line are JSON; build output (`Built …`,

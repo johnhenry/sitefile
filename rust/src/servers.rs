@@ -198,6 +198,9 @@ pub struct ServerState {
     /// of the default scan interval (absent: the default).
     #[serde(default, rename = "pollMs", skip_serializing_if = "Option::is_none")]
     pub poll_ms: Option<u64>,
+    /// `--sync` with `-d --watch`: `nav` or `scroll` (absent: off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -1132,6 +1135,8 @@ pub struct DetachedServe {
     pub watch: bool,
     /// `--poll`, `--poll-interval` with `-d --watch` (milliseconds).
     pub poll_ms: Option<u64>,
+    /// `--sync` with `-d --watch`.
+    pub sync: Option<crate::server::SyncMode>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -1177,6 +1182,7 @@ impl DetachedServe {
             strict_site_files: false,
             watch: false,
             poll_ms: None,
+            sync: None,
             project: None,
         })
     }
@@ -1261,6 +1267,10 @@ pub fn serve_detached_with(
         strict_site_files: serve.strict_site_files,
         watch: serve.watch && matches!(serve.source, ServerSource::Dir { .. }),
         poll_ms: serve.poll_ms.filter(|_| serve.watch),
+        sync: serve
+            .sync
+            .filter(|_| serve.watch)
+            .map(|m| m.as_str().to_string()),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1499,6 +1509,7 @@ mod tests {
             strict_site_files: false,
             watch: false,
             poll_ms: None,
+            sync: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -2041,7 +2052,7 @@ mod tests {
         assert_eq!(
             e.message(),
             format!(
-                "{}: not a recognized archive (expected tar, tar.gz, zip or web bundle)",
+                "{}: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)",
                 fs::canonicalize(&notes).unwrap().display()
             )
         );

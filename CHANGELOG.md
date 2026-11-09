@@ -2,6 +2,36 @@
 
 ## 0.0.4 (2026-11-09)
 
+- **`.tar.zst` / `.tzst` archives** (johnhenry/sitefile#221): `IMPORT … AS tree`, `serve`, `verify` and
+  `diff` read Zstandard-compressed tars (detected by magic bytes, like gzip), with the same entry,
+  size and ratio limits. TypeScript uses node:zlib's `zstdDecompress`; Rust uses the `ruzstd` crate
+  (pure Rust, decode only; new dependency approved by the owner, rationale in rust/Cargo.toml).
+  Both read what libzstd reads: several frames, skippable frames, checksums; a window over 128 MiB is
+  refused. The E_TYPE message no longer calls zstd unsupported.
+- **hreflang alternates: `LANGUAGES <code>… [DEFAULT <code>]`** (johnhenry/sitefile#303):
+  names the site's language folders, so `/en/about.html` and `/fr/about.html` are the same page
+  (pages outside the folders are the DEFAULT language's); documents with frontmatter `lang` and
+  a shared `translationKey` (rendered by an earlier `RENDER … FOR`) are paired by key instead,
+  for different slugs per language. CANONICAL then adds `<link rel="alternate" hreflang="…">`
+  for every translation (plus `x-default` for the DEFAULT language's page), and SITEMAP adds
+  `xhtml:link` alternates, also in a split sitemap. Unknown language codes and two pages of one
+  language in a group are `E_VALIDATION`. Both implementations, with conformance cases, LSP
+  hover and completion, grammars; example `examples/hreflang`.
+- **bcrypt entries in `serve --auth-file`** (johnhenry/sitefile#278): `$2y$` (what `htpasswd -B` writes),
+  `$2a$` and `$2b$` hashes at cost 4 to 31 are accepted next to `{SHA}`. Keys are the password's UTF-8 bytes
+  up to a NUL, at most 72 bytes; digests are compared in constant time. TypeScript has its own
+  EksBlowfish (src/bcrypt.ts, no npm dependency); Rust uses the `bcrypt` crate's raw function (new
+  dependency approved by the owner, rationale in rust/Cargo.toml). Tested with OpenBSD's and
+  htpasswd's vectors in both, and in the `serve-auth` conformance case.
+- **Synced browsing: `serve --watch --sync[=scroll]`** (johnhenry/sitefile#309): opt-in, for
+  `serve --watch` and `serve -d --watch` (the record keeps it). Each open page reports its path,
+  fragment and title (and with `=scroll` its scroll position) to `POST /__sitefile/client`
+  (same origin only, size- and rate-limited, no query strings, form contents, keys or cookies);
+  a navigation in one page is sent to the others as `{"type":"navigate"}` (and scrolling as
+  `{"type":"scroll"}`), which follow unless a form field has focus. Connected pages are listed
+  at `GET /__sitefile/clients` (loopback, non-browser clients only) and logged as `client`
+  lines (`{"type":"client",…}` with `--log-format json`), for Sitefile Desktop. Without
+  `--sync` nothing changes. Both implementations, with conformance cases.
 - **`serve -d --watch ./dir`, and pages reload after a server restart** (johnhenry/sitefile#304):
   a detached server can watch a plain directory (no Sitefile): it re-reads it on change and
   live-reloads open pages, CSS swaps included; `--poll`/`--poll-interval` apply. The record keeps

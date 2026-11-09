@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { CLIENT_REPORT_LIMIT, clientLogLine, isOperatorRequest, parseClientReport, streamClientId } from '../src/server.js';
 import { BUILDING_EVENT, closeServer, pageUrlFor, CONSOLE_LIMIT, errorEvent, OK_EVENT, consoleLines, createSiteServer, isSameOriginPost, clientScript, RELOAD_EVENT, reloadEventFor, cspBlocksReload, injectReloadScript, isNavigation, listen, LiveReload, RELOAD_CLIENT, RELOAD_PATH, RELOAD_SCRIPT, RELOAD_SCRIPT_PATH } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { SitefileError } from '../src/errors.js';
@@ -193,6 +194,127 @@ test('POST /__sitefile/console: same-origin only, size-capped, rate-limited, nev
   }
 });
 
+test('--sync: the client script option, reports, stream IDs, the operator check and log lines', () => {
+  assert.ok(clientScript({ sync: 'nav' }).endsWith('"reload":"morph","sync":"nav"});\n'));
+  assert.ok(clientScript({ sync: 'scroll' }).endsWith('"reload":"morph","sync":"scroll"});\n'));
+  assert.ok(clientScript().endsWith('"reload":"morph"});\n'), 'nothing without --sync');
+  const id = '0123456789abcdef';
+  assert.deepEqual(parseClientReport(`{"id":"${id}","url":"/docs/#a","title":" Docs\\n  page ","nav":true}`), { id, url: '/docs/#a', title: 'Docs   page', nav: true });
+  assert.deepEqual(parseClientReport(`{"id":"${id}","url":"/","scroll":[0,10000]}`), { id, url: '/', title: '', nav: false, scroll: [0, 10000] });
+  assert.equal(parseClientReport(`{"id":"${id}","url":"/","title":"${'x'.repeat(300)}"}`)?.title, `${'x'.repeat(200)}...`);
+  for (const bad of [
+    '',
+    'x',
+    '[]',
+    `{"url":"/"}`,
+    `{"id":"0123456789ABCDEF","url":"/"}`,
+    `{"id":"${id}"}`,
+    `{"id":"${id}","url":"//evil.example/"}`,
+    `{"id":"${id}","url":"https://x/"}`,
+    `{"id":"${id}","url":"/a b"}`,
+    `{"id":"${id}","url":"/${'a'.repeat(2048)}"}`,
+    `{"id":"${id}","url":"/","nav":1}`,
+    `{"id":"${id}","url":"/","title":5}`,
+    `{"id":"${id}","url":"/","scroll":[1]}`,
+    `{"id":"${id}","url":"/","scroll":[0.5,1]}`,
+    `{"id":"${id}","url":"/","scroll":[0,10001]}`,
+  ]) {
+    assert.equal(parseClientReport(bad), undefined, bad);
+  }
+  assert.equal(streamClientId(`?client=${id}`), id);
+  assert.equal(streamClientId(`?x=1&client=${id}&client=fedcba9876543210`), id, 'the first');
+  assert.equal(streamClientId('?client=nothex'), undefined);
+  assert.equal(streamClientId(''), undefined);
+  assert.equal(isOperatorRequest('127.0.0.1', {}), true);
+  assert.equal(isOperatorRequest('::ffff:127.0.0.1', { 'user-agent': 'curl' }), true);
+  assert.equal(isOperatorRequest('192.168.1.2', {}), false, 'not loopback');
+  assert.equal(isOperatorRequest('127.0.0.1', { origin: 'http://127.0.0.1:1' }), false, 'a page');
+  assert.equal(isOperatorRequest('127.0.0.1', { 'sec-fetch-site': 'same-origin' }), false, 'a page');
+  assert.equal(isOperatorRequest('127.0.0.1', { 'sec-fetch-mode': 'navigate' }), false, 'a browser tab');
+  const e = { ts: '2026-01-02T03:04:05.006Z', event: 'navigate' as const, id, url: '/a/', title: 'A "page"', remote: '127.0.0.1', device: 'Mac' };
+  assert.equal(clientLogLine('text', e), `client navigate ${id} /a/ 127.0.0.1 Mac`);
+  assert.equal(clientLogLine('json', e), `{"type":"client","ts":"2026-01-02T03:04:05.006Z","event":"navigate","id":"${id}","url":"/a/","title":"A \\"page\\"","remote":"127.0.0.1","device":"Mac"}`);
+  assert.equal(clientLogLine('json', { ...e, title: '' }), `{"type":"client","ts":"2026-01-02T03:04:05.006Z","event":"navigate","id":"${id}","url":"/a/","remote":"127.0.0.1","device":"Mac"}`);
+});
+
+test('--sync: pages report where they are, the others follow, /__sitefile/clients lists them; off without --sync', async () => {
+  const tree = Tree.fromFiles([['/index.html', makeFile(enc('<h1>x</h1>'), 't')]]);
+  const log: string[] = [];
+  const live = new LiveReload({ sync: 'scroll' });
+  const server = createSiteServer(() => tree, { liveReload: live, log: (l) => log.push(l), logFormat: 'json' });
+  const plain = createSiteServer(() => tree, { liveReload: new LiveReload(), log: () => undefined });
+  const { port } = await listen(server, '127.0.0.1', 0);
+  const { port: plainPort } = await listen(plain, '127.0.0.1', 0);
+  const A = 'aaaaaaaaaaaaaaaa';
+  const B = 'bbbbbbbbbbbbbbbb';
+  const post = (p: number, body: string, headers: Record<string, string> = { origin: `http://127.0.0.1:${p}` }): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port: p, path: '/__sitefile/client', method: 'POST', headers: { 'content-type': 'text/plain', ...headers }, agent: false }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      r.on('error', reject);
+      r.end(body);
+    });
+  const report = (o: object): Promise<number> => post(port, JSON.stringify(o));
+  try {
+    assert.equal(await report({ id: A, url: '/' }), 404, 'no open stream for this page');
+    const a = await events(port, { path: `${RELOAD_PATH}?client=${A}`, headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' } });
+    const b = await events(port, { path: `${RELOAD_PATH}?client=${B}` });
+    for (const ev of [a, b]) {
+      assert.equal(await ev.next(), 'retry: 1000');
+      assert.match(await ev.next(), /^id: /);
+    }
+    let list = JSON.parse((await get(port, '/__sitefile/clients')).body) as { clients: Array<Record<string, string>> };
+    assert.deepEqual(list.clients.map((c) => [c.id, c.url, c.device]), [[A, '', 'iPhone'], [B, '', 'other']].sort((x, y) => (x[0]! < y[0]! ? -1 : 1)));
+    assert.equal(await report({ id: A, url: '/', title: 'Home' }), 204);
+    assert.equal(await report({ id: A, url: '/docs/', title: 'Docs', nav: true }), 204);
+    assert.equal(await b.next(), 'data: {"type":"navigate","url":"/docs/"}', 'the other page follows');
+    assert.equal(await report({ id: B, url: '/docs/', scroll: [0, 5000] }), 204);
+    assert.equal(await a.next(), 'data: {"type":"scroll","url":"/docs/","x":0,"y":5000}');
+    live.send(OK_EVENT);
+    assert.equal(await a.next(), `data: ${OK_EVENT}`, 'a page is not sent its own navigation');
+    assert.equal(await b.next(), `data: ${OK_EVENT}`, 'nor its own scrolling');
+    const lines = log.map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.deepEqual(
+      lines.map((l) => [l.type, l.event, l.id, l.url, l.title, l.device]),
+      [
+        ['client', 'connect', A, '/', 'Home', 'iPhone'],
+        ['client', 'navigate', A, '/docs/', 'Docs', 'iPhone'],
+        ['client', 'connect', B, '/docs/', undefined, 'other'],
+      ],
+      'connect, a new URL; no access-log lines',
+    );
+    const clients = await get(port, '/__sitefile/clients');
+    assert.equal(clients.headers['content-type'], 'application/json');
+    assert.equal(clients.headers['cache-control'], 'no-store');
+    list = JSON.parse(clients.body) as { clients: Array<Record<string, string>> };
+    const ofA = list.clients.find((c) => c.id === A)!;
+    assert.deepEqual(Object.keys(ofA), ['id', 'url', 'title', 'remote', 'device', 'since', 'lastSeen']);
+    assert.deepEqual([ofA.url, ofA.title, ofA.remote], ['/docs/', 'Docs', '127.0.0.1']);
+    assert.equal((await get(port, '/__sitefile/clients', { origin: `http://127.0.0.1:${port}` })).status, 403, 'not to pages');
+    assert.equal((await get(port, '/__sitefile/clients', { 'sec-fetch-mode': 'cors' })).status, 403, 'not to pages');
+    assert.equal(await post(port, JSON.stringify({ id: A, url: '/' }), { origin: 'http://evil.example' }), 403);
+    assert.equal(await post(port, '{"id":"x"}'), 400);
+    assert.equal(await post(port, JSON.stringify({ id: A, url: '/', title: 'x'.repeat(5000) })), 413);
+    assert.equal((await get(port, '/__sitefile/client')).status, 405);
+    let limited = 0;
+    for (let i = 0; i < CLIENT_REPORT_LIMIT + 5; i++) if ((await report({ id: B, url: '/docs/' })) === 429) limited++;
+    assert.ok(limited >= 5, `rate-limited per page (${limited})`);
+    a.close();
+    await sleep(100);
+    list = JSON.parse((await get(port, '/__sitefile/clients')).body) as { clients: Array<Record<string, string>> };
+    assert.deepEqual(list.clients.map((c) => c.id), [B], 'a page whose stream closed is no longer listed');
+    b.close();
+    // without --sync the paths are not reserved, and a stream's client= is ignored
+    assert.equal((await get(plainPort, '/__sitefile/clients')).status, 404);
+    assert.equal(await post(plainPort, JSON.stringify({ id: A, url: '/' })), 405);
+  } finally {
+    await closeServer(server);
+    await closeServer(plain);
+  }
+});
+
 test('--navigate-to-changed: a reload that changed exactly one page names its URL', () => {
   const t = (files: Record<string, string>) => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const a = t({ '/index.html': 'i', '/posts/a/index.html': 'a', '/posts/b/index.html': 'b', '/x.html': 'x', '/s.css': 's', '/app.js': '1' });
@@ -225,7 +347,7 @@ test('--reload morph: only reloads where nothing but existing HTML changed are m
 });
 
 test('the client script parses with every option', () => {
-  for (const o of [{}, { resetServiceWorkers: false, cssInject: false, console: true, overlay: false, navigateToChanged: true, reload: 'full' as const }]) {
+  for (const o of [{}, { resetServiceWorkers: false, cssInject: false, console: true, overlay: false, navigateToChanged: true, reload: 'full' as const }, { sync: 'nav' as const }, { sync: 'scroll' as const }]) {
     assert.doesNotThrow(() => new Function(clientScript(o)));
   }
 });
@@ -274,11 +396,11 @@ function get(port: number, p: string, headers: Record<string, string> = {}): Pro
 }
 
 /** Open the event stream; `next()` resolves with the next complete event. */
-function events(port: number, through?: { proxyPort?: number; lastEventId?: string }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
+function events(port: number, through?: { proxyPort?: number; lastEventId?: string; path?: string; headers?: Record<string, string> }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const target = through?.proxyPort !== undefined ? { port: through.proxyPort } : { port };
-    const headers = through?.lastEventId !== undefined ? { 'last-event-id': through.lastEventId } : {};
-    const req = http.get({ host: '127.0.0.1', ...target, path: RELOAD_PATH, headers, agent: false }, (res) => {
+    const headers = { ...(through?.lastEventId !== undefined ? { 'last-event-id': through.lastEventId } : {}), ...through?.headers };
+    const req = http.get({ host: '127.0.0.1', ...target, path: through?.path ?? RELOAD_PATH, headers, agent: false }, (res) => {
       let buf = '';
       const waiters: Array<(e: string) => void> = [];
       const queue: string[] = [];
@@ -436,7 +558,7 @@ test('live reload through a buffering reverse proxy: unbuffered, untransformed s
     assert.equal(head['cache-control'], 'no-cache, no-transform');
     // the client reconnects with backoff when an answer is not an event stream, and finds the
     // stream relative to its own URL (another public origin or a base path)
-    assert.match(RELOAD_CLIENT, /new URL\("reload", base\)/);
+    assert.match(RELOAD_CLIENT, /new URL\(sync \? "reload\?client=" \+ clientId : "reload", base\)/);
     assert.match(RELOAD_CLIENT, /delay = Math\.min\(delay \* 2, 30000\)/);
   } finally {
     await proxy.close();
@@ -583,6 +705,12 @@ test('build --watch: usage errors', async () => {
   r = await runCli(home, ['serve', '--keep-service-workers', './x/']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /--keep-service-workers needs --watch/);
+  r = await runCli(home, ['serve', '--sync', './x/']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /^error: --sync needs --watch\n/);
+  r = await runCli(home, ['serve', '--watch', '--sync=all', site]);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /^error: --sync takes no value or =scroll, got 'all'\n/);
 });
 
 test('serve --watch: serves the build, live-reloads after a good rebuild, keeps serving on failure', async () => {
@@ -746,6 +874,45 @@ test('serve -d --watch ./dir: the detached server re-reads the directory, live-r
     again.close();
   } finally {
     await runCli(home, ['server', 'rm', '-f', 'dw']);
+  }
+});
+
+test('serve -d --watch --sync=scroll: recorded (and kept over a restart); pages are listed at /__sitefile/clients and logged as client lines', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const dir = await tmpDir('sitefile-plain-');
+  await fs.writeFile(path.join(dir, 'index.html'), '<h1>s</h1>');
+  let r = await runCli(home, ['serve', '-d', '--watch', '--sync=scroll', '--log-format', 'json', '--name', 'ds', dir]);
+  assert.equal(r.code, 0, r.stderr);
+  try {
+    const port = Number(/127\.0\.0\.1:(\d+)/.exec(r.stdout)![1]);
+    const state = JSON.parse(await fs.readFile(path.join(home, 'servers', `${/\((\w{12})\)/.exec(r.stdout)![1]}.json`), 'utf8'));
+    assert.equal(state.sync, 'scroll');
+    assert.ok((await get(port, RELOAD_SCRIPT_PATH)).body.endsWith(',"sync":"scroll"});\n'));
+    const id = 'c0ffee00c0ffee00';
+    const ev = await events(port, { path: `${RELOAD_PATH}?client=${id}` });
+    assert.equal(await ev.next(), 'retry: 1000');
+    await ev.next();
+    const status = await new Promise<number>((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, path: '/__sitefile/client', method: 'POST', headers: { origin: `http://127.0.0.1:${port}` }, agent: false }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      q.on('error', reject);
+      q.end(JSON.stringify({ id, url: '/', title: 'S' }));
+    });
+    assert.equal(status, 204);
+    const list = JSON.parse((await get(port, '/__sitefile/clients')).body) as { clients: Array<{ id: string; url: string; title: string }> };
+    assert.deepEqual(list.clients.map((c) => [c.id, c.url, c.title]), [[id, '/', 'S']]);
+    ev.close();
+    const lines = (await runCli(home, ['server', 'logs', 'ds'])).stdout.split('\n').filter((l) => l.includes('"type":"client"'));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, new RegExp(`"event":"connect","id":"${id}","url":"/","title":"S","remote":"127\\.0\\.0\\.1","device":"other"\\}$`));
+    r = await runCli(home, ['server', 'restart', 'ds']);
+    assert.equal(r.code, 0, r.stderr);
+    const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as { name: string; sync?: string }[];
+    assert.deepEqual(ps.filter((s) => s.name === 'ds').map((s) => s.sync), ['scroll'], 'restart keeps --sync');
+  } finally {
+    await runCli(home, ['server', 'rm', '-f', 'ds']);
   }
 });
 

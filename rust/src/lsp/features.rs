@@ -428,6 +428,15 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 Vec::new()
             }
         }
+        "LANGUAGES" => {
+            // <code>…, then DEFAULT <code> once.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if ops.is_empty() || ops.iter().any(|w| w == "DEFAULT") {
+                Vec::new()
+            } else {
+                kw_items(["DEFAULT"], CIK_KEYWORD)
+            }
+        }
         "PRECOMPRESS" => {
             // [gzip] (before the patterns), then patterns, then MIN <bytes> once.
             let ops: Vec<String> = prior
@@ -1381,6 +1390,11 @@ mod tests {
         assert!(labels("CANONICAL BASE ").is_empty());
         assert_eq!(labels("CANONICAL BASE https://e.x "), ["PRETTY"]);
         assert!(labels("CANONICAL BASE https://e.x PRETTY ").is_empty());
+        // LANGUAGES: codes, then DEFAULT <code>
+        assert!(labels("LANGUAGES ").is_empty());
+        assert_eq!(labels("LANGUAGES en fr "), ["DEFAULT"]);
+        assert!(labels("LANGUAGES en fr DEFAULT ").is_empty());
+        assert!(labels("LANGUAGES en fr DEFAULT en ").is_empty());
         // PRECOMPRESS: gzip first, then patterns, then MIN once
         assert_eq!(labels("PRECOMPRESS "), ["gzip"]);
         assert_eq!(labels("PRECOMPRESS --"), ["--overwrite"]);

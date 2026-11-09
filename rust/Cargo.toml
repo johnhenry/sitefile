@@ -40,6 +40,20 @@ path = "src/main.rs"
 #                     TypeScript). Already in the build through ureq, named
 #                     with exactly ureq's version and features (ring, no
 #                     aws-lc), so it adds no crate
+#   bcrypt            EksBlowfish for bcrypt entries in `serve --auth-file`
+#                     (#278; src/bcrypt.ts in TypeScript, which has no
+#                     Blowfish in node:crypto). Only its raw `bcrypt()` is
+#                     used: parsing, the 72-byte key and the constant-time
+#                     compare are in src/bcrypt_verify.rs, as in TypeScript.
+#                     No default features (no getrandom, no zeroize). Brings
+#                     blowfish, cipher, subtle and base64 0.23. Approved by
+#                     the owner (John) on 2026-11-09 as a new dependency
+#   ruzstd            zstd *decompression* for `.tar.zst` imports and serve
+#                     (#221; node:zlib's zstdDecompress in TypeScript). Pure
+#                     Rust, decode only; brings twox-hash for frame checksums.
+#                     Approved by the owner (John) on 2026-11-09 as a new
+#                     dependency. Locked at 0.8.1: 0.8.3 and later declare
+#                     rust-version 1.87, above ours (1.85)
 # The language server (src/lsp, `sitefile lsp`) adds none: LSP framing is
 # hand-rolled and messages are serde_json values (lsp-types would add types
 # for a handful of messages; no async runtime, the loop is single-threaded).
@@ -55,6 +69,8 @@ wasmtime = { version = "29", default-features = false, features = ["cranelift", 
 ring = { version = "0.17", default-features = false }
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+bcrypt = { version = "0.19", default-features = false }
+ruzstd = "0.8"
 
 [profile.release]
 opt-level = 3

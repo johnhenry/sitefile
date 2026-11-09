@@ -139,6 +139,13 @@
         "value": "[Cc][Aa][Nn][Oo][Nn][Ii][Cc][Aa][Ll]"
       }
     },
+    "_kw_languages": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Ll][Aa][Nn][Gg][Uu][Aa][Gg][Ee][Ss]"
+      }
+    },
     "_kw_precompress": {
       "type": "TOKEN",
       "content": {
@@ -391,6 +398,13 @@
         "value": "[Pp][Rr][Ee][Tt][Tt][Yy]"
       }
     },
+    "_kw_default": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Dd][Ee][Ff][Aa][Uu][Ll][Tt]"
+      }
+    },
     "_kw_min": {
       "type": "TOKEN",
       "content": {
@@ -640,6 +654,10 @@
         {
           "type": "SYMBOL",
           "name": "canonical_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "languages_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2554,6 +2572,61 @@
               },
               "named": false,
               "value": "PRETTY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "languages_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_languages"
+          },
+          "named": false,
+          "value": "LANGUAGES"
+        },
+        {
+          "type": "REPEAT1",
+          "content": {
+            "type": "FIELD",
+            "name": "code",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_operand"
+            }
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_default"
+                  },
+                  "named": false,
+                  "value": "DEFAULT"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "default",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_operand"
+                  }
+                }
+              ]
             },
             {
               "type": "BLANK"

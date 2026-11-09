@@ -45,24 +45,34 @@ function utf8Compare(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 }
 
-const SITEMAP_HEAD = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+const SITEMAP_HEAD_PLAIN = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
 const SITEMAP_TAIL = '</urlset>\n';
+/** The urlset head when entries have `xhtml:link` alternates (LANGUAGES). */
+const SITEMAP_HEAD_XHTML = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n';
 
 /** The sitemaps.org limits of one sitemap file: 50,000 URLs and 50 MiB (52,428,800 bytes) uncompressed. */
 export const SITEMAP_LIMITS = { urls: 50_000, bytes: 52_428_800 } as const;
 
 /** sitemaps.org XML for every `.html` file in the tree except `/404.html`, sorted by path. */
 export function sitemapXml(tree: Tree, base: string): string {
-  return SITEMAP_HEAD + sitemapEntries(tree, base).join('') + SITEMAP_TAIL;
+  return SITEMAP_HEAD_PLAIN + sitemapEntries(tree, base).join('') + SITEMAP_TAIL;
 }
 
-function sitemapEntries(tree: Tree, base: string): string[] {
+/** The pages a sitemap lists: every `.html` file except `/404.html`, sorted by path (UTF-8 bytes). */
+export function sitemapPages(tree: Tree): string[] {
   return tree
     .entries()
     .map(([p]) => p)
     .filter((p) => p.endsWith('.html') && p !== '/404.html')
-    .sort(utf8Compare)
-    .map((p) => `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc></url>\n`);
+    .sort(utf8Compare);
+}
+
+function sitemapEntries(tree: Tree, base: string, alternates?: ReadonlyMap<string, ReadonlyArray<readonly [string, string]>>): string[] {
+  return sitemapPages(tree).map((p) => {
+    let links = '';
+    for (const [lang, u] of alternates?.get(p) ?? []) links += `<xhtml:link rel="alternate" hreflang="${xmlEscape(lang)}" href="${xmlEscape(pageUrl(base, u))}"/>`;
+    return `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc>${links}</url>\n`;
+  });
 }
 
 /** `/sitemap.xml` -> `/sitemap-2.xml`: the n-th part of a split sitemap (before the extension, or at the end). */
@@ -75,10 +85,19 @@ export function sitemapPart(dest: string, n: number): string {
 /**
  * The sitemap files for the tree: one at `dest` when it is within `limits`, or else a sitemap index at
  * `dest` and the parts (`sitemapPart`) it lists, each with at most `limits.urls` URLs and `limits.bytes`
- * bytes (a part is closed when the next URL would pass either limit).
+ * bytes (a part is closed when the next URL would pass either limit). `alternates` (LANGUAGES: tree path ->
+ * [hreflang, URL path] pairs) adds `<xhtml:link rel="alternate">` elements to those pages' entries, and the
+ * `xhtml` namespace to every urlset when there is any.
  */
-export function sitemapFiles(tree: Tree, base: string, dest: string, limits: { urls: number; bytes: number } = SITEMAP_LIMITS): Array<[string, string]> {
-  const entries = sitemapEntries(tree, base);
+export function sitemapFiles(
+  tree: Tree,
+  base: string,
+  dest: string,
+  limits: { urls: number; bytes: number } = SITEMAP_LIMITS,
+  alternates?: ReadonlyMap<string, ReadonlyArray<readonly [string, string]>>,
+): Array<[string, string]> {
+  const entries = sitemapEntries(tree, base, alternates);
+  const SITEMAP_HEAD = alternates && alternates.size > 0 ? SITEMAP_HEAD_XHTML : SITEMAP_HEAD_PLAIN;
   const frame = utf8Length(SITEMAP_HEAD) + utf8Length(SITEMAP_TAIL);
   const sizes = entries.map(utf8Length);
   const total = frame + sizes.reduce((a, b) => a + b, 0);

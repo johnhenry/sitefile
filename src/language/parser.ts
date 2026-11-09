@@ -80,6 +80,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseFingerprint(c, span);
     case 'CANONICAL':
       return parseCanonical(c, span);
+    case 'LANGUAGES':
+      return parseLanguages(c, span);
     case 'PRECOMPRESS':
       return parsePrecompress(c, span);
     case 'ROBOTS':
@@ -614,6 +616,16 @@ function parseCanonical(c: Cursor, span: SourceSpan): Instruction {
   const pretty = c.keyword('PRETTY');
   c.expectEnd();
   return { kind: 'CANONICAL', span, base, pretty };
+}
+
+/** `LANGUAGES <code>… [DEFAULT <code>]` */
+function parseLanguages(c: Cursor, span: SourceSpan): Instruction {
+  const codes: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('DEFAULT')) codes.push(c.operand('language code'));
+  if (codes.length === 0) throw c.error('E_SYNTAX', 'expected a language code (LANGUAGES en fr de DEFAULT en)');
+  const dflt = c.keyword('DEFAULT') ? c.operand('default language code') : undefined;
+  c.expectEnd();
+  return { kind: 'LANGUAGES', span, codes, ...(dflt ? { default: dflt } : {}) };
 }
 
 /** Sidecar formats PRECOMPRESS knows; only gzip has an encoder (src/deflate.ts, shared with the Rust port). */

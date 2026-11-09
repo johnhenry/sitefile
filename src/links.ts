@@ -491,6 +491,27 @@ export function integrityTags(text: string): IntegrityTag[] {
  * there is no `</head>`. Comments, declarations and raw text are skipped as in {@link scanHtml}.
  */
 export function canonicalSlot(text: string): number | 'has' | undefined {
+  const h = headLinks(text);
+  return h.canonical ? 'has' : h.at;
+}
+
+/** What CANONICAL needs from a page's head: see {@link headLinks}. */
+export interface HeadLinks {
+  /** The offset of the first `</head` end tag; undefined when there is none. */
+  readonly at: number | undefined;
+  /** A `<link>` whose `rel` has the token `canonical` comes before it (or anywhere, without `</head>`). */
+  readonly canonical: boolean;
+  /** So does a `<link>` whose `rel` has the token `alternate` and that has an `hreflang` attribute. */
+  readonly hreflang: boolean;
+}
+
+/**
+ * Where links go in a page's head and which it already has (ASCII case-insensitive `rel` tokens). Comments,
+ * declarations and raw text are skipped as in {@link scanHtml}.
+ */
+export function headLinks(text: string): HeadLinks {
+  let canonical = false;
+  let hreflang = false;
   const n = text.length;
   let i = 0;
   while (i < n) {
@@ -505,7 +526,7 @@ export function canonicalSlot(text: string): number | 'has' | undefined {
     }
     if (next === '/') {
       const end = i + 6;
-      if (lowerAscii(text.slice(i + 2, end)) === 'head' && (end >= n || isWs(text[end]) || text[end] === '/' || text[end] === '>')) return i;
+      if (lowerAscii(text.slice(i + 2, end)) === 'head' && (end >= n || isWs(text[end]) || text[end] === '/' || text[end] === '>')) return { at: i, canonical, hreflang };
     }
     if (next === '!' || next === '?' || next === '/') {
       const j = text.indexOf('>', i + 2);
@@ -521,6 +542,7 @@ export function canonicalSlot(text: string): number | 'has' | undefined {
     const tag = lowerAscii(text.slice(i + 1, j));
     i = j;
     let rel: string | undefined;
+    let lang = false;
     for (;;) {
       while (i < n && (isWs(text[i]) || text[i] === '/')) i++;
       if (i >= n) break;
@@ -532,6 +554,7 @@ export function canonicalSlot(text: string): number | 'has' | undefined {
       i++;
       while (i < n && !isWs(text[i]) && text[i] !== '/' && text[i] !== '>' && text[i] !== '=') i++;
       const name = lowerAscii(text.slice(nameStart, i));
+      if (name === 'hreflang') lang = true;
       let k = i;
       while (k < n && isWs(text[k])) k++;
       if (text[k] !== '=') continue;
@@ -552,10 +575,14 @@ export function canonicalSlot(text: string): number | 'has' | undefined {
       }
       if (name === 'rel' && rel === undefined) rel = text.slice(start, end);
     }
-    if (tag === 'link' && rel !== undefined && lowerAscii(decodeHtmlText(rel)).split(/[ \t\n\r\f]+/).includes('canonical')) return 'has';
+    if (tag === 'link' && rel !== undefined) {
+      const tokens = lowerAscii(decodeHtmlText(rel)).split(/[ \t\n\r\f]+/);
+      if (tokens.includes('canonical')) canonical = true;
+      if (lang && tokens.includes('alternate')) hreflang = true;
+    }
     if (RAW_TEXT.has(tag)) i = indexOfCloseTag(text, tag, i);
   }
-  return undefined;
+  return { at: undefined, canonical, hreflang };
 }
 
 /** What CSP needs from a page: its inline script and style texts, in order, and where its `<head>` start tag ends. */

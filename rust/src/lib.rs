@@ -29,6 +29,7 @@ pub mod secrets;
 
 // Templates and data formats
 pub mod bake;
+pub mod bcrypt_verify;
 pub mod csv;
 pub mod documents;
 pub mod frontmatter;
@@ -50,6 +51,7 @@ pub mod csp;
 pub mod export;
 pub mod export_for;
 pub mod fingerprint;
+pub mod hreflang;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;

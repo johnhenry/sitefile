@@ -269,14 +269,128 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
     overlay = null;
   }
 
+  // --sync: this page reports where it is (its path and fragment, its title and, with
+  // --sync=scroll, how far down it is) and follows the navigation (and scrolling) of the other open
+  // pages, unless a form field has focus. It never sends query strings, form contents, keys or cookies.
+  var sync = options.sync === "nav" || options.sync === "scroll";
+  var syncScroll = options.sync === "scroll";
+  function stored(k) {
+    try {
+      return sessionStorage.getItem(k);
+    } catch (_) {
+      return null;
+    }
+  }
+  function store(k, v) {
+    try {
+      sessionStorage.setItem(k, v);
+    } catch (_) {}
+  }
+  // One ID per tab, kept across its page loads.
+  var clientId = sync ? stored("sitefile:client") || "" : "";
+  if (sync && !/^[0-9a-f]{16}$/.test(clientId)) {
+    var bytes = new Uint8Array(8);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+    else for (var b = 0; b < 8; b++) bytes[b] = Math.floor(Math.random() * 256);
+    clientId = Array.prototype.map.call(bytes, function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
+    store("sitefile:client", clientId);
+  }
+  var atKey = "sitefile:at";
+  function where() {
+    return (location.pathname + location.hash).slice(0, 2048);
+  }
+  function scrolled() {
+    var el = document.scrollingElement || document.documentElement;
+    var w = el.scrollWidth - window.innerWidth;
+    var h = el.scrollHeight - window.innerHeight;
+    var part = function (at, size) { return size > 0 ? Math.min(10000, Math.max(0, Math.round((at / size) * 10000))) : 0; };
+    return [part(window.scrollX, w), part(window.scrollY, h)];
+  }
+  var clientUrl = new URL("client", base).href;
+  function report(nav, withScroll) {
+    try {
+      var body = { id: clientId, url: where(), title: String(document.title || "").slice(0, 200), nav: nav };
+      if (withScroll) body.scroll = scrolled();
+      fetch(clientUrl, { method: "POST", body: JSON.stringify(body), keepalive: true }).catch(function () {});
+    } catch (_) {
+      // never let reporting break the page
+    }
+  }
+  // Once its stream is open, a page reports itself: as a navigation only when this tab showed
+  // another page before (not on a reload, a reconnect, a new tab or a page another one led here).
+  function arrived() {
+    var at = where();
+    var before = stored(atKey);
+    store(atKey, at);
+    report(before !== null && before !== at, syncScroll);
+  }
+  function moved() {
+    var at = where();
+    if (stored(atKey) === at) return;
+    store(atKey, at);
+    report(true, false);
+  }
+  if (sync) {
+    ["pushState", "replaceState"].forEach(function (name) {
+      var original = history[name];
+      if (typeof original !== "function") return;
+      history[name] = function () {
+        var r = original.apply(this, arguments);
+        moved();
+        return r;
+      };
+    });
+    window.addEventListener("popstate", moved);
+    window.addEventListener("hashchange", moved);
+  }
+  function editing() {
+    var a = document.activeElement;
+    if (!a) return false;
+    var t = a.localName;
+    return t === "input" || t === "textarea" || t === "select" || a.isContentEditable === true;
+  }
+  var quietUntil = 0;
+  function follow(ev) {
+    if (!sync || typeof ev.url !== "string" || ev.url.charAt(0) !== "/" || ev.url.charAt(1) === "/") return;
+    var hash = ev.url.indexOf("#");
+    var path = hash === -1 ? ev.url : ev.url.slice(0, hash);
+    if (ev.type === "navigate") {
+      if (ev.url === where() || editing()) return;
+      store(atKey, ev.url); // the page this leads to is not a navigation of its own
+      if (hash !== -1 && path === location.pathname) location.hash = ev.url.slice(hash);
+      else location.assign(ev.url);
+      return;
+    }
+    if (!syncScroll || path !== location.pathname || editing()) return;
+    if (typeof ev.x !== "number" || typeof ev.y !== "number") return;
+    var el = document.scrollingElement || document.documentElement;
+    quietUntil = Date.now() + 500; // the scroll this causes is not reported back
+    window.scrollTo((ev.x / 10000) * Math.max(0, el.scrollWidth - window.innerWidth), (ev.y / 10000) * Math.max(0, el.scrollHeight - window.innerHeight));
+  }
+  if (syncScroll) {
+    var scrollTimer = null;
+    window.addEventListener(
+      "scroll",
+      function () {
+        if (Date.now() < quietUntil || scrollTimer !== null) return;
+        scrollTimer = setTimeout(function () {
+          scrollTimer = null;
+          if (Date.now() >= quietUntil) report(false, true);
+        }, 250);
+      },
+      { passive: true }
+    );
+  }
+
   // EventSource reconnects by itself after a dropped connection (the server sends retry: 1000),
   // but gives up for good when an answer is not an event stream (a proxy or tunnel error page):
   // then try again, waiting twice as long each time, up to 30 s.
   var delay = 1000;
   function connect() {
-    var source = new EventSource(new URL("reload", base).href);
+    var source = new EventSource(new URL(sync ? "reload?client=" + clientId : "reload", base).href);
     source.onopen = function () {
       delay = 1000;
+      if (sync) arrived();
     };
     source.onmessage = function (e) {
       var ev;
@@ -285,6 +399,7 @@ export const RELOAD_CLIENT = String.raw`(function (options) {
       } catch (_) {
         ev = { type: "reload" };
       }
+      if (ev.type === "navigate" || ev.type === "scroll") return follow(ev);
       if (ev.type === "building") return showBadge();
       if (ev.type === "error") return showError(ev);
       hideBadge();

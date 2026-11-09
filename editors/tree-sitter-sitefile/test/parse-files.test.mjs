@@ -21,6 +21,7 @@ const EXPECTED_SYNTAX_ERRORS = [
   'conformance/cases/err-copy-chmod/Sitefile', // --chmod=600: the grammar accepts any flag value
   'conformance/cases/err-export-for-host/Sitefile', // FOR heroku: the grammar accepts any word here
   'conformance/cases/err-from-missing-base/Sitefile',
+  'conformance/cases/err-languages-syntax/Sitefile', // LANGUAGES DEFAULT en: the grammar reads DEFAULT as a code
   'conformance/cases/err-redirect-status/Sitefile', // STATUS 200: the grammar accepts any word here
   'conformance/cases/err-secret-reserved/Sitefile', // SECRET … AS HEADER Content-Length: the grammar accepts any header name
   'conformance/cases/err-sitemap-syntax/Sitefile',
@@ -42,6 +43,7 @@ const LENIENT = new Set([
   'conformance/cases/err-fingerprint-syntax/Sitefile',
   'conformance/cases/err-copy-chmod/Sitefile',
   'conformance/cases/err-export-for-host/Sitefile',
+  'conformance/cases/err-languages-syntax/Sitefile',
   'conformance/cases/err-redirect-status/Sitefile',
   'conformance/cases/err-secret-reserved/Sitefile',
   'conformance/cases/err-syntax-directive-late/Sitefile',

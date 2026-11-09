@@ -1,5 +1,5 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
-import { crc32, gunzip as gunzipCb, inflateRaw as inflateRawCb, inflateRawSync, type ZlibOptions } from 'node:zlib';
+import { crc32, gunzip as gunzipCb, inflateRaw as inflateRawCb, inflateRawSync, zstdDecompress as zstdDecompressCb, type ZlibOptions, type ZstdOptions } from 'node:zlib';
 import { promisify } from 'node:util';
 import { SitefileError, type SourceSpan } from '../errors.js';
 import { normalizeVirtual } from '../paths.js';
@@ -12,6 +12,7 @@ const RATIO_FLOOR = 1024 * 1024;
 
 const gunzipAsync = promisify<Uint8Array, ZlibOptions, Buffer>(gunzipCb);
 const inflateRawAsync = promisify<Uint8Array, ZlibOptions, Buffer>(inflateRawCb);
+const zstdDecompressAsync = promisify<Uint8Array, ZstdOptions, Buffer>(zstdDecompressCb);
 
 /** Tar framing per entry, worst case: header + padding + a pax/GNU long-name header and its padding. */
 const TAR_OVERHEAD_PER_ENTRY = 4 * 512;
@@ -19,7 +20,7 @@ const TAR_OVERHEAD_PER_ENTRY = 4 * 512;
 type Add = (name: string, kind: 'file' | 'dir', bytes: Uint8Array, mode: number) => void;
 
 /**
- * Extract a tar, tar.gz/tgz, zip or Web Bundle (b1/b2, plain or gzip-wrapped) archive into a Tree. The format is detected
+ * Extract a tar, tar.gz/tgz, tar.zst/tzst, zip or Web Bundle (b1/b2, plain or gzip-wrapped) archive into a Tree. The format is detected
  * from magic bytes, never from the name. Nothing is inflated beyond the limits,
  * and unsafe entries (absolute or `..` paths, backslashes, NUL, symlinks, hard
  * links, devices) are rejected, not skipped. A single top-level directory is
@@ -33,11 +34,12 @@ export async function extractArchive(
 ): Promise<Tree> {
   if (isWebBundle(bytes)) return webBundleToTree(readWebBundle(bytes, origin, limits, span), origin, span);
   const { add, files } = collector(origin, limits, span, true);
-  if (isGzip(bytes)) {
-    const inner = await gunzip(bytes, origin, limits, span);
+  const compression = isGzip(bytes) ? 'gzip' : isZstd(bytes) ? 'zstd' : undefined;
+  if (compression) {
+    const inner = await decompress(compression, bytes, origin, limits, span);
     // gzip(application/webbundle), as @johnhenry/fileable (encode="wbn") and packfile's toArchive() write it
     if (isWebBundle(inner)) return webBundleToTree(readWebBundle(inner, origin, limits, span), origin, span);
-    if (!isTar(inner)) throw new SitefileError('E_TYPE', `${origin}: gzip content is not a tar archive`, span);
+    if (!isTar(inner)) throw new SitefileError('E_TYPE', `${origin}: ${compression} content is not a tar archive`, span);
     readTar(inner, origin, limits, span, add);
   } else if (isZip(bytes)) {
     await readZip(bytes, origin, limits, span, add);
@@ -45,7 +47,7 @@ export async function extractArchive(
     readTar(bytes, origin, limits, span, add);
   } else {
     const what = otherFormat(bytes);
-    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (${what ?? 'expected tar, tar.gz, zip or web bundle'})`, span);
+    throw new SitefileError('E_TYPE', `${origin}: not a recognized archive (${what ?? 'expected tar, tar.gz, tar.zst, zip or web bundle'})`, span);
   }
   return Tree.fromFiles(files);
 }
@@ -109,7 +111,6 @@ export function osMetadataWarning(what: string, skipped: number): string {
 function otherFormat(b: Uint8Array): string | undefined {
   const starts = (...m: number[]): boolean => b.length >= m.length && m.every((x, i) => b[i] === x);
   if (starts(0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00)) return 'it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip';
-  if (starts(0x28, 0xb5, 0x2f, 0xfd)) return 'it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip';
   if (starts(0x42, 0x5a, 0x68) && b.length > 3 && b[3]! >= 0x31 && b[3]! <= 0x39) return 'it is bzip2-compressed, e.g. .tar.bz2; recompress it as .tar.gz or zip';
   if (starts(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c)) return 'it is a 7z archive; convert it to zip or tar';
   if (starts(0x52, 0x61, 0x72, 0x21, 0x1a, 0x07)) return 'it is a RAR archive; convert it to zip or tar';
@@ -117,6 +118,8 @@ function otherFormat(b: Uint8Array): string | undefined {
 }
 
 const isGzip = (b: Uint8Array): boolean => b.length > 2 && b[0] === 0x1f && b[1] === 0x8b;
+/** A Zstandard frame (RFC 8878); a stream that starts with a skippable frame is not recognized. */
+const isZstd = (b: Uint8Array): boolean => b.length >= 4 && b[0] === 0x28 && b[1] === 0xb5 && b[2] === 0x2f && b[3] === 0xfd;
 const isZip = (b: Uint8Array): boolean =>
   b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && ((b[2] === 3 && b[3] === 4) || (b[2] === 5 && b[3] === 6));
 const isTar = (b: Uint8Array): boolean =>
@@ -140,15 +143,21 @@ function archivePath(name: string, span?: SourceSpan): string {
   return normalizeVirtual('/' + name, span, 'archive entry').path;
 }
 
-// ------------------------------------------------------------------ gzip
+// ------------------------------------------------------------ gzip, zstd
 
-async function gunzip(bytes: Uint8Array, origin: string, limits: ArchiveLimits, span?: SourceSpan): Promise<Uint8Array> {
+/**
+ * Decompress a gzip or zstd stream within the limits (the same ratio and size caps for both). zstd is
+ * Node's libzstd (frames that need a window over 128 MiB are refused; rust/src/resources/archive.rs
+ * matches what it accepts).
+ */
+async function decompress(kind: 'gzip' | 'zstd', bytes: Uint8Array, origin: string, limits: ArchiveLimits, span?: SourceSpan): Promise<Uint8Array> {
   const byRatio = Math.max(bytes.length * limits.maxRatio, RATIO_FLOOR);
   // The inflated stream is tar: file data plus headers and padding for every entry.
   const byTotal = limits.maxTotalBytes + (limits.maxEntries + 2) * TAR_OVERHEAD_PER_ENTRY;
   try {
     // Async so a large archive doesn't stall other imports' sockets and timers.
-    return await gunzipAsync(bytes, { maxOutputLength: Math.min(byRatio, byTotal) });
+    const options = { maxOutputLength: Math.min(byRatio, byTotal) };
+    return kind === 'gzip' ? await gunzipAsync(bytes, options) : await zstdDecompressAsync(bytes, options);
   } catch (e) {
     throw inflateError(e, origin, byRatio <= byTotal, limits, span);
   }

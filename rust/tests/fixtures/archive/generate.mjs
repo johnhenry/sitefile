@@ -17,7 +17,7 @@
 // For a larger local run (not committed):
 //   FUZZ_OUT=/tmp/archive-fuzz.json FUZZ_COUNT=50000 FUZZ_SEED=7 node rust/tests/fixtures/archive/generate.mjs
 //   SITEFILE_ARCHIVE_FUZZ=/tmp/archive-fuzz.json cargo test --release -- --ignored archive_differential_external
-import { crc32, deflateRawSync, gzipSync } from 'node:zlib';
+import { constants, crc32, deflateRawSync, gzipSync, zstdCompressSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -609,6 +609,16 @@ function fuzzCase() {
 
 // ---------------------------------------------------------------- fixed cases
 
+/** `f` with the random state restored afterwards. */
+const noRng = (f) => () => {
+  const saved = seed;
+  try {
+    return f();
+  } finally {
+    seed = saved;
+  }
+};
+
 const tarOf = (...entries) =>
   Buffer.concat([
     ...entries.flatMap(([n, type, data]) => [tarHeader({ name: B(n), type, size: data.length, magic: 'ustar\u000000' }), data, pad512(data.length)]),
@@ -811,6 +821,24 @@ const EDGE = [
   () => Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4]), Buffer.alloc(600)]),
   () => Buffer.from('Rar!\u001a\u0007\u0001\u0000', 'latin1'),
   () => Buffer.from([0x28, 0xb5, 0x2f]),
+  // .tar.zst (#221): Node's libzstd decodes; rust/src/resources/archive.rs (ruzstd) must agree.
+  // noRng: tarOf draws from the generator; these leave it as it was, so the random cases stay the same.
+  noRng(() => zstdCompressSync(tarOf(['a.txt', '0', B('hello')]))),
+  noRng(() => zstdCompressSync(tarOf(['a.txt', '0', B('hello')]), { params: { [constants.ZSTD_c_checksumFlag]: 1, [constants.ZSTD_c_compressionLevel]: 19 } })),
+  noRng(() => { const t = tarOf(['a.txt', '0', B('hello')], ['b/c.txt', '0', B('x'.repeat(3000))]); return Buffer.concat([zstdCompressSync(t.subarray(0, 700)), Buffer.from([0x5a, 0x2a, 0x4d, 0x18, 1, 0, 0, 0, 7]), zstdCompressSync(t.subarray(700))]); }),
+  noRng(() => Buffer.concat([zstdCompressSync(tarOf(['a.txt', '0', B('hello')])), B('trailing bytes that are not a frame')])),
+  noRng(() => Buffer.concat([zstdCompressSync(tarOf(['a.txt', '0', B('hello')])), Buffer.from([0x28, 0xb5, 0x2f, 0xfd])])),
+  noRng(() => Buffer.concat([zstdCompressSync(tarOf(['a.txt', '0', B('hello')])), Buffer.from([0x50, 0x2a, 0x4d, 0x18, 9, 0, 0, 0])])),
+  noRng(() => { const z = zstdCompressSync(tarOf(['a.txt', '0', B('hello')])); return z.subarray(0, z.length - 4); }),
+  noRng(() => { const z = zstdCompressSync(tarOf(['a.txt', '0', B('hello')]), { params: { [constants.ZSTD_c_checksumFlag]: 1 } }); z[z.length - 2] ^= 0x10; return z; }),
+  noRng(() => { const z = zstdCompressSync(tarOf(['a.txt', '0', B('hello'.repeat(300))])); z[z.length >> 1] ^= 0xff; return z; }),
+  noRng(() => Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 17 << 3, 0x09, 0, 0, 0x41])), // windowLog 27: one raw byte
+  noRng(() => Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 18 << 3, 0x09, 0, 0, 0x41])), // windowLog 28: too large
+  noRng(() => Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x01, 17 << 3, 7, 0x09, 0, 0, 0x41])), // a dictionary ID
+  noRng(() => Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0xe0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0x09, 0, 0, 0x41])), // single segment, 256 MiB content size
+  noRng(() => zstdCompressSync(B('not a tar'))),
+  noRng(() => zstdCompressSync(tarOf(['big', '0', Buffer.alloc(1_200_000)]))),
+  noRng(() => zstdCompressSync(Buffer.alloc(1024))),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

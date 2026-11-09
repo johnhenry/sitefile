@@ -229,6 +229,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", Some(operand(base))),
             ("pretty", Some(json!(pretty))),
         ]),
+        Instruction::Languages { span: sp, codes, default } => obj(vec![
+            ("kind", s("LANGUAGES")),
+            ("span", Some(span(sp))),
+            ("codes", Some(Value::Array(codes.iter().map(operand).collect()))),
+            ("default", default.as_ref().map(operand)),
+        ]),
         Instruction::Precompress { span: sp, formats, patterns, min, overwrite } => obj(vec![
             ("kind", s("PRECOMPRESS")),
             ("span", Some(span(sp))),

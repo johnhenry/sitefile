@@ -3,8 +3,10 @@
 //!
 //! A credential is kept only as a verifier, never as the password:
 //! `pbkdf2-sha256$<iterations>$<salt base64>$<32-byte key base64>` (`--auth`,
-//! `SITEFILE_SERVE_AUTH`) or `{SHA}<base64 SHA-1>` (an htpasswd `-s` entry).
+//! `SITEFILE_SERVE_AUTH`), `{SHA}<base64 SHA-1>` (an htpasswd `-s` entry) or a
+//! bcrypt hash (`$2y$`, `$2a$`, `$2b$`; an htpasswd `-B` entry, #278).
 
+use crate::bcrypt_verify::{is_bcrypt_prefix, parse_bcrypt, verify_bcrypt};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -101,6 +103,9 @@ fn equal(a: &[u8], b: &[u8]) -> bool {
 
 /// Whether `password` matches `verifier` (false for a malformed verifier).
 pub fn verify_password(verifier: &str, password: &str) -> bool {
+    if is_bcrypt_prefix(verifier) {
+        return verify_bcrypt(verifier, password);
+    }
     if let Some(h) = verifier.strip_prefix("{SHA}") {
         let Some(want) = b64(h) else { return false };
         let mut s = crate::sha1::Sha1::new();
@@ -127,7 +132,7 @@ pub fn verify_password(verifier: &str, password: &str) -> bool {
     )
 }
 
-/// An htpasswd file (`parseHtpasswd` in src/serve-auth.ts): `user:hash` lines, only `{SHA}`.
+/// An htpasswd file (`parseHtpasswd` in src/serve-auth.ts): `user:hash` lines, `{SHA}` or bcrypt.
 pub fn parse_htpasswd(text: &str, origin: &str) -> Result<Vec<AuthEntry>> {
     let mut out = Vec::new();
     for (n, raw) in text.split('\n').enumerate() {
@@ -145,10 +150,17 @@ pub fn parse_htpasswd(text: &str, origin: &str) -> Result<Vec<AuthEntry>> {
             return bad("expected user:hash".into());
         };
         let (user, hash) = (&line[..i], &line[i + 1..]);
-        if hash.starts_with("$2a$") || hash.starts_with("$2b$") || hash.starts_with("$2y$") {
-            return bad(format!(
-                "user '{user}': bcrypt entries are not supported yet; use htpasswd -s ({{SHA}})"
-            ));
+        if is_bcrypt_prefix(hash) {
+            if parse_bcrypt(hash).is_none() {
+                return bad(format!(
+                    "user '{user}': malformed bcrypt hash (expected $2y$, $2a$ or $2b$, a cost of 04 to 31 and 53 characters of salt and hash)"
+                ));
+            }
+            out.push(AuthEntry {
+                user: user.to_string(),
+                verifier: hash.to_string(),
+            });
+            continue;
         }
         let sha_ok = hash.strip_prefix("{SHA}").is_some_and(|h| {
             h.len() == 28
@@ -159,7 +171,7 @@ pub fn parse_htpasswd(text: &str, origin: &str) -> Result<Vec<AuthEntry>> {
         });
         if !sha_ok {
             return bad(format!(
-                "user '{user}': unsupported password hash (only {{SHA}} entries, htpasswd -s)"
+                "user '{user}': unsupported password hash (only {{SHA}} and bcrypt entries, htpasswd -s or -B)"
             ));
         }
         out.push(AuthEntry {
@@ -280,5 +292,31 @@ mod tests {
         assert!(a.allows(Some("Basic YWxpY2U6cGFzc3dvcmQ=")), "cached");
         assert!(!a.allows(Some("Basic YWxpY2U6d3Jvbmc=")));
         assert!(!a.allows(None));
+    }
+
+    #[test]
+    fn htpasswd_bcrypt_entries() {
+        let text = "alice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\ncarol:$2y$04$H52uuRGqEIy8.sR2oMtiEu08EXLUPljPpA9ItS9ur0y1xB84QRQI2\ndave:$2b$06$If6bvum7DFjUnE9p2uDeDu0YHzrHM6tf.iqN8.yx.jNN1ILEf7h0i\n";
+        let e = parse_htpasswd(text, "f").unwrap();
+        assert_eq!(e.len(), 3);
+        assert!(verify_password(&e[1].verifier, "correct horse"));
+        assert!(!verify_password(&e[1].verifier, "correct horsE"));
+        let a = BasicAuth::new(e);
+        let basic = |s: &str| format!("Basic {}", STANDARD.encode(s));
+        assert!(a.allows(Some(&basic("carol:correct horse"))));
+        assert!(a.allows(Some(&basic("dave:abc"))));
+        assert!(!a.allows(Some(&basic("dave:abd"))));
+        assert!(!a.allows(Some(&basic("carol:password"))));
+        let err = parse_htpasswd("bob:$2y$05$abc", "f").unwrap_err();
+        assert!(
+            err.message()
+                .contains("f:1: user 'bob': malformed bcrypt hash"),
+            "{}",
+            err.message()
+        );
+        let err = parse_htpasswd("bob:$apr1$x$y", "f").unwrap_err();
+        assert!(err
+            .message()
+            .contains("only {SHA} and bcrypt entries, htpasswd -s or -B"));
     }
 }
