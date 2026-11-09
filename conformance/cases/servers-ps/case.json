@@ -1,0 +1,9 @@
+{
+  "steps": [
+    ["ps", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["ps", "-f", "${CTX}/sitefile.servers.yaml", "--json"],
+    ["down", "-f", "${CTX}/sitefile.servers.yaml"],
+    ["up", "-f", "${CTX}/unknown.yaml"]
+  ],
+  "stdout": true
+}

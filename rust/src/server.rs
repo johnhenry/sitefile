@@ -28,10 +28,66 @@ pub struct SiteServerOptions {
     /// with the client script, and add [`RELOAD_SCRIPT`] to HTML navigations. Never set
     /// otherwise, and never written to exports.
     pub live_reload: Option<Arc<LiveReload>>,
+    /// When the served files last changed (Unix seconds), read per request: sent as
+    /// `Last-Modified` on file responses, and `If-Modified-Since` (without `If-None-Match`)
+    /// gives `304`. `None`: neither.
+    pub last_modified: Option<LastModifiedFn>,
     /// Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that
     /// blocks live reload.
     pub warn: Option<LogFn>,
+    /// Where file contents come from when the tree holds only digests (a zip served in
+    /// place, [`crate::resources::archive::open_zip_file`]).
+    pub content: Option<Arc<dyn SiteContent>>,
 }
+
+/// Contents read on demand ([`SiteServerOptions::content`]).
+pub trait SiteContent: Send + Sync {
+    /// A file's bytes (`None`: use the node's).
+    fn read(&self, path: &str) -> Option<Result<Vec<u8>>>;
+    /// A deflated file's raw deflate stream, sent as `content-encoding: gzip` to clients that accept it.
+    fn deflated(&self, path: &str) -> Option<crate::resources::archive::Deflated>;
+}
+
+impl SiteContent for crate::resources::archive::ZipFile {
+    fn read(&self, path: &str) -> Option<Result<Vec<u8>>> {
+        crate::resources::archive::ZipFile::read(self, path)
+    }
+    fn deflated(&self, path: &str) -> Option<crate::resources::archive::Deflated> {
+        crate::resources::archive::ZipFile::deflated(self, path)
+    }
+}
+
+/// Whether an `accept-encoding` header accepts gzip (`gzip` or `x-gzip` with a non-zero q).
+pub fn accepts_gzip(header: Option<&str>) -> bool {
+    let Some(header) = header else {
+        return false;
+    };
+    header.split(',').any(|part| {
+        let mut it = part.trim().split(';');
+        let name = it.next().unwrap_or("").trim().to_ascii_lowercase();
+        if name != "gzip" && name != "x-gzip" {
+            return false;
+        }
+        match it
+            .map(str::trim)
+            .find(|x| x.len() >= 2 && x[..2].eq_ignore_ascii_case("q="))
+        {
+            None => true,
+            Some(q) => crate::cli::common::js_to_number(&q[2..]) > 0.0,
+        }
+    })
+}
+
+/// A gzip member around a raw deflate stream: fixed header (no name, mtime 0, OS unknown), CRC-32 and size.
+pub fn gzip_member(deflate: &[u8], crc: u32, size: u64) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    out.extend_from_slice(deflate);
+    out.extend(crc.to_le_bytes());
+    out.extend(((size % (1u64 << 32)) as u32).to_le_bytes());
+    out
+}
+
+pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
 
 /// The tree a server answers from; `serve --watch` swaps in each good rebuild.
 pub type SharedTree = Arc<RwLock<Arc<Tree>>>;
@@ -660,6 +716,7 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
 /// `decodeURIComponent`, or `None` where it would throw.
@@ -708,6 +765,261 @@ pub fn safe_segments(raw_path: &str) -> Option<Vec<String>> {
         out.push(crate::paths::nfc(&seg).into_owned());
     }
     Some(out)
+}
+
+const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (month 1..=12).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// An IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110 section 5.6.7) for Unix seconds.
+pub fn http_date(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // civil_from_days (Howard Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{}, {d:02} {} {y:04} {:02}:{:02}:{:02} GMT",
+        DAYS[(days + 4).rem_euclid(7) as usize],
+        MONTHS[(m - 1) as usize],
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// Unix seconds of an IMF-fixdate, or `None` for anything else (the obsolete formats too).
+pub fn parse_http_date(value: &str) -> Option<i64> {
+    let v = value.trim();
+    let b = v.as_bytes();
+    if b.len() != 29 || &v[3..5] != ", " || &v[25..] != " GMT" {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let t = v.get(r)?;
+        if !t.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        t.parse().ok()
+    };
+    if b[7] != b' ' || b[11] != b' ' || b[16] != b' ' || b[19] != b':' || b[22] != b':' {
+        return None;
+    }
+    let wd = DAYS.iter().position(|d| *d == &v[0..3])?;
+    let month = MONTHS.iter().position(|m| *m == &v[8..11])? as i64 + 1;
+    let (day, year) = (num(5..7)?, num(12..16)?);
+    let (h, mi, se) = (num(17..19)?, num(20..22)?, num(23..25)?);
+    if day < 1 || h > 23 || mi > 59 || se > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    // The day must exist in that month and fall on the weekday given.
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_len = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if day > month_len[(month - 1) as usize] || (days + 4).rem_euclid(7) as usize != wd {
+        return None;
+    }
+    Some(days * 86_400 + h * 3600 + mi * 60 + se)
+}
+
+/// One link-value as Node's `writeEarlyHints` accepts it (`LINK_VALUE` in src/server.ts):
+/// `<uri>` then `; param[=value]` pairs, a quoted value without whitespace, `;` or `"`.
+fn is_link_value(p: &str) -> bool {
+    let ws =
+        |c: char| c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c';
+    let Some(rest) = p.strip_prefix('<') else {
+        return false;
+    };
+    let Some(close) = rest.find('>') else {
+        return false;
+    };
+    if rest[..close].contains(['\r', '\n']) {
+        return false;
+    }
+    let mut it = rest[close + 1..].chars().peekable();
+    loop {
+        while it.peek().is_some_and(|c| ws(*c)) {
+            it.next();
+        }
+        match it.next() {
+            None => return true,
+            Some(';') => {}
+            Some(_) => return false,
+        }
+        while it.peek().is_some_and(|c| ws(*c)) {
+            it.next();
+        }
+        let mut token = String::new();
+        while let Some(&c) = it.peek() {
+            if c == ';' || c == '"' || ws(c) {
+                break;
+            }
+            token.push(c);
+            it.next();
+        }
+        if token.is_empty() {
+            return false;
+        }
+        if it.peek() == Some(&'"') {
+            // `name="value"`: the quote must follow `=` after a non-empty name.
+            if !(token.len() >= 2 && token.ends_with('=')) {
+                return false;
+            }
+            it.next();
+            loop {
+                match it.next() {
+                    Some('"') => break,
+                    Some(c) if c == ';' || ws(c) => return false,
+                    Some(_) => {}
+                    None => return false,
+                }
+            }
+            if it.peek().is_some_and(|c| !(ws(*c) || *c == ';')) {
+                return false;
+            }
+        }
+    }
+}
+
+/// The link-values of a `Link` header that become `103 Early Hints`: split at commas outside
+/// `<…>` and quotes, kept when well formed and `rel=preload` or `rel=preconnect`.
+pub fn early_hints(link: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let (mut angle, mut quote) = (false, false);
+    for c in link.chars() {
+        if c == '<' && !quote {
+            angle = true;
+        } else if c == '>' && !quote {
+            angle = false;
+        } else if c == '"' && !angle {
+            quote = !quote;
+        }
+        if c == ',' && !angle && !quote {
+            parts.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    parts.push(cur);
+    parts
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| {
+            if !is_link_value(p) {
+                return false;
+            }
+            let v: String = p
+                .to_ascii_lowercase()
+                .chars()
+                .filter(|c| *c != ' ' && *c != '\t')
+                .collect();
+            [
+                "rel=preload",
+                "rel=\"preload\"",
+                "rel=preconnect",
+                "rel=\"preconnect\"",
+            ]
+            .iter()
+            .any(|t| v.contains(t))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// What a `Range` header asks of a body (see [`byte_range`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRange {
+    /// First and last byte, inclusive.
+    Bytes(usize, usize),
+    /// `416 Range Not Satisfiable`.
+    Unsatisfiable,
+}
+
+/// A `bytes=` value's number: digits only; more than 15 digits counts as larger than any file.
+fn range_number(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(if s.len() > 15 {
+        u64::MAX
+    } else {
+        s.parse().ok()?
+    })
+}
+
+/// The byte range a `Range` header asks of a body of `size` bytes, or `None` when the header is
+/// absent, malformed, not in bytes, or asks for several ranges (those are ignored: the whole body
+/// is sent, as RFC 9110 allows). Same rules as `byteRange` in src/server.ts.
+pub fn byte_range(header: Option<&str>, size: usize) -> Option<ByteRange> {
+    let v = header?.trim();
+    if v.len() < 6 || !v.as_bytes()[..6].eq_ignore_ascii_case(b"bytes=") {
+        return None;
+    }
+    let spec = v[6..].trim();
+    if spec.contains(',') {
+        return None;
+    }
+    let (first, last) = spec.split_once('-')?;
+    let (first, last) = (first.trim(), last.trim());
+    let size64 = size as u64;
+    if first.is_empty() {
+        let n = range_number(last)?;
+        if n == 0 || size == 0 {
+            return Some(ByteRange::Unsatisfiable);
+        }
+        return Some(ByteRange::Bytes(
+            size64.saturating_sub(n) as usize,
+            size - 1,
+        ));
+    }
+    let start = range_number(first)?;
+    let end = if last.is_empty() {
+        u64::MAX
+    } else {
+        range_number(last)?
+    };
+    if end < start {
+        return None;
+    }
+    if start >= size64 {
+        return Some(ByteRange::Unsatisfiable);
+    }
+    Some(ByteRange::Bytes(
+        start as usize,
+        end.min(size64 - 1) as usize,
+    ))
 }
 
 fn etag_matches(header: Option<&str>, etag: &str) -> bool {
@@ -760,10 +1072,13 @@ fn reason(status: u16) -> &'static str {
         303 => "See Other",
         307 => "Temporary Redirect",
         308 => "Permanent Redirect",
+        206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        416 => "Range Not Satisfiable",
         _ => "",
     }
 }
@@ -791,13 +1106,16 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 6] = [
+const PROTECTED_HEADERS: [&str; 9] = [
     "content-length",
     "transfer-encoding",
     "connection",
     "keep-alive",
     "etag",
     "location",
+    "accept-ranges",
+    "content-range",
+    "last-modified",
 ];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
@@ -815,7 +1133,7 @@ fn is_http_url(s: &str) -> bool {
 }
 
 /// JavaScript's `String.prototype.trim` whitespace (the characters that matter in these files).
-fn js_trim(s: &str) -> &str {
+pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
@@ -993,9 +1311,17 @@ pub struct SiteRules {
 
 impl SiteRules {
     pub fn from_tree(tree: &Tree) -> SiteRules {
+        SiteRules::from_tree_with(tree, None)
+    }
+    /// The rules, reading `/_redirects` and `/_headers` through `content` when given.
+    pub fn from_tree_with(tree: &Tree, content: Option<&dyn SiteContent>) -> SiteRules {
         let text = |p: &str| {
             tree.get(p)
-                .map(|f| String::from_utf8_lossy(&f.bytes).into_owned())
+                .map(|f| match content.and_then(|c| c.read(p)) {
+                    Some(Ok(b)) => String::from_utf8_lossy(&b).into_owned(),
+                    Some(Err(_)) => String::new(),
+                    None => String::from_utf8_lossy(&f.bytes).into_owned(),
+                })
                 .unwrap_or_default()
         };
         SiteRules {
@@ -1008,7 +1334,11 @@ impl SiteRules {
 /// The parsed rules of the tree a server last served (a watched server swaps trees).
 type RulesCache = Arc<Mutex<Option<(Arc<Tree>, Arc<SiteRules>)>>>;
 
-fn rules_for(cache: &RulesCache, tree: &Arc<Tree>) -> Arc<SiteRules> {
+fn rules_for(
+    cache: &RulesCache,
+    tree: &Arc<Tree>,
+    content: Option<&dyn SiteContent>,
+) -> Arc<SiteRules> {
     let mut slot = match cache.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -1018,7 +1348,7 @@ fn rules_for(cache: &RulesCache, tree: &Arc<Tree>) -> Arc<SiteRules> {
             return r.clone();
         }
     }
-    let r = Arc::new(SiteRules::from_tree(tree));
+    let r = Arc::new(SiteRules::from_tree_with(tree, content));
     *slot = Some((tree.clone(), r.clone()));
     r
 }
@@ -1033,7 +1363,7 @@ pub fn handle_request(
 ) -> Response {
     respond(
         tree,
-        &SiteRules::from_tree(tree),
+        &SiteRules::from_tree_with(tree, options.content.as_deref()),
         options,
         method,
         url,
@@ -1160,32 +1490,119 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
-        let body = if live {
-            inject_reload_script(&file.bytes)
+        // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
+        // range request: ranges are served from the identity body).
+        let deflated = if !live
+            && !headers.contains_key("range")
+            && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
+        {
+            options.content.as_ref().and_then(|c| c.deflated(served))
         } else {
-            file.bytes.to_vec()
+            None
+        };
+        let read = match &deflated {
+            Some(d) => Ok(gzip_member(&d.deflate, d.crc, d.size)),
+            None => match options.content.as_ref().and_then(|c| c.read(served)) {
+                Some(r) => r,
+                None => Ok(file.bytes.to_vec()),
+            },
+        };
+        let body = match read {
+            Ok(b) => b,
+            Err(e) => {
+                if let Some(log) = &options.log {
+                    log(&format!("error: {}", e.message()));
+                }
+                return page(500, ERROR_PAGE, vec![]);
+            }
+        };
+        let body = if live {
+            inject_reload_script(&body)
+        } else {
+            body
+        };
+        let encoding: Vec<(String, String)> = if deflated.is_some() {
+            owned(vec![
+                ("content-encoding", "gzip".into()),
+                ("vary", "accept-encoding".into()),
+            ])
+        } else {
+            vec![]
         };
         let mut h = owned(vec![
             ("content-type", mime.into()),
             ("content-length", body.len().to_string()),
         ]);
+        h.extend(encoding.iter().cloned());
         h.extend(custom.iter().cloned());
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page is a different representation of the file: give it its own ETag.
+        // An injected page and a gzip response are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}\"",
+            "\"{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
-            if live { "-live" } else { "" }
+            if live { "-live" } else { "" },
+            if deflated.is_some() { "-gzip" } else { "" }
         );
+        let modified = options.last_modified.as_ref().and_then(|f| f());
+        let lm: Vec<(String, String)> = modified
+            .map(|m| vec![("last-modified".to_string(), http_date(m))])
+            .unwrap_or_default();
+        let not_modified = || {
+            let mut h: Vec<(String, String)> = encoding.clone();
+            h.extend(custom.iter().cloned());
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            finish(304, h, None)
+        };
         if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
-            let mut h: Vec<(String, String)> = custom.clone();
-            h.push(("etag".into(), etag));
-            return finish(304, h, None);
+            return not_modified();
         }
-        h.push(("etag".into(), etag));
-        finish(200, h, Some(body))
+        // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
+        let since = if headers.contains_key("if-none-match") {
+            None
+        } else {
+            headers
+                .get("if-modified-since")
+                .and_then(|v| parse_http_date(v))
+        };
+        if let (Some(m), Some(since)) = (modified, since) {
+            if m <= since {
+                return not_modified();
+            }
+        }
+        h.push(("etag".into(), etag.clone()));
+        h.extend(lm.iter().cloned());
+        // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
+        let if_range_ok = headers
+            .get("if-range")
+            .is_none_or(|v| v.trim() == etag.as_str());
+        let range = if method == "GET" && if_range_ok {
+            byte_range(headers.get("range").map(String::as_str), body.len())
+        } else {
+            None
+        };
+        h.push(("accept-ranges".into(), "bytes".into()));
+        match range {
+            Some(ByteRange::Unsatisfiable) => {
+                let mut h: Vec<(String, String)> = custom.clone();
+                h.push(("accept-ranges".into(), "bytes".into()));
+                h.push(("content-range".into(), format!("bytes */{}", body.len())));
+                h.push(("content-length".into(), "0".into()));
+                finish(416, h, None)
+            }
+            Some(ByteRange::Bytes(start, end)) => {
+                let part = body[start..=end].to_vec();
+                h[1] = ("content-length".into(), part.len().to_string());
+                h.push((
+                    "content-range".into(),
+                    format!("bytes {start}-{end}/{}", body.len()),
+                ));
+                finish(206, h, Some(part))
+            }
+            None => finish(200, h, Some(body)),
+        }
     };
     // The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash.
     let resolve = |p: &str, slash: bool| -> Option<String> {
@@ -1292,6 +1709,8 @@ const MAX_DISCARD_BODY: u64 = 1 << 20;
 
 struct Request {
     method: String,
+    /// HTTP/1.1 or later (`103 Early Hints` is only sent then).
+    http11: bool,
     url: String,
     headers: HashMap<String, String>,
     keep_alive: bool,
@@ -1380,6 +1799,7 @@ fn read_request(
     };
     Ok(Some(Ok(Request {
         method: method.into(),
+        http11: version != "HTTP/1.0",
         url: url.into(),
         headers,
         keep_alive,
@@ -1450,7 +1870,7 @@ fn serve_connection(
             Ok(t) => t.clone(),
             Err(_) => break,
         };
-        let site_rules = rules_for(rules, &current);
+        let site_rules = rules_for(rules, &current, options.content.as_deref());
         let res = match console {
             Some(live) => live.console_response(
                 options,
@@ -1469,6 +1889,29 @@ fn serve_connection(
                 &req.headers,
             ),
         };
+        // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
+        let hints = match res.header("link") {
+            Some(l)
+                if res.status == 200
+                    && req.method == "GET"
+                    && req.http11
+                    && res
+                        .header("content-type")
+                        .is_some_and(|t| t.starts_with("text/html")) =>
+            {
+                early_hints(l)
+            }
+            _ => Vec::new(),
+        };
+        if !hints.is_empty() {
+            let _ = out.write_all(
+                format!(
+                    "HTTP/1.1 103 Early Hints\r\nlink: {}\r\n\r\n",
+                    hints.join(", ")
+                )
+                .as_bytes(),
+            );
+        }
         let mut head = format!("HTTP/1.1 {} {}\r\n", res.status, reason(res.status));
         for (k, v) in &res.headers {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -1764,7 +2207,9 @@ mod tests {
             })),
             server_id: None,
             live_reload: None,
+            last_modified: None,
             warn: None,
+            content: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -1886,6 +2331,129 @@ mod tests {
     }
 
     #[test]
+    fn http_dates_and_early_hints() {
+        assert_eq!(http_date(0), "Thu, 01 Jan 1970 00:00:00 GMT");
+        assert_eq!(http_date(1_700_000_000), "Tue, 14 Nov 2023 22:13:20 GMT");
+        assert_eq!(http_date(951_782_400), "Tue, 29 Feb 2000 00:00:00 GMT");
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_http_date(&http_date(951_782_400)), Some(951_782_400));
+        for bad in [
+            "Mon, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+            "Sun, 31 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+        ] {
+            assert_eq!(parse_http_date(bad), None, "{bad}");
+        }
+        assert_eq!(
+            early_hints("</a.css>; rel=preload; as=style, </b.js>; rel=stylesheet, <https://c.example>; REL=\"preconnect\""),
+            vec!["</a.css>; rel=preload; as=style", "<https://c.example>; REL=\"preconnect\""]
+        );
+        assert_eq!(
+            early_hints("</a,b.css>; rel=preload"),
+            vec!["</a,b.css>; rel=preload"]
+        );
+        assert!(early_hints("garbage rel=preload").is_empty());
+        assert!(early_hints("</a>; title=\"a b\"; rel=preload").is_empty());
+
+        let t = Tree::from_files([("/a.css".to_string(), make_file(b"a{}".to_vec(), "t", 0o644))])
+            .unwrap();
+        let opts = SiteServerOptions {
+            last_modified: Some(Arc::new(|| Some(1_700_000_000))),
+            ..Default::default()
+        };
+        let ask = |extra: &[(&str, &str)]| {
+            let h: HashMap<String, String> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            handle_request(&t, &opts, "GET", "/a.css", &h)
+        };
+        assert_eq!(
+            ask(&[]).header("last-modified"),
+            Some("Tue, 14 Nov 2023 22:13:20 GMT")
+        );
+        let ims = ("if-modified-since", "Tue, 14 Nov 2023 22:13:20 GMT");
+        assert_eq!(ask(&[ims]).status, 304);
+        assert_eq!(
+            ask(&[("if-modified-since", "Tue, 14 Nov 2023 22:13:19 GMT")]).status,
+            200
+        );
+        assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn byte_ranges() {
+        use ByteRange::*;
+        assert_eq!(byte_range(Some("bytes=0-"), 5), Some(Bytes(0, 4)));
+        assert_eq!(byte_range(Some(" BYTES= 1 - 2 "), 5), Some(Bytes(1, 2)));
+        assert_eq!(
+            byte_range(Some("bytes=0-99999999999999999999"), 5),
+            Some(Bytes(0, 4))
+        );
+        assert_eq!(
+            byte_range(Some("bytes=99999999999999999999-"), 5),
+            Some(Unsatisfiable)
+        );
+        assert_eq!(byte_range(Some("bytes=-30"), 10), Some(Bytes(0, 9)));
+        assert_eq!(byte_range(Some("bytes=-0"), 10), Some(Unsatisfiable));
+        assert_eq!(byte_range(Some("bytes=0-"), 0), Some(Unsatisfiable));
+        for ignored in [
+            "bytes=0-1,4-5",
+            "bytes=5-2",
+            "items=0-1",
+            "bytes=a-b",
+            "bytes=1",
+        ] {
+            assert_eq!(byte_range(Some(ignored), 10), None, "{ignored}");
+        }
+        assert_eq!(byte_range(None, 5), None);
+        let t = Tree::from_files([(
+            "/v.txt".to_string(),
+            make_file(b"0123456789".to_vec(), "t", 0o644),
+        )])
+        .unwrap();
+        let opts = SiteServerOptions::default();
+        let ask = |method: &str, extra: &[(&str, &str)]| {
+            let h: HashMap<String, String> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            handle_request(&t, &opts, method, "/v.txt", &h)
+        };
+        let full = ask("GET", &[]);
+        assert_eq!(full.header("accept-ranges"), Some("bytes"));
+        let etag = full.header("etag").unwrap().to_string();
+        let r = ask("GET", &[("range", "bytes=2-4")]);
+        assert_eq!(r.status, 206);
+        assert_eq!(r.body, b"234");
+        assert_eq!(r.header("content-range"), Some("bytes 2-4/10"));
+        assert_eq!(r.header("content-length"), Some("3"));
+        let r = ask("GET", &[("range", "bytes=10-")]);
+        assert_eq!(
+            (r.status, r.header("content-range")),
+            (416, Some("bytes */10"))
+        );
+        assert!(r.body.is_empty());
+        let r = ask("GET", &[("range", "bytes=0-0"), ("if-range", &etag)]);
+        assert_eq!(r.status, 206);
+        assert_eq!(
+            ask("GET", &[("range", "bytes=0-0"), ("if-range", "\"x\"")]).status,
+            200
+        );
+        assert_eq!(
+            ask("GET", &[("range", "bytes=0-0"), ("if-none-match", &etag)]).status,
+            304
+        );
+        let h = ask("HEAD", &[("range", "bytes=0-1")]);
+        assert_eq!((h.status, h.header("content-length")), (200, Some("10")));
+    }
+
+    #[test]
     fn absolute_form_targets() {
         with_server(false, |port, log| {
             let home = get(port, "http://example.com/index.html");
@@ -1991,7 +2559,9 @@ mod tests {
             })),
             server_id: Some("abcdef012345".into()),
             live_reload: None,
+            last_modified: None,
             warn: None,
+            content: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
@@ -2944,7 +3514,14 @@ mod tests {
             ("/404.html", "<p>gone</p></body>"),
             ("/_redirects", "/a /b 302\n"),
         ]);
-        let r = respond(&one, &rules_for(&cache, &one), &opts, "GET", "/missing", &h);
+        let r = respond(
+            &one,
+            &rules_for(&cache, &one, None),
+            &opts,
+            "GET",
+            "/missing",
+            &h,
+        );
         assert_eq!(r.status, 404);
         assert_eq!(
             String::from_utf8(r.body.clone()).unwrap(),
@@ -2955,11 +3532,12 @@ mod tests {
             Some(r.body.len().to_string().as_str())
         );
         assert_eq!(
-            respond(&one, &rules_for(&cache, &one), &opts, "GET", "/a", &h).header("location"),
+            respond(&one, &rules_for(&cache, &one, None), &opts, "GET", "/a", &h)
+                .header("location"),
             Some("/b")
         );
         let two = mk(&[("/index.html", "v2"), ("/_redirects", "/a /c 301\n")]);
-        let r = respond(&two, &rules_for(&cache, &two), &opts, "GET", "/a", &h);
+        let r = respond(&two, &rules_for(&cache, &two, None), &opts, "GET", "/a", &h);
         assert_eq!((r.status, r.header("location")), (301, Some("/c")));
     }
 }

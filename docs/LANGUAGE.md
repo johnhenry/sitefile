@@ -1511,11 +1511,19 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
-  else fails with `E_TYPE`. Supported tar extras: POSIX ustar prefix (old GNU
+  tgz (gzip), and zip (stored and deflate, including ZIP64 records: the zip64
+  end record and locator and the 0x0001 extra field, as streaming writers add
+  them even to small archives; no encryption). Anything
+  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  Zip entry names are UTF-8 when general-purpose bit 11 is set. Without it,
+  the Info-ZIP Unicode Path field (0x7075) is used when its CRC-32 matches the
+  raw name; otherwise a name that is valid UTF-8 is read as UTF-8 (macOS, 7-Zip
+  and many tools write UTF-8 without the flag), and any other name as IBM437
+  (CP437), as older Windows Explorer, Info-ZIP and Java tools write it.
   A gzip stream may hold several members; zero bytes after the last one are
   ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.
@@ -1533,9 +1541,14 @@ checked:
   `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
-  device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
+  device and fifo entries (`E_ARCHIVE_UNSAFE`). A zip whose local header
+  disagrees with its central-directory record (name, compression method, or
+  sizes when there is no data descriptor), or whose entries overlap, is
+  `E_ARCHIVE_UNSAFE` too: other tools would extract different files from it. Duplicate paths, or a file and
   directory at one path, fail with `E_CONFLICT`. Malformed or truncated
-  archives fail with `E_ARCHIVE`.
+  archives fail with `E_ARCHIVE`, as does a zip entry whose CRC-32 does not
+  match its central-directory record (a corrupt stored entry inflate cannot
+  notice).
 - Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
   `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
   `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the
@@ -1567,8 +1580,10 @@ the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
-  the external attributes (version made by = 3 << 8). No zip64: more than
+- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
+  extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
+  same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
+  the external attributes (version made by = 3 << 8). No zip64 is written: more than
   65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
   with `E_EXPORT`.
 - **tar**: POSIX ustar. A name over 100 bytes is split into `prefix`/`name` at

@@ -1,0 +1,1 @@
+{"responseOverrides":{"500":{"rewrite":"/e.html"},"404":{"rewrite":"/404.html"},"403":{"rewrite":"/f"}},"navigationFallback":{"rewrite":"/index.html"},"routes":[{"route":"/old","redirect":"/new"},{"route":"/r","rewrite":"/s","statusCode":201},{"route":"/t","statusCode":404},{"route":"/*","headers":{"X":"1"}}]}
