@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
+  app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
+  else `Accept: text/html`), never subresources, so `/users/jane.doe` works
+  and a missing script stays 404. The shell is the nearest `200.html`
+  (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
+  <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
+  implementations.
 - **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
   404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
   `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters

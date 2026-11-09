@@ -9,6 +9,20 @@ import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
+/** GET `url` as a page navigation (fetch() always sends `sec-fetch-mode: cors`, which is not one). */
+function navigate(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(url, { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' } }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      })
+      .on('error', reject);
+  });
+}
+
+
 const enc = (s: string) => new TextEncoder().encode(s);
 const tree = Tree.fromFiles(
   Object.entries({
@@ -99,13 +113,30 @@ test('404 for unknown paths, no directory listings, small error page', async () 
   });
 });
 
-test('SPA fallback serves /index.html for unknown extension-less paths only', async () => {
+// johnhenry/sitefile#194: the fallback is decided by navigation, not by the look of the path.
+test('SPA fallback answers navigations only, nearest app shell, exclusions, 200.html and --spa-fallback', async () => {
+  const doc = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
   await withServer({ spa: true }, async (port) => {
-    const r = await req(port, '/some/client/route');
+    let r = await req(port, '/some/client/route', 'GET', doc);
     assert.equal(r.status, 200);
     assert.equal(r.body, '<h1>home</h1>');
-    assert.equal((await req(port, '/missing.js')).status, 404, 'missing assets stay 404');
+    assert.equal((await req(port, '/users/jane.doe', 'GET', doc)).body, '<h1>home</h1>', 'a dotted navigation path falls back');
+    assert.equal((await req(port, '/users/jane.doe', 'GET', { accept: 'text/html,*/*' })).status, 200, 'Accept text/html without Sec-Fetch');
+    assert.equal((await req(port, '/assets/app.js', 'GET', { 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'script', accept: '*/*' })).status, 404, 'a missing script stays 404');
+    assert.equal((await req(port, '/some/route')).status, 404, 'no navigation headers: no fallback');
+    r = await req(port, '/about/team', 'GET', doc);
+    assert.equal(r.body, '<h1>about</h1>', 'the nearest index.html (a nested app root)');
     assert.equal((await req(port, '/app.js')).body, 'console.log(1)');
+  });
+  const files = { '/index.html': 'root', '/200.html': 'surge shell', '/admin/index.html': 'admin', '/api/x.json': '{}', '/app.html': 'app' };
+  await withTree(files, { spa: true, spaExclude: ['/api/*', '/admin/raw'] }, async (port) => {
+    assert.equal((await req(port, '/route', 'GET', doc)).body, 'surge shell', '200.html wins over index.html');
+    assert.equal((await req(port, '/admin/users/5', 'GET', doc)).body, 'admin');
+    assert.equal((await req(port, '/api/missing', 'GET', doc)).status, 404, 'excluded');
+    assert.equal((await req(port, '/admin/raw', 'GET', doc)).status, 404, 'excluded');
+  });
+  await withTree(files, { spa: true, spaFallback: '/app.html' }, async (port) => {
+    assert.equal((await req(port, '/admin/users/5', 'GET', doc)).body, 'app', '--spa-fallback is the only fallback');
   });
 });
 
@@ -329,7 +360,7 @@ test('serve -d / servers / server logs|stop|restart|rm lifecycle with a real por
   const [, id, url, port] = m!;
   assert.equal((await fetch(url!)).status, 200);
   assert.match(await (await fetch(url! + 'about/')).text(), /About/);
-  assert.match(await (await fetch(url! + 'client/route')).text(), /Home/, 'spa fallback');
+  assert.match(await navigate(url! + 'client/route'), /Home/, 'spa fallback');
 
   r = await runCli(home, ['servers']);
   assert.match(r.stdout, /^NAME\s+SITE\s+URL\s+STATUS\s+ID/);
@@ -450,7 +481,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
