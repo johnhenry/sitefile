@@ -470,6 +470,26 @@ canonical base ${URL} pretty
         (identifier)))))
 
 ================================================================================
+PRECOMPRESS with a format, patterns and MIN
+================================================================================
+
+PRECOMPRESS gzip /assets/ /**/*.html MIN 256
+precompress --overwrite /
+
+---
+
+(source_file
+  (precompress_instruction
+    (word)
+    (path)
+    (path)
+    (word))
+  (precompress_instruction
+    (flag
+      (flag_name))
+    (path)))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

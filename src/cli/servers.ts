@@ -162,6 +162,7 @@ const run: Command = {
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)',
     '--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)',
@@ -212,6 +213,7 @@ const run: Command = {
     'allow-private-network': { type: 'boolean' },
     'connect-timeout': { type: 'string' },
     'read-timeout': { type: 'string' },
+    cors: { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -252,7 +254,7 @@ const run: Command = {
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
       const proxy = proxyOption(v);
-      const server = createSiteServer(tree, { allowedHosts, proxy, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
+      const server = createSiteServer(tree, { allowedHosts, proxy, cors: !!v.cors, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -263,7 +265,7 @@ const run: Command = {
 
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, country, strictSiteFiles, ...spa, base }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, country, strictSiteFiles, ...spa, base }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
@@ -287,6 +289,8 @@ export interface DetachedServe {
   readonly keepOsMetadata?: boolean | undefined;
   /** `--allowed-host` names. */
   readonly allowedHosts?: readonly string[] | undefined;
+  /** `--cors`. */
+  readonly cors?: boolean | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -319,6 +323,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.base !== undefined ? { base: d.base } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
+    ...(d.cors ? { cors: true } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -457,7 +462,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     if (event !== undefined) live.send(event);
   };
   const proxy = proxyOption(v);
-  const server = createSiteServer(() => current, { allowedHosts, proxy, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
+  const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
   try {
     return await watchLoop({
       context,

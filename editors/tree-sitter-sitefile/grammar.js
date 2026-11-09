@@ -112,6 +112,7 @@ export default grammar({
         $.header_instruction,
         $.fingerprint_instruction,
         $.canonical_instruction,
+        $.precompress_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -323,6 +324,15 @@ export default grammar({
     // CANONICAL BASE <url> [PRETTY]
     canonical_instruction: ($) =>
       seq(kw($, 'CANONICAL'), kw($, 'BASE'), field('base', $._operand), optional(kw($, 'PRETTY'))),
+
+    // PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>] (a format word reads as a pattern here)
+    precompress_instruction: ($) =>
+      seq(
+        kw($, 'PRECOMPRESS'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'MIN'), field('min', $._operand))),
+      ),
 
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),

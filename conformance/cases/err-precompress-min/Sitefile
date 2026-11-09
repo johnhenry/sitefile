@@ -1,0 +1,7 @@
+FROM scratch
+ARG MIN = 1k
+COPY <<X /a.css
+x
+X
+PRECOMPRESS /a.css MIN ${MIN}
+EXPORT /
