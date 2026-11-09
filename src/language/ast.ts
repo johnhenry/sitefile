@@ -434,6 +434,20 @@ export interface SecurityTxtInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache
+ * manifest (`[{url, revision}]`) of the matching files, written to TO (default `/sw-manifest.json`) and/or
+ * injected into a service worker at `self.__WB_MANIFEST`.
+ */
+export interface PrecacheInstruction {
+  readonly kind: 'PRECACHE';
+  readonly span: SourceSpan;
+  readonly patterns: readonly Operand[];
+  readonly dest?: Operand;
+  readonly into?: Operand;
+  readonly overwrite: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -464,6 +478,7 @@ export type Instruction =
   | PrecompressInstruction
   | RobotsInstruction
   | SecurityTxtInstruction
+  | PrecacheInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

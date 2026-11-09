@@ -56,6 +56,8 @@ export function operationLabel(op: Operation): string {
     case 'ROBOTS':
     case 'SECURITY_TXT':
       return `${op.kind} ${op.dest}`;
+    case 'PRECACHE':
+      return `PRECACHE ${op.patterns.join(' ')}`;
     case 'CHECKLINKS':
       return `CHECKLINKS${op.warn ? ' --warn' : ''}${op.external ? ' --external' : ''}`;
   }
@@ -467,6 +469,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       else if (op.kind === 'CHECKLINKS') return;
       else if (op.kind === 'CANONICAL') inputs.push('the page (canonical link)');
       else if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') inputs.push('the Sitefile');
+      else if (op.kind === 'PRECACHE') inputs.push(op.into === file ? 'the service worker (manifest injected)' : 'the files it lists');
       else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
       else if (op.kind === 'PRECOMPRESS') inputs.push(`${file.slice(0, -'.gz'.length)} (compressed)`);
       else inputs.push(`list ${op.list}`);

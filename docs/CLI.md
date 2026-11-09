@@ -1161,7 +1161,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1302,6 +1302,15 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--watch` and no `--base`, the path of the Sitefile's `EXPORT … BASE` URL is the default (re-read after
   each good build), so a site exported for `https://user.github.io/repo/` previews at `/repo/`. The printed
   URL, `servers` and the server record (`base`) include it.
+- **`--rewrite-base <url>`** replaces the production URL (`https://example.com/blog/`: scheme, host and
+  path, without the trailing slash) with the local origin and `--base` (`http://<Host>/repo`) in served
+  HTML, CSS and XML (feeds, sitemaps, SVG), so absolute self-links, canonical links and sitemap entries
+  stay on the preview. A match must end where a URL part ends (`https://example.com` does not rewrite
+  `https://example.com.evil`, `/blog` not `/blogroll`). Only responses change, never exports or other
+  types; a rewritten file gets its own `ETag` (`…-rebased`), and the `Host` header is used only when it
+  is a plain host name or address with a port (otherwise nothing is rewritten). Under `serve --watch` it is
+  **on by default** with the build's EXPORT BASE URL, else its first SITEMAP or FEED BASE (re-read after each
+  good build); `--no-rewrite-base` turns that off. Kept in the server record as `rewriteBase`.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on

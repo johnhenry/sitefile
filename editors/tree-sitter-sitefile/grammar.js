@@ -115,6 +115,7 @@ export default grammar({
         $.precompress_instruction,
         $.robots_instruction,
         $.security_txt_instruction,
+        $.precache_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -360,6 +361,16 @@ export default grammar({
             seq(kw($, 'TO'), field('dest', $._operand)),
           ),
         ),
+      ),
+
+    // PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]
+    precache_instruction: ($) =>
+      seq(
+        kw($, 'PRECACHE'),
+        repeat(field('flag', $.flag)),
+        repeat1(field('pattern', $._operand)),
+        optional(seq(kw($, 'TO'), field('dest', $._operand))),
+        optional(seq(kw($, 'INTO'), field('into', $._operand))),
       ),
 
     // CHECKLINKS [--warn] [--external]

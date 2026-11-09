@@ -50,6 +50,7 @@ pub mod fingerprint;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;
+pub mod precache;
 pub mod precompress;
 pub mod qr;
 pub mod refs;

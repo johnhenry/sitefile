@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_sitefile");
 
-fn tmp() -> PathBuf {
-    let p = std::env::temp_dir().join(format!("sitefile-keys-rs-{}", std::process::id()));
+/// A fresh directory per test: the tests run on threads of one process, so the
+/// process id alone would let one test's `remove_dir_all` delete the other's files.
+fn tmp(name: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!("sitefile-keys-rs-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&p);
     fs::create_dir_all(&p).unwrap();
     fs::canonicalize(&p).unwrap()
@@ -34,7 +36,7 @@ fn wait_for(path: &std::path::Path, what: &str) -> String {
 
 #[test]
 fn keys_open_and_qr() {
-    let d = tmp();
+    let d = tmp("keys");
     fs::create_dir_all(d.join("site")).unwrap();
     fs::write(d.join("site/index.html"), "hi").unwrap();
     let browser = d.join("browser.sh");
@@ -110,7 +112,7 @@ fn keys_open_and_qr() {
 
 #[test]
 fn open_and_qr_are_foreground_only() {
-    let d = tmp().join("fg");
+    let d = tmp("fg");
     fs::create_dir_all(d.join("site")).unwrap();
     let r = Command::new(BIN)
         .args(["serve", "-d", "--qr", "./site"])
