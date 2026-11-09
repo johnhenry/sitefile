@@ -4,6 +4,7 @@ import { isSitefileError, SitefileError } from './errors.js';
 import { fetchRemote, redactUrl } from './resources/https.js';
 import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
@@ -70,6 +71,12 @@ export interface SiteServerOptions {
   readonly allowedHosts?: readonly string[];
   /** `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and `OPTIONS` preflights answered with `204`. */
   readonly cors?: boolean;
+  /**
+   * `--isolate`: cross-origin isolation (SharedArrayBuffer, wasm threads) on every response:
+   * `Cross-Origin-Opener-Policy: same-origin`, this `Cross-Origin-Embedder-Policy` and
+   * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+   */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /**
    * Where file contents come from when the tree holds only digests (a zip served in place,
    * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
@@ -470,6 +477,11 @@ export function originForm(target: string): string {
   return rest.startsWith('/') ? rest : '/' + rest;
 }
 
+/** A request header as one string (repeated headers joined with `, `). */
+function header(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -611,6 +623,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
   if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.isolate !== undefined) {
+    base['cross-origin-opener-policy'] = 'same-origin';
+    base['cross-origin-embedder-policy'] = options.isolate;
+    base['cross-origin-resource-policy'] = 'same-origin';
+  }
   // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
   let rulesTree: Tree | undefined;
   let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };
@@ -753,9 +770,12 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
+      // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+      const delta = live ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
+      const dictionaryVary = tree.isFile(`${served}.dcz`);
       // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
       // range request: ranges are served from the identity body).
-      const deflated = !live && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      const deflated = !live && !delta && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
       let body: Uint8Array;
       try {
         body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
@@ -764,17 +784,21 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         return page(500, ERROR_PAGE);
       }
       if (live) body = injectReloadScript(body);
-      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {};
+      const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
+      const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
-      // An injected page and a gzip response are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
+      // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
+      // The delta is sent whole (no byte ranges of an encoded body).
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...custom, ...vary, 'content-encoding': 'dcz', etag, ...lm }, delta);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -786,11 +810,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, ...vary, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {

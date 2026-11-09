@@ -239,6 +239,20 @@ fn proxy_option(v: &Parsed) -> Result<crate::server::ServeProxy> {
     Ok(crate::server::ServeProxy { routes, policy })
 }
 
+fn isolate_of(v: &Parsed) -> Result<Option<String>> {
+    let coep = v.str("coep");
+    if coep.is_some() && !v.flag("isolate") {
+        return usage("--coep needs --isolate");
+    }
+    if let Some(c) = coep.filter(|c| *c != "require-corp" && *c != "credentialless") {
+        return usage(format!(
+            "--coep must be require-corp or credentialless, not '{c}'"
+        ));
+    }
+    Ok(v.flag("isolate")
+        .then(|| coep.unwrap_or("require-corp").to_string()))
+}
+
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for raw in v.strs("allowed-host") {
@@ -272,6 +286,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("connect-timeout"),
     string("read-timeout"),
     flag("cors"),
+    flag("isolate"),
+    string("coep"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -316,6 +332,8 @@ pub const SERVE: Command = Command {
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
         "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
+        "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
+        "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)",
         "--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)",
@@ -368,6 +386,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     )?;
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
     let country = parse_country(v.str("country"))?;
@@ -421,6 +440,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 allowed_hosts: Some(allowed_hosts.clone()),
                 proxy: Some(proxy_option(v)?),
                 cors: v.flag("cors"),
+                isolate: isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },
@@ -458,6 +478,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             keep_os_metadata,
             allowed_hosts,
             cors: v.flag("cors"),
+            isolate,
             country,
             strict_site_files,
             project: None,
@@ -486,6 +507,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let proxy = proxy_option(v)?;
     let allowed_hosts = allowed_hosts_of(v)?;
+    let isolate = isolate_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -673,6 +695,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             allowed_hosts: Some(allowed_hosts.clone()),
             proxy: Some(proxy.clone()),
             cors: v.flag("cors"),
+            isolate: isolate.clone(),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -768,6 +791,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 warn: None,
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
+                isolate: state.isolate.clone(),
                 content: site.content,
                 ..Default::default()
             },

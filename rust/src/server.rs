@@ -169,6 +169,10 @@ pub struct SiteServerOptions {
     /// `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and
     /// `OPTIONS` preflights answered with `204`.
     pub cors: bool,
+    /// `--isolate`: cross-origin isolation on every response: `Cross-Origin-Opener-Policy:
+    /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
+    /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+    pub isolate: Option<String>,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -749,6 +753,9 @@ impl LiveReload {
         if options.cors {
             head.push_str("access-control-allow-origin: *\r\n");
         }
+        for (k, v) in isolation_headers(options) {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
         for (k, v) in STREAM_HEADERS {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -945,7 +952,20 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     if options.cors {
         base.push(("access-control-allow-origin".into(), "*".into()));
     }
+    base.extend(isolation_headers(options));
     base
+}
+
+/// The `--isolate` headers ([`SiteServerOptions::isolate`]).
+fn isolation_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    match &options.isolate {
+        Some(coep) => vec![
+            ("cross-origin-opener-policy".into(), "same-origin".into()),
+            ("cross-origin-embedder-policy".into(), coep.clone()),
+            ("cross-origin-resource-policy".into(), "same-origin".into()),
+        ],
+        None => Vec::new(),
+    }
 }
 
 /// `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of
@@ -2290,9 +2310,22 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
+        // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+        let delta = if live {
+            None
+        } else {
+            crate::dictionary::delta_for(
+                tree,
+                served,
+                headers.get("available-dictionary").map(String::as_str),
+                headers.get("accept-encoding").map(String::as_str),
+            )
+        };
+        let dictionary_vary = tree.is_file(&format!("{served}.dcz"));
         // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
         // range request: ranges are served from the identity body).
         let deflated = if !live
+            && delta.is_none()
             && !headers.contains_key("range")
             && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
         {
@@ -2321,11 +2354,21 @@ pub fn respond(
         } else {
             body
         };
+        let vary_on = if dictionary_vary {
+            "accept-encoding, available-dictionary"
+        } else {
+            "accept-encoding"
+        };
         let encoding: Vec<(String, String)> = if deflated.is_some() {
             owned(vec![
                 ("content-encoding", "gzip".into()),
-                ("vary", "accept-encoding".into()),
+                ("vary", vary_on.into()),
             ])
+        } else {
+            vec![]
+        };
+        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
@@ -2338,12 +2381,13 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page and a gzip response are other representations of the file: they get their own ETags.
+        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}{}\"",
+            "\"{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" }
+            if deflated.is_some() { "-gzip" } else { "" },
+            if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
@@ -2352,6 +2396,7 @@ pub fn respond(
         let not_modified = || {
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -2372,6 +2417,20 @@ pub fn respond(
                 return not_modified();
             }
         }
+        // The delta is sent whole (no byte ranges of an encoded body).
+        if let Some(d) = delta {
+            let mut h = owned(vec![
+                ("content-type", mime.into()),
+                ("content-length", d.len().to_string()),
+            ]);
+            h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
+            h.push(("content-encoding".into(), "dcz".into()));
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            return finish(200, h, Some(d.to_vec()));
+        }
+        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
@@ -3324,6 +3383,29 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn isolate_flag() {
+        let t = site();
+        let h = HashMap::new();
+        for coep in ["require-corp", "credentialless"] {
+            let opts = SiteServerOptions {
+                isolate: Some(coep.into()),
+                ..Default::default()
+            };
+            for p in ["/", "/missing"] {
+                let r = handle_request(&t, &opts, "GET", p, &h);
+                assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
+                assert_eq!(r.header("cross-origin-embedder-policy"), Some(coep));
+                assert_eq!(
+                    r.header("cross-origin-resource-policy"),
+                    Some("same-origin")
+                );
+            }
+        }
+        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/", &h);
+        assert_eq!(r.header("cross-origin-embedder-policy"), None);
     }
 
     #[test]

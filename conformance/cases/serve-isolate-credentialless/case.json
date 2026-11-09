@@ -1,0 +1,7 @@
+{
+  "command": "serve",
+  "args": ["--isolate", "--coep", "credentialless"],
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 200, "headers": { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "credentialless", "cross-origin-resource-policy": "same-origin" } } }
+  ]
+}
