@@ -650,9 +650,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "Started {} ({}) serving {label} at {}\n{}{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
-        network_lines(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
-        throttle_line(up.throttle.as_deref())
         site_url(
             &up.host,
             up.port,
@@ -664,7 +661,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             up.port,
             up.base_path.as_deref(),
             up.tls_cert.is_some()
-        )
+        ),
+        throttle_line(up.throttle.as_deref())
     ));
     Ok(0)
 }
