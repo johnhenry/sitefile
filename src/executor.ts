@@ -419,6 +419,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn, {
     ...(options.node !== undefined ? { node: options.node } : {}),
     ...(options.onNotice ? { onNotice: options.onNotice } : {}),
+    reusesResults: options.cacheDir !== undefined || memo !== undefined,
   });
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
