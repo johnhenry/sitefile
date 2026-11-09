@@ -1,0 +1,9 @@
+{
+  "command": "serve",
+  "args": ["--spa-fallback", "app.html"],
+  "requests": [
+    { "target": "/admin/users/5", "headers": { "sec-fetch-mode": "navigate" }, "expect": { "status": 200, "body": "app\n" } },
+    { "target": "/x", "headers": { "sec-fetch-dest": "document" }, "expect": { "status": 200, "body": "app\n" } },
+    { "target": "/x.css", "headers": { "sec-fetch-dest": "style" }, "expect": { "status": 404 } }
+  ]
+}

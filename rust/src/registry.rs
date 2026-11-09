@@ -2199,11 +2199,21 @@ pub fn push_image(
         if let Ok(b) = parse_ref(a).map(|b| with_default_registry(&b)) {
             if b.registry.as_deref() == Some(client.registry.as_str()) && b.name != repo {
                 mount_from = Some(b.name);
-                let n = parsed.layers.len().saturating_sub(1);
-                base_layers = parsed.layers[..n]
-                    .iter()
-                    .map(|l| l.digest.clone())
-                    .collect();
+                // Every layer but the site layers (`--oci-layers` may give several).
+                let config = store
+                    .read_blob(&parsed.config.digest, None)
+                    .ok()
+                    .and_then(|c| crate::export::oci::parse_config(&c).ok());
+                if let Some(cfg) = config {
+                    let site = crate::export::oci::site_layer_indices(&parsed, &cfg);
+                    base_layers = parsed
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !site.contains(i))
+                        .map(|(_, l)| l.digest.clone())
+                        .collect();
+                }
             }
         }
     }
