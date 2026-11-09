@@ -5,5 +5,5 @@ properties:
   title: string
   description: string
   date: date
-  tags: {type: list, items: string}
+  tags: {type: list, items: string, pattern: '^[a-z0-9-]+$'}
   draft: boolean

@@ -1,0 +1,2 @@
+properties:
+  code: {pattern: '^[A-Z]{2,1}$'}

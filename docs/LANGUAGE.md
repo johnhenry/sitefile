@@ -684,7 +684,7 @@ properties:
   title: string
   date: date
   draft: boolean
-  tags: {type: list, items: string}
+  tags: {type: list, items: string, pattern: '^[a-z0-9-]+$'}
   status: {enum: [draft, published]}
 ```
 
@@ -707,11 +707,41 @@ properties:
       `number`, `boolean` or `date`);
     - `enum`: a non-empty list of allowed strings, numbers or booleans; for a
       `list` value, the allowed elements.
+    - `pattern`: a regular expression the value (for a `list`, each element)
+      must match somewhere, like JSON Schema's `pattern` and JavaScript's
+      `RegExp.test`; anchor it (`'^[a-z0-9-]+$'`) to match the whole value.
+      Only strings can match (`it should be a string matching the pattern …`),
+      so in a CSV import every cell is checked as text. Checked after `type`
+      and `enum`. Write it single-quoted in YAML so backslashes stay as typed.
   Keys not listed are not checked, and a listed key that is missing (or `null`)
   is only an error when it is `required`. There are no other keywords (no
-  `pattern`: the two implementations would need the same regular expression
-  engine; no nested objects); an unknown key, type or malformed rule is
-  `E_SCHEMA` at the `SCHEMA` clause, naming the schema file and the property.
+  nested objects); an unknown key, type or malformed rule is `E_SCHEMA` at the
+  `SCHEMA` clause, naming the schema file and the property.
+- **Patterns** are a subset of JavaScript regular expressions (with the `u`
+  flag) that both implementations run with one small engine of their own
+  (`src/pattern.ts`, `rust/src/pattern.rs`; no regex dependency), so they
+  accept the same patterns and match the same strings. Every pattern they
+  accept is a valid JavaScript `u` regex with the same meaning:
+  - literals: any character other than `^ $ \ . * + ? ( ) [ ] { } |`;
+  - `.`: any character except `\n`, `\r`, U+2028 and U+2029;
+  - classes `[abc]`, `[a-z]`, `[^…]` (`-` is literal first or last; `[]`
+    matches nothing, `[^]` anything);
+  - `\d` (`[0-9]`), `\w` (`[A-Za-z0-9_]`), `\s` (JavaScript whitespace) and
+    their complements `\D \W \S`; `\n \r \t`; a `\` before any of
+    `^ $ \ . * + ? ( ) [ ] { } | /` (and `-` in a class) is that character;
+  - repetition `* + ? {n} {n,} {n,m}` (counts up to 1000; a trailing `?`
+    makes it lazy, which changes nothing here), groups `( … )` and
+    `(?: … )`, alternation `|`, and the anchors `^` and `$` (start and end of
+    the value; there is no multiline mode).
+  Characters are Unicode code points, and matching is case-sensitive. Anything
+  else (`\b`, back-references, lookaround `(?=`, named groups, `\u…`, flags,
+  a lone `{`, `}` or `]`) is `E_SCHEMA` naming the pattern, the position (in
+  characters) and the reason:
+  `IMPORT posts: schema './post.schema.yaml' property 'slug': pattern '[a-' is invalid at character 1: unterminated character class`.
+  Matching runs a Thompson NFA, so it takes time linear in the value's length
+  whatever the pattern (no catastrophic backtracking). The two engines are
+  checked against shared vectors (`rust/tests/fixtures/pattern/vectors.json`),
+  random patterns (`fuzz.json`), and JavaScript's own `RegExp`.
 - **What is checked**: each element of a list import (every Markdown document,
   each element of a JSON/YAML array or directory collection, each CSV row), or
   the single document of a one-file import. An element that is not an object is
@@ -727,7 +757,8 @@ properties:
   `IMPORT posts: document '/2026-01-05-hello.md' has no 'title' (required by schema './post.schema.yaml')`,
   `IMPORT posts: document '/a.md' has 'date' string 'soon'; it should be a date (YYYY-MM-DD or an RFC 3339 date-time)`,
   `IMPORT posts: document '/a.md' has 'tags' item 2 number 3; it should be a string`,
-  `IMPORT items: document '#2' has 'size' string 'xl'; it should be one of s, m, l`.
+  `IMPORT items: document '#2' has 'size' string 'xl'; it should be one of s, m, l`,
+  `IMPORT posts: document '/a.md' has 'handle' string 'Hello World'; it should match the pattern '^[a-z0-9-]+$'`.
   Imports are checked in Sitefile order and documents in path order (before
   `SORT BY`), after every import has been read.
 - Checking happens whenever the imports are read (`build`, `serve`, `inspect`,

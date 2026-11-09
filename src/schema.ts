@@ -7,6 +7,7 @@
 //     title: string                  # a type name ...
 //     tags: { type: list, items: string }
 //     status: { enum: [draft, published] }
+//     slug: { pattern: '^[a-z0-9-]+$' }   # a string matching a regular expression (src/pattern.ts)
 //
 // Types: string, number, boolean, date (YYYY-MM-DD or an RFC 3339 date-time, as FEED reads it) and list
 // (`items` gives the type of its elements). `enum` lists the allowed strings, numbers or booleans (for a list,
@@ -14,6 +15,7 @@
 // `boolean` the strings `true` and `false`, enum entries match their text, and an empty cell counts as missing. docs/LANGUAGE.md has the rules.
 import { SitefileError, type SourceSpan } from './errors.js';
 import { parseFeedDate } from './site.js';
+import { compilePattern, PatternError, patternMatches, type Pattern } from './pattern.js';
 
 export type SchemaType = 'string' | 'number' | 'boolean' | 'date' | 'list';
 type ItemType = Exclude<SchemaType, 'list'>;
@@ -37,6 +39,8 @@ export interface SchemaRule {
   readonly type?: SchemaType;
   readonly items?: ItemType;
   readonly enum?: readonly EnumValue[];
+  /** `pattern`: strings (or a list's items) must match it somewhere (src/pattern.ts). */
+  readonly pattern?: Pattern;
 }
 
 /** A compiled schema; `label` names its file in messages. */
@@ -81,10 +85,10 @@ export function compileSchema(value: unknown, label: string, what: string, span:
         properties.push({ key, type: typeName(rule, TYPES, 'type') as SchemaType });
         continue;
       }
-      if (!isObject(rule)) fail(`${at} expected a type name or a mapping with type, items or enum`);
+      if (!isObject(rule)) fail(`${at} expected a type name or a mapping with type, items, enum or pattern`);
       const r = rule as Record<string, unknown>;
       for (const k of Object.keys(r)) {
-        if (k !== 'type' && k !== 'items' && k !== 'enum') fail(`${at} unknown key '${k}' (expected type, items or enum)`);
+        if (k !== 'type' && k !== 'items' && k !== 'enum' && k !== 'pattern') fail(`${at} unknown key '${k}' (expected type, items, enum or pattern)`);
       }
       const type = r['type'] !== undefined ? (typeName(r['type'], TYPES, 'type') as SchemaType) : undefined;
       let items: ItemType | undefined;
@@ -100,7 +104,18 @@ export function compileSchema(value: unknown, label: string, what: string, span:
         }
         values = e as EnumValue[];
       }
-      properties.push({ key, ...(type ? { type } : {}), ...(items ? { items } : {}), ...(values ? { enum: values } : {}) });
+      let pattern: Pattern | undefined;
+      if (r['pattern'] !== undefined) {
+        const src = r['pattern'];
+        if (typeof src !== 'string') fail(`${at} pattern must be a string (a regular expression)`);
+        try {
+          pattern = compilePattern(src as string);
+        } catch (e) {
+          if (!(e instanceof PatternError)) throw e;
+          fail(`${at} pattern '${src as string}' is invalid ${e.message}`);
+        }
+      }
+      properties.push({ key, ...(type ? { type } : {}), ...(items ? { items } : {}), ...(values ? { enum: values } : {}), ...(pattern ? { pattern } : {}) });
     }
   }
   return { label, required, properties };
@@ -129,6 +144,12 @@ function hasType(v: unknown, t: SchemaType, csv: boolean): boolean {
     case 'list':
       return Array.isArray(v);
   }
+}
+
+/** Why a value fails a `pattern`, or undefined when it matches. Only strings can match. */
+function patternMismatch(v: unknown, p: Pattern): string | undefined {
+  if (typeof v !== 'string') return `it should be a string matching the pattern '${p.source}'`;
+  return patternMatches(p, v) ? undefined : `it should match the pattern '${p.source}'`;
 }
 
 function inEnum(v: unknown, values: readonly EnumValue[], csv: boolean): boolean {
@@ -166,9 +187,17 @@ export function checkSchema(value: unknown, schema: Schema, what: string, csv: b
             fail(`has '${rule.key}' item ${j + 1} ${describe(item)}; it should be ${EXPECTED[rule.items]}`);
           }
           if (rule.enum !== undefined && !inEnum(item, rule.enum, csv)) fail(`has '${rule.key}' item ${j + 1} ${describe(item)}; it should be one of ${enumText(rule.enum)}`);
+          if (rule.pattern !== undefined) {
+            const m = patternMismatch(item, rule.pattern);
+            if (m) fail(`has '${rule.key}' item ${j + 1} ${describe(item)}; ${m}`);
+          }
         });
-      } else if (rule.enum !== undefined && !inEnum(v, rule.enum, csv)) {
-        fail(`has '${rule.key}' ${describe(v)}; it should be one of ${enumText(rule.enum)}`);
+      } else {
+        if (rule.enum !== undefined && !inEnum(v, rule.enum, csv)) fail(`has '${rule.key}' ${describe(v)}; it should be one of ${enumText(rule.enum)}`);
+        if (rule.pattern !== undefined) {
+          const m = patternMismatch(v, rule.pattern);
+          if (m) fail(`has '${rule.key}' ${describe(v)}; ${m}`);
+        }
       }
     }
   });
