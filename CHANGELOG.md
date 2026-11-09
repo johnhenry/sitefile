@@ -188,6 +188,13 @@
   A small deterministic Zstandard encoder shared by both implementations
   (`src/zstd.ts`, `rust/src/zstd.rs`); frames decode with libzstd.
   Conformance cases `steps-dictionary`, `serve-dictionary`.
+- **WARC export, import and serve** (johnhenry/sitefile#206, WARC part):
+  `EXPORT / AS warc BASE <url>` writes a deterministic WARC/1.1 file (one
+  `response` record per file with its `_headers`, directory indexes at their
+  directory URL; `COMPRESSION gzip` or `-o x.warc.gz` gzips each record);
+  `IMPORT … AS tree` and `sitefile serve` read `.warc` and `.warc.gz`. Both
+  implementations; conformance cases `ok-warc`, `ok-warc-gzip`,
+  `ok-warc-import`. WACZ follows once the zip writer work lands.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

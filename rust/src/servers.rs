@@ -540,8 +540,13 @@ fn load_archive(
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     check_archive_file(file, limits)?;
     let bytes = fs::read(file).map_err(|_| unreadable())?;
-    let tree = extract_archive(&bytes, &origin, limits, None)?;
-    if tree.is_file("/oci-layout") {
+    let warc = crate::warc::looks_like_warc(&bytes);
+    let tree = if warc {
+        crate::warc::read_warc(&bytes, &origin, limits, None)?
+    } else {
+        extract_archive(&bytes, &origin, limits, None)?
+    };
+    if !warc && tree.is_file("/oci-layout") {
         return oci_archive_tree(&tree, &origin, limits);
     }
     if hidden {

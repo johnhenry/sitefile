@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1679,8 +1679,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`. The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`; not `.html`, which stays a directory name), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1879,6 +1879,22 @@ and tar timestamps instead.
   `https://site.invalid/`), the page first. Root-relative references (`/css/a.css`) resolve to parts only
   when the base is an origin (`https://example.com/`). The boundary is fixed and the file has no date, so
   the output depends only on the tree.
+
+- **warc**: a [WARC/1.1](https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1/)
+  web archive (ISO 28500) of the site at `BASE` (required, from here or `--base-url`; an https URL
+  ending in `/`). A `warcinfo` record comes first, then, in path order, one `response` record per file
+  at `<BASE><path>` (percent-encoded): `HTTP/1.1 200 OK` with the Content-Type of the Web Bundle MIME
+  table (or the site's `_headers`), `Content-Length`, and every `_headers` rule that matches the path, in
+  file order. `_headers` and `_redirects` themselves are not recorded. An `index.html` is recorded again
+  at its directory's URL (`<BASE>`, `<BASE>docs/`), which replay tools request. `WARC-Payload-Digest` and
+  `WARC-Block-Digest` are `sha256:<hex>`; record IDs are version-8 UUIDs derived from the record, and
+  every `WARC-Date` is `SOURCE_DATE_EPOCH` (default `1970-01-01T00:00:00Z`), so the same build gives the
+  same bytes. `COMPRESSION gzip` (or `-o site.warc.gz`) writes every record as its own gzip member, the
+  usual `.warc.gz` layout. WARCs are also read: `IMPORT x FROM site.warc AS tree` (plain or gzipped) and
+  `sitefile serve site.warc` take the `200` responses of the first response's host, a URL ending in `/`
+  as that directory's `index.html`, the first record of each path; paths are checked like archive entries
+  (`E_ARCHIVE_UNSAFE`) and the archive limits apply. WACZ (a zip of WARCs with an index) is not written
+  yet.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

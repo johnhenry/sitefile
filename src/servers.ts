@@ -1,3 +1,4 @@
+import { looksLikeWarc, readWarc } from './warc.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
@@ -246,8 +247,9 @@ export async function loadArchiveTree(
   const origin = file;
   const unreadable = await checkArchiveFile(file, limits);
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
-  const tree = await extractArchive(bytes, origin, limits);
-  if (tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
+  const warc = looksLikeWarc(bytes);
+  const tree = warc ? readWarc(bytes, origin, limits) : await extractArchive(bytes, origin, limits);
+  if (!warc && tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
   return options.hidden ? tree : served(tree, origin, options);
 }
 
