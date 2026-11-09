@@ -27,6 +27,7 @@ const PASS_BOOLEANS: &[&str] = &[
     "allow-http",
     "allow-private-network",
     "allow-hardlinks",
+    "keep-os-metadata",
     "force",
 ];
 const PASS_STRINGS: &[&str] = &[
@@ -35,6 +36,7 @@ const PASS_STRINGS: &[&str] = &[
     "timeout",
     "plugin-timeout",
     "plugin-memory",
+    "node",
 ];
 const PASS_LISTS: &[&str] = &[
     "allow-exec",
@@ -55,8 +57,8 @@ const FLAGS: &[&str] = &[
     "--build-arg-file <path>       read ARGs for every target from a file (after the targets' own; repeatable)",
     "Passed to every build: --allow-exec, --allow-plugin, --allow-plugins, --no-cache, --cache-from, --strict-pins,",
     "  --frozen-lockfile, --update-lock, --no-lockfile, --vendor-dir, --allow-http, --allow-private-network,",
-    "  --allow-hardlinks, --max-download-bytes, --timeout, --plugin-timeout, --plugin-memory, --insecure-registry,",
-    "  --force",
+    "  --allow-hardlinks, --keep-os-metadata, --max-download-bytes, --timeout, --plugin-timeout, --plugin-memory, --node,",
+    "  --insecure-registry, --force",
 ];
 
 const OPTS: &[OptSpec] = &[
@@ -75,12 +77,14 @@ const OPTS: &[OptSpec] = &[
     flag("allow-http"),
     flag("allow-private-network"),
     flag("allow-hardlinks"),
+    flag("keep-os-metadata"),
     flag("force"),
     string("vendor-dir"),
     string("max-download-bytes"),
     string("timeout"),
     string("plugin-timeout"),
     string("plugin-memory"),
+    string("node"),
     strings("allow-exec"),
     strings("allow-plugin"),
     strings("cache-from"),
