@@ -455,7 +455,25 @@ struct PluginProcess {
 /// Percent-encode a path for a `file://` URL.
 fn file_url(file: &Path) -> String {
     let mut s = String::from("file://");
-    for b in file.to_string_lossy().bytes() {
+    #[cfg(unix)]
+    let text = file.to_string_lossy();
+    // Windows (Node's `pathToFileURL`): `C:\a\b` is `file:///C:/a/b`, and
+    // `\\host\share\x` is `file://host/share/x`.
+    #[cfg(windows)]
+    let text = {
+        let t = file.to_string_lossy().replace('\\', "/");
+        let t = t.strip_prefix("//?/").map(str::to_string).unwrap_or(t);
+        let t = t
+            .strip_prefix("UNC/")
+            .map(|r| format!("//{r}"))
+            .unwrap_or(t);
+        match t.strip_prefix("//") {
+            Some(unc) => unc.to_string(),
+            None if t.starts_with('/') => t,
+            None => format!("/{t}"),
+        }
+    };
+    for b in text.bytes() {
         if b.is_ascii_alphanumeric() || b"/-._~!$&'()*+,;=:@".contains(&b) {
             s.push(b as char);
         } else {
@@ -1274,10 +1292,22 @@ mod tests {
         assert_eq!(b64_decode_lenient("aGVsbG8="), b"hello");
         assert_eq!(b64_decode_lenient("aGVsbG8"), b"hello");
         assert_eq!(b64_decode_lenient("aG Vs\nbG8=junk"), b"hello");
+        #[cfg(unix)]
         assert_eq!(
             file_url(Path::new("/a b/c#d.mjs")),
             "file:///a%20b/c%23d.mjs"
         );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                file_url(Path::new(r"C:\a b\c#d.mjs")),
+                "file:///C:/a%20b/c%23d.mjs"
+            );
+            assert_eq!(
+                file_url(Path::new(r"\\host\share\p.mjs")),
+                "file://host/share/p.mjs"
+            );
+        }
     }
 
     #[test]

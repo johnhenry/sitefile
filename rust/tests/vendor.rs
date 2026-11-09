@@ -115,6 +115,7 @@ fn vendor_then_build_offline_without_network_flags() {
     );
     assert!(
         v.stdout
+            .replace('\\', "/")
             .ends_with("vendor/sitefile\nUpdated Sitefile.lock\n"),
         "{}",
         v.stdout

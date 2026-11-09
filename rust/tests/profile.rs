@@ -159,7 +159,7 @@ fn build_profile_lists_steps_in_sitefile_order() {
         .collect();
     assert!(
         ops.iter()
-            .all(|l| l.ends_with("blog/Sitefile") && l == &ops[0]),
+            .all(|l| l.replace('\\', "/").ends_with("blog/Sitefile") && l == &ops[0]),
         "{ops:?}"
     );
     let imp = ev.iter().find(|e| e["name"] == "import posts").unwrap();
