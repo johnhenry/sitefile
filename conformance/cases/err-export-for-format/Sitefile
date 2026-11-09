@@ -1,0 +1,2 @@
+FROM ./site
+EXPORT / AS wbn BASE https://example.com/ FOR vercel

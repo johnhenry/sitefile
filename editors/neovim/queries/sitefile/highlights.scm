@@ -79,6 +79,10 @@
     "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML" "WARC" "SWBN"))
 ((compression) @constant.builtin
   (#any-of? @constant.builtin "gzip" "none" "GZIP" "NONE"))
+((export_host) @constant.builtin
+  (#any-of? @constant.builtin
+    "netlify" "cloudflare" "vercel" "firebase" "azure" "github-pages" "s3"
+    "NETLIFY" "CLOUDFLARE" "VERCEL" "FIREBASE" "AZURE" "GITHUB-PAGES" "S3"))
 
 ; Flags
 (flag "--" @attribute)

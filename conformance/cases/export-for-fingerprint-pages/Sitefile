@@ -1,0 +1,4 @@
+# FINGERPRINT's cache headers are left out with a warning on GitHub Pages (no --lossy needed).
+FROM ./site
+FINGERPRINT /assets/
+EXPORT / FOR github-pages

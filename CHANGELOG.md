@@ -143,6 +143,17 @@
   (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
   <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
   implementations.
+- **`EXPORT … FOR <host>`** (johnhenry/sitefile#205): writes the REDIRECT
+  and HEADER rules (and FINGERPRINT's cache headers) as Netlify, Cloudflare
+  Pages, Vercel (Build Output API v3), Firebase Hosting (`firebase.json`),
+  Azure Static Web Apps (`staticwebapp.config.json`), GitHub Pages
+  (`.nojekyll`, `CNAME` from `BASE`) or S3 (website configuration and
+  per-object metadata) read them. A rule the host cannot express as Netlify
+  applies it is `E_EXPORT` naming the rule; `build --lossy` leaves it out
+  with a warning. This includes a redirect that a file in the export would
+  answer first on Netlify, on hosts that apply redirects first. Both
+  implementations, with a conformance case per host.
+
 - **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
   404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
   `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
