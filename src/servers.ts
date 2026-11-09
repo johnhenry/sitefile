@@ -6,7 +6,8 @@ import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
-import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
+import { extractArchive, openZipFile, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
+import type { SiteContent } from './server.js';
 import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
@@ -255,19 +256,71 @@ export async function loadArchiveTree(
   options: ServedTreeOptions & { readonly hidden?: boolean } = {},
 ): Promise<Tree> {
   const origin = file;
-  const unreadable = (): SitefileError => new SitefileError('E_ARCHIVE', `cannot read '${origin}'`);
-  const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
-    throw e.code === 'ENOENT' ? new SitefileError('E_NOT_FOUND', `'${origin}' does not exist`) : unreadable();
-  });
-  if (!st.isFile()) throw new SitefileError('E_TYPE', `'${origin}' is not a file`);
-  // The archive is at most its expanded size plus tar framing for every entry.
-  if (st.size > limits.maxTotalBytes + (limits.maxEntries + 2) * 4 * 512) {
-    throw new SitefileError('E_ARCHIVE_LIMIT', `${origin}: archive expands beyond ${limits.maxTotalBytes} bytes`);
-  }
+  const unreadable = await checkArchiveFile(file, limits);
   const bytes = new Uint8Array(await fs.readFile(file).catch(() => { throw unreadable(); }));
   const tree = await extractArchive(bytes, origin, limits);
   if (tree.get('/oci-layout')) return ociArchiveTree(tree, origin, limits);
   return options.hidden ? tree : served(tree, origin, options);
+}
+
+/** The checks every archive file gets before it is read; returns the error for an unreadable file. */
+async function checkArchiveFile(file: string, limits: ArchiveLimits): Promise<() => SitefileError> {
+  const unreadable = (): SitefileError => new SitefileError('E_ARCHIVE', `cannot read '${file}'`);
+  const st = await fs.stat(file).catch((e: NodeJS.ErrnoException) => {
+    throw e.code === 'ENOENT' ? new SitefileError('E_NOT_FOUND', `'${file}' does not exist`) : unreadable();
+  });
+  if (!st.isFile()) throw new SitefileError('E_TYPE', `'${file}' is not a file`);
+  // The archive is at most its expanded size plus tar framing for every entry.
+  if (st.size > limits.maxTotalBytes + (limits.maxEntries + 2) * 4 * 512) {
+    throw new SitefileError('E_ARCHIVE_LIMIT', `${file}: archive expands beyond ${limits.maxTotalBytes} bytes`);
+  }
+  return unreadable;
+}
+
+/** What a server serves: the tree and, for a zip served in place, where its contents come from. */
+export interface ServedSite {
+  readonly tree: Tree;
+  readonly content?: SiteContent;
+  /** Release the open zip file, if any. */
+  close(): void;
+}
+
+/**
+ * A zip archive file opened for serving in place (#213): its entries are checked and indexed at
+ * start (each inflated once, one at a time, for its CRC-32 and digest) and read from the file on
+ * each request, so memory does not grow with the archive. The tree is the one {@link loadArchiveTree}
+ * serves, with the same errors. Undefined for anything that is not a zip (or a zip holding an OCI layout).
+ */
+export async function openZipArchive(file: string, limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS, options: ServedTreeOptions = {}): Promise<ServedSite | undefined> {
+  const unreadable = await checkArchiveFile(file, limits);
+  const head = Buffer.alloc(4);
+  try {
+    const fh = await fs.open(file, 'r');
+    try {
+      await fh.read(head, 0, 4, 0);
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    throw unreadable();
+  }
+  const zip = head[0] === 0x50 && head[1] === 0x4b && ((head[2] === 3 && head[3] === 4) || (head[2] === 5 && head[3] === 6));
+  if (!zip) return undefined;
+  const z = await openZipFile(file, file, limits);
+  if (z.tree.get('/oci-layout')) {
+    z.close();
+    return undefined;
+  }
+  return { tree: served(z.tree, file, options), content: z, close: () => z.close() };
+}
+
+/** {@link loadServedTree}, serving a zip archive in place ({@link openZipArchive}). */
+export async function loadServedSite(store: Store, source: ServerState['source'], options: ServedTreeOptions = {}): Promise<ServedSite> {
+  if (source.kind === 'archive') {
+    const site = await openZipArchive(source.path, DEFAULT_ARCHIVE_LIMITS, options);
+    if (site) return site;
+  }
+  return { tree: await loadServedTree(store, source, options), close: () => undefined };
 }
 
 /** The files of the first image in an extracted OCI layout. */
