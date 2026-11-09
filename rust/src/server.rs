@@ -62,6 +62,14 @@ pub struct SiteServerOptions {
     pub max_connections_per_ip: usize,
     /// Count loopback clients against `max_connections_per_ip` too (tests only).
     pub limit_loopback: bool,
+    /// `--random-route`: the site answers only under this prefix (`/<random>`).
+    pub base_path: Option<String>,
+    /// `--allow-ip`, `--deny-ip`: a non-loopback client they refuse gets `403` before anything else.
+    pub ip_rules: Option<IpRules>,
+    /// `X-Robots-Tag: noindex` on every response (non-loopback binds).
+    pub noindex: bool,
+    /// Add the client address and device to access-log lines of non-loopback clients.
+    pub client_info: bool,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -772,6 +780,143 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// A parsed CIDR block: 4 or 16 address bytes and a prefix length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cidr {
+    pub bytes: Vec<u8>,
+    pub prefix: u32,
+}
+
+/// `--allow-ip` / `--deny-ip` blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IpRules {
+    pub allow: Vec<Cidr>,
+    pub deny: Vec<Cidr>,
+}
+
+/// Address bytes of an IPv4 or IPv6 literal (`::ffff:a.b.c.d` becomes IPv4; `ipBytes` in
+/// src/server.ts).
+pub fn ip_bytes(text: &str) -> Option<Vec<u8>> {
+    let t = match text.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") && text[7..].contains('.') => &text[7..],
+        _ => text,
+    };
+    if is_ipv4(t) {
+        return Some(t.split('.').map(|p| p.parse::<u8>().unwrap_or(0)).collect());
+    }
+    if t.is_empty() || !t.contains(':') || !t.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
+        return None;
+    }
+    let halves: Vec<&str> = t.split("::").collect();
+    if halves.len() > 2 {
+        return None;
+    }
+    let words = |h: &str| -> Option<Vec<u16>> {
+        if h.is_empty() {
+            return Some(Vec::new());
+        }
+        h.split(':')
+            .map(|w| {
+                if (1..=4).contains(&w.len()) {
+                    u16::from_str_radix(w, 16).ok()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let a = words(halves[0])?;
+    let b = if halves.len() == 2 {
+        words(halves[1])?
+    } else {
+        Vec::new()
+    };
+    let used = a.len() + b.len();
+    let fill = if halves.len() == 2 {
+        if used >= 8 {
+            return None;
+        }
+        8 - used
+    } else {
+        0
+    };
+    if used + fill != 8 {
+        return None;
+    }
+    let mut all = a;
+    all.extend(std::iter::repeat_n(0u16, fill));
+    all.extend(b);
+    Some(all.iter().flat_map(|w| w.to_be_bytes()).collect())
+}
+
+/// `a.b.c.d/n`, `x::y/n` or a bare address (`parseCidr` in src/server.ts).
+pub fn parse_cidr(text: &str) -> Option<Cidr> {
+    let parts: Vec<&str> = text.trim().split('/').collect();
+    if parts.len() > 2 {
+        return None;
+    }
+    let bytes = ip_bytes(parts[0])?;
+    let max = (bytes.len() * 8) as u32;
+    let prefix = match parts.get(1) {
+        None => max,
+        Some(l) if (1..=3).contains(&l.len()) && l.bytes().all(|b| b.is_ascii_digit()) => {
+            l.parse().ok()?
+        }
+        Some(_) => return None,
+    };
+    (prefix <= max).then_some(Cidr { bytes, prefix })
+}
+
+fn cidr_contains(c: &Cidr, ip: &[u8]) -> bool {
+    c.bytes.len() == ip.len()
+        && (0..c.prefix as usize).all(|bit| {
+            let mask = 0x80u8 >> (bit % 8);
+            c.bytes[bit / 8] & mask == ip[bit / 8] & mask
+        })
+}
+
+/// Whether `--allow-ip`/`--deny-ip` let a client in (`ipAllowed` in src/server.ts).
+pub fn ip_allowed(rules: Option<&IpRules>, remote: &str) -> bool {
+    let Some(r) = rules else { return true };
+    if is_loopback_text(remote) {
+        return true;
+    }
+    let Some(ip) = ip_bytes(remote) else {
+        return false;
+    };
+    if r.deny.iter().any(|c| cidr_contains(c, &ip)) {
+        return false;
+    }
+    r.allow.is_empty() || r.allow.iter().any(|c| cidr_contains(c, &ip))
+}
+
+/// `isLoopbackAddress` in src/server.ts.
+fn is_loopback_text(ip: &str) -> bool {
+    let t = match ip.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") => &ip[7..],
+        _ => ip,
+    };
+    ip == "::1" || t.starts_with("127.")
+}
+
+/// A short device name from a `User-Agent` (`deviceOf` in src/server.ts).
+pub fn device_of(user_agent: Option<&str>) -> &'static str {
+    let ua = user_agent.unwrap_or("");
+    for (needle, name) in [
+        ("iPhone", "iPhone"),
+        ("iPad", "iPad"),
+        ("Android", "Android"),
+        ("Windows", "Windows"),
+        ("Macintosh", "Mac"),
+        ("Linux", "Linux"),
+    ] {
+        if ua.contains(needle) {
+            return name;
+        }
+    }
+    "other"
+}
+
 /// Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`).
 fn is_loopback_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
@@ -800,6 +945,9 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     if options.cors {
         base.push(("access-control-allow-origin".into(), "*".into()));
     }
+    if options.noindex {
+        base.push(("x-robots-tag".into(), "noindex".into()));
+    }
     base.extend(isolation_headers(options));
     base
 }
@@ -815,8 +963,10 @@ pub struct AccessLogEntry<'a> {
     pub ms: f64,
     /// `Content-Range` of a `206`/`416`.
     pub range: Option<&'a str>,
-    /// The client address (`--log-ip`).
+    /// The client address (`--log-ip`, or a non-loopback client with client info).
     pub remote: Option<&'a str>,
+    /// The client's device ([`device_of`]).
+    pub device: Option<&'a str>,
 }
 
 fn json_str(s: &str) -> String {
@@ -829,12 +979,13 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
     let target = printable(e.target);
     if !json {
         return format!(
-            "{} {target} {} {} {:.1}ms{}",
+            "{} {target} {} {} {:.1}ms{}{}",
             e.method,
             e.status,
             e.bytes,
             e.ms,
-            e.remote.map(|r| format!(" {r}")).unwrap_or_default()
+            e.remote.map(|r| format!(" {r}")).unwrap_or_default(),
+            e.device.map(|d| format!(" {d}")).unwrap_or_default()
         );
     }
     let (path, query) = match target.find('?') {
@@ -842,7 +993,7 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
         None => (target.as_str(), ""),
     };
     format!(
-        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}}}",
+        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}}}",
         json_str(e.ts),
         json_str(e.method),
         json_str(path),
@@ -853,6 +1004,9 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
         e.range.map(json_str).unwrap_or_else(|| "null".into()),
         e.remote
             .map(|r| format!(",\"remote\":{}", json_str(r)))
+            .unwrap_or_default(),
+        e.device
+            .map(|d| format!(",\"device\":{}", json_str(d)))
             .unwrap_or_default()
     )
 }
@@ -928,6 +1082,7 @@ pub fn log_line_as_json(line: &str) -> String {
                 ms: r.4,
                 range: None,
                 remote: r.5,
+                device: None,
             },
         );
     }
@@ -1045,6 +1200,7 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
     ok.then(|| v.to_string())
 }
 
+const FORBIDDEN_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n";
 const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
@@ -1778,11 +1934,36 @@ pub fn respond(
     let q = url.find('?');
     let hash = url.find('#');
     let end = q.unwrap_or(url.len()).min(hash.unwrap_or(url.len()));
-    let raw_path = &url[..end];
+    let mut raw_path = &url[..end];
     let search = match (q, hash) {
         (None, _) => "",
         (Some(q), Some(h)) if h > q => &url[q..h],
         (Some(q), _) => &url[q..],
+    };
+    let prefix = options.base_path.as_deref();
+    if let Some(p) = prefix.filter(|_| !raw_path.starts_with("/__sitefile/")) {
+        // --random-route: only paths under the secret prefix exist (the reserved /__sitefile/ ones too).
+        if raw_path == p {
+            return finish(
+                301,
+                owned(vec![
+                    ("location", format!("{p}/{search}")),
+                    ("content-length", "0".into()),
+                ]),
+                None,
+            );
+        }
+        match raw_path.strip_prefix(p).filter(|r| r.starts_with('/')) {
+            Some(rest) => raw_path = rest,
+            None => return page(404, NOT_FOUND_PAGE, vec![]),
+        }
+    }
+    // A redirect target inside the site: under the secret prefix with --random-route.
+    let loc = |l: String| -> String {
+        match prefix {
+            Some(p) if l.starts_with('/') && !l.starts_with("//") => format!("{p}{l}"),
+            _ => l,
+        }
     };
     if options.live_reload.is_some() && raw_path == RELOAD_PATH {
         // GET is streamed by the connection loop; HEAD only gets the headers.
@@ -1963,11 +2144,11 @@ pub fn respond(
                 r.to.clone()
             };
             if r.status != 200 && r.status != 404 {
-                let location = if target.contains('?') {
+                let location = loc(if target.contains('?') {
                     target
                 } else {
                     format!("{target}{search}")
-                };
+                });
                 return Some(finish(
                     r.status,
                     owned(vec![("location", location), ("content-length", "0".into())]),
@@ -1991,7 +2172,7 @@ pub fn respond(
     let mut served = resolve(&vpath, trailing);
     if served.is_none() && !trailing && tree.is_directory(&vpath) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}/{search}", enc.join("/"));
+        let location = loc(format!("/{}/{search}", enc.join("/")));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
@@ -2007,7 +2188,7 @@ pub fn respond(
     // the page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if served.is_none() && trailing && !segs.is_empty() && is_file(&format!("{vpath}.html")) {
         let enc: Vec<String> = segs.iter().map(|s| encode_uri_component(s)).collect();
-        let location = format!("/{}{search}", enc.join("/"));
+        let location = loc(format!("/{}{search}", enc.join("/")));
         return finish(
             301,
             owned(vec![("location", location), ("content-length", "0".into())]),
@@ -2162,7 +2343,9 @@ fn serve_connection(
         let started = Instant::now();
         let mut keep =
             !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        let host_ok = !busy
+        let ip_ok = ip_allowed(options.ip_rules.as_ref(), peer.as_deref().unwrap_or(""));
+        let host_ok = ip_ok
+            && !busy
             && host_allowed(
             options.allowed_hosts.as_deref(),
             req.headers.get("host").map(String::as_str),
@@ -2206,6 +2389,21 @@ fn serve_connection(
         };
         let site_rules = rules_for(rules, &current);
         let res = match console {
+            // --allow-ip / --deny-ip refuse this client (checked first).
+            _ if !ip_ok => {
+                let mut headers = base_headers(options);
+                headers.push(("content-type".into(), "text/html; charset=utf-8".into()));
+                headers.push(("content-length".into(), FORBIDDEN_PAGE.len().to_string()));
+                Response {
+                    status: 403,
+                    headers,
+                    body: if req.method == "HEAD" {
+                        Vec::new()
+                    } else {
+                        FORBIDDEN_PAGE.as_bytes().to_vec()
+                    },
+                }
+            }
             // Over --max-connections-per-ip: one 503, then the connection closes.
             _ if busy => {
                 let mut headers = base_headers(options);
@@ -2281,7 +2479,12 @@ fn serve_connection(
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
         if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                let remote = if options.log_ip { peer.clone() } else { None };
+                let shared = options.client_info && !peer.as_deref().is_some_and(is_loopback_text);
+                let remote = if options.log_ip || shared {
+                    peer.clone()
+                } else {
+                    None
+                };
                 log(&access_log_line(
                     options.log_json,
                     &AccessLogEntry {
@@ -2293,6 +2496,8 @@ fn serve_connection(
                         ms,
                         range: res.header("content-range"),
                         remote: remote.as_deref(),
+                        device: shared
+                            .then(|| device_of(req.headers.get("user-agent").map(String::as_str))),
                     },
                 ));
             }
@@ -2689,6 +2894,10 @@ mod tests {
             auth: None,
             max_connections_per_ip: 0,
             limit_loopback: false,
+            base_path: None,
+            ip_rules: None,
+            noindex: false,
+            client_info: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2929,6 +3138,7 @@ mod tests {
             ms: 1.24,
             range: Some("bytes 0-1/10"),
             remote: None,
+            device: None,
         };
         assert_eq!(
             access_log_line(true, &e),
@@ -3301,6 +3511,10 @@ mod tests {
             auth: None,
             max_connections_per_ip: 0,
             limit_loopback: false,
+            base_path: None,
+            ip_rules: None,
+            noindex: false,
+            client_info: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
