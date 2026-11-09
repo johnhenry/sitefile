@@ -511,6 +511,26 @@ SECURITY_TXT CONTACT mailto:a@example.com EXPIRES 2099-01-01 POLICY https://exam
     (path)))
 
 ================================================================================
+PRECACHE with TO and INTO
+================================================================================
+
+PRECACHE --overwrite /assets/ /index.html TO /sw-manifest.json INTO /sw.js
+PRECACHE /
+
+---
+
+(source_file
+  (precache_instruction
+    (flag
+      (flag_name))
+    (path)
+    (path)
+    (path)
+    (path))
+  (precache_instruction
+    (path)))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

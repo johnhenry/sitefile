@@ -98,6 +98,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Writes an RFC 9116 `/.well-known/security.txt`. CONTACT (`mailto:`, `tel:` or `https:`) and EXPIRES (a date or RFC 3339 date-time, not a duration) are required; a date in the past or less than 30 days away warns.",
     ),
     (
+        "PRECACHE",
+        "PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]",
+        "Writes a Workbox-style precache manifest, `[{url, revision}]`, of the matching files below the EXPORT path (default `/sw-manifest.json`); `revision` is 10 hex digits of the SHA-256, or null for a fingerprinted file. `INTO` replaces `self.__WB_MANIFEST` in a service worker of the stage with it.",
+    ),
+    (
         "CHECKLINKS",
         "CHECKLINKS [--warn] [--external]",
         "Checks every reference in the stage's HTML and CSS files at this point: a link to a file that is not there (and that no REDIRECT covers) fails the build with `E_BROKEN_LINK`, listing each with its file and line. Clean URLs (`/about` → `/about.html`) and directory indexes count as found.",
@@ -183,6 +188,8 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("SECURITY_TXT", "ENCRYPTION", "`ENCRYPTION <uri>` (repeatable): a key for encrypted reports: `https:`, `openpgp4fpr:` or `dns:`."),
     ("SECURITY_TXT", "POLICY", "`POLICY <uri>` (repeatable): the disclosure policy, an `https:` URL."),
     ("SECURITY_TXT", "TO", "`TO <dest>`: the file (default `/.well-known/security.txt`)."),
+    ("PRECACHE", "TO", "`TO <dest>`: the manifest file (default `/sw-manifest.json`; with only INTO, none is written)."),
+    ("PRECACHE", "INTO", "`INTO <service-worker>`: a file of the stage whose first `self.__WB_MANIFEST` becomes the manifest (Workbox `injectManifest`)."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci, car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints), html (index.html with its assets inlined as data: URIs) or mhtml (index.html and its assets as one MHTML file)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -431,6 +438,7 @@ mod tests {
                 "SECURITY_TXT",
                 &crate::language::parser::SECURITY_TXT_CLAUSES[..],
             ),
+            ("PRECACHE", &crate::language::parser::PRECACHE_CLAUSES[..]),
         ] {
             for c in clauses {
                 assert!(clause(kw, c).is_some(), "{kw} {c}");

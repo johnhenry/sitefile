@@ -13,6 +13,12 @@
   `_headers` are read, which 404 answers, Cloudflare's SPA fallback), or pick
   Cloudflare's `auto`, `force-slash`, `drop-slash` or `none` directly. Kept in
   the server record. Both implementations, with a conformance case per mode.
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
 - **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
   URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
   a preview with absolute self-links stays local. On by default in
