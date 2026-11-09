@@ -1,11 +1,30 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { SitefileError } from './errors.js';
+import { isSitefileError, SitefileError } from './errors.js';
+import { fetchRemote, redactUrl } from './resources/https.js';
+import { DEFAULT_FETCH_POLICY, type FetchPolicy } from './resources/types.js';
 import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
+
+/** `serve`'s proxying (#172): `--proxy` routes and the fetch policy every proxied request follows. */
+export interface ServeProxy {
+  /** `--proxy /prefix=https://host/path`: requests under `prefix` go to `target` + the rest of the path. */
+  readonly routes: ReadonlyArray<{ readonly prefix: string; readonly target: string }>;
+  /**
+   * The policy: https only unless allowHttp, public addresses only unless allowPrivateNetwork, and a strict
+   * host list (`--allow-hosts`, plus each `--proxy` route's host): a `_redirects` proxy rule to any other
+   * host is refused.
+   */
+  readonly policy: FetchPolicy;
+}
+
+/** Response headers a proxy does not pass on (RFC 9110 section 7.6.1), and the length it recomputes. */
+const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length']);
+/** Request headers passed to the upstream (no cookies or credentials: they belong to this server's origin). */
+const PROXY_REQUEST_HEADERS = ['accept', 'accept-language', 'if-none-match', 'if-modified-since', 'range'];
 
 export interface SiteServerOptions {
   /**
@@ -13,6 +32,8 @@ export interface SiteServerOptions {
    * with the nearest app shell ({@link spaFallback}). Never for subresources (scripts, images, `fetch()`).
    */
   readonly spa?: boolean;
+  /** Proxy rules (`_redirects` status 200 to a URL) and `--proxy` routes; without this every proxy rule is refused. */
+  readonly proxy?: ServeProxy;
   /** `--spa-exclude`: request paths (`*` matches any characters) that never fall back. */
   readonly spaExclude?: readonly string[];
   /** `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`. */
@@ -615,7 +636,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     let bytes = 0;
     /** What answered, for the access log (` → /new (_redirects:3)`), when a rule did. */
     let note = '';
-    const finish = (status: number, headers: Record<string, string | number>, body: Uint8Array | string | undefined, quiet = false): void => {
+    const finish = (status: number, headers: Record<string, string | number | string[]>, body: Uint8Array | string | undefined, quiet = false): void => {
       const buf = body === undefined ? undefined : typeof body === 'string' ? Buffer.from(body) : body;
       // 103 Early Hints before an HTML page whose `Link` (from `_headers`) preloads or preconnects.
       const link = headers.link;
@@ -768,6 +789,39 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return Array.isArray(v) ? v.join(', ') : v;
     };
     const ruleRequest = { search, acceptLanguage: one('accept-language'), cookie: one('cookie'), country: options.country };
+    /** Answer from `target` (an http(s) URL) under the proxy policy; a refusal or a failed fetch is a 502. */
+    const proxyTo = (target: string, from: string): void => {
+      note = ` \u2192 ${redactUrl(target)} (proxy, ${from})`;
+      const headers: Record<string, string> = {};
+      for (const k of PROXY_REQUEST_HEADERS) {
+        const v = one(k);
+        if (v !== undefined) headers[k] = v;
+      }
+      const policy = options.proxy?.policy ?? { ...DEFAULT_FETCH_POLICY, network: { strict: true } };
+      fetchRemote(target, policy, undefined, { method: method === 'HEAD' ? 'HEAD' : 'GET', raw: true, headers }).then(
+        (r) => {
+          const out: Record<string, string | string[]> = {};
+          for (const [n, vs] of r.headers ?? []) if (!HOP_BY_HOP.has(n)) out[n] = vs.length === 1 ? (vs[0] as string) : [...vs];
+          const upstreamLength = r.headers?.find(([n]) => n === 'content-length')?.[1][0];
+          out['content-length'] = method === 'HEAD' && upstreamLength !== undefined ? upstreamLength : String(r.bytes.byteLength);
+          finish(r.status ?? 502, out, r.bytes);
+        },
+        (e: unknown) => {
+          const why = isSitefileError(e) ? `error[${e.code}]: ${e.detail}` : `error: ${String(e)}`;
+          note += ` ${why}`;
+          const text = `502 Bad Gateway: ${why}\n`;
+          finish(502, { 'content-type': 'text/plain; charset=utf-8', 'content-length': Buffer.byteLength(text) }, text);
+        },
+      );
+    };
+    // `--proxy` routes come first: they are what this server is asked to front.
+    for (const route of options.proxy?.routes ?? []) {
+      const inside = route.prefix === '/' || vpath === route.prefix || vpath.startsWith(`${route.prefix}/`);
+      if (!inside) continue;
+      const rest = (route.prefix === '/' ? vpath : vpath.slice(route.prefix.length)) + (trailingSlash && segs.length > 0 ? '/' : '');
+      const encoded = rest.split('/').map((p) => encodeURIComponent(p)).join('/');
+      return proxyTo(route.target.replace(/\/$/, '') + encoded + search, `--proxy ${route.prefix}`);
+    }
     /** Apply the first matching `_redirects` rule (forced ones, or the others); false when none applies. */
     const redirect = (forced: boolean): boolean => {
       for (const r of redirects) {
@@ -781,6 +835,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
           const location = mounted.includes('?') || r.query.length > 0 ? mounted : mounted + search;
           note = ` \u2192 ${location} (_redirects:${r.line})`;
           finish(r.status, { location, 'content-length': 0 }, undefined);
+          return true;
+        }
+        if (r.status === 200 && /^https?:\/\//i.test(target)) {
+          // A proxy rule (#172): the request's query string goes along unless the target has one.
+          proxyTo(target.includes('?') || r.query.length > 0 ? target : target + search, `_redirects:${r.line}`);
           return true;
         }
         // 200 (rewrite), 404, 410 and 451: serve the target path's file with that status.

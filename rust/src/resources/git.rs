@@ -426,6 +426,7 @@ fn command(remote: &Remote, repo: &str, body: Vec<u8>, t: GitTransport<'_>) -> R
         t.span,
         &FetchRequest {
             method: Some("POST"),
+            raw: false,
             body: Some(body),
             headers: headers(&[
                 ("git-protocol", "version=2"),

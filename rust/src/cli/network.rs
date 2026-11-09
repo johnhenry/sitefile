@@ -92,10 +92,16 @@ fn ms(raw: Option<&str>, flag: &str) -> Result<Option<u64>> {
 /// flags on top (flags replace the proxy and timeouts and add to the host
 /// lists). E_USAGE for a bad value.
 pub fn network_option(v: &Parsed) -> Result<NetworkSettings> {
+    network_option_with(v, true)
+}
+
+/// [`network_option`]; `proxy_flag` false when the command's `--proxy` means something else
+/// (`serve --proxy /prefix=url`): the upstream proxy then comes from `$SITEFILE_PROXY` only.
+pub fn network_option_with(v: &Parsed, proxy_flag: bool) -> Result<NetworkSettings> {
     let list =
         |name: &str| -> Vec<String> { v.strs(name).iter().flat_map(|s| split_list(s)).collect() };
     let flags = NetworkSettings {
-        proxy: v.str("proxy").map(str::to_string),
+        proxy: v.str("proxy").filter(|_| proxy_flag).map(str::to_string),
         no_proxy: list("no-proxy"),
         allow_hosts: list("allow-hosts"),
         deny_hosts: list("deny-hosts"),

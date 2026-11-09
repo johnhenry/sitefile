@@ -152,7 +152,7 @@ function parseRedirectLine(t: string, line: number): ServeRedirect | string {
   if (!/^[\x21-\x7e]+$/.test(to) || !(to.startsWith('/') || /^https?:\/\/[^/]/i.test(to))) {
     return 'the target must be an absolute path or an http(s) URL, in printable ASCII';
   }
-  if (isRewriteStatus(status) && !to.startsWith('/')) return `status ${status} needs a path target (proxying to a URL is not supported)`;
+  if (isRewriteStatus(status) && status !== 200 && !to.startsWith('/')) return `status ${status} needs a path target`;
   if (!from.startsWith('/')) return "the source must be a path starting with '/'";
   const splat = from === '/*' || from.endsWith('/*');
   const prefix = splat ? from.slice(0, -2) : from;

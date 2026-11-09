@@ -1,0 +1,6 @@
+# Proxy rules (#172), answered without the network: each is refused before connecting.
+/api/* https://api.example.com/v1/:splat 200
+/plain/* http://127.0.0.1:9/x/:splat 200
+/f/* https://api.example.com/f/:splat 200
+/forced https://denied.test/ 200!
+/four/* https://x.example/ 404

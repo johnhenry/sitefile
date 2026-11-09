@@ -50,7 +50,6 @@ pub fn format_of(file: &str) -> Option<&'static str> {
 
 const PLACEHOLDERS: &str = ":placeholders are supported in redirects, not in header patterns";
 const MIDDLE_STAR: &str = "* is supported only as a trailing /*";
-const PROXY: &str = "proxying to another host is not supported (johnhenry/sitefile#172)";
 const CONDITIONS: &str = "conditions are not supported";
 const CLEAN_URLS: &str =
     "serve always answers /about with about.html; canonical redirects are johnhenry/sitefile#192";
@@ -237,8 +236,8 @@ fn redirect_reason(from: &str, to: &str, status: i64) -> String {
     if !from.starts_with('/') {
         return format!("'{from}' is not a path");
     }
-    if REWRITES.contains(&status) && is_http(to) {
-        return PROXY.into();
+    if REWRITES.contains(&status) && status != 200 && is_http(to) {
+        return format!("status {status} needs a page path, not a URL");
     }
     format!("sitefile serve cannot express '{from} {to} {status}'")
 }
@@ -590,9 +589,6 @@ fn vercel(doc: &Map<String, Value>, out: &mut Out) {
         let (Some(source), Some(dest)) = (str_of(r, "source"), str_of(r, "destination")) else {
             return out.skip(entry, "expected source and destination");
         };
-        if is_http(dest) {
-            return out.skip(entry, PROXY);
-        }
         let Some((from, params)) = vercel_source(source, true) else {
             return out.skip(entry, vercel_source_reason(source, true));
         };
@@ -729,9 +725,6 @@ fn firebase(doc: &Map<String, Value>, out: &mut Out) {
         let Some(dest) = str_of(r, "destination") else {
             return out.skip(entry, "expected a destination");
         };
-        if is_http(dest) {
-            return out.skip(entry, PROXY);
-        }
         out.redirect(
             entry,
             &from,

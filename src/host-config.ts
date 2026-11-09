@@ -47,7 +47,6 @@ export function formatOf(file: string): HostFormat | undefined {
 
 const PLACEHOLDERS = ':placeholders are supported in redirects, not in header patterns';
 const MIDDLE_STAR = '* is supported only as a trailing /*';
-const PROXY = 'proxying to another host is not supported (johnhenry/sitefile#172)';
 const CONDITIONS = 'conditions are not supported';
 
 type Json = unknown;
@@ -118,7 +117,7 @@ function redirectReason(from: string, to: string, status: number): string {
   if (![200, 301, 302, 303, 307, 308, ...REWRITES.slice(1)].includes(status)) return `status ${status} is not supported`;
   if (from.slice(0, from.endsWith('/*') ? -2 : undefined).includes('*')) return MIDDLE_STAR;
   if (!from.startsWith('/')) return `'${from}' is not a path`;
-  if (REWRITES.includes(status) && /^https?:/i.test(to)) return PROXY;
+  if (REWRITES.includes(status) && status !== 200 && /^https?:/i.test(to)) return `status ${status} needs a page path, not a URL`;
   return `sitefile serve cannot express '${from} ${to} ${status}'`;
 }
 
@@ -246,7 +245,6 @@ function vercel(doc: Record<string, Json>, out: Out): void {
   });
   list('rewrites', (r, entry) => {
     if (!isStr(r['source']) || !isStr(r['destination'])) return out.skip(entry, 'expected source and destination');
-    if (/^https?:/i.test(r['destination'])) return out.skip(entry, PROXY);
     const src = vercelSource(r['source'], true);
     if (!src) return out.skip(entry, vercelSourceReason(r['source'], true));
     out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), 200);
@@ -334,7 +332,6 @@ function firebase(doc: Record<string, Json>, out: Out): void {
     const src = sourceOf(r, true);
     if (src === undefined) return out.skip(entry, firebaseReason(r, true));
     if (!isStr(r['destination'])) return out.skip(entry, 'expected a destination');
-    if (/^https?:/i.test(r['destination'])) return out.skip(entry, PROXY);
     out.redirect(entry, src.from, vercelTarget(r['destination'], src.splat), 200);
   });
   list('headers', (r, entry) => {
