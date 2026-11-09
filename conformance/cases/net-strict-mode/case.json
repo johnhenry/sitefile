@@ -1,0 +1,10 @@
+{
+  "network": true,
+  "steps": [
+    { "args": ["build", "${CTX}", "-o", "${OUT}/dist", "--allow-private-network", "--network", "strict", "--allow-hosts", "127.0.0.1"] },
+    { "args": ["build", "${CTX}", "-o", "${OUT}/open", "--allow-private-network", "--network", "open"], "env": { "SITEFILE_NETWORK": "strict" } },
+    { "args": ["build", "${CTX}", "-o", "${OUT}/strict", "--allow-private-network", "--json"], "env": { "SITEFILE_NETWORK": "strict" } }
+  ],
+  "outputs": [["dist", "tree"], ["open", "tree"]],
+  "stdout": true
+}

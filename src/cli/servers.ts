@@ -6,14 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { closeServer, createSiteServer, formatUrl, listen, LiveReload } from '../server.js';
-import { isRunning, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
+import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
 import { watchMemo } from '../memo.js';
-import { watchLoop } from './watch.js';
+import { pollOption, watchLoop } from './watch.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -107,12 +107,13 @@ const run: Command = {
   summary: 'serve an image, directory or archive file over HTTP',
   usage: 'serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>  |  serve --watch [options] [context]',
   description:
-    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(HTML responses get a small script listening on /__sitefile/reload). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock.',
+    'Serve an image from the local store, a directory (paths starting with ./, ../ or /), or an archive file over HTTP:\nzip, tar, tar.gz, wbn, or an OCI archive as build -o x.oci.tar and save write it (the format is read from the\nbytes). A directory or archive is a snapshot read at start. GET and HEAD only; no directory listings.\nBinds 127.0.0.1 on a free port unless -p is given;\n0.0.0.0 is bound only when you pass it explicitly. Foreground by default (Ctrl-C stops it); -d detaches and\nrecords the server for servers, server stop, rm, logs and restart.\n\nWith --watch the argument is a build context (default .): its Sitefile is built in memory and served, rebuilt\nwhen the context, the Sitefile or a --build-arg-file changes, and open pages reload after each good rebuild\n(page loads get a small script, /__sitefile/reload.js). A failed rebuild keeps serving the last\ngood build. Nothing is written to the context except Sitefile.lock. A directory with no Sitefile (and no -f,\n--target or --build-arg*) is served as it is and re-read on change. When only stylesheets changed, pages\nswap them in place.',
   flags: [
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
@@ -120,12 +121,21 @@ const run: Command = {
     '--build-arg-file <path>      read ARGs from a .json, .yaml/.yml or .env file (--watch; repeatable)',
     '--no-cache        do not use the TRANSFORM result cache (--watch)',
     '--no-lockfile     do not read or write Sitefile.lock (--watch)',
+    '--keep-service-workers       do not unregister service workers and clear caches before a reload (--watch)',
+    '--poll            poll for changes (every 1000 ms) instead of file system events (--watch)',
+    '--poll-interval <ms>         poll every <ms> milliseconds (--watch; implies --poll)',
+    '--no-css-inject   reload the page when only stylesheets changed, instead of swapping them (--watch)',
+    '--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)',
+    '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
+    '--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)',
+    '--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)',
   ],
   options: {
     name: { type: 'string' },
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    'keep-os-metadata': { type: 'boolean' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -133,6 +143,14 @@ const run: Command = {
     'build-arg-file': { type: 'string', multiple: true },
     'no-cache': { type: 'boolean' },
     'no-lockfile': { type: 'boolean' },
+    'keep-service-workers': { type: 'boolean' },
+    poll: { type: 'boolean' },
+    'poll-interval': { type: 'string' },
+    'no-css-inject': { type: 'boolean' },
+    console: { type: 'boolean' },
+    'no-overlay': { type: 'boolean' },
+    'navigate-to-changed': { type: 'boolean' },
+    reload: { type: 'string' },
   },
   async run(v, pos) {
     if (v.watch) return serveWatch(v, pos);
@@ -145,8 +163,10 @@ const run: Command = {
     const { label, source } = await resolveSource(store, pos[0] as string);
     if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
+    const keepOsMetadata = !!v['keep-os-metadata'];
+    const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
-      const tree = await loadServedTree(store, source);
+      const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
       const server = createSiteServer(tree, { spa: !!v.spa, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
@@ -156,7 +176,7 @@ const run: Command = {
       return 0;
     }
 
-    await loadServedTree(store, source); // fail fast on a bad image, directory or archive
+    await loadServedTree(store, source, { keepOsMetadata, warn }); // fail fast on a bad image, directory or archive
     const reg = await ServerRegistry.open(store);
     const { id, name: finalName } = await reg.allocate(name);
     const state: ServerState = {
@@ -165,6 +185,7 @@ const run: Command = {
       image: label,
       source,
       spa: !!v.spa,
+      ...(keepOsMetadata ? { keepOsMetadata } : {}),
       bind,
       host: bind.host,
       port: bind.port,
@@ -186,9 +207,13 @@ const run: Command = {
 };
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload'] as const;
 
-/** `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. */
+/**
+ * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
+ * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
+ * as it is (re-read on change) instead of built.
+ */
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
@@ -199,21 +224,44 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const target = str(v.target);
   const argFiles = strs(v['build-arg-file']);
   const argFlags = strs(v['build-arg']);
+  const pollMs = pollOption(!!v.poll, str(v['poll-interval']));
+  const buildFlags = !!file || target !== undefined || argFiles.length > 0 || argFlags.length > 0;
+  const plain = !buildFlags && !(await isFile(path.join(context, 'Sitefile')));
+  const cssInject = !v['no-css-inject'];
+  const navigate = !!v['navigate-to-changed'];
+  const reloadMode = str(v.reload) ?? 'morph';
+  if (reloadMode !== 'full' && reloadMode !== 'morph') usage(`--reload expects full or morph, got '${reloadMode}'`);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
   let current: Tree = Tree.empty;
   let builtAt: number | undefined; // Last-Modified: the time of the build being served
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload();
-  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`) });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate, reload: reloadMode });
+  /** Serve `next` and tell open pages what changed. */
+  const swap = (next: Tree): void => {
+    const event = started ? (reloadEventFor(current, next, cssInject, navigate) ?? OK_EVENT) : undefined;
+    current = next;
+    builtAt = Math.floor(Date.now() / 1000);
+    if (event !== undefined) live.send(event);
+  };
+  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
+      ...(pollMs !== undefined ? { pollMs } : {}),
       ...(file ? { sitefile: file } : {}),
+      ...(plain ? { plain } : {}),
       argFiles,
       build: async () => {
+        if (started) live.send(BUILDING_EVENT);
         try {
+          if (plain) {
+            const tree = await loadDirectoryTree(context);
+            process.stdout.write(`Read ${tree.size} file${tree.size === 1 ? '' : 's'} (${tree.digest()})\n`);
+            swap(tree);
+            return { code: 0 };
+          }
           const r = await build({
             contextDir: context,
             ...(file ? { sitefile: file } : {}),
@@ -222,19 +270,19 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             ...(v['no-lockfile'] ? { lockfile: false as const } : {}),
             ...(v['no-cache'] ? {} : { cacheDir: transformCacheDir() }),
             skipBase: true,
+            keepOsMetadata: !!v['keep-os-metadata'],
             ...(memo ? { memo } : {}),
             onNotice: (m) => process.stderr.write(`${m}\n`),
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
           });
-          current = r.output;
-          builtAt = Math.floor(Date.now() / 1000);
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
-          if (started) live.reload();
+          swap(r.output);
           return { code: 0 };
         } catch (e) {
           if (!(e instanceof SitefileError)) throw e;
           if (e.code === 'E_USAGE') return { code: usageError(e.detail) };
           process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+          live.send(errorEvent(e)); // pages show it (and pages opened later get it on connect)
           return { code: 1 };
         }
       },
@@ -427,7 +475,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     await stopServer(reg, s, graceOf(v));
-    await loadServedTree(reg.store, s.source);
+    await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
     const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
     delete (fresh as { error?: string }).error;
     await reg.write(fresh);

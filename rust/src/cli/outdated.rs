@@ -30,6 +30,10 @@ const FLAGS: &[&str] = &[
     "                              also $SITEFILE_ALLOW_HOSTS)",
     "--deny-hosts <hosts>          never contact hosts matching these patterns; beats --allow-hosts",
     "                              (repeatable, comma-separated; also $SITEFILE_DENY_HOSTS)",
+    "--network <mode>              open (default) or strict: every host must match --allow-hosts, even with none",
+    "                              given (also $SITEFILE_NETWORK)",
+    "--allow-secret-host <id=host> in strict mode, let IMPORT ... SECRET <id> send its secret to this host",
+    "                              (a host pattern; repeatable)",
     "--connect-timeout <ms>        time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)",
     "--read-timeout <ms>           longest wait for data on a connection (also $SITEFILE_FETCH_TIMEOUT)",
     "--base <image>                check this BASE image (overrides EXPORT ... AS oci BASE)",
@@ -51,6 +55,8 @@ const OPTS: &[OptSpec] = &[
     strings("no-proxy"),
     strings("allow-hosts"),
     strings("deny-hosts"),
+    string("network"),
+    strings("allow-secret-host"),
     string("connect-timeout"),
     string("read-timeout"),
     string("base"),
@@ -118,7 +124,7 @@ pub fn format_outdated(r: &Report) -> String {
     }
     let mut s = table(&rows);
     for i in &r.inputs {
-        if let Some((code, msg)) = &i.error {
+        if let Some((code, msg, _)) = &i.error {
             s.push_str(&format!("{}: error[{code}]: {msg}\n", i.name));
         }
     }

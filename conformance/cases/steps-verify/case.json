@@ -1,0 +1,50 @@
+{
+  "stdout": true,
+  "steps": [
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site",
+      "--no-lockfile",
+      "--manifest",
+      "${OUT}/m.json"
+    ],
+    [
+      "build",
+      "${CTX}",
+      "-o",
+      "${OUT}/site.zip",
+      "--no-lockfile",
+      "--manifest",
+      "${OUT}/mz.json"
+    ],
+    [
+      "verify",
+      "${OUT}/site",
+      "--manifest",
+      "${OUT}/m.json"
+    ],
+    [
+      "verify",
+      "${OUT}/site.zip",
+      "--manifest",
+      "${OUT}/m.json",
+      "--json"
+    ]
+  ],
+  "outputs": [
+    [
+      "m.json",
+      "bytes"
+    ],
+    [
+      "mz.json",
+      "bytes"
+    ],
+    [
+      "site",
+      "tree"
+    ]
+  ]
+}

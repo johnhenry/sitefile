@@ -10,7 +10,7 @@ import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
 import { importedStageRefs, plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportedStageRef, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
-import { cacheKey, digestFolder, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
+import { cacheKey, digestFolder, pluginFolderIntegrity, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
 import { DEFAULT_TOOL_POLICY, resolveTool, runTool, type ResolvedTool, type ToolPolicy } from './plugins/exec.js';
 import type { Operand } from './language/ast.js';
 import { decodeUtf8, fileRefs, fragmentNotValue, parseRenderTemplate, renderTemplate, resolveJsonPath, walk, type TemplateContext } from './render.js';
@@ -19,7 +19,7 @@ import { bytesToResource, verifyIntegrity } from './resources/convert.js';
 import { fetchRemote } from './resources/https.js';
 import { redactError, redactSecrets, secretHeaders, type Secrets } from './secrets.js';
 import { fetchGitCommit, pinnedGitUrl, selectGitPath, type GitLocation, type GitSelection } from './resources/git.js';
-import { extractArchive } from './resources/archive.js';
+import { extractArchive, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { writeTar } from './archive-writers.js';
 import { LocalContext } from './resources/local.js';
 import { Lockfile } from './resources/lockfile.js';
@@ -46,7 +46,7 @@ import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
-import { atomXml, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry } from './site.js';
+import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapXml, type FeedEntry, type HeaderRule } from './site.js';
 
 export interface BuildOptions {
   /** Build context directory; local paths resolve from here. */
@@ -68,6 +68,11 @@ export interface BuildOptions {
   readonly fetchPolicy?: Partial<FetchPolicy>;
   /** Limits for extracting archives imported AS tree. */
   readonly archiveLimits?: Partial<ArchiveLimits>;
+  /**
+   * Keep OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`, `Icon\r`) in archives
+   * imported AS tree, like the CLI's `--keep-os-metadata`. Default false: they are dropped with a warning.
+   */
+  readonly keepOsMetadata?: boolean;
   /** Lockfile path, or false to disable. Default: `Sitefile.lock` next to the Sitefile. */
   readonly lockfile?: string | false;
   /** Fail instead of adding or changing lockfile entries. */
@@ -89,6 +94,11 @@ export interface BuildOptions {
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
   readonly pluginPolicy?: Partial<PluginPolicy>;
+  /**
+   * `--node` / `SITEFILE_NODE`: the absolute path of the Node binary JavaScript plugins run on
+   * (default: the Node running sitefile). Checked to be at least MIN_NODE before the first plugin starts.
+   */
+  readonly node?: string;
   /** Permit hard-linked files in the context (you assert they are safe). Default false. */
   readonly allowHardlinks?: boolean;
   /**
@@ -353,6 +363,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     local,
     policy,
     archiveLimits,
+    keepOsMetadata: !!options.keepOsMetadata,
     lock,
     label,
     warn,
@@ -405,7 +416,10 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
     images.push({ name: r.name, digest: r.digest, line: b.span.line, local: b.local, ...(unit !== undefined ? { import: unit } : {}) });
     return r;
   };
-  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn);
+  const plugins = new PluginHost({ ...DEFAULT_PLUGIN_POLICY, ...options.pluginPolicy }, warn, {
+    ...(options.node !== undefined ? { node: options.node } : {}),
+    ...(options.onNotice ? { onNotice: options.onNotice } : {}),
+  });
   const cache = options.cacheDir !== undefined ? new TransformCache(options.cacheDir, options.remoteCache) : undefined;
   const stats: TransformStats = { hits: 0, misses: 0, writes: 0, corrupt: 0, pluginsSpawned: 0, pluginCalls: 0, toolRuns: 0 };
   const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...options.toolPolicy };
@@ -528,7 +542,7 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   if (tree.isFile(p.exportPath)) {
     throw new SitefileError('E_EXPORT', `EXPORT path '${p.exportPath}' is a file; export a directory`);
   }
-  tree = withSiteRules(tree, p, label, currentRenames);
+  tree = withSiteRules(tree, p, label, currentRenames, warn);
   const output = tree.subtree(p.exportPath);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
@@ -763,6 +777,7 @@ export async function imageAttestations(
 interface ImportEnv extends RemoteEnv {
   readonly local: LocalContext;
   readonly archiveLimits: ArchiveLimits;
+  readonly keepOsMetadata?: boolean;
   readonly memo?: BuildMemo;
 }
 
@@ -783,7 +798,15 @@ async function resolveImport(spec: ImportSpec, env: ImportEnv): Promise<{ res: R
   const convertBytes = async (key: string, compute: () => Promise<Resource>): Promise<Resource> => {
     const hit = env.memo?.get<Resource>(key);
     if (hit) return hit;
-    const r = await compute();
+    let r = await compute();
+    // An archive AS tree: OS metadata files are dropped (keepOsMetadata keeps them).
+    if (r.kind === 'tree' && !env.keepOsMetadata) {
+      const { tree, skipped } = withoutOsMetadata(r.tree);
+      if (skipped > 0) {
+        env.warn(osMetadataWarning(`IMPORT ${spec.name}`, skipped));
+        r = { ...r, tree };
+      }
+    }
     env.memo?.set(key, r);
     return r;
   };
@@ -906,7 +929,7 @@ export async function fetchRemoteImport(spec: ImportSpec, url: string, env: Remo
     env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}; fetching it (run 'sitefile vendor' to add it)`);
   }
   const fetchIt = (): Promise<{ bytes: Uint8Array; finalUrl: string }> => {
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url, network: env.policy.network });
     return fetchRemote(url, env.policy, spec.span, originHeaders ? { originHeaders } : {});
   };
   const { bytes, finalUrl } = vendored && env.vendor ? await env.vendor.readResource(url, vendored, spec.span) : await fetchIt();
@@ -961,7 +984,7 @@ export async function fetchGitImport(spec: ImportSpec, loc: GitLocation, env: Re
       env.warn(`${env.label}:${spec.span.line}: IMPORT ${spec.name}: '${url}' is not vendored in ${env.vendor.dir}${vendored ? ` at commit ${want ?? 'the latest'}` : ''}; fetching it (run 'sitefile vendor' to add it)`);
     }
     const limits = env.archiveLimits ?? DEFAULT_ARCHIVE_LIMITS;
-    const originHeaders = secretHeaders(spec, env.secrets);
+    const originHeaders = secretHeaders(spec, env.secrets, { url: loc.repo, network: env.policy.network });
     const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy: env.policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
     want = objs.commit;
     selection = selectGitPath(objs, loc, limits, spec.span);
@@ -1769,9 +1792,9 @@ function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: E
 /** Check a plugin file (sandbox, own folder, integrity) and start its process. */
 async function registerPlugin(spec: PluginSpec, local: LocalContext, host: PluginHost, allowed: (spec: PluginSpec) => void): Promise<void> {
   const { real, bytes } = await local.realFile(spec.path, spec.span);
-  if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
   if (real.endsWith('.wasm')) {
-    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed.
+    // A wasm plugin has no imports, so it reads nothing: no own-folder rule needed, and INTEGRITY pins the module.
+    if (spec.integrity) verifyIntegrity(bytes, spec.integrity, `./${spec.path}`, spec.span);
     checkWasmPlugin(spec.name, bytes, spec.span);
     host.register(spec.name, real, spec.span, bytes);
     return;
@@ -1785,6 +1808,16 @@ async function registerPlugin(spec: PluginSpec, local: LocalContext, host: Plugi
       `PLUGIN ${spec.name}: put the plugin in its own folder (e.g. ./plugins/${path.basename(real)}); a plugin can read every file next to it`,
       spec.span,
     );
+  }
+  // It can read and import everything in its folder, so INTEGRITY pins the whole folder (#158).
+  if (spec.integrity) {
+    const dir = path.dirname(real);
+    const shown = `./${path.relative(local.root, dir).split(path.sep).join('/')}/`;
+    const r = await pluginFolderIntegrity(dir);
+    if ('problem' in r) throw new SitefileError('E_INTEGRITY', `PLUGIN ${spec.name}: INTEGRITY pins the plugin's folder ${shown}, which ${r.problem}`, spec.span);
+    if (r.digest !== spec.integrity.toLowerCase()) {
+      throw new SitefileError('E_INTEGRITY', `integrity mismatch for ${shown} (PLUGIN ${spec.name}'s folder: INTEGRITY covers every file in it): expected ${spec.integrity}, got ${r.digest}`, spec.span);
+    }
   }
   host.register(spec.name, real, spec.span);
 }
@@ -2267,13 +2300,13 @@ async function transformFiles(
   return out;
 }
 
-/** REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory. */
 /**
  * REDIRECT and HEADER lines become `/_redirects` and `/_headers` at the root of the exported directory.
  * A HEADER pattern or REDIRECT target that is the URL of a file FINGERPRINT renamed in the exported stage
- * names its new URL.
+ * names its new URL. Unless the plan turns them off, the renamed files (and the pages) also get
+ * `Cache-Control` lines in `/_headers` (after the HEADER lines; see {@link cacheHeaderRules}).
  */
-function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>): Tree {
+function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<string, string>, warn: (m: string) => void): Tree {
   const url = new Map<string, string>();
   for (const [from, to] of renames) {
     const a = urlBelow(p.exportPath, from);
@@ -2281,10 +2314,27 @@ function withSiteRules(tree: Tree, p: Plan, label: string, renames: ReadonlyMap<
     if (a !== undefined && b !== undefined) url.set(a, b);
   }
   const redirects = p.redirects.map((r) => ({ ...r, to: url.get(r.to) ?? r.to }));
-  const headers = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
+  const headers: HeaderRule[] = p.headers.map((h) => ({ ...h, pattern: url.get(h.pattern) ?? h.pattern }));
+  let headerRules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }> = p.headers;
+  let headerKind = 'HEADER';
+  const headersPath = joinVirtual(p.exportPath, '_headers');
+  if (p.cacheHeaders && url.size > 0) {
+    const files = tree.subtree(p.exportPath).entries().map(([f]) => f);
+    const present = new Set(files);
+    const auto = cacheHeaderRules(files, new Set([...url.values()].filter((u) => present.has(u))));
+    if (auto.length > 0 && p.headers.length === 0 && tree.isFile(headersPath)) {
+      warn(`${label}:${p.cacheHeaders.span.line} FINGERPRINT: ${headersPath} already exists (not written by HEADER), so no Cache-Control lines were added for the fingerprinted files; add them to that file, or use HEADER`);
+    } else if (auto.length > 0) {
+      headers.push(...auto);
+      if (p.headers.length === 0) {
+        headerRules = [{ overwrite: false, span: p.cacheHeaders.span }];
+        headerKind = 'FINGERPRINT';
+      }
+    }
+  }
   const files: Array<{ name: string; text: string; rules: ReadonlyArray<{ overwrite: boolean; span: SourceSpan }>; kind: string }> = [
     { name: '_redirects', text: redirectsFile(redirects), rules: redirects, kind: 'REDIRECT' },
-    { name: '_headers', text: headersFile(headers), rules: headers, kind: 'HEADER' },
+    { name: '_headers', text: headersFile(headers), rules: headerRules, kind: headerKind },
   ];
   for (const f of files) {
     const first = f.rules[0];

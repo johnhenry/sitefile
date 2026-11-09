@@ -1,5 +1,5 @@
 import { SitefileError } from '../errors.js';
-import { mergeNetwork, networkFromEnv, networkProblem, splitList, type NetworkSettings } from '../resources/network.js';
+import { mergeNetwork, networkFromEnv, networkProblem, parseNetworkMode, splitList, type NetworkSettings } from '../resources/network.js';
 
 /** parseArgs options for the network flags (build, validate, inspect, graph, why, pull, push, vendor, outdated). */
 export const NETWORK_OPTIONS = {
@@ -7,6 +7,8 @@ export const NETWORK_OPTIONS = {
   'no-proxy': { type: 'string', multiple: true },
   'allow-hosts': { type: 'string', multiple: true },
   'deny-hosts': { type: 'string', multiple: true },
+  network: { type: 'string' },
+  'allow-secret-host': { type: 'string', multiple: true },
   'connect-timeout': { type: 'string' },
   'read-timeout': { type: 'string' },
 } as const;
@@ -18,12 +20,16 @@ export function networkHelp(width: number): string[] {
     ['--no-proxy <hosts>', ['hosts reached directly, not through the proxy (NO_PROXY syntax; repeatable,', 'comma-separated; also $SITEFILE_NO_PROXY)']],
     ['--allow-hosts <hosts>', ['contact only hosts matching these patterns (repeatable, comma-separated;', 'also $SITEFILE_ALLOW_HOSTS)']],
     ['--deny-hosts <hosts>', ['never contact hosts matching these patterns; beats --allow-hosts', '(repeatable, comma-separated; also $SITEFILE_DENY_HOSTS)']],
+    ['--network <mode>', ['open (default) or strict: every host must match --allow-hosts, even with none', 'given (also $SITEFILE_NETWORK)']],
+    ['--allow-secret-host <id=host>', ['in strict mode, let IMPORT ... SECRET <id> send its secret to this host', '(a host pattern; repeatable)']],
     ['--connect-timeout <ms>', ['time limit for opening each connection (also $SITEFILE_FETCH_TIMEOUT)']],
     ['--read-timeout <ms>', ['longest wait for data on a connection (also $SITEFILE_FETCH_TIMEOUT)']],
   ];
   const out: string[] = [];
   for (const [flag, lines] of rows) {
-    lines.forEach((l, i) => out.push(`${(i === 0 ? flag : '').padEnd(width)}${l}`));
+    // A flag wider than the column gets a line of its own.
+    if (flag.length >= width) out.push(flag);
+    lines.forEach((l, i) => out.push(`${(i === 0 && flag.length < width ? flag : '').padEnd(width)}${l}`));
   }
   return out;
 }
@@ -49,10 +55,14 @@ export function networkOption(v: Values, env: NodeJS.ProcessEnv = process.env): 
     noProxy: strings(v['no-proxy']).flatMap(splitList),
     allowHosts: strings(v['allow-hosts']).flatMap(splitList),
     denyHosts: strings(v['deny-hosts']).flatMap(splitList),
+    secretHosts: strings(v['allow-secret-host']).flatMap(splitList),
     connectTimeoutMs: ms(typeof v['connect-timeout'] === 'string' ? v['connect-timeout'] : undefined, '--connect-timeout'),
     readTimeoutMs: ms(typeof v['read-timeout'] === 'string' ? v['read-timeout'] : undefined, '--read-timeout'),
   };
-  const merged = mergeNetwork(networkFromEnv(env), flags);
+  const fromEnv = networkFromEnv(env);
+  // --network replaces SITEFILE_NETWORK (--network open turns an inherited strict mode off).
+  const mode = typeof v.network === 'string' ? (parseNetworkMode(v.network === '' ? '?' : v.network, '--network') ?? false) : undefined;
+  const merged = mergeNetwork(mode === undefined ? fromEnv : { ...fromEnv, strict: undefined }, mode ? { ...flags, strict: true } : flags);
   const problem = networkProblem(merged);
   if (problem) throw new SitefileError('E_USAGE', problem);
   return Object.keys(merged).length ? merged : undefined;

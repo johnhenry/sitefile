@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { makeClient } from './base-image.js';
 import { sha256 } from './digest.js';
-import { isSitefileError } from './errors.js';
+import { isSitefileError, type Needs } from './errors.js';
 import { loadProgram, readImportedSitefile, rootSitefileSource, type BuildOptions, type SitefileSource } from './executor.js';
 import { importedStageRefs, plan, type Plan } from './planner.js';
 import { parseRef, withDefaultRegistry } from './ref.js';
@@ -45,7 +45,8 @@ export interface OutdatedEntry {
   readonly status: OutdatedStatus;
   /** Images only (BASE and FROM image): a greater version-like tag of the same shape. */
   readonly newerTag: string | null;
-  readonly error: { readonly code: string; readonly message: string } | null;
+  /** `needs` only when the error carries one (E_HOST_BLOCKED: the host to allow). */
+  readonly error: { readonly code: string; readonly message: string; readonly needs?: Needs } | null;
 }
 
 export interface OutdatedReport {
@@ -95,8 +96,8 @@ export function newerVersionTag(current: string, tags: readonly string[]): strin
   return best?.tag;
 }
 
-function errorOf(e: unknown, secrets?: Secrets): { code: string; message: string } {
-  if (isSitefileError(e)) return { code: e.code, message: redactSecrets(e.detail, secrets) };
+function errorOf(e: unknown, secrets?: Secrets): { code: string; message: string; needs?: Needs } {
+  if (isSitefileError(e)) return { code: e.code, message: redactSecrets(e.detail, secrets), ...(e.needs ? { needs: { kind: e.needs.kind, name: e.needs.name, flag: e.needs.flag } } : {}) };
   throw redactError(e, secrets);
 }
 
@@ -139,7 +140,7 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
           inputs.push(entry({ ...row, latest: null, status: 'digest-only', error: null }));
         } else {
           try {
-            const originHeaders = secretHeaders(spec, options.secrets);
+            const originHeaders = secretHeaders(spec, options.secrets, { url: loc.repo, network: policy.network });
             const latest = await resolveRef(loc.repo, loc.ref, { policy, span: spec.span, ...(originHeaders ? { originHeaders } : {}) });
             inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
           } catch (e) {
@@ -153,7 +154,7 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
         const pinnedBy: OutdatedEntry['pinnedBy'] = spec.integrity ? 'integrity' : locked ? 'lockfile' : null;
         const row = { kind: 'import' as const, name, source: url, pin, pinnedBy, newerTag: null };
         try {
-          const originHeaders = secretHeaders(spec, options.secrets);
+          const originHeaders = secretHeaders(spec, options.secrets, { url, network: policy.network });
           const { bytes } = await fetchRemote(url, policy, undefined, originHeaders ? { originHeaders } : {});
           const latest = sha256(bytes);
           inputs.push(entry({ ...row, latest, status: statusOf(pin, latest), error: null }));
@@ -166,7 +167,7 @@ export async function outdated(options: BuildOptions): Promise<OutdatedReport> {
       let sub: { plan: Plan; source: SitefileSource };
       try {
         sub = await readImportedSitefile(spec, source, importedStageRefs(sp.stages), async (s, loc) => {
-          const originHeaders = secretHeaders(s, options.secrets);
+          const originHeaders = secretHeaders(s, options.secrets, { url: loc.repo, network: policy.network });
           const want = loc.commit ?? lock?.getGit(loc.url)?.commit;
           const objs = await fetchGitCommit(loc.repo, loc.ref, want, { policy, span: s.span, ...(originHeaders ? { originHeaders } : {}) }, limits);
           return { commit: objs.commit, selection: selectGitPath(objs, loc, limits, s.span) };

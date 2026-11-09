@@ -1,0 +1,5 @@
+FROM scratch
+# --plugin-memory 32: the heap passes the limit and V8 stops the process.
+PLUGIN hog FROM ./plugins/hog.mjs
+TRANSFORM ./a.txt WITH hog TO /a.txt
+EXPORT /

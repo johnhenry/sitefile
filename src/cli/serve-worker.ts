@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   const state = await reg.read(id);
   if (!state) throw new SitefileError('E_SERVER', `no state for server '${id}'`);
   try {
-    const tree = await loadServedTree(reg.store, state.source);
+    const tree = await loadServedTree(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
     const modified = await servedLastModified(reg.store, state.source);
     const server = createSiteServer(tree, { spa: state.spa, serverId: id, lastModified: () => modified, log: stamp });
     const addr = await listen(server, state.bind.host, state.bind.port);
