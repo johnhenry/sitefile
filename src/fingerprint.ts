@@ -20,9 +20,9 @@ const FIXED_NAMES = new Set(['_redirects', '_headers']);
  * Check a FINGERPRINT pattern: an absolute path (NFC) with no control characters. A trailing `/`
  * means everything below that directory (`/assets/` is `/assets/**`).
  */
-export function checkPattern(raw: string, span: SourceSpan): string {
-  if (/[\u0000-\u001f\u007f]/.test(raw)) throw new SitefileError('E_VALIDATION', 'FINGERPRINT pattern must not contain control characters', span);
-  if (!raw.startsWith('/')) throw new SitefileError('E_VALIDATION', `FINGERPRINT pattern '${raw}' must be an absolute path starting with '/' (e.g. /assets/ or /**/*.css)`, span);
+export function checkPattern(raw: string, span: SourceSpan, what = 'FINGERPRINT'): string {
+  if (/[\u0000-\u001f\u007f]/.test(raw)) throw new SitefileError('E_VALIDATION', `${what} pattern must not contain control characters`, span);
+  if (!raw.startsWith('/')) throw new SitefileError('E_VALIDATION', `${what} pattern '${raw}' must be an absolute path starting with '/' (e.g. /assets/ or /**/*.css)`, span);
   const p = nfc(raw);
   return p.endsWith('/') ? p + '**' : p;
 }

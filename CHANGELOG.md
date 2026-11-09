@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
+  `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
+  response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept
+  in the server record. Both servers.
 - **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
   on every response (`_headers` still wins) and `OPTIONS` preflights answered
   with `204`; kept in the server record. Both servers.
@@ -9,6 +13,13 @@
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
   subdomains, `*` for any) adds names and is kept in the server record.
+- **PRECOMPRESS writes `.gz` sidecars** (johnhenry/sitefile#203):
+  `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes
+  `<file>.gz` next to matching text files of at least MIN bytes (default 1024)
+  when smaller, with the shared deterministic deflate encoder, for nginx
+  `gzip_static` and Caddy `precompressed`. `br` and `zstd` are rejected as not
+  supported yet. Both implementations, with conformance cases; example
+  `examples/precompress`.
 - **`serve` in a terminal** (johnhenry/sitefile#224): single keys in a
   foreground `serve` or `serve --watch`:
   - `o` opens the browser;
@@ -130,6 +141,12 @@
   matches, else as UTF-8 when valid, else as CP437 (they used to become
   U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
   `serve x.zip`, in both implementations.
+- **Zip export stores already-compressed media** (#203, writer half): png,
+  jpg, webp, avif, woff2, mp4, zip, gz and similar extensions are stored
+  without running deflate, so exports of media-heavy sites are faster. Zip
+  bytes change only for such entries that deflate had shrunk slightly; tar.gz
+  and OCI layers (image IDs) are unchanged. Both implementations, with a
+  byte-for-byte conformance case (`zip-stored-media`).
 - **Zip export writes the extended timestamp** (#187): every entry carries the
   0x5455 "UT" extra field (mtime only) in its local and central header, so
   `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
@@ -137,6 +154,14 @@
   `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
   deterministic and identical across the TypeScript and Rust writers (their
   byte-for-byte fixtures are updated together). Image IDs are not affected.
+- **Compression Dictionary Transport, experimental** (johnhenry/sitefile#215):
+  `build --experimental-dictionary <previous>` adds `Use-As-Dictionary`
+  headers for scripts, styles, JSON, wasm and HTML, and a `<path>.dcz`
+  Zstandard delta against the previous build for each that changed;
+  `serve` answers `Available-Dictionary` + `Accept-Encoding: dcz` with it.
+  A small deterministic Zstandard encoder shared by both implementations
+  (`src/zstd.ts`, `rust/src/zstd.rs`); frames decode with libzstd.
+  Conformance cases `steps-dictionary`, `serve-dictionary`.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

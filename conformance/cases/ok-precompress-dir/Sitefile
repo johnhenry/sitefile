@@ -1,0 +1,6 @@
+# PRECOMPRESS under an EXPORT path, after another stage, as a tgz.
+STAGE files
+COPY ./public/ /www/
+FROM files
+PRECOMPRESS /www/**/*.css /www/*.html
+EXPORT /www AS tgz

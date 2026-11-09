@@ -880,6 +880,39 @@ stored blob against its digest. The manifest itself is checked first: its root m
 `--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
 actual: { size, digest } }], extra: [path] }`.
 
+## Compression Dictionary Transport (experimental)
+
+`sitefile build --experimental-dictionary <previous>` prepares a build for
+[Compression Dictionary Transport](https://datatracker.ietf.org/doc/draft-ietf-httpbis-compression-dictionary/):
+browsers that have the previous version of a file use it as a dictionary, and the update downloads as
+a small delta. `<previous>` is the previous build: an image reference or ID, a directory or an archive
+(read as `sitefile verify` reads them).
+
+```sh
+sitefile build . -o dist-v2 --experimental-dictionary dist-v1     # or: --experimental-dictionary mysite:1
+```
+
+- Every `.js`, `.mjs`, `.css`, `.json`, `.wasm` and `.html` file whose path is plain (letters, digits,
+  `/ . _ ~ -`) gets `Use-As-Dictionary: match="<path>"` in `/_headers` (appended under a comment), so
+  a browser keeps it as the dictionary for the next version of that URL.
+- Each of those files that also exists in `<previous>` with other content gets `<path>.dcz`: the new
+  file as a `dcz` delta (a Zstandard frame against the previous version, after the 40-byte `dcz` header
+  with the dictionary's SHA-256). A delta is written only when it is smaller than the file and the two
+  versions together fit in 8 MiB (the window browsers accept). An existing `<path>.dcz` in the output
+  fails the build (`E_CONFLICT`). `build` prints `Dictionary deltas: N (.dcz)`.
+- `sitefile serve` (both implementations) answers a request for `<path>` that sends
+  `Accept-Encoding: dcz` (any non-zero quality) and `Available-Dictionary: :<base64 SHA-256>:` matching
+  the delta's dictionary with the `.dcz` bytes, `Content-Encoding: dcz` and an ETag ending in `-dcz`;
+  responses for files with a delta carry `Vary: accept-encoding, available-dictionary`. Other requests
+  get the file as before.
+- The encoder is sitefile's own (`src/zstd.ts`, ported as `rust/src/zstd.rs`, byte for byte): greedy
+  matching against the dictionary, raw literals and the predefined FSE tables. Its frames are standard
+  Zstandard (tests decode them with libzstd); the ratio is below libzstd's, but a small edit to a large
+  file still gives a delta of tens of bytes. `dcb` (Brotli) deltas are not written: there is no shared Brotli encoder.
+- Hosts must serve the `.dcz` themselves for this to help outside `sitefile serve`; most do not
+  negotiate it yet. Fingerprinted assets (new name per version) need a `match` pattern across names,
+  which this flag does not write.
+
 ## Comparing builds: `sitefile diff`
 
 `sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
@@ -1179,6 +1212,11 @@ on disk after the server started answers `500` for the entries that changed (`se
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
   `Access-Control-Allow-Headers` (when it is a plain list of header names) and `Access-Control-Max-Age: 600`.
   Without it `OPTIONS` is `405` as before. Stored in the server record (`cors`).
+- **`--isolate`** makes pages cross-origin isolated (`SharedArrayBuffer`, wasm threads, precise timers need it,
+  and only response headers can turn it on): every response gets `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
+  cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
+  same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

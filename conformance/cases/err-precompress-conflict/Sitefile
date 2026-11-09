@@ -1,0 +1,7 @@
+FROM scratch
+COPY ./public/ /
+COPY <<X /index.html.gz
+not gzip
+X
+PRECOMPRESS /index.html MIN 1
+EXPORT /

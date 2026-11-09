@@ -47,6 +47,8 @@ export interface ServerState {
   readonly allowedHosts?: readonly string[];
   /** `--cors` (absent: false). */
   readonly cors?: boolean;
+  /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */

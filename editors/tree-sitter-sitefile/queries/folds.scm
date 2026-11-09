@@ -16,6 +16,7 @@
   (header_instruction)
   (fingerprint_instruction)
   (canonical_instruction)
+  (precompress_instruction)
   (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)
