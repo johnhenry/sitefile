@@ -409,14 +409,15 @@ fn run_extra_command(argv: &[String]) -> i32 {
     }
 }
 
-/// `serve --open` takes its path only as `--open=<path>`: a bare `--open` (before `--`) is `--open=`.
+/// `serve --open` and `--sync` take a value only as `--open=<path>`, `--sync=scroll`: a bare
+/// `--open` or `--sync` (before `--`) is `--open=`, `--sync=`.
 fn optional_open(args: &[String]) -> Vec<String> {
     let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     args.iter()
         .enumerate()
         .map(|(i, a)| {
-            if a == "--open" && i < end {
-                "--open=".to_string()
+            if (a == "--open" || a == "--sync") && i < end {
+                format!("{a}=")
             } else {
                 a.clone()
             }

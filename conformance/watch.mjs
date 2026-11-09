@@ -19,6 +19,10 @@
 //   { open: true, lastEventId: 'x' }            open it with `Last-Event-ID: x` ('previous': the instance ID the
 //                                               last stream started with; a different one makes the server send reload)
 //   { restart: true }                           `server restart` (detached cases), then wait until it answers
+//   { open: true, client: 'id', as: 'a' }       open another stream, as page `id` (`?client=id`, --sync) under
+//                                               the name `a`; `{ next: true, of: 'a' }` reads it
+//   { log: 'client' }                           record the lines that start with `client ` instead
+//   { get: '/path', mask: true }                record the body with ISO times as <ts>
 // A case with `detach: true` runs `serve -d --watch` (named, on a free port, so a restart keeps the
 // URL) and reads the server's log instead of the output; it is removed at the end.
 // Every stream starts with `id: <instance>` (random): it is not recorded.
@@ -192,6 +196,66 @@ export const WATCH_CASES = [
     steps: [{ open: true }, { write: { 'index.html': '<h1>p2</h1>' } }, { next: true }, { get: '/', headers: NAV }],
   },
   {
+    name: 'watch/sync',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    args: ['--sync=scroll'],
+    steps: [
+      { get: '/__sitefile/reload.js' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/"}' },
+      { open: true, client: 'aaaaaaaaaaaaaaaa', as: 'a' },
+      { open: true, client: 'bbbbbbbbbbbbbbbb', as: 'b' },
+      { open: true, client: 'not-an-id', as: 'c' },
+      { get: '/__sitefile/clients', mask: true },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/","title":" Home\\n page "}' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/docs/#top","title":"Docs","nav":true}' },
+      { next: true, of: 'b' },
+      { next: true, of: 'c' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"bbbbbbbbbbbbbbbb","url":"/docs/","scroll":[0,5000.0]}' },
+      { next: true, of: 'a' },
+      { next: true, of: 'a', ms: 300 },
+      { next: true, of: 'b', ms: 300 },
+      { get: '/__sitefile/clients', mask: true },
+      { get: '/__sitefile/clients', method: 'HEAD' },
+      { get: '/__sitefile/clients', headers: { origin: 'http://127.0.0.1' } },
+      { get: '/__sitefile/clients', headers: { 'sec-fetch-mode': 'cors' } },
+      { post: '/__sitefile/clients', headers: { origin: 'SELF' }, body: '' },
+      { post: '/__sitefile/client', headers: { origin: 'http://evil.example' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/"}' },
+      { post: '/__sitefile/client', headers: {}, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/"}' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"//evil.example/"}' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/","scroll":[0.5,1]}' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: 'x'.repeat(5000) },
+      { get: '/__sitefile/client' },
+      { wait: 200 },
+      { log: 'client' },
+    ],
+  },
+  {
+    name: 'watch/no-sync',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    steps: [
+      { get: '/__sitefile/clients' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"aaaaaaaaaaaaaaaa","url":"/"}' },
+      { open: true, client: 'aaaaaaaaaaaaaaaa', as: 'a' },
+      { get: '/__sitefile/clients' },
+    ],
+  },
+  {
+    name: 'watch/detached-sync',
+    detach: true,
+    args: ['--sync', '--log-format', 'json'],
+    files: { 'index.html': '<h1>d</h1>' },
+    steps: [
+      { get: '/__sitefile/reload.js' },
+      { open: true, client: 'cccccccccccccccc', as: 'a' },
+      { post: '/__sitefile/client', headers: { origin: 'SELF' }, body: '{"id":"cccccccccccccccc","url":"/","title":"D","scroll":[0,1]}' },
+      { get: '/__sitefile/clients', mask: true },
+      { wait: 200 },
+      { log: '{"type":"client"' },
+      { restart: true },
+      { get: '/__sitefile/reload.js' },
+    ],
+  },
+  {
     name: 'watch/reload-full',
     files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>' },
     args: ['--reload', 'full'],
@@ -229,10 +293,11 @@ function request(port, { method = 'GET', path: p, headers = {}, body }) {
   });
 }
 
-function openEvents(port, lastEventId) {
+function openEvents(port, lastEventId, client) {
   return new Promise((resolve) => {
     const headers = lastEventId === undefined ? {} : { 'last-event-id': lastEventId };
-    const req = http.get({ host: '127.0.0.1', port, path: '/__sitefile/reload', headers, agent: false }, (res) => {
+    const p = client === undefined ? '/__sitefile/reload' : `/__sitefile/reload?client=${client}`;
+    const req = http.get({ host: '127.0.0.1', port, path: p, headers, agent: false }, (res) => {
       let buf = '';
       const queue = [];
       const waiters = [];
@@ -297,6 +362,8 @@ async function runOne(c, cmd, work, home) {
   const transcript = [];
   let events;
   let lastId;
+  /** Streams opened `as` a name (pages of `--sync` cases). */
+  const named = new Map();
   /** A detached server's log (its lines start with a time stamp). */
   let logFile;
   const output = () => {
@@ -335,13 +402,31 @@ async function runOne(c, cmd, work, home) {
     }
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(stdout)?.[1]);
     for (const s of c.steps) {
-      if (s.get !== undefined) transcript.push({ step: `${s.method ?? 'GET'} ${s.get}`, ...(await request(port, { method: s.method, path: s.get, headers: s.headers })) });
+      if (s.get !== undefined) {
+        const r = await request(port, { method: s.method, path: s.get, headers: s.headers });
+        if (s.mask && r.body !== undefined) r.body = r.body.replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, '<ts>');
+        transcript.push({ step: `${s.method ?? 'GET'} ${s.get}`, ...r });
+      }
       else if (s.post !== undefined) {
         // SELF in a header value is this server's origin.
         const headers = Object.fromEntries(Object.entries(s.headers ?? {}).map(([k, v]) => [k, v.replace('SELF', `http://127.0.0.1:${port}`)]));
         transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers, body: s.body })) });
-      } else if (s.log) transcript.push({ step: 'log', lines: output().split('\n').filter((l) => l.startsWith('browser')) });
-      else if (s.open) {
+      } else if (s.log) {
+        const prefix = s.log === true ? 'browser' : s.log;
+        // JSON lines carry a time stamp: kept out of the transcript.
+        const lines = output().split('\n').filter((l) => l.startsWith(prefix)).map((l) => l.replace(/"ts":"[^"]*"/, '"ts":"<ts>"'));
+        transcript.push({ step: 'log', lines });
+      } else if (s.open && s.as !== undefined) {
+        named.get(s.as)?.close();
+        const ev = await openEvents(port, undefined, s.client);
+        named.set(s.as, ev);
+        transcript.push({ step: `open ${s.as}`, status: ev?.status, headers: ev?.headers, event: await ev?.next() });
+      } else if (s.next && s.of !== undefined) {
+        const ev = named.get(s.of);
+        let got = ev?.drain() ?? [];
+        if (got.length === 0 && ev) got = [await ev.next(s.ms)];
+        transcript.push({ step: `next ${s.of}`, events: got });
+      } else if (s.open) {
         await quiet();
         events?.close();
         events = await openEvents(port, s.lastEventId === 'previous' ? lastId : s.lastEventId);
@@ -370,6 +455,7 @@ async function runOne(c, cmd, work, home) {
     }
   } finally {
     events?.close();
+    for (const ev of named.values()) ev?.close();
     child.kill('SIGINT');
     await new Promise((r) => (child.exitCode !== null ? r() : child.once('exit', r)));
     if (c.detach) await new Promise((r) => spawn(cmd[0], [...cmd.slice(1), 'server', 'rm', '-f', 'conf-watch'], { env, stdio: 'ignore' }).once('exit', r));

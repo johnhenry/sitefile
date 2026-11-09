@@ -158,6 +158,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             strict_site_files: false,
             watch: false,
             poll_ms: None,
+            sync: None,
             project: Some(project.clone()),
         });
     }

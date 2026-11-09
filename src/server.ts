@@ -230,11 +230,19 @@ export interface LiveReloadOptions {
   readonly navigateToChanged?: boolean;
   /** `--reload`: `morph` (default) updates a page in place when only HTML changed; `full` always reloads. */
   readonly reload?: 'full' | 'morph';
+  /**
+   * `--sync`: pages report where they are ({@link CLIENT_PATH}, listed at {@link CLIENTS_PATH}) and
+   * follow each other's navigation (`nav`), and scrolling too (`scroll`, `--sync=scroll`). Unset: off.
+   */
+  readonly sync?: SyncMode;
 }
+
+/** What `--sync` mirrors between open pages: navigation, or navigation and scrolling. */
+export type SyncMode = 'nav' | 'scroll';
 
 /** The script served at {@link RELOAD_SCRIPT_PATH}: {@link RELOAD_CLIENT} called with `options` (keys in a fixed order). */
 export function clientScript(options: LiveReloadOptions = {}): string {
-  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false},"navigateToChanged":${options.navigateToChanged === true},"reload":"${options.reload ?? 'morph'}"});\n`;
+  return `${RELOAD_CLIENT}({"resetServiceWorkers":${options.resetServiceWorkers !== false},"cssInject":${options.cssInject !== false},"console":${options.console === true},"overlay":${options.overlay !== false},"navigateToChanged":${options.navigateToChanged === true},"reload":"${options.reload ?? 'morph'}"${options.sync !== undefined ? `,"sync":"${options.sync}"` : ''}});\n`;
 }
 
 /** Reserved for browser console messages (POST) while `serve --watch` runs. */
@@ -298,6 +306,115 @@ export function isSameOriginPost(headers: Readonly<Record<string, string | strin
   const site = one('sec-fetch-site');
   if (site !== undefined && site.trim().toLowerCase() !== 'same-origin') return false;
   return origin === `http://${host}` || origin === `https://${host}`;
+}
+
+/** Reserved for location reports (POST) from pages while `serve --watch --sync` runs. */
+export const CLIENT_PATH = '/__sitefile/client';
+/** Reserved for the list of connected pages (GET, loopback only, not from a browser) while `serve --watch --sync` runs. */
+export const CLIENTS_PATH = '/__sitefile/clients';
+/** Largest location report accepted (bytes). */
+export const MAX_CLIENT_BODY = 4096;
+/** At most this many reports are accepted from one page per {@link CLIENT_WINDOW_MS} (more get `429`). */
+export const CLIENT_REPORT_LIMIT = 60;
+export const CLIENT_WINDOW_MS = 10_000;
+/** At most this many pages are tracked (one that left is forgotten first to make room). */
+export const MAX_CLIENTS = 64;
+
+/** One location report from a page's client script (`--sync`). */
+export interface ClientReport {
+  /** The tab's ID: 16 lowercase hex digits, kept in its sessionStorage. */
+  readonly id: string;
+  /** Its path and fragment (`/docs/#intro`): path-absolute, printable ASCII, at most 2048 characters. */
+  readonly url: string;
+  /** Its `document.title`, cleaned ({@link cleanText}, at most 200 code points). */
+  readonly title: string;
+  /** The person navigated (the others follow). */
+  readonly nav: boolean;
+  /** `--sync=scroll`: how far across and down it is scrolled, in 1/10000ths of the scrollable size. */
+  readonly scroll?: readonly [number, number];
+}
+
+const CLIENT_ID = /^[0-9a-f]{16}$/;
+
+/** A location report body (JSON `{id, url, title?, nav?, scroll?}`), or undefined when it is not one. */
+export function parseClientReport(body: string): ClientReport | undefined {
+  let v: unknown;
+  try {
+    v = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.id !== 'string' || !CLIENT_ID.test(o.id)) return undefined;
+  if (typeof o.url !== 'string' || o.url.length > 2048 || !/^\/(?!\/)[\x21-\x7e]*$/.test(o.url)) return undefined;
+  if (o.title !== undefined && typeof o.title !== 'string') return undefined;
+  if (o.nav !== undefined && typeof o.nav !== 'boolean') return undefined;
+  let scroll: [number, number] | undefined;
+  if (o.scroll !== undefined) {
+    const sc = o.scroll;
+    const part = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 10000;
+    if (!Array.isArray(sc) || sc.length !== 2 || !part(sc[0]) || !part(sc[1])) return undefined;
+    scroll = [sc[0], sc[1]];
+  }
+  return { id: o.id, url: o.url, title: cleanText(typeof o.title === 'string' ? o.title : '', 200), nav: o.nav === true, ...(scroll ? { scroll } : {}) };
+}
+
+/** The tab ID a page's event stream names (`/__sitefile/reload?client=<id>`, the first `client`), else undefined. */
+export function streamClientId(search: string): string | undefined {
+  for (const pair of search.replace(/^\?/, '').split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1 || pair.slice(0, eq) !== 'client') continue;
+    const id = pair.slice(eq + 1);
+    return CLIENT_ID.test(id) ? id : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a request for {@link CLIENTS_PATH} comes from the operator (Sitefile Desktop, curl), not a
+ * page: a loopback client that sends no `Origin` and no `Sec-Fetch-*` header.
+ */
+export function isOperatorRequest(remote: string, headers: Readonly<Record<string, string | string[] | undefined>>): boolean {
+  if (!isLoopbackAddress(remote)) return false;
+  return headers.origin === undefined && headers['sec-fetch-site'] === undefined && headers['sec-fetch-mode'] === undefined;
+}
+
+/** One `--sync` log line: a page connected (its first report) or went to another URL. */
+export interface ClientLogEntry {
+  readonly ts: string;
+  readonly event: 'connect' | 'navigate';
+  readonly id: string;
+  readonly url: string;
+  readonly title: string;
+  readonly remote: string;
+  readonly device: string;
+}
+
+/**
+ * A `--sync` log line. Text: `client <event> <id> <url> <remote> <device>`. JSON (a stable contract,
+ * docs/CLI.md): `{"type":"client","ts","event","id","url","title","remote","device"}`, `title` only
+ * when not empty.
+ */
+export function clientLogLine(format: 'text' | 'json', e: ClientLogEntry): string {
+  if (format === 'text') return `client ${e.event} ${e.id} ${e.url} ${e.remote} ${e.device}`;
+  return `{"type":"client","ts":${JSON.stringify(e.ts)},"event":${JSON.stringify(e.event)},"id":${JSON.stringify(e.id)},"url":${JSON.stringify(e.url)}${e.title !== '' ? `,"title":${JSON.stringify(e.title)}` : ''},"remote":${JSON.stringify(e.remote)},"device":${JSON.stringify(e.device)}}`;
+}
+
+/** A page `--sync` knows about. */
+interface ClientEntry {
+  readonly id: string;
+  remote: string;
+  device: string;
+  /** Empty until its first report. */
+  url: string;
+  title: string;
+  readonly since: string;
+  lastSeen: string;
+  /** Its open event streams; 0: it left (kept, so it keeps its `since` if it comes back). */
+  streams: number;
+  window: number;
+  count: number;
 }
 
 /** The event that tells every page to reload. */
@@ -367,7 +484,12 @@ export function reloadEventFor(prev: Tree, next: Tree, cssInject: boolean, navig
 
 /** Open live-reload streams; {@link LiveReload.send} gives every page an event ({@link LiveReload.reload}: reload). */
 export class LiveReload {
-  private readonly clients = new Set<http.ServerResponse>();
+  /** Open streams, with the tab ID each names (`--sync`). */
+  private readonly clients = new Map<http.ServerResponse, string | undefined>();
+  /** `--sync`: the pages that reported, in the order they first connected. */
+  private readonly known = new Map<string, ClientEntry>();
+  /** `--sync`, else undefined. */
+  readonly sync: SyncMode | undefined;
   /** The client script for this session ({@link clientScript}). */
   readonly script: string;
 
@@ -385,6 +507,7 @@ export class LiveReload {
     this.script = clientScript(options);
     this.heartbeatMs = heartbeatMs;
     this.console = options.console === true;
+    this.sync = options.sync;
   }
 
   /**
@@ -392,20 +515,89 @@ export class LiveReload {
    * and tunnels from buffering or compressing it, and a comment every 15 s keeps idle
    * connections from being cut (and finds clients that went away).
    */
-  attach(res: http.ServerResponse, headers: Record<string, string>, lastEventId?: string): void {
+  attach(res: http.ServerResponse, headers: Record<string, string>, lastEventId?: string, client?: { readonly id: string; readonly remote: string; readonly device: string }): void {
     res.writeHead(200, { ...headers, ...STREAM_HEADERS });
     res.write(`retry: 1000\n\nid: ${this.instance}\n\n`);
     // A page that was connected to an earlier instance of this server (it restarted) reloads.
     if (lastEventId !== undefined && lastEventId !== '' && lastEventId !== this.instance) res.write(`data: ${RELOAD_EVENT}\n\n`);
     // A page opened while the last build is broken shows the error at once.
     if (this.failure !== undefined) res.write(`data: ${this.failure}\n\n`);
-    this.clients.add(res);
+    const entry = client !== undefined && this.sync !== undefined ? this.track(client) : undefined;
+    this.clients.set(res, entry?.id);
     const beat = setInterval(() => res.write(': ping\n\n'), this.heartbeatMs);
     beat.unref();
     res.on('close', () => {
       clearInterval(beat);
       this.clients.delete(res);
+      if (entry !== undefined) {
+        entry.streams--;
+        entry.lastSeen = new Date().toISOString();
+      }
     });
+  }
+
+  /** `--sync`: the entry for a page whose stream opened (undefined when {@link MAX_CLIENTS} are connected). */
+  private track(client: { readonly id: string; readonly remote: string; readonly device: string }): ClientEntry | undefined {
+    const now = new Date().toISOString();
+    let entry = this.known.get(client.id);
+    if (entry === undefined) {
+      if (this.known.size >= MAX_CLIENTS) {
+        const gone = [...this.known.values()].find((e) => e.streams === 0);
+        if (gone === undefined) return undefined;
+        this.known.delete(gone.id);
+      }
+      entry = { id: client.id, remote: client.remote, device: client.device, url: '', title: '', since: now, lastSeen: now, streams: 0, window: 0, count: 0 };
+      this.known.set(client.id, entry);
+    }
+    entry.remote = client.remote;
+    entry.device = client.device;
+    entry.lastSeen = now;
+    entry.streams++;
+    return entry;
+  }
+
+  /**
+   * `--sync`: take a page's location report. The status to answer: `404` when its stream is not
+   * open, `429` over {@link CLIENT_REPORT_LIMIT}, else `204`; then the log line it gives (its first
+   * report, or a new URL) and the events sent to the other pages (`navigate`, and `scroll` with
+   * `--sync=scroll`).
+   */
+  report(r: ClientReport, now: number, format: 'text' | 'json'): { status: number; log?: string } {
+    const entry = this.known.get(r.id);
+    if (entry === undefined || entry.streams === 0 || this.sync === undefined) return { status: 404 };
+    if (now - entry.window >= CLIENT_WINDOW_MS) {
+      entry.window = now;
+      entry.count = 0;
+    }
+    if (++entry.count > CLIENT_REPORT_LIMIT) return { status: 429 };
+    const ts = new Date(now).toISOString();
+    const event = entry.url === '' ? 'connect' : entry.url !== r.url ? 'navigate' : undefined;
+    entry.url = r.url;
+    entry.title = r.title;
+    entry.lastSeen = ts;
+    if (r.nav) this.sendExcept(JSON.stringify({ type: 'navigate', url: r.url }), r.id);
+    if (r.scroll !== undefined && this.sync === 'scroll') this.sendExcept(JSON.stringify({ type: 'scroll', url: r.url, x: r.scroll[0], y: r.scroll[1] }), r.id);
+    if (event === undefined) return { status: 204 };
+    return { status: 204, log: clientLogLine(format, { ts, event, id: r.id, url: r.url, title: r.title, remote: entry.remote, device: entry.device }) };
+  }
+
+  /**
+   * `--sync`: the connected pages as {@link CLIENTS_PATH} answers them:
+   * `{"clients":[{"id","url","title","remote","device","since","lastSeen"}]}` (one line), by
+   * `since`, then `id`. A page that has not reported yet has an empty `url`.
+   */
+  clientsJson(): string {
+    const list = [...this.known.values()].filter((e) => e.streams > 0).sort((a, b) => (a.since < b.since ? -1 : a.since > b.since ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const items = list.map(
+      (e) =>
+        `{"id":${JSON.stringify(e.id)},"url":${JSON.stringify(e.url)},"title":${JSON.stringify(e.title)},"remote":${JSON.stringify(e.remote)},"device":${JSON.stringify(e.device)},"since":${JSON.stringify(e.since)},"lastSeen":${JSON.stringify(e.lastSeen)}}`,
+    );
+    return `{"clients":[${items.join(',')}]}\n`;
+  }
+
+  /** Send `event` to every open page except those of tab `id`. */
+  private sendExcept(event: string, id: string): void {
+    for (const [c, cid] of this.clients) if (cid !== id) c.write(`data: ${event}\n\n`);
   }
 
   readonly console: boolean;
@@ -433,7 +625,7 @@ export class LiveReload {
   send(event: string): void {
     if (event.startsWith('{"type":"error"')) this.failure = event;
     else if (event !== BUILDING_EVENT) this.failure = undefined;
-    for (const c of this.clients) c.write(`data: ${event}\n\n`);
+    for (const c of this.clients.keys()) c.write(`data: ${event}\n\n`);
   }
 
   reload(): void {
@@ -1217,6 +1409,35 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       });
       return;
     }
+    if (live?.sync !== undefined && url.split(/[?#]/, 1)[0] === CLIENT_PATH) {
+      // --sync: a page's location report (the client script sends it; not access-logged).
+      if (method !== 'POST') return finish(405, { allow: 'POST', 'content-length': 0 }, undefined, true);
+      if (!isSameOriginPost(req.headers)) return finish(403, { 'content-length': 0 }, undefined, true);
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let tooBig = false;
+      req.on('data', (c: Buffer) => {
+        size += c.byteLength;
+        if (size > MAX_CLIENT_BODY) tooBig = true;
+        else chunks.push(c);
+      });
+      req.on('end', () => {
+        if (tooBig) return finish(413, { 'content-length': 0, connection: 'close' }, undefined, true);
+        const r = parseClientReport(Buffer.concat(chunks).toString('utf8'));
+        if (r === undefined) return finish(400, { 'content-length': 0 }, undefined, true);
+        const done = live.report(r, Date.now(), options.logFormat ?? 'text');
+        if (done.log !== undefined) options.log?.(done.log);
+        finish(done.status, done.status === 204 ? {} : { 'content-length': 0 }, undefined, true);
+      });
+      return;
+    }
+    if (live?.sync !== undefined && url.split(/[?#]/, 1)[0] === CLIENTS_PATH) {
+      // --sync: the connected pages, for Sitefile Desktop and other local tools (not access-logged).
+      if (method !== 'GET' && method !== 'HEAD') return finish(405, { allow: 'GET, HEAD', 'content-length': 0 }, undefined, true);
+      if (!isOperatorRequest(req.socket.remoteAddress ?? '', req.headers)) return finish(403, { 'content-length': 0 }, undefined, true);
+      const json = live.clientsJson();
+      return finish(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(json) }, json, true);
+    }
     if (options.cors && method === 'OPTIONS') {
       // A CORS preflight: any path, nothing is looked up.
       const allowHeaders = preflightHeaders(req.headers['access-control-request-headers']);
@@ -1239,7 +1460,9 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const rawPath = url.slice(0, end);
     if (options.liveReload && rawPath === RELOAD_PATH) {
       if (method === 'HEAD') return finish(200, { ...STREAM_HEADERS }, undefined);
-      return options.liveReload.attach(res, base, header(req.headers['last-event-id'])); // not access-logged: one long request per open page
+      const id = options.liveReload.sync !== undefined ? streamClientId(url.slice(rawPath.length).split('#', 1)[0]!) : undefined;
+      const client = id !== undefined ? { id, remote: req.socket.remoteAddress ?? '', device: deviceOf(req.headers['user-agent']) } : undefined;
+      return options.liveReload.attach(res, base, header(req.headers['last-event-id']), client); // not access-logged: one long request per open page
     }
     if (options.liveReload && rawPath === RELOAD_SCRIPT_PATH) {
       // not access-logged either: every page load fetches it

@@ -9,7 +9,7 @@ import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { networkOption } from './network.js';
 import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile, type SyncMode } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import type { Plan } from '../planner.js';
@@ -249,6 +249,7 @@ const run: Command = {
     '--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)',
     '--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)',
     '--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)',
+    '--sync[=scroll]   open pages report where they are and follow each other\'s navigation (=scroll: and scrolling) (--watch, -d --watch)',
   ],
   options: {
     name: { type: 'string' },
@@ -312,6 +313,7 @@ const run: Command = {
     'no-overlay': { type: 'boolean' },
     'navigate-to-changed': { type: 'boolean' },
     reload: { type: 'string' },
+    sync: { type: 'string' },
   },
   async run(v, pos) {
     if (v.watch && !v.detach) return serveWatch(v, pos);
@@ -324,6 +326,7 @@ const run: Command = {
     if (watchDetached) requireArgs(pos, 0, 1, 'a directory');
     else requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const pollMs = watchDetached ? pollOption(!!v.poll, str(v['poll-interval'])) : undefined;
+    const sync = watchDetached ? syncOf(v) : undefined;
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
@@ -385,7 +388,7 @@ const run: Command = {
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs } : {}) }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles, ...(watchDetached ? { watch: true, pollMs, sync } : {}) }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
@@ -456,6 +459,8 @@ export interface DetachedServe {
   readonly watch?: boolean | undefined;
   /** `--poll`, `--poll-interval` with `-d --watch`. */
   readonly pollMs?: number | undefined;
+  /** `--sync` with `-d --watch`. */
+  readonly sync?: SyncMode | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -508,6 +513,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     ...(d.watch ? { watch: true } : {}),
     ...(d.watch && d.pollMs !== undefined ? { pollMs: d.pollMs } : {}),
+    ...(d.watch && d.sync !== undefined ? { sync: d.sync } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -576,7 +582,7 @@ async function terminal(
 }
 
 /** The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for builds or the page script). */
-const DETACHED_WATCH = ['poll', 'poll-interval'] as const;
+const DETACHED_WATCH = ['poll', 'poll-interval', 'sync'] as const;
 
 /**
  * `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. A Sitefile project
@@ -591,7 +597,16 @@ async function watchedDirectory(arg: string): Promise<{ label: string; source: S
 }
 
 /** serve flags that only mean something with --watch. */
-const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload', 'no-rewrite-base'] as const;
+const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload', 'no-rewrite-base', 'sync'] as const;
+
+/** `--sync` (a bare `--sync` arrives as `--sync=`): `nav`, or `scroll` for `--sync=scroll`; undefined without it. */
+function syncOf(v: ParsedValues): SyncMode | undefined {
+  const s = str(v.sync);
+  if (s === undefined) return undefined;
+  if (s === '') return 'nav';
+  if (s === 'scroll') return 'scroll';
+  return usage(`--sync takes no value or =scroll, got '${s}'`);
+}
 
 /**
  * `serve --watch [context]`: build in memory, serve, rebuild on change, live reload. A directory
@@ -840,6 +855,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
+  const sync = syncOf(v);
   const spa = spaOptions(v);
   const baseFlag = sharing.randomBase ?? parseBase(str(v.base));
   /** `--base`, else the path of the last good build's EXPORT BASE URL. */
@@ -870,7 +886,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   let builtAt: number | undefined; // Last-Modified: the time of the build being served
   let started = false;
   const memo = watchMemo();
-  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate, reload: reloadMode });
+  const live = new LiveReload({ resetServiceWorkers: !v['keep-service-workers'], cssInject, console: !!v.console, overlay: !v['no-overlay'], navigateToChanged: navigate, reload: reloadMode, ...(sync ? { sync } : {}) });
   /** Serve `next` and tell open pages what changed. */
   const swap = (next: Tree): void => {
     const event = started ? (reloadEventFor(current, next, cssInject, navigate) ?? OK_EVENT) : undefined;

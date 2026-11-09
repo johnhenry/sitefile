@@ -368,6 +368,10 @@ protocol v2, not by running the `git` program:
   `Transfer-Encoding: chunked` is read by the TypeScript server and refused
   with `413` by the Rust one, whose request reader handles bodies only by
   `Content-Length`. The live-reload client always sends a `Content-Length`.
+- **When a `--sync` page counts as gone.** The TypeScript server drops a page from
+  `/__sitefile/clients` as soon as its event stream closes; the Rust server notices
+  only when it next writes to the stream (an event, or the heartbeat every 15 s),
+  so a closed tab can stay listed up to 15 s longer.
 - **zlib error text.** A Git packfile object that fails to inflate is `E_GIT` in both, but the
   message embeds Node's or flate2's wording.
 - **Small edge cases** documented in the port PRs (#38–#44): IPv6 zone IDs in

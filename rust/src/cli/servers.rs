@@ -687,6 +687,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("no-overlay"),
     flag("navigate-to-changed"),
     string("reload"),
+    string("sync"),
 ];
 /// serve flags that only mean something with --watch.
 const WATCH_ONLY: &[&str] = &[
@@ -705,6 +706,7 @@ const WATCH_ONLY: &[&str] = &[
     "navigate-to-changed",
     "reload",
     "no-rewrite-base",
+    "sync",
 ];
 pub const SERVE: Command = Command {
     name: "serve",
@@ -774,6 +776,7 @@ pub const SERVE: Command = Command {
         "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
         "--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)",
         "--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)",
+        "--sync[=scroll]   open pages report where they are and follow each other's navigation (=scroll: and scrolling) (--watch, -d --watch)",
     ],
     options: SERVE_OPTS,
     run: run_serve,
@@ -781,7 +784,18 @@ pub const SERVE: Command = Command {
 
 /// The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for
 /// builds or the page script).
-const DETACHED_WATCH: &[&str] = &["poll", "poll-interval"];
+const DETACHED_WATCH: &[&str] = &["poll", "poll-interval", "sync"];
+
+/// `--sync` (a bare `--sync` arrives as `--sync=`): `nav`, or `scroll` for `--sync=scroll`;
+/// None without it (`syncOf` in src/cli/servers.ts).
+fn sync_of(v: &Parsed) -> Result<Option<crate::server::SyncMode>> {
+    match v.str("sync") {
+        None => Ok(None),
+        Some("") => Ok(Some(crate::server::SyncMode::Nav)),
+        Some("scroll") => Ok(Some(crate::server::SyncMode::Scroll)),
+        Some(s) => usage(format!("--sync takes no value or =scroll, got '{s}'")),
+    }
+}
 
 /// `serve -d --watch [dir]`: the directory (default .) as a source, absolute and real. A Sitefile
 /// project is refused: building on change happens in the foreground (`serve --watch`).
@@ -837,6 +851,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     } else {
         None
     };
+    let sync = if watch_detached { sync_of(v)? } else { None };
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
@@ -1084,6 +1099,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             strict_site_files,
             watch: watch_detached,
             poll_ms,
+            sync,
             project: None,
         },
         None,
@@ -1132,6 +1148,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let plain = !build_flags && !std::path::Path::new(&context).join("Sitefile").is_file();
     let css_inject = !v.flag("no-css-inject");
     let navigate = v.flag("navigate-to-changed");
+    let sync = sync_of(v)?;
     let morph = match v.str("reload").unwrap_or("morph") {
         "morph" => true,
         "full" => false,
@@ -1193,6 +1210,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         overlay: !v.flag("no-overlay"),
         navigate_to_changed: navigate,
         morph,
+        sync,
     });
     let mut server: Option<crate::server::ListeningServer> = None;
     let started = std::cell::Cell::new(false);
@@ -1610,7 +1628,15 @@ pub fn serve_worker(id: &str) -> i32 {
         .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
     // `-d --watch`: the directory is re-read on change and open pages reload (or swap stylesheets).
     let live = (state.watch && matches!(state.source, crate::servers::ServerSource::Dir { .. }))
-        .then(LiveReload::new);
+        .then(|| {
+            LiveReload::with_options(&crate::server::LiveReloadOptions {
+                sync: state
+                    .sync
+                    .as_deref()
+                    .and_then(crate::server::SyncMode::parse),
+                ..Default::default()
+            })
+        });
     let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
     let modified: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
     let started = (|| -> Result<crate::server::ListeningServer> {
