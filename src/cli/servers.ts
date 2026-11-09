@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -8,8 +9,9 @@ import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { networkOption } from './network.js';
 import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
+import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import type { Plan } from '../planner.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -66,7 +68,7 @@ export function parseBase(v: string | undefined): string | undefined {
 }
 
 /** The URL a server answers at: its origin and `--base`. */
-const siteUrl = (host: string, port: number, base: string | undefined): string => formatUrl(host, port) + (base ?? '/').slice(1);
+const siteUrl = (host: string, port: number, base: string | undefined, scheme: 'http' | 'https' = 'http'): string => formatUrl(host, port, scheme) + (base ?? '/').slice(1);
 
 /** The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`), else undefined. */
 export function exportBasePath(exportBase: string | undefined): string | undefined {
@@ -198,6 +200,19 @@ const run: Command = {
     '--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)',
     '--log-ip          add the client address to access-log lines',
     '--quiet           no access-log lines',
+    '--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored',
+    '--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)',
+    '--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)',
+    '--random-route    serve the site only under a random secret path (printed in the URL)',
+    '--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)',
+    '--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)',
+    '--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)',
+    '--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)',
+    '--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied',
+    '--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)',
+    '--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)',
+    '--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)',
+    '--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)',
     '--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)',
@@ -269,6 +284,19 @@ const run: Command = {
     'log-format': { type: 'string' },
     'log-ip': { type: 'boolean' },
     quiet: { type: 'boolean' },
+    auth: { type: 'string', multiple: true },
+    'auth-file': { type: 'string' },
+    'max-connections-per-ip': { type: 'string' },
+    'random-route': { type: 'boolean' },
+    'allow-ip': { type: 'string', multiple: true },
+    'deny-ip': { type: 'string', multiple: true },
+    'stop-after': { type: 'string' },
+    'tls-cert': { type: 'string' },
+    compress: { type: 'boolean' },
+    throttle: { type: 'string' },
+    mime: { type: 'string', multiple: true },
+    'mime-file': { type: 'string' },
+    'tls-key': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -294,8 +322,14 @@ const run: Command = {
     const isolate = isolateOf(v);
     const cache = cacheOf(v);
     const logging = loggingOf(v);
+    const auth = await authOf(v, bind.host);
+    const perIp = perIpOf(v);
+    const sharing = sharingOf(v, bind.host);
+    const tls = await tlsOf(v);
+    const throttle = throttleOf(v);
+    const mime = await mimeOf(v);
     const spa = spaOptions(v);
-    const base = parseBase(str(v.base));
+    const base = sharing.randomBase ?? parseBase(str(v.base));
     const rewriteBase = parseRewriteBase(str(v['rewrite-base']));
     const profiles = profileOptions(v);
     const profile = routingFor(profiles);
@@ -316,10 +350,10 @@ const run: Command = {
       const modified = await servedLastModified(store, source);
       let current = tree;
       const proxy = proxyOption(v);
-      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
       const addr = await listen(server, bind.host, bind.port);
-      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
       const quit = await terminal(v, addr, base, warn, async () => {
         if (source.kind !== 'dir') {
           process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
@@ -331,7 +365,10 @@ const run: Command = {
         next.close();
         process.stdout.write(`Re-read ${label} (${current.size} files)\n`);
       });
-      await Promise.race([waitForSignal(), quit.promise]);
+      const stop = sharing.stopAfter;
+      const timer = stop === undefined ? undefined : new Promise<string>((r) => setTimeout(() => r('stop-after'), stop.seconds * 1000).unref());
+      const why = await Promise.race([waitForSignal(), quit.promise.then(() => 'quit'), ...(timer ? [timer] : [])]);
+      if (why === 'stop-after') process.stdout.write(`Stopping: --stop-after ${stop!.text} reached\n`);
       quit.stop();
       await closeServer(server);
       close();
@@ -341,8 +378,8 @@ const run: Command = {
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
     for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n${networkLines(up.host, up.port, up.base)}`);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
 };
@@ -382,6 +419,28 @@ export interface DetachedServe {
   readonly logIp?: boolean | undefined;
   /** `--quiet`. */
   readonly quiet?: boolean | undefined;
+  /** `--auth` verifiers. */
+  readonly auth?: AuthEntry[] | undefined;
+  /** `--auth-file`, an absolute path read at every start. */
+  readonly authFile?: string | undefined;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number | undefined;
+  /** `--random-route` prefix. */
+  readonly hideBase?: boolean | undefined;
+  /** `--allow-ip`, `--deny-ip` blocks as given. */
+  readonly allowIp?: string[] | undefined;
+  readonly denyIp?: string[] | undefined;
+  /** `--stop-after`: when the server stops (ISO time). */
+  readonly expires?: string | undefined;
+  /** `--compress`. */
+  readonly compress?: boolean | undefined;
+  /** `--throttle` as given. */
+  readonly throttle?: string | undefined;
+  /** `--mime`, `--mime-file`: extension → content type. */
+  readonly mime?: Record<string, string> | undefined;
+  /** `--tls-cert`, `--tls-key`, absolute paths. */
+  readonly tlsCert?: string | undefined;
+  readonly tlsKey?: string | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -423,6 +482,17 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.logFormat === 'json' ? { logFormat: 'json' as const } : {}),
     ...(d.logIp ? { logIp: true } : {}),
     ...(d.quiet ? { quiet: true } : {}),
+    ...(d.auth !== undefined ? { auth: d.auth } : {}),
+    ...(d.authFile !== undefined ? { authFile: d.authFile } : {}),
+    ...(d.maxConnectionsPerIp ? { maxConnectionsPerIp: d.maxConnectionsPerIp } : {}),
+    ...(d.hideBase ? { hideBase: true } : {}),
+    ...(d.allowIp !== undefined ? { allowIp: d.allowIp } : {}),
+    ...(d.denyIp !== undefined ? { denyIp: d.denyIp } : {}),
+    ...(d.expires !== undefined ? { expires: d.expires } : {}),
+    ...(d.tlsCert !== undefined ? { tlsCert: d.tlsCert, tlsKey: d.tlsKey } : {}),
+    ...(d.compress ? { compress: true } : {}),
+    ...(d.throttle !== undefined ? { throttle: d.throttle } : {}),
+    ...(d.mime !== undefined ? { mime: d.mime } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -568,10 +638,139 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
 }
 
 /** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
-function networkLines(host: string, port: number, base?: string): string {
-  return networkUrls(host, port)
+function networkLines(host: string, port: number, base?: string, scheme: 'http' | 'https' = 'http'): string {
+  return networkUrls(host, port, scheme)
     .map((u) => `  Network: ${u}${(base ?? '/').slice(1)}\n`)
     .join('');
+}
+
+/**
+ * `--auth`, `--auth-file`, `SITEFILE_SERVE_AUTH`: the server's checker and what the record keeps (verifiers and the
+ * file path, never a password). Warns when the bind is not loopback: basic auth over plain HTTP sends the password
+ * in the clear.
+ */
+async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: BasicAuth; record: { auth?: AuthEntry[]; authFile?: string } }> {
+  const pairs = [...strs(v.auth).map((a) => parseAuthPair(a, '--auth'))];
+  const env = process.env.SITEFILE_SERVE_AUTH;
+  if (env !== undefined && env !== '') pairs.push(parseAuthPair(env, 'SITEFILE_SERVE_AUTH'));
+  const authFile = str(v['auth-file']);
+  const entries: AuthEntry[] = pairs.map((p) => ({ user: p.user, verifier: makeVerifier(p.password) }));
+  const fromFile = authFile === undefined ? [] : parseHtpasswd(await fs.readFile(authFile, 'utf8').catch(() => usage(`--auth-file: cannot read ${authFile}`)), authFile);
+  if (entries.length === 0 && authFile === undefined) return { record: {} };
+  if (!isLoopback(bindHost)) process.stderr.write(`warning: basic authentication over plain HTTP on ${bindHost}: the password crosses the network in the clear\n`);
+  return {
+    server: new BasicAuth([...entries, ...fromFile]),
+    record: { ...(entries.length > 0 ? { auth: entries } : {}), ...(authFile !== undefined ? { authFile: path.resolve(authFile) } : {}) },
+  };
+}
+
+/**
+ * `--tls-cert`, `--tls-key` (or `SITEFILE_TLS_CERT`, `SITEFILE_TLS_KEY`): the PEM files, read now (the key is never logged
+ * or copied; the record keeps both paths, absolute, and a detached server reads them at every start).
+ */
+async function tlsOf(v: ParsedValues): Promise<{ server?: { cert: Buffer; key: Buffer }; record: { tlsCert?: string; tlsKey?: string }; scheme: 'http' | 'https' }> {
+  const env = (k: string): string | undefined => (process.env[k] === '' ? undefined : process.env[k]);
+  const cert = str(v['tls-cert']) ?? env('SITEFILE_TLS_CERT');
+  const key = str(v['tls-key']) ?? env('SITEFILE_TLS_KEY');
+  if (cert === undefined && key === undefined) return { record: {}, scheme: 'http' };
+  if (cert === undefined || key === undefined) usage('--tls-cert and --tls-key go together');
+  const read = (f: string, flag: string): Promise<Buffer> => fs.readFile(f).catch(() => usage(`--${flag}: cannot read ${f}`));
+  return {
+    server: { cert: await read(cert, 'tls-cert'), key: await read(key, 'tls-key') },
+    record: { tlsCert: path.resolve(cert), tlsKey: path.resolve(key) },
+    scheme: 'https',
+  };
+}
+
+/** `--throttle`: the spec as given and its limits. */
+function throttleOf(v: ParsedValues): { spec: string; limits: Throttle } | undefined {
+  const spec = str(v.throttle);
+  if (spec === undefined) return undefined;
+  const limits = parseThrottle(spec);
+  if (limits === undefined) usage(`--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '${spec}'`);
+  return { spec, limits };
+}
+
+/** `--mime-file` entries, then `--mime` values (a later one replaces an earlier type for the extension), or undefined. */
+async function mimeOf(v: ParsedValues): Promise<Map<string, string> | undefined> {
+  const file = str(v['mime-file']);
+  const flags = strs(v.mime);
+  if (file === undefined && flags.length === 0) return undefined;
+  const out = file === undefined ? new Map<string, string>() : parseMimeTypes(await fs.readFile(file, 'utf8').catch(() => usage(`--mime-file: cannot read ${file}`)), file);
+  for (const f of flags) {
+    const pair = parseMimeFlag(f);
+    if (pair === undefined) usage(`--mime expects ext=type/subtype, not '${f}'`);
+    out.set(pair[0], pair[1]);
+  }
+  return out;
+}
+
+/** The start message's `  Throttle: …` line (none without --throttle). */
+function throttleLine(spec: string | undefined): string {
+  const t = spec === undefined ? undefined : parseThrottle(spec);
+  return t === undefined ? '' : `  Throttle: ${spec} (${t.bytesPerSecond / 125} kbit/s, ${t.latencyMs} ms latency)\n`;
+}
+
+/**
+ * `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after`, and the sharing defaults: `noindex` on a non-loopback bind and
+ * client info (address, device) in the access log of non-loopback clients.
+ */
+function sharingOf(
+  v: ParsedValues,
+  bindHost: string,
+): {
+  server: { hideBase?: true; ipRules?: { allow: Cidr[]; deny: Cidr[] }; noindex?: true; clientInfo: true };
+  record: { hideBase?: true; allowIp?: string[]; denyIp?: string[]; expires?: string };
+  randomBase?: string;
+  stopAfter?: { seconds: number; text: string };
+} {
+  const cidrs = (flag: string): { text: string[]; parsed: Cidr[] } => {
+    const text = strs(v[flag]);
+    return {
+      text,
+      parsed: text.map((t) => {
+        const c = parseCidr(t);
+        if (c === undefined) usage(`--${flag}: invalid address or CIDR block '${t}'`);
+        return c;
+      }),
+    };
+  };
+  const allow = cidrs('allow-ip');
+  const deny = cidrs('deny-ip');
+  if (v['random-route'] && v.base !== undefined) usage('--random-route and --base both set the path prefix; use one');
+  const randomBase = v['random-route'] ? `/${randomBytes(12).toString('hex')}/` : undefined;
+  const raw = str(v['stop-after']);
+  let stopAfter: { seconds: number; text: string } | undefined;
+  if (raw !== undefined) {
+    const m = /^([0-9]{1,6})(s|m|h|d)$/.exec(raw);
+    if (!m || Number(m[1]) === 0) usage(`--stop-after expects a duration like 90s, 30m, 2h or 1d, not '${raw}'`);
+    stopAfter = { seconds: Number(m[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[m[2] as 's' | 'm' | 'h' | 'd'], text: raw };
+  }
+  const ipRules = allow.parsed.length + deny.parsed.length > 0 ? { allow: allow.parsed, deny: deny.parsed } : undefined;
+  return {
+    ...(randomBase ? { randomBase } : {}),
+    server: { ...(randomBase ? { hideBase: true as const } : {}), ...(ipRules ? { ipRules } : {}), ...(!isLoopback(bindHost) ? { noindex: true as const } : {}), clientInfo: true },
+    record: {
+      ...(randomBase ? { hideBase: true as const } : {}),
+      ...(allow.text.length > 0 ? { allowIp: allow.text } : {}),
+      ...(deny.text.length > 0 ? { denyIp: deny.text } : {}),
+      ...(stopAfter ? { expires: new Date(Date.now() + stopAfter.seconds * 1000).toISOString() } : {}),
+    },
+    ...(stopAfter ? { stopAfter } : {}),
+  };
+}
+
+/** `--max-connections-per-ip <n>`: the option (and record field) when n > 0. */
+function perIpOf(v: ParsedValues): { maxConnectionsPerIp?: number } {
+  const raw = str(v['max-connections-per-ip']);
+  if (raw === undefined) return {};
+  if (!/^[0-9]{1,6}$/.test(raw)) usage(`--max-connections-per-ip must be a number (0 to 999999), not '${raw}'`);
+  const n = Number(raw);
+  return n > 0 ? { maxConnectionsPerIp: n } : {};
+}
+
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
 }
 
 /** `--log-format`, `--log-ip`, `--quiet`: the server options (and record fields) they set, only those not at their default. */
@@ -595,6 +794,13 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const isolate = isolateOf(v);
   const cache = cacheOf(v);
   const logging = loggingOf(v);
+  const auth = await authOf(v, bind.host);
+  const perIp = perIpOf(v);
+  if (v['stop-after'] !== undefined) usage('--stop-after does not apply to --watch');
+  const sharing = sharingOf(v, bind.host);
+  const tls = await tlsOf(v);
+  const throttle = throttleOf(v);
+  const mime = await mimeOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -607,7 +813,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
   const spa = spaOptions(v);
-  const baseFlag = parseBase(str(v.base));
+  const baseFlag = sharing.randomBase ?? parseBase(str(v.base));
   /** `--base`, else the path of the last good build's EXPORT BASE URL. */
   let base = baseFlag;
   const rewriteFlag = parseRewriteBase(str(v['rewrite-base']));
@@ -645,7 +851,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     if (event !== undefined) live.send(event);
   };
   const proxy = proxyOption(v);
-  const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+  const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
   const control: { rebuild?: () => void } = {};
   let quit: { promise: Promise<void>; stop: () => void } | undefined;
   let quitNow!: () => void;
@@ -699,8 +905,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
         quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
         void quit.promise.then(() => quitNow());
       },
@@ -726,9 +932,10 @@ const ps: Command = {
     if (v.json) {
       // 'site' is the image reference or directory being served.
       // A server bound to all interfaces also lists the URLs other machines use (networkUrls).
-      const out = shown.map(({ image, ...rest }) => {
-        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port) : [];
-        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), site: image };
+      // Credentials never leave the record: a server that needs them shows auth: true.
+      const out = shown.map(({ image, auth, ...rest }) => {
+        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port, rest.tlsCert !== undefined ? 'https' : 'http') : [];
+        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), ...(auth !== undefined || rest.authFile !== undefined ? { auth: true } : {}), site: image };
       });
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
       return 0;
@@ -904,7 +1111,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base)}\n${networkLines(up.host, up.port, up.base)}`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}`);
     return 0;
   },
 };

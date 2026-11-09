@@ -35,7 +35,9 @@ fn upstream() -> (String, Arc<Mutex<Vec<(String, Vec<String>)>>>) {
             }
             let path = line.split(' ').nth(1).unwrap_or("").to_string();
             s.lock().unwrap().push((line.trim().to_string(), headers));
-            let reply = if path.contains("moved") {
+            let reply = if path.contains("big") {
+                format!("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\ncontent-length: 2000\r\n\r\n{}", "x".repeat(2000))
+            } else if path.contains("moved") {
                 "HTTP/1.1 302 Found\r\nlocation: /elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
             } else {
                 let body = format!("{{\"url\":\"{path}\"}}");
@@ -160,4 +162,51 @@ fn redirect_rules_need_an_allowed_host_and_yield_to_files() {
     // No proxy settings (a detached server): refused.
     let bare = handle_request(&t, &SiteServerOptions::default(), "GET", "/api/z", &h);
     assert_eq!(bare.status, 502);
+}
+
+#[test]
+fn auth_covers_proxied_paths_and_compress_leaves_them_alone() {
+    use sitefile::serve_auth::{make_verifier, AuthEntry, BasicAuth};
+    let (origin, seen) = upstream();
+    let rules = format!("/rule/* {origin}/r/:splat 200\n");
+    let t = tree(&[("/index.html", "home"), ("/_redirects", &rules)]);
+    let options = SiteServerOptions {
+        auth: Some(Arc::new(BasicAuth::new(vec![AuthEntry {
+            user: "u".into(),
+            verifier: make_verifier("pw", None, 1000),
+        }]))),
+        compress: true,
+        proxy: Some(proxy(vec![("/api".into(), origin.clone())], &["127.0.0.1"])),
+        ..Default::default()
+    };
+    for p in ["/api/x", "/rule/x"] {
+        let denied = handle_request(&t, &options, "GET", p, &req(&[]));
+        assert_eq!(denied.status, 401, "{p}");
+        assert!(denied
+            .header("www-authenticate")
+            .is_some_and(|v| v.starts_with("Basic ")));
+    }
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing reached the upstream"
+    );
+    let ok = req(&[
+        ("authorization", "Basic dTpwdw=="),
+        ("accept-encoding", "gzip"),
+    ]);
+    for (p, url) in [("/api/x", "/x"), ("/rule/x", "/r/x")] {
+        let r = handle_request(&t, &options, "GET", p, &ok);
+        assert_eq!(
+            String::from_utf8_lossy(&r.body),
+            format!("{{\"url\":\"{url}\"}}"),
+            "{p}"
+        );
+        let (_, sent) = seen.lock().unwrap().last().cloned().unwrap();
+        assert!(!sent.iter().any(|l| l.starts_with("authorization:")));
+    }
+    // A large compressible upstream body is passed on as it came, not gzipped here.
+    let big = handle_request(&t, &options, "GET", "/api/big", &ok);
+    assert_eq!(big.status, 200);
+    assert_eq!(big.header("content-encoding"), None);
+    assert_eq!(big.body, "x".repeat(2000).into_bytes());
 }

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **`serve --mime ext=type` and `--mime-file mime.types`** (the CLI half of
+  johnhenry/sitefile#220): custom content types before the built-in table,
+  kept in the server record. Both servers.
+- **`serve --throttle 3g|slow-3g|<kbit>[/<ms>]`** (johnhenry/sitefile#227):
+  per-response latency and bandwidth limits, shown in the start message and kept
+  in the server record. Both servers.
+- **`serve` compression** (johnhenry/sitefile#167): precompressed `<path>.br`
+  / `<path>.gz` variants by `Accept-Encoding` (br first), `--compress` for gzip
+  on the fly (byte-identical in both servers), `Vary: Accept-Encoding`, an ETag
+  per encoding; ranges stay identity.
+- **`serve --tls-cert/--tls-key`** (johnhenry/sitefile#170): HTTPS with your
+  certificate (mkcert works), `https://` URLs, paths kept in the server record,
+  liveness probe over TLS. No CA is created. HTTP/1.1 only. Both servers (Rust
+  through rustls, already in its build).
+- **Sharing safety for `serve`** (johnhenry/sitefile#191): `--random-route`
+  (a secret path prefix), `--allow-ip`/`--deny-ip` CIDR blocks, `--stop-after`
+  (with `expires` in the record), `X-Robots-Tag: noindex` on non-loopback
+  binds, and client address and device on access-log lines of non-loopback
+  clients. Both servers.
+- **`serve --max-connections-per-ip <n>`** (johnhenry/sitefile#178): a
+  non-loopback client over the cap gets `503` with `Retry-After: 1`; kept in the
+  server record. Both servers.
+- **`serve --auth user:password`, `--auth-file`, `SITEFILE_SERVE_AUTH`**
+  (johnhenry/sitefile#177): HTTP basic authentication on every request (401
+  with `WWW-Authenticate` otherwise), constant-time checks, only PBKDF2
+  verifiers in the server record, `auth: true` in `servers --json`, a warning on
+  non-loopback binds. htpasswd `{SHA}` entries; bcrypt is a follow-up. Both
+  servers.
 - **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
   a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
   brackets), and `servers --json` gains `networkUrls`. Both implementations

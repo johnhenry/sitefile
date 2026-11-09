@@ -182,6 +182,32 @@ pub struct SiteServerOptions {
     pub log_ip: bool,
     /// `--quiet`: no access-log lines (other log lines still go to `log`).
     pub quiet: bool,
+    /// `--auth`, `--auth-file`: every request needs one of these credentials, else `401`.
+    pub auth: Option<Arc<crate::serve_auth::BasicAuth>>,
+    /// `--max-connections-per-ip`: open connections one non-loopback client may hold (0: no limit);
+    /// a connection over it gets `503` with `Retry-After: 1` and is closed.
+    pub max_connections_per_ip: usize,
+    /// Count loopback clients against `max_connections_per_ip` too (tests only).
+    pub limit_loopback: bool,
+    /// `--random-route`: `base` is a secret, so `/` is a plain `404` instead of a redirect into it.
+    pub hide_base: bool,
+    /// `--allow-ip`, `--deny-ip`: a non-loopback client they refuse gets `403` before anything else.
+    pub ip_rules: Option<IpRules>,
+    /// `X-Robots-Tag: noindex` on every response (non-loopback binds).
+    pub noindex: bool,
+    /// Add the client address and device to access-log lines of non-loopback clients.
+    pub client_info: bool,
+    /// `--tls-cert`, `--tls-key`: serve HTTPS ([`tls_config`]).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// `--compress`: gzip compressible files of at least 1024 bytes on the fly when no
+    /// precompressed variant exists.
+    pub compress: bool,
+    /// gzip output by file digest (at most 256 files), shared by the server's connections.
+    pub gzip_cache: GzipCache,
+    /// `--throttle`: response bandwidth and latency ([`parse_throttle`]).
+    pub throttle: Option<Throttle>,
+    /// `--mime`, `--mime-file`: content types by lowercase extension, checked before the table.
+    pub mime: Option<Arc<HashMap<String, String>>>,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -763,7 +789,7 @@ impl LiveReload {
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
     /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
     /// 15 s keeps idle connections from being cut (and finds clients that went away).
-    fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
+    fn stream(&self, out: &mut Conn, options: &SiteServerOptions) {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
@@ -958,6 +984,249 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// A served connection: plain TCP, or a TLS session over it (`--tls-cert`). Clones share the
+/// socket and the session; the connection loop reads and writes from one thread.
+pub struct Conn {
+    tcp: TcpStream,
+    tls: Option<Arc<Mutex<rustls::ServerConnection>>>,
+}
+
+impl Conn {
+    fn try_clone(&self) -> io::Result<Conn> {
+        Ok(Conn {
+            tcp: self.tcp.try_clone()?,
+            tls: self.tls.clone(),
+        })
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.tcp.peer_addr()
+    }
+    fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        self.tcp.set_read_timeout(d)
+    }
+    fn set_nodelay(&self, on: bool) -> io::Result<()> {
+        self.tcp.set_nodelay(on)
+    }
+    fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
+        if let Some(t) = &self.tls {
+            if let Ok(mut c) = t.lock() {
+                c.send_close_notify();
+                let _ = c.complete_io(&mut self.tcp);
+            }
+        }
+        self.tcp.shutdown(how)
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.read(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).read(buf)
+            }
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.write(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).write(buf)
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match &self.tls {
+            None => self.tcp.flush(),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).flush()
+            }
+        }
+    }
+}
+
+/// The TLS configuration of `--tls-cert`/`--tls-key`: a PEM certificate chain and private key.
+pub fn tls_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<rustls::ServerConfig>> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let bad = |m: String| SitefileError::plain(E_USAGE, m);
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| bad(format!("--tls-cert: not a PEM certificate: {e}")))?;
+    if certs.is_empty() {
+        return Err(bad("--tls-cert: no certificate in the file".into()));
+    }
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| bad(format!("--tls-key: not a PEM private key: {e}")))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| bad(format!("TLS: {e}")))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| bad(format!("--tls-key does not match --tls-cert: {e}")))?;
+    Ok(Arc::new(config))
+}
+
+/// A parsed CIDR block: 4 or 16 address bytes and a prefix length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cidr {
+    pub bytes: Vec<u8>,
+    pub prefix: u32,
+}
+
+/// `--allow-ip` / `--deny-ip` blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IpRules {
+    pub allow: Vec<Cidr>,
+    pub deny: Vec<Cidr>,
+}
+
+/// Address bytes of an IPv4 or IPv6 literal (`::ffff:a.b.c.d` becomes IPv4; `ipBytes` in
+/// src/server.ts).
+pub fn ip_bytes(text: &str) -> Option<Vec<u8>> {
+    let t = match text.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") && text[7..].contains('.') => &text[7..],
+        _ => text,
+    };
+    if is_ipv4(t) {
+        return Some(t.split('.').map(|p| p.parse::<u8>().unwrap_or(0)).collect());
+    }
+    if t.is_empty() || !t.contains(':') || !t.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
+        return None;
+    }
+    let halves: Vec<&str> = t.split("::").collect();
+    if halves.len() > 2 {
+        return None;
+    }
+    let words = |h: &str| -> Option<Vec<u16>> {
+        if h.is_empty() {
+            return Some(Vec::new());
+        }
+        h.split(':')
+            .map(|w| {
+                if (1..=4).contains(&w.len()) {
+                    u16::from_str_radix(w, 16).ok()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let a = words(halves[0])?;
+    let b = if halves.len() == 2 {
+        words(halves[1])?
+    } else {
+        Vec::new()
+    };
+    let used = a.len() + b.len();
+    let fill = if halves.len() == 2 {
+        if used >= 8 {
+            return None;
+        }
+        8 - used
+    } else {
+        0
+    };
+    if used + fill != 8 {
+        return None;
+    }
+    let mut all = a;
+    all.extend(std::iter::repeat_n(0u16, fill));
+    all.extend(b);
+    Some(all.iter().flat_map(|w| w.to_be_bytes()).collect())
+}
+
+/// `a.b.c.d/n`, `x::y/n` or a bare address (`parseCidr` in src/server.ts).
+pub fn parse_cidr(text: &str) -> Option<Cidr> {
+    let parts: Vec<&str> = text.trim().split('/').collect();
+    if parts.len() > 2 {
+        return None;
+    }
+    let bytes = ip_bytes(parts[0])?;
+    let max = (bytes.len() * 8) as u32;
+    let prefix = match parts.get(1) {
+        None => max,
+        Some(l) if (1..=3).contains(&l.len()) && l.bytes().all(|b| b.is_ascii_digit()) => {
+            l.parse().ok()?
+        }
+        Some(_) => return None,
+    };
+    (prefix <= max).then_some(Cidr { bytes, prefix })
+}
+
+fn cidr_contains(c: &Cidr, ip: &[u8]) -> bool {
+    c.bytes.len() == ip.len()
+        && (0..c.prefix as usize).all(|bit| {
+            let mask = 0x80u8 >> (bit % 8);
+            c.bytes[bit / 8] & mask == ip[bit / 8] & mask
+        })
+}
+
+/// Whether `--allow-ip`/`--deny-ip` let a client in (`ipAllowed` in src/server.ts).
+pub fn ip_allowed(rules: Option<&IpRules>, remote: &str) -> bool {
+    let Some(r) = rules else { return true };
+    if is_loopback_text(remote) {
+        return true;
+    }
+    let Some(ip) = ip_bytes(remote) else {
+        return false;
+    };
+    if r.deny.iter().any(|c| cidr_contains(c, &ip)) {
+        return false;
+    }
+    r.allow.is_empty() || r.allow.iter().any(|c| cidr_contains(c, &ip))
+}
+
+/// `isLoopbackAddress` in src/server.ts.
+fn is_loopback_text(ip: &str) -> bool {
+    let t = match ip.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("::ffff:") => &ip[7..],
+        _ => ip,
+    };
+    ip == "::1" || t.starts_with("127.")
+}
+
+/// A short device name from a `User-Agent` (`deviceOf` in src/server.ts).
+pub fn device_of(user_agent: Option<&str>) -> &'static str {
+    let ua = user_agent.unwrap_or("");
+    for (needle, name) in [
+        ("iPhone", "iPhone"),
+        ("iPad", "iPad"),
+        ("Android", "Android"),
+        ("Windows", "Windows"),
+        ("Macintosh", "Mac"),
+        ("Linux", "Linux"),
+    ] {
+        if ua.contains(needle) {
+            return name;
+        }
+    }
+    "other"
+}
+
+/// Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`).
+fn is_loopback_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => a.is_loopback(),
+        std::net::IpAddr::V6(a) => {
+            a.is_loopback() || a.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
+}
+
+/// The first of repeated header values (ours are joined with `, `; Node keeps the first
+/// `Authorization`).
+fn first_value(v: Option<&String>) -> Option<&str> {
+    v.map(|s| s.split(',').next().unwrap_or("").trim())
+}
+
 /// The headers every response starts with (`base` in src/server.ts).
 fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     let mut base: Vec<(String, String)> = vec![
@@ -969,6 +1238,9 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     }
     if options.cors {
         base.push(("access-control-allow-origin".into(), "*".into()));
+    }
+    if options.noindex {
+        base.push(("x-robots-tag".into(), "noindex".into()));
     }
     base.extend(isolation_headers(options));
     base
@@ -985,10 +1257,13 @@ pub struct AccessLogEntry<'a> {
     pub ms: f64,
     /// `Content-Range` of a `206`/`416`.
     pub range: Option<&'a str>,
+    /// The client address (`--log-ip`, or a non-loopback client with client info).
     /// What answered, as the `_redirects` log note (` → /new (_redirects:3)`).
     pub note: Option<&'a str>,
     /// The client address (`--log-ip`).
     pub remote: Option<&'a str>,
+    /// The client's device ([`device_of`]).
+    pub device: Option<&'a str>,
 }
 
 fn json_str(s: &str) -> String {
@@ -1001,13 +1276,14 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
     let target = printable(e.target);
     if !json {
         return format!(
-            "{} {target} {} {} {:.1}ms{}{}",
+            "{} {target} {} {} {:.1}ms{}{}{}",
             e.method,
             e.status,
             e.bytes,
             e.ms,
             e.note.unwrap_or(""),
-            e.remote.map(|r| format!(" {r}")).unwrap_or_default()
+            e.remote.map(|r| format!(" {r}")).unwrap_or_default(),
+            e.device.map(|d| format!(" {d}")).unwrap_or_default()
         );
     }
     let (path, query) = match target.find('?') {
@@ -1015,7 +1291,7 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
         None => (target.as_str(), ""),
     };
     format!(
-        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}}}",
+        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}{}}}",
         json_str(e.ts),
         json_str(e.method),
         json_str(path),
@@ -1029,6 +1305,9 @@ pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
             .unwrap_or_default(),
         e.remote
             .map(|r| format!(",\"remote\":{}", json_str(r)))
+            .unwrap_or_default(),
+        e.device
+            .map(|d| format!(",\"device\":{}", json_str(d)))
             .unwrap_or_default()
     )
 }
@@ -1105,6 +1384,7 @@ pub fn log_line_as_json(line: &str) -> String {
                 range: None,
                 note: None,
                 remote: r.5,
+                device: None,
             },
         );
     }
@@ -1170,6 +1450,183 @@ fn parse_text_request(rest: &str) -> Option<(&str, &str, u16, usize, f64, Option
     ))
 }
 
+/// [`SiteServerOptions::gzip_cache`].
+pub type GzipCache = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
+
+/// Whether an `Accept-Encoding` value accepts `coding` (`acceptsEncoding` in src/server.ts).
+pub fn accepts_encoding(header: Option<&str>, coding: &str) -> bool {
+    let Some(h) = header else { return false };
+    let mut star: Option<bool> = None;
+    for part in h.split(',') {
+        let mut it = part.split(';').map(js_trim);
+        let name = it.next().unwrap_or("").to_ascii_lowercase();
+        let mut q = 1.0f64;
+        for p in it {
+            let b = p.as_bytes();
+            if b.first().is_some_and(|c| *c == b'q' || *c == b'Q') {
+                let rest = p[1..].trim_start_matches([' ', '\t']);
+                if let Some(v) = rest.strip_prefix('=') {
+                    let v = v.trim_start_matches([' ', '\t']);
+                    if !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit() || c == b'.') {
+                        q = v.parse().unwrap_or(f64::NAN);
+                    }
+                }
+            }
+        }
+        let ok = q.is_finite() && q > 0.0;
+        if name == coding {
+            return ok;
+        }
+        if name == "*" {
+            star = Some(ok);
+        }
+    }
+    star.unwrap_or(false)
+}
+
+/// Media types worth compressing (`isCompressible` in src/server.ts).
+pub fn is_compressible(mime: &str) -> bool {
+    let t = mime.split(';').next().unwrap_or("").trim();
+    t.starts_with("text/")
+        || t.ends_with("+json")
+        || t.ends_with("+xml")
+        || [
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/wasm",
+            "image/svg+xml",
+        ]
+        .contains(&t)
+}
+
+/// `--throttle` limits (`Throttle` in src/server.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Throttle {
+    pub bytes_per_second: u64,
+    pub latency_ms: u64,
+}
+
+/// `3g`, `slow-3g` (Chrome DevTools' presets) or `<kbit/s>[/<latency ms>]`.
+pub fn parse_throttle(value: &str) -> Option<Throttle> {
+    match value {
+        "3g" => {
+            return Some(Throttle {
+                bytes_per_second: 200_000,
+                latency_ms: 150,
+            })
+        }
+        "slow-3g" => {
+            return Some(Throttle {
+                bytes_per_second: 50_000,
+                latency_ms: 400,
+            })
+        }
+        _ => {}
+    }
+    let (rate, latency) = match value.split_once('/') {
+        Some((r, l)) => (r, Some(l)),
+        None => (value, None),
+    };
+    let digits =
+        |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(rate, 7) || latency.is_some_and(|l| !digits(l, 5)) {
+        return None;
+    }
+    let kbps: u64 = rate.parse().ok()?;
+    if kbps == 0 {
+        return None;
+    }
+    Some(Throttle {
+        bytes_per_second: kbps * 125,
+        latency_ms: latency.map(|l| l.parse().unwrap_or(0)).unwrap_or(0),
+    })
+}
+
+/// A content type `--mime` accepts (`MIME_VALUE` in src/server.ts).
+fn is_mime_value(t: &str) -> bool {
+    let tok = |s: &str| {
+        let b = s.as_bytes();
+        !b.is_empty()
+            && b[0].is_ascii_alphanumeric()
+            && b.iter()
+                .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+    };
+    let (main, params) = match t.find(';') {
+        Some(i) => (&t[..i], Some(&t[i..])),
+        None => (t, None),
+    };
+    let main = if params.is_some() {
+        main.trim_end_matches(' ')
+    } else {
+        main
+    };
+    let Some((a, b)) = main.split_once('/') else {
+        return false;
+    };
+    tok(a) && tok(b) && params.is_none_or(|p| p.bytes().all(|c| (0x20..=0x7e).contains(&c)))
+}
+
+fn mime_ext(e: &str) -> Option<String> {
+    let ext = e.strip_prefix('.').unwrap_or(e).to_ascii_lowercase();
+    (!ext.is_empty()
+        && ext
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_+-".contains(&c)))
+    .then_some(ext)
+}
+
+/// `--mime ext=type` (`parseMimeFlag` in src/server.ts).
+pub fn parse_mime_flag(value: &str) -> Option<(String, String)> {
+    let i = value.find('=').filter(|i| *i > 0)?;
+    let ext = mime_ext(&value[..i])?;
+    let t = value[i + 1..].trim();
+    is_mime_value(t).then(|| (ext, t.to_string()))
+}
+
+/// A `mime.types` file (`parseMimeTypes` in src/server.ts), in file order.
+pub fn parse_mime_types(text: &str, origin: &str) -> Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (n, raw) in text.split('\n').enumerate() {
+        let mut line = raw.split('#').next().unwrap_or("").to_string();
+        let lead = line.trim_start_matches([' ', '\t']);
+        if let Some(rest) = lead.strip_prefix("types") {
+            if !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+                line = format!(" {rest}");
+            }
+        }
+        let line: String = line
+            .chars()
+            .map(|c| if matches!(c, '{' | '}' | ';') { ' ' } else { c })
+            .collect();
+        let line = js_trim(&line);
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split([' ', '\t']).filter(|p| !p.is_empty());
+        let t = parts.next().unwrap_or("");
+        if !is_mime_value(t) {
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("{origin}:{}: not a content type: {t}", n + 1),
+            ));
+        }
+        for e in parts {
+            let Some(ext) = mime_ext(e) else {
+                return Err(SitefileError::plain(
+                    E_USAGE,
+                    format!("{origin}:{}: not an extension: {e}", n + 1),
+                ));
+            };
+            match out.iter_mut().find(|(k, _)| *k == ext) {
+                Some(slot) => slot.1 = t.to_string(),
+                None => out.push((ext, t.to_string())),
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1222,6 +1679,9 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
     ok.then(|| v.to_string())
 }
 
+const FORBIDDEN_PAGE: &str =
+    "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1>\n";
+const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
@@ -2079,7 +2539,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 9] = [
+const PROTECTED_HEADERS: [&str; 11] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -2089,6 +2549,8 @@ const PROTECTED_HEADERS: [&str; 9] = [
     "accept-ranges",
     "content-range",
     "last-modified",
+    "www-authenticate",
+    "content-encoding",
 ];
 pub const SERVE_STATUSES: [u16; 9] = [200, 301, 302, 303, 307, 308, 404, 410, 451];
 
@@ -2716,6 +3178,19 @@ pub fn respond(
     ) {
         return page(403, FORBIDDEN_HOST_PAGE, vec![]);
     }
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if let Some(a) = &options.auth {
+        if !a.allows(first_value(headers.get("authorization"))) {
+            return page(
+                401,
+                UNAUTHORIZED_PAGE,
+                vec![(
+                    "www-authenticate".into(),
+                    "Basic realm=\"sitefile\", charset=\"UTF-8\"".into(),
+                )],
+            );
+        }
+    }
     if options.cors && method == "OPTIONS" {
         // A CORS preflight: any path, nothing is looked up.
         let mut h = owned(vec![("access-control-allow-methods", "GET, HEAD".into())]);
@@ -2813,7 +3288,7 @@ pub fn respond(
         if inside && all_segs.len() == base_segs.len() && !trailing {
             return to_mount(301);
         }
-        if !inside && all_segs.is_empty() {
+        if !inside && all_segs.is_empty() && !options.hide_base {
             return to_mount(302);
         }
         if !inside {
@@ -2839,7 +3314,19 @@ pub fn respond(
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
-        let mime = mime_type_for(served);
+        let ext = served
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .skip(1)
+            .last()
+            .map(str::to_ascii_lowercase);
+        let custom_type = ext.and_then(|e| options.mime.as_ref().and_then(|m| m.get(&e).cloned()));
+        let mime: &str = match &custom_type {
+            Some(t) => t.as_str(),
+            None => mime_type_for(served),
+        };
         let live = options.live_reload.is_some()
             && mime.starts_with("text/html")
             && is_navigation(headers);
@@ -2906,30 +3393,68 @@ pub fn respond(
         } else {
             body
         };
+        // Otherwise: a precompressed `<path>.br` / `<path>.gz` the client accepts (br first), else gzip on
+        // the fly under --compress. Range requests, live pages, rebased pages and deltas are never compressed here.
+        let plain = deflated.is_none() && delta.is_none() && rebase.is_none() && status == 200;
+        let ae = headers.get("accept-encoding").map(String::as_str);
+        let (br_path, gz_path) = (format!("{served}.br"), format!("{served}.gz"));
+        let (has_br, has_gz) = (plain && is_file(&br_path), plain && is_file(&gz_path));
+        let on_the_fly = plain && options.compress && is_compressible(mime) && body.len() >= 1024;
+        let negotiated = !live && (has_br || has_gz || on_the_fly);
+        let mut coding: Option<&str> = None;
+        let mut body = body;
+        if negotiated && !headers.contains_key("range") {
+            if has_br && accepts_encoding(ae, "br") {
+                coding = Some("br");
+                body = tree
+                    .get(&br_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
+            } else if has_gz && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                body = tree
+                    .get(&gz_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
+            } else if on_the_fly && accepts_encoding(ae, "gzip") {
+                coding = Some("gzip");
+                let mut cache = options.gzip_cache.lock().unwrap_or_else(|p| p.into_inner());
+                let z = match cache.get(&file.digest) {
+                    Some(z) => z.clone(),
+                    None => {
+                        if cache.len() >= 256 {
+                            cache.clear();
+                        }
+                        let z = Arc::new(crate::deflate::gzip(&body));
+                        cache.insert(file.digest.clone(), z.clone());
+                        z
+                    }
+                };
+                body = z.to_vec();
+            }
+        }
         let vary_on = if dictionary_vary {
             "accept-encoding, available-dictionary"
         } else {
             "accept-encoding"
         };
-        let encoding: Vec<(String, String)> = if deflated.is_some() {
-            owned(vec![
-                ("content-encoding", "gzip".into()),
-                ("vary", vary_on.into()),
-            ])
+        let vary: Vec<(String, String)> = if deflated.is_some() || negotiated || dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
+        let mut encoding: Vec<(String, String)> = match (&deflated, coding) {
+            (Some(_), _) => owned(vec![("content-encoding", "gzip".into())]),
+            (None, Some(c)) => owned(vec![("content-encoding", c.into())]),
+            (None, None) => vec![],
+        };
+        encoding.extend(vary.iter().cloned());
         let cc: Vec<(String, String)> = if status == 200 {
             cache_control_for(mime, options.cache.as_ref())
                 .map(|v| vec![("cache-control".to_string(), v)])
                 .unwrap_or_default()
         } else {
             Vec::new()
-        };
-        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
-            owned(vec![("vary", vary_on.into())])
-        } else {
-            vec![]
         };
         let mut h = owned(vec![
             ("content-type", mime.into()),
@@ -2941,13 +3466,18 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
+        // An injected page, a rebased page, a compressed response and a delta are other representations of
+        // the file: they get their own ETags.
         let etag = format!(
             "\"{}{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
             if rebase.is_some() { "-rebased" } else { "" },
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" },
+            if deflated.is_some() {
+                "-gzip".to_string()
+            } else {
+                coding.map(|c| format!("-{c}")).unwrap_or_default()
+            },
             if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
@@ -2958,7 +3488,6 @@ pub fn respond(
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(cc.iter().cloned());
             h.extend(custom.iter().cloned());
-            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -2993,7 +3522,6 @@ pub fn respond(
             h.extend(lm.iter().cloned());
             return finish(200, h, Some(d.to_vec()));
         }
-        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
@@ -3009,6 +3537,7 @@ pub fn respond(
         match range {
             Some(ByteRange::Unsatisfiable) => {
                 let mut h: Vec<(String, String)> = custom.clone();
+                h.extend(vary.iter().cloned());
                 h.push(("accept-ranges".into(), "bytes".into()));
                 h.push(("content-range".into(), format!("bytes */{}", body.len())));
                 h.push(("content-length".into(), "0".into()));
@@ -3346,9 +3875,7 @@ struct Request {
 }
 
 /// Read one request head. `Ok(None)` on a clean EOF before any byte.
-fn read_request(
-    r: &mut BufReader<TcpStream>,
-) -> io::Result<Option<std::result::Result<Request, ()>>> {
+fn read_request(r: &mut BufReader<Conn>) -> io::Result<Option<std::result::Result<Request, ()>>> {
     let mut head: Vec<u8> = Vec::new();
     loop {
         let mut line = Vec::new();
@@ -3436,10 +3963,11 @@ fn read_request(
 }
 
 fn serve_connection(
-    stream: TcpStream,
+    stream: Conn,
     tree: &SharedTree,
     rules: &RulesCache,
     options: &SiteServerOptions,
+    busy: bool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
@@ -3460,11 +3988,18 @@ fn serve_connection(
             _ => break,
         };
         let started = Instant::now();
-        let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        let host_ok = host_allowed(
-            options.allowed_hosts.as_deref(),
-            req.headers.get("host").map(String::as_str),
-        );
+        let mut keep = !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let ip_ok = ip_allowed(options.ip_rules.as_ref(), peer.as_deref().unwrap_or(""));
+        let host_ok = ip_ok
+            && !busy
+            && host_allowed(
+                options.allowed_hosts.as_deref(),
+                req.headers.get("host").map(String::as_str),
+            )
+            && options
+                .auth
+                .as_ref()
+                .is_none_or(|a| a.allows(first_value(req.headers.get("authorization"))));
         let console = options
             .live_reload
             .as_ref()
@@ -3502,6 +4037,34 @@ fn serve_connection(
         };
         let site_rules = rules_for(rules, &current, options.content.as_deref());
         let res = match console {
+            // --allow-ip / --deny-ip refuse this client (checked first).
+            _ if !ip_ok => {
+                let mut headers = base_headers(options);
+                headers.push(("content-type".into(), "text/html; charset=utf-8".into()));
+                headers.push(("content-length".into(), FORBIDDEN_PAGE.len().to_string()));
+                Response {
+                    status: 403,
+                    headers,
+                    body: if req.method == "HEAD" {
+                        Vec::new()
+                    } else {
+                        FORBIDDEN_PAGE.as_bytes().to_vec()
+                    },
+                    note: None,
+                }
+            }
+            // Over --max-connections-per-ip: one 503, then the connection closes.
+            _ if busy => {
+                let mut headers = base_headers(options);
+                headers.push(("retry-after".into(), "1".into()));
+                headers.push(("content-length".into(), "0".into()));
+                Response {
+                    status: 503,
+                    headers,
+                    body: Vec::new(),
+                    note: None,
+                }
+            }
             Some(live) => live.console_response(
                 options,
                 &req.method,
@@ -3551,11 +4114,31 @@ fn serve_connection(
         } else {
             "connection: close\r\n\r\n"
         });
-        let ok = out
-            .write_all(head.as_bytes())
-            .and_then(|_| out.write_all(&res.body))
-            .and_then(|_| out.flush())
-            .is_ok();
+        let ok = match options.throttle {
+            None => out
+                .write_all(head.as_bytes())
+                .and_then(|_| out.write_all(&res.body))
+                .and_then(|_| out.flush())
+                .is_ok(),
+            // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+            Some(t) => {
+                std::thread::sleep(Duration::from_millis(t.latency_ms));
+                let slice = (t.bytes_per_second / 10).max(1) as usize;
+                let mut ok = out
+                    .write_all(head.as_bytes())
+                    .and_then(|_| out.flush())
+                    .is_ok();
+                let mut chunks = res.body.chunks(slice).peekable();
+                while ok {
+                    let Some(c) = chunks.next() else { break };
+                    ok = out.write_all(c).and_then(|_| out.flush()).is_ok();
+                    if ok && chunks.peek().is_some() {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                ok
+            }
+        };
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         // `servers` probes carry the server's own id; they would only clutter the access log.
         let probe = options.server_id.is_some()
@@ -3566,7 +4149,12 @@ fn serve_connection(
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
         if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                let remote = if options.log_ip { peer.clone() } else { None };
+                let shared = options.client_info && !peer.as_deref().is_some_and(is_loopback_text);
+                let remote = if options.log_ip || shared {
+                    peer.clone()
+                } else {
+                    None
+                };
                 log(&access_log_line(
                     options.log_json,
                     &AccessLogEntry {
@@ -3579,6 +4167,8 @@ fn serve_connection(
                         range: res.header("content-range"),
                         note: res.note.as_deref(),
                         remote: remote.as_deref(),
+                        device: shared
+                            .then(|| device_of(req.headers.get("user-agent").map(String::as_str))),
                     },
                 ));
             }
@@ -3648,6 +4238,7 @@ pub fn listen_shared(
     let stop = Arc::new(AtomicBool::new(false));
     let conns: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let (s2, c2) = (stop.clone(), conns.clone());
+    let per_ip: Arc<Mutex<HashMap<std::net::IpAddr, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     let accept = std::thread::spawn(move || {
         let next = AtomicU64::new(0);
         for stream in listener.incoming() {
@@ -3661,12 +4252,52 @@ pub fn listen_shared(
                     m.insert(id, c);
                 }
             }
-            let (tree, rules, options, conns) =
-                (tree.clone(), rules.clone(), options.clone(), c2.clone());
+            // --max-connections-per-ip: count this client's open connections.
+            let ip = stream.peer_addr().ok().map(|a| a.ip());
+            let limited = ip.filter(|ip| {
+                options.max_connections_per_ip > 0
+                    && (options.limit_loopback || !is_loopback_ip(ip))
+            });
+            let busy = match limited {
+                Some(ip) => {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    let n = m.entry(ip).or_insert(0);
+                    *n += 1;
+                    *n > options.max_connections_per_ip
+                }
+                None => false,
+            };
+            let (tree, rules, options, conns, per_ip) = (
+                tree.clone(),
+                rules.clone(),
+                options.clone(),
+                c2.clone(),
+                per_ip.clone(),
+            );
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &rules, &options);
+                let conn = Conn {
+                    tls: options.tls.as_ref().and_then(|cfg| {
+                        rustls::ServerConnection::new(cfg.clone())
+                            .ok()
+                            .map(|c| Arc::new(Mutex::new(c)))
+                    }),
+                    tcp: stream,
+                };
+                if options.tls.is_some() && conn.tls.is_none() {
+                    return;
+                }
+                serve_connection(conn, &tree, &rules, &options, busy);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
+                }
+                if let Some(ip) = limited {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(n) = m.get_mut(&ip) {
+                        *n -= 1;
+                        if *n == 0 {
+                            m.remove(&ip);
+                        }
+                    }
                 }
             });
         }
@@ -3845,6 +4476,14 @@ pub fn network_urls(bind_host: &str, port: u16) -> Vec<String> {
         .iter()
         .map(|a| format_url(a, port))
         .collect()
+}
+
+/// `http://` URL made `https://` for a TLS server.
+pub fn with_scheme(url: String, tls: bool) -> String {
+    match url.strip_prefix("http://").filter(|_| tls) {
+        Some(rest) => format!("https://{rest}"),
+        None => url,
+    }
 }
 
 pub fn format_url(host: &str, port: u16) -> String {
@@ -4199,6 +4838,222 @@ mod tests {
     }
 
     #[test]
+    fn max_connections_per_ip() {
+        let opts = SiteServerOptions {
+            max_connections_per_ip: 2,
+            limit_loopback: true,
+            ..Default::default()
+        };
+        let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
+        let port = srv.port;
+        let open = || TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let ask = |c: &mut TcpStream| {
+            c.write_all(b"GET /app.js HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let n = c.read(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        };
+        let mut a = open();
+        let b = open();
+        let mut c = open();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(ask(&mut a).starts_with("HTTP/1.1 200"));
+        let busy = ask(&mut c);
+        assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
+        assert!(busy.contains("retry-after: 1"));
+        drop(b);
+        drop(c);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut d = open();
+        assert!(ask(&mut d).starts_with("HTTP/1.1 200"));
+        srv.close();
+    }
+
+    #[test]
+    fn sharing_safety() {
+        let opts = SiteServerOptions {
+            base: Some(Arc::new(|| Some("/s3cr3t/".to_string()))),
+            hide_base: true,
+            noindex: true,
+            ..Default::default()
+        };
+        let t = site();
+        let h = HashMap::new();
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &h);
+        assert_eq!(get("/app.js").status, 404);
+        assert_eq!(
+            get("/").status,
+            404,
+            "the secret is not given away by a redirect"
+        );
+        assert_eq!(get("/s3cr3t/app.js").status, 200);
+        let r = get("/s3cr3t?x=1");
+        assert_eq!(
+            (r.status, r.header("location")),
+            (301, Some("/s3cr3t/?x=1"))
+        );
+        assert_eq!(
+            get("/s3cr3t/about").header("location"),
+            Some("/s3cr3t/about/")
+        );
+        assert_eq!(get("/s3cr3tx/app.js").status, 404);
+        assert_eq!(r.header("x-robots-tag"), Some("noindex"));
+        assert_eq!(ip_bytes("10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        assert_eq!(ip_bytes("::ffff:10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        let mut one = vec![0u8; 15];
+        one.push(1);
+        assert_eq!(ip_bytes("::1"), Some(one));
+        for bad in ["1.2.3", "::1::2", "1:2:3:4:5:6:7:8:9", "g::1", ""] {
+            assert_eq!(ip_bytes(bad), None, "{bad}");
+        }
+        let rules = IpRules {
+            allow: vec![
+                parse_cidr("192.168.0.0/16").unwrap(),
+                parse_cidr("fd00::/8").unwrap(),
+            ],
+            deny: vec![parse_cidr("192.168.9.0/24").unwrap()],
+        };
+        assert!(ip_allowed(Some(&rules), "192.168.1.5"));
+        assert!(ip_allowed(Some(&rules), "::ffff:192.168.1.5"));
+        assert!(!ip_allowed(Some(&rules), "192.168.9.5"));
+        assert!(!ip_allowed(Some(&rules), "10.0.0.1"));
+        assert!(ip_allowed(Some(&rules), "fd12::1"));
+        assert!(ip_allowed(Some(&rules), "127.0.0.1"));
+        for bad in ["10.0.0.0/33", "10/8", "x", "1.2.3.4/a", "::/129"] {
+            assert_eq!(parse_cidr(bad), None, "{bad}");
+        }
+        assert_eq!(
+            device_of(Some(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+            )),
+            "iPhone"
+        );
+        assert_eq!(
+            device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")),
+            "Mac"
+        );
+        assert_eq!(device_of(None), "other");
+    }
+
+    #[test]
+    fn tls_config_errors() {
+        let e = tls_config(b"not pem", b"").err().unwrap();
+        assert!(e.message().contains("--tls-cert"), "{}", e.message());
+        let cert = b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+        assert!(tls_config(cert, b"no key").is_err());
+        assert_eq!(
+            with_scheme("http://127.0.0.1:1/".into(), true),
+            "https://127.0.0.1:1/"
+        );
+        assert_eq!(with_scheme("http://a/".into(), false), "http://a/");
+    }
+
+    #[test]
+    fn compression_negotiation() {
+        assert!(!accepts_encoding(Some("gzip;q=0, *"), "gzip"));
+        assert!(accepts_encoding(Some("*"), "br"));
+        assert!(accepts_encoding(Some("BR;Q=0.1"), "br"));
+        assert!(!accepts_encoding(None, "br"));
+        assert!(is_compressible("image/svg+xml; charset=utf-8"));
+        assert!(!is_compressible("image/png"));
+        let t = Tree::from_files(
+            [
+                ("/a.css", "a{}".to_string()),
+                ("/a.css.br", "BR".into()),
+                ("/big.txt", "x".repeat(2000)),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            compress: true,
+            ..Default::default()
+        };
+        let ask = |p: &str, ae: &str| {
+            let mut h = HashMap::new();
+            h.insert("accept-encoding".to_string(), ae.to_string());
+            handle_request(&t, &opts, "GET", p, &h)
+        };
+        let r = ask("/a.css", "br");
+        assert_eq!(r.header("content-encoding"), Some("br"));
+        assert_eq!(r.body, b"BR");
+        assert!(r.header("etag").unwrap().ends_with("-br\""));
+        let z = ask("/big.txt", "gzip");
+        assert_eq!(z.header("content-encoding"), Some("gzip"));
+        assert_eq!(z.body, crate::deflate::gzip("x".repeat(2000).as_bytes()));
+    }
+
+    #[test]
+    fn throttle_bandwidth_and_latency() {
+        assert_eq!(
+            parse_throttle("80/100"),
+            Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 100
+            })
+        );
+        assert_eq!(parse_throttle("slow-3g").map(|t| t.latency_ms), Some(400));
+        for bad in ["0", "fast", "80/", "/100", "-1"] {
+            assert_eq!(parse_throttle(bad), None, "{bad}");
+        }
+        let t = Tree::from_files([(
+            "/big.bin".to_string(),
+            make_file(vec![0u8; 15000], "t", 0o644),
+        )])
+        .unwrap();
+        let opts = SiteServerOptions {
+            throttle: Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 200,
+            }),
+            ..Default::default()
+        };
+        let srv = listen(Arc::new(t), opts, "127.0.0.1", 0).unwrap();
+        let start = std::time::Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+        c.write_all(b"GET /big.bin HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n")
+            .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).unwrap();
+        let ms = start.elapsed().as_millis();
+        assert!(buf.len() > 15000);
+        assert!((1500..4000).contains(&ms), "took {ms} ms");
+        srv.close();
+    }
+
+    #[test]
+    fn mime_flags() {
+        assert_eq!(
+            parse_mime_flag(".TS=video/mp2t"),
+            Some(("ts".into(), "video/mp2t".into()))
+        );
+        assert_eq!(
+            parse_mime_flag("bin=application/x-a; charset=binary").map(|p| p.1),
+            Some("application/x-a; charset=binary".into())
+        );
+        for bad in [
+            "ts",
+            "=video/mp2t",
+            "ts=video",
+            "ts=/x",
+            "a.b=x/y",
+            "ts=vid eo/x",
+        ] {
+            assert_eq!(parse_mime_flag(bad), None, "{bad}");
+        }
+        let m = parse_mime_types(
+            "types {\n  model/vnd.usdz+zip usdz;\n  application/x-types a b; # c\n}\ntext/x-apache  .ap\n",
+            "f",
+        )
+        .unwrap();
+        let keys: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["usdz", "a", "b", "ap"]);
+        assert_eq!(m[1].1, "application/x-types");
+        assert!(parse_mime_types("notatype ext", "f").is_err());
+    }
+
+    #[test]
     fn json_access_log() {
         let e = AccessLogEntry {
             ts: "2026-01-01T00:00:00.000Z",
@@ -4210,6 +5065,7 @@ mod tests {
             range: Some("bytes 0-1/10"),
             note: None,
             remote: None,
+            device: None,
         };
         assert_eq!(
             access_log_line(true, &e),

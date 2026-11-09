@@ -57,7 +57,7 @@ export interface ServeHeaders {
 
 const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 /** Headers the server owns; `_headers` cannot set them. */
-const PROTECTED_HEADERS = new Set(['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'etag', 'location', 'accept-ranges', 'content-range', 'last-modified']);
+const PROTECTED_HEADERS = new Set(['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'etag', 'location', 'accept-ranges', 'content-range', 'last-modified', 'www-authenticate', 'content-encoding']);
 export const SERVE_STATUSES: readonly number[] = [200, 301, 302, 303, 307, 308, 404, 410, 451];
 /** Statuses that serve the target path's file with that status instead of redirecting. */
 export const isRewriteStatus = (s: number): boolean => s === 200 || s === 404 || s === 410 || s === 451;

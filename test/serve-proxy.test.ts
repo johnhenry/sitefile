@@ -8,6 +8,7 @@ import { promises as fs } from 'node:fs';
 import { closeServer, createSiteServer, listen, type ServeProxy } from '../src/server.js';
 import { parseProxyRoute } from '../src/cli/servers.js';
 import { DEFAULT_FETCH_POLICY } from '../src/resources/types.js';
+import { BasicAuth, makeVerifier } from '../src/serve-auth.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { runCli, tmpDir } from './helpers/cli.js';
 
@@ -30,6 +31,10 @@ async function upstream(): Promise<{ origin: string; seen: Array<{ url: string; 
       return res.end();
     }
     if (req.url?.includes('slow')) return; // never answers
+    if (req.url?.includes('big')) {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      return res.end('x'.repeat(2000));
+    }
     res.setHeader('set-cookie', ['a=1', 'b=2']);
     res.writeHead(201, { 'content-type': 'application/json', 'x-up': 'yes', connection: 'close', 'cache-control': 'max-age=5' });
     res.end(JSON.stringify({ url: req.url }));
@@ -112,6 +117,34 @@ test('_redirects proxy rules: only to allowed hosts; a file answers a non-forced
     assert.match(await r.text(), /^502 Bad Gateway: error\[E_PROTOCOL\]/); // the default policy: https only, then the host list
   } finally {
     await bare.stop();
+  }
+});
+
+test('--auth covers proxied paths; their credentials stay here; --compress leaves proxied bodies alone', async () => {
+  const up = await upstream();
+  const auth = new BasicAuth([{ user: 'u', verifier: makeVerifier('pw', undefined, 1000) }]);
+  const files = { '/index.html': 'home', '/_redirects': `/rule/* ${up.origin}/r/:splat 200\n` };
+  const s = await site(files, { auth, compress: true, proxy: proxy([{ prefix: '/api', target: up.origin }], ['127.0.0.1']) });
+  try {
+    const before = up.seen.length;
+    for (const p of ['/api/x', '/rule/x']) {
+      const denied = await get(`${s.base}${p}`);
+      assert.equal(denied.status, 401, p);
+      assert.match(denied.headers.get('www-authenticate') ?? '', /^Basic /);
+    }
+    assert.equal(up.seen.length, before, 'nothing reached the upstream');
+    const authorization = `Basic ${Buffer.from('u:pw').toString('base64')}`;
+    for (const [p, url] of [['/api/x', '/x'], ['/rule/x', '/r/x']] as const) {
+      assert.deepEqual(await (await get(`${s.base}${p}`, { headers: { authorization } })).json(), { url }, p);
+      assert.equal(up.seen.at(-1)!.headers.authorization, undefined);
+    }
+    // A large compressible upstream body is passed on as it came, not gzipped here.
+    const big = await get(`${s.base}/api/big`, { headers: { authorization, 'accept-encoding': 'gzip' } });
+    assert.equal(big.status, 200);
+    assert.equal(big.headers.get('content-encoding'), null);
+    assert.equal(await big.text(), 'x'.repeat(2000));
+  } finally {
+    await s.stop();
   }
 });
 

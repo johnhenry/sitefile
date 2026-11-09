@@ -57,6 +57,7 @@ pub mod precache;
 pub mod precompress;
 pub mod qr;
 pub mod refs;
+pub mod serve_auth;
 pub mod server;
 pub mod servers;
 pub mod servers_file;

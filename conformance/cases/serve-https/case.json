@@ -1,0 +1,10 @@
+{
+  "command": "serve",
+  "tls": true,
+  "log": true,
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 200, "body": "secure\n" } },
+    { "target": "/a.txt", "headers": { "range": "bytes=0-1" }, "expect": { "status": 206, "body": "se" } },
+    { "target": "/missing", "expect": { "status": 404 } }
+  ]
+}
