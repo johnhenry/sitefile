@@ -11,6 +11,7 @@ use crate::base_image::{
 use crate::build_args::BuildArgs;
 use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
+use crate::csp::csp_pages;
 use crate::digest::sha256;
 use crate::documents::{
     data_collection, markdown_collection, sort_documents, DataKind, MarkdownDocument,
@@ -131,6 +132,8 @@ pub struct BuildOptions {
     /// `--lossy`: with `EXPORT … FOR <host>`, leave out (with a warning) the REDIRECT and HEADER rules
     /// the host cannot express, instead of failing with E_EXPORT.
     pub lossy: bool,
+    /// `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings.
+    pub strict_paths: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -249,6 +252,7 @@ impl Default for BuildOptions {
             vendor_dir: None,
             strict_pins: false,
             lossy: false,
+            strict_paths: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             node: None,
@@ -694,12 +698,15 @@ pub fn warn_unused_secrets(p: &Plan, secrets: &Secrets, warn: &Callback) {
         .imports
         .iter()
         .flat_map(|s| s.secrets.iter().map(|x| x.id.as_str()))
+        .chain(p.export_key.as_deref())
         .collect();
     let mut ids: Vec<&str> = secrets.ids().collect();
     ids.sort();
     for id in ids {
         if !used.contains(id) {
-            warn(&format!("--secret {id} is not used by any IMPORT … SECRET"));
+            warn(&format!(
+                "--secret {id} is not used by any IMPORT … SECRET or EXPORT … KEY"
+            ));
         }
     }
 }
@@ -1229,6 +1236,26 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
         options.lossy,
     )?;
     let output = host_output.unwrap_or_else(|| tree.subtree(&p.export_path));
+    let paths: Vec<String> = output.entries().map(|(f, _)| f.clone()).collect();
+    let portability = crate::portable::portability_problems(&paths);
+    if !portability.is_empty() && options.strict_paths {
+        let count = if portability.len() == 1 {
+            "a path is".to_string()
+        } else {
+            format!("{} paths are", portability.len())
+        };
+        let listed: String = portability.iter().map(|m| format!("\n  {m}")).collect();
+        return Err(SitefileError::plain(
+            E_PATH_PORTABLE,
+            format!(
+                "EXPORT {}: {count} not portable (--strict-paths):{listed}",
+                p.export_path
+            ),
+        ));
+    }
+    for m in &portability {
+        warn(&format!("EXPORT {}: {m}", p.export_path));
+    }
     if output.is_empty() {
         warn(&match &p.target {
             None => format!("EXPORT {} contains no files", p.export_path),
@@ -1353,8 +1380,38 @@ fn with_site_rules(
             }
         }
     }
+    // CSP: Content-Security-Policy lines after those, or with META a <meta> in each page.
+    let mut csp_rules: Vec<(String, String)> = Vec::new();
+    if let Some(c) = &p.csp {
+        let origin = format!("{label}:{} CSP", c.span.line);
+        let r = csp_pages(&tree, &p.export_path, &c.policy, c.meta, &origin);
+        if !r.headless.is_empty() {
+            let count = if r.headless.len() == 1 {
+                "1 page has".to_string()
+            } else {
+                format!("{} pages have", r.headless.len())
+            };
+            warn(&format!(
+                "{origin}: {count} no <head>, so no policy was added: {}",
+                r.headless.join(", ")
+            ));
+        }
+        if !r.pages.is_empty() {
+            tree = tree.with_files(r.pages, ConflictPolicy::Overwrite, Some(&c.span))?;
+        }
+        let none_yet = p.headers.is_empty() && auto.is_empty();
+        if !r.rules.is_empty() && none_yet && tree.is_file(&headers_path) {
+            warn(&format!("{origin}: {headers_path} already exists (not written by HEADER), so no Content-Security-Policy lines were added; add them to that file, use HEADER, or CSP … META"));
+        } else if !r.rules.is_empty() {
+            if none_yet {
+                header_rules = vec![(false, &c.span)];
+                header_kind = "CSP";
+            }
+            csp_rules = r.rules;
+        }
+    }
     // EXPORT … FOR <host> (not netlify, whose files these are; not with --target, which exports the raw tree).
-    let n_headers = p.headers.len() + auto.len();
+    let n_headers = p.headers.len() + auto.len() + csp_rules.len();
     let mut keep_r = vec![true; p.redirects.len()];
     let mut keep_h = vec![true; n_headers];
     if let Some((host, hspan)) = p.export_for.as_ref().filter(|_| p.target.is_none()) {
@@ -1389,6 +1446,18 @@ fn with_site_rules(
                     value: value.to_string(),
                     span: auto_span.clone(),
                     auto: true,
+                }))
+                .chain(csp_rules.iter().map(|(pattern, value)| {
+                    HostHeader {
+                        pattern: pattern.clone(),
+                        name: "Content-Security-Policy".into(),
+                        value: value.clone(),
+                        span: p
+                            .csp
+                            .as_ref()
+                            .map_or_else(|| hspan.clone(), |c| c.span.clone()),
+                        auto: false,
+                    }
                 }))
                 .collect();
             let r = export_for_host(
@@ -1430,6 +1499,11 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
+            )
+            .chain(
+                csp_rules
+                    .iter()
+                    .map(|(pattern, v)| (pattern.as_str(), "Content-Security-Policy", v.as_str())),
             )
             .zip(&keep_h)
             .filter(|(_, k)| **k)
@@ -1515,6 +1589,8 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// car: the root CID (CIDv1, base32).
     pub root_cid: Option<String>,
+    /// swbn: the Web Bundle ID (the Isolated Web App is `isolated-app://<id>/`).
+    pub web_bundle_id: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
     /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
@@ -1812,6 +1888,7 @@ fn export_build_inner(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
+                web_bundle_id: None,
                 incremental: None,
                 dictionary_deltas: None,
             });
@@ -1829,6 +1906,7 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1847,7 +1925,42 @@ fn export_build_inner(
             file_digest: None,
             manifest_digest: None,
             root_cid: None,
+            web_bundle_id: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
+        });
+    }
+    if format == ExportFormat::Swbn {
+        let key_id = if result.plan.export_format == ExportFormat::Swbn {
+            result.plan.export_key.clone()
+        } else {
+            None
+        };
+        let Some(key_id) = key_id else {
+            return Err(SitefileError::plain(
+                E_VALIDATION,
+                "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+            ));
+        };
+        let Some(pem) = options.secrets.get(&key_id) else {
+            return Err(SitefileError::plain(
+                E_SECRET,
+                format!("EXPORT ... KEY {key_id}: no --secret id={key_id} was given"),
+            ));
+        };
+        let (data, id) =
+            crate::export::swbn::write_signed_web_bundle(&result.output, pem, &key_id)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: None,
+            web_bundle_id: Some(id),
+            incremental: None,
             dictionary_deltas: None,
         });
     }
@@ -1862,6 +1975,7 @@ fn export_build_inner(
             file_digest: Some(sha256(&data)),
             manifest_digest: None,
             root_cid: Some(root),
+            web_bundle_id: None,
             incremental: None,
             dictionary_deltas: None,
         });
@@ -1897,6 +2011,7 @@ fn export_build_inner(
         file_digest: Some(digest),
         manifest_digest: None,
         root_cid: None,
+        web_bundle_id: None,
         incremental: None,
         dictionary_deltas: None,
     })

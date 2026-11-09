@@ -86,6 +86,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseSecurityTxt(c, span);
     case 'PRECACHE':
       return parsePrecache(c, span);
+    case 'CSP':
+      return parseCsp(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -690,6 +692,14 @@ function parsePrecache(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'PRECACHE', span, patterns, ...(dest ? { dest } : {}), ...(into ? { into } : {}), overwrite: flags.has('overwrite') };
 }
 
+/** `CSP [POLICY <policy>] [META]` */
+function parseCsp(c: Cursor, span: SourceSpan): Instruction {
+  const policy = c.keyword('POLICY') ? c.operand('policy') : undefined;
+  const meta = c.keyword('META');
+  c.expectEnd();
+  return { kind: 'CSP', span, ...(policy ? { policy } : {}), meta };
+}
+
 /** `CHECKLINKS [--warn] [--external]` */
 function parseCheckLinks(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { warn: 'bare', external: 'bare' });
@@ -708,7 +718,7 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     if (name === '') throw c.error('E_SYNTAX', 'expected export format after AS', at);
     const f = parseExportFormat(name);
     if (f === undefined) {
-      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml or warc)`, at);
+      throw c.error('E_UNSUPPORTED', `export format '${name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml, warc or swbn)`, at);
     }
     format = f;
   }
@@ -727,6 +737,11 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
       throw c.error('E_SYNTAX', name === '' ? 'expected gzip or none after COMPRESSION' : `unknown compression '${name}' (expected gzip or none)`, cspan);
     }
     compression = { value, span: cspan };
+  }
+  let key: { id: string; span: SourceSpan } | undefined;
+  if (c.keyword('KEY')) {
+    const kspan = c.span;
+    key = { id: c.ident('secret id'), span: kspan };
   }
   let forHost: { value: ExportHost; span: SourceSpan } | undefined;
   if (c.keyword('FOR')) {
@@ -747,6 +762,7 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     ...(base ? { base } : {}),
     ...(at ? { at } : {}),
     ...(compression ? { compression } : {}),
+    ...(key ? { key } : {}),
     ...(forHost ? { forHost } : {}),
   };
 }

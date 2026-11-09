@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 22] = [
+pub const INSTRUCTIONS: [&str; 23] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -39,6 +39,7 @@ pub const INSTRUCTIONS: [&str; 22] = [
     "ROBOTS",
     "SECURITY_TXT",
     "PRECACHE",
+    "CSP",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -61,7 +62,7 @@ pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
 pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 /// Clauses after `EXPORT <path>`, in this order.
-pub const EXPORT_CLAUSES: [&str; 5] = ["AS", "BASE", "AT", "COMPRESSION", "FOR"];
+pub const EXPORT_CLAUSES: [&str; 6] = ["AS", "BASE", "AT", "COMPRESSION", "KEY", "FOR"];
 /// Clauses after `TRANSFORM … TO <dest>`.
 pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 /// Clauses after `SITEMAP`, in this order (`BASE` is required).
@@ -82,6 +83,8 @@ pub const ROBOTS_CLAUSES: [&str; 4] = ["ALLOW", "DISALLOW", "SITEMAP", "TO"];
 pub const SECURITY_TXT_CLAUSES: [&str; 5] = ["CONTACT", "EXPIRES", "ENCRYPTION", "POLICY", "TO"];
 /// Clauses after `PRECACHE <pattern>…`, in this order.
 pub const PRECACHE_CLAUSES: [&str; 2] = ["TO", "INTO"];
+/// Clauses of CSP, in this order.
+pub const CSP_CLAUSES: [&str; 2] = ["POLICY", "META"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
@@ -186,6 +189,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "ROBOTS" => parse_robots(c, span),
         "SECURITY_TXT" => parse_security_txt(c, span),
         "PRECACHE" => parse_precache(c, span),
+        "CSP" => parse_csp(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1346,6 +1350,18 @@ fn parse_precache(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     })
 }
 
+/// `CSP [POLICY <policy>] [META]`
+fn parse_csp(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let policy = if c.keyword("POLICY") {
+        Some(c.operand("policy")?)
+    } else {
+        None
+    };
+    let meta = c.keyword("META");
+    c.expect_end()?;
+    Ok(Instruction::Csp { span, policy, meta })
+}
+
 /// `CHECKLINKS [--warn] [--external]`
 fn parse_check_links(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, CHECKLINKS_FLAGS)?;
@@ -1373,7 +1389,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         format = ExportFormat::parse(&name).ok_or_else(|| {
             SitefileError::at(
                 E_UNSUPPORTED,
-                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml or warc)"),
+                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml, warc or swbn)"),
                 &at,
             )
         })?;
@@ -1402,6 +1418,12 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         };
         compression = Some((v, cspan));
     }
+    let key = if c.keyword("KEY") {
+        let kspan = c.span();
+        Some((c.ident("secret id", "")?, kspan))
+    } else {
+        None
+    };
     let mut for_host = None;
     if c.keyword("FOR") {
         let hspan = c.span();
@@ -1426,6 +1448,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         base,
         at,
         compression,
+        key,
         for_host,
     })
 }

@@ -20,6 +20,10 @@
         "named": true
       },
       {
+        "type": "csp_instruction",
+        "named": true
+      },
+      {
         "type": "export_instruction",
         "named": true
       },
@@ -338,6 +342,38 @@
     }
   },
   {
+    "type": "csp_instruction",
+    "named": true,
+    "fields": {
+      "policy": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "export_instruction",
     "named": true,
     "fields": {
@@ -393,6 +429,16 @@
         "types": [
           {
             "type": "export_host",
+            "named": true
+          }
+        ]
+      },
+      "key": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
             "named": true
           }
         ]
@@ -3004,6 +3050,10 @@
     "named": false
   },
   {
+    "type": "CSP",
+    "named": false
+  },
+  {
     "type": "DESC",
     "named": false
   },
@@ -3077,6 +3127,10 @@
   },
   {
     "type": "INTO",
+    "named": false
+  },
+  {
+    "type": "KEY",
     "named": false
   },
   {

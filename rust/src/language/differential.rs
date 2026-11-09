@@ -268,6 +268,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("into", into.as_ref().map(operand)),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::Csp { span: sp, policy, meta } => obj(vec![
+            ("kind", s("CSP")),
+            ("span", Some(span(sp))),
+            ("policy", policy.as_ref().map(operand)),
+            ("meta", Some(json!(meta))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),
@@ -302,7 +308,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("value", Some(Value::Array(value.iter().map(operand).collect()))),
             ("overwrite", Some(json!(overwrite))),
         ]),
-        Instruction::Export { span: sp, path, format, base, at, compression, for_host } => obj(vec![
+        Instruction::Export { span: sp, path, format, base, at, compression, key, for_host } => obj(vec![
             ("kind", s("EXPORT")),
             ("span", Some(span(sp))),
             ("path", Some(operand(path))),
@@ -310,6 +316,7 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("base", base.as_ref().map(operand)),
             ("at", at.as_ref().map(operand)),
             ("compression", compression.as_ref().map(|(v, cs)| json!({ "value": v.as_str(), "span": span(cs) }))),
+            ("key", key.as_ref().map(|(id, ks)| json!({ "id": id, "span": span(ks) }))),
             ("forHost", for_host.as_ref().map(|(v, hs)| json!({ "value": v, "span": span(hs) }))),
         ]),
     }

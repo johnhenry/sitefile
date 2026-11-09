@@ -178,11 +178,12 @@ pub enum ExportFormat {
     Html,
     Mhtml,
     Warc,
+    Swbn,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 10] = [
+    pub const ALL: [ExportFormat; 11] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -193,6 +194,7 @@ impl ExportFormat {
         ExportFormat::Html,
         ExportFormat::Mhtml,
         ExportFormat::Warc,
+        ExportFormat::Swbn,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
@@ -214,6 +216,7 @@ impl ExportFormat {
             ExportFormat::Html => "html",
             ExportFormat::Mhtml => "mhtml",
             ExportFormat::Warc => "warc",
+            ExportFormat::Swbn => "swbn",
         }
     }
 }
@@ -527,6 +530,13 @@ pub enum Instruction {
         into: Option<Operand>,
         overwrite: bool,
     },
+    /// `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the hashes of
+    /// its inline scripts and styles (at EXPORT).
+    Csp {
+        span: SourceSpan,
+        policy: Option<Operand>,
+        meta: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -541,6 +551,8 @@ pub enum Instruction {
         at: Option<Operand>,
         /// `COMPRESSION gzip|none` (oci only) and the span of its value.
         compression: Option<(OciCompression, SourceSpan)>,
+        /// `KEY <secret-id>` (swbn only) and its span.
+        key: Option<(String, SourceSpan)>,
         /// `FOR <host>` (one of [`EXPORT_HOSTS`], lowercase) and the span of its value.
         for_host: Option<(String, SourceSpan)>,
     },
@@ -569,6 +581,7 @@ impl Instruction {
             | Instruction::Robots { span, .. }
             | Instruction::SecurityTxt { span, .. }
             | Instruction::Precache { span, .. }
+            | Instruction::Csp { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -595,6 +608,7 @@ impl Instruction {
             Instruction::Robots { .. } => "ROBOTS",
             Instruction::SecurityTxt { .. } => "SECURITY_TXT",
             Instruction::Precache { .. } => "PRECACHE",
+            Instruction::Csp { .. } => "CSP",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

@@ -15,15 +15,15 @@
 
 /** Keyword lists, checked against the parser by test/keywords.test.mjs. */
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CSP', 'CHECKLINKS', 'EXPORT'],
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'KEY', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'POLICY', 'META', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
   /** The LET-only type of an html fragment (`LET name: html`). */
   fragmentType: 'html',
-  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc'],
+  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn'],
   compressions: ['gzip', 'none'],
   exportHosts: ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'],
   escapeModes: ['none', 'html'],
@@ -386,6 +386,7 @@ export function buildGrammar() {
           instruction('ROBOTS', [...flags('ROBOTS'), kw(['ALLOW', 'DISALLOW', 'SITEMAP', 'TO']), { include: '#operands' }]),
           instruction('SECURITY_TXT', [...flags('SECURITY_TXT'), kw(['CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'TO']), { include: '#operands' }]),
           instruction('PRECACHE', [...flags('PRECACHE'), kw(['TO', 'INTO']), { include: '#operands' }]),
+          instruction('CSP', [kw(['POLICY', 'META']), { include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]
@@ -415,7 +416,7 @@ export function buildGrammar() {
             valueAfter('AS', KEYWORDS.exportFormats, 'support.type.export-format', 'invalid.illegal.export-format'),
             valueAfter('COMPRESSION', KEYWORDS.compressions, 'constant.language.compression', 'invalid.illegal.compression'),
             valueAfter('FOR', KEYWORDS.exportHosts, 'constant.language.export-host', 'invalid.illegal.export-host'),
-            kw(['BASE', 'AT']),
+            kw(['BASE', 'AT', 'KEY']),
             { include: '#operands' },
           ]),
           {

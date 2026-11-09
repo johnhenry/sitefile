@@ -3,7 +3,7 @@ import { importedStage, isFragment, isImageBase, isInline, stageNames, type Imag
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
-import { checkBaseUrl, checkFieldUri, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
+import { checkBaseUrl, checkFieldUri, checkCspPolicy, checkHeaderName, checkHeaderValue, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
 import { parseFragmentBody } from './language/validate.js';
@@ -91,6 +91,16 @@ export interface TextFileOperation<K extends 'ROBOTS' | 'SECURITY_TXT'> {
   readonly overwrite: boolean;
   readonly span: SourceSpan;
 }
+
+/** A CSP, evaluated: the base policy (checked) and where the per-page policies go. */
+export interface CspSpec {
+  readonly policy: string;
+  readonly meta: boolean;
+  readonly span: SourceSpan;
+}
+
+/** CSP's base policy when POLICY is not given: same-origin resources only, no plugins, no `<base>` hijacking. */
+export const DEFAULT_CSP = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
 export type Operation =
   | {
@@ -274,6 +284,8 @@ export interface Plan {
   readonly exportRoot: string | undefined;
   /** `COMPRESSION` clause of EXPORT ... AS oci or wbn (undefined: gzip for oci, none for wbn). */
   readonly exportCompression: OciCompression | undefined;
+  /** `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key. */
+  readonly exportKey?: string;
   /** `FOR <host>` of EXPORT: which host's files the REDIRECT and HEADER rules become (undefined: `_redirects`/`_headers`). */
   readonly exportFor?: { readonly host: ExportHost; readonly span: SourceSpan };
   /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
@@ -286,6 +298,8 @@ export interface Plan {
    * `Cache-Control` itself. `span` is the first FINGERPRINT's (the origin of the lines).
    */
   readonly cacheHeaders?: { readonly span: SourceSpan };
+  /** The CSP instruction (any stage): EXPORT adds a policy for every exported page. */
+  readonly csp?: CspSpec;
   readonly warnings: readonly string[];
   /**
    * `--target <stage>`: the build stops after this stage and exports its whole tree (see {@link targetPlan}).
@@ -313,6 +327,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const fingerprints: Array<{ span: SourceSpan; headers: boolean }> = [];
   const sitemapUrls: string[] = [];
   const robots: Array<{ op: Extract<Operation, { kind: 'ROBOTS' }>; rules: Array<{ allow: boolean; path: string }>; stage: number }> = [];
+  let csp: CspSpec | undefined;
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
   const allStageNames = stageNames(program.instructions);
@@ -323,6 +338,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportBase: string | undefined;
   let exportRoot: string | undefined;
   let exportCompression: OciCompression | undefined;
+  let exportKey: string | undefined;
   let exportFor: { host: ExportHost; span: SourceSpan } | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
@@ -583,6 +599,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         });
         break;
       }
+      case 'CSP': {
+        if (csp) throw new SitefileError('E_VALIDATION', `CSP given twice (line ${csp.span.line} already sets the policy)`, ins.span);
+        const policy = ins.policy ? checkCspPolicy(evaluateOperand(ins.policy, vars), ins.policy.span) : DEFAULT_CSP;
+        csp = { policy, meta: ins.meta, span: ins.span };
+        break;
+      }
       case 'EXPORT':
         exportPath = normalizeVirtual(evaluateOperand(ins.path, vars), ins.path.span, 'EXPORT path').path;
         exportFormat = ins.format;
@@ -591,6 +613,9 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
         if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn' && ins.format !== 'warc') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc', ins.compression.span);
         exportCompression = ins.compression?.value;
+        if (ins.key && ins.format !== 'swbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... KEY applies only to AS swbn', ins.key.span);
+        if (ins.format === 'swbn' && !ins.key) throw new SitefileError('E_VALIDATION', 'EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key', ins.span);
+        exportKey = ins.key?.id;
         if (ins.forHost && !['directory', 'zip', 'tar', 'tgz'].includes(ins.format)) {
           throw new SitefileError('E_VALIDATION', `EXPORT ... FOR applies only to AS directory, zip, tar and tgz, not ${ins.format}`, ins.forHost.span);
         }
@@ -603,6 +628,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     if (sitemapUrls.length === 0) throw new SitefileError('E_VALIDATION', 'ROBOTS … SITEMAP: the Sitefile has no SITEMAP to point to (add SITEMAP BASE <url>, or leave out SITEMAP)', r.op.span);
     const ops = stages[r.stage]!.operations;
     ops[ops.indexOf(r.op)] = { ...r.op, text: robotsTxt(r.rules, [...new Set(sitemapUrls)]) };
+  }
+  const cspHeader = headers.find((h) => h.name.toLowerCase() === 'content-security-policy');
+  if (csp && cspHeader) {
+    throw new SitefileError('E_VALIDATION', `CSP and the HEADER on line ${cspHeader.span.line} both set Content-Security-Policy; keep one (put your policy in CSP POLICY "…")`, csp.span);
   }
   for (const st of stages) {
     st.operations.forEach((op, i) => {
@@ -642,10 +671,12 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     exportBase,
     exportRoot,
     exportCompression,
+    ...(exportKey !== undefined ? { exportKey } : {}),
     ...(exportFor ? { exportFor } : {}),
     redirects,
     headers,
     ...(cacheHeaders ? { cacheHeaders } : {}),
+    ...(csp ? { csp } : {}),
     warnings,
   };
 }
@@ -667,7 +698,7 @@ export function targetPlan(p: Plan, name: string): Plan {
         : `--target '${name}' does not name a stage (the Sitefile has no named stages; name one with FROM … AS <name>)`,
     );
   }
-  const { cacheHeaders: _, ...rest } = p;
+  const { cacheHeaders: _, csp: _csp, ...rest } = p;
   return { ...rest, stages: p.stages.slice(0, index + 1), exportPath: '/', redirects: [], headers: [], target: name };
 }
 

@@ -10,8 +10,8 @@ use crate::language::ast::{
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_field_uri, check_header_name, check_header_value, check_redirect_target,
-    check_site_path, page_url, parse_feed_date, robots_txt, security_txt,
+    check_base_url, check_csp_policy, check_field_uri, check_header_name, check_header_value,
+    check_redirect_target, check_site_path, page_url, parse_feed_date, robots_txt, security_txt,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -184,6 +184,17 @@ pub struct HeaderSpec {
     pub overwrite: bool,
     pub span: SourceSpan,
 }
+
+/// A CSP, evaluated: the base policy (checked) and whether it goes into `<meta>` elements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CspSpec {
+    pub policy: String,
+    pub meta: bool,
+    pub span: SourceSpan,
+}
+
+/// CSP's base policy when POLICY is not given.
+pub const DEFAULT_CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
@@ -399,6 +410,8 @@ pub struct Plan {
     pub export_root: Option<String>,
     /// `COMPRESSION` clause of EXPORT ... AS oci or wbn (None: gzip for oci, none for wbn).
     pub export_compression: Option<OciCompression>,
+    /// `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key.
+    pub export_key: Option<String>,
     /// `FOR <host>` of EXPORT and its span: which host's files the REDIRECT and HEADER rules become
     /// (None: `_redirects` and `_headers`).
     pub export_for: Option<(String, SourceSpan)>,
@@ -410,6 +423,8 @@ pub struct Plan {
     /// for the fingerprinted files and the pages to `/_headers`: the Sitefile has a FINGERPRINT, none says
     /// `--no-cache-headers`, and no HEADER sets `Cache-Control` itself.
     pub cache_headers: Option<SourceSpan>,
+    /// The CSP instruction (any stage): EXPORT adds a policy for every exported page.
+    pub csp: Option<CspSpec>,
     pub warnings: Vec<String>,
     /// `--target <stage>`: the build stops after this stage and exports its whole tree (see [`target_plan`]).
     pub target: Option<String>,
@@ -441,6 +456,7 @@ pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
     p.redirects.clear();
     p.headers.clear();
     p.cache_headers = None;
+    p.csp = None;
     p.target = Some(name.to_string());
     Ok(p)
 }
@@ -489,6 +505,7 @@ pub fn plan_with(
     // ROBOTS … SITEMAP: (stage, operation index + 1, rules, span), completed once every SITEMAP is planned.
     let mut robots: Vec<(usize, usize, Vec<(bool, String)>, SourceSpan)> = Vec::new();
     let ops_len = |stages: &[Stage]| stages.last().map_or(0, |s| s.operations.len());
+    let mut csp: Option<CspSpec> = None;
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -497,6 +514,7 @@ pub fn plan_with(
     let mut export_base = None;
     let mut export_root = None;
     let mut export_compression = None;
+    let mut export_key = None;
     let mut export_for: Option<(String, SourceSpan)> = None;
 
     fn bind(
@@ -1075,6 +1093,27 @@ pub fn plan_with(
                     span: span.clone(),
                 });
             }
+            Instruction::Csp { span, policy, meta } => {
+                if let Some(prior) = &csp {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!(
+                            "CSP given twice (line {} already sets the policy)",
+                            prior.span.line
+                        ),
+                        span,
+                    ));
+                }
+                let policy = match policy {
+                    Some(o) => check_csp_policy(&evaluate_operand(o, &vars)?, &o.span)?,
+                    None => DEFAULT_CSP.to_string(),
+                };
+                csp = Some(CspSpec {
+                    policy,
+                    meta: *meta,
+                    span: span.clone(),
+                });
+            }
             Instruction::CheckLinks {
                 span,
                 warn,
@@ -1167,8 +1206,9 @@ pub fn plan_with(
                 base,
                 at,
                 compression,
+                key,
                 for_host,
-                ..
+                span,
             } => {
                 export_path = Some(
                     normalize_virtual(
@@ -1212,6 +1252,23 @@ pub fn plan_with(
                 } else {
                     export_compression = None;
                 }
+                if let Some((_, kspan)) = key {
+                    if *format != ExportFormat::Swbn {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            "EXPORT ... KEY applies only to AS swbn",
+                            kspan,
+                        ));
+                    }
+                }
+                if *format == ExportFormat::Swbn && key.is_none() {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        "EXPORT ... AS swbn needs KEY <secret-id>: the --secret that holds the Ed25519 signing key",
+                        span,
+                    ));
+                }
+                export_key = key.as_ref().map(|(k, _)| k.clone());
                 if let Some((host, hspan)) = for_host {
                     if !matches!(
                         format,
@@ -1254,6 +1311,18 @@ pub fn plan_with(
         if let Operation::TextFile { text, .. } = &mut stages[si].operations[end - 1] {
             *text = robots_txt(&rules, &unique);
         }
+    }
+    if let (Some(c), Some(h)) = (
+        &csp,
+        headers
+            .iter()
+            .find(|h: &&HeaderSpec| h.name.eq_ignore_ascii_case("content-security-policy")),
+    ) {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("CSP and the HEADER on line {} both set Content-Security-Policy; keep one (put your policy in CSP POLICY \"…\")", h.span.line),
+            &c.span,
+        ));
     }
     let root = export_path.clone().unwrap_or_else(|| "/".into());
     for st in &mut stages {
@@ -1323,10 +1392,12 @@ pub fn plan_with(
         export_base,
         export_root,
         export_compression,
+        export_key,
         export_for,
         redirects,
         headers,
         cache_headers,
+        csp,
         warnings,
         target: None,
     })
