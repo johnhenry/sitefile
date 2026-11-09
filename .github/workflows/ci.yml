@@ -81,7 +81,14 @@ jobs:
       run:
         working-directory: rust
     steps:
+      # One conformance fixture has a name Windows can't create
+      # ("a&b <c>.html"); leave it out of the checkout.
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/conformance/cases/ok-site-files/public/a&b <c>.html
 
       - uses: dtolnay/rust-toolchain@stable
 
