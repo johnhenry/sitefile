@@ -8,8 +8,8 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    PRECACHE_CLAUSES,
-    INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    INSTRUCTIONS, PRECACHE_CLAUSES, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
+    TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -431,7 +431,9 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 Vec::new()
             } else {
                 kw_items(
-                    PRECACHE_CLAUSES[last.map_or(0, |l| l + 1)..].iter().copied(),
+                    PRECACHE_CLAUSES[last.map_or(0, |l| l + 1)..]
+                        .iter()
+                        .copied(),
                     CIK_KEYWORD,
                 )
             }

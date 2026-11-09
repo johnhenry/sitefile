@@ -24,7 +24,6 @@ use crate::export::oci::{
     build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions,
 };
 use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
-use crate::precache::{precache, PrecacheOp};
 use crate::language::ast::{
     ExportFormat, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart,
     FEED_ITEM,
@@ -46,6 +45,7 @@ use crate::plugins::host::{
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
 use crate::plugins::wasm::check_wasm_plugin_in;
+use crate::precache::{precache, PrecacheOp};
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
 use crate::render::{

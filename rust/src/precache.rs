@@ -78,12 +78,18 @@ pub fn precache(
 ) -> Result<Tree> {
     let entries = precache_entries(&tree, op, fingerprinted);
     if entries.is_empty() {
-        warn(&format!("{origin}: no files match {}", op.patterns.join(" ")));
+        warn(&format!(
+            "{origin}: no files match {}",
+            op.patterns.join(" ")
+        ));
     }
     let json = precache_json(&entries);
     let mut files = Vec::new();
     if let Some(d) = op.dest {
-        files.push((d.to_string(), make_file(json.clone().into_bytes(), origin, 0o644)));
+        files.push((
+            d.to_string(),
+            make_file(json.clone().into_bytes(), origin, 0o644),
+        ));
     }
     if let Some(sw_path) = op.into {
         let Some(sw) = tree.get(sw_path) else {
@@ -113,7 +119,10 @@ pub fn precache(
             json.trim_end(),
             &text[at + INJECTION_POINT.len()..]
         );
-        files.push((sw_path.to_string(), make_file(injected.into_bytes(), origin, sw.mode)));
+        files.push((
+            sw_path.to_string(),
+            make_file(injected.into_bytes(), origin, sw.mode),
+        ));
     }
     let mut out = tree;
     for (p, node) in files {
