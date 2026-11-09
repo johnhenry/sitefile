@@ -28,12 +28,14 @@ use crate::digest::sha256;
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    blob_path_of, decode_index, extract_image_files, media, parse_config, parse_manifest,
-    site_layer_index,
+    blob_path_of, decode_index, media, parse_config, parse_manifest, site_layer_indices,
 };
-use crate::resources::archive::{extract_archive, os_metadata_warning, without_os_metadata};
+use crate::resources::archive::{
+    extract_archive, open_zip_file, os_metadata_warning, without_os_metadata,
+};
 use crate::resources::local::{LocalContext, LocalContextOptions};
 use crate::resources::types::{ArchiveLimits, Resource, DEFAULT_ARCHIVE_LIMITS};
+use crate::server::SiteContent;
 use crate::store::Store;
 use crate::tree::Tree;
 use serde::{Deserialize, Serialize};
@@ -42,6 +44,7 @@ use std::io::{self, Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +79,19 @@ pub struct ServerState {
     pub image: String,
     pub source: ServerSource,
     pub spa: bool,
+    /// `--spa-exclude`: request paths that never fall back (absent: none).
+    #[serde(default, rename = "spaExclude", skip_serializing_if = "Vec::is_empty")]
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html).
+    #[serde(
+        default,
+        rename = "spaFallback",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spa_fallback: Option<String>,
+    /// `--base`: the path prefix the site is served under, `/repo/` (absent: `/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// `--keep-os-metadata`: serve a directory's or archive's OS metadata files too.
     #[serde(
         default,
@@ -83,6 +99,16 @@ pub struct ServerState {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub keep_os_metadata: bool,
+    /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting.
+    #[serde(
+        default,
+        rename = "strictSiteFiles",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub strict_site_files: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -292,7 +318,11 @@ impl ServerRegistry {
             state: s.clone(),
             status: if running { "running" } else { "exited" },
             url: if s.ready {
-                url_of(&s.host, s.port)
+                format!(
+                    "{}{}",
+                    url_of(&s.host, s.port),
+                    &s.base.as_deref().unwrap_or("/")[1..]
+                )
             } else {
                 String::new()
             },
@@ -478,6 +508,22 @@ fn load_archive(
 ) -> Result<Tree> {
     let origin = file.display().to_string();
     let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
+    check_archive_file(file, limits)?;
+    let bytes = fs::read(file).map_err(|_| unreadable())?;
+    let tree = extract_archive(&bytes, &origin, limits, None)?;
+    if tree.is_file("/oci-layout") {
+        return oci_archive_tree(&tree, &origin, limits);
+    }
+    if hidden {
+        return Ok(tree);
+    }
+    served(tree, &origin, options)
+}
+
+/// The checks every archive file gets before it is read.
+fn check_archive_file(file: &Path, limits: &ArchiveLimits) -> Result<()> {
+    let origin = file.display().to_string();
+    let unreadable = || SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'"));
     let meta = fs::metadata(file).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             SitefileError::plain(E_NOT_FOUND, format!("'{origin}' does not exist"))
@@ -504,15 +550,79 @@ fn load_archive(
             ),
         ));
     }
-    let bytes = fs::read(file).map_err(|_| unreadable())?;
-    let tree = extract_archive(&bytes, &origin, limits, None)?;
-    if tree.is_file("/oci-layout") {
-        return oci_archive_tree(&tree, &origin, limits);
+    Ok(())
+}
+
+/// What a server serves: the tree and, for a zip served in place, where its contents come from.
+pub struct ServedSite {
+    pub tree: Tree,
+    pub content: Option<Arc<dyn SiteContent>>,
+}
+
+/// A zip archive file opened for serving in place (#213): its entries are
+/// checked and indexed at start (each inflated once, one at a time, for its
+/// CRC-32 and digest) and read from the file on each request, so memory does
+/// not grow with the archive. The tree is the one [`load_archive_tree_opts`]
+/// serves, with the same errors. `None` for anything that is not a zip (or a
+/// zip holding an OCI layout).
+pub fn open_zip_archive(
+    file: &Path,
+    limits: &ArchiveLimits,
+    options: &ServedTreeOptions,
+) -> Result<Option<ServedSite>> {
+    let origin = file.display().to_string();
+    check_archive_file(file, limits)?;
+    let mut head = [0u8; 4];
+    {
+        use std::io::Read;
+        let mut f = fs::File::open(file)
+            .map_err(|_| SitefileError::plain(E_ARCHIVE, format!("cannot read '{origin}'")))?;
+        let mut got = 0;
+        while got < 4 {
+            match f.read(&mut head[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(_) => {
+                    return Err(SitefileError::plain(
+                        E_ARCHIVE,
+                        format!("cannot read '{origin}'"),
+                    ))
+                }
+            }
+        }
     }
-    if hidden {
-        return Ok(tree);
+    let zip = head[0] == 0x50
+        && head[1] == 0x4b
+        && ((head[2] == 3 && head[3] == 4) || (head[2] == 5 && head[3] == 6));
+    if !zip {
+        return Ok(None);
     }
-    served(tree, &origin, options)
+    let z = open_zip_file(file, &origin, limits)?;
+    if z.tree.is_file("/oci-layout") {
+        return Ok(None);
+    }
+    let tree = served(z.tree.clone(), &origin, options)?;
+    Ok(Some(ServedSite {
+        tree,
+        content: Some(Arc::new(z)),
+    }))
+}
+
+/// [`load_served_tree_with`], serving a zip archive in place ([`open_zip_archive`]).
+pub fn load_served_site(
+    store: &Store,
+    source: &ServerSource,
+    options: &ServedTreeOptions,
+) -> Result<ServedSite> {
+    if let ServerSource::Archive { path } = source {
+        if let Some(site) = open_zip_archive(Path::new(path), &DEFAULT_ARCHIVE_LIMITS, options)? {
+            return Ok(site);
+        }
+    }
+    Ok(ServedSite {
+        tree: load_served_tree_with(store, source, options)?,
+        content: None,
+    })
 }
 
 /// The files of the first image in an extracted OCI layout.
@@ -540,19 +650,28 @@ fn oci_archive_tree(layout: &Tree, origin: &str, limits: &ArchiveLimits) -> Resu
         .map_err(|_| bad("OCI archive's first manifest is not an image manifest".into()))?;
     let cfg = parse_config(&blob(&m.config.digest, m.config.size)?)
         .map_err(|_| bad("OCI archive's image config is corrupt".into()))?;
-    let layer = site_layer_index(&m, &cfg)
-        .and_then(|i| m.layers.get(i))
-        .filter(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR);
-    let layer_bytes = match layer {
-        Some(l) => {
+    let layers: Vec<&crate::export::oci::Descriptor> = site_layer_indices(&m, &cfg)
+        .into_iter()
+        .map(|i| &m.layers[i])
+        .collect();
+    // An empty list makes extract_site_layers report "not a Sitefile image".
+    let mut blobs: Vec<Vec<u8>> = Vec::new();
+    if layers
+        .iter()
+        .all(|l| l.media_type == media::LAYER || l.media_type == media::LAYER_TAR)
+    {
+        for l in &layers {
             let b = blob(&l.digest, l.size)?;
-            // Hold the site layer to the archive limits before it is fully decoded.
+            // Hold each site layer to the archive limits before it is fully decoded.
             extract_archive(&b, origin, limits, None)?;
-            b
+            blobs.push(b);
         }
-        None => Vec::new(), // extract_image_files reports "not a Sitefile image"
-    };
-    extract_image_files(&m, &cfg, &layer_bytes, origin)
+    }
+    if layers.is_empty() {
+        blobs.push(Vec::new());
+    }
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    crate::export::oci::extract_site_layers(&m, &cfg, &refs, origin, None)
 }
 
 /// The tree a server state serves.
@@ -747,6 +866,32 @@ pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)
     }
 }
 
+/// Warn about every `_redirects`/`_headers` line `serve` ignores; with `strict`
+/// (`--strict-site-files`) any such line is then an error (port of `checkSiteFiles`).
+pub fn check_site_files(
+    tree: &Tree,
+    strict: bool,
+    warn: &dyn Fn(&str),
+    content: Option<&dyn crate::server::SiteContent>,
+) -> Result<()> {
+    let ignored = crate::server::site_file_warnings(tree, content);
+    for m in &ignored {
+        warn(m);
+    }
+    let n = ignored.len();
+    if strict && n > 0 {
+        return Err(SitefileError::plain(
+            E_VALIDATION,
+            format!(
+                "{n} line{} of _redirects/_headers {} ignored (--strict-site-files)",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "is" } else { "are" }
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// A detached server to start ([`serve_detached`]): `serve -d`'s arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedServe {
@@ -759,8 +904,18 @@ pub struct DetachedServe {
     pub bind: Bind,
     /// `--spa`.
     pub spa: bool,
+    /// `--spa-exclude`.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`.
+    pub spa_fallback: Option<String>,
+    /// `--base` (normalized; `None` for `/`).
+    pub base: Option<String>,
     /// `--keep-os-metadata`.
     pub keep_os_metadata: bool,
+    /// `--country`.
+    pub country: Option<String>,
+    /// `--strict-site-files`.
+    pub strict_site_files: bool,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -776,7 +931,12 @@ impl DetachedServe {
             name: None,
             bind: parse_publish(None)?,
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
+            country: None,
+            strict_site_files: false,
             project: None,
         })
     }
@@ -809,7 +969,15 @@ pub fn serve_detached_with(
         keep_os_metadata: serve.keep_os_metadata,
         warn: Some(warn),
     };
-    load_served_tree_with(&reg.store, &serve.source, &options)?; // fail fast on a bad image, directory or archive
+    // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
+    let site = load_served_site(&reg.store, &serve.source, &options)?;
+    check_site_files(
+        &site.tree,
+        serve.strict_site_files,
+        warn,
+        site.content.as_deref(),
+    )?;
+    drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -817,7 +985,12 @@ pub fn serve_detached_with(
         image: serve.label.clone(),
         source: serve.source.clone(),
         spa: serve.spa,
+        spa_exclude: serve.spa_exclude.clone(),
+        spa_fallback: serve.spa_fallback.clone(),
+        base: serve.base.clone(),
         keep_os_metadata: serve.keep_os_metadata,
+        country: serve.country.clone(),
+        strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -853,7 +1026,7 @@ pub fn restart_detached(
         keep_os_metadata: s.keep_os_metadata,
         warn: None,
     };
-    load_served_tree_with(&reg.store, &s.source, &options)?;
+    load_served_site(&reg.store, &s.source, &options)?;
     let mut fresh = s.clone();
     fresh.host = s.bind.host.clone();
     fresh.port = s.bind.port;
@@ -1014,6 +1187,7 @@ mod tests {
     use crate::export::exporter::tests::TmpDir;
     use crate::server::{listen, SiteServerOptions};
     use crate::tree::make_file;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn state(reg: &ServerRegistry, id: &str, name: &str, started: &str) -> ServerState {
@@ -1025,7 +1199,12 @@ mod tests {
                 path: "/tmp/site".into(),
             },
             spa: false,
+            spa_exclude: Vec::new(),
+            spa_fallback: None,
+            base: None,
             keep_os_metadata: false,
+            country: None,
+            strict_site_files: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -1324,6 +1503,207 @@ mod tests {
         assert!(w[1].contains(": skipped 3 OS metadata files"), "{}", w[1]);
         // The default loaders filter too.
         assert_eq!(load_archive_tree(&zip).unwrap().len(), 2);
+    }
+
+    fn zip_site() -> Tree {
+        Tree::from_files(
+            [
+                ("/index.html", "<h1>home</h1>".repeat(40)),
+                ("/about/index.html", "<h1>about</h1>".into()),
+                ("/404.html", "missing".into()),
+                (
+                    "/_redirects",
+                    "/old /about/ 301\n/rewrite /index.html 200\n".into(),
+                ),
+                ("/_headers", "/*\n  X-Test: yes\n".into()),
+                ("/app.js", "console.log(1);".repeat(30)),
+                ("/tiny.txt", "x".into()),
+                ("/.env", "hidden".into()),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+        )
+        .unwrap()
+    }
+
+    /// Where stored entry `name`'s data starts in zip `z` (after its local header's name and extra field).
+    fn data_of(z: &[u8], name: &str) -> usize {
+        let at = z
+            .windows(name.len())
+            .position(|w| w == name.as_bytes())
+            .unwrap();
+        at + name.len() + u16::from_le_bytes([z[at - 2], z[at - 1]]) as usize
+    }
+
+    #[test]
+    fn a_zip_served_in_place_answers_as_the_extracted_zip_does() {
+        use crate::export::archive_writers::{write_zip, WriterOptions};
+        use crate::server::handle_request;
+        let d = TmpDir::new("servers");
+        let file = d.path().join("site.zip");
+        fs::write(
+            &file,
+            write_zip(&zip_site(), &WriterOptions::default()).unwrap(),
+        )
+        .unwrap();
+        let eager = load_archive_tree(&file).unwrap();
+        let lazy = open_zip_archive(
+            &file,
+            &DEFAULT_ARCHIVE_LIMITS,
+            &ServedTreeOptions::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let shape = |t: &Tree| {
+            t.entries()
+                .map(|(p, n)| (p.clone(), n.digest.clone(), n.mode))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&lazy.tree), shape(&eager));
+        assert!(lazy.tree.entries().all(|(_, n)| n.bytes.is_empty()));
+        let lm: crate::server::LastModifiedFn = Arc::new(|| Some(1_700_000_000));
+        let plain = SiteServerOptions {
+            last_modified: Some(lm.clone()),
+            ..Default::default()
+        };
+        let opts = SiteServerOptions {
+            content: lazy.content.clone(),
+            last_modified: Some(lm),
+            ..Default::default()
+        };
+        let none = HashMap::new();
+        // Byte ranges and Last-Modified / If-Modified-Since work on entries read from the zip, as on extracted ones.
+        let variants: Vec<HashMap<String, String>> = [
+            vec![],
+            vec![("range", "bytes=0-9")],
+            vec![("range", "bytes=5-")],
+            vec![("range", "bytes=9999-")],
+            vec![("range", "bytes=0-9"), ("accept-encoding", "gzip")],
+            vec![("if-modified-since", "Tue, 14 Nov 2023 22:13:20 GMT")],
+            vec![("if-modified-since", "Mon, 01 Jan 2001 00:00:00 GMT")],
+        ]
+        .into_iter()
+        .map(|v| {
+            v.into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
+        .collect();
+        for method in ["GET", "HEAD"] {
+            for h in &variants {
+                for p in ["/", "/index.html", "/app.js", "/tiny.txt", "/nope"] {
+                    let want = handle_request(&eager, &plain, method, p, h);
+                    let got = handle_request(&lazy.tree, &opts, method, p, h);
+                    assert_eq!(
+                        (got.status, &got.headers, &got.body),
+                        (want.status, &want.headers, &want.body),
+                        "{method} {p} {h:?}"
+                    );
+                }
+            }
+        }
+        for method in ["GET", "HEAD"] {
+            for p in [
+                "/",
+                "/index.html",
+                "/about",
+                "/about/",
+                "/old",
+                "/rewrite",
+                "/app.js",
+                "/tiny.txt",
+                "/nope",
+                "/.env",
+                "/_headers",
+            ] {
+                let want = handle_request(&eager, &plain, method, p, &none);
+                let got = handle_request(&lazy.tree, &opts, method, p, &none);
+                assert_eq!(
+                    (got.status, &got.headers, &got.body),
+                    (want.status, &want.headers, &want.body),
+                    "{method} {p}"
+                );
+            }
+        }
+        // Gzip clients get deflated entries as gzip, with their own ETag.
+        let gz: HashMap<String, String> =
+            [("accept-encoding".to_string(), "br, gzip;q=0.8".to_string())].into();
+        let p = handle_request(&lazy.tree, &opts, "GET", "/app.js", &none);
+        let g = handle_request(&lazy.tree, &opts, "GET", "/app.js", &gz);
+        assert_eq!(g.header("content-encoding"), Some("gzip"));
+        assert_eq!(g.header("vary"), Some("accept-encoding"));
+        assert_eq!(
+            g.header("etag").unwrap(),
+            format!("{}-gzip\"", p.header("etag").unwrap().trim_end_matches('"'))
+        );
+        let mut un = Vec::new();
+        use std::io::Read;
+        flate2::read::GzDecoder::new(&g.body[..])
+            .read_to_end(&mut un)
+            .unwrap();
+        assert_eq!(un, p.body);
+        let stored = handle_request(&lazy.tree, &opts, "GET", "/tiny.txt", &gz);
+        assert_eq!(stored.header("content-encoding"), None);
+        let q0: HashMap<String, String> =
+            [("accept-encoding".to_string(), "gzip;q=0".to_string())].into();
+        assert_eq!(
+            handle_request(&lazy.tree, &opts, "GET", "/app.js", &q0).header("content-encoding"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zip_changed_after_start_is_a_500() {
+        use crate::export::archive_writers::{write_zip, WriterOptions};
+        use crate::server::handle_request;
+        let d = TmpDir::new("servers");
+        let file = d.path().join("site.zip");
+        let mut bytes = write_zip(&zip_site(), &WriterOptions::default()).unwrap();
+        fs::write(&file, &bytes).unwrap();
+        let lazy = open_zip_archive(
+            &file,
+            &DEFAULT_ARCHIVE_LIMITS,
+            &ServedTreeOptions::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let at = data_of(&bytes, "tiny.txt");
+        assert_eq!(bytes[at], b'x');
+        bytes[at] = b'y';
+        fs::write(&file, &bytes).unwrap();
+        let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let l2 = lines.clone();
+        let opts = SiteServerOptions {
+            content: lazy.content.clone(),
+            log: Some(Arc::new(move |m: &str| {
+                l2.lock().unwrap().push(m.to_string())
+            })),
+            ..Default::default()
+        };
+        let r = handle_request(&lazy.tree, &opts, "GET", "/tiny.txt", &HashMap::new());
+        assert_eq!(r.status, 500);
+        assert!(lines.lock().unwrap()[0]
+            .contains("zip entry 'tiny.txt' changed since the server started"));
+        // A corrupt zip fails to open with the extraction error; other archives are not opened in place.
+        let e = open_zip_archive(
+            &file,
+            &DEFAULT_ARCHIVE_LIMITS,
+            &ServedTreeOptions::default(),
+        )
+        .err()
+        .unwrap();
+        assert!(
+            e.message()
+                .contains("zip entry 'tiny.txt' fails its CRC-32 check"),
+            "{}",
+            e.message()
+        );
+        let tar = d.path().join("x.tar");
+        fs::write(&tar, vec![0u8; 1024]).unwrap();
+        assert!(
+            open_zip_archive(&tar, &DEFAULT_ARCHIVE_LIMITS, &ServedTreeOptions::default())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

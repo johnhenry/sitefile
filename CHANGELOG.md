@@ -2,12 +2,63 @@
 
 ## Unreleased
 
+- **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
+  a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
+  gets its slash, everything else is 404, and the server's redirects and
+  `_redirects` path targets stay under it. `serve --watch` defaults it to the
+  path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
+  Both implementations.
+- **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
+  app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
+  else `Accept: text/html`), never subresources, so `/users/jane.doe` works
+  and a missing script stays 404. The shell is the nearest `200.html`
+  (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
+  <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
+  implementations.
+- **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
+  404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
+  `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
+  (`/store id=:id /items/:id`), `Language=`, `Cookie=` and `Country=`
+  conditions (`--country` sets the country), statuses 410 and 451, and a
+  `404.html` in the nearest directory. Every `_redirects`/`_headers` line it
+  ignores is a warning with its line and reason (`--strict-site-files` makes
+  them an error), `validate` warns about REDIRECT/HEADER lines serve would
+  ignore (lint rule `serve-ignored`), and the access log names the rule that
+  answered (`→ /new (_redirects:3)`).
+- **CANONICAL links and split sitemaps** (johnhenry/sitefile#218):
+  `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical">` before
+  `</head>` of every page that has none (PRETTY drops `.html`), and SITEMAP
+  writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
+  Both implementations, with conformance cases; example `examples/canonical`.
+  hreflang alternates are not done yet.
+- **`--oci-layers <n>`** (johnhenry/sitefile#214): split an oci image's files
+  over `n` site layers (1-64, by a hash of each path) so pushing a new version
+  uploads only the layers whose files changed; `dev.sitefile.layers` in the
+  config marks them, and every reader (store, save, serve, push, pull,
+  `FROM image`) merges them. Default unchanged (one layer, same image IDs).
+  Both implementations; conformance `example/blog:oci-layers-*`,
+  `case/steps-oci-layers`.
+- **Identical `--help` in both CLIs**: the `--node` line now reads "default
+  $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
+  default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
+  the Rust binary), and that is now listed in docs/RUST.md "Known
+  differences". `save --help` in the Rust binary now lists `car`, `html` and
+  `mhtml` too. A `help-text` conformance case compares every command's help.
 - **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
   file responses carry `Last-Modified` (image: when it was stored; directory:
   newest file mtime; archive: its mtime; `--watch`: the build time), and
   `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
   `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
   response with those links (HTTP/1.1 `GET` only). Both servers.
+- **`sitefile import-config`** (johnhenry/sitefile#204): translates
+  netlify.toml, vercel.json, firebase.json, staticwebapp.config.json,
+  wrangler.toml/.json (`[assets]`) and an `.htaccess` subset into the
+  `_redirects` and `_headers` that `sitefile serve` understands today. Every
+  rule written is checked against serve's parser. Placeholders, conditions,
+  regular expressions, proxies and settings with no `_redirects` form are
+  listed as unsupported, never half translated. `--json` lists both. It reads
+  the TOML files with a small TOML subset shared by both implementations.
+  Fixtures for every format are conformance cases.
 - **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
   bytes` on file responses; a single `Range` on `GET` gets `206` with
   `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
@@ -21,6 +72,13 @@
   not created yet. Sources are relative to the servers file. Server records
   gain an optional `project` field. Both implementations, with conformance
   cases.
+- **`serve x.zip` serves in place** (#213): the zip is checked and indexed at
+  start and each entry is read from the file per request, so memory stays
+  flat for large zips; responses are unchanged, except that gzip clients get
+  deflated entries passed through as `content-encoding: gzip` (no
+  re-encoding). Library: `openZipFile`/`openZipArchive`/`loadServedSite` and
+  `SiteServerOptions.content` (Rust: `open_zip_file`, `open_zip_archive`,
+  `load_served_site`, `SiteServerOptions::content`). Both implementations.
 - **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
   RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
   with what to convert it to. (zstd decoding is not added: the Rust side has
@@ -43,6 +101,13 @@
   matches, else as UTF-8 when valid, else as CP437 (they used to become
   U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
   `serve x.zip`, in both implementations.
+- **Zip export writes the extended timestamp** (#187): every entry carries the
+  0x5455 "UT" extra field (mtime only) in its local and central header, so
+  `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
+  the DOS time as local time). **This changes zip export bytes**: every
+  `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
+  deterministic and identical across the TypeScript and Rust writers (their
+  byte-for-byte fixtures are updated together). Image IDs are not affected.
 - **Compression Dictionary Transport, experimental** (johnhenry/sitefile#215):
   `build --experimental-dictionary <previous>` adds `Use-As-Dictionary`
   headers for scripts, styles, JSON, wasm and HTML, and a `<path>.dcz`
@@ -51,7 +116,6 @@
   A small deterministic Zstandard encoder shared by both implementations
   (`src/zstd.ts`, `rust/src/zstd.rs`); frames decode with libzstd.
   Conformance cases `steps-dictionary`, `serve-dictionary`.
-
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input

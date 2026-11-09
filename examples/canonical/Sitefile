@@ -1,0 +1,9 @@
+# CANONICAL: every page names its own URL with <link rel="canonical">, so copies of it
+# (/about?utm=…, http://, www.) count as one page in search results.
+FROM scratch
+ARG SITE_URL = "https://example.com/"
+COPY ./public/ /
+# PRETTY: hosts that serve /about.html at /about (Netlify, Cloudflare Pages).
+CANONICAL BASE ${SITE_URL} PRETTY
+SITEMAP BASE ${SITE_URL}
+EXPORT /

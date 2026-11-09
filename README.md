@@ -82,7 +82,8 @@ no runtime dependencies.
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [--include/--exclude=<pattern>] [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`); a directory source runs once per file (`TO /img/thumbs/*.png`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
-| `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
+| `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far (a sitemap index and parts above 50,000 URLs or 50 MiB) |
+| `CANONICAL BASE <url> [PRETTY]` | yes; a `<link rel="canonical">` in every page that has none |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
@@ -174,6 +175,7 @@ sitefile graph    [context] [--json | --dot]   # dependency graph of imports, st
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
+sitefile import-config netlify.toml      # a host's config (Netlify, Vercel, Firebase, Azure, wrangler, .htaccess) as _redirects/_headers
 sitefile hosts [context] [--json]        # the hosts a build would contact and whether they are allowed (no fetch)
 sitefile bake [targets...] [-f sitefile.bake.yaml] [--print [--json]] [-j n]   # build several variants
 
