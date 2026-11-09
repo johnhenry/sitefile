@@ -86,6 +86,9 @@ pub struct ServerState {
     /// `--allowed-host` names (localhost names and IP addresses are always allowed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cors: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -763,6 +766,8 @@ pub struct DetachedServe {
     pub keep_os_metadata: bool,
     /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
     pub allowed_hosts: Vec<String>,
+    /// `--cors`.
+    pub cors: bool,
 }
 
 impl DetachedServe {
@@ -778,6 +783,7 @@ impl DetachedServe {
             spa: false,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
+            cors: false,
         })
     }
 }
@@ -819,6 +825,7 @@ pub fn serve_detached_with(
         spa: serve.spa,
         keep_os_metadata: serve.keep_os_metadata,
         allowed_hosts: serve.allowed_hosts.clone(),
+        cors: serve.cors,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1027,6 +1034,7 @@ mod tests {
             spa: false,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
+            cors: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

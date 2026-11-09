@@ -37,6 +37,8 @@ export interface ServerState {
   readonly keepOsMetadata?: boolean;
   /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
   readonly allowedHosts?: readonly string[];
+  /** `--cors` (absent: false). */
+  readonly cors?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

@@ -1123,6 +1123,11 @@ to `image` (`imageId`) and `dir` (`path`).
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
+  a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
+  `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
+  `Access-Control-Allow-Headers` (when it is a plain list of header names) and `Access-Control-Max-Age: 600`.
+  Without it `OPTIONS` is `405` as before. Stored in the server record (`cors`).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
