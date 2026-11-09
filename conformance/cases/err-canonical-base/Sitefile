@@ -1,0 +1,3 @@
+FROM scratch
+CANONICAL BASE example.com
+EXPORT /

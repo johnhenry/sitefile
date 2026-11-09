@@ -1085,7 +1085,11 @@ fn is_safe_host(h: &str) -> bool {
             return false;
         };
         let inner = &rest[..end];
-        if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.') {
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
             return false;
         }
         ("x", &rest[end + 1..])
@@ -1100,9 +1104,9 @@ fn is_safe_host(h: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
     let port_ok = port.is_empty()
-        || port.strip_prefix(':').is_some_and(|p| {
-            (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit())
-        });
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
     name_ok && port_ok
 }
 
@@ -2020,7 +2024,8 @@ pub fn respond(
     };
     let mut segs = all_segs.clone();
     if !base_segs.is_empty() {
-        let inside = all_segs.len() >= base_segs.len() && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let inside = all_segs.len() >= base_segs.len()
+            && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
         let to_mount = |status: u16| {
             finish(
                 status,
