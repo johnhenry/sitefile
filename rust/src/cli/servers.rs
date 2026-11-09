@@ -12,7 +12,7 @@ use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
     is_running, load_served_tree_with, resolve_source, restart_detached, serve_detached_with,
-    DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
+    served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
 use crate::store::{now_iso, Store};
@@ -182,6 +182,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 warn: Some(&warn),
             },
         )?;
+        let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
@@ -192,6 +193,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 log: Some(log),
                 server_id: None,
                 live_reload: None,
+                last_modified: Some(Arc::new(move || modified)),
                 warn: None,
             },
             &bind.host,
@@ -216,6 +218,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             bind,
             spa: v.flag("spa"),
             keep_os_metadata,
+            project: None,
         },
         None,
         &warn,
@@ -264,6 +267,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     catch_signals();
 
     let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
+    // Last-Modified: the time of the build being served.
+    let built_at: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
     let live = LiveReload::with_options(&crate::server::LiveReloadOptions {
         reset_service_workers: !v.flag("keep-service-workers"),
         css_inject,
@@ -288,6 +293,12 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         };
         *t = Arc::new(next);
         drop(t);
+        if let Ok(mut b) = built_at.write() {
+            *b = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64);
+        }
         if let Some(e) = event {
             live.send(&e);
         }
@@ -372,6 +383,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             log: Some(log),
             server_id: None,
             live_reload: Some(live.clone()),
+            last_modified: Some(Arc::new({
+                let built_at = built_at.clone();
+                move || built_at.read().ok().and_then(|t| *t)
+            })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -435,6 +450,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 warn: Some(&warn),
             },
         )?;
+        let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
         let server = listen(
@@ -444,6 +460,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 log: Some(log),
                 server_id: Some(id.to_string()),
                 live_reload: None,
+                last_modified: Some(Arc::new(move || modified)),
                 warn: None,
             },
             &state.bind.host,
@@ -555,7 +572,7 @@ fn run_ps(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-fn grace_of(v: &Parsed) -> Result<Duration> {
+pub fn grace_of(v: &Parsed) -> Result<Duration> {
     let Some(t) = v.str("time") else {
         return Ok(Duration::from_secs(5));
     };

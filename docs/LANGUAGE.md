@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1511,11 +1511,19 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
-  else fails with `E_TYPE`. Supported tar extras: POSIX ustar prefix (old GNU
+  tgz (gzip), and zip (stored and deflate, including ZIP64 records: the zip64
+  end record and locator and the 0x0001 extra field, as streaming writers add
+  them even to small archives; no encryption). Anything
+  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
+  Zip entry names are UTF-8 when general-purpose bit 11 is set. Without it,
+  the Info-ZIP Unicode Path field (0x7075) is used when its CRC-32 matches the
+  raw name; otherwise a name that is valid UTF-8 is read as UTF-8 (macOS, 7-Zip
+  and many tools write UTF-8 without the flag), and any other name as IBM437
+  (CP437), as older Windows Explorer, Info-ZIP and Java tools write it.
   A gzip stream may hold several members; zero bytes after the last one are
   ignored, any other trailing data must be another valid member.
   Decompression is asynchronous, so other imports keep making progress.
@@ -1533,9 +1541,14 @@ checked:
   `E_PATH_COLLISION` (see "Writes and conflicts").
 - Unsafe entries are rejected, never skipped: absolute paths (including `C:`),
   `..` segments, backslashes, NUL (`E_ARCHIVE_UNSAFE`), and symlink, hard link,
-  device and fifo entries (`E_ARCHIVE_UNSAFE`). Duplicate paths, or a file and
+  device and fifo entries (`E_ARCHIVE_UNSAFE`). A zip whose local header
+  disagrees with its central-directory record (name, compression method, or
+  sizes when there is no data descriptor), or whose entries overlap, is
+  `E_ARCHIVE_UNSAFE` too: other tools would extract different files from it. Duplicate paths, or a file and
   directory at one path, fail with `E_CONFLICT`. Malformed or truncated
-  archives fail with `E_ARCHIVE`.
+  archives fail with `E_ARCHIVE`, as does a zip entry whose CRC-32 does not
+  match its central-directory record (a corrupt stored entry inflate cannot
+  notice).
 - Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
   `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
   `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the
@@ -1547,8 +1560,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`). The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1570,7 +1583,7 @@ and tar timestamps instead.
 - **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
   extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
   same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
-  the external attributes (version made by = 3 << 8). No zip64: more than
+  the external attributes (version made by = 3 << 8). No zip64 is written: more than
   65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
   with `E_EXPORT`.
 - **tar**: POSIX ustar. A name over 100 bytes is split into `prefix`/`name` at
@@ -1704,6 +1717,40 @@ and tar timestamps instead.
     both implementations write identical `.wbn.gz` files. With
     `BASE https://packfile.invalid/` it is exactly what packfile's
     `fromArchive(buffer)` reads with no options.
+
+- **car**: an [IPFS CARv1](https://ipld.io/specs/transport/car/carv1/) file of the tree as a UnixFS DAG,
+  built the way kubo's `ipfs add -r --hidden --cid-version=1 <dir>` builds it, so the root CID is the one
+  kubo prints for the exported directory (tested against kubo 0.43, whose `ipfs dag export` of that root
+  gives the same bytes). Files are cut into 262144-byte chunks, each a raw block (CIDv1, codec `raw`); a
+  file of one chunk is that block; longer files are a balanced tree of dag-pb UnixFS File nodes of at most
+  174 links. Directories are dag-pb UnixFS Directory nodes with links sorted by name; a directory big
+  enough for IPFS to shard (HAMT, over 256 KiB of names and CIDs, roughly 5000 entries) fails with
+  `E_EXPORT`. Every CID is v1 with a SHA-256 multihash. The header's one root is the tree's `/`; blocks
+  follow once each, root first, then depth first in link order. No modes or timestamps are recorded (kubo
+  adds neither by default), so `SOURCE_DATE_EPOCH` does not change the file. `build` and `save` print the
+  root CID (`root bafy…`). Upload the file to an IPFS pinning service (`ipfs dag import`, web3.storage,
+  Pinata). Tools that wrap the directory in one more directory (as `ipfs-car pack` can) report a different
+  root; compare with kubo's unwrapped `ipfs add -r`.
+
+- **html**: one page as a single self-contained file. The page is `index.html` of the exported tree
+  (`EXPORT /docs AS html` exports `/docs/index.html`); a tree without one fails with `E_EXPORT`. Every
+  asset the page references is inlined as a `data:<type>;base64,…` URI (the type from the Web Bundle MIME
+  table): URLs in `src`, `srcset`/`imagesrcset`, `poster`, `xlink:href`, `<object data>` and `<link
+  href>`, and in its CSS (`<style>`, `style=""`), found with the FINGERPRINT reference scanner. A
+  stylesheet's own `url()` and `@import` references are inlined into it first (an import cycle is
+  `E_EXPORT`). Kept as written: `<a href>` and `<area href>` (navigation), references to other `.html`
+  files (pages, such as a canonical `<link>`), external URLs (`https:`, `//host/`; the page still loads
+  them when online) and non-file URLs (`data:`, `mailto:`, `#top`). A reference to a file that is not in
+  the tree, or to a directory, fails with `E_EXPORT` naming the page and line. A fragment is kept after
+  the data URI (`icons.svg#home`). Scripts are inlined byte for byte: what they fetch or import at run
+  time is not followed. Text must be UTF-8.
+- **mhtml**: the same page and the same assets (each once, in the order first referenced, through CSS
+  too) as one MHTML file (RFC 2557 `multipart/related`, what Chrome writes for "Webpage, Single File"),
+  references unchanged. Each part is base64 with its `Content-Type` and an absolute `Content-Location`:
+  the file's path under `BASE` (or `--base-url`; an https URL ending in `/`, default
+  `https://site.invalid/`), the page first. Root-relative references (`/css/a.css`) resolve to parts only
+  when the base is an origin (`https://example.com/`). The boundary is fixed and the file has no date, so
+  the output depends only on the tree.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

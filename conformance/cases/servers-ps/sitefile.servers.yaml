@@ -1,0 +1,9 @@
+servers:
+  docs:
+    source: ./docs
+    publish: 127.0.0.1:0
+  app:
+    source: ./app
+    spa: true
+  img:
+    source: theme:1

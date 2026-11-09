@@ -145,6 +145,49 @@ test('a plugin can opt out with `export const cache = false`', async () => {
   assert.equal(c.transformStats.writes, 0);
 });
 
+test('a JS plugin that does not export cache is cached with one warning; cache = true is silent (#160)', async () => {
+  const two = 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.json OPTIONS n=1\nTRANSFORM ./a.txt WITH p TO /b.json OPTIONS n=2\nEXPORT /';
+  const t = await setup({ Sitefile: two });
+  const warned = (w: string[]): string[] => w.filter((m) => m.includes('does not export cache'));
+  const w1: string[] = [];
+  const a = await t.go({ onWarning: (m) => w1.push(m) });
+  assert.equal(a.transformStats.writes, 2, 'still cached');
+  assert.deepEqual(warned(w1), [
+    'PLUGIN p does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call',
+  ]);
+  // A hit starts no plugin, so there is nothing to warn about.
+  const w2: string[] = [];
+  assert.equal((await t.go({ onWarning: (m) => w2.push(m) })).transformStats.hits, 2);
+  assert.deepEqual(warned(w2), []);
+  // Nothing is reused without a cache (or memo): no warning.
+  const w3: string[] = [];
+  await build({ contextDir: t.ctx, lockfile: false, allowAllPlugins: true, onWarning: (m) => w3.push(m) });
+  assert.deepEqual(warned(w3), []);
+  // cache = true: cached, silent; also on a default-exported object.
+  for (const plugin of [PLUGIN + '\nexport const cache = true;', "export default { apiVersion: 1, cache: true, transform: (r) => r.dest };"]) {
+    const u = await setup({ Sitefile: two, 'plugins/p.mjs': plugin });
+    const w: string[] = [];
+    const r = await u.go({ onWarning: (m) => w.push(m) });
+    assert.equal(r.transformStats.writes, 2);
+    assert.deepEqual(warned(w), []);
+  }
+  // cache = false: never cached, and no warning either.
+  const f = await setup({ 'plugins/p.mjs': PLUGIN + '\nexport const cache = false;' });
+  const w4: string[] = [];
+  await f.go({ onWarning: (m) => w4.push(m) });
+  assert.deepEqual(warned(w4), []);
+  // Anything else is a load error.
+  const bad = await setup({ 'plugins/p.mjs': PLUGIN + "\nexport const cache = 'yes';" });
+  await assert.rejects(bad.go(), (e: Error) => e.message.includes('PLUGIN p: cache must be true or false, got "yes"'));
+});
+
+test('module state carries over between calls of one build (documented, #160)', async () => {
+  const counter = "let n = 0; export const cache = false; export function transform() { return String(++n); }";
+  const t = await setup({ 'plugins/p.mjs': counter, Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM WITH p TO /a.txt\nTRANSFORM WITH p TO /b.txt\nEXPORT /' });
+  const r = await t.go();
+  assert.deepEqual([text(r.output.get('/a.txt')?.bytes), text(r.output.get('/b.txt')?.bytes)], ['1', '2']);
+});
+
 test('a damaged entry or blob is ignored, rewritten, and then hits again', async () => {
   const t = await setup();
   await t.go();
