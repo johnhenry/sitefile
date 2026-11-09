@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -31,6 +31,45 @@ export function parsePublish(spec: string | undefined): { host: string; port: nu
 }
 
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
+
+/** `--spa`, `--spa-exclude` and `--spa-fallback` (which implies `--spa`), as server options. */
+export function spaOptions(v: ParsedValues): { spa: boolean; spaExclude?: string[]; spaFallback?: string } {
+  const exclude = strs(v['spa-exclude']);
+  for (const g of exclude) if (!g.startsWith('/')) usage(`--spa-exclude expects a path pattern starting with '/', got '${g}'`);
+  const raw = str(v['spa-fallback']);
+  let fallback: string | undefined;
+  if (raw !== undefined) {
+    const segs = safeSegments('/' + raw.replace(/^\/+/, ''));
+    if (!segs || segs.length === 0) usage(`--spa-fallback expects a file of the site such as /200.html, got '${raw}'`);
+    fallback = '/' + segs.join('/');
+  }
+  const spa = !!v.spa || fallback !== undefined;
+  if (!spa && exclude.length > 0) usage('--spa-exclude needs --spa');
+  return { spa, ...(exclude.length > 0 ? { spaExclude: exclude } : {}), ...(fallback !== undefined ? { spaFallback: fallback } : {}) };
+}
+
+/** A warning when `--spa-fallback` names a file the site does not have. */
+function warnSpaFallback(tree: Tree, fallback: string | undefined, warn: (m: string) => void): void {
+  if (fallback !== undefined && !tree.isFile(fallback)) warn(`--spa-fallback ${fallback} is not a file of the site, so navigations to missing paths get 404`);
+}
+
+/** `--base`: the path prefix to serve under (`/repo/`), or undefined for `/`. */
+export function parseBase(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const b = normalizeBase(v);
+  if (b === undefined) usage(`--base expects a path such as /repo/, got '${v}'`);
+  return b === '/' ? undefined : b;
+}
+
+/** The URL a server answers at: its origin and `--base`. */
+const siteUrl = (host: string, port: number, base: string | undefined): string => formatUrl(host, port) + (base ?? '/').slice(1);
+
+/** The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`), else undefined. */
+export function exportBasePath(exportBase: string | undefined): string | undefined {
+  if (exportBase === undefined || !/^https?:\/\//i.test(exportBase)) return undefined;
+  const b = normalizeBase(exportBase);
+  return b === '/' ? undefined : b;
+}
 
 /** `--country`: an ISO 3166-1 alpha-2 code (any case). */
 export function parseCountry(v: string | undefined): string | undefined {
@@ -131,6 +170,10 @@ const run: Command = {
     '--log-ip          add the client address to access-log lines',
     '--quiet           no access-log lines',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
+    '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
+    '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
+    '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
+    '--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL\'s path)',
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
@@ -155,6 +198,9 @@ const run: Command = {
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    'spa-exclude': { type: 'string', multiple: true },
+    'spa-fallback': { type: 'string' },
+    base: { type: 'string' },
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
@@ -193,6 +239,8 @@ const run: Command = {
     const isolate = isolateOf(v);
     const cache = cacheOf(v);
     const logging = loggingOf(v);
+    const spa = spaOptions(v);
+    const base = parseBase(str(v.base));
     const country = parseCountry(str(v.country));
     const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
@@ -206,11 +254,12 @@ const run: Command = {
     if (!v.detach) {
       const { tree, content, close } = await loadServedSite(store, source, { keepOsMetadata, warn });
       checkSiteFiles(tree, strictSiteFiles, warn, content);
+      warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}) });
+      const server = createSiteServer(tree, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
-      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
       await waitForSignal();
       await closeServer(server);
       close();
@@ -218,8 +267,8 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, country, strictSiteFiles }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, country, strictSiteFiles, ...spa, base }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n${networkLines(up.host, up.port, up.base)}`);
     return 0;
   },
 };
@@ -231,6 +280,12 @@ export interface DetachedServe {
   readonly name?: string | undefined;
   readonly bind: { readonly host: string; readonly port: number };
   readonly spa: boolean;
+  /** `--spa-exclude`. */
+  readonly spaExclude?: readonly string[] | undefined;
+  /** `--spa-fallback`. */
+  readonly spaFallback?: string | undefined;
+  /** `--base` (normalized; undefined for `/`). */
+  readonly base?: string | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
   /** `--allowed-host` names. */
@@ -274,6 +329,9 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     image: d.label,
     source: d.source,
     spa: d.spa,
+    ...(d.spaExclude !== undefined && d.spaExclude.length > 0 ? { spaExclude: [...d.spaExclude] } : {}),
+    ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
+    ...(d.base !== undefined ? { base: d.base } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
     ...(d.cors ? { cors: true } : {}),
@@ -361,9 +419,9 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
 }
 
 /** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
-function networkLines(host: string, port: number): string {
+function networkLines(host: string, port: number, base?: string): string {
   return networkUrls(host, port)
-    .map((u) => `  Network: ${u}\n`)
+    .map((u) => `  Network: ${u}${(base ?? '/').slice(1)}\n`)
     .join('');
 }
 
@@ -399,6 +457,10 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
+  const spa = spaOptions(v);
+  const baseFlag = parseBase(str(v.base));
+  /** `--base`, else the path of the last good build's EXPORT BASE URL. */
+  let base = baseFlag;
   const country = parseCountry(str(v.country));
   const strictSiteFiles = !!v['strict-site-files'];
   /** The site-file warnings last printed: a rebuild repeats them only when they change. */
@@ -426,7 +488,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}) });
+  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
   try {
     return await watchLoop({
       context,
@@ -459,6 +521,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           });
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
           siteFiles(r.output);
+          if (baseFlag === undefined) base = exportBasePath(r.plan.exportBase);
           swap(r.output);
           return { code: 0 };
         } catch (e) {
@@ -472,8 +535,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, formatUrl(addr.host, addr.port))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base)}`);
       },
     });
   } finally {
@@ -674,7 +737,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base)}\n${networkLines(up.host, up.port, up.base)}`);
     return 0;
   },
 };
