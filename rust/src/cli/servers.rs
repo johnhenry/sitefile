@@ -352,6 +352,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             v.str("open"),
             &server.host,
             server.port,
+            base.as_deref(),
             restart,
         );
         loop {
@@ -610,11 +611,13 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             )
         ));
         let rebuild = rebuild.clone();
+        let shown_base = base.read().ok().and_then(|b| b.clone());
         *keys.borrow_mut() = super::serve_keys::terminal(
             v.flag("qr"),
             v.str("open"),
             &s.host,
             s.port,
+            shown_base.as_deref(),
             Box::new(move || rebuild.store(true, std::sync::atomic::Ordering::SeqCst)),
         );
         server = Some(s);

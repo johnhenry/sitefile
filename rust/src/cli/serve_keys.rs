@@ -58,11 +58,13 @@ pub struct Urls {
     pub network: Option<String>,
 }
 
-/// The URLs to show: the local one, and the network one when bound to every interface.
-pub fn serve_urls(host: &str, port: u16) -> Urls {
-    let local = format_url(host, port);
+/// The URLs to show (below `serve --base`): the local one, and the network one
+/// when bound to every interface.
+pub fn serve_urls(host: &str, port: u16, base: Option<&str>) -> Urls {
+    let path = &base.unwrap_or("/")[1..];
+    let local = format!("{}{path}", format_url(host, port));
     let network = if is_wildcard(host) {
-        network_address(host).map(|a| format_url(&a, port))
+        network_address(host).map(|a| format!("{}{path}", format_url(&a, port)))
     } else {
         None
     };
@@ -199,9 +201,10 @@ pub fn terminal(
     open: Option<&str>,
     host: &str,
     port: u16,
+    base: Option<&str>,
     restart: Box<dyn Fn() + Send>,
 ) -> Option<Keys> {
-    let urls = serve_urls(host, port);
+    let urls = serve_urls(host, port, base);
     if qr {
         out(&qr_text(urls.network.as_deref().unwrap_or(&urls.local)));
     }

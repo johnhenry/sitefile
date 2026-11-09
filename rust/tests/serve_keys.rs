@@ -24,7 +24,10 @@ fn wait_for(path: &std::path::Path, what: &str) -> String {
         if text.contains(what) {
             return text;
         }
-        assert!(start.elapsed() < Duration::from_secs(20), "waiting for {what:?} in {text:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "waiting for {what:?} in {text:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -35,11 +38,22 @@ fn keys_open_and_qr() {
     fs::create_dir_all(d.join("site")).unwrap();
     fs::write(d.join("site/index.html"), "hi").unwrap();
     let browser = d.join("browser.sh");
-    fs::write(&browser, format!("#!/bin/sh\necho \"$@\" >> {}/opened\n", d.display())).unwrap();
+    fs::write(
+        &browser,
+        format!("#!/bin/sh\necho \"$@\" >> {}/opened\n", d.display()),
+    )
+    .unwrap();
     fs::set_permissions(&browser, fs::Permissions::from_mode(0o755)).unwrap();
     let log = d.join("out.txt");
     let mut child = Command::new(BIN)
-        .args(["serve", "./site", "--open=/docs/", "--qr", "-p", "127.0.0.1:0"])
+        .args([
+            "serve",
+            "./site",
+            "--open=/docs/",
+            "--qr",
+            "-p",
+            "127.0.0.1:0",
+        ])
         .current_dir(&d)
         .env("SITEFILE_HOME", d.join("home"))
         .env("SITEFILE_SERVE_KEYS", "1")
@@ -75,13 +89,22 @@ fn keys_open_and_qr() {
         if let Some(s) = child.try_wait().unwrap() {
             break s;
         }
-        assert!(start.elapsed() < Duration::from_secs(10), "q did not stop the server");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "q did not stop the server"
+        );
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(status.success());
     let mut s = String::new();
-    fs::File::open(&log).unwrap().read_to_string(&mut s).unwrap();
-    assert!(s.contains("Re-read ./site (2 files)\n") || s.contains("(2 files)"), "{s}");
+    fs::File::open(&log)
+        .unwrap()
+        .read_to_string(&mut s)
+        .unwrap();
+    assert!(
+        s.contains("Re-read ./site (2 files)\n") || s.contains("(2 files)"),
+        "{s}"
+    );
     let _ = fs::remove_dir_all(&d);
 }
 
@@ -96,5 +119,6 @@ fn open_and_qr_are_foreground_only() {
         .output()
         .unwrap();
     assert_eq!(r.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&r.stderr).contains("--open and --qr are for a server in the foreground, not -d"));
+    assert!(String::from_utf8_lossy(&r.stderr)
+        .contains("--open and --qr are for a server in the foreground, not -d"));
 }
