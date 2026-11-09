@@ -213,6 +213,93 @@ fn parse_country(v: Option<&str>) -> Result<Option<String>> {
 
 /// `--allowed-host` values, validated and lowercased (the server always adds localhost names and
 /// IP addresses).
+/// serve flags for proxying (#172); a detached server has none, so its proxy rules are all refused.
+const PROXY_FLAGS: [&str; 7] = [
+    "proxy",
+    "allow-hosts",
+    "deny-hosts",
+    "allow-http",
+    "allow-private-network",
+    "connect-timeout",
+    "read-timeout",
+];
+
+/// `--proxy /prefix=url`: a path prefix (no trailing slash, except `/`) and an http(s) URL.
+pub fn parse_proxy_route(raw: &str) -> Result<(String, String)> {
+    let bad = || {
+        usage(format!(
+            "--proxy expects /prefix=http(s)://host[/path], got '{raw}'"
+        ))
+    };
+    let Some(eq) = raw.find('=').filter(|i| *i > 0) else {
+        return bad();
+    };
+    let (prefix, target) = (&raw[..eq], &raw[eq + 1..]);
+    let lower = target.to_ascii_lowercase();
+    let after = if lower.starts_with("http://") {
+        &target[7..]
+    } else if lower.starts_with("https://") {
+        &target[8..]
+    } else {
+        return bad();
+    };
+    let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let host = &after[..host_end];
+    let rest = &after[host_end..];
+    if !prefix.starts_with('/')
+        || prefix
+            .chars()
+            .any(|c| c.is_whitespace() || "?#*:".contains(c))
+        || host.is_empty()
+        || host.chars().any(char::is_whitespace)
+        || !(rest.is_empty() || rest.starts_with('/'))
+        || rest.chars().any(|c| c.is_whitespace() || c == '#')
+    {
+        return bad();
+    }
+    let prefix = if prefix.len() > 1 {
+        prefix.trim_end_matches('/').to_string()
+    } else {
+        prefix.to_string()
+    };
+    Ok((prefix, target.to_string()))
+}
+
+/// The proxy settings of a foreground `serve` (see the TypeScript `proxyOption`).
+fn proxy_option(v: &Parsed) -> Result<crate::server::ServeProxy> {
+    let routes = v
+        .strs("proxy")
+        .iter()
+        .map(|r| parse_proxy_route(r))
+        .collect::<Result<Vec<_>>>()?;
+    let mut network = super::network::network_option_with(v, false)?;
+    for (_, target) in &routes {
+        if let Some((host, port)) = crate::resources::https::host_port(target) {
+            let default = if target.to_ascii_lowercase().starts_with("https:") {
+                443
+            } else {
+                80
+            };
+            let shown = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.clone()
+            };
+            network.allow_hosts.push(if port == default {
+                shown
+            } else {
+                format!("{shown}:{port}")
+            });
+        }
+    }
+    network.strict = true;
+    let mut policy = crate::resources::types::DEFAULT_FETCH_POLICY;
+    policy.allow_http = v.flag("allow-http");
+    policy.allow_private_network = v.flag("allow-private-network");
+    policy.network = network;
+    Ok(crate::server::ServeProxy { routes, policy })
+}
+
 fn isolate_of(v: &Parsed) -> Result<Option<String>> {
     let coep = v.str("coep");
     if coep.is_some() && !v.flag("isolate") {
@@ -554,6 +641,13 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("strict-site-files"),
     flag("keep-os-metadata"),
     strings("allowed-host"),
+    strings("proxy"),
+    strings("allow-hosts"),
+    strings("deny-hosts"),
+    flag("allow-http"),
+    flag("allow-private-network"),
+    string("connect-timeout"),
+    string("read-timeout"),
     flag("cors"),
     string("open"),
     flag("qr"),
@@ -645,6 +739,13 @@ pub const SERVE: Command = Command {
         "--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)",
         "--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
+        "--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)",
+        "--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)",
+        "--deny-hosts <hosts>         hosts never proxied to; beats --allow-hosts and --proxy (also $SITEFILE_DENY_HOSTS)",
+        "--allow-http                 proxy to plain http:// URLs",
+        "--allow-private-network      proxy to loopback/private addresses (localhost:3000 needs it)",
+        "--connect-timeout <ms>       proxy connect time limit; --read-timeout <ms>: longest wait for data",
+        "--read-timeout <ms>          (see --connect-timeout)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
         "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
@@ -768,6 +869,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(allowed_hosts.clone()),
+                proxy: Some(proxy_option(v)?),
                 cors: v.flag("cors"),
                 isolate: isolate.clone(),
                 cache: cache.clone(),
@@ -883,6 +985,13 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     if v.has("open") || v.flag("qr") {
         return usage("--open and --qr are for a server in the foreground, not -d");
     }
+    for f in PROXY_FLAGS {
+        if v.has(f) {
+            return usage(format!(
+                "--{f} is for a server in the foreground (or --watch), not -d"
+            ));
+        }
+    }
     let reg = ServerRegistry::open(Some(store))?;
     let up = serve_detached_with(
         &reg,
@@ -952,6 +1061,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         return usage("--name needs -d (only detached servers are tracked)");
     }
     let bind = parse_publish(v.str("publish"))?;
+    let proxy = proxy_option(v)?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
@@ -1182,6 +1292,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
             allowed_hosts: Some(allowed_hosts.clone()),
+            proxy: Some(proxy.clone()),
             cors: v.flag("cors"),
             isolate: isolate.clone(),
             cache: cache.clone(),

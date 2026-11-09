@@ -30,6 +30,10 @@ pub struct FetchResult {
     pub final_url: String,
     /// Media type essence from `content-type` (lowercase, parameters removed).
     pub media_type: Option<String>,
+    /// `raw` requests only (else 200): the status.
+    pub status: u16,
+    /// `raw` requests only (else empty): the response headers, lowercase names in order, each with its values.
+    pub headers: Vec<(String, Vec<String>)>,
 }
 
 /// A parsed http(s) URL.
@@ -53,8 +57,12 @@ struct Hop {
 /// A request with a body (POST) never follows redirects (E_REDIRECT).
 #[derive(Debug, Clone, Default)]
 pub struct FetchRequest {
-    /// "GET" (default) or "POST".
+    /// "GET" (default), "POST" or "HEAD".
     pub method: Option<&'static str>,
+    /// One hop only, for `serve`'s proxy rules: redirects are not followed, every status and
+    /// content encoding is returned as it is (with the headers), and the body is still size- and
+    /// time-limited.
+    pub raw: bool,
     pub body: Option<Vec<u8>>,
     pub headers: Vec<(String, String)>,
     pub origin_headers: Vec<(String, String)>,
@@ -590,6 +598,59 @@ pub fn fetch_remote_with(
         };
         let status = res.status();
 
+        if request.raw {
+            let mut headers: Vec<(String, Vec<String>)> = Vec::new();
+            for name in res.headers_names() {
+                if headers.iter().any(|(n, _)| *n == name) {
+                    continue;
+                }
+                let values = res.all(&name).into_iter().map(String::from).collect();
+                headers.push((name, values));
+            }
+            let mut reader = res.into_reader();
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if (bytes.len() + n) as u64 > policy.max_bytes {
+                            return Err(SitefileError::new(
+                                E_TOO_LARGE,
+                                format!(
+                                    "{} exceeded the limit of {} bytes",
+                                    current.redacted, policy.max_bytes
+                                ),
+                                span.cloned(),
+                            ));
+                        }
+                        bytes.extend_from_slice(&buf[..n]);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        if Instant::now() >= deadline || source_is_timeout(&e) {
+                            return Err(timeout_error());
+                        }
+                        return Err(SitefileError::new(
+                            E_FETCH,
+                            format!("error reading {}: {e}", current.redacted),
+                            span.cloned(),
+                        ));
+                    }
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(timeout_error());
+            }
+            return Ok(FetchResult {
+                bytes,
+                final_url: current.href,
+                media_type: None,
+                status,
+                headers,
+            });
+        }
+
         if REDIRECT_STATUSES.contains(&status) && method != "GET" {
             return Err(SitefileError::new(
                 E_REDIRECT,
@@ -736,6 +797,8 @@ pub fn fetch_remote_with(
             bytes,
             final_url: current.href,
             media_type,
+            status: 200,
+            headers: Vec::new(),
         });
     }
 }

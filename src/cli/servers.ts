@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
+import { networkOption } from './network.js';
+import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import type { Plan } from '../planner.js';
@@ -212,6 +214,13 @@ const run: Command = {
     '--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)',
     '--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
+    '--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)',
+    '--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)',
+    '--deny-hosts <hosts>         hosts never proxied to; beats --allow-hosts and --proxy (also $SITEFILE_DENY_HOSTS)',
+    '--allow-http                 proxy to plain http:// URLs',
+    '--allow-private-network      proxy to loopback/private addresses (localhost:3000 needs it)',
+    '--connect-timeout <ms>       proxy connect time limit; --read-timeout <ms>: longest wait for data',
+    '--read-timeout <ms>          (see --connect-timeout)',
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
@@ -257,6 +266,13 @@ const run: Command = {
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
     'allowed-host': { type: 'string', multiple: true },
+    proxy: { type: 'string', multiple: true },
+    'allow-hosts': { type: 'string', multiple: true },
+    'deny-hosts': { type: 'string', multiple: true },
+    'allow-http': { type: 'boolean' },
+    'allow-private-network': { type: 'boolean' },
+    'connect-timeout': { type: 'string' },
+    'read-timeout': { type: 'string' },
     cors: { type: 'boolean' },
     open: { type: 'string' },
     qr: { type: 'boolean' },
@@ -333,7 +349,8 @@ const run: Command = {
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
       let current = tree;
-      const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+      const proxy = proxyOption(v);
+      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
@@ -360,6 +377,7 @@ const run: Command = {
 
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
+    for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
     const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
@@ -552,6 +570,40 @@ const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache',
  * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
  * as it is (re-read on change) instead of built.
  */
+/** serve flags for proxying (#172); a detached server has none, so its proxy rules are all refused. */
+const PROXY_FLAGS = ['proxy', 'allow-hosts', 'deny-hosts', 'allow-http', 'allow-private-network', 'connect-timeout', 'read-timeout'] as const;
+
+/** `--proxy /prefix=url`: a path prefix (no trailing slash, except `/`) and an http(s) URL. */
+export function parseProxyRoute(raw: string): { prefix: string; target: string } {
+  const bad = (): never => usage(`--proxy expects /prefix=http(s)://host[/path], got '${raw}'`);
+  const eq = raw.indexOf('=');
+  if (eq <= 0) bad();
+  const prefix = raw.slice(0, eq);
+  const target = raw.slice(eq + 1);
+  if (!prefix.startsWith('/') || /[\s?#*:]/.test(prefix) || !/^https?:\/\/[^/?#\s]+(\/[^\s#]*)?$/i.test(target)) bad();
+  return { prefix: prefix.length > 1 ? prefix.replace(/\/+$/, '') : prefix, target };
+}
+
+/**
+ * The proxy settings of a foreground `serve`: `--proxy` routes, and a strict host list (`--allow-hosts`
+ * and `$SITEFILE_ALLOW_HOSTS`, plus each route's host) for `_redirects` proxy rules, under the build fetch
+ * policy (https only unless --allow-http, public addresses only unless --allow-private-network).
+ */
+function proxyOption(v: ParsedValues): ServeProxy {
+  const routes = strs(v.proxy).map(parseProxyRoute);
+  const network = networkOption({ 'allow-hosts': v['allow-hosts'], 'deny-hosts': v['deny-hosts'], 'connect-timeout': v['connect-timeout'], 'read-timeout': v['read-timeout'] }) ?? {};
+  const routeHosts = routes.map((r) => new URL(r.target).host);
+  return {
+    routes,
+    policy: {
+      ...DEFAULT_FETCH_POLICY,
+      allowHttp: !!v['allow-http'],
+      allowPrivateNetwork: !!v['allow-private-network'],
+      network: { ...network, strict: true, allowHosts: [...(network.allowHosts ?? []), ...routeHosts] },
+    },
+  };
+}
+
 /** `--allowed-host` values, validated and lowercased (the server always adds localhost names and IP addresses). */
 function allowedHostsOf(v: ParsedValues): string[] {
   const out: string[] = [];
@@ -799,7 +851,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+  const proxy = proxyOption(v);
+  const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
   const control: { rebuild?: () => void } = {};
   let quit: { promise: Promise<void>; stop: () => void } | undefined;
   let quitNow!: () => void;

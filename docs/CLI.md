@@ -1139,7 +1139,7 @@ the site behaves the same locally. The format comes from the file name (`netlify
   Anything else is listed on stderr, one `warning: <file>: <entry>: <reason>` per entry, and left out
   rather than half translated. Examples: a `:name` in a target that the source does not capture,
   conditions other than language, country and cookie, `:placeholders` in header patterns, regular
-  expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301, 302,
+  expressions, statuses other than 200, 301, 302,
   303, 307, 308, 404, 410 and 451, and settings with no `_redirects` form. The exit code is 0 either way.
 - Catch-all rules (a 404 page, an SPA fallback) are written after every other rule, since the first
   matching rule wins and they would shadow the rest. Consecutive header blocks for the same pattern are
@@ -1150,8 +1150,8 @@ the site behaves the same locally. The format comes from the file name (`netlify
 | File | Translated | Listed as unsupported |
 | --- | --- | --- |
 | `netlify.toml` | `[[redirects]]` `from` (with `:placeholders` and a trailing `/*`), `to`, `status` (default 301; also 410 and 451), `force` (`!`), `query` (`name=value` or `name=:placeholder` fields), `conditions` `Language`, `Country`, `Cookie` (`Key=a,b`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `conditions` on `Role` or other keys, `headers` and `signed` (proxy options); `functions`, `edge_functions`, `plugins` |
-| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
-| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
+| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200; one to a URL becomes a proxy rule), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, `cleanUrls`, `trailingSlash` |
+| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` (200; one to a URL becomes a proxy rule), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
 | `staticwebapp.config.json` | `routes` (exact or trailing `/*`) with `redirect` (`statusCode`, default 302), `rewrite` (200), `headers`; `navigationFallback` (`/* <rewrite> 200`); `responseOverrides.404` with a `rewrite` (`/* <page> 404`); `globalHeaders` (`/*`) | `allowedRoles`, `methods`, other route patterns, `navigationFallback.exclude`, other overrides, `mimeTypes` (johnhenry/sitefile#220) |
 | `wrangler.toml` / `wrangler.json` | `[assets] not_found_handling = "single-page-application"` (`/* /index.html 200`); `404-page` and `none` need nothing | `html_handling` other than `auto-trailing-slash` (johnhenry/sitefile#192), `run_worker_first` |
 | `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410 (Apache names no page to serve, which a 410 rule in `_redirects` needs), other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
@@ -1441,14 +1441,15 @@ on disk after the server started answers `500` for the entries that changed (`se
     `--country`, since there is no geolocation locally; without the flag it never matches). Statuses `301`
     (the default), `302`, `303`, `307`, `308` redirect with `Location` (the request's query string is kept
     unless the target has one or the rule matches query parameters); `200` serves the target path's file
-    instead (a rewrite, e.g. `/app/* /app/index.html 200`); `404`, `410` and `451` serve it with that status.
+    instead (a rewrite, e.g. `/app/* /app/index.html 200`), or, with an `http(s)://` target, **proxies** to it
+    (see Proxying below); `404`, `410` and `451` serve it with that status.
     Like Netlify, a rule applies only when no file answers the path, unless its status ends in `!` (`301!`),
     which is checked first. The first matching rule wins. The access log notes the rule that answered:
     `GET /old 301 0 0.3ms → /new (_redirects:3)` (the target, or the file a rewrite served).
   - **Every line `serve` ignores is a warning** at start (and after a rebuild that changes them under
     `--watch`), with the file, line and reason: `warning: _redirects:4: ignored: '*' is only supported as the
     last segment of the source`. Ignored are `Role=` and other conditions, `*` anywhere but the end, statuses
-    other than the ones above, `200`/`404`/`410`/`451` to a URL (proxying), targets with characters outside
+    other than the ones above, `404`/`410`/`451` to a URL, targets with characters outside
     printable ASCII, malformed placeholders and query parameters, and, in `_headers`, the lines listed below.
     `--strict-site-files` makes them an error (`E_VALIDATION`; under `--watch` the rebuild fails and the last
     good one keeps being served). `validate` (and the language server) warns about a `REDIRECT` or `HEADER`
@@ -1464,6 +1465,32 @@ on disk after the server started answers `500` for the entries that changed (`se
     `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines, patterns that are not paths and header lines before
     the first pattern (each with a warning).
+- **Proxying** (as Netlify and Cloudflare Pages do): a `_redirects` rule with status `200` (or `200!`) and an
+  `http(s)://` target, `/api/* https://api.example.com/:splat 200`, forwards the request there and answers
+  with the upstream's response. `--proxy /api=http://localhost:3000` does the same for a dev backend without
+  a `_redirects` file: every request for `/api` or below goes to the URL plus the rest of its path (and its
+  query string), before any file or rule (repeatable; the longest match is not chosen, the first `--proxy`
+  that matches is).
+  - **Off unless allowed.** A proxy rule comes from the site, which may not be yours (an image, an archive),
+    and proxying makes `serve` a network client. So a `_redirects` proxy rule only reaches hosts allowed by
+    `--allow-hosts` (or `$SITEFILE_ALLOW_HOSTS`): any other host is a `502` whose body names the flag to add,
+    `502 Bad Gateway: error[E_HOST_BLOCKED]: refusing to connect to api.example.com: … add --allow-hosts
+    api.example.com`. A `--proxy` route's host is allowed by being written; `--deny-hosts` beats both.
+  - **The build fetch policy applies** (docs above, "Network"): `https:` only unless `--allow-http`, public
+    addresses only unless `--allow-private-network` (so `--proxy /api=http://localhost:3000` needs both),
+    every hop checked, `--connect-timeout`/`--read-timeout` and the 30 s total, responses up to 50 MiB
+    (buffered), `$SITEFILE_PROXY` as the upstream proxy. A refusal, timeout or connection error is a `502`
+    with `error[CODE]: …` in its body and in the access log (`GET /api/x 502 … → https://… (proxy,
+    _redirects:3) error[E_FETCH_TIMEOUT]: …`).
+  - Only `GET` and `HEAD` (as everywhere in `serve`). The upstream gets `Accept`, `Accept-Language`,
+    `Range`, `If-None-Match` and `If-Modified-Since`, never `Cookie` or `Authorization` (they belong to this
+    server's origin). Its status and headers come back as they are, except hop-by-hop headers (`Connection`,
+    `Transfer-Encoding`, …) and `Content-Length` (recomputed); a redirect is passed on, not followed.
+    `_headers`, live reload and the SPA fallback do not apply to proxied responses, nor do `--compress` and
+    dictionary deltas (the upstream's encoding is passed on). `--auth` does apply: a proxied path needs the
+    credentials like any other (`401` without them, and nothing is fetched), and they are not forwarded.
+  - A server started with `-d` (or `sitefile up`) has no proxy settings, so its proxy rules all answer `502`;
+    `--proxy` and the other proxy flags are a usage error with `-d`.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   `country` and `strictSiteFiles` when given, requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker

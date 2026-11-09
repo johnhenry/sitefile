@@ -16,8 +16,130 @@ use std::time::{Duration, Instant};
 
 pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// `serve`'s proxying (#172): `--proxy` routes and the fetch policy every proxied request follows.
+#[derive(Clone, Debug)]
+pub struct ServeProxy {
+    /// `--proxy /prefix=https://host/path`: (prefix, target).
+    pub routes: Vec<(String, String)>,
+    /// https only unless `allow_http`, public addresses only unless `allow_private_network`, and a
+    /// strict host list (`--allow-hosts`, plus each route's host): a `_redirects` proxy rule to any
+    /// other host is refused.
+    pub policy: crate::resources::types::FetchPolicy,
+}
+
+/// Response headers a proxy does not pass on (RFC 9110 section 7.6.1), and the length it recomputes.
+const HOP_BY_HOP: [&str; 10] = [
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+];
+/// Request headers passed to the upstream (no cookies or credentials: they belong to this server's origin).
+const PROXY_REQUEST_HEADERS: [&str; 5] = [
+    "accept",
+    "accept-language",
+    "if-none-match",
+    "if-modified-since",
+    "range",
+];
+
+/// Answer from `target` (an http(s) URL) under the proxy policy; a refusal or a failed fetch is a 502.
+fn proxy_response(
+    target: &str,
+    from: &str,
+    method: &str,
+    request_headers: &HashMap<String, String>,
+    base: &[(String, String)],
+    proxy: Option<&ServeProxy>,
+) -> Response {
+    use crate::resources::https::{fetch_remote_with, redact_url, FetchRequest};
+    let mut note = format!(" \u{2192} {} (proxy, {from})", redact_url(target));
+    let headers: Vec<(String, String)> = PROXY_REQUEST_HEADERS
+        .iter()
+        .filter_map(|k| request_headers.get(*k).map(|v| (k.to_string(), v.clone())))
+        .collect();
+    let policy = match proxy {
+        Some(p) => p.policy.clone(),
+        None => {
+            let mut p = crate::resources::types::DEFAULT_FETCH_POLICY;
+            p.network.strict = true;
+            p
+        }
+    };
+    let req = FetchRequest {
+        method: Some(if method == "HEAD" { "HEAD" } else { "GET" }),
+        raw: true,
+        headers,
+        ..Default::default()
+    };
+    match fetch_remote_with(target, &policy, None, &req) {
+        Ok(r) => {
+            let mut out: Vec<(String, String)> = base
+                .iter()
+                .filter(|(k, _)| !r.headers.iter().any(|(n, _)| n == k))
+                .cloned()
+                .collect();
+            for (n, vs) in &r.headers {
+                if HOP_BY_HOP.contains(&n.as_str()) {
+                    continue;
+                }
+                for v in vs {
+                    out.push((n.clone(), v.clone()));
+                }
+            }
+            let upstream_length = r
+                .headers
+                .iter()
+                .find(|(n, _)| n == "content-length")
+                .and_then(|(_, v)| v.first().cloned());
+            let length = match (method, upstream_length) {
+                ("HEAD", Some(l)) => l,
+                _ => r.bytes.len().to_string(),
+            };
+            out.push(("content-length".into(), length));
+            Response {
+                status: r.status,
+                headers: out,
+                body: if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    r.bytes
+                },
+                note: Some(note),
+            }
+        }
+        Err(e) => {
+            let why = format!("error[{}]: {}", e.code, e.detail);
+            note.push_str(&format!(" {why}"));
+            let text = format!("502 Bad Gateway: {why}\n");
+            let mut out: Vec<(String, String)> = base.to_vec();
+            out.push(("content-type".into(), "text/plain; charset=utf-8".into()));
+            out.push(("content-length".into(), text.len().to_string()));
+            Response {
+                status: 502,
+                headers: out,
+                body: if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    text.into_bytes()
+                },
+                note: Some(note),
+            }
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct SiteServerOptions {
+    /// Proxy rules (`_redirects` status 200 to a URL) and `--proxy` routes; without this every
+    /// proxy rule is refused.
+    pub proxy: Option<ServeProxy>,
     /// Single-page apps: answer a page navigation ([`is_navigation`]) for a path nothing else
     /// answers with the nearest app shell ([`spa_fallback`]). Never for subresources.
     pub spa: bool,
@@ -2270,27 +2392,74 @@ impl Response {
     }
 }
 
+/// The reason phrase Node's `http.STATUS_CODES` gives (the TypeScript server's), so both send the
+/// same status line also for whatever status a proxied upstream answers with.
 fn reason(status: u16) -> &'static str {
     match status {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        102 => "Processing",
+        103 => "Early Hints",
         200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        203 => "Non-Authoritative Information",
         204 => "No Content",
+        205 => "Reset Content",
+        206 => "Partial Content",
+        207 => "Multi-Status",
+        208 => "Already Reported",
+        226 => "IM Used",
+        300 => "Multiple Choices",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
+        304 => "Not Modified",
+        305 => "Use Proxy",
         307 => "Temporary Redirect",
         308 => "Permanent Redirect",
-        206 => "Partial Content",
-        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
+        402 => "Payment Required",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        503 => "Service Unavailable",
-        500 => "Internal Server Error",
-        416 => "Range Not Satisfiable",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Timeout",
+        409 => "Conflict",
         410 => "Gone",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Payload Too Large",
+        414 => "URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Range Not Satisfiable",
+        417 => "Expectation Failed",
+        418 => "I'm a Teapot",
+        421 => "Misdirected Request",
+        422 => "Unprocessable Entity",
+        423 => "Locked",
+        424 => "Failed Dependency",
+        425 => "Too Early",
+        426 => "Upgrade Required",
+        428 => "Precondition Required",
+        429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
         451 => "Unavailable For Legal Reasons",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        505 => "HTTP Version Not Supported",
+        506 => "Variant Also Negotiates",
+        507 => "Insufficient Storage",
+        508 => "Loop Detected",
+        509 => "Bandwidth Limit Exceeded",
+        510 => "Not Extended",
+        511 => "Network Authentication Required",
+
         _ => "",
     }
 }
@@ -2556,10 +2725,8 @@ fn parse_redirect_line(t: &str, line: usize) -> std::result::Result<ServeRedirec
             "the target must be an absolute path or an http(s) URL, in printable ASCII".into(),
         );
     }
-    if is_rewrite_status(status) && !to.starts_with('/') {
-        return Err(format!(
-            "status {status} needs a path target (proxying to a URL is not supported)"
-        ));
+    if is_rewrite_status(status) && status != 200 && !to.starts_with('/') {
+        return Err(format!("status {status} needs a path target"));
     }
     if !from.starts_with('/') {
         return Err("the source must be a path starting with '/'".into());
@@ -3408,6 +3575,38 @@ pub fn respond(
         }
         None
     };
+    // `--proxy` routes come first: they are what this server is asked to front.
+    if let Some(p) = &options.proxy {
+        for (prefix, target) in &p.routes {
+            let inside =
+                prefix == "/" || vpath == *prefix || vpath.starts_with(&format!("{prefix}/"));
+            if !inside {
+                continue;
+            }
+            let mut rest = if prefix == "/" {
+                vpath.clone()
+            } else {
+                vpath[prefix.len()..].to_string()
+            };
+            if trailing && !segs.is_empty() {
+                rest.push('/');
+            }
+            let encoded: Vec<String> = rest.split('/').map(encode_uri_component).collect();
+            let url = format!(
+                "{}{}{search}",
+                target.strip_suffix('/').unwrap_or(target),
+                encoded.join("/")
+            );
+            return proxy_response(
+                &url,
+                &format!("--proxy {prefix}"),
+                method,
+                headers,
+                &base,
+                Some(p),
+            );
+        }
+    }
     let rule_request = RedirectRequest {
         search,
         accept_language: headers.get("accept-language").map(String::as_str),
@@ -3421,6 +3620,22 @@ pub fn respond(
                 continue;
             };
             let target = substitute_target(&r.to, &caps);
+            if r.status == 200 && is_http_url(&target) {
+                // A proxy rule (#172): the request's query string goes along unless the target has one.
+                let url = if target.contains('?') || !r.query.is_empty() {
+                    target
+                } else {
+                    format!("{target}{search}")
+                };
+                return Some(proxy_response(
+                    &url,
+                    &format!("_redirects:{}", r.line),
+                    method,
+                    headers,
+                    &base,
+                    options.proxy.as_ref(),
+                ));
+            }
             if !is_rewrite_status(r.status) {
                 // A rule that matches query parameters passes on only what its target names.
                 let target = if target.starts_with('/') {

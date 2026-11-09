@@ -17,6 +17,9 @@ export interface FetchResult {
   readonly finalUrl: string;
   /** Media type essence from `content-type` (lowercase, parameters removed). */
   readonly mediaType?: string;
+  /** `raw` requests only: the status and the response headers (lowercase names, values in order). */
+  readonly status?: number;
+  readonly headers?: ReadonlyArray<readonly [string, readonly string[]]>;
 }
 
 /**
@@ -25,7 +28,12 @@ export interface FetchResult {
  * A request with a body (POST) never follows redirects (E_REDIRECT).
  */
 export interface FetchRequest {
-  readonly method?: 'GET' | 'POST';
+  readonly method?: 'GET' | 'POST' | 'HEAD';
+  /**
+   * One hop only, for `serve`'s proxy rules: redirects are not followed, every status and content
+   * encoding is returned as it is (with the headers), and the body is still size- and time-limited.
+   */
+  readonly raw?: boolean;
   readonly body?: Uint8Array;
   readonly headers?: Readonly<Record<string, string>>;
   readonly originHeaders?: Readonly<Record<string, string>>;
@@ -177,6 +185,36 @@ export async function fetchRemote(url: string, policy: FetchPolicy, span?: Sourc
       const res = await openHop(current, policy, controller.signal, state, span, timeoutError, method, headers, request.body);
       const status = res.statusCode ?? 0;
 
+      if (request.raw) {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        try {
+          for await (const chunk of res as AsyncIterable<Buffer>) {
+            total += chunk.length;
+            if (total > policy.maxBytes) {
+              res.destroy();
+              throw new SitefileError('E_TOO_LARGE', `${redactUrl(current)} exceeded the limit of ${policy.maxBytes} bytes`, span);
+            }
+            chunks.push(chunk);
+          }
+        } catch (e) {
+          if (isSitefileError(e)) throw e;
+          if (controller.signal.aborted) throw timeoutError();
+          if (state.failure) throw state.failure;
+          throw new SitefileError('E_FETCH', `error reading ${redactUrl(current)}: ${(e as Error).message}`, span, { cause: e });
+        }
+        if (controller.signal.aborted) throw timeoutError();
+        const grouped: Array<[string, string[]]> = [];
+        for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) {
+          const name = (res.rawHeaders[i] as string).toLowerCase();
+          const found = grouped.find(([n]) => n === name);
+          if (found) found[1].push(res.rawHeaders[i + 1] as string);
+          else grouped.push([name, [res.rawHeaders[i + 1] as string]]);
+        }
+        const buf = Buffer.concat(chunks, total);
+        return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), finalUrl: current.href, status, headers: grouped };
+      }
+
       if (REDIRECT_STATUSES.has(status) && method !== 'GET') {
         res.destroy();
         throw new SitefileError('E_REDIRECT', `${method} ${redactUrl(current)} was redirected (HTTP ${status}); redirects are only followed for GET`, span);
@@ -279,7 +317,7 @@ async function openHop(
   state: HopState,
   span: SourceSpan | undefined,
   timeoutError: () => SitefileError,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'HEAD',
   extra: Readonly<Record<string, string>>,
   body: Uint8Array | undefined,
 ): Promise<IncomingMessage> {

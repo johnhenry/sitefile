@@ -468,6 +468,11 @@ tools are code, and run only when you name them on the command line.
   ([docs/LANGUAGE.md](docs/LANGUAGE.md#vendoring-sitefile-vendor)).
 - **`sitefile serve` listens on `127.0.0.1`**, GET/HEAD only, no directory
   listings, unless `-p` names another address.
+- **`serve` proxies only where you allow it.** A `_redirects` proxy rule (200
+  to a URL) in a site you serve reaches only hosts in `--allow-hosts`; others
+  get a `502` naming the flag. `--proxy /api=url` is allowed by being written.
+  Both follow the build fetch policy above and never forward cookies or
+  `Authorization` ([docs/CLI.md](docs/CLI.md#site-servers)).
 
 **What is still yours:**
 

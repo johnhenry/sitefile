@@ -100,6 +100,17 @@
 - **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
   on every response (`_headers` still wins) and `OPTIONS` preflights answered
   with `204`; kept in the server record. Both servers.
+- **`serve` proxies** (johnhenry/sitefile#172): a `_redirects` rule with status
+  200 and an `http(s)://` target forwards the request there, as on Netlify,
+  and `--proxy /api=http://localhost:3000` does the same for a dev backend.
+  This is off unless allowed: a `_redirects` proxy rule only reaches hosts in
+  `--allow-hosts`, and any other host gets a `502` naming the flag to add. The
+  build fetch policy applies (https unless `--allow-http`, public addresses
+  unless `--allow-private-network`, timeouts, every hop checked). Only GET and
+  HEAD are proxied, without cookies or credentials, and redirects are passed
+  on. `import-config` now also translates rewrites to URLs (Vercel,
+  Firebase).
+
 - **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
