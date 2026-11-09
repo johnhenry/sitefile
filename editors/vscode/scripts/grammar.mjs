@@ -391,12 +391,14 @@ export function buildGrammar() {
           instruction('MIME', [{ include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
-            // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]
+            // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …] [FOR tag IN <import> BY key]
             {
               match: `\\G((?:\\s+--\\S+)*)\\s+(${IDENT})${WE}`,
               captures: { 1: { patterns: flags('FEED') }, 2: { name: S('variable.other.readwrite.import') } },
             },
             ...flags('FEED'),
+            forClause,
+            byClause,
             kw(['BASE', 'LINK', 'TO', 'TITLE']),
             { include: '#operands' },
           ]),
@@ -535,15 +537,18 @@ export function buildGrammar() {
             ],
           },
           {
-            match: `(\\$\\{)(#each)\\s+(${REF})\\s+(as)\\s+(${IDENT})\\s*(\\})`,
+            // ${#each list as item}, ${#each list by key as group}
+            match: `(\\$\\{)(#each)\\s+(${REF})\\s+(?:(by)\\s+(${IDENT})\\s+)?(as)\\s+(${IDENT})\\s*(\\})`,
             name: S('meta.template.block'),
             captures: {
               1: { name: S('punctuation.definition.template.begin') },
               2: { name: S('keyword.control.loop') },
               3: { patterns: [{ include: '#ref' }] },
               4: { name: S('keyword.control.loop') },
-              5: { name: S('variable.other.definition.loop') },
-              6: { name: S('punctuation.definition.template.end') },
+              5: { name: S('variable.other.property.group-key') },
+              6: { name: S('keyword.control.loop') },
+              7: { name: S('variable.other.definition.loop') },
+              8: { name: S('punctuation.definition.template.end') },
             },
           },
           {

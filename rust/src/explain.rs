@@ -88,7 +88,12 @@ pub fn operation_label(op: &Operation) -> String {
                 .unwrap_or_default()
         ),
         Operation::Sitemap { dest, .. } => format!("SITEMAP {dest}"),
-        Operation::Feed { list, dest, .. } => format!("FEED {list} {dest}"),
+        Operation::Feed {
+            list, dest, each, ..
+        } => match each {
+            Some(e) => format!("FEED FOR {} IN {list} BY {}", e.as_name, e.by),
+            None => format!("FEED {list} {dest}"),
+        },
         Operation::Fingerprint { patterns, .. } => format!("FINGERPRINT {}", patterns.join(" ")),
         Operation::Canonical { base, pretty, .. } => {
             format!("CANONICAL {base}{}", if *pretty { " PRETTY" } else { "" })

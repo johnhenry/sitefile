@@ -118,7 +118,7 @@ no runtime dependencies.
 | `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far (a sitemap index and parts above 50,000 URLs or 50 MiB) |
 | `CANONICAL BASE <url> [PRETTY]` | yes; a `<link rel="canonical">` in every page that has none |
 | `LANGUAGES <code>… [DEFAULT <code>]` | yes; `/en/…`, `/fr/…` folders (or frontmatter `lang` + `translationKey`) are translations: CANONICAL adds `hreflang` alternates, SITEMAP `xhtml:link` alternates (`examples/hreflang/`) |
-| `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
+| `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR <var> IN <import> BY <key>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required), or one feed per tag with `FOR … BY` |
 | `ROBOTS [ALLOW\|DISALLOW <path>]… [SITEMAP] [TO <dest>]`, `SECURITY_TXT CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]…` | yes; `/robots.txt` (with the SITEMAP URLs) and an RFC 9116 `/.well-known/security.txt` (Expires required; warns when near) |
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CSP [POLICY <policy>] [META]` | yes; a strict Content-Security-Policy per page in `/_headers` (or a `<meta>`), with the SHA-256 of each inline script and style instead of `'unsafe-inline'` |

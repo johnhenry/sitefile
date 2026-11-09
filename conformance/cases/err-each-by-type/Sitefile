@@ -1,0 +1,5 @@
+IMPORT posts FROM ./posts.yaml AS yaml
+RENDER <<HTML TO /tags.html
+${#each posts by tags as t}${t.key}${/each}
+HTML
+EXPORT /

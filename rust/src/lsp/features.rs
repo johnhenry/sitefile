@@ -1358,12 +1358,13 @@ mod tests {
         assert_eq!(labels("FEED posts BASE https://x "), ["LINK"]);
         assert_eq!(
             labels("FEED posts BASE https://x LINK /a "),
-            ["TO", "TITLE"]
+            ["TO", "TITLE", "FOR"]
         );
         assert_eq!(
             labels("FEED posts BASE https://x LINK /a TO /f.xml "),
-            ["TITLE"]
+            ["TITLE", "FOR"]
         );
+        assert!(labels("FEED t BASE https://x LINK /a TO /f.xml FOR ").is_empty());
         assert!(labels("REDIRECT /a ").is_empty());
         assert_eq!(labels("REDIRECT /a /b "), ["STATUS"]);
         assert_eq!(

@@ -24,6 +24,7 @@ import {
   type Instruction,
   type Operand,
   type RenderEach,
+  type FeedInstruction,
   type RobotsRule,
   type StageRef,
   type ValueType,
@@ -519,23 +520,44 @@ function parseSitemap(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'SITEMAP', span, base, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
 }
 
-/** `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` (clauses in this order) */
+/**
+ * `FEED [--overwrite] <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>] [FOR <var> IN <import> BY <key>]`
+ * (clauses in this order). With FOR, the subject is the loop variable and TO is required.
+ */
 function parseFeed(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { overwrite: 'bare' });
-  const listSpan = c.span;
-  const list = c.ident('import name');
+  const subjectSpan = c.span;
+  const subject = c.ident('import name');
   c.expectKeyword('BASE');
   const base = c.operand('base URL');
   c.expectKeyword('LINK');
   const link = c.operand('link path');
   const dest = c.keyword('TO') ? c.operand('destination') : undefined;
   const title = c.keyword('TITLE') ? c.operand('feed title') : undefined;
+  let list = subject;
+  let listSpan = subjectSpan;
+  let each: FeedInstruction['each'];
+  const forAt = c.span;
+  if (c.keyword('FOR')) {
+    const as = c.ident('loop variable');
+    c.expectKeyword('IN');
+    listSpan = c.span;
+    list = c.ident('list name');
+    const byAt = c.span;
+    c.expectKeyword('BY');
+    each = { as, by: { key: c.ident('group key'), span: byAt }, span: forAt };
+    if (subject !== as) {
+      throw c.error('E_SYNTAX', `FEED ${subject} … FOR ${as} IN ${list} BY ${each.by.key} writes a feed per group; its subject must be the loop variable: FEED ${as} …`, subjectSpan);
+    }
+    if (!dest) throw c.error('E_SYNTAX', `FEED ${as} … FOR ${as} IN ${list} writes a feed per group, so it needs TO <dest> (such as /tags/\${${as}.key}/feed.xml)`, forAt);
+  }
   c.expectEnd();
   return {
     kind: 'FEED',
     span,
     list,
     listSpan,
+    ...(each && { each }),
     base,
     link,
     ...(dest ? { dest } : {}),

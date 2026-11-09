@@ -2534,7 +2534,29 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
   if (!Array.isArray(list)) {
     throw new SitefileError('E_TYPE', `FEED ${op.list}: '${op.list}' is not a list (import a directory AS markdown)`, op.span);
   }
-  if (list.length === 0) env.warn(`${origin}: '${op.list}' is empty, so the feed has no entries`);
+  const xmlFile = (title: string, dest: string, items: readonly unknown[]): Files[number] => {
+    const xml = atomXml({ title, siteUrl: op.base + '/', selfUrl: pageUrl(op.base, dest), entries: feedEntries(op, items, env) });
+    return [dest, makeFile(new TextEncoder().encode(xml), origin)];
+  };
+  if (!op.each) {
+    if (list.length === 0) env.warn(`${origin}: '${op.list}' is empty, so the feed has no entries`);
+    return [xmlFile(op.title, op.dest, list)];
+  }
+  // FEED tag … FOR tag IN list BY key: one feed per group, its TO and TITLE evaluated with the group.
+  const { as, by, dest, title } = op.each;
+  const groups = groupBy(list, by, `FEED ${as} FOR ${as} IN ${op.list} BY ${by}`, op.span);
+  if (groups.length === 0) env.warn(`${origin}: FOR ${as} IN ${op.list} BY ${by} writes no feeds: no element has '${by}'`);
+  return groups.map((g) => {
+    const groupEnv: ExecEnv = { ...env, loop: { name: as, value: g } };
+    const raw = interpolate(dest, groupEnv);
+    const target = normalizeVirtual(raw, dest.span, `FEED destination for ${as}`);
+    if (target.trailingSlash) throw new SitefileError('E_PATH', `FEED destination '${raw}' must be a file path, not a directory`, dest.span);
+    return xmlFile(title ? interpolate(title, groupEnv) : op.base, target.path, g['items'] as unknown[]);
+  });
+}
+
+/** The Atom entries of a FEED's elements, in list order. */
+function feedEntries(op: Extract<Operation, { kind: 'FEED' }>, list: readonly unknown[], env: ExecEnv): FeedEntry[] {
   const entries: FeedEntry[] = [];
   list.forEach((item: unknown, i: number) => {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
@@ -2573,8 +2595,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
       ...(content !== undefined ? { content } : {}),
     });
   });
-  const xml = atomXml({ title: op.title, siteUrl: op.base + '/', selfUrl: pageUrl(op.base, op.dest), entries });
-  return [[op.dest, makeFile(new TextEncoder().encode(xml), origin)]];
+  return entries;
 }
 
 /**
@@ -2585,7 +2606,7 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
-    const key = env.memo ? memoKey('feed', opId, namesKey(env, operandNames([op.link], new Set([op.list])))) : undefined;
+    const key = env.memo ? memoKey('feed', opId, namesKey(env, operandNames([op.link, op.each?.dest, op.each?.title], new Set([op.list])), op.each?.as)) : undefined;
     return memoFiles(env, key, async () => feedFiles(op, env));
   }
   const origin = `${env.label}:${op.span.line} ${op.kind}`;

@@ -143,6 +143,7 @@ const INSTRUCTIONS = {
     if (chance(0.4)) s += ` TO ${pick(PATHS)}`;
     if (chance(0.4)) s += ` TITLE ${pick(['"My & <feed>"', 'Notes', '${x}', '""'])}`;
     if (chance(0.15)) s += ` ${pick(['TITLE x TO /f.xml', 'LINK /a', 'BOGUS'])}`;
+    if (chance(0.2)) s += ` FOR ${pick(['t', 'item', ...NAMES])} IN ${pick(NAMES)}${maybe(() => ` BY ${pick(['tags', 't', '1x'])}`, 0.8)}`;
     return s;
   },
   REDIRECT: () => `REDIRECT ${flags(['--overwrite'])}${pick(['/old', '/a/*', '/${x}', 'old', '/a b', ...PATHS])} ${pick(['/new', 'https://e.x/:splat', '/b', '', '/c\\n'])}${maybe(() => ` STATUS ${pick(['301', '302', '303', '307', '308', '200', '418', 'x', '301!'])}`, 0.4)}`,
@@ -328,6 +329,7 @@ function validProgram() {
     () => (plugin ? `TRANSFORM ${maybe('--include=*.jpg ')}${maybe('--exclude=drafts/ ')}${pick(['./photos/', './photos', 'site:/img'])} WITH og TO ${pick(['/img/', '/img/*.png', '/t/*'])}` : 'COPY ./v /v'),
     () => `SITEMAP ${maybe('--overwrite ')}BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' TO /map.xml')}`,
     () => (lists.includes('posts') ? `FEED posts BASE https://e.x LINK ${pick(['/p/${item.slug}.html', '/p/${item.slug}/index.html'])}${maybe(' TO /atom.xml')}${maybe(` TITLE "${v()} & notes"`)}` : 'COPY ./f /f'),
+    () => (lists.includes('posts') ? `FEED tag BASE https://e.x LINK /p/\${item.slug}/ TO /tags/\${tag.key}/feed.xml${maybe(' TITLE "${tag.key} & notes"')} FOR tag IN posts BY tags` : 'COPY ./f /f'),
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
     () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,

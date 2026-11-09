@@ -151,9 +151,12 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
         (ins.kind === 'FEED' && op === ins.link) ||
         (ins.kind === 'RENDER' && (op === ins.dest || op === ins.each?.page?.first)) ||
         (ins.kind === 'TRANSFORM' && (op === ins.dest || ins.options.some((o) => o.value === op) || (ins.args?.includes(op) ?? false)));
+      // FEED tag … FOR tag IN list BY key: TO and TITLE may use ${tag.key} for the current group.
+      const groupVar = ins.kind === 'FEED' && (op === ins.dest || op === ins.title) ? ins.each?.as : undefined;
       for (const part of op.parts) {
         if (part.kind !== 'var') continue;
         if (isDest && part.name === loopVar) continue;
+        if (groupVar !== undefined && part.name === groupVar) continue;
         if (part.path.length > 0) {
           throw new SitefileError(
             'E_SYNTAX',
@@ -286,6 +289,11 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
           throw new SitefileError('E_UNDEFINED', `FEED ${ins.list}: '${ins.list}' is not an IMPORT declared on an earlier line`, ins.listSpan);
         }
         notSitefile(ins.list, `FEED ${ins.list}`, ins.listSpan, sitefiles);
+        if (ins.each) {
+          const { as, span } = ins.each;
+          if (as === FEED_ITEM) throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${FEED_ITEM}' is the element in FEED's LINK; pick another loop variable name`, span);
+          if (taken(as)) throw new SitefileError('E_DUPLICATE', `FOR ${as}: '${as}' is already defined; pick another loop variable name`, span);
+        }
         break;
       case 'SITEMAP':
       case 'REDIRECT':

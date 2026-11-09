@@ -225,3 +225,12 @@ test('TRANSFORM --include and --exclude', async () => {
   has(scopesOf(r, 1, '*.jpg'), 'string.unquoted.glob');
   has(scopesOf(r, 1, 'drafts/'), 'string.unquoted.glob');
 });
+
+test('${#each list by key as group} and FEED … FOR tag IN list BY key', async () => {
+  const r = await tokenize('RENDER <<H TO /t.html\n${#each posts by tags as tag}${tag.key}${/each}\nH\nFEED tag BASE https://x LINK /a TO /t/${tag.key}.xml FOR tag IN posts BY tags\n');
+  has(scopesOf(r, 2, 'by'), 'keyword.control.loop');
+  has(scopesOf(r, 2, 'tags'), 'variable.other.property.group-key');
+  has(scopesOf(r, 2, 'tag'), 'variable.other.definition.loop');
+  has(scopesOf(r, 4, 'FOR'), 'keyword.other.clause');
+  has(scopesOf(r, 4, 'BY'), 'keyword.other.clause');
+});

@@ -150,6 +150,11 @@ test('examples/blog builds an index, one page per post and an Atom feed', async 
   assert.doesNotMatch(post, /href="javascript:/i);
   assert.match(post, /<li><a href="\/tags\/security\/">security<\/a><\/li>/);
   assert.match(await readFile(path.join(out, 'tags', 'sitefile', 'index.html'), 'utf8'), /Tagged “sitefile” \(2\)/);
+  // Every tag with its count, and a feed per tag.
+  assert.match(await readFile(path.join(out, 'tags', 'index.html'), 'utf8'), /<li><a href="\/tags\/sitefile\/">sitefile<\/a> \(2\) · <a href="\/tags\/sitefile\/feed.xml">feed<\/a><\/li>/);
+  const tagFeed = await readFile(path.join(out, 'tags', 'sitefile', 'feed.xml'), 'utf8');
+  assert.match(tagFeed, /<title>Field Notes: sitefile<\/title>/);
+  assert.equal((tagFeed.match(/<entry>/g) ?? []).length, 2);
   await assert.rejects(stat(path.join(out, 'posts', 'coming-soon', 'index.html')));
   const feed = await readFile(path.join(out, 'feed.xml'), 'utf8');
   assert.match(feed, /<updated>2026-03-01T00:00:00Z<\/updated>/);

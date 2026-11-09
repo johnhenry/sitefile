@@ -95,3 +95,38 @@ T
       (template_substitution
         (identifier)))
     (heredoc_end)))
+
+==================
+each by key: groups
+==================
+
+RENDER <<HTML TO /tags/index.html
+${#each posts by tags as tag}${tag.key} ${tag.count}${/each}${#each by as x}${/each}
+HTML
+
+---
+
+(source_file
+  (render_instruction
+    (heredoc_start
+      (heredoc_delimiter))
+    (path)
+    (heredoc_body
+      (template_each
+        (reference
+          (identifier))
+        (identifier)
+        (identifier))
+      (template_substitution
+        (identifier)
+        (key))
+      (template_substitution
+        (identifier)
+        (key))
+      (template_end)
+      (template_each
+        (reference
+          (identifier))
+        (identifier))
+      (template_end))
+    (heredoc_end)))

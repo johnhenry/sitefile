@@ -156,6 +156,7 @@ const tAtoms = [
   '${file "/a.png"|img loading=eager data-x="a}b"}', '${file "/m.png" | img alt="${T}" sizes=50vw}', '${file "/m.json" | srcset}', '${file /m.png | width}', '${file /m.png}', '${file /a.png | srcset}', '${file /s.css | img}', '${file "/a.png" | img "x"}', '${file "/a.png" x}', '${file "/s.css" | width}', '${file "/a.png" | integrity}',
   '${F1}', '${F2}', '${LOOP}', '${REC}', '${BAD}', '${F1|raw}', '${F1.x}', '${#each F1 as i}', '${#if F2}', '${#each list as F1}${F1}${/each}',
   '${T}', '${N}', '${F}', '${Z}', '${B}', '${E}', '${T|raw}', '${nil}', '${obj}', '${obj.k}', '${obj.n.1}', '${obj.n.5}', '${list.0.t}', '${nope}',
+  '${#each list by t as i}', '${#each list by tags as i}', '${#each list by as i}', '${#each obj.n by x as i}', '${#each by as i}',
   '${#each list as i}', '${#each obj.n as i}', '${#each list.0.tags as T}', '${#each nope as i}', '${#each T as i}', '${#each missing.k as i}',
   '${i}', '${i.t}', '${i.tags.0}', '${#if i.tags}', '${#if !i}', '${#if B}', '${#if Z}', '${#if empty}', '${#if obj}', '${#if nope.x}', '${else}',
   '${/each}', '${/if}', '$${', '$', '${', '${ a }', '${a b}', '${#each x}', '${#if}', '${/each x}', '${else x}', 'text', ' ', '\n', '\r\n', '  ',
@@ -173,6 +174,7 @@ const tBlock = () => {
   const r = rand();
   if (r < 0.25) return nl() + '${#each list as i}' + nl() + '[${i.t}' + inner() + '${#each i.tags as t}${t},${else}-${/each}]' + nl() + '${/each}' + nl();
   if (r < 0.4) return '${#each obj.n as T}${T}' + inner() + '${/each}';
+  if (r < 0.45) return nl() + '${#each list by tags as g}' + nl() + '${g.key}=${g.count}' + inner() + '${#each g.items as i}${i.t}${/each}' + nl() + '${else}none${/each}' + nl();
   if (r < 0.55) return '${#each empty as x}x${else}' + inner() + '${/each}';
   if (r < 0.75) return nl() + '${#if ' + pick(['!', '', '! ']) + pick(conds) + '}' + nl() + inner() + pick(['', '${else}' + inner()]) + '${/if}' + nl();
   return inner();

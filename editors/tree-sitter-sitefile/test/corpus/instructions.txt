@@ -705,3 +705,35 @@ render ./t.html to /t/${t.key}/${t.number}.html for t in posts by tags page ${N}
       (word
         (substitution
           (identifier))))))
+
+==================
+FEED per tag: FOR … BY
+==================
+
+FEED tag BASE ${URL} LINK /p/${item.slug}/ TO /tags/${tag.key}/feed.xml TITLE "${tag.key}" FOR tag IN posts BY tags
+
+---
+
+(source_file
+  (feed_instruction
+    (identifier)
+    (word
+      (substitution
+        (identifier)))
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (path
+      (substitution
+        (identifier)
+        (key)))
+    (string
+      (substitution
+        (identifier)
+        (key)))
+    (for_clause
+      (identifier)
+      (identifier))
+    (group_clause
+      (identifier))))

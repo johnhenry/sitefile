@@ -146,3 +146,48 @@ test('DRAFTS and BY in an imported Sitefile (AS sitefile)', async () => {
   assert.deepEqual(outputs(r), { '/all/x.html': 'AB\n', '/t/x.html': 'A\n' });
   assert.throws(() => parseProgram('IMPORT t FROM ./t AS sitefile DRAFTS false\nEXPORT /'), (e: unknown) => isSitefileError(e, 'E_VALIDATION'));
 });
+
+test('${#each list by key as g}: groups in templates, for a page listing every tag', async () => {
+  const r = await run(
+    files('IMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS false\nRENDER <<T TO /tags/index.html\n${#each posts by tags as tag}\n${tag.key} ${tag.count}:${#each tag.items as p}${p.title}${/each}\n${/each}\n${#each posts by nothing as g}${g.key}${else}none${/each}\nT\nEXPORT /'),
+  );
+  assert.deepEqual(outputs(r), { '/tags/index.html': '9 1:C\n10 1:C\nrust 1:A\nweb 3:ECA\nnone\n' });
+  // A dotted list, `by` as a list name, and the error of a value that cannot be a key.
+  const nested = await run({ 'p.json': '{"posts":[{"t":"x"},{"t":["x","y"]}],"by":[1]}', Sitefile: 'IMPORT d FROM ./p.json AS json\nRENDER <<T TO /i.html\n${#each d.posts by t as g}${g.key}=${g.count} ${/each}${#each d.by as x}${x}${/each}\nT\nEXPORT /' });
+  assert.equal(outputs(nested)['/i.html'], 'x=2 y=1 1\n');
+  await rejects(
+    { 'p.yaml': '- tags: [{a: 1}]\n', Sitefile: 'IMPORT p FROM ./p.yaml AS yaml\nRENDER <<T TO /i.html\n${#each p by tags as t}${t.key}${/each}\nT\nEXPORT /' },
+    'E_TYPE',
+    "${#each p by tags}: 'tags' of document '#1' is not text or a list of text",
+  );
+  await rejects({ Sitefile: 'RENDER <<T TO /i.html\n${#each p by as t}${/each}\nT\nEXPORT /' }, 'E_TEMPLATE', "expected ${#each list as item} or ${#each list by key as group}, got '${#each p by as t}'");
+});
+
+test('FEED tag … FOR tag IN list BY key: a feed per group', async () => {
+  const sf = 'ARG SITE = "Blog"\nIMPORT posts FROM ./posts AS markdown SORT BY date DESC DRAFTS false\nFEED tag BASE https://x.example LINK /p/${item.slug}/ TO /tags/${tag.key}/feed.xml TITLE "${SITE}: ${tag.key}" FOR tag IN posts BY tags\nEXPORT /';
+  const r = await run(files(sf));
+  const out = outputs(r);
+  assert.deepEqual(Object.keys(out).sort(), ['/tags/10/feed.xml', '/tags/9/feed.xml', '/tags/rust/feed.xml', '/tags/web/feed.xml']);
+  const web = out['/tags/web/feed.xml']!;
+  assert.match(web, /<title>Blog: web<\/title>/);
+  assert.match(web, /<id>https:\/\/x\.example\/tags\/web\/feed\.xml<\/id>/);
+  assert.deepEqual([...web.matchAll(/<title>([A-Z])<\/title>/g)].map((m) => m[1]), ['E', 'C', 'A']);
+  assert.equal(operationLabel(plan(parseProgram(sf)).stages[0]!.operations[0]!), 'FEED FOR tag IN posts BY tags');
+  const err = (src: string, code: ErrorCode, detail: string): void =>
+    assert.throws(() => parseProgram(src), (e: unknown) => isSitefileError(e, code) && e.detail === detail);
+  err('IMPORT posts FROM ./p AS markdown\nFEED posts BASE https://x LINK /a TO /t/${t.key}.xml FOR t IN posts BY tags\nEXPORT /', 'E_SYNTAX', 'FEED posts … FOR t IN posts BY tags writes a feed per group; its subject must be the loop variable: FEED t …');
+  err('IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x LINK /a FOR t IN posts BY tags\nEXPORT /', 'E_SYNTAX', 'FEED t … FOR t IN posts writes a feed per group, so it needs TO <dest> (such as /tags/${t.key}/feed.xml)');
+  err('IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x LINK /a TO /t.xml FOR t IN posts\nEXPORT /', 'E_SYNTAX', "expected BY");
+  err('IMPORT posts FROM ./p AS markdown\nFEED item BASE https://x LINK /a TO /${item.key}.xml FOR item IN posts BY tags\nEXPORT /', 'E_DUPLICATE', "FOR item: 'item' is the element in FEED's LINK; pick another loop variable name");
+  err('IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x/${t.key} LINK /a TO /${t.key}.xml FOR t IN posts BY tags\nEXPORT /', 'E_SYNTAX', 'dotted access ${t.key} is only allowed in RENDER templates and for a RENDER … FOR loop variable');
+  err('IMPORT posts FROM ./p AS markdown\nFEED t BASE https://x LINK /a TO /${t.key}.xml FOR t IN nope BY tags\nEXPORT /', 'E_UNDEFINED', "FEED nope: 'nope' is not an IMPORT declared on an earlier line");
+  // Incremental rebuilds match a clean build.
+  const dir = await project(files(sf));
+  const memo = new BuildMemo();
+  const same = async (): Promise<void> => {
+    assert.deepEqual(outputs(await build({ contextDir: dir, lockfile: false, memo })), outputs(await build({ contextDir: dir, lockfile: false })));
+  };
+  await same();
+  await writeFile(path.join(dir, 'posts/2026-01-03-c.md'), post('C2', 'rust'));
+  await same();
+});
