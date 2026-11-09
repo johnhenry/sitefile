@@ -321,6 +321,13 @@ protocol v2, not by running the `git` program:
 
 ## Known differences
 
+- **The default Node for JavaScript plugins.** Without `--node` or
+  `SITEFILE_NODE`, the TypeScript CLI runs plugins on the Node that runs
+  sitefile (`process.execPath`) and the Rust binary on `node` from `PATH`
+  (it has no Node of its own). Both then check that it is Node 26 or later.
+  Their `--help` says the same thing for both ("else the default Node, see
+  docs/PLUGINS.md"), and docs/PLUGINS.md, "Which Node runs plugins", names
+  each default.
 - **A wasm plugin that passes `--plugin-memory`.** wasmtime refuses the
   `memory.grow` (it returns -1, so the module typically traps or reports an
   error of its own); V8 lets the memory grow and fails the call after it

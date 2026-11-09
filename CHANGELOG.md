@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Identical `--help` in both CLIs**: the `--node` line now reads "default
+  $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
+  default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
+  the Rust binary), and that is now listed in docs/RUST.md "Known
+  differences". `save --help` in the Rust binary now lists `car`, `html` and
+  `mhtml` too. A `help-text` conformance case compares every command's help.
 - **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
   file responses carry `Last-Modified` (image: when it was stored; directory:
   newest file mtime; archive: its mtime; `--watch`: the build time), and
