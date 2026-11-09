@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`import-config` reads what serve now understands** (johnhenry/sitefile#204,
+  after #193): `:placeholders` in sources and targets (Netlify, Vercel `:name`
+  segments, Firebase `:name` and `:name*`), Netlify `query` and `conditions`
+  (`Language`, `Country`, `Cookie`), and statuses 410 and 451 are now
+  translated rather than listed as unsupported. A target `:name` that the
+  source does not capture is still refused.
+
 - **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
   app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
   else `Accept: text/html`), never subresources, so `/users/jane.doe` works

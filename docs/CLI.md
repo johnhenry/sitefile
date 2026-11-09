@@ -1102,9 +1102,10 @@ the site behaves the same locally. The format comes from the file name (`netlify
   "headers": [[name, value]…]}], "unsupported": [{"entry", "reason"}]}`.
 - **Every line printed is one `serve` applies as written** (each is checked against `serve`'s own parser).
   Anything else is listed on stderr, one `warning: <file>: <entry>: <reason>` per entry, and left out
-  rather than half translated. Examples: `:placeholders` (until johnhenry/sitefile#193), conditions,
-  regular expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301,
-  302, 303, 307, 308 and 404, and settings with no `_redirects` form. The exit code is 0 either way.
+  rather than half translated. Examples: a `:name` in a target that the source does not capture,
+  conditions other than language, country and cookie, `:placeholders` in header patterns, regular
+  expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301, 302,
+  303, 307, 308, 404, 410 and 451, and settings with no `_redirects` form. The exit code is 0 either way.
 - Catch-all rules (a 404 page, an SPA fallback) are written after every other rule, since the first
   matching rule wins and they would shadow the rest. Consecutive header blocks for the same pattern are
   merged.
@@ -1113,12 +1114,12 @@ the site behaves the same locally. The format comes from the file name (`netlify
 
 | File | Translated | Listed as unsupported |
 | --- | --- | --- |
-| `netlify.toml` | `[[redirects]]` `from`, `to`, `status` (default 301), `force` (`!`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `query`, `conditions`, `headers`, `signed` on a redirect; placeholders; `functions`, `edge_functions`, `plugins` |
-| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` that is exact or ends in `/:name*` or `/(.*)` becomes the path or `/*`, and `:name*`, `:name` or `$1` in the destination become `:splat` | `has`/`missing`, other parameters, regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
-| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` that is exact or ends in `/**`, or is `**` | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
+| `netlify.toml` | `[[redirects]]` `from` (with `:placeholders` and a trailing `/*`), `to`, `status` (default 301; also 410 and 451), `force` (`!`), `query` (`name=value` or `name=:placeholder` fields), `conditions` `Language`, `Country`, `Cookie` (`Key=a,b`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `conditions` on `Role` or other keys, `headers` and `signed` (proxy options); `functions`, `edge_functions`, `plugins` |
+| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
+| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
 | `staticwebapp.config.json` | `routes` (exact or trailing `/*`) with `redirect` (`statusCode`, default 302), `rewrite` (200), `headers`; `navigationFallback` (`/* <rewrite> 200`); `responseOverrides.404` with a `rewrite` (`/* <page> 404`); `globalHeaders` (`/*`) | `allowedRoles`, `methods`, other route patterns, `navigationFallback.exclude`, other overrides, `mimeTypes` (johnhenry/sitefile#220) |
 | `wrangler.toml` / `wrangler.json` | `[assets] not_found_handling = "single-page-application"` (`/* /index.html 200`); `404-page` and `none` need nothing | `html_handling` other than `auto-trailing-slash` (johnhenry/sitefile#192), `run_worker_first` |
-| `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410, other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
+| `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410 (Apache names no page to serve, which a 410 rule in `_redirects` needs), other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
 
 Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the same. The language form
 (`REDIRECT … FROM <file>`) is not implemented yet (johnhenry/sitefile#204).
