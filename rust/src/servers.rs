@@ -937,7 +937,12 @@ pub fn serve_detached_with(
     };
     // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
     let site = load_served_site(&reg.store, &serve.source, &options)?;
-    check_site_files(&site.tree, serve.strict_site_files, warn, site.content.as_deref())?;
+    check_site_files(
+        &site.tree,
+        serve.strict_site_files,
+        warn,
+        site.content.as_deref(),
+    )?;
     drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {

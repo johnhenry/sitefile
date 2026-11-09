@@ -501,7 +501,12 @@ pub fn serve_worker(id: &str) -> i32 {
             },
         )?;
         let tree = site.tree;
-        check_site_files(&tree, state.strict_site_files, &warn, site.content.as_deref())?;
+        check_site_files(
+            &tree,
+            state.strict_site_files,
+            &warn,
+            site.content.as_deref(),
+        )?;
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
