@@ -1,6 +1,9 @@
 //! Watch mode, ported from test/watch.test.ts: `build --watch` and
 //! `serve --watch` run as child processes on temporary contexts with a
 //! temporary SITEFILE_HOME.
+//! Unix-only: the CLI is stopped with SIGINT (`kill`), and several tests use
+//! detached servers (`serve -d`), which Windows does not support.
+#![cfg(unix)]
 
 use std::fs;
 use std::io::{Read, Write};
