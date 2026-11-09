@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`serve --auth user:password`, `--auth-file`, `SITEFILE_SERVE_AUTH`**
+  (johnhenry/sitefile#177): HTTP basic authentication on every request (401
+  with `WWW-Authenticate` otherwise), constant-time checks, only PBKDF2
+  verifiers in the server record, `auth: true` in `servers --json`, a warning on
+  non-loopback binds. htpasswd `{SHA}` entries; bcrypt is a follow-up. Both
+  servers.
 - **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
   a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
   brackets), and `servers --json` gains `networkUrls`. Both implementations

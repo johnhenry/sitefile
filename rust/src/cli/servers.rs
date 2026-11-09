@@ -122,6 +122,59 @@ fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
     }))
 }
 
+/// What `--auth`, `--auth-file` and `SITEFILE_SERVE_AUTH` give: the server's checker, the verifiers
+/// and the absolute htpasswd path the record keeps (never a password).
+type AuthSetup = (
+    Option<Arc<crate::serve_auth::BasicAuth>>,
+    Vec<crate::serve_auth::AuthEntry>,
+    Option<String>,
+);
+
+fn auth_of(v: &Parsed, bind_host: &str) -> Result<AuthSetup> {
+    use crate::serve_auth::{make_verifier, parse_auth_pair, parse_htpasswd, AuthEntry, BasicAuth, AUTH_ITERATIONS};
+    let mut pairs = Vec::new();
+    for a in v.strs("auth") {
+        pairs.push(parse_auth_pair(&a, "--auth")?);
+    }
+    if let Ok(env) = std::env::var("SITEFILE_SERVE_AUTH") {
+        if !env.is_empty() {
+            pairs.push(parse_auth_pair(&env, "SITEFILE_SERVE_AUTH")?);
+        }
+    }
+    let entries: Vec<AuthEntry> = pairs
+        .into_iter()
+        .map(|(user, pw)| AuthEntry {
+            user,
+            verifier: make_verifier(&pw, None, AUTH_ITERATIONS),
+        })
+        .collect();
+    let auth_file = v.str("auth-file").map(str::to_string);
+    let from_file = match &auth_file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--auth-file: cannot read {f}"));
+            };
+            parse_htpasswd(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    if entries.is_empty() && auth_file.is_none() {
+        return Ok((None, Vec::new(), None));
+    }
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    if !loopback {
+        err(&format!("warning: basic authentication over plain HTTP on {bind_host}: the password crosses the network in the clear\n"));
+    }
+    let abs = auth_file.map(|f| {
+        std::path::absolute(&f)
+            .map(|p| p.display().to_string())
+            .unwrap_or(f)
+    });
+    let mut all = entries.clone();
+    all.extend(from_file);
+    Ok((Some(Arc::new(BasicAuth::new(all))), entries, abs))
+}
+
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
 fn network_lines(host: &str, port: u16) -> String {
     crate::server::network_urls(host, port)
@@ -183,6 +236,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("log-format"),
     flag("log-ip"),
     flag("quiet"),
+    strings("auth"),
+    string("auth-file"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -235,6 +290,8 @@ pub const SERVE: Command = Command {
         "--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)",
         "--log-ip          add the client address to access-log lines",
         "--quiet           no access-log lines",
+        "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
+        "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -277,6 +334,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -320,6 +378,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 log_json,
                 log_ip,
                 quiet,
+                auth: auth.clone(),
             },
             &bind.host,
             bind.port,
@@ -392,6 +451,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let isolate = isolate_of(v)?;
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
+    let (auth, _, _) = auth_of(v, &bind.host)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -544,6 +604,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             log_json,
             log_ip,
             quiet,
+            auth: auth.clone(),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -585,6 +646,19 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         s.close();
     }
     Ok(code)
+}
+
+/// A detached server's checker: its verifiers and its htpasswd file, read again at every start.
+fn worker_auth(state: &ServerState) -> Result<Option<Arc<crate::serve_auth::BasicAuth>>> {
+    let mut all = state.auth.clone();
+    if let Some(f) = &state.auth_file {
+        let text = std::fs::read_to_string(f).map_err(|e| {
+            SitefileError::plain(E_SERVER, format!("--auth-file {f}: {e}"))
+        })?;
+        all.extend(crate::serve_auth::parse_htpasswd(&text, f)?);
+    }
+    Ok((!all.is_empty() || state.auth_file.is_some())
+        .then(|| Arc::new(crate::serve_auth::BasicAuth::new(all))))
 }
 
 /// `sitefile __serve-worker <id>`: the detached server process.
@@ -652,6 +726,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 log_json: json,
                 log_ip: state.log_ip,
                 quiet: state.quiet,
+                auth: worker_auth(&state)?,
             },
             &state.bind.host,
             state.bind.port,
@@ -748,7 +823,8 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 let mut m = Map::new();
                 if let Ok(Value::Object(st)) = serde_json::to_value(&s.state) {
                     for (k, val) in st {
-                        if k != "image" {
+                        // Credentials never leave the record: a server that needs them shows auth: true.
+                        if k != "image" && k != "auth" {
                             m.insert(k, val);
                         }
                     }
@@ -766,6 +842,9 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                         "networkUrls".into(),
                         Value::Array(net.into_iter().map(Value::String).collect()),
                     );
+                }
+                if !s.state.auth.is_empty() || s.state.auth_file.is_some() {
+                    m.insert("auth".into(), Value::Bool(true));
                 }
                 m.insert("site".into(), Value::String(s.state.image.clone()));
                 Value::Object(m)

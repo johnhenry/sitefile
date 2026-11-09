@@ -55,6 +55,8 @@ pub struct SiteServerOptions {
     pub log_ip: bool,
     /// `--quiet`: no access-log lines (other log lines still go to `log`).
     pub quiet: bool,
+    /// `--auth`, `--auth-file`: every request needs one of these credentials, else `401`.
+    pub auth: Option<Arc<crate::serve_auth::BasicAuth>>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -765,6 +767,12 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// The first of repeated header values (ours are joined with `, `; Node keeps the first
+/// `Authorization`).
+fn first_value(v: Option<&String>) -> Option<&str> {
+    v.map(|s| s.split(',').next().unwrap_or("").trim())
+}
+
 /// The headers every response starts with (`base` in src/server.ts).
 fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     let mut base: Vec<(String, String)> = vec![
@@ -1022,6 +1030,7 @@ fn preflight_headers(value: Option<&str>) -> Option<String> {
     ok.then(|| v.to_string())
 }
 
+const UNAUTHORIZED_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n";
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
 
@@ -1382,6 +1391,7 @@ fn reason(status: u16) -> &'static str {
         206 => "Partial Content",
         304 => "Not Modified",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -1413,7 +1423,7 @@ pub struct ServeHeaders {
 }
 
 /// Headers the server owns; `_headers` cannot set them.
-const PROTECTED_HEADERS: [&str; 9] = [
+const PROTECTED_HEADERS: [&str; 10] = [
     "content-length",
     "transfer-encoding",
     "connection",
@@ -1423,6 +1433,7 @@ const PROTECTED_HEADERS: [&str; 9] = [
     "accept-ranges",
     "content-range",
     "last-modified",
+    "www-authenticate",
 ];
 const SERVE_STATUSES: [u16; 7] = [200, 301, 302, 303, 307, 308, 404];
 
@@ -1711,6 +1722,19 @@ pub fn respond(
         headers.get("host").map(String::as_str),
     ) {
         return page(403, FORBIDDEN_HOST_PAGE, vec![]);
+    }
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if let Some(a) = &options.auth {
+        if !a.allows(first_value(headers.get("authorization"))) {
+            return page(
+                401,
+                UNAUTHORIZED_PAGE,
+                vec![(
+                    "www-authenticate".into(),
+                    "Basic realm=\"sitefile\", charset=\"UTF-8\"".into(),
+                )],
+            );
+        }
     }
     if options.cors && method == "OPTIONS" {
         // A CORS preflight: any path, nothing is looked up.
@@ -2123,7 +2147,9 @@ fn serve_connection(
         let host_ok = host_allowed(
             options.allowed_hosts.as_deref(),
             req.headers.get("host").map(String::as_str),
-        );
+        ) && options.auth.as_ref().is_none_or(|a| {
+            a.allows(first_value(req.headers.get("authorization")))
+        });
         let console = options
             .live_reload
             .as_ref()
@@ -2601,6 +2627,7 @@ mod tests {
             log_json: false,
             log_ip: false,
             quiet: false,
+            auth: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -3177,6 +3204,7 @@ mod tests {
             log_json: false,
             log_ip: false,
             quiet: false,
+            auth: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

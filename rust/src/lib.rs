@@ -48,6 +48,7 @@ pub mod links;
 pub mod mime_data;
 pub mod refs;
 pub mod server;
+pub mod serve_auth;
 pub mod servers;
 pub mod servers_file;
 pub mod site;

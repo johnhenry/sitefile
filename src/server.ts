@@ -7,6 +7,7 @@ import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
+import type { BasicAuth } from './serve-auth.js';
 
 export interface SiteServerOptions {
   /** Fall back to `/index.html` for unknown extension-less paths (single-page apps). */
@@ -50,6 +51,8 @@ export interface SiteServerOptions {
   readonly logIp?: boolean;
   /** `--quiet`: no access-log lines (other log lines still go to {@link log}). */
   readonly quiet?: boolean;
+  /** `--auth`, `--auth-file`: every request needs one of these credentials (`Authorization: Basic`), else `401`. */
+  readonly auth?: BasicAuth;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -340,6 +343,7 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const UNAUTHORIZED_PAGE = '<!doctype html><meta charset="utf-8"><title>401 Unauthorized</title><h1>401 Unauthorized</h1>\n';
 const FORBIDDEN_HOST_PAGE =
   '<!doctype html><meta charset="utf-8"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n';
 const METHOD_PAGE = '<!doctype html><meta charset="utf-8"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n';
@@ -692,6 +696,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     // DNS rebinding: a page on another name must not read this server (before anything else).
     const hostHeader = req.headers.host;
     if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
+    // Basic authentication covers everything, the live-reload endpoints too.
+    if (options.auth !== undefined && !options.auth.allows(req.headers.authorization)) {
+      return page(401, UNAUTHORIZED_PAGE, { 'www-authenticate': 'Basic realm="sitefile", charset="UTF-8"' });
+    }
 
     const live = options.liveReload;
     if (live && url.split(/[?#]/, 1)[0] === CONSOLE_PATH) {

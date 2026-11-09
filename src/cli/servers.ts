@@ -8,6 +8,7 @@ import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
+import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -122,6 +123,8 @@ const run: Command = {
     '--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)',
     '--log-ip          add the client address to access-log lines',
     '--quiet           no access-log lines',
+    '--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored',
+    '--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -156,6 +159,8 @@ const run: Command = {
     'log-format': { type: 'string' },
     'log-ip': { type: 'boolean' },
     quiet: { type: 'boolean' },
+    auth: { type: 'string', multiple: true },
+    'auth-file': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -181,6 +186,7 @@ const run: Command = {
     const isolate = isolateOf(v);
     const cache = cacheOf(v);
     const logging = loggingOf(v);
+    const auth = await authOf(v, bind.host);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -192,7 +198,7 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
@@ -202,7 +208,7 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
     return 0;
   },
@@ -231,6 +237,10 @@ export interface DetachedServe {
   readonly logIp?: boolean | undefined;
   /** `--quiet`. */
   readonly quiet?: boolean | undefined;
+  /** `--auth` verifiers. */
+  readonly auth?: AuthEntry[] | undefined;
+  /** `--auth-file`, an absolute path read at every start. */
+  readonly authFile?: string | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -256,6 +266,8 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.logFormat === 'json' ? { logFormat: 'json' as const } : {}),
     ...(d.logIp ? { logIp: true } : {}),
     ...(d.quiet ? { quiet: true } : {}),
+    ...(d.auth !== undefined ? { auth: d.auth } : {}),
+    ...(d.authFile !== undefined ? { authFile: d.authFile } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -339,6 +351,30 @@ function networkLines(host: string, port: number): string {
     .join('');
 }
 
+/**
+ * `--auth`, `--auth-file`, `SITEFILE_SERVE_AUTH`: the server's checker and what the record keeps (verifiers and the
+ * file path, never a password). Warns when the bind is not loopback: basic auth over plain HTTP sends the password
+ * in the clear.
+ */
+async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: BasicAuth; record: { auth?: AuthEntry[]; authFile?: string } }> {
+  const pairs = [...strs(v.auth).map((a) => parseAuthPair(a, '--auth'))];
+  const env = process.env.SITEFILE_SERVE_AUTH;
+  if (env !== undefined && env !== '') pairs.push(parseAuthPair(env, 'SITEFILE_SERVE_AUTH'));
+  const authFile = str(v['auth-file']);
+  const entries: AuthEntry[] = pairs.map((p) => ({ user: p.user, verifier: makeVerifier(p.password) }));
+  const fromFile = authFile === undefined ? [] : parseHtpasswd(await fs.readFile(authFile, 'utf8').catch(() => usage(`--auth-file: cannot read ${authFile}`)), authFile);
+  if (entries.length === 0 && authFile === undefined) return { record: {} };
+  if (!isLoopback(bindHost)) process.stderr.write(`warning: basic authentication over plain HTTP on ${bindHost}: the password crosses the network in the clear\n`);
+  return {
+    server: new BasicAuth([...entries, ...fromFile]),
+    record: { ...(entries.length > 0 ? { auth: entries } : {}), ...(authFile !== undefined ? { authFile: path.resolve(authFile) } : {}) },
+  };
+}
+
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
 /** `--log-format`, `--log-ip`, `--quiet`: the server options (and record fields) they set, only those not at their default. */
 function loggingOf(v: ParsedValues): { logFormat?: 'json'; logIp?: true; quiet?: true } {
   const format = str(v['log-format']);
@@ -360,6 +396,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const isolate = isolateOf(v);
   const cache = cacheOf(v);
   const logging = loggingOf(v);
+  const auth = await authOf(v, bind.host);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -386,7 +423,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -454,9 +491,10 @@ const ps: Command = {
     if (v.json) {
       // 'site' is the image reference or directory being served.
       // A server bound to all interfaces also lists the URLs other machines use (networkUrls).
-      const out = shown.map(({ image, ...rest }) => {
+      // Credentials never leave the record: a server that needs them shows auth: true.
+      const out = shown.map(({ image, auth, ...rest }) => {
         const net = rest.status === 'running' ? networkUrls(rest.host, rest.port) : [];
-        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), site: image };
+        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), ...(auth !== undefined || rest.authFile !== undefined ? { auth: true } : {}), site: image };
       });
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
       return 0;

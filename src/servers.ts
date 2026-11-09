@@ -11,6 +11,7 @@ import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js
 import { Store } from './store.js';
 import { Tree } from './tree.js';
 import type { CachePreview } from './server.js';
+import type { AuthEntry } from './serve-auth.js';
 
 /**
  * Detached site servers ("containers"). One state file per server:
@@ -50,6 +51,10 @@ export interface ServerState {
   readonly logIp?: boolean;
   /** `--quiet` (absent: false). */
   readonly quiet?: boolean;
+  /** `--auth`, `SITEFILE_SERVE_AUTH`: users and password verifiers (never passwords; absent: none). */
+  readonly auth?: readonly AuthEntry[];
+  /** `--auth-file`: an htpasswd file, read at every start (absent: none). */
+  readonly authFile?: string;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

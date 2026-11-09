@@ -1,0 +1,15 @@
+{
+  "command": "serve",
+  "args": ["--auth", "alice:s3cret", "--auth-file", "users.htpasswd"],
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 401, "headers": { "www-authenticate": "Basic realm=\"sitefile\", charset=\"UTF-8\"" } } },
+    { "method": "HEAD", "target": "/a.txt", "expect": { "status": 401, "body": "" } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic YWxpY2U6d3Jvbmc=" }, "expect": { "status": 401 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic YWxpY2U6czNjcmV0" }, "expect": { "status": 200, "body": "secret\n", "headers": { "www-authenticate": null } } },
+    { "target": "/a.txt", "headers": { "authorization": "basic   YWxpY2U6czNjcmV0" }, "expect": { "status": 200 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic Ym9iOnBhc3N3b3Jk" }, "expect": { "status": 200 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic Ym9iOnBhc3N3b3Jk", "host": "evil.example" }, "expect": { "status": 403 } },
+    { "target": "/missing", "headers": { "authorization": "Basic YWxpY2U6czNjcmV0" }, "expect": { "status": 404 } },
+    { "target": "/a.txt", "headers": { "authorization": "Bearer YWxpY2U6czNjcmV0" }, "expect": { "status": 401 } }
+  ]
+}

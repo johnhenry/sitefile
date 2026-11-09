@@ -104,6 +104,12 @@ pub struct ServerState {
     /// `--quiet`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
+    /// `--auth`, `SITEFILE_SERVE_AUTH`: users and password verifiers (never passwords).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth: Vec<crate::serve_auth::AuthEntry>,
+    /// `--auth-file`: an htpasswd file, read at every start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_file: Option<String>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -796,6 +802,10 @@ pub struct DetachedServe {
     pub log_ip: bool,
     /// `--quiet`.
     pub quiet: bool,
+    /// `--auth` verifiers.
+    pub auth: Vec<crate::serve_auth::AuthEntry>,
+    /// `--auth-file`, an absolute path.
+    pub auth_file: Option<String>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -819,6 +829,8 @@ impl DetachedServe {
             log_format: None,
             log_ip: false,
             quiet: false,
+            auth: Vec::new(),
+            auth_file: None,
             project: None,
         })
     }
@@ -867,6 +879,8 @@ pub fn serve_detached_with(
         log_format: serve.log_format.clone(),
         log_ip: serve.log_ip,
         quiet: serve.quiet,
+        auth: serve.auth.clone(),
+        auth_file: serve.auth_file.clone(),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1082,6 +1096,8 @@ mod tests {
             log_format: None,
             log_ip: false,
             quiet: false,
+            auth: Vec::new(),
+            auth_file: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

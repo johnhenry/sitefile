@@ -1144,6 +1144,16 @@ to `image` (`imageId`) and `dir` (`path`).
   HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
   `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
   host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
+- **Basic authentication (for sharing).** `--auth user:password` (repeatable; `SITEFILE_SERVE_AUTH=user:password`
+  keeps it out of shell history and `ps`) and `--auth-file <htpasswd>` (`user:{SHA}…` lines as `htpasswd -s`
+  writes them; bcrypt, `$apr1$`, crypt and plain-text entries are refused, bcrypt support is a follow-up) make every
+  request, the live-reload endpoints included, need `Authorization: Basic`; otherwise the answer is `401` with
+  `WWW-Authenticate: Basic realm="sitefile", charset="UTF-8"` (and the server-id header, so `servers` still
+  detects it). Passwords are compared in constant time and never stored: the record keeps a PBKDF2-SHA256
+  verifier per `--auth` user (`auth`) and the htpasswd path (`authFile`, read at every start); `servers --json`
+  shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
+  warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
+  `www-authenticate`.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
@@ -1223,7 +1233,7 @@ to `image` (`imageId`) and `dir` (`path`).
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
     with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
-    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
+    `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range`, `last-modified` and `www-authenticate` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
   requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the

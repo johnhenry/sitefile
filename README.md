@@ -440,6 +440,10 @@ tools are code, and run only when you name them on the command line.
   ([docs/PLUGINS.md](docs/PLUGINS.md#what-sitefile-trusts-as-is)). JavaScript
   plugins say whether they are deterministic with `export const cache =
   true|false`; one that says neither is cached with a warning.
+- **Sharing a server with `--auth`** keeps people who lack the password out
+  (basic authentication on every request, passwords stored only as PBKDF2
+  verifiers). It does not hide the traffic: over plain HTTP on a LAN the
+  password and the pages travel in the clear, so use it on networks you trust.
 - **No silent overwrites.** Writing different content to an existing path fails
   unless `--overwrite` is given. Two output paths that differ only in case
   (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is

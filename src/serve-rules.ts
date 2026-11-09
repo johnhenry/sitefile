@@ -21,7 +21,7 @@ export interface ServeHeaders {
 
 const HEADER_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 /** Headers the server owns; `_headers` cannot set them. */
-const PROTECTED_HEADERS = new Set(['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'etag', 'location', 'accept-ranges', 'content-range', 'last-modified']);
+const PROTECTED_HEADERS = new Set(['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'etag', 'location', 'accept-ranges', 'content-range', 'last-modified', 'www-authenticate']);
 const SERVE_STATUSES = new Set([200, 301, 302, 303, 307, 308, 404]);
 
 /**
