@@ -396,7 +396,9 @@ function get(port: number, p: string, headers: Record<string, string> = {}): Pro
 }
 
 /** Open the event stream; `next()` resolves with the next complete event. */
-function events(port: number, through?: { proxyPort?: number; lastEventId?: string; path?: string; headers?: Record<string, string> }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
+// Heartbeat comments (`: ping`) can arrive at any time on a slow runner, so
+// next() skips them unless a test asks to see them (keepPings).
+function events(port: number, through?: { proxyPort?: number; lastEventId?: string; path?: string; headers?: Record<string, string>; keepPings?: boolean }): Promise<{ next: () => Promise<string>; close: () => void; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const target = through?.proxyPort !== undefined ? { port: through.proxyPort } : { port };
     const headers = { ...(through?.lastEventId !== undefined ? { 'last-event-id': through.lastEventId } : {}), ...through?.headers };
@@ -411,6 +413,7 @@ function events(port: number, through?: { proxyPort?: number; lastEventId?: stri
         while ((i = buf.indexOf('\n\n')) !== -1) {
           const ev = buf.slice(0, i);
           buf = buf.slice(i + 2);
+          if (ev === ': ping' && !through?.keepPings) continue;
           const w = waiters.shift();
           if (w) w(ev);
           else queue.push(ev);
@@ -540,7 +543,7 @@ test('live reload through a buffering reverse proxy: unbuffered, untransformed s
   const { port } = await listen(server, '127.0.0.1', 0);
   const proxy = await bufferingProxy(port);
   try {
-    const ev = await events(port, { proxyPort: proxy.port });
+    const ev = await events(port, { proxyPort: proxy.port, keepPings: true });
     assert.equal(ev.headers['x-accel-buffering'], 'no');
     assert.equal(ev.headers['cache-control'], 'no-cache, no-transform');
     assert.equal(await ev.next(), 'retry: 1000');
