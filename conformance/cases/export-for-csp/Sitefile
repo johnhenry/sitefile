@@ -1,0 +1,6 @@
+# EXPORT ... FOR with CSP: the Content-Security-Policy lines become the host's headers, after the HEADER lines.
+FROM scratch
+COPY ./public/ /
+HEADER /* X-Frame-Options: DENY
+CSP
+EXPORT / FOR firebase

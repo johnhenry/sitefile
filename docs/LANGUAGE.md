@@ -1748,8 +1748,9 @@ checked:
 ### Host files: EXPORT … FOR <host>
 
 `EXPORT <path> … FOR netlify|cloudflare|vercel|firebase|azure|github-pages|s3` (the last clause; the host
-name is case-insensitive, any other word is `E_SYNTAX`) writes the REDIRECT and HEADER rules, and
-FINGERPRINT's `Cache-Control` lines, as that host reads them. It works with `AS directory`, `zip`, `tar`
+name is case-insensitive, any other word is `E_SYNTAX`) writes the REDIRECT and HEADER rules,
+FINGERPRINT's `Cache-Control` lines and CSP's `Content-Security-Policy` lines as that host reads them
+(a CSP line the host cannot carry is an error at the CSP line, like a HEADER). It works with `AS directory`, `zip`, `tar`
 and `tgz` (`E_VALIDATION` otherwise), and not with `--target`, which exports the stage's raw tree. It is
 the reverse of `sitefile import-config` (CLI.md).
 
