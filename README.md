@@ -424,7 +424,8 @@ tools are code, and run only when you name them on the command line.
   1 GiB), on a Node you can name with `--node` (checked to be at least Node 26
   and printed); a `TOOL` runs only with `--allow-exec <name>`, argv
   only, no shell, scrubbed environment. The Sitefile cannot allow itself. A
-  WebAssembly plugin must import nothing (checked before the build starts) and
+  JavaScript plugin's `INTEGRITY` pins its whole folder (everything it can
+  read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
 - **No silent overwrites.** Writing different content to an existing path fails
