@@ -215,6 +215,17 @@ impl ExportFormat {
     }
 }
 
+/// `EXPORT ... FOR <host>`: whose config files the REDIRECT and HEADER rules become.
+pub const EXPORT_HOSTS: [&str; 7] = [
+    "netlify",
+    "cloudflare",
+    "vercel",
+    "firebase",
+    "azure",
+    "github-pages",
+    "s3",
+];
+
 /// `EXPORT ... COMPRESSION`: for `oci`, the site layer encoding, `gzip` (tar+gzip, the default) or `none`
 /// (plain tar); for `wbn`, `gzip` wraps the bundle in gzip (the family's `.wbn.gz`) and `none` (the default
 /// for wbn, so not this type's `Default`) writes the plain bundle.
@@ -489,6 +500,8 @@ pub enum Instruction {
         at: Option<Operand>,
         /// `COMPRESSION gzip|none` (oci only) and the span of its value.
         compression: Option<(OciCompression, SourceSpan)>,
+        /// `FOR <host>` (one of [`EXPORT_HOSTS`], lowercase) and the span of its value.
+        for_host: Option<(String, SourceSpan)>,
     },
 }
 

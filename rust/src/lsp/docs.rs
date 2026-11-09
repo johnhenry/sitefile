@@ -162,6 +162,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
     ("EXPORT", "AT", "`AT <root>` (oci only): the directory the files occupy in the image (default /srv/www)."),
     ("EXPORT", "COMPRESSION", "`COMPRESSION gzip|none` (oci and wbn only): how the oci site layer is stored, or whether the wbn is gzipped."),
+    ("EXPORT", "FOR", "`FOR <host>`: write the REDIRECT and HEADER rules as that host reads them: netlify (`_redirects`, `_headers`), cloudflare, vercel (Build Output API v3), firebase, azure (staticwebapp.config.json), github-pages (.nojekyll, CNAME) or s3. A rule the host cannot express is an error (a warning with --lossy)."),
 ];
 
 const FLAGS: &[(&str, &str)] = &[

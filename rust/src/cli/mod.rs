@@ -184,6 +184,8 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lossy                  with EXPORT ... FOR <host>: leave out, with a warning, REDIRECT and HEADER
+                               rules the host cannot express (default: an error)
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
@@ -252,6 +254,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     flag("frozen-lockfile"),
     flag("update-lock"),
     flag("strict-pins"),
+    flag("lossy"),
     strings("lint-disable"),
     flag("no-lockfile"),
     string("vendor-dir"),
@@ -894,6 +897,7 @@ fn run_build_command(
     options.frozen_lockfile = o.flag("frozen-lockfile");
     options.update_lock = o.flag("update-lock");
     options.strict_pins = o.flag("strict-pins");
+    options.lossy = o.flag("lossy");
     let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
     options.on_warning = Some(warning);
     options.memo = memo;

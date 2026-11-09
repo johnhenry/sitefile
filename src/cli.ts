@@ -105,6 +105,8 @@ Options:
       --update-lock            re-record unpinned URLs whose content changed
       --strict-pins            fail when a remote IMPORT has no INTEGRITY and no lockfile entry, or the
                                BASE image is neither @sha256:-pinned nor locked (build, validate, inspect)
+      --lossy                  with EXPORT ... FOR <host>: leave out, with a warning, REDIRECT and HEADER
+                               rules the host cannot express (default: an error)
       --lint-disable <rules>   turn lint rules off (validate; comma-separated rule ids, or all; repeatable)
       --no-lockfile            do not read or write Sitefile.lock
       --vendor-dir <dir>       read remote imports and BASE blobs from this vendor directory (relative
@@ -180,6 +182,7 @@ export async function main(
         'frozen-lockfile': { type: 'boolean' },
         'update-lock': { type: 'boolean' },
         'strict-pins': { type: 'boolean' },
+        lossy: { type: 'boolean' },
         'lint-disable': { type: 'string', multiple: true },
         'no-lockfile': { type: 'boolean' },
         'vendor-dir': { type: 'string' },
@@ -377,6 +380,7 @@ export async function main(
       frozenLockfile: !!o['frozen-lockfile'],
       updateLock: !!o['update-lock'],
       strictPins: !!o['strict-pins'],
+      lossy: !!o.lossy,
       onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
       ...(profiler ? { profiler, alsoWrites: [o.profile!] } : {}),
       ...(run.memo ? { memo: run.memo } : {}),

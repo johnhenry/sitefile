@@ -57,7 +57,7 @@ pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
 pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 /// Clauses after `EXPORT <path>`, in this order.
-pub const EXPORT_CLAUSES: [&str; 4] = ["AS", "BASE", "AT", "COMPRESSION"];
+pub const EXPORT_CLAUSES: [&str; 5] = ["AS", "BASE", "AT", "COMPRESSION", "FOR"];
 /// Clauses after `TRANSFORM … TO <dest>`.
 pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 /// Clauses after `SITEMAP`, in this order (`BASE` is required).
@@ -1201,6 +1201,22 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         };
         compression = Some((v, cspan));
     }
+    let mut for_host = None;
+    if c.keyword("FOR") {
+        let hspan = c.span();
+        let name = c.word();
+        let lower = name.to_ascii_lowercase();
+        let hosts = crate::language::ast::EXPORT_HOSTS;
+        if !hosts.contains(&lower.as_str()) {
+            let msg = if name.is_empty() {
+                format!("expected a host after FOR ({})", hosts.join(", "))
+            } else {
+                format!("unknown host '{name}' (expected {})", hosts.join(", "))
+            };
+            return Err(SitefileError::at(E_SYNTAX, msg, &hspan));
+        }
+        for_host = Some((lower, hspan));
+    }
     c.expect_end()?;
     Ok(Instruction::Export {
         span,
@@ -1209,6 +1225,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         base,
         at,
         compression,
+        for_host,
     })
 }
 

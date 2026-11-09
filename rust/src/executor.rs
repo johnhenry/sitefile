@@ -126,6 +126,9 @@ pub struct BuildOptions {
     /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
     /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
     pub strict_pins: bool,
+    /// `--lossy`: with `EXPORT … FOR <host>`, leave out (with a warning) the REDIRECT and HEADER rules
+    /// the host cannot express, instead of failing with E_EXPORT.
+    pub lossy: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -243,6 +246,7 @@ impl Default for BuildOptions {
             update_lock: false,
             vendor_dir: None,
             strict_pins: false,
+            lossy: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             node: None,
@@ -1214,8 +1218,15 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
             ),
         ));
     }
-    let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
-    let output = tree.subtree(&p.export_path);
+    let (tree, host_output) = with_site_rules(
+        tree,
+        &p,
+        &label,
+        &current_renames,
+        &|m: &str| warn(m),
+        options.lossy,
+    )?;
+    let output = host_output.unwrap_or_else(|| tree.subtree(&p.export_path));
     if output.is_empty() {
         warn(&match &p.target {
             None => format!("EXPORT {} contains no files", p.export_path),
@@ -1293,7 +1304,8 @@ fn with_site_rules(
     label: &str,
     renames: &BTreeMap<String, String>,
     warn: &dyn Fn(&str),
-) -> Result<Tree> {
+    lossy: bool,
+) -> Result<(Tree, Option<Tree>)> {
     let url_below = |path: &str| -> Option<String> {
         if p.export_path == "/" {
             Some(path.to_string())
@@ -1309,12 +1321,7 @@ fn with_site_rules(
     let renamed = |s: &str| urls.get(s).cloned().unwrap_or_else(|| s.to_string());
     let to: Vec<String> = p.redirects.iter().map(|r| renamed(&r.to)).collect();
     let patterns: Vec<String> = p.headers.iter().map(|h| renamed(&h.pattern)).collect();
-    let redirects = redirects_file(
-        p.redirects
-            .iter()
-            .zip(&to)
-            .map(|(r, to)| (r.from.as_str(), to.as_str(), r.status)),
-    );
+
     // FINGERPRINT's Cache-Control lines, after the HEADER lines (see `cache_header_rules`).
     let mut auto: Vec<(String, &str)> = Vec::new();
     let mut header_rules: Vec<(bool, &SourceSpan)> =
@@ -1344,6 +1351,75 @@ fn with_site_rules(
             }
         }
     }
+    // EXPORT … FOR <host> (not netlify, whose files these are; not with --target, which exports the raw tree).
+    let n_headers = p.headers.len() + auto.len();
+    let mut keep_r = vec![true; p.redirects.len()];
+    let mut keep_h = vec![true; n_headers];
+    if let Some((host, hspan)) = p.export_for.as_ref().filter(|_| p.target.is_none()) {
+        if host != "netlify" {
+            use crate::export_for::{export_for_host, HostHeader, HostOptions, HostRedirect};
+            let host_redirects: Vec<HostRedirect> = p
+                .redirects
+                .iter()
+                .zip(&to)
+                .map(|(r, to)| HostRedirect {
+                    from: r.from.clone(),
+                    to: to.clone(),
+                    status: r.status,
+                    span: r.span.clone(),
+                })
+                .collect();
+            let auto_span = p.cache_headers.clone().unwrap_or_else(|| hspan.clone());
+            let host_headers: Vec<HostHeader> = p
+                .headers
+                .iter()
+                .zip(&patterns)
+                .map(|(h, pattern)| HostHeader {
+                    pattern: pattern.clone(),
+                    name: h.name.clone(),
+                    value: h.value.clone(),
+                    span: h.span.clone(),
+                    auto: false,
+                })
+                .chain(auto.iter().map(|(pattern, value)| HostHeader {
+                    pattern: pattern.clone(),
+                    name: "Cache-Control".into(),
+                    value: value.to_string(),
+                    span: auto_span.clone(),
+                    auto: true,
+                }))
+                .collect();
+            let r = export_for_host(
+                host,
+                &tree.subtree(&p.export_path),
+                &host_redirects,
+                &host_headers,
+                &HostOptions {
+                    label,
+                    lossy,
+                    warn,
+                    base: p.export_base.as_deref(),
+                    span: hspan,
+                },
+            )?;
+            if host != "cloudflare" {
+                return Ok((tree, Some(r.output)));
+            }
+            // Cloudflare: the same files, without the rules it refused.
+            keep_r = (0..p.redirects.len())
+                .map(|i| r.redirects.contains(&i))
+                .collect();
+            keep_h = (0..n_headers).map(|i| r.headers.contains(&i)).collect();
+        }
+    }
+    let redirects = redirects_file(
+        p.redirects
+            .iter()
+            .zip(&to)
+            .zip(&keep_r)
+            .filter(|(_, k)| **k)
+            .map(|((r, to), _)| (r.from.as_str(), to.as_str(), r.status)),
+    );
     let headers = headers_file(
         p.headers
             .iter()
@@ -1352,7 +1428,10 @@ fn with_site_rules(
             .chain(
                 auto.iter()
                     .map(|(pattern, value)| (pattern.as_str(), "Cache-Control", *value)),
-            ),
+            )
+            .zip(&keep_h)
+            .filter(|(_, k)| **k)
+            .map(|(x, _)| x),
     );
     /// (file name, content, each rule's `--overwrite` and span, instruction)
     type SiteFile<'a> = (&'a str, String, Vec<(bool, &'a SourceSpan)>, &'a str);
@@ -1360,7 +1439,12 @@ fn with_site_rules(
         (
             "_redirects",
             redirects,
-            p.redirects.iter().map(|r| (r.overwrite, &r.span)).collect(),
+            p.redirects
+                .iter()
+                .zip(&keep_r)
+                .filter(|(_, k)| **k)
+                .map(|(r, _)| (r.overwrite, &r.span))
+                .collect(),
             "REDIRECT",
         ),
         ("_headers", headers, header_rules, header_kind),
@@ -1381,7 +1465,7 @@ fn with_site_rules(
             Some(first),
         )?;
     }
-    Ok(tree)
+    Ok((tree, None))
 }
 
 // ---------------------------------------------------------------- export

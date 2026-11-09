@@ -14,6 +14,7 @@ export const KEYWORDS = {
   fragmentType: 'html',
   exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml'],
   compressions: ['gzip', 'none'],
+  exportHosts: ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'],
   escapeModes: ['none', 'html'],
   /** `${file "…" | helper}` (src/media.ts FILE_HELPERS). */
   fileHelpers: ['url', 'width', 'height', 'type', 'size', 'integrity', 'datauri', 'srcset', 'img', 'video', 'audio', 'source', 'script', 'stylesheet', 'preload', 'modulepreload', 'pre', 'svg'],

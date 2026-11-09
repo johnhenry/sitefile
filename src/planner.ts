@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type ExportHost, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
@@ -242,6 +242,8 @@ export interface Plan {
   readonly exportRoot: string | undefined;
   /** `COMPRESSION` clause of EXPORT ... AS oci or wbn (undefined: gzip for oci, none for wbn). */
   readonly exportCompression: OciCompression | undefined;
+  /** `FOR <host>` of EXPORT: which host's files the REDIRECT and HEADER rules become (undefined: `_redirects`/`_headers`). */
+  readonly exportFor?: { readonly host: ExportHost; readonly span: SourceSpan };
   /** REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`. */
   readonly redirects: readonly RedirectSpec[];
   /** HEADER lines in source order (any stage); EXPORT writes them to `/_headers`. */
@@ -287,6 +289,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   let exportBase: string | undefined;
   let exportRoot: string | undefined;
   let exportCompression: OciCompression | undefined;
+  let exportFor: { host: ExportHost; span: SourceSpan } | undefined;
 
   const bind = (name: string, raw: string, type: ValueType, span: SourceSpan, what: string): void => {
     vars.set(name, coerce(raw, type, span, what));
@@ -509,6 +512,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
         if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci and AS wbn', ins.compression.span);
         exportCompression = ins.compression?.value;
+        if (ins.forHost && !['directory', 'zip', 'tar', 'tgz'].includes(ins.format)) {
+          throw new SitefileError('E_VALIDATION', `EXPORT ... FOR applies only to AS directory, zip, tar and tgz, not ${ins.format}`, ins.forHost.span);
+        }
+        exportFor = ins.forHost ? { host: ins.forHost.value, span: ins.forHost.span } : undefined;
         break;
     }
   }
@@ -551,6 +558,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
     exportBase,
     exportRoot,
     exportCompression,
+    ...(exportFor ? { exportFor } : {}),
     redirects,
     headers,
     ...(cacheHeaders ? { cacheHeaders } : {}),

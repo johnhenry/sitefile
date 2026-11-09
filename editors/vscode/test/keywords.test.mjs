@@ -64,6 +64,7 @@ test('value words: types, import kinds, export formats, compressions, escape mod
   if (astTs.includes("=== 'tar.gz'")) formats.push('tar.gz');
   assert.deepEqual(lower(formats), lower(KEYWORDS.exportFormats));
   assert.deepEqual(lower(constList('OCI_COMPRESSIONS', astTs)), lower(KEYWORDS.compressions));
+  assert.deepEqual(lower(constList('EXPORT_HOSTS', astTs)), lower(KEYWORDS.exportHosts));
   const escape = /type EscapeMode = ([^;]+);/.exec(astTs);
   assert.ok(escape);
   assert.deepEqual(lower(strings(escape[1])), lower(KEYWORDS.escapeModes));

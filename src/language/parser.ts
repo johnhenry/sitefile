@@ -12,6 +12,9 @@ import {
   parseExportFormat,
   type OciCompression,
   parseOciCompression,
+  EXPORT_HOSTS,
+  type ExportHost,
+  parseExportHost,
   REDIRECT_STATUSES,
   type RedirectStatus,
   type ImportArg,
@@ -629,6 +632,25 @@ function parseExport(c: Cursor, span: SourceSpan): Instruction {
     }
     compression = { value, span: cspan };
   }
+  let forHost: { value: ExportHost; span: SourceSpan } | undefined;
+  if (c.keyword('FOR')) {
+    const hspan = c.span;
+    const name = c.word();
+    const value = parseExportHost(name);
+    if (value === undefined) {
+      throw c.error('E_SYNTAX', name === '' ? `expected a host after FOR (${EXPORT_HOSTS.join(', ')})` : `unknown host '${name}' (expected ${EXPORT_HOSTS.join(', ')})`, hspan);
+    }
+    forHost = { value, span: hspan };
+  }
   c.expectEnd();
-  return { kind: 'EXPORT', span, path, format, ...(base ? { base } : {}), ...(at ? { at } : {}), ...(compression ? { compression } : {}) };
+  return {
+    kind: 'EXPORT',
+    span,
+    path,
+    format,
+    ...(base ? { base } : {}),
+    ...(at ? { at } : {}),
+    ...(compression ? { compression } : {}),
+    ...(forHost ? { forHost } : {}),
+  };
 }
