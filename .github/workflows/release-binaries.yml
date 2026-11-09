@@ -1,0 +1,230 @@
+# .github/workflows/release-binaries.yml -- prebuilt `sitefile` binaries and
+# the VS Code .vsix, attached to the GitHub Release (johnhenry/sitefile#69).
+#
+# This is NOT a publish workflow: npm publishing stays in publish.yml (main is
+# the release branch; publish.yml tags v<version> and creates the Release as a
+# by-product). This workflow only adds assets to a Release that already exists.
+#
+# Triggers:
+#   - workflow_run of "Publish to npm": the Release that publish.yml creates
+#     uses the repository GITHUB_TOKEN, and events made with that token do not
+#     start other workflows, so `release: published` never fires for it. After
+#     each successful publish run this reads the version from package.json at
+#     the run's commit and builds when Release v<version> exists and has no
+#     SHA256SUMS yet (the publish run is a no-op on most pushes to main).
+#   - release: published -- a Release created by hand (with a personal token
+#     or in the web UI).
+#   - workflow_dispatch -- rebuild for an existing tag. `dry_run` (default true)
+#     builds and lists the artifacts without uploading anything.
+name: Release binaries
+
+on:
+  workflow_run:
+    workflows: ["Publish to npm"]
+    types: [completed]
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build, e.g. v0.0.5"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and list the artifacts without uploading them"
+        required: false
+        type: boolean
+        default: true
+
+# One release build at a time; never cancel one halfway through an upload.
+concurrency:
+  group: release-binaries
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      version: ${{ steps.r.outputs.version }}
+      dry_run: ${{ steps.r.outputs.dry_run }}
+      build: ${{ steps.r.outputs.build }}
+    steps:
+      - id: r
+        name: Resolve the tag and whether to build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          dry_run=false
+          case "$EVENT" in
+            release) tag="$RELEASE_TAG" ;;
+            workflow_dispatch)
+              tag="$INPUT_TAG"
+              [ "$INPUT_DRY_RUN" = "false" ] || dry_run=true ;;
+            workflow_run)
+              version=$(gh api "repos/$REPO/contents/package.json?ref=$HEAD_SHA" --jq .content | base64 -d | jq -r .version)
+              tag="v$version" ;;
+            *) echo "::error::unexpected event $EVENT"; exit 1 ;;
+          esac
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::error::tag '$tag' is not v<version>"; exit 1 ;;
+          esac
+          build=true
+          if ! assets=$(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[].name'); then
+            if [ "$EVENT" = workflow_run ]; then
+              echo "::notice::No release $tag (publish was a no-op); nothing to build."
+              build=false
+            else
+              echo "::error::No release $tag"; exit 1
+            fi
+          elif [ "$dry_run" = false ] && grep -qx SHA256SUMS <<<"$assets"; then
+            echo "::notice::Release $tag already has binaries (SHA256SUMS); nothing to do."
+            build=false
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+            echo "dry_run=$dry_run"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag=$tag dry_run=$dry_run build=$build"
+
+  binaries:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            smoke: true
+          - target: x86_64-apple-darwin
+            os: macos-latest # cross-compiled on the arm64 runner
+            smoke: false
+          # 22.04 rather than latest: the binary links glibc dynamically, so an
+          # older build host runs on more distributions.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            smoke: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            smoke: true
+          # No Windows build yet: the Rust port uses std::os::unix APIs
+          # unconditionally (store, local resources, watch, plugins).
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The release build needs a C compiler (ring, vendored brotli); every
+      # runner image here has one.
+      - name: cargo build --release
+        working-directory: rust
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Smoke test
+        if: matrix.smoke
+        run: rust/target/${{ matrix.target }}/release/sitefile --help >/dev/null
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="sitefile-$VERSION-$TARGET"
+          mkdir -p "dist/$name"
+          cp "rust/target/$TARGET/release/sitefile" LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*.tar.gz
+          retention-days: 7
+
+  vsix:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Package the VS Code extension
+        working-directory: editors/vscode
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run package
+          ext_version=$(node -p 'require("./package.json").version')
+          mkdir -p ../../dist
+          mv ./*.vsix "../../dist/sitefile-vscode-$ext_version.vsix"
+          ls -l ../../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: dist/*.vsix
+          retention-days: 7
+
+  upload:
+    needs: [resolve, binaries, vsix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum -- *.tar.gz *.vsix > SHA256SUMS
+          cat SHA256SUMS
+          ls -l
+
+      - name: Upload to the release
+        if: needs.resolve.outputs.dry_run != 'true'
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        # SHA256SUMS goes last: its presence marks the release as done.
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" -R "$REPO" --clobber -- *.tar.gz *.vsix
+          gh release upload "$TAG" -R "$REPO" --clobber SHA256SUMS
+
+      - name: Dry run
+        if: needs.resolve.outputs.dry_run == 'true'
+        run: echo "::notice::Dry run for ${{ needs.resolve.outputs.tag }}; nothing uploaded."

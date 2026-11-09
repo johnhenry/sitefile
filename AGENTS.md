@@ -90,5 +90,7 @@ entry in a PR; merging it publishes through
 `.github/workflows/publish.yml` (npm trusted publishing, idempotent
 `npm view` guard), which then creates the `v<version>` tag and GitHub
 Release. Don't run `gh release create`. Don't rename `publish.yml`: npm
-trusted publishing is bound to that filename. Rust binaries and the VS Code
-extension are not released yet (johnhenry/sitefile#69).
+trusted publishing is bound to that filename. After a successful publish,
+`.github/workflows/release-binaries.yml` attaches the Rust binaries, the VS
+Code `.vsix` and `SHA256SUMS` to that Release (docs/RUST.md, "Release
+binaries").

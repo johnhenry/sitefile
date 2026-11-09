@@ -38,8 +38,9 @@ name = "sitefile"
 language-servers = ["sitefile-lsp"]
 ```
 
-It needs the `sitefile` Rust binary on `PATH` (`cargo install --path rust`
-from a clone), or its full path in `command`. `hx --health sitefile` shows
+It needs the `sitefile` Rust binary on `PATH` (a
+[prebuilt release binary](../../README.md#prebuilt-binaries), or
+`cargo install --path rust` from a clone), or its full path in `command`. `hx --health sitefile` shows
 whether Helix finds it.
 
 ## Local grammar
