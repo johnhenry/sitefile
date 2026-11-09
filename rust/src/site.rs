@@ -450,6 +450,10 @@ pub fn cache_header_rules(
     }
     if !pages.is_empty() {
         add(&mut out, "/*.html".into(), NO_CACHE);
+    }
+    out
+}
+
 // ---------------------------------------------------------------- robots.txt and security.txt
 
 /// `/robots.txt` (RFC 9309) for every user agent (`robotsTxt` in src/site.ts).
@@ -459,6 +463,7 @@ pub fn robots_txt(rules: &[(bool, String)], sitemaps: &[String]) -> String {
         out.push_str("Disallow:\n");
     }
     for (allow, path) in rules {
+        out.push_str(&format!(
             "{}: {path}\n",
             if *allow { "Allow" } else { "Disallow" }
         ));
@@ -487,6 +492,8 @@ pub fn check_field_uri(raw: &str, field: &str, schemes: &[&str], span: &SourceSp
                 None => s.to_string(),
             })
             .collect();
+        return Err(SitefileError::at(
+            E_VALIDATION,
             format!(
                 "SECURITY_TXT {field} '{raw}' must be a {} URI with no spaces",
                 list.join(", ")
@@ -494,6 +501,7 @@ pub fn check_field_uri(raw: &str, field: &str, schemes: &[&str], span: &SourceSp
             span,
         ));
     }
+    Ok(raw.to_string())
 }
 
 /// RFC 9116 `security.txt`: Contact lines, Expires, then Encryption and Policy lines, in source order.
