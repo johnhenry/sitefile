@@ -6,12 +6,27 @@
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
   subdomains, `*` for any) adds names and is kept in the server record.
+- **Identical `--help` in both CLIs**: the `--node` line now reads "default
+  $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
+  default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
+  the Rust binary), and that is now listed in docs/RUST.md "Known
+  differences". `save --help` in the Rust binary now lists `car`, `html` and
+  `mhtml` too. A `help-text` conformance case compares every command's help.
 - **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
   file responses carry `Last-Modified` (image: when it was stored; directory:
   newest file mtime; archive: its mtime; `--watch`: the build time), and
   `If-Modified-Since` without `If-None-Match` gives `304`. An HTML page whose
   `_headers` `Link` preloads or preconnects is preceded by a `103 Early Hints`
   response with those links (HTTP/1.1 `GET` only). Both servers.
+- **`sitefile import-config`** (johnhenry/sitefile#204): translates
+  netlify.toml, vercel.json, firebase.json, staticwebapp.config.json,
+  wrangler.toml/.json (`[assets]`) and an `.htaccess` subset into the
+  `_redirects` and `_headers` that `sitefile serve` understands today. Every
+  rule written is checked against serve's parser. Placeholders, conditions,
+  regular expressions, proxies and settings with no `_redirects` form are
+  listed as unsupported, never half translated. `--json` lists both. It reads
+  the TOML files with a small TOML subset shared by both implementations.
+  Fixtures for every format are conformance cases.
 - **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
   bytes` on file responses; a single `Range` on `GET` gets `206` with
   `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
@@ -25,6 +40,42 @@
   not created yet. Sources are relative to the servers file. Server records
   gain an optional `project` field. Both implementations, with conformance
   cases.
+- **`serve x.zip` serves in place** (#213): the zip is checked and indexed at
+  start and each entry is read from the file per request, so memory stays
+  flat for large zips; responses are unchanged, except that gzip clients get
+  deflated entries passed through as `content-encoding: gzip` (no
+  re-encoding). Library: `openZipFile`/`openZipArchive`/`loadServedSite` and
+  `SiteServerOptions.content` (Rust: `open_zip_file`, `open_zip_archive`,
+  `load_served_site`, `SiteServerOptions::content`). Both implementations.
+- **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
+  RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
+  with what to convert it to. (zstd decoding is not added: the Rust side has
+  no zstd decoder without a new dependency; see #221.) Both implementations.
+- **ZIP64 zips are read** (#185): the zip64 end record and locator and the
+  0x0001 extra field (central and local) are read, so zips from Python's
+  `force_zip64`, Java, Go and Node `archiver` with `forceZip64` import and
+  serve; the archive limits still refuse large ones. Writing ZIP64 stays
+  unsupported. Both implementations.
+- **Zip local headers are cross-checked** (#184): a local header whose name,
+  compression method or sizes (without a data descriptor) differ from the
+  central directory, or entries whose bytes overlap, are `E_ARCHIVE_UNSAFE`,
+  so sitefile never extracts different files than `unzip` or a browser would.
+  Directory entries' local headers are now checked too. Both implementations.
+- **Zip CRC-32 check** (#183): every extracted zip entry is checked against
+  its central-directory CRC-32; a mismatch is `E_ARCHIVE` naming the entry
+  (`IMPORT … AS tree`, `serve x.zip`). Both implementations.
+- **Zip names without the UTF-8 flag** (#182): names without general-purpose
+  bit 11 are read from the Info-ZIP Unicode Path field (0x7075) when its CRC
+  matches, else as UTF-8 when valid, else as CP437 (they used to become
+  U+FFFD, and two names could collide). Applies to `IMPORT … AS tree` and
+  `serve x.zip`, in both implementations.
+- **Zip export writes the extended timestamp** (#187): every entry carries the
+  0x5455 "UT" extra field (mtime only) in its local and central header, so
+  `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
+  the DOS time as local time). **This changes zip export bytes**: every
+  `-o x.zip` (and `EXPORT … AS zip`) output differs from 0.0.2's, still
+  deterministic and identical across the TypeScript and Rust writers (their
+  byte-for-byte fixtures are updated together). Image IDs are not affected.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input
@@ -90,6 +141,20 @@
   `webfinger` as `application/jrd+json` and `host-meta` as
   `application/xrd+xml`, instead of `application/octet-stream`. Extension
   matching is ASCII case-insensitive in both implementations.
+- **`EXPORT … AS html` and `AS mhtml`** (johnhenry/sitefile#210): a single
+  self-contained page. `html` inlines every asset `index.html` references
+  (and what its stylesheets reference) as `data:` URIs; `mhtml` writes the
+  page and the same assets as one `multipart/related` file under `BASE`
+  (default `https://site.invalid/`). A missing asset fails with `E_EXPORT`;
+  links, other pages and external URLs stay. Both implementations;
+  conformance cases `ok-html`, `ok-mhtml`, `err-html-missing`. The reference
+  scanner now records each attribute URL's element (`img src`).
+- **`EXPORT … AS car`** (johnhenry/sitefile#208): an IPFS CARv1 file of the
+  tree as a UnixFS DAG (raw leaves, 256 KiB chunks, balanced 174-link file
+  nodes, CIDv1), the same DAG and root CID as kubo's `ipfs add -r --hidden
+  --cid-version=1` (and the same bytes as its `ipfs dag export`). `-o x.car`
+  selects it; `build` and `save` print the root CID. Both implementations;
+  conformance cases `example/blog:car-bytes`, `case/ok-car`.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of

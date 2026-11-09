@@ -1,0 +1,7 @@
+# A missing asset fails the html export.
+FROM scratch
+COPY <<HTML /index.html
+<p>x</p>
+<img src="missing.png">
+HTML
+EXPORT / AS html
