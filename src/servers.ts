@@ -55,6 +55,8 @@ export interface ServerState {
   readonly auth?: readonly AuthEntry[];
   /** `--auth-file`: an htpasswd file, read at every start (absent: none). */
   readonly authFile?: string;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

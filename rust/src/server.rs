@@ -57,6 +57,11 @@ pub struct SiteServerOptions {
     pub quiet: bool,
     /// `--auth`, `--auth-file`: every request needs one of these credentials, else `401`.
     pub auth: Option<Arc<crate::serve_auth::BasicAuth>>,
+    /// `--max-connections-per-ip`: open connections one non-loopback client may hold (0: no limit);
+    /// a connection over it gets `503` with `Retry-After: 1` and is closed.
+    pub max_connections_per_ip: usize,
+    /// Count loopback clients against `max_connections_per_ip` too (tests only).
+    pub limit_loopback: bool,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -767,6 +772,16 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`).
+fn is_loopback_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => a.is_loopback(),
+        std::net::IpAddr::V6(a) => {
+            a.is_loopback() || a.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
+}
+
 /// The first of repeated header values (ours are joined with `, `; Node keeps the first
 /// `Authorization`).
 fn first_value(v: Option<&String>) -> Option<&str> {
@@ -1395,6 +1410,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         416 => "Range Not Satisfiable",
         _ => "",
     }
@@ -2123,6 +2139,7 @@ fn serve_connection(
     tree: &SharedTree,
     rules: &RulesCache,
     options: &SiteServerOptions,
+    busy: bool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_nodelay(true);
@@ -2143,8 +2160,10 @@ fn serve_connection(
             _ => break,
         };
         let started = Instant::now();
-        let mut keep = req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
-        let host_ok = host_allowed(
+        let mut keep =
+            !busy && req.keep_alive && !req.chunked && req.body_len <= MAX_DISCARD_BODY;
+        let host_ok = !busy
+            && host_allowed(
             options.allowed_hosts.as_deref(),
             req.headers.get("host").map(String::as_str),
         ) && options.auth.as_ref().is_none_or(|a| {
@@ -2187,6 +2206,17 @@ fn serve_connection(
         };
         let site_rules = rules_for(rules, &current);
         let res = match console {
+            // Over --max-connections-per-ip: one 503, then the connection closes.
+            _ if busy => {
+                let mut headers = base_headers(options);
+                headers.push(("retry-after".into(), "1".into()));
+                headers.push(("content-length".into(), "0".into()));
+                Response {
+                    status: 503,
+                    headers,
+                    body: Vec::new(),
+                }
+            }
             Some(live) => live.console_response(
                 options,
                 &req.method,
@@ -2332,6 +2362,7 @@ pub fn listen_shared(
     let stop = Arc::new(AtomicBool::new(false));
     let conns: Arc<Mutex<HashMap<u64, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
     let (s2, c2) = (stop.clone(), conns.clone());
+    let per_ip: Arc<Mutex<HashMap<std::net::IpAddr, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     let accept = std::thread::spawn(move || {
         let next = AtomicU64::new(0);
         for stream in listener.incoming() {
@@ -2345,12 +2376,40 @@ pub fn listen_shared(
                     m.insert(id, c);
                 }
             }
-            let (tree, rules, options, conns) =
-                (tree.clone(), rules.clone(), options.clone(), c2.clone());
+            // --max-connections-per-ip: count this client's open connections.
+            let ip = stream.peer_addr().ok().map(|a| a.ip());
+            let limited = ip.filter(|ip| {
+                options.max_connections_per_ip > 0 && (options.limit_loopback || !is_loopback_ip(ip))
+            });
+            let busy = match limited {
+                Some(ip) => {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    let n = m.entry(ip).or_insert(0);
+                    *n += 1;
+                    *n > options.max_connections_per_ip
+                }
+                None => false,
+            };
+            let (tree, rules, options, conns, per_ip) = (
+                tree.clone(),
+                rules.clone(),
+                options.clone(),
+                c2.clone(),
+                per_ip.clone(),
+            );
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &rules, &options);
+                serve_connection(stream, &tree, &rules, &options, busy);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
+                }
+                if let Some(ip) = limited {
+                    let mut m = per_ip.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(n) = m.get_mut(&ip) {
+                        *n -= 1;
+                        if *n == 0 {
+                            m.remove(&ip);
+                        }
+                    }
                 }
             });
         }
@@ -2628,6 +2687,8 @@ mod tests {
             log_ip: false,
             quiet: false,
             auth: None,
+            max_connections_per_ip: 0,
+            limit_loopback: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2822,6 +2883,39 @@ mod tests {
             network_urls("0.0.0.0", 8080),
             v4.iter().map(|a| format!("http://{a}:8080/")).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn max_connections_per_ip() {
+        let opts = SiteServerOptions {
+            max_connections_per_ip: 2,
+            limit_loopback: true,
+            ..Default::default()
+        };
+        let srv = listen(site(), opts, "127.0.0.1", 0).unwrap();
+        let port = srv.port;
+        let open = || TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let ask = |c: &mut TcpStream| {
+            c.write_all(b"GET /app.js HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let n = c.read(&mut buf).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        };
+        let mut a = open();
+        let b = open();
+        let mut c = open();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(ask(&mut a).starts_with("HTTP/1.1 200"));
+        let busy = ask(&mut c);
+        assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
+        assert!(busy.contains("retry-after: 1"));
+        drop(b);
+        drop(c);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut d = open();
+        assert!(ask(&mut d).starts_with("HTTP/1.1 200"));
+        srv.close();
     }
 
     #[test]
@@ -3205,6 +3299,8 @@ mod tests {
             log_ip: false,
             quiet: false,
             auth: None,
+            max_connections_per_ip: 0,
+            limit_loopback: false,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

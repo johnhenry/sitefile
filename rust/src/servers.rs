@@ -67,6 +67,10 @@ pub struct Bind {
     pub port: u16,
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerState {
@@ -110,6 +114,9 @@ pub struct ServerState {
     /// `--auth-file`: an htpasswd file, read at every start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_file: Option<String>,
+    /// `--max-connections-per-ip` (0: no limit).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_connections_per_ip: usize,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -806,6 +813,8 @@ pub struct DetachedServe {
     pub auth: Vec<crate::serve_auth::AuthEntry>,
     /// `--auth-file`, an absolute path.
     pub auth_file: Option<String>,
+    /// `--max-connections-per-ip` (0: no limit).
+    pub max_connections_per_ip: usize,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -831,6 +840,7 @@ impl DetachedServe {
             quiet: false,
             auth: Vec::new(),
             auth_file: None,
+            max_connections_per_ip: 0,
             project: None,
         })
     }
@@ -881,6 +891,7 @@ pub fn serve_detached_with(
         quiet: serve.quiet,
         auth: serve.auth.clone(),
         auth_file: serve.auth_file.clone(),
+        max_connections_per_ip: serve.max_connections_per_ip,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1098,6 +1109,7 @@ mod tests {
             quiet: false,
             auth: Vec::new(),
             auth_file: None,
+            max_connections_per_ip: 0,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

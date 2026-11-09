@@ -53,6 +53,10 @@ export interface SiteServerOptions {
   readonly quiet?: boolean;
   /** `--auth`, `--auth-file`: every request needs one of these credentials (`Authorization: Basic`), else `401`. */
   readonly auth?: BasicAuth;
+  /** `--max-connections-per-ip`: open connections one non-loopback client may hold (0 or unset: no limit); a connection over it gets `503` with `Retry-After: 1` and is closed. */
+  readonly maxConnectionsPerIp?: number;
+  /** Count loopback clients against {@link maxConnectionsPerIp} too (tests only). */
+  readonly limitLoopback?: boolean;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -467,6 +471,11 @@ export function preflightHeaders(value: string | undefined): string | undefined 
   return v !== undefined && v !== '' && /^[A-Za-z0-9 \t,!#$%&'*+\-.^_`|~]+$/.test(v) ? v : undefined;
 }
 
+/** Loopback, also as an IPv4-mapped IPv6 address (`::ffff:127.0.0.1`). */
+function isLoopbackAddress(ip: string): boolean {
+  return ip === '::1' || /^(::ffff:)?127\./i.test(ip);
+}
+
 /** Whether `s` is a dotted-decimal IPv4 address. */
 function isIpv4(s: string): boolean {
   const parts = s.split('.');
@@ -649,6 +658,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     options.warn(`live reload: the Content-Security-Policy that _headers sets for ${served} does not allow ${what}, so open pages will not reload: ${policy}`);
   };
 
+  /** Connections over --max-connections-per-ip: they get one 503. */
+  const busy = new WeakSet<object>();
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const started = process.hrtime.bigint();
     const method = req.method ?? 'GET';
@@ -693,6 +704,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const page = (status: number, html: string, extra: Record<string, string> = {}): void =>
       finish(status, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), ...extra }, html);
 
+    if (busy.has(req.socket)) return finish(503, { 'retry-after': '1', 'content-length': 0, connection: 'close' }, undefined);
     // DNS rebinding: a page on another name must not read this server (before anything else).
     const hostHeader = req.headers.host;
     if (!hostAllowed(options.allowedHosts, hostHeader)) return page(403, FORBIDDEN_HOST_PAGE);
@@ -850,6 +862,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   };
 
   const server = http.createServer(handler);
+  const limit = options.maxConnectionsPerIp ?? 0;
+  if (limit > 0) {
+    const perIp = new Map<string, number>();
+    server.on('connection', (socket) => {
+      const ip = socket.remoteAddress ?? '';
+      if (!options.limitLoopback && isLoopbackAddress(ip)) return;
+      const n = (perIp.get(ip) ?? 0) + 1;
+      perIp.set(ip, n);
+      if (n > limit) busy.add(socket);
+      socket.once('close', () => {
+        const left = (perIp.get(ip) ?? 1) - 1;
+        if (left === 0) perIp.delete(ip);
+        else perIp.set(ip, left);
+      });
+    });
+  }
   server.on('clientError', (_err, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
     else socket.destroy();

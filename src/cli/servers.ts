@@ -125,6 +125,7 @@ const run: Command = {
     '--quiet           no access-log lines',
     '--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored',
     '--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)',
+    '--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -161,6 +162,7 @@ const run: Command = {
     quiet: { type: 'boolean' },
     auth: { type: 'string', multiple: true },
     'auth-file': { type: 'string' },
+    'max-connections-per-ip': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -187,6 +189,7 @@ const run: Command = {
     const cache = cacheOf(v);
     const logging = loggingOf(v);
     const auth = await authOf(v, bind.host);
+    const perIp = perIpOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -198,7 +201,7 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
       else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
@@ -208,7 +211,7 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
     return 0;
   },
@@ -241,6 +244,8 @@ export interface DetachedServe {
   readonly auth?: AuthEntry[] | undefined;
   /** `--auth-file`, an absolute path read at every start. */
   readonly authFile?: string | undefined;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -268,6 +273,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.quiet ? { quiet: true } : {}),
     ...(d.auth !== undefined ? { auth: d.auth } : {}),
     ...(d.authFile !== undefined ? { authFile: d.authFile } : {}),
+    ...(d.maxConnectionsPerIp ? { maxConnectionsPerIp: d.maxConnectionsPerIp } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -371,6 +377,15 @@ async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: Bas
   };
 }
 
+/** `--max-connections-per-ip <n>`: the option (and record field) when n > 0. */
+function perIpOf(v: ParsedValues): { maxConnectionsPerIp?: number } {
+  const raw = str(v['max-connections-per-ip']);
+  if (raw === undefined) return {};
+  if (!/^[0-9]{1,6}$/.test(raw)) usage(`--max-connections-per-ip must be a number (0 to 999999), not '${raw}'`);
+  const n = Number(raw);
+  return n > 0 ? { maxConnectionsPerIp: n } : {};
+}
+
 function isLoopback(host: string): boolean {
   return host === 'localhost' || host === '::1' || /^127\./.test(host);
 }
@@ -397,6 +412,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cache = cacheOf(v);
   const logging = loggingOf(v);
   const auth = await authOf(v, bind.host);
+  const perIp = perIpOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -423,7 +439,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,

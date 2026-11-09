@@ -414,6 +414,55 @@ test('network URLs for a server bound to all interfaces (johnhenry/sitefile#169)
   assert.deepEqual(networkUrls('0.0.0.0', 8080), v4.map((a) => `http://${a}:8080/`));
 });
 
+test('--max-connections-per-ip: a connection over the limit gets 503 with Retry-After (johnhenry/sitefile#178)', async () => {
+  const s = createSiteServer(tree, { maxConnectionsPerIp: 2, limitLoopback: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  const open = async (): Promise<net.Socket> => {
+    const c = net.connect(port, '127.0.0.1');
+    await new Promise((r) => c.once('connect', r));
+    return c;
+  };
+  const ask = (c: net.Socket): Promise<string> =>
+    new Promise((resolve) => {
+      let d = '';
+      c.on('data', (x) => {
+        d += x;
+        if (d.includes('\r\n\r\n')) resolve(d);
+      });
+      c.write('GET /app.js HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n');
+    });
+  try {
+    const a = await open();
+    const b = await open();
+    const c = await open();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.match(await ask(a), /^HTTP\/1\.1 200/);
+    const busy = await ask(c);
+    assert.match(busy, /^HTTP\/1\.1 503/);
+    assert.match(busy, /retry-after: 1/i);
+    b.destroy();
+    c.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const d = await open();
+    assert.match(await ask(d), /^HTTP\/1\.1 200/, 'a slot is free again');
+    a.destroy();
+    d.destroy();
+  } finally {
+    await closeServer(s);
+  }
+  // Loopback clients are not limited unless asked.
+  const t = createSiteServer(tree, { maxConnectionsPerIp: 1 });
+  const tp = await listen(t, '127.0.0.1', 0);
+  try {
+    const x = net.connect(tp.port, '127.0.0.1');
+    await new Promise((r) => x.once('connect', r));
+    assert.equal((await req(tp.port, '/app.js')).status, 200);
+    x.destroy();
+  } finally {
+    await closeServer(t);
+  }
+});
+
 test('an access log line is written per request: method path status bytes ms', async () => {
   await withServer({}, async (port, log) => {
     await req(port, '/app.js');

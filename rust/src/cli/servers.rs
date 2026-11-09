@@ -175,6 +175,19 @@ fn auth_of(v: &Parsed, bind_host: &str) -> Result<AuthSetup> {
     Ok((Some(Arc::new(BasicAuth::new(all))), entries, abs))
 }
 
+/// `--max-connections-per-ip <n>` (0 when absent: no limit).
+fn per_ip_of(v: &Parsed) -> Result<usize> {
+    let Some(raw) = v.str("max-connections-per-ip") else {
+        return Ok(0);
+    };
+    if !(1..=6).contains(&raw.len()) || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return usage(format!(
+            "--max-connections-per-ip must be a number (0 to 999999), not '{raw}'"
+        ));
+    }
+    Ok(raw.parse().unwrap_or(0))
+}
+
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
 fn network_lines(host: &str, port: u16) -> String {
     crate::server::network_urls(host, port)
@@ -238,6 +251,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("quiet"),
     strings("auth"),
     string("auth-file"),
+    string("max-connections-per-ip"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -292,6 +306,7 @@ pub const SERVE: Command = Command {
         "--quiet           no access-log lines",
         "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
         "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
+        "--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -335,6 +350,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
     let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -379,6 +395,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 log_ip,
                 quiet,
                 auth: auth.clone(),
+                max_connections_per_ip: per_ip,
+                limit_loopback: false,
             },
             &bind.host,
             bind.port,
@@ -452,6 +470,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let cache = cache_of(v)?;
     let (log_json, log_ip, quiet) = logging_of(v)?;
     let (auth, _, _) = auth_of(v, &bind.host)?;
+    let per_ip = per_ip_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -605,6 +624,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             log_ip,
             quiet,
             auth: auth.clone(),
+            max_connections_per_ip: per_ip,
+            limit_loopback: false,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -727,6 +748,8 @@ pub fn serve_worker(id: &str) -> i32 {
                 log_ip: state.log_ip,
                 quiet: state.quiet,
                 auth: worker_auth(&state)?,
+                max_connections_per_ip: state.max_connections_per_ip,
+                limit_loopback: false,
             },
             &state.bind.host,
             state.bind.port,

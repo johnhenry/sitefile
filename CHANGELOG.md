@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve --max-connections-per-ip <n>`** (johnhenry/sitefile#178): a
+  non-loopback client over the cap gets `503` with `Retry-After: 1`; kept in the
+  server record. Both servers.
 - **`serve --auth user:password`, `--auth-file`, `SITEFILE_SERVE_AUTH`**
   (johnhenry/sitefile#177): HTTP basic authentication on every request (401
   with `WWW-Authenticate` otherwise), constant-time checks, only PBKDF2

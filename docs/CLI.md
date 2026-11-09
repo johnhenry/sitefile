@@ -1154,6 +1154,10 @@ to `image` (`imageId`) and `dir` (`path`).
   shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
   warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
   `www-authenticate`.
+- **`--max-connections-per-ip <n>`** caps the connections one non-loopback client may hold open (default `0`, no
+  limit; loopback clients are never limited). A connection over the cap gets one `503` with `Retry-After: 1` (and
+  the usual access-log line), then it is closed; the count drops as connections close. Stored in the server record
+  (`maxConnectionsPerIp`), so `servers --json` shows it.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

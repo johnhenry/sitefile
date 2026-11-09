@@ -138,6 +138,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             quiet: false,
             auth: Vec::new(),
             auth_file: None,
+            max_connections_per_ip: 0,
             project: Some(project.clone()),
         });
     }
