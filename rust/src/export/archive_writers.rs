@@ -135,6 +135,21 @@ fn dos_date_time(epoch: Option<u64>) -> (u16, u16) {
 
 use crate::deflate::deflate_raw;
 
+/// The extended-timestamp extra field (0x5455 "UT", APPNOTE 4.4.6, Info-ZIP
+/// extrafld.txt) with the modification time only: unlike the DOS time, which
+/// unzippers read as local time, it is UTC seconds, so SOURCE_DATE_EPOCH
+/// survives extraction in any time zone. The same 9 bytes go in the local and
+/// the central header. Without an epoch it says 1980-01-01, as the DOS time does.
+fn extended_timestamp(epoch: Option<u64>) -> [u8; 9] {
+    let t = epoch.unwrap_or(315_532_800).min(0xffff_ffff) as u32;
+    let mut ut = [0u8; 9];
+    ut[0..2].copy_from_slice(&0x5455u16.to_le_bytes());
+    ut[2..4].copy_from_slice(&5u16.to_le_bytes());
+    ut[4] = 1; // mtime present
+    ut[5..9].copy_from_slice(&t.to_le_bytes());
+    ut
+}
+
 /// Zip (no zip64). Deflate when it shrinks the data, otherwise stored.
 pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
     let entries = entries_of(tree)?;
@@ -145,6 +160,7 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         ));
     }
     let (time, date) = dos_date_time(options.epoch);
+    let ut = extended_timestamp(options.epoch);
     let mut out: Vec<u8> = Vec::new();
     let mut central: Vec<u8> = Vec::new();
     for e in &entries {
@@ -195,8 +211,9 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         out.extend((data.len() as u32).to_le_bytes());
         out.extend((e.bytes.len() as u32).to_le_bytes());
         out.extend((name.len() as u16).to_le_bytes());
-        out.extend(0u16.to_le_bytes());
+        out.extend((ut.len() as u16).to_le_bytes());
         out.extend_from_slice(name);
+        out.extend_from_slice(&ut);
         out.extend_from_slice(data);
 
         central.extend(0x0201_4b50u32.to_le_bytes());
@@ -210,10 +227,12 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
         central.extend((data.len() as u32).to_le_bytes());
         central.extend((e.bytes.len() as u32).to_le_bytes());
         central.extend((name.len() as u16).to_le_bytes());
-        central.extend([0u8; 8]); // extra, comment, disk number, internal attrs
+        central.extend((ut.len() as u16).to_le_bytes());
+        central.extend([0u8; 6]); // comment, disk number, internal attrs
         central.extend(((0o100000 | e.mode) << 16).to_le_bytes());
         central.extend((offset as u32).to_le_bytes());
         central.extend_from_slice(name);
+        central.extend_from_slice(&ut);
     }
     let offset = out.len() as u64;
     let cd_size = central.len() as u64;
@@ -514,7 +533,7 @@ pub(crate) mod tests {
             assert_eq!(data.len(), usize_);
             assert_eq!(crc32(&data), u32at(off + 16) as u32);
             files.push((format!("/{name}"), make_file(data, "t", attr & 0o777)));
-            off += 46 + nlen;
+            off += 46 + nlen + u16at(off + 30) as usize + u16at(off + 32) as usize;
         }
         Tree::from_files(files).unwrap()
     }
@@ -619,7 +638,7 @@ pub(crate) mod tests {
                 (u16at(off + 10), u32at(off + 38) >> 16, u16at(off + 4)),
             );
             order.push(name);
-            off += 46 + nlen;
+            off += 46 + nlen + u16at(off + 30) as usize + u16at(off + 32) as usize;
         }
         let mut sorted = order.clone();
         sorted.sort();
@@ -750,7 +769,7 @@ pub(crate) mod tests {
         ]);
         assert_eq!(
             sha256(&write_zip(&stored, &none).unwrap()),
-            "sha256:247ec13fd1565e2894ea61a9579047f5baaaa39ff1787c348d1159597db85bc5"
+            "sha256:7257a53824162c02a60b8c1b783a57fe20d74d64ef4b7a04c3ef64b5d14ce46c"
         );
         let e1 = WriterOptions {
             epoch: Some(1_700_000_001),
@@ -758,7 +777,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             sha256(&write_zip(&stored, &e1).unwrap()),
-            "sha256:6c780535188c6bea3bafc6499d49057f8e33a4140fa29d78d48805a0b6ae0738"
+            "sha256:b29ffe03ae09ced4411a7d5f9d4be6ab6f5949843b5e0d614bea732dfdb1d55f"
         );
     }
 

@@ -59,6 +59,21 @@ function dosDateTime(epoch: number | undefined): { time: number; date: number } 
   };
 }
 
+/**
+ * The extended-timestamp extra field (0x5455 "UT", APPNOTE 4.4.6, Info-ZIP extrafld.txt) with the
+ * modification time only: unlike the DOS time, which unzippers read as local time, it is UTC
+ * seconds, so SOURCE_DATE_EPOCH survives extraction in any time zone. The same 9 bytes go in the
+ * local and the central header. Without an epoch it says 1980-01-01, as the DOS time does.
+ */
+function extendedTimestamp(epoch: number | undefined): Buffer {
+  const ut = Buffer.alloc(9);
+  ut.writeUInt16LE(0x5455, 0);
+  ut.writeUInt16LE(5, 2);
+  ut[4] = 1; // mtime present
+  ut.writeUInt32LE(Math.min(Math.max(epoch ?? 315532800, 0), 0xffffffff), 5);
+  return ut;
+}
+
 /** Zip (no zip64). Deflate when it shrinks the data, otherwise stored. */
 export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
   const entries = entriesOf(tree);
@@ -66,6 +81,7 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
     throw new SitefileError('E_EXPORT', `zip export supports at most ${ZIP_MAX_ENTRIES} entries (zip64 is not implemented); got ${entries.length}`);
   }
   const { time, date } = dosDateTime(options.epoch);
+  const ut = extendedTimestamp(options.epoch);
   const chunks: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
@@ -92,7 +108,7 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
     lh.writeUInt32LE(data.length, 18);
     lh.writeUInt32LE(e.bytes.length, 22);
     lh.writeUInt16LE(e.nameBytes.length, 26);
-    lh.writeUInt16LE(0, 28);
+    lh.writeUInt16LE(ut.length, 28);
 
     const ch = Buffer.alloc(46);
     ch.writeUInt32LE(0x02014b50, 0);
@@ -106,13 +122,14 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
     ch.writeUInt32LE(data.length, 20);
     ch.writeUInt32LE(e.bytes.length, 24);
     ch.writeUInt16LE(e.nameBytes.length, 28);
-    // extra, comment, disk number, internal attrs = 0
+    ch.writeUInt16LE(ut.length, 30);
+    // comment, disk number, internal attrs = 0
     ch.writeUInt32LE(((0o100000 | e.mode) << 16) >>> 0, 38);
     ch.writeUInt32LE(offset, 42);
 
-    chunks.push(lh, e.nameBytes, data);
-    central.push(ch, e.nameBytes);
-    offset += 30 + e.nameBytes.length + data.length;
+    chunks.push(lh, e.nameBytes, ut, data);
+    central.push(ch, e.nameBytes, ut);
+    offset += 30 + e.nameBytes.length + ut.length + data.length;
   }
   const cdSize = central.reduce((n, c) => n + c.length, 0);
   if (offset + cdSize > ZIP_MAX) throw new SitefileError('E_EXPORT', 'zip export does not support archives of 4 GiB or more (zip64 is not implemented)');
