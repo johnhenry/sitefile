@@ -2778,6 +2778,26 @@ mod tests {
     }
 
     #[test]
+    fn network_addresses_of_wildcard_binds() {
+        assert!(network_addresses("127.0.0.1").is_empty());
+        assert!(network_addresses("::1").is_empty());
+        let v4 = network_addresses("0.0.0.0");
+        assert!(v4.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| !ip.is_loopback())));
+        let mut sorted = v4.clone();
+        sorted.sort();
+        assert_eq!(v4, sorted);
+        let all = network_addresses("::");
+        assert_eq!(&all[..v4.len()], &v4[..], "IPv4 first");
+        assert!(all[v4.len()..]
+            .iter()
+            .all(|a| a.contains(':') && !a.starts_with("fe8") && a != "::1"));
+        assert_eq!(
+            network_urls("0.0.0.0", 8080),
+            v4.iter().map(|a| format!("http://{a}:8080/")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn json_access_log() {
         let e = AccessLogEntry {
             ts: "2026-01-01T00:00:00.000Z",
