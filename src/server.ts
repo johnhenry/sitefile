@@ -22,6 +22,38 @@ export interface SiteServerOptions {
   readonly liveReload?: LiveReload;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
+  /**
+   * Where file contents come from when the tree holds only digests (a zip served in place,
+   * `openZipFile`): `read` returns a file's bytes (undefined: use the node's), `deflated` a
+   * deflated file's raw deflate stream, sent as `content-encoding: gzip` to clients that accept it.
+   */
+  readonly content?: SiteContent;
+}
+
+/** Contents read on demand ({@link SiteServerOptions.content}). */
+export interface SiteContent {
+  read(path: string): Uint8Array | undefined;
+  deflated?(path: string): { readonly deflate: Uint8Array; readonly crc: number; readonly size: number } | undefined;
+}
+
+/** Whether an `accept-encoding` header accepts gzip (`gzip` or `x-gzip` with a non-zero q). */
+export function acceptsGzip(header: string | undefined): boolean {
+  if (header === undefined) return false;
+  return header.split(',').some((part) => {
+    const [name, ...params] = part.trim().split(';');
+    if (name?.trim().toLowerCase() !== 'gzip' && name?.trim().toLowerCase() !== 'x-gzip') return false;
+    const q = params.map((x) => x.trim()).find((x) => x.toLowerCase().startsWith('q='));
+    return q === undefined || Number(q.slice(2)) > 0;
+  });
+}
+
+/** A gzip member around a raw deflate stream: fixed header (no name, mtime 0, OS unknown), CRC-32 and size. */
+export function gzipMember(deflate: Uint8Array, crc: number, size: number): Uint8Array {
+  const head = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
+  const tail = Buffer.alloc(8);
+  tail.writeUInt32LE(crc >>> 0, 0);
+  tail.writeUInt32LE(size % 2 ** 32, 4);
+  return Buffer.concat([head, deflate, tail]);
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -312,6 +344,7 @@ export function injectReloadScript(html: Uint8Array): Uint8Array {
 
 const NOT_FOUND_PAGE = '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n';
 const BAD_REQUEST_PAGE = '<!doctype html><meta charset="utf-8"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n';
+const ERROR_PAGE = '<!doctype html><meta charset="utf-8"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n';
 const METHOD_PAGE = '<!doctype html><meta charset="utf-8"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n';
 
 /** Decode a request path into safe segments, or undefined when it is malformed or unsafe. */
@@ -375,7 +408,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (t !== rulesTree) {
       const text = (p: string): string => {
         const f = t.get(p);
-        return f ? new TextDecoder().decode(f.bytes) : '';
+        return f ? new TextDecoder().decode(options.content?.read(p) ?? f.bytes) : '';
       };
       rules = { redirects: parseRedirectRules(text('/_redirects')), headers: parseHeaderRules(text('/_headers')) };
       rulesTree = t;
@@ -475,12 +508,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
-      const body = live ? injectReloadScript(file.bytes) : file.bytes;
-      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
-      // An injected page is a different representation of the file: give it its own ETag.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag }, body);
+      // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer.
+      const deflated = !live && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      let body: Uint8Array;
+      try {
+        body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
+      } catch (e) {
+        options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
+        return page(500, ERROR_PAGE);
+      }
+      if (live) body = injectReloadScript(body);
+      const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: 'accept-encoding' } : {};
+      if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
+      // An injected page and a gzip response are other representations of the file: they get their own ETags.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}"`;
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, etag }, undefined);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom, etag }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`serve x.zip` serves in place** (#213): the zip is checked and indexed at
+  start and each entry is read from the file per request, so memory stays
+  flat for large zips; responses are unchanged, except that gzip clients get
+  deflated entries passed through as `content-encoding: gzip` (no
+  re-encoding). Library: `openZipFile`/`openZipArchive`/`loadServedSite` and
+  `SiteServerOptions.content` (Rust: `open_zip_file`, `open_zip_archive`,
+  `load_served_site`, `SiteServerOptions::content`). Both implementations.
 - **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
   RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
   with what to convert it to. (zstd decoding is not added: the Rust side has

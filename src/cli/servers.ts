@@ -7,7 +7,7 @@ import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
-import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
+import { isRunning, loadDirectoryTree, loadServedSite, pidAlive, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -166,16 +166,17 @@ const run: Command = {
     const keepOsMetadata = !!v['keep-os-metadata'];
     const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
-      const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
-      const server = createSiteServer(tree, { spa: !!v.spa, log: (l) => process.stdout.write(`${l}\n`) });
+      const { tree, content, close } = await loadServedSite(store, source, { keepOsMetadata, warn });
+      const server = createSiteServer(tree, { spa: !!v.spa, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
       await closeServer(server);
+      close();
       return 0;
     }
 
-    await loadServedTree(store, source, { keepOsMetadata, warn }); // fail fast on a bad image, directory or archive
+    (await loadServedSite(store, source, { keepOsMetadata, warn })).close(); // fail fast on a bad image, directory or archive
     const reg = await ServerRegistry.open(store);
     const { id, name: finalName } = await reg.allocate(name);
     const state: ServerState = {
@@ -472,7 +473,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     await stopServer(reg, s, graceOf(v));
-    await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
+    (await loadServedSite(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata })).close();
     const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
     delete (fresh as { error?: string }).error;
     await reg.write(fresh);

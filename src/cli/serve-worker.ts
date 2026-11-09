@@ -3,7 +3,7 @@
 // Usage: node serve-worker.js <server id>. State and logs live in $SITEFILE_HOME/servers.
 import { SitefileError } from '../errors.js';
 import { closeServer, createSiteServer, formatUrl, listen } from '../server.js';
-import { loadServedTree, ServerRegistry } from '../servers.js';
+import { loadServedSite, ServerRegistry } from '../servers.js';
 
 const stamp = (m: string): void => void process.stdout.write(`${new Date().toISOString()} ${m}\n`);
 
@@ -13,8 +13,8 @@ async function main(): Promise<void> {
   const state = await reg.read(id);
   if (!state) throw new SitefileError('E_SERVER', `no state for server '${id}'`);
   try {
-    const tree = await loadServedTree(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
-    const server = createSiteServer(tree, { spa: state.spa, serverId: id, log: stamp });
+    const { tree, content } = await loadServedSite(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
+    const server = createSiteServer(tree, { spa: state.spa, serverId: id, log: stamp, ...(content ? { content } : {}) });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
     stamp(`serving ${state.image} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}`);
