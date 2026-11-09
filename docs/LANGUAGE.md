@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|epub] [BASE <url>] [AT <root>] [COMPRESSION gzip|none]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1583,8 +1583,8 @@ checked:
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`. The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`; not `.html`, which stays a directory name), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.epub`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.epub`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1774,6 +1774,18 @@ and tar timestamps instead.
   `https://site.invalid/`), the page first. Root-relative references (`/css/a.css`) resolve to parts only
   when the base is an origin (`https://example.com/`). The boundary is fixed and the file has no date, so
   the output depends only on the tree.
+
+- **epub**: an [EPUB 3](https://www.w3.org/TR/epub-33/) publication. The zip starts with `mimetype`
+  (`application/epub+zip`, stored, without an extra field, as the OCF container requires), then
+  `META-INF/container.xml`, the package document `EPUB/package.opf` and the site's files under `EPUB/`.
+  The spine is every `.xhtml`/`.html` page in path order with `/index.xhtml` or `/index.html` first;
+  they are declared `application/xhtml+xml`, so they must be well-formed XHTML (write them with
+  `.xhtml` templates). A site file `/nav.xhtml` is the navigation document; otherwise one is generated
+  that lists the spine pages by `<title>`. Metadata comes from the first page: its `<title>` (default
+  `Untitled`) and `<html lang>` (default `en`); the identifier is a UUID derived from the tree digest
+  and `dcterms:modified` is `SOURCE_DATE_EPOCH` (default the Unix epoch), so the same tree gives the
+  same file. `_redirects` and `_headers` are left out; a site file `/package.opf` is `E_CONFLICT`; a
+  tree without a page is `E_EXPORT`. See `examples/book`.
 
 File output safety (same rules as directories, plus): `--out` that is, or
 contains, the build context, the filesystem root or the home directory is

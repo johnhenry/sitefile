@@ -128,14 +128,14 @@ Options:
       --target <stage>         stop after the named stage and export its whole tree instead of
                                the EXPORT path (EXPORT's format still applies; no _redirects/_headers)
   -o, --out <path>             export destination (build only): a directory for 'directory',
-                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
+                               a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml, epub
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | epub
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml .epub),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer

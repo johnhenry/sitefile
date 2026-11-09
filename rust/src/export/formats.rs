@@ -26,6 +26,7 @@ pub fn default_out_name(format: ExportFormat, compression: Option<OciCompression
         ExportFormat::Car => "dist.car",
         ExportFormat::Html => "dist.html",
         ExportFormat::Mhtml => "dist.mhtml",
+        ExportFormat::Epub => "dist.epub",
     }
 }
 
@@ -59,6 +60,7 @@ pub fn encode_tree(tree: &Tree, format: ExportFormat, options: &EncodeOptions) -
         ExportFormat::Mhtml => {
             super::single_file::write_mhtml(tree, None, options.base_url.as_deref())
         }
+        ExportFormat::Epub => super::epub::write_epub(tree, options.writer.epoch),
         ExportFormat::Directory | ExportFormat::Oci => Err(crate::error::SitefileError::plain(
             crate::error::ErrorCode::E_EXPORT,
             format!("'{}' is not an archive format", format.as_str()),
@@ -83,6 +85,8 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
         Some(ExportFormat::Car)
     } else if name.ends_with(".mhtml") || name.ends_with(".mht") {
         Some(ExportFormat::Mhtml)
+    } else if name.ends_with(".epub") {
+        Some(ExportFormat::Epub)
     } else {
         None
     }

@@ -1,3 +1,4 @@
+import { writeEpub } from './epub.js';
 import { writeTar, writeTgz, writeZip, type WriterOptions } from './archive-writers.js';
 import { gzip } from './deflate.js';
 import type { ExportFormat, OciCompression } from './language/ast.js';
@@ -15,7 +16,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.epub`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -37,6 +38,8 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return 'dist.html';
     case 'mhtml':
       return 'dist.mhtml';
+    case 'epub':
+      return 'dist.epub';
   }
 }
 
@@ -67,6 +70,8 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
       return writeSingleFile(tree);
     case 'mhtml':
       return writeMhtml(tree, undefined, options.baseUrl);
+    case 'epub':
+      return writeEpub(tree, options.epoch);
   }
 }
 
@@ -80,6 +85,7 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.wbn') || name.endsWith('.wbn.gz')) return 'wbn';
   if (name.endsWith('.car')) return 'car';
   if (name.endsWith('.mhtml') || name.endsWith('.mht')) return 'mhtml';
+  if (name.endsWith('.epub')) return 'epub';
   return undefined;
 }
 

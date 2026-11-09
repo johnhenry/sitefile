@@ -1,0 +1,6 @@
+# An EPUB needs at least one XHTML page.
+FROM scratch
+COPY <<T /style.css
+p{}
+T
+EXPORT / AS epub

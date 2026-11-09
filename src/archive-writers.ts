@@ -74,9 +74,18 @@ function extendedTimestamp(epoch: number | undefined): Buffer {
   return ut;
 }
 
-/** Zip (no zip64). Deflate when it shrinks the data, otherwise stored. */
-export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
-  const entries = entriesOf(tree);
+/**
+ * Zip (no zip64). Deflate when it shrinks the data, otherwise stored.
+ *
+ * `first` (tree paths, e.g. `['/mimetype']` for EPUB): these entries come first, in that order, stored
+ * and without an extra field (the EPUB container requires its `mimetype` entry that way); the rest
+ * follow in path order as usual.
+ */
+export function writeZip(tree: Tree, options: WriterOptions = {}, first: readonly string[] = []): Uint8Array {
+  const all = entriesOf(tree);
+  const firstNames = first.map((p) => p.slice(1));
+  const plain = new Set(firstNames);
+  const entries = [...firstNames.flatMap((n) => all.filter((e) => e.name === n)), ...all.filter((e) => !plain.has(e.name))];
   if (entries.length > ZIP_MAX_ENTRIES) {
     throw new SitefileError('E_EXPORT', `zip export supports at most ${ZIP_MAX_ENTRIES} entries (zip64 is not implemented); got ${entries.length}`);
   }
@@ -87,8 +96,10 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
   let offset = 0;
   for (const e of entries) {
     if (e.nameBytes.length > 0xffff) throw new SitefileError('E_EXPORT', `zip entry name is too long (${e.nameBytes.length} bytes): '${e.name.slice(0, 60)}…'`);
-    const deflated = deflateRaw(e.bytes);
-    const stored = deflated.length >= e.bytes.length;
+    const isPlain = plain.has(e.name);
+    const deflated = isPlain ? e.bytes : deflateRaw(e.bytes);
+    const stored = isPlain || deflated.length >= e.bytes.length;
+    const extra = isPlain ? Buffer.alloc(0) : ut;
     const data: Uint8Array = stored ? e.bytes : deflated;
     if (e.bytes.length > ZIP_MAX || data.length > ZIP_MAX) {
       throw new SitefileError('E_EXPORT', `zip export does not support files of 4 GiB or more (zip64 is not implemented): '/${e.name}'`);
@@ -108,7 +119,7 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
     lh.writeUInt32LE(data.length, 18);
     lh.writeUInt32LE(e.bytes.length, 22);
     lh.writeUInt16LE(e.nameBytes.length, 26);
-    lh.writeUInt16LE(ut.length, 28);
+    lh.writeUInt16LE(extra.length, 28);
 
     const ch = Buffer.alloc(46);
     ch.writeUInt32LE(0x02014b50, 0);
@@ -122,14 +133,14 @@ export function writeZip(tree: Tree, options: WriterOptions = {}): Uint8Array {
     ch.writeUInt32LE(data.length, 20);
     ch.writeUInt32LE(e.bytes.length, 24);
     ch.writeUInt16LE(e.nameBytes.length, 28);
-    ch.writeUInt16LE(ut.length, 30);
+    ch.writeUInt16LE(extra.length, 30);
     // comment, disk number, internal attrs = 0
     ch.writeUInt32LE(((0o100000 | e.mode) << 16) >>> 0, 38);
     ch.writeUInt32LE(offset, 42);
 
-    chunks.push(lh, e.nameBytes, ut, data);
-    central.push(ch, e.nameBytes, ut);
-    offset += 30 + e.nameBytes.length + ut.length + data.length;
+    chunks.push(lh, e.nameBytes, extra, data);
+    central.push(ch, e.nameBytes, extra);
+    offset += 30 + e.nameBytes.length + extra.length + data.length;
   }
   const cdSize = central.reduce((n, c) => n + c.length, 0);
   if (offset + cdSize > ZIP_MAX) throw new SitefileError('E_EXPORT', 'zip export does not support archives of 4 GiB or more (zip64 is not implemented)');

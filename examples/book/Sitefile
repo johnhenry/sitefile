@@ -1,0 +1,8 @@
+# sitefile=1
+# A small book: XHTML chapters rendered from one template, exported as an EPUB 3 file.
+ARG TITLE = "A Small Book"
+FROM scratch
+RENDER ./templates/page.xhtml TO /index.xhtml
+COPY ./chapters/ /chapters/
+COPY ./style.css /style.css
+EXPORT / AS epub
