@@ -1,7 +1,8 @@
 //! Diagnostics from the real pipeline: scan → parse → validate → plan → lint, plus the
 //! template parser for RENDER heredoc bodies. Nothing is executed: planning
 //! binds variables and normalizes paths without IO (no reads, fetches,
-//! plugins or writes).
+//! plugins or writes). `schema_diagnostics` is the exception: it reads the
+//! local imports that have a SCHEMA and their schema files (no fetches).
 
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode, SitefileError};
@@ -231,6 +232,31 @@ pub fn analyze(text: &str, file: &str) -> Analysis {
     out
 }
 
+/// `IMPORT … SCHEMA` checks, which read files (the server runs them when a document is opened or saved,
+/// docs/LSP.md): every local import with a SCHEMA is read from `context_dir` and checked as a build would,
+/// so a frontmatter typo shows at its IMPORT line without a build. Nothing is checked unless the document
+/// plans, and not while an ARG lacks a default (its placeholder value could name the wrong files).
+pub fn schema_diagnostics(
+    analysis: &Analysis,
+    text: &str,
+    file: &str,
+    context_dir: &std::path::Path,
+) -> Vec<Diagnostic> {
+    let Some(plan) = &analysis.plan else {
+        return Vec::new();
+    };
+    if !analysis.required_args.is_empty()
+        || analysis.diagnostics.iter().any(|d| d.severity == ERROR)
+    {
+        return Vec::new();
+    }
+    let lines = Lines::new(text);
+    crate::executor::check_local_schemas(plan, context_dir, file)
+        .iter()
+        .map(|e| from_error(e, &lines, ""))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +384,52 @@ mod tests {
         let d = diags("FROM scratch\nRENDER --escape=html <<HTML TO /i.html\n<p>ok</p>\n  ${#if x}\nHTML\nEXPORT /");
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!((d[0].0, d[0].1, d[0].4), (3, 2, Some("E_TEMPLATE")));
+    }
+
+    #[test]
+    fn schema_errors_read_the_files() {
+        let dir = std::env::temp_dir().join(format!("sitefile-lsp-schema-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("posts")).unwrap();
+        std::fs::write(
+            dir.join("s.yaml"),
+            "required: [title]\nproperties:\n  tags: {type: list, items: string}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("bad.yaml"), "properties:\n  a: str\n").unwrap();
+        std::fs::write(dir.join("posts/a.md"), "---\ntitle: A\n---\nx\n").unwrap();
+        std::fs::write(dir.join("posts/b.md"), "---\ntags: [x]\n---\nx\n").unwrap();
+        std::fs::write(dir.join("posts/c.md"), "---\ndraft: true\n---\nx\n").unwrap();
+        let check = |src: &str| {
+            let a = analyze(src, "Sitefile");
+            schema_diagnostics(&a, src, "Sitefile", &dir)
+                .into_iter()
+                .map(|d| (d.line, d.start, d.code, d.message))
+                .collect::<Vec<_>>()
+        };
+        let src = "IMPORT posts FROM ./posts AS markdown SCHEMA ./s.yaml DRAFTS false\nIMPORT p2 FROM ./posts AS markdown SCHEMA ./bad.yaml\nIMPORT r FROM https://example.com/x.json AS json SCHEMA ./s.yaml\nEXPORT /";
+        assert_eq!(
+            check(src),
+            [
+                (0, 0, Some("E_SCHEMA"), "IMPORT posts: document '/b.md' has no 'title' (required by schema './s.yaml')".to_string()),
+                (1, 35, Some("E_SCHEMA"), "IMPORT p2: schema './bad.yaml' property 'a': unknown type 'str' (expected string, number, boolean, date or list)".to_string()),
+            ]
+        );
+        // Fixed documents: nothing to report. A document that does not plan, or an ARG without a default: no check.
+        std::fs::write(dir.join("posts/b.md"), "---\ntitle: B\n---\nx\n").unwrap();
+        assert!(check(
+            "IMPORT posts FROM ./posts AS markdown SCHEMA ./s.yaml DRAFTS false\nEXPORT /"
+        )
+        .is_empty());
+        assert!(check(
+            "IMPORT posts FROM ./posts AS markdown SCHEMA ./missing.yaml\nCOPY ./a ../x\nEXPORT /"
+        )
+        .is_empty());
+        assert!(
+            check("ARG S\nIMPORT posts FROM ./posts AS markdown SCHEMA ./${S}.yaml\nEXPORT /")
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

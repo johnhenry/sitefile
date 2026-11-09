@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Schema checks in the language server** (johnhenry/sitefile#135): when a Sitefile is opened or
+  saved, `sitefile lsp` reads every local `IMPORT … SCHEMA` (documents and schema file, as a build
+  reads them, DRAFTS applied) and reports `E_SCHEMA` and friends at the IMPORT line or SCHEMA clause,
+  without a build. Remote and Git imports are skipped (the server never fetches); an edit clears
+  these diagnostics until the next save. docs/LSP.md describes it.
+
+## Unreleased
+
 - **The version comes from `package.json`** (johnhenry/sitefile#146): `sitefile --version`, the help
   text and the builder version in build attestations said `0.1.0` in both implementations. TypeScript
   now reads `package.json`; Rust reports `rust/Cargo.toml`'s version (now `0.0.5`), and tests on both

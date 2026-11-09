@@ -731,7 +731,9 @@ properties:
   Imports are checked in Sitefile order and documents in path order (before
   `SORT BY`), after every import has been read.
 - Checking happens whenever the imports are read (`build`, `serve`, `inspect`,
-  `why`), not in `validate`, which never reads files. The schema file is
+  `why`), not in `validate`, which never reads files. The language server
+  (`sitefile lsp`) also checks local imports when a Sitefile is opened or
+  saved, without a build (docs/LSP.md). The schema file is
   read on every build (also in watch mode, where a change to it triggers a
   rebuild like any other file); `graph` shows it as a `local:` input of the
   import.
