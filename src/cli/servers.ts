@@ -161,6 +161,8 @@ const run: Command = {
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
     '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
+    '--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response',
+    '--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
@@ -198,6 +200,8 @@ const run: Command = {
     'keep-os-metadata': { type: 'boolean' },
     'allowed-host': { type: 'string', multiple: true },
     cors: { type: 'boolean' },
+    isolate: { type: 'boolean' },
+    coep: { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -220,6 +224,7 @@ const run: Command = {
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
+    const isolate = isolateOf(v);
     const spa = spaOptions(v);
     const base = parseBase(str(v.base));
     const country = parseCountry(str(v.country));
@@ -237,7 +242,7 @@ const run: Command = {
       checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { allowedHosts, cors: !!v.cors, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
+      const server = createSiteServer(tree, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -247,7 +252,7 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, country, strictSiteFiles, ...spa, base }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), country, strictSiteFiles, ...spa, base }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
@@ -273,6 +278,8 @@ export interface DetachedServe {
   readonly allowedHosts?: readonly string[] | undefined;
   /** `--cors`. */
   readonly cors?: boolean | undefined;
+  /** `--isolate`: the COEP value. */
+  readonly isolate?: 'require-corp' | 'credentialless' | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -306,6 +313,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
     ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
     ...(d.cors ? { cors: true } : {}),
+    ...(d.isolate ? { isolate: d.isolate } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -361,12 +369,21 @@ function allowedHostsOf(v: ParsedValues): string[] {
   return out;
 }
 
+/** `--isolate [--coep require-corp|credentialless]`: the Cross-Origin-Embedder-Policy to send, or undefined. */
+function isolateOf(v: ParsedValues): 'require-corp' | 'credentialless' | undefined {
+  const coep = str(v.coep);
+  if (coep !== undefined && !v.isolate) usage('--coep needs --isolate');
+  if (coep !== undefined && coep !== 'require-corp' && coep !== 'credentialless') usage(`--coep must be require-corp or credentialless, not '${coep}'`);
+  return v.isolate ? (coep ?? 'require-corp') : undefined;
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
   if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
   const bind = parsePublish(str(v.publish));
   const allowedHosts = allowedHostsOf(v);
+  const isolate = isolateOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -409,7 +426,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
+  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
   try {
     return await watchLoop({
       context,

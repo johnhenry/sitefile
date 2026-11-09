@@ -1,3 +1,4 @@
+import { addDictionaryDeltas } from './dictionary.js';
 import { encodeCar } from './car.js';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
@@ -658,6 +659,11 @@ export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string |
 }
 
 export interface ExportTarget {
+  /**
+   * `--experimental-dictionary`: the previous build's files. The export gets `.dcz` deltas against them
+   * and `Use-As-Dictionary` headers (src/dictionary.ts).
+   */
+  readonly dictionaryFrom?: Tree;
   /** Overrides the Sitefile's EXPORT format. */
   readonly format?: ExportFormat;
   /** Overrides the Sitefile's EXPORT ... BASE (wbn). */
@@ -682,6 +688,8 @@ export interface ExportTarget {
 
 export interface ExportedBuild extends BuildResult {
   readonly format: ExportFormat;
+  /** `--experimental-dictionary`: the paths that got a `.dcz` delta. */
+  readonly dictionaryDeltas?: readonly string[];
   /** Real path written: a directory for `directory`, otherwise the archive file. */
   readonly outDir: string;
   /** Archive size in bytes (archive formats only). */
@@ -714,10 +722,12 @@ export async function buildToDirectory(
 }
 
 async function exportBuild(
-  result: BuildResult,
+  built: BuildResult,
   format: ExportFormat,
   options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
 ): Promise<ExportedBuild> {
+  const dictionary = options.dictionaryFrom ? addDictionaryDeltas(built.output, options.dictionaryFrom) : undefined;
+  const result: BuildResult & { readonly dictionaryDeltas?: readonly string[] } = dictionary ? { ...built, output: dictionary.tree, dictionaryDeltas: dictionary.deltas } : built;
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
   // Watch mode: a directory export writes only what changed since the session's last one.
   const exportState = options.memo?.exportState;
