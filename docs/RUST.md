@@ -115,7 +115,7 @@ errors and per-plugin cache entries.
 | Need | API (Rust) | Used by |
 | --- | --- | --- |
 | Detached servers | `DetachedServe::project` and `ServerState::project` (`Option<String>`, the servers file's real path) mark servers `sitefile up` started; `servers_file::{find_servers_file, load_servers_file}` read the servers file (#223; a struct literal of `DetachedServe` needs the new field). `servers::serve_detached(&ServerRegistry, &DetachedServe, worker_exe: Option<&Path>) -> Result<ServerState>`; `servers::restart_detached(&ServerRegistry, &ServerState, grace: Duration, worker_exe: Option<&Path>) -> Result<ServerState>`; `servers::stop_server(&ServerRegistry, &ServerState, grace: Duration) -> Result<bool>`; `servers::start_detached(&ServerRegistry, &ServerState, worker_exe: Option<&Path>) -> Result<ServerState>` (a state already written) | `serve -d`, `server restart`, `server stop`, `server rm -f`, `up`/`down` |
-| What `serve <arg>` serves | `servers::resolve_source(&Store, arg: &str) -> Result<(String, ServerSource)>`; `DetachedServe::resolve(&Store, arg) -> Result<DetachedServe>` (then set `name`, `bind`, `spa`); `servers::parse_publish(Option<&str>) -> Result<Bind>` (`-p`); `servers::looks_like_dir(&str) -> bool`. `ServerSource` is `Image { image_id }`, `Dir { path }` or `Archive { path }` (a zip, tar, tar.gz, wbn or OCI archive file); `servers::load_served_tree(&Store, &ServerSource) -> Result<Tree>` reads it (a directory or archive afresh each time), `servers::load_archive_tree(&Path)` / `load_archive_tree_with(&Path, &ArchiveLimits)` an archive file alone | `serve` |
+| What `serve <arg>` serves | `servers::resolve_source(&Store, arg: &str) -> Result<(String, ServerSource)>`; `DetachedServe::resolve(&Store, arg) -> Result<DetachedServe>` (then set `name`, `bind`, `spa`); `servers::parse_publish(Option<&str>) -> Result<Bind>` (`-p`); `servers::looks_like_dir(&str) -> bool`. `ServerSource` is `Image { image_id }`, `Dir { path }` or `Archive { path }` (a zip, tar, tar.gz, wbn or OCI archive file); `servers::load_served_tree(&Store, &ServerSource) -> Result<Tree>` reads it (a directory or archive afresh each time), `servers::load_archive_tree(&Path)` / `load_archive_tree_with(&Path, &ArchiveLimits)` an archive file alone; `servers::load_served_site(&Store, &ServerSource, &ServedTreeOptions) -> Result<ServedSite>` serves a zip in place (`ServedSite { tree, content }`, pass `content` as `SiteServerOptions::content`) | `serve` |
 | Store a build as an image | `executor::store_build_as_image(&Store, &BuildResult, tags: &[String], &ImageInfo, &BuildOptions) -> Result<StoredImage>` (`StoredImage { id, tags }`; `ImageInfo::new(context_dir)` plus `oci_root`, `oci_compression`, `platform`, `labels`, `git_labels`, `attest`); `executor::validate_image_tags(&[String]) -> Result<()>` | `build -t` |
 | The store home | `BuildOptions::store_home: Option<PathBuf>` (`None`: `$SITEFILE_HOME`, else `~/.sitefile`), used by `FROM <local image>`, `BASE` and the wasm module cache; `BuildOptions::store_home()` / `open_store()`. The TRANSFORM cache stays `BuildOptions::cache_dir` | every build |
 | Cancellation | `BuildOptions::cancel: Option<CancelToken>`; `CancelToken::new()`, `.cancel()`, `.is_cancelled()`, `.check()`. A cancelled build fails with `E_CANCELLED` ("the build was cancelled") | not the CLI |
@@ -321,6 +321,13 @@ protocol v2, not by running the `git` program:
 
 ## Known differences
 
+- **The default Node for JavaScript plugins.** Without `--node` or
+  `SITEFILE_NODE`, the TypeScript CLI runs plugins on the Node that runs
+  sitefile (`process.execPath`) and the Rust binary on `node` from `PATH`
+  (it has no Node of its own). Both then check that it is Node 26 or later.
+  Their `--help` says the same thing for both ("else the default Node, see
+  docs/PLUGINS.md"), and docs/PLUGINS.md, "Which Node runs plugins", names
+  each default.
 - **A wasm plugin that passes `--plugin-memory`.** wasmtime refuses the
   `memory.grow` (it returns -1, so the module typically traps or reports an
   error of its own); V8 lets the memory grow and fails the call after it

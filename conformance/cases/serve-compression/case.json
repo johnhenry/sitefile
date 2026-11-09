@@ -13,7 +13,7 @@
         "status": 200,
         "headers": {
           "content-encoding": "br",
-          "vary": "Accept-Encoding",
+          "vary": "accept-encoding",
           "content-type": "text/css; charset=utf-8"
         },
         "body": "BR-BYTES"
@@ -53,7 +53,7 @@
         "status": 200,
         "headers": {
           "content-encoding": null,
-          "vary": "Accept-Encoding"
+          "vary": "accept-encoding"
         }
       }
     },
@@ -63,7 +63,7 @@
         "status": 200,
         "headers": {
           "content-encoding": null,
-          "vary": "Accept-Encoding"
+          "vary": "accept-encoding"
         }
       }
     },
@@ -104,7 +104,7 @@
         "status": 206,
         "headers": {
           "content-encoding": null,
-          "vary": "Accept-Encoding"
+          "vary": "accept-encoding"
         },
         "body": "body"
       }
@@ -141,7 +141,7 @@
         "status": 200,
         "headers": {
           "content-encoding": "gzip",
-          "vary": "Accept-Encoding"
+          "vary": "accept-encoding"
         }
       }
     },
@@ -203,7 +203,7 @@
       "expect": {
         "status": 304,
         "headers": {
-          "vary": "Accept-Encoding"
+          "vary": "accept-encoding"
         }
       }
     },
