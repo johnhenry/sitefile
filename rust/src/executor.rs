@@ -1806,6 +1806,7 @@ fn export_build_inner(
             root_cid: None,
             web_bundle_id: Some(id),
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     if format == ExportFormat::Car {
