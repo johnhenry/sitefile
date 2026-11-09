@@ -1,0 +1,5 @@
+# 4 MiB of zeros in a 205-byte .tar.zst: refused by the same ratio limit as gzip (#221).
+FROM scratch
+IMPORT s FROM ./bomb.tar.zst AS tree
+COPY s:/ /
+EXPORT /

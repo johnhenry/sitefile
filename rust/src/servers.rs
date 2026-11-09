@@ -2052,7 +2052,7 @@ mod tests {
         assert_eq!(
             e.message(),
             format!(
-                "{}: not a recognized archive (expected tar, tar.gz, zip or web bundle)",
+                "{}: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)",
                 fs::canonicalize(&notes).unwrap().display()
             )
         );

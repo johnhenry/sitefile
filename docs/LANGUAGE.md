@@ -1702,10 +1702,11 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip; a gzip stream that holds a Web Bundle is read as one), and zip (stored and deflate, including ZIP64 records: the zip64
+  tgz (gzip; a gzip stream that holds a Web Bundle is read as one), tar.zst / tzst
+  (Zstandard), and zip (stored and deflate, including ZIP64 records: the zip64
   end record and locator and the 0x0001 extra field, as streaming writers add
   them even to small archives; no encryption). Anything
-  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  else fails with `E_TYPE`; xz and bzip2 streams and 7z and RAR
   archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
@@ -1717,6 +1718,10 @@ checked:
   (CP437), as older Windows Explorer, Info-ZIP and Java tools write it.
   A gzip stream may hold several members; zero bytes after the last one are
   ignored, any other trailing data must be another valid member.
+  A zstd stream may hold several frames and skippable frames, as libzstd reads
+  them: a frame's checksum is checked when present, data after a frame that
+  does not start another frame is ignored, and a frame that needs a window
+  over 128 MiB or a dictionary is `E_ARCHIVE` (as is a truncated stream).
   Decompression is asynchronous, so other imports keep making progress.
 - `INTEGRITY` and the lockfile apply to the archive bytes exactly as for file
   imports, and the import's provenance digest is the archive's digest.
@@ -1742,9 +1747,9 @@ checked:
   notice).
 - Limits (`E_ARCHIVE_LIMIT`), configurable through `BuildOptions.archiveLimits`:
   `maxEntries` 10 000, `maxTotalBytes` 500 MiB of uncompressed content, and
-  `maxRatio` 100 (uncompressed:compressed, measured on the gzip stream or the
+  `maxRatio` 100 (uncompressed:compressed, measured on the gzip or zstd stream or the
   whole zip; not enforced below 1 MiB of output, since tar padding compresses
-  extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
+  extremely well). Inflation is bounded with zlib's `maxOutputLength` (zstd too), so a
   bomb is stopped at the limit, never fully inflated; zip entries are never
   inflated beyond their declared size. The download cap still applies first.
 

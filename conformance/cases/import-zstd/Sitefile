@@ -1,0 +1,6 @@
+# A Zstandard-compressed tar (johnhenry/sitefile#221): two frames (the first with a
+# checksum) around a skippable frame, as concatenated .tar.zst files are.
+FROM scratch
+IMPORT s FROM ./site.tar.zst AS tree
+COPY s:/ /
+EXPORT /

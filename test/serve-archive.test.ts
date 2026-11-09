@@ -55,7 +55,7 @@ test('archive errors name the file and what it is not', async () => {
   const dir = await tmpDir();
   const notes = path.join(dir, 'notes.txt');
   await fs.writeFile(notes, 'just text');
-  assert.deepEqual(await code(loadArchiveTree(notes)), { code: 'E_TYPE', message: `${notes}: not a recognized archive (expected tar, tar.gz, zip or web bundle)` });
+  assert.deepEqual(await code(loadArchiveTree(notes)), { code: 'E_TYPE', message: `${notes}: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)` });
   const gone = path.join(dir, 'gone.zip');
   assert.deepEqual(await code(loadArchiveTree(gone)), { code: 'E_NOT_FOUND', message: `'${gone}' does not exist` });
   assert.deepEqual(await code(loadArchiveTree(dir)), { code: 'E_TYPE', message: `'${dir}' is not a file` });
@@ -155,7 +155,7 @@ test('serve -d ./x.oci.tar serves what build -o x.oci.tar wrote; a non-archive f
   await fs.writeFile(notes, 'plain');
   r = await runCli(home, ['serve', '-d', notes]);
   assert.equal(r.code, 1);
-  assert.equal(r.stderr, `error[E_TYPE]: ${notes}: not a recognized archive (expected tar, tar.gz, zip or web bundle)\n`);
+  assert.equal(r.stderr, `error[E_TYPE]: ${notes}: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)\n`);
   r = await runCli(home, ['serve', '-d', path.join(path.dirname(out), 'gone.zip')]);
   assert.match(r.stderr, /^error\[E_NOT_FOUND\]: '.*gone\.zip' is not a directory or a file\n/);
   assert.equal((JSON.parse((await runCli(home, ['servers', '-a', '--json'])).stdout) as unknown[]).length, 1);

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`.tar.zst` / `.tzst` archives** (johnhenry/sitefile#221): `IMPORT … AS tree`, `serve`, `verify` and
+  `diff` read Zstandard-compressed tars (detected by magic bytes, like gzip), with the same entry,
+  size and ratio limits. TypeScript uses node:zlib's `zstdDecompress`; Rust uses the `ruzstd` crate
+  (pure Rust, decode only; new dependency approved by the owner, rationale in rust/Cargo.toml).
+  Both read what libzstd reads: several frames, skippable frames, checksums; a window over 128 MiB is
+  refused. The E_TYPE message no longer calls zstd unsupported.
 - **Synced browsing: `serve --watch --sync[=scroll]`** (johnhenry/sitefile#309): opt-in, for
   `serve --watch` and `serve -d --watch` (the record keeps it). Each open page reports its path,
   fragment and title (and with `=scroll` its scroll position) to `POST /__sitefile/client`
