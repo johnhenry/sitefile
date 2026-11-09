@@ -129,6 +129,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             bind,
             spa: s.spa,
             keep_os_metadata: false,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

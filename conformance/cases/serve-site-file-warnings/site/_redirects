@@ -1,0 +1,6 @@
+/ok /index.html 200
+/a/*/b /c
+/x /y 418
+/admin /secret 200! Role=admin
+/z /y 301 Planet=mars
+only-one-field
