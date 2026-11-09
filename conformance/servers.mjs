@@ -260,8 +260,10 @@ export async function startServers(root, dir) {
 // (`headers.host` replaces the default `host: 127.0.0.1:<port>`);
 // `target` is sent as written (so an absolute-form target works). `expect` checks both
 // answers: `status`, `headers` (name → exact value, null for absent, true for present), `body`
-// (exact text) and `interim` (the list of 1xx statuses). With `"log": true` (or `{ "lines": n }`) the
-// servers' stdout (access log) must match too, with times and the port normalized.
+// (exact text) and `interim` (the list of 1xx statuses). With `"log": true` the CLIs'
+// stdout and stderr (the Serving line, warnings and access log) must match too, after
+// the port and each request's time (`1.2ms`) are replaced by fixed text; `expectLog`
+// lists lines both logs must contain.
 
 const IGNORED_HEADERS = new Set(['date', 'connection', 'keep-alive']);
 
@@ -318,9 +320,8 @@ function startServe(cmd, argv, env, cwd) {
       clearTimeout(timer);
       resolve({
         port: Number(m[1]),
-        /** Lines written to stdout so far. */
-        output: () => out,
         stop: () => new Promise((r) => (child.exitCode !== null ? r() : (child.once('exit', () => r()), child.kill()))),
+        output: () => ({ out, err }),
       });
     });
     child.on('exit', (code) => {
@@ -329,14 +330,6 @@ function startServe(cmd, argv, env, cwd) {
     });
   });
 }
-
-/** stdout of `serve` with times made comparable: ISO times, `"ms":N`, `N.Nms` and the port. */
-const normalizeLog = (text) =>
-  text
-    .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, 'TS')
-    .replace(/"ms":[0-9]+\.[0-9]/g, '"ms":0.0')
-    .replace(/ [0-9]+\.[0-9]ms/g, ' 0.0ms')
-    .replace(/127\.0\.0\.1:[0-9]+/g, '127.0.0.1:PORT');
 
 const show = (r) =>
   [
@@ -359,15 +352,34 @@ export async function runServeCase(c, { impls, tmp }) {
       server = await startServe(cmd, ['serve', ...(c.args ?? []), `./${c.site ?? 'site'}`], { SITEFILE_HOME: home, ...(c.env ?? {}) }, c.context);
       answers[impl] = [];
       for (const r of c.requests) answers[impl].push(await rawRequest(server.port, r));
-      if (c.log) {
-        await new Promise((r) => setTimeout(r, 300)); // the access-log line follows the response
-        logs[impl] = normalizeLog(server.output());
-      }
+      // The access-log line of the last request is written after its answer.
+      if (c.log) await new Promise((r) => setTimeout(r, 200));
     } catch (e) {
       detail.push(`${impl}: ${e.message}`);
     } finally {
       await server?.stop();
     }
+    if (c.log && server) {
+      const { out, err } = server.output();
+      const norm = (t) =>
+        t
+          .replace(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/g, 'TS')
+          .replace(/"ms":[0-9]+\.[0-9]/g, '"ms":T')
+          .replace(/(https?:\/\/[^/\s"]+):[0-9]+\//g, '$1:PORT/')
+          .replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:PORT')
+          .replace(/ \d+\.\dms/g, ' Tms');
+      logs[impl] = `stdout:\n${norm(out)}stderr:\n${norm(err)}`;
+    }
+  }
+  if (c.log && detail.length === 0) {
+    const [a, b] = impls.map(([impl]) => logs[impl]);
+    if (a !== b) detail.push(`logs differ\nts:\n${a}\nrust:\n${b}`);
+    // `"log": { "lines": n }`: stdout has n lines (the start line and the access log).
+    if (typeof c.log === 'object' && c.log.lines !== undefined) {
+      const n = (logs.ts.split('stderr:\n')[0] ?? '').split('\n').length - 2;
+      if (n !== c.log.lines) detail.push(`ts stdout has ${n} lines, expected ${c.log.lines}`);
+    }
+    for (const [impl] of impls) for (const line of c.expectLog ?? []) if (!logs[impl].split('\n').includes(line)) detail.push(`${impl}: log has no line ${JSON.stringify(line)}\n${logs[impl]}`);
   }
   if (detail.length === 0) {
     c.requests.forEach((r, i) => {
@@ -388,11 +400,6 @@ export async function runServeCase(c, { impls, tmp }) {
         }
       }
     });
-  }
-  if (c.log && detail.length === 0) {
-    const [a, b] = impls.map(([impl]) => logs[impl]);
-    if (a !== b) detail.push(`logs differ\nts:\n${a}\nrust:\n${b}`);
-    if (typeof c.log === 'object' && c.log.lines !== undefined && a.split('\n').length - 1 !== c.log.lines) detail.push(`ts log has ${a.split('\n').length - 1} lines, expected ${c.log.lines}`);
   }
   const summary = (impl) => ({ requests: c.requests.length, statuses: (answers[impl] ?? []).map((a) => a.status) });
   return { name: c.name, compare: 'serve', pass: detail.length === 0, detail, ts: summary('ts'), rust: summary('rust') };

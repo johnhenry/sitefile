@@ -136,6 +136,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             log_format: None,
             log_ip: false,
             quiet: false,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

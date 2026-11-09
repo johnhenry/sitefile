@@ -15,9 +15,10 @@ import { templateNames } from './executor.js';
 import { importedStageRefs, type Operation, type Plan } from './planner.js';
 import { parseRenderTemplate } from './render.js';
 import { parseRef } from './ref.js';
+import { parseHeaders, parseRedirects } from './serve-rules.js';
 
 /** Every rule, in the order warnings of one line are reported. */
-export const LINT_RULES = ['unused-name', 'unpinned-import', 'unpinned-image', 'render-escape', 'sitemap-order', 'shadowed-write'] as const;
+export const LINT_RULES = ['unused-name', 'unpinned-import', 'unpinned-image', 'render-escape', 'sitemap-order', 'shadowed-write', 'serve-ignored'] as const;
 export type LintRule = (typeof LINT_RULES)[number];
 
 /** Import kinds a RENDER template can read (so a template file may use them). */
@@ -212,6 +213,27 @@ export function lint(program: Program, plan: Plan, source: string, disabled: rea
       }
       last.set(path, op.span.line);
     }
+  }
+
+  // ---- serve-ignored: a REDIRECT or HEADER line `sitefile serve` would ignore (operands with ${…} are skipped).
+  const literal = (op: Operand): string | undefined => (op.parts.every((p) => p.kind === 'text') ? written(op) : undefined);
+  for (const ins of program.instructions) {
+    let text: string | undefined;
+    let what = '';
+    let ignored: string | undefined;
+    if (ins.kind === 'REDIRECT') {
+      const [from, to] = [literal(ins.from), literal(ins.to)];
+      if (from === undefined || to === undefined) continue;
+      [text, what] = [`${from} ${to} ${ins.status}`, `REDIRECT ${from} ${to}`];
+      ignored = parseRedirects(text).ignored[0]?.reason;
+    } else if (ins.kind === 'HEADER') {
+      const parts = [ins.pattern, ins.name, ...ins.value].map(literal);
+      if (parts.some((p) => p === undefined)) continue;
+      const [pattern, name, ...value] = parts as string[];
+      what = `HEADER ${pattern} ${name}`;
+      ignored = parseHeaders(`${pattern}\n  ${name}: ${value.join(' ')}\n`).ignored[0]?.reason;
+    }
+    if (ignored !== undefined) report(ins.span.line, 'serve-ignored', `sitefile serve ignores the line ${what} writes: ${ignored}`);
   }
 
   const kept = found.filter((f) => f.rule === 'lint-comment' || !(off.has('all') || off.has(f.rule) || offPerLine.get(f.line)?.has('all') || offPerLine.get(f.line)?.has(f.rule)));

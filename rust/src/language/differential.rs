@@ -223,6 +223,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("noCacheHeaders", no_cache_headers.then(|| json!(true))),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::Canonical { span: sp, base, pretty } => obj(vec![
+            ("kind", s("CANONICAL")),
+            ("span", Some(span(sp))),
+            ("base", Some(operand(base))),
+            ("pretty", Some(json!(pretty))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),
