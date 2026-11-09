@@ -28,6 +28,7 @@ pub fn default_out_name(format: ExportFormat, compression: Option<OciCompression
         ExportFormat::Mhtml => "dist.mhtml",
         ExportFormat::Warc if compression == Some(OciCompression::Gzip) => "dist.warc.gz",
         ExportFormat::Warc => "dist.warc",
+        ExportFormat::Swbn => "dist.swbn",
     }
 }
 
@@ -64,6 +65,10 @@ pub fn encode_tree(tree: &Tree, format: ExportFormat, options: &EncodeOptions) -
             options.writer.epoch,
             options.compression,
         ),
+        ExportFormat::Swbn => Err(crate::error::SitefileError::plain(
+            crate::error::ErrorCode::E_VALIDATION,
+            "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret",
+        )),
         ExportFormat::Mhtml => {
             super::single_file::write_mhtml(tree, None, options.base_url.as_deref())
         }
@@ -89,6 +94,8 @@ pub fn format_from_extension(out: &str) -> Option<ExportFormat> {
         Some(ExportFormat::Wbn)
     } else if name.ends_with(".car") {
         Some(ExportFormat::Car)
+    } else if name.ends_with(".swbn") {
+        Some(ExportFormat::Swbn)
     } else if name.ends_with(".warc") || name.ends_with(".warc.gz") {
         Some(ExportFormat::Warc)
     } else if name.ends_with(".mhtml") || name.ends_with(".mht") {

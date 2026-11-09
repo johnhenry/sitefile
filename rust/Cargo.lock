@@ -874,6 +874,7 @@ dependencies = [
  "base64",
  "flate2",
  "icu_normalizer",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

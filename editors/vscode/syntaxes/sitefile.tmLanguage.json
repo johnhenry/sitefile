@@ -4287,7 +4287,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml|warc))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml|warc|swbn))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
@@ -4315,7 +4315,7 @@
               }
             },
             {
-              "match": "(?<![^\\s])((?i:BASE|AT))(?=\\s|$)",
+              "match": "(?<![^\\s])((?i:BASE|AT|KEY))(?=\\s|$)",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
