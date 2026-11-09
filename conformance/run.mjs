@@ -133,6 +133,8 @@ function cases() {
     ex('blog', { suffix: ':tgz-bytes', out: 'site.tar.gz', compare: 'bytes' }),
     ex('hello', { suffix: ':oci-id', out: 'site.oci.tar', compare: 'oci' }),
     ex('blog', { suffix: ':oci-bytes', out: 'site.oci.tar', compare: 'bytes' }),
+    ex('blog', { suffix: ':oci-layers-bytes', out: 'site.oci.tar', args: ['--oci-layers', '8'], compare: 'bytes' }),
+    ex('blog', { suffix: ':oci-layers-id', out: 'site.oci.tar', args: ['--oci-layers', '3', '--oci-compression', 'none'], compare: 'oci' }),
     ex('blog', { suffix: ':oci-uncompressed-bytes', out: 'site.oci.tar', args: ['--oci-compression', 'none'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn', out: 'site.wbn', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),
     ex('blog', { suffix: ':wbn-gzip', out: 'site.wbn.gz', args: ['--base-url', 'https://blog.example/'], compare: 'bytes' }),

@@ -6,14 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor, safeSegments } from '../server.js';
-import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments } from '../server.js';
+import { isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState, checkSiteFiles } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
 import { requireArgs, str, strs, table, usage, usageError, type Command, type ParsedValues } from './common.js';
 import { watchMemo } from '../memo.js';
 import { pollOption, watchLoop } from './watch.js';
+import { CLEAR, KEYS_HELP, KEYS_HINT, openBrowser, openUrl, qrText, readKeys, serveUrls, urlsText } from './serve-keys.js';
 
 const WORKER = fileURLToPath(new URL('./serve-worker.js', import.meta.url));
 
@@ -51,6 +52,24 @@ export function spaOptions(v: ParsedValues): { spa: boolean; spaExclude?: string
 /** A warning when `--spa-fallback` names a file the site does not have. */
 function warnSpaFallback(tree: Tree, fallback: string | undefined, warn: (m: string) => void): void {
   if (fallback !== undefined && !tree.isFile(fallback)) warn(`--spa-fallback ${fallback} is not a file of the site, so navigations to missing paths get 404`);
+}
+
+/** `--base`: the path prefix to serve under (`/repo/`), or undefined for `/`. */
+export function parseBase(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const b = normalizeBase(v);
+  if (b === undefined) usage(`--base expects a path such as /repo/, got '${v}'`);
+  return b === '/' ? undefined : b;
+}
+
+/** The URL a server answers at: its origin and `--base`. */
+const siteUrl = (host: string, port: number, base: string | undefined): string => formatUrl(host, port) + (base ?? '/').slice(1);
+
+/** The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`), else undefined. */
+export function exportBasePath(exportBase: string | undefined): string | undefined {
+  if (exportBase === undefined || !/^https?:\/\//i.test(exportBase)) return undefined;
+  const b = normalizeBase(exportBase);
+  return b === '/' ? undefined : b;
 }
 
 /** `--country`: an ISO 3166-1 alpha-2 code (any case). */
@@ -141,12 +160,20 @@ const run: Command = {
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
+    '--spa             serve /index.html for unknown paths without a file extension',
+    '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
+    '--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response',
+    '--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)',
+    '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
+    '--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL\'s path)',
     '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
     '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
+    '--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)',
+    '--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
     '--target <stage>             build up to this stage and serve its whole tree (--watch)',
@@ -170,9 +197,16 @@ const run: Command = {
     spa: { type: 'boolean' },
     'spa-exclude': { type: 'string', multiple: true },
     'spa-fallback': { type: 'string' },
+    base: { type: 'string' },
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
+    'allowed-host': { type: 'string', multiple: true },
+    cors: { type: 'boolean' },
+    open: { type: 'string' },
+    qr: { type: 'boolean' },
+    isolate: { type: 'boolean' },
+    coep: { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -194,7 +228,10 @@ const run: Command = {
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
+    const allowedHosts = allowedHostsOf(v);
+    const isolate = isolateOf(v);
     const spa = spaOptions(v);
+    const base = parseBase(str(v.base));
     const country = parseCountry(str(v.country));
     const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
@@ -210,18 +247,33 @@ const run: Command = {
       checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { ...spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
+      let current = tree;
+      const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
-      process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
-      await waitForSignal();
+      process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
+      const quit = await terminal(v, addr, base, warn, async () => {
+        if (source.kind !== 'dir') {
+          process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
+          return;
+        }
+        const next = await loadServedSite(store, source, { keepOsMetadata, warn });
+        checkSiteFiles(next.tree, false, warn, next.content);
+        current = next.tree;
+        next.close();
+        process.stdout.write(`Re-read ${label} (${current.size} files)\n`);
+      });
+      await Promise.race([waitForSignal(), quit.promise]);
+      quit.stop();
       await closeServer(server);
       close();
       return 0;
     }
 
+    if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, ...spa, keepOsMetadata, country, strictSiteFiles }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), country, strictSiteFiles, ...spa, base }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
   },
 };
@@ -237,8 +289,16 @@ export interface DetachedServe {
   readonly spaExclude?: readonly string[] | undefined;
   /** `--spa-fallback`. */
   readonly spaFallback?: string | undefined;
+  /** `--base` (normalized; undefined for `/`). */
+  readonly base?: string | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
+  /** `--allowed-host` names. */
+  readonly allowedHosts?: readonly string[] | undefined;
+  /** `--cors`. */
+  readonly cors?: boolean | undefined;
+  /** `--isolate`: the COEP value. */
+  readonly isolate?: 'require-corp' | 'credentialless' | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -268,7 +328,11 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     spa: d.spa,
     ...(d.spaExclude !== undefined && d.spaExclude.length > 0 ? { spaExclude: [...d.spaExclude] } : {}),
     ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
+    ...(d.base !== undefined ? { base: d.base } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
+    ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
+    ...(d.cors ? { cors: true } : {}),
+    ...(d.isolate ? { isolate: d.isolate } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -305,6 +369,38 @@ export async function restartDetached(reg: ServerRegistry, s: ServerState, grace
   });
 }
 
+/**
+ * After the server listens: `--qr`, `--open[=path]`, then single keys (a terminal, see serve-keys.ts).
+ * `promise` resolves on `q`; `stop` stops reading keys.
+ */
+async function terminal(
+  v: ParsedValues,
+  addr: { host: string; port: number },
+  base: string | undefined,
+  warn: (m: string) => void,
+  restart: () => Promise<void>,
+): Promise<{ promise: Promise<void>; stop: () => void }> {
+  const urls = await serveUrls(addr.host, addr.port, base);
+  if (v.qr) process.stdout.write(qrText(urls.network ?? urls.local));
+  const open = str(v.open);
+  if (open !== undefined) openBrowser(openUrl(urls.local, open), warn);
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  let busy = Promise.resolve();
+  const stop = readKeys((a) => {
+    busy = busy.then(async () => {
+      if (a === 'quit') resolve();
+      else if (a === 'help') process.stdout.write(KEYS_HELP);
+      else if (a === 'clear') process.stdout.write(CLEAR);
+      else if (a === 'urls') process.stdout.write(urlsText(urls));
+      else if (a === 'open') openBrowser(openUrl(urls.local, open ?? '/'), warn);
+      else await restart();
+    });
+  });
+  if (stop) process.stdout.write(KEYS_HINT);
+  return { promise, stop: stop ?? (() => undefined) };
+}
+
 /** serve flags that only mean something with --watch. */
 const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload'] as const;
 
@@ -313,11 +409,32 @@ const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache',
  * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
  * as it is (re-read on change) instead of built.
  */
+/** `--allowed-host` values, validated and lowercased (the server always adds localhost names and IP addresses). */
+function allowedHostsOf(v: ParsedValues): string[] {
+  const out: string[] = [];
+  for (const raw of strs(v['allowed-host'])) {
+    const h = parseAllowedHost(raw);
+    if (h === undefined) usage(`--allowed-host: invalid host name '${raw}'`);
+    if (!out.includes(h)) out.push(h);
+  }
+  return out;
+}
+
+/** `--isolate [--coep require-corp|credentialless]`: the Cross-Origin-Embedder-Policy to send, or undefined. */
+function isolateOf(v: ParsedValues): 'require-corp' | 'credentialless' | undefined {
+  const coep = str(v.coep);
+  if (coep !== undefined && !v.isolate) usage('--coep needs --isolate');
+  if (coep !== undefined && coep !== 'require-corp' && coep !== 'credentialless') usage(`--coep must be require-corp or credentialless, not '${coep}'`);
+  return v.isolate ? (coep ?? 'require-corp') : undefined;
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
   if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
   const bind = parsePublish(str(v.publish));
+  const allowedHosts = allowedHostsOf(v);
+  const isolate = isolateOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -330,6 +447,9 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
   const spa = spaOptions(v);
+  const baseFlag = parseBase(str(v.base));
+  /** `--base`, else the path of the last good build's EXPORT BASE URL. */
+  let base = baseFlag;
   const country = parseCountry(str(v.country));
   const strictSiteFiles = !!v['strict-site-files'];
   /** The site-file warnings last printed: a rebuild repeats them only when they change. */
@@ -357,10 +477,16 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { ...spa, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
+  const control: { rebuild?: () => void } = {};
+  let quit: { promise: Promise<void>; stop: () => void } | undefined;
+  let quitNow!: () => void;
+  const quitting = new Promise<void>((r) => (quitNow = r));
   try {
     return await watchLoop({
       context,
+      control,
+      stop: Promise.race([waitForSignal().then(() => undefined), quitting]),
       ...(pollMs !== undefined ? { pollMs } : {}),
       ...(file ? { sitefile: file } : {}),
       ...(plain ? { plain } : {}),
@@ -390,6 +516,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           });
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
           siteFiles(r.output);
+          if (baseFlag === undefined) base = exportBasePath(r.plan.exportBase);
           swap(r.output);
           return { code: 0 };
         } catch (e) {
@@ -403,10 +530,13 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+        process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
+        quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
+        void quit.promise.then(() => quitNow());
       },
     });
   } finally {
+    quit?.stop();
     if (started) await closeServer(server);
   }
 }
@@ -589,7 +719,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
   },
 };

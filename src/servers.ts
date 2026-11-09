@@ -6,7 +6,7 @@ import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import { siteFileWarnings } from './serve-rules.js';
 import type { SiteContent } from './server.js';
-import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
+import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndices } from './oci.js';
 import { extractArchive, openZipFile, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
@@ -39,8 +39,16 @@ export interface ServerState {
   readonly spaExclude?: readonly string[];
   /** `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html). */
   readonly spaFallback?: string;
+  /** `--base`: the path prefix the site is served under, `/repo/` (absent: `/`). */
+  readonly base?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
+  /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
+  readonly allowedHosts?: readonly string[];
+  /** `--cors` (absent: false). */
+  readonly cors?: boolean;
+  /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
@@ -149,7 +157,7 @@ export class ServerRegistry {
 
   async view(s: ServerState): Promise<ServerView> {
     const running = await isRunning(s);
-    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
+    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) + (s.base ?? '/').slice(1) : '' };
   }
 }
 function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {
@@ -330,14 +338,18 @@ async function ociArchiveTree(layout: Tree, origin: string, limits: ArchiveLimit
   } catch {
     throw bad("OCI archive's image config is corrupt");
   }
-  const layer = m.layers[siteLayerIndex(m, cfg)];
-  let layerBytes: Uint8Array = new Uint8Array(0); // extractImageFiles reports "not a Sitefile image"
-  if (layer && (layer.mediaType === MEDIA.layer || layer.mediaType === MEDIA.layerTar)) {
-    layerBytes = blob(layer.digest, layer.size);
-    // Hold the site layer to the archive limits before it is fully decoded.
-    await extractArchive(layerBytes, origin, limits);
+  const layers = siteLayerIndices(m, cfg).map((i) => m.layers[i]!);
+  // An empty list makes extractImageFiles report "not a Sitefile image".
+  const blobs: Uint8Array[] = [];
+  if (layers.every((l) => l.mediaType === MEDIA.layer || l.mediaType === MEDIA.layerTar)) {
+    for (const l of layers) {
+      const b = blob(l.digest, l.size);
+      // Hold each site layer to the archive limits before it is fully decoded.
+      await extractArchive(b, origin, limits);
+      blobs.push(b);
+    }
   }
-  return extractImageFiles(m, cfg, layerBytes, origin);
+  return extractImageFiles(m, cfg, layers.length ? blobs : [new Uint8Array(0)], origin);
 }
 
 /** The tree a server state serves (`options` apply to a directory or archive). */

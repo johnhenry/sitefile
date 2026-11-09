@@ -11,6 +11,7 @@ import {
   type ExportFormat,
   parseExportFormat,
   type OciCompression,
+  type PrecompressFormat,
   parseOciCompression,
   EXPORT_HOSTS,
   type ExportHost,
@@ -23,6 +24,7 @@ import {
   type Instruction,
   type Operand,
   type RenderEach,
+  type RobotsRule,
   type StageRef,
   type ValueType,
 } from './ast.js';
@@ -76,6 +78,12 @@ function parseInstruction(c: Cursor): Instruction {
       return parseFingerprint(c, span);
     case 'CANONICAL':
       return parseCanonical(c, span);
+    case 'PRECOMPRESS':
+      return parsePrecompress(c, span);
+    case 'ROBOTS':
+      return parseRobots(c, span);
+    case 'SECURITY_TXT':
+      return parseSecurityTxt(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -592,6 +600,80 @@ function parseCanonical(c: Cursor, span: SourceSpan): Instruction {
   const pretty = c.keyword('PRETTY');
   c.expectEnd();
   return { kind: 'CANONICAL', span, base, pretty };
+}
+
+/** Sidecar formats PRECOMPRESS knows; only gzip has an encoder (src/deflate.ts, shared with the Rust port). */
+const PRECOMPRESS_FORMATS = ['gzip', 'br', 'zstd'];
+
+/** `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]` */
+function parsePrecompress(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const formats: PrecompressFormat[] = [];
+  for (;;) {
+    const at = c.span;
+    const mark = c.mark();
+    const w = c.word().toLowerCase();
+    if (!PRECOMPRESS_FORMATS.includes(w)) {
+      c.reset(mark);
+      break;
+    }
+    if (w !== 'gzip') {
+      throw c.error('E_UNSUPPORTED', `PRECOMPRESS ${w} is not supported yet: sitefile has no ${w === 'br' ? 'Brotli' : 'Zstandard'} encoder that writes the same bytes in both implementations (use gzip)`, at);
+    }
+    if (formats.includes(w as PrecompressFormat)) throw c.error('E_SYNTAX', `${w} given twice`, at);
+    formats.push(w as PrecompressFormat);
+  }
+  const patterns: Operand[] = [];
+  while (!c.atEnd() && !c.peekKeyword('MIN')) patterns.push(c.operand('path pattern'));
+  if (patterns.length === 0) throw c.error('E_SYNTAX', 'expected a path pattern (PRECOMPRESS /assets/ or PRECOMPRESS gzip /**/*.css)');
+  const min = c.keyword('MIN') ? c.operand('minimum size in bytes') : undefined;
+  c.expectEnd();
+  return { kind: 'PRECOMPRESS', span, formats: formats.length ? formats : ['gzip'], patterns, ...(min ? { min } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]` (in this order) */
+function parseRobots(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const rules: RobotsRule[] = [];
+  for (;;) {
+    const at = c.span;
+    if (c.keyword('ALLOW')) rules.push({ allow: true, path: c.operand('path'), span: at });
+    else if (c.keyword('DISALLOW')) rules.push({ allow: false, path: c.operand('path'), span: at });
+    else break;
+  }
+  const sitemap = c.keyword('SITEMAP');
+  const dest = c.keyword('TO') ? c.operand('destination') : undefined;
+  if (!c.atEnd()) {
+    const at = c.span;
+    throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected ALLOW, DISALLOW, SITEMAP or TO, in this order)`, at);
+  }
+  return { kind: 'ROBOTS', span, rules, sitemap, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]` (any order) */
+function parseSecurityTxt(c: Cursor, span: SourceSpan): Instruction {
+  const flags = parseFlags(c, { overwrite: 'bare' });
+  const contact: Operand[] = [];
+  const encryption: Operand[] = [];
+  const policy: Operand[] = [];
+  let expires: Operand | undefined;
+  let dest: Operand | undefined;
+  while (!c.atEnd()) {
+    const at = c.span;
+    if (c.keyword('CONTACT')) contact.push(c.operand('contact URI'));
+    else if (c.keyword('ENCRYPTION')) encryption.push(c.operand('encryption key URI'));
+    else if (c.keyword('POLICY')) policy.push(c.operand('policy URI'));
+    else if (c.keyword('EXPIRES')) {
+      if (expires) throw c.error('E_SYNTAX', 'EXPIRES given twice', at);
+      expires = c.operand('expiry date');
+    } else if (c.keyword('TO')) {
+      if (dest) throw c.error('E_SYNTAX', 'TO given twice', at);
+      dest = c.operand('destination');
+    } else throw c.error('E_SYNTAX', `unexpected '${c.word()}' (expected CONTACT, EXPIRES, ENCRYPTION, POLICY or TO)`, at);
+  }
+  if (contact.length === 0) throw c.error('E_VALIDATION', 'SECURITY_TXT needs CONTACT <uri> (RFC 9116 requires at least one Contact field)', span);
+  if (!expires) throw c.error('E_VALIDATION', 'SECURITY_TXT needs EXPIRES <date> (RFC 9116 requires an Expires field)', span);
+  return { kind: 'SECURITY_TXT', span, contact, expires, encryption, policy, ...(dest ? { dest } : {}), overwrite: flags.has('overwrite') };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

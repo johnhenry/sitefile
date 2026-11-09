@@ -1,3 +1,4 @@
+import { addDictionaryDeltas } from './dictionary.js';
 import { encodeCar } from './car.js';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
@@ -49,6 +50,7 @@ import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { canonical } from './canonical.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { exportForHost, type HostHeader, type HostRedirect } from './export-for.js';
+import { precompress } from './precompress.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
 
 export interface BuildOptions {
@@ -664,6 +666,11 @@ export function checkPins(p: Plan, lock: Lockfile | undefined, baseRef: string |
 }
 
 export interface ExportTarget {
+  /**
+   * `--experimental-dictionary`: the previous build's files. The export gets `.dcz` deltas against them
+   * and `Use-As-Dictionary` headers (src/dictionary.ts).
+   */
+  readonly dictionaryFrom?: Tree;
   /** Overrides the Sitefile's EXPORT format. */
   readonly format?: ExportFormat;
   /** Overrides the Sitefile's EXPORT ... BASE (wbn). */
@@ -672,6 +679,8 @@ export interface ExportTarget {
   readonly ociRoot?: string;
   /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
   readonly ociCompression?: OciCompression;
+  /** oci: split the site's files over this many layers (`--oci-layers`, default 1). */
+  readonly ociLayers?: number;
   /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
   readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
@@ -686,6 +695,8 @@ export interface ExportTarget {
 
 export interface ExportedBuild extends BuildResult {
   readonly format: ExportFormat;
+  /** `--experimental-dictionary`: the paths that got a `.dcz` delta. */
+  readonly dictionaryDeltas?: readonly string[];
   /** Real path written: a directory for `directory`, otherwise the archive file. */
   readonly outDir: string;
   /** Archive size in bytes (archive formats only). */
@@ -718,10 +729,12 @@ export async function buildToDirectory(
 }
 
 async function exportBuild(
-  result: BuildResult,
+  built: BuildResult,
   format: ExportFormat,
   options: BuildOptions & ExportTarget & { readonly outDir: string; readonly force?: boolean },
 ): Promise<ExportedBuild> {
+  const dictionary = options.dictionaryFrom ? addDictionaryDeltas(built.output, options.dictionaryFrom) : undefined;
+  const result: BuildResult & { readonly dictionaryDeltas?: readonly string[] } = dictionary ? { ...built, output: dictionary.tree, dictionaryDeltas: dictionary.deltas } : built;
   const exportOptions = { contextDir: options.contextDir, ...(options.force ? { force: true } : {}) };
   // Watch mode: a directory export writes only what changed since the session's last one.
   const exportState = options.memo?.exportState;
@@ -730,6 +743,7 @@ async function exportBuild(
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
       compression: options.ociCompression ?? sitefileCompression(result.plan, 'oci'),
+      ...(options.ociLayers !== undefined ? { layers: options.ociLayers } : {}),
       platform: options.platform,
       epoch: sourceDateEpoch(),
       base: result.base,
@@ -1743,6 +1757,7 @@ async function executeOp(
     if (op.kind === 'SITEMAP') return { tree: sitemap(op, tree, env), key: '' };
     if (op.kind === 'FINGERPRINT') return { ...fingerprintOp(op, tree, env), key: '' };
     if (op.kind === 'CANONICAL') return { tree: canonicalOp(op, tree, env), key: '' };
+    if (op.kind === 'PRECOMPRESS') return { tree: precompressOp(op, tree, env), key: '' };
     if (op.kind === 'CHECKLINKS') {
       await checkLinks(op, tree, env, env.warn);
       return { tree, key: '' };
@@ -1750,7 +1765,7 @@ async function executeOp(
     return { tree: tree.withFiles((await produce(op, tree, recording(env), '', '')).files, policy, op.span), key: '' };
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
-  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'CHECKLINKS') {
+  if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECOMPRESS' || op.kind === 'CHECKLINKS') {
     // Reads the whole tree: only the chain key can say it is unchanged.
     const key = memoKey('chain', prevKey, opId);
     if (op.kind === 'CHECKLINKS') {
@@ -1787,6 +1802,17 @@ async function executeOp(
       memo.set(key, { tree: out, warnings });
       return { tree: out, key, memo: 'miss' };
     }
+    if (op.kind === 'PRECOMPRESS') {
+      const hit = memo.get<{ tree: Tree; warnings: readonly string[] }>(key);
+      if (hit) {
+        hit.warnings.forEach(env.warn);
+        return { tree: hit.tree, key, memo: 'hit' };
+      }
+      const warnings: string[] = [];
+      const out = precompressOp(op, tree, { ...env, warn: (m) => (warnings.push(m), env.warn(m)) });
+      memo.set(key, { tree: out, warnings });
+      return { tree: out, key, memo: 'miss' };
+    }
     const hit = memo.get<Tree>(key);
     if (hit) return { tree: hit, key, memo: 'hit' };
     const out = sitemap(op, tree, env);
@@ -1815,6 +1841,10 @@ function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tr
 
 function canonicalOp(op: Extract<Operation, { kind: 'CANONICAL' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
   return canonical(tree, op, `${env.label}:${op.span.line} CANONICAL`, env.warn);
+}
+
+function precompressOp(op: Extract<Operation, { kind: 'PRECOMPRESS' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
+  return precompress(tree, op, `${env.label}:${op.span.line} PRECOMPRESS`, env.warn);
 }
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
@@ -2454,7 +2484,7 @@ function feedFiles(op: Extract<Operation, { kind: 'FEED' }>, env: ExecEnv): File
  * The files an operation (other than SITEMAP, FINGERPRINT and CHECKLINKS) adds; `opId` is its memo identity
  * ('' without a memo), `treeKey` the key of the input tree (a RENDER with `${file …}` reads it).
  */
-async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CANONICAL' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
+async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' | 'CANONICAL' | 'PRECOMPRESS' | 'CHECKLINKS' }>, tree: Tree, env: RecEnv, opId: string, treeKey: string): Promise<Produced> {
   if (op.kind === 'TRANSFORM') return produceTransform(op, env, opId);
   // A feed reads its list and what its LINK names.
   if (op.kind === 'FEED') {
@@ -2462,6 +2492,10 @@ async function produce(op: Exclude<Operation, { kind: 'SITEMAP' | 'FINGERPRINT' 
     return memoFiles(env, key, async () => feedFiles(op, env));
   }
   const origin = `${env.label}:${op.span.line} ${op.kind}`;
+  // The planner wrote the text; it reads nothing.
+  if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') {
+    return memoFiles(env, env.memo ? memoKey('text', opId) : undefined, async () => [[op.dest, makeFile(new TextEncoder().encode(op.text), origin)]]);
+  }
 
   if (op.kind === 'COPY') {
     const exclude = op.exclude ? IgnoreRules.fromPatterns(op.exclude) : undefined;

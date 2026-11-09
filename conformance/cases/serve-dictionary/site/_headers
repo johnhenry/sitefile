@@ -1,0 +1,3 @@
+# Compression Dictionary Transport (sitefile build --experimental-dictionary)
+/app.js
+  Use-As-Dictionary: match="/app.js"

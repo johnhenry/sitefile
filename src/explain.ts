@@ -51,6 +51,11 @@ export function operationLabel(op: Operation): string {
       return `FINGERPRINT ${op.patterns.join(' ')}`;
     case 'CANONICAL':
       return `CANONICAL ${op.base}${op.pretty ? ' PRETTY' : ''}`;
+    case 'PRECOMPRESS':
+      return `PRECOMPRESS ${op.formats.join(' ')} ${op.patterns.join(' ')}`;
+    case 'ROBOTS':
+    case 'SECURITY_TXT':
+      return `${op.kind} ${op.dest}`;
     case 'CHECKLINKS':
       return `CHECKLINKS${op.warn ? ' --warn' : ''}${op.external ? ' --external' : ''}`;
   }
@@ -461,7 +466,9 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       } else if (op.kind === 'SITEMAP') inputs.push('the .html files in the tree');
       else if (op.kind === 'CHECKLINKS') return;
       else if (op.kind === 'CANONICAL') inputs.push('the page (canonical link)');
+      else if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') inputs.push('the Sitefile');
       else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
+      else if (op.kind === 'PRECOMPRESS') inputs.push(`${file.slice(0, -'.gz'.length)} (compressed)`);
       else inputs.push(`list ${op.list}`);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: prev ? 'overwrite' : 'write', digest: next.digest, inputs });
       prev = next;

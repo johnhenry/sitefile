@@ -93,6 +93,10 @@ pub fn operation_label(op: &Operation) -> String {
         Operation::Canonical { base, pretty, .. } => {
             format!("CANONICAL {base}{}", if *pretty { " PRETTY" } else { "" })
         }
+        Operation::Precompress {
+            formats, patterns, ..
+        } => format!("PRECOMPRESS {} {}", formats.join(" "), patterns.join(" ")),
+        Operation::TextFile { keyword, dest, .. } => format!("{keyword} {dest}"),
         Operation::CheckLinks { warn, external, .. } => {
             format!(
                 "CHECKLINKS{}{}",
@@ -346,6 +350,8 @@ pub fn plan_graph(p: &Plan) -> Graph {
                 Operation::Sitemap { .. }
                 | Operation::Fingerprint { .. }
                 | Operation::Canonical { .. }
+                | Operation::Precompress { .. }
+                | Operation::TextFile { .. }
                 | Operation::CheckLinks { .. } => {}
             }
             for from in inputs.into_iter().flatten() {
@@ -883,6 +889,11 @@ impl<'a> WhyScope<'a> {
                 }
                 Operation::Sitemap { .. } => inputs.push("the .html files in the tree".into()),
                 Operation::Canonical { .. } => inputs.push("the page (canonical link)".into()),
+                Operation::Precompress { .. } => inputs.push(format!(
+                    "{} (compressed)",
+                    file.strip_suffix(".gz").unwrap_or(file)
+                )),
+                Operation::TextFile { .. } => inputs.push("the Sitefile".into()),
                 // Writes nothing, so never reached.
                 Operation::CheckLinks { .. } => {}
                 Operation::Fingerprint { manifest, .. } => inputs.push(

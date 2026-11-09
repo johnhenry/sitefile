@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments, normalizeBase } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { siteFileWarnings } from '../src/serve-rules.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
@@ -301,6 +301,73 @@ test('Last-Modified, If-Modified-Since and 103 Early Hints (johnhenry/sitefile#2
   assert.deepEqual(earlyHints('</a>; title="a b"; rel=preload'), []);
 });
 
+test('Host allow-list: DNS rebinding guard (johnhenry/sitefile#190)', async () => {
+  const s = createSiteServer(tree, { allowedHosts: ['example.com', '.dev.test'] });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/')).status, 200, 'the default 127.0.0.1:<port> Host');
+    const bad = await req(port, '/', 'GET', { host: 'evil.example' });
+    assert.equal(bad.status, 403);
+    assert.match(bad.body, /--allowed-host/);
+    assert.equal((await req(port, '/', 'GET', { host: 'www.dev.test' })).status, 200);
+    assert.equal((await req(port, '/', 'GET', { host: 'app.localhost:5173' })).status, 200);
+  } finally {
+    await closeServer(s);
+  }
+  const allowed = ['example.com', '.dev.test'];
+  for (const h of [undefined, '', 'localhost', 'LocalHost:80', 'x.localhost', 'localhost.', '127.0.0.1:8080', '10.0.0.7', '[::1]:8080', '[fe80::1%25en0]', 'example.com', 'EXAMPLE.com.:1', 'dev.test', 'a.dev.test']) {
+    assert.equal(hostAllowed(allowed, h), !String(h).includes('%25'), String(h));
+  }
+  for (const h of ['evil.example', 'www.example.com', 'notdev.test', 'localhost.evil', '1.2.3.4.evil', '999.1.1.1', '[::1', 'a:b:80']) assert.equal(hostAllowed(allowed, h), false, h);
+  assert.equal(hostAllowed(undefined, 'evil.example'), true, 'no list: no check');
+  assert.equal(hostAllowed(['*'], 'evil.example'), true);
+  assert.equal(parseAllowedHost('Example.COM.'), 'example.com');
+  assert.equal(parseAllowedHost('.dev.test'), '.dev.test');
+  assert.equal(parseAllowedHost('*'), '*');
+  for (const bad of ['', '.', 'a..b', 'a b', 'a:80', 'http://a', '*.a']) assert.equal(parseAllowedHost(bad), undefined, bad);
+});
+
+test('--cors: Access-Control-Allow-Origin and OPTIONS preflights (johnhenry/sitefile#171)', async () => {
+  const s = createSiteServer(tree, { cors: true });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], '*');
+    assert.equal((await req(port, '/missing')).headers['access-control-allow-origin'], '*');
+    const pre = await req(port, '/app.js', 'OPTIONS', { 'access-control-request-headers': 'x-a, x-b' });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers['access-control-allow-methods'], 'GET, HEAD');
+    assert.equal(pre.headers['access-control-allow-headers'], 'x-a, x-b');
+    assert.equal((await req(port, '/app.js', 'POST')).headers.allow, 'GET, HEAD, OPTIONS');
+  } finally {
+    await closeServer(s);
+  }
+  await withServer({}, async (port) => {
+    assert.equal((await req(port, '/app.js')).headers['access-control-allow-origin'], undefined);
+    assert.equal((await req(port, '/app.js', 'OPTIONS')).status, 405);
+  });
+  assert.equal(preflightHeaders(' x-a,x-b '), 'x-a,x-b');
+  assert.equal(preflightHeaders('a"b'), undefined);
+  assert.equal(preflightHeaders(''), undefined);
+});
+
+test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)', async () => {
+  for (const coep of ['require-corp', 'credentialless'] as const) {
+    const s = createSiteServer(tree, { isolate: coep });
+    const { port } = await listen(s, '127.0.0.1', 0);
+    try {
+      for (const p of ['/app.js', '/missing']) {
+        const r = await req(port, p);
+        assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin');
+        assert.equal(r.headers['cross-origin-embedder-policy'], coep);
+        assert.equal(r.headers['cross-origin-resource-policy'], 'same-origin');
+      }
+    } finally {
+      await closeServer(s);
+    }
+  }
+  await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
+});
+
 test('an access log line is written per request: method path status bytes ms', async () => {
   await withServer({}, async (port, log) => {
     await req(port, '/app.js');
@@ -481,7 +548,7 @@ test('run: bad -p values, unknown images, registries, port in use, foreground --
 
 // ---------------------------------------------------------------- 404.html, clean URLs, _redirects, _headers
 
-async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string }, fn: (port: number) => Promise<void>): Promise<void> {
+async function withTree(files: Record<string, string>, opts: { spa?: boolean; spaExclude?: string[]; spaFallback?: string; base?: string }, fn: (port: number) => Promise<void>): Promise<void> {
   const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   const s = createSiteServer(t, opts);
   const { port } = await listen(s, '127.0.0.1', 0);
@@ -709,6 +776,37 @@ test('serve --strict-site-files refuses a site with ignored lines; --country is 
   const bad = await runCli(dir, ['serve', '--country', 'nzl', dir + '/']);
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /--country expects a two-letter country code such as nz, got 'nzl'/);
+});
+
+// johnhenry/sitefile#195
+test('serve --base: the site under a path prefix; / redirects there, outside is 404', async () => {
+  assert.equal(normalizeBase('repo'), '/repo/');
+  assert.equal(normalizeBase('/a b//c/'), '/a%20b/c/');
+  assert.equal(normalizeBase('https://user.github.io/repo/?x'), '/repo/');
+  assert.equal(normalizeBase('https://example.com'), '/');
+  assert.equal(normalizeBase('/../x'), undefined);
+  const files = { '/index.html': 'home', '/docs/index.html': 'docs', '/about.html': 'about', '/404.html': 'site 404', '/_redirects': '/old /about 301\n/ext https://e.x/ 302\n' };
+  await withTree(files, { base: '/repo/' }, async (port) => {
+    let r = await req(port, '/?q=1');
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.location, '/repo/?q=1');
+    r = await req(port, '/repo');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/repo/');
+    assert.equal((await req(port, '/repo/')).body, 'home');
+    assert.equal((await req(port, '/repo/about')).body, 'about');
+    assert.equal((await req(port, '/repo/docs')).headers.location, '/repo/docs/');
+    assert.equal((await req(port, '/repo/about/')).headers.location, '/repo/about');
+    assert.equal((await req(port, '/repo/old')).headers.location, '/repo/about', 'path targets are under the base');
+    assert.equal((await req(port, '/repo/ext')).headers.location, 'https://e.x/');
+    r = await req(port, '/repo/missing');
+    assert.equal(r.status, 404);
+    assert.equal(r.body, 'site 404');
+    r = await req(port, '/about');
+    assert.equal(r.status, 404);
+    assert.match(r.body, /404 Not Found/, 'outside the base: the built-in page');
+    assert.equal((await req(port, '/repository/')).status, 404);
+  });
 });
 
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };

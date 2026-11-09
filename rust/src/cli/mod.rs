@@ -14,6 +14,7 @@ pub mod integrity;
 pub mod network;
 pub mod outdated;
 pub mod registry;
+pub mod serve_keys;
 pub mod servers;
 pub mod up;
 pub mod vendor;
@@ -142,6 +143,8 @@ Options:
                                (default gzip; none: plain tar), or the whole wbn (default none; gzip:
                                gzip(application/webbundle), also chosen by -o *.wbn.gz)
       --oci-compression <c>    the same as --compression, for oci only
+      --oci-layers <n>         split the oci image's files over n layers (1-64, default 1) by a hash of each
+                               path, so pushing a new version uploads only the layers that changed
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -179,6 +182,10 @@ Options:
                                later files win, --build-arg wins over files)
       --manifest <file>        also write a manifest of the exported files (build only): path, size and
                                SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
+      --experimental-dictionary <previous>
+                               Compression Dictionary Transport (experimental, build only): add a .dcz delta
+                               against <previous> (image, directory or archive) for each changed .js/.css/...
+                               and Use-As-Dictionary headers; 'serve' answers Available-Dictionary with them
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -230,6 +237,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("base-url"),
     string("oci-root"),
     string("oci-compression"),
+    string("oci-layers"),
     string("compression"),
     strings("label"),
     flag("git-labels"),
@@ -279,6 +287,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("poll-interval"),
     string("profile"),
     string("manifest"),
+    string("experimental-dictionary"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
 ];
@@ -390,9 +399,25 @@ fn run_extra_command(argv: &[String]) -> i32 {
         return run_command(cmd, &rest[1..]);
     }
     match TOP.iter().find(|c| c.name == name) {
+        Some(c) if c.name == "serve" => run_command(c, &optional_open(rest)),
         Some(c) => run_command(c, rest),
         None => usage_error(&format!("unknown command '{name}'")),
     }
+}
+
+/// `serve --open` takes its path only as `--open=<path>`: a bare `--open` (before `--`) is `--open=`.
+fn optional_open(args: &[String]) -> Vec<String> {
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if a == "--open" && i < end {
+                "--open=".to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------ build / validate / inspect
@@ -573,6 +598,7 @@ fn run_main(argv: &[String]) -> i32 {
             arg_files: &arg_files,
             poll,
             plain: false,
+            rebuild: None,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");
@@ -731,6 +757,15 @@ fn run_build_command(
     if let Some(m) = manifest {
         wrote.push(m.to_string());
     }
+    let dictionary = o.str("experimental-dictionary");
+    if dictionary.is_some() && command != "build" {
+        return Ok(usage_error("--experimental-dictionary is only for build"));
+    }
+    if dictionary == Some("") {
+        return Ok(usage_error(
+            "--experimental-dictionary expects an image, directory or archive",
+        ));
+    }
     let network = network::network_option(o)?;
     let mut fetch_policy = crate::resources::types::DEFAULT_FETCH_POLICY;
     fetch_policy.network = network;
@@ -771,6 +806,24 @@ fn run_build_command(
                 images::export_formats()
             )));
         }
+    }
+    let mut oci_layers: Option<usize> = None;
+    if let Some(raw) = o.str("oci-layers") {
+        if command != "build" {
+            return Ok(usage_error("--oci-layers is only for build"));
+        }
+        let n = if !raw.is_empty() && raw.len() <= 2 && raw.bytes().all(|c| c.is_ascii_digit()) {
+            raw.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+        if !(1..=crate::export::oci::MAX_OCI_LAYERS).contains(&n) {
+            return Ok(usage_error(&format!(
+                "--oci-layers expects an integer from 1 to {}, got '{raw}'",
+                crate::export::oci::MAX_OCI_LAYERS
+            )));
+        }
+        oci_layers = Some(n);
     }
     let mut oci_compression = None;
     if let Some(c) = o.str("oci-compression") {
@@ -960,6 +1013,7 @@ fn run_build_command(
                 context_dir: context.to_string(),
                 oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
+                oci_layers,
                 platform: o.str("platform").map(str::to_string),
                 labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
@@ -968,6 +1022,15 @@ fn run_build_command(
             if let Some(rc) = &remote_cache {
                 rc.load();
             }
+            // `--experimental-dictionary <previous>`: the previous build's files.
+            let dictionary_from = match dictionary {
+                Some(arg) => {
+                    let mut store = crate::integrity::LazyStore::default();
+                    let t = crate::integrity::resolve_target(arg, &mut store)?;
+                    Some(crate::integrity::load_target(&t, &mut store)?)
+                }
+                None => None,
+            };
             let push_cache = || {
                 if let Some(rc) = &remote_cache {
                     rc.push(&cache::transform_cache_dir());
@@ -975,7 +1038,11 @@ fn run_build_command(
             };
             if !tags.is_empty() && out_flag.is_none() {
                 // -t without -o: store the image only; nothing is written to the context.
-                let built = build(&options)?;
+                let mut built = build(&options)?;
+                if let Some(previous) = &dictionary_from {
+                    built.output =
+                        crate::dictionary::add_dictionary_deltas(&built.output, previous)?.0;
+                }
                 if let Some(m) = manifest {
                     write_manifest(&built.output, m, context, o.flag("force"))?;
                 }
@@ -988,6 +1055,7 @@ fn run_build_command(
                 base_url: o.str("base-url").map(str::to_string),
                 oci_root: o.str("oci-root").map(str::to_string),
                 oci_compression,
+                oci_layers,
                 wbn_compression,
                 image_labels: labels.clone(),
                 git_labels: o.flag("git-labels"),
@@ -997,6 +1065,7 @@ fn run_build_command(
                 },
                 force: o.flag("force"),
                 attest,
+                dictionary_from,
             };
             if let Some(m) = manifest {
                 let format = match format_override.or(sitefile_format) {
@@ -1040,6 +1109,9 @@ fn run_build_command(
                 ),
             };
             out(&line);
+            if let Some(d) = &r.dictionary_deltas {
+                out(&format!("Dictionary deltas: {} (.dcz)\n", d.len()));
+            }
             if let Some(m) = manifest {
                 write_manifest(&r.result.output, m, context, o.flag("force"))?;
             }

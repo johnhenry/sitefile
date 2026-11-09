@@ -1,0 +1,9 @@
+# ROBOTS and SECURITY_TXT: /robots.txt (pointing at the sitemap) and an RFC 9116
+# /.well-known/security.txt, the files crawlers and security researchers look for.
+FROM scratch
+ARG SITE_URL = "https://example.com/"
+COPY ./public/ /
+SITEMAP BASE ${SITE_URL}
+ROBOTS DISALLOW /drafts/ SITEMAP
+SECURITY_TXT CONTACT mailto:security@example.com EXPIRES 2099-01-01 POLICY https://example.com/security
+EXPORT /

@@ -1,0 +1,6 @@
+# PRECOMPRESS: .gz sidecars from the shared deflate encoder, byte-identical in both implementations.
+FROM scratch
+COPY ./public/ /
+PRECOMPRESS gzip / MIN 64
+PRECOMPRESS --overwrite /assets/
+EXPORT /
