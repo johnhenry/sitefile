@@ -1210,11 +1210,10 @@ on disk after the server started answers `500` for the entries that changed (`se
   (`maxConnectionsPerIp`), so `servers --json` shows it.
 - **Sharing a server** (on a LAN with `-p 0.0.0.0:<port>`, or through a tunnel). Besides `--auth`,
   `--max-connections-per-ip` and the Host allow-list:
-  - `--random-route` serves the site only under a random secret prefix (`/<24 hex>/`, printed in the URL and kept
-    in the record as `basePath`, so `server restart` keeps the link); every other path is a plain `404` (never the
-    site's `404.html`), `/<prefix>` redirects to `/<prefix>/`, and redirects the server makes stay under the
-    prefix. The reserved `/__sitefile/` paths are not prefixed. Links in the site that start with `/` leave the
-    prefix, as on any host that serves a site from a sub-path.
+  - `--random-route` is a secret `--base`: the site is served only under `/<24 hex>/` (printed in the URL and kept
+    in the record as `base`, so `server restart` keeps the link). Unlike `--base`, `/` does not redirect to it:
+    every path outside it is a plain `404`, never the site's `404.html` (`hideBase` in the record). It cannot be
+    combined with `--base`.
   - `--allow-ip <cidr>` / `--deny-ip <cidr>` (repeatable; `192.168.0.0/16`, `fd00::/8` or one address) are checked
     before anything else: a client in a deny block, or outside every allow block when there are some, gets `403`.
     Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
