@@ -5,10 +5,15 @@
 //
 // A case: { name, files: { 'rel/path': 'content' }, args?: [...], steps: [...] }. Steps:
 //   { get: '/path', headers?: {...}, method? }  record one response
-//   { post: '/path', body, headers? }           record one response to a POST
+//   { post: '/path', body, headers? }           record one response to a POST (SELF in a header: the server's origin)
+//   { log: true }                               record the `browser ...` lines of stdout so far
 //   { open: true }                              open the event stream (records its headers and first event)
-//   { next: true }                              record the next event
-//   { write: { 'rel/path': 'content' } }        edit files in the context (then wait for the rebuild via next)
+//   { next: true }                              record the events since the last step: `building` events are
+//                                               left out, and `ok` events too unless they are all there is
+//                                               (a file system may report one save twice: the second rebuild
+//                                               changes nothing and sends ok)
+//   { write: { 'rel/path': 'content' } }        edit files in the context, then wait until a rebuild has finished
+//                                               and the server has been quiet for a moment
 //   { wait: ms }                                sleep
 // Each implementation gets its own copy of the context and its own SITEFILE_HOME.
 
@@ -62,6 +67,99 @@ export const WATCH_CASES = [
       { get: '/strict/', headers: NAV },
       { get: '/noconnect/', headers: NAV },
     ],
+  },
+  {
+    name: 'watch/keep-service-workers',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>sw</h1>', 'public/sw.js': 'self.addEventListener("fetch", () => {});' },
+    args: ['--keep-service-workers'],
+    steps: [{ get: '/__sitefile/reload.js' }, { get: '/sw.js' }],
+  },
+  {
+    name: 'watch/plain-dir',
+    files: { 'index.html': '<link rel="stylesheet" href="/s.css"><h1>p1</h1>', 's.css': 'a{}', '.env': 'SECRET=1', '.well-known/x.txt': 'x' },
+    steps: [
+      { get: '/', headers: NAV },
+      { get: '/.env' },
+      { get: '/.well-known/x.txt' },
+      { open: true },
+      { write: { 's.css': 'a{color:red}' } },
+      { next: true },
+      { get: '/s.css' },
+      { write: { 'index.html': '<h1>p2</h1>' } },
+      { next: true },
+      { get: '/', headers: NAV },
+    ],
+  },
+  {
+    name: 'watch/css-inject-build',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>', 'public/a.css': 'a{}', 'public/b.css': 'b{}' },
+    steps: [{ open: true }, { write: { 'public/a.css': 'a{color:red}' } }, { next: true }, { write: { 'public/index.html': '<h1>y</h1>' } }, { next: true }],
+  },
+  {
+    name: 'watch/no-css-inject',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>', 'public/a.css': 'a{}' },
+    args: ['--no-css-inject'],
+    steps: [{ get: '/__sitefile/reload.js' }, { open: true }, { write: { 'public/a.css': 'a{color:red}' } }, { next: true }],
+  },
+  {
+    name: 'watch/console',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    args: ['--console'],
+    steps: [
+      { get: '/__sitefile/reload.js' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"error","message":"Uncaught Error: boom\\nnext","url":"http://x/app.js","line":3,"col":9,"stack":"Error: boom\\n    at f (app.js:3:9)"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"log","message":"hello","line":2.5}' },
+      { post: '/__sitefile/console', headers: { origin: 'http://evil.example' }, body: '{"level":"error","message":"x"}' },
+      { post: '/__sitefile/console', headers: {}, body: '{"level":"error","message":"x"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: '{"level":"trace"}' },
+      { post: '/__sitefile/console', headers: { origin: 'SELF' }, body: 'x'.repeat(17000) },
+      { get: '/__sitefile/console' },
+      { wait: 200 },
+      { log: true },
+    ],
+  },
+  {
+    name: 'watch/build-error',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>x</h1>' },
+    steps: [
+      { open: true },
+      { write: { Sitefile: 'FROM scratch\nCOPY ./missing/ /\nEXPORT /\n' } },
+      { next: true },
+      { get: '/', headers: NAV },
+      { write: { Sitefile: SITEFILE } },
+      { next: true },
+      { write: { 'public/index.html': '<h1>y</h1>' } },
+      { next: true },
+    ],
+  },
+  {
+    name: 'watch/navigate-to-changed',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>', 'public/posts/a b/index.html': '<h1>a</h1>', 'public/x.html': '<h1>x</h1>' },
+    args: ['--navigate-to-changed'],
+    steps: [
+      { open: true },
+      { write: { 'public/posts/a b/index.html': '<h1>A</h1>' } },
+      { next: true },
+      { write: { 'public/x.html': '<h1>X</h1>', 'public/index.html': '<h1>I</h1>' } },
+      { next: true },
+    ],
+  },
+  {
+    name: 'watch/morph',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>', 'public/b.html': '<h1>b</h1>', 'public/app.js': '1' },
+    steps: [
+      { open: true },
+      { write: { 'public/index.html': '<h1>I</h1>' } },
+      { next: true },
+      { write: { 'public/b.html': '<h1>B</h1>', 'public/app.js': '2' } },
+      { next: true },
+    ],
+  },
+  {
+    name: 'watch/reload-full',
+    files: { Sitefile: SITEFILE, 'public/index.html': '<h1>i</h1>' },
+    args: ['--reload', 'full'],
+    steps: [{ get: '/__sitefile/reload.js' }],
   },
 ];
 
@@ -117,6 +215,8 @@ function openEvents(port) {
                   r(e);
                 });
               }),
+        /** Every event received and not yet taken. */
+        drain: () => queue.splice(0),
         close: () => req.destroy(),
       });
     });
@@ -140,6 +240,19 @@ async function runOne(c, cmd, work, home) {
   child.stderr.on('data', (d) => (stderr += d));
   const transcript = [];
   let events;
+  // Builds and re-reads that have finished (their last line).
+  const finished = () => (stdout + stderr).match(/^(Built |Read |Build failed|Read failed)/gm)?.length ?? 0;
+  /** Wait until no build finishes for `ms`. */
+  const quiet = async (ms = 500) => {
+    let n = finished();
+    for (let still = 0; still < ms; still += 50) {
+      await sleep(50);
+      if (finished() !== n) {
+        n = finished();
+        still = 0;
+      }
+    }
+  };
   try {
     const deadline = Date.now() + 30000;
     while (!/Watching /.test(stdout)) {
@@ -149,13 +262,28 @@ async function runOne(c, cmd, work, home) {
     const port = Number(/at http:\/\/127\.0\.0\.1:(\d+)\//.exec(stdout)?.[1]);
     for (const s of c.steps) {
       if (s.get !== undefined) transcript.push({ step: `${s.method ?? 'GET'} ${s.get}`, ...(await request(port, { method: s.method, path: s.get, headers: s.headers })) });
-      else if (s.post !== undefined) transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers: s.headers, body: s.body })) });
+      else if (s.post !== undefined) {
+        // SELF in a header value is this server's origin.
+        const headers = Object.fromEntries(Object.entries(s.headers ?? {}).map(([k, v]) => [k, v.replace('SELF', `http://127.0.0.1:${port}`)]));
+        transcript.push({ step: `POST ${s.post}`, ...(await request(port, { method: 'POST', path: s.post, headers, body: s.body })) });
+      } else if (s.log) transcript.push({ step: 'log', lines: stdout.split('\n').filter((l) => l.startsWith('browser')) });
       else if (s.open) {
+        await quiet();
         events = await openEvents(port);
         transcript.push({ step: 'open', status: events?.status, headers: events?.headers, event: await events?.next() });
-      } else if (s.next) transcript.push({ step: 'next', event: await events?.next() });
-      else if (s.write) {
+      } else if (s.next) {
+        let got = events?.drain() ?? [];
+        if (got.length === 0 && events) got = [await events.next()];
+        const OK = 'data: {"type":"ok"}';
+        const shown = got.filter((e) => e !== 'data: {"type":"building"}');
+        const rest = shown.filter((e) => e !== OK);
+        transcript.push({ step: 'next', events: rest.length > 0 ? rest : shown.length > 0 ? [OK] : [] });
+      } else if (s.write) {
+        const before = finished();
         for (const [rel, content] of Object.entries(s.write)) await fs.writeFile(path.join(work, rel), content);
+        const deadline = Date.now() + 20000;
+        while (finished() === before && Date.now() < deadline) await sleep(25);
+        await quiet();
       } else if (s.wait) await sleep(s.wait);
     }
   } finally {
@@ -176,7 +304,10 @@ export async function runWatchCases({ impls, tmp, only }) {
     const got = {};
     for (const [impl, cmd] of impls) {
       const dir = path.join(tmp, impl, c.name.replace(/[/:]/g, '_'));
-      got[impl] = await runOne(c, cmd, path.join(dir, 'ctx'), path.join(tmp, impl, '.home'));
+      const r = await runOne(c, cmd, path.join(dir, 'ctx'), path.join(tmp, impl, '.home'));
+      // Error locations name each implementation's own copy of the context.
+      const own = `/${impl}/${path.basename(dir)}/`;
+      got[impl] = { transcript: JSON.parse(JSON.stringify(r.transcript).replaceAll(own, `/<impl>/${path.basename(dir)}/`)) };
     }
     const detail = [];
     const a = got.ts.transcript;

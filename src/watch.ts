@@ -104,10 +104,75 @@ export interface WatchSpec {
   readonly files: readonly string[];
   /** Called with the absolute path of each change (the directory itself when the OS gives no name). */
   readonly onChange: (abs: string) => void;
+  /**
+   * `--poll`: compare stat snapshots every this many milliseconds instead of using file system
+   * events (for network shares, Docker bind mounts and WSL paths, where events do not arrive).
+   */
+  readonly pollMs?: number;
+  /** Paths the poller does not descend into or report (it re-checks at every scan). */
+  readonly ignore?: (abs: string) => boolean;
 }
 
-/** Start fs.watch watchers for `spec`; returns a function that closes them. */
+/** Default interval of `--poll`. */
+export const DEFAULT_POLL_MS = 1000;
+
+/** What a poll compares per path: type, size, mtime, ctime and inode (symlinks are not followed). */
+function stampOf(st: import('node:fs').BigIntStats): string {
+  return `${st.mode & 0o170000n}:${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}`;
+}
+
+/** A stat snapshot of `spec`'s directories (recursive) and files; a missing file is `missing`. */
+export async function pollSnapshot(spec: Pick<WatchSpec, 'dirs' | 'files' | 'ignore'>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const walk = async (dir: string): Promise<void> => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (spec.ignore?.(p)) continue;
+      const st = await fs.lstat(p, { bigint: true }).catch(() => undefined);
+      if (st === undefined) continue;
+      out.set(p, stampOf(st));
+      if (st.isDirectory()) await walk(p);
+    }
+  };
+  for (const d of spec.dirs) await walk(d);
+  for (const f of spec.files) {
+    if (out.has(f) || spec.ignore?.(f)) continue;
+    out.set(f, await fs.stat(f, { bigint: true }).then(stampOf, () => 'missing'));
+  }
+  return out;
+}
+
+/** Poll `spec` every `spec.pollMs`; reports each added, removed or changed path. Returns a function that stops it. */
+function pollPaths(spec: WatchSpec & { pollMs: number }): () => void {
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
+  let last: Map<string, string> | undefined;
+  const tick = async (): Promise<void> => {
+    const snap = await pollSnapshot(spec);
+    if (stopped) return;
+    if (last !== undefined) {
+      for (const [p, st] of snap) if (last.get(p) !== st) spec.onChange(p);
+      for (const p of last.keys()) if (!snap.has(p)) spec.onChange(p);
+    }
+    last = snap;
+    timer = setTimeout(() => void tick(), spec.pollMs);
+  };
+  void tick();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
+/** Start fs.watch watchers (or, with `pollMs`, a poller) for `spec`; returns a function that closes them. */
 export function watchPaths(spec: WatchSpec): () => void {
+  if (spec.pollMs !== undefined) return pollPaths({ ...spec, pollMs: spec.pollMs });
   const watchers: FSWatcher[] = [];
   const add = (dir: string, recursive: boolean, names?: ReadonlySet<string>): void => {
     const w = fsWatch(dir, { recursive, persistent: true }, (_event, filename) => {
