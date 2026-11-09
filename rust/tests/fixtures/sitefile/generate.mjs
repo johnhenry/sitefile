@@ -320,8 +320,8 @@ function validProgram() {
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
     () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
-    () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
     () => `CANONICAL BASE ${pick(['https://e.x/', `https://e.x/${v()}/`])}${maybe(' PRETTY')}`,
+    () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
     stage,
   ];
   if (chance(0.5)) lines.push(stage());
