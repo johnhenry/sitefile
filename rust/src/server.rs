@@ -2141,9 +2141,22 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
+        // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
+        let delta = if live {
+            None
+        } else {
+            crate::dictionary::delta_for(
+                tree,
+                served,
+                headers.get("available-dictionary").map(String::as_str),
+                headers.get("accept-encoding").map(String::as_str),
+            )
+        };
+        let dictionary_vary = tree.is_file(&format!("{served}.dcz"));
         // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
         // range request: ranges are served from the identity body).
         let deflated = if !live
+            && delta.is_none()
             && !headers.contains_key("range")
             && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
         {
@@ -2172,11 +2185,21 @@ pub fn respond(
         } else {
             body
         };
+        let vary_on = if dictionary_vary {
+            "accept-encoding, available-dictionary"
+        } else {
+            "accept-encoding"
+        };
         let encoding: Vec<(String, String)> = if deflated.is_some() {
             owned(vec![
                 ("content-encoding", "gzip".into()),
-                ("vary", "accept-encoding".into()),
+                ("vary", vary_on.into()),
             ])
+        } else {
+            vec![]
+        };
+        let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
+            owned(vec![("vary", vary_on.into())])
         } else {
             vec![]
         };
@@ -2189,12 +2212,13 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page and a gzip response are other representations of the file: they get their own ETags.
+        // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}{}\"",
+            "\"{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
             if live { "-live" } else { "" },
-            if deflated.is_some() { "-gzip" } else { "" }
+            if deflated.is_some() { "-gzip" } else { "" },
+            if delta.is_some() { "-dcz" } else { "" }
         );
         let modified = options.last_modified.as_ref().and_then(|f| f());
         let lm: Vec<(String, String)> = modified
@@ -2203,6 +2227,7 @@ pub fn respond(
         let not_modified = || {
             let mut h: Vec<(String, String)> = encoding.clone();
             h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -2223,6 +2248,20 @@ pub fn respond(
                 return not_modified();
             }
         }
+        // The delta is sent whole (no byte ranges of an encoded body).
+        if let Some(d) = delta {
+            let mut h = owned(vec![
+                ("content-type", mime.into()),
+                ("content-length", d.len().to_string()),
+            ]);
+            h.extend(custom.iter().cloned());
+            h.extend(vary.iter().cloned());
+            h.push(("content-encoding".into(), "dcz".into()));
+            h.push(("etag".into(), etag.clone()));
+            h.extend(lm.iter().cloned());
+            return finish(200, h, Some(d.to_vec()));
+        }
+        h.extend(vary.iter().cloned());
         h.push(("etag".into(), etag.clone()));
         h.extend(lm.iter().cloned());
         // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
