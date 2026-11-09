@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
@@ -65,6 +66,8 @@ export interface SiteServerOptions {
   readonly noindex?: boolean;
   /** Add the client address and device (from `User-Agent`) to access-log lines of non-loopback clients. */
   readonly clientInfo?: boolean;
+  /** `--tls-cert`, `--tls-key`: serve HTTPS with this PEM certificate chain and private key. */
+  readonly tls?: { readonly cert: string | Uint8Array; readonly key: string | Uint8Array };
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -956,7 +959,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     page(404, NOT_FOUND_PAGE, custom);
   };
 
-  const server = http.createServer(handler);
+  // HTTPS when a certificate is given (same handler; an https.Server has the http.Server API).
+  const server = options.tls
+    ? (https.createServer({ cert: Buffer.from(options.tls.cert), key: Buffer.from(options.tls.key) }, handler) as unknown as http.Server)
+    : http.createServer(handler);
   const limit = options.maxConnectionsPerIp ?? 0;
   if (limit > 0) {
     const perIp = new Map<string, number>();
@@ -1028,11 +1034,11 @@ export function networkAddresses(bindHost: string): string[] {
 }
 
 /** {@link networkAddresses} as URLs. */
-export function networkUrls(bindHost: string, port: number): string[] {
-  return networkAddresses(bindHost).map((a) => formatUrl(a, port));
+export function networkUrls(bindHost: string, port: number, scheme: 'http' | 'https' = 'http'): string[] {
+  return networkAddresses(bindHost).map((a) => formatUrl(a, port, scheme));
 }
 
-export function formatUrl(host: string, port: number): string {
+export function formatUrl(host: string, port: number, scheme: 'http' | 'https' = 'http'): string {
   const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
+  return `${scheme}://${shown.includes(':') ? `[${shown}]` : shown}:${port}/`;
 }

@@ -131,6 +131,8 @@ const run: Command = {
     '--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)',
     '--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)',
     '--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)',
+    '--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)',
+    '--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -172,6 +174,8 @@ const run: Command = {
     'allow-ip': { type: 'string', multiple: true },
     'deny-ip': { type: 'string', multiple: true },
     'stop-after': { type: 'string' },
+    'tls-cert': { type: 'string' },
+    'tls-key': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -200,6 +204,7 @@ const run: Command = {
     const auth = await authOf(v, bind.host);
     const perIp = perIpOf(v);
     const sharing = sharingOf(v, bind.host);
+    const tls = await tlsOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -211,11 +216,11 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       const bp = sharing.server.basePath;
-      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, bp)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp)}`);
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}`);
       const stop = sharing.stopAfter;
       const timer = stop === undefined ? undefined : new Promise<string>((r) => setTimeout(() => r('stop-after'), stop.seconds * 1000).unref());
       const why = await Promise.race([waitForSignal(), ...(timer ? [timer] : [])]);
@@ -225,8 +230,8 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath)}\n${networkLines(up.host, up.port, up.basePath)}`);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}`);
     return 0;
   },
 };
@@ -267,6 +272,9 @@ export interface DetachedServe {
   readonly denyIp?: string[] | undefined;
   /** `--stop-after`: when the server stops (ISO time). */
   readonly expires?: string | undefined;
+  /** `--tls-cert`, `--tls-key`, absolute paths. */
+  readonly tlsCert?: string | undefined;
+  readonly tlsKey?: string | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -299,6 +307,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.allowIp !== undefined ? { allowIp: d.allowIp } : {}),
     ...(d.denyIp !== undefined ? { denyIp: d.denyIp } : {}),
     ...(d.expires !== undefined ? { expires: d.expires } : {}),
+    ...(d.tlsCert !== undefined ? { tlsCert: d.tlsCert, tlsKey: d.tlsKey } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -376,8 +385,8 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
 }
 
 /** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
-function networkLines(host: string, port: number, basePath?: string): string {
-  return networkUrls(host, port)
+function networkLines(host: string, port: number, basePath?: string, scheme: 'http' | 'https' = 'http'): string {
+  return networkUrls(host, port, scheme)
     .map((u) => `  Network: ${withBase(u, basePath)}\n`)
     .join('');
 }
@@ -402,14 +411,32 @@ async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: Bas
   };
 }
 
+/**
+ * `--tls-cert`, `--tls-key` (or `SITEFILE_TLS_CERT`, `SITEFILE_TLS_KEY`): the PEM files, read now (the key is never logged
+ * or copied; the record keeps both paths, absolute, and a detached server reads them at every start).
+ */
+async function tlsOf(v: ParsedValues): Promise<{ server?: { cert: Buffer; key: Buffer }; record: { tlsCert?: string; tlsKey?: string }; scheme: 'http' | 'https' }> {
+  const env = (k: string): string | undefined => (process.env[k] === '' ? undefined : process.env[k]);
+  const cert = str(v['tls-cert']) ?? env('SITEFILE_TLS_CERT');
+  const key = str(v['tls-key']) ?? env('SITEFILE_TLS_KEY');
+  if (cert === undefined && key === undefined) return { record: {}, scheme: 'http' };
+  if (cert === undefined || key === undefined) usage('--tls-cert and --tls-key go together');
+  const read = (f: string, flag: string): Promise<Buffer> => fs.readFile(f).catch(() => usage(`--${flag}: cannot read ${f}`));
+  return {
+    server: { cert: await read(cert, 'tls-cert'), key: await read(key, 'tls-key') },
+    record: { tlsCert: path.resolve(cert), tlsKey: path.resolve(key) },
+    scheme: 'https',
+  };
+}
+
 /** A server URL (`http://host:port/`) under a --random-route prefix. */
 function withBase(url: string, basePath: string | undefined): string {
   return basePath === undefined ? url : `${url.slice(0, -1)}${basePath}/`;
 }
 
 /** The URL a server is reached at locally (its --random-route prefix included). */
-export function siteUrl(host: string, port: number, basePath?: string): string {
-  return withBase(formatUrl(host, port), basePath);
+export function siteUrl(host: string, port: number, basePath?: string, scheme: 'http' | 'https' = 'http'): string {
+  return withBase(formatUrl(host, port, scheme), basePath);
 }
 
 /**
@@ -496,6 +523,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const perIp = perIpOf(v);
   if (v['stop-after'] !== undefined) usage('--stop-after does not apply to --watch');
   const sharing = sharingOf(v, bind.host);
+  const tls = await tlsOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -522,7 +550,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -567,8 +595,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
         const bp = sharing.server.basePath;
-        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, bp))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, bp)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp)}`);
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}`);
       },
     });
   } finally {
@@ -593,7 +621,7 @@ const ps: Command = {
       // A server bound to all interfaces also lists the URLs other machines use (networkUrls).
       // Credentials never leave the record: a server that needs them shows auth: true.
       const out = shown.map(({ image, auth, ...rest }) => {
-        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port) : [];
+        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port, rest.tlsCert !== undefined ? 'https' : 'http') : [];
         return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), ...(auth !== undefined || rest.authFile !== undefined ? { auth: true } : {}), site: image };
       });
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
@@ -770,7 +798,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.basePath)}\n${networkLines(up.host, up.port, up.basePath)}`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}`);
     return 0;
   },
 };

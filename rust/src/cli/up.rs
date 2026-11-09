@@ -143,6 +143,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             allow_ip: None,
             deny_ip: None,
             expires: None,
+            tls_cert: None,
+            tls_key: None,
             project: Some(project.clone()),
         });
     }

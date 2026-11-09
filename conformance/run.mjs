@@ -266,7 +266,7 @@ try {
       continue;
     }
     if (c.command === 'serve') {
-      const res = await runServeCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp });
+      const res = await runServeCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, root });
       results.push(res);
       console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
       if (!res.pass) for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);

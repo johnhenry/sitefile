@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
@@ -64,6 +65,9 @@ export interface ServerState {
   readonly denyIp?: readonly string[];
   /** `--stop-after`: when the server stops itself (ISO time; absent: never). */
   readonly expires?: string;
+  /** `--tls-cert`, `--tls-key`: HTTPS with these PEM files, read at every start (absent: HTTP). */
+  readonly tlsCert?: string;
+  readonly tlsKey?: string;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
@@ -171,9 +175,9 @@ export class ServerRegistry {
     return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
   }
 }
-function urlOf(s: Pick<ServerState, 'host' | 'port' | 'basePath'>): string {
+function urlOf(s: Pick<ServerState, 'host' | 'port' | 'basePath' | 'tlsCert'>): string {
   const shown = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}${s.basePath ?? ''}/`;
+  return `${s.tlsCert !== undefined ? 'https' : 'http'}://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}${s.basePath ?? ''}/`;
 }
 
 export function pidAlive(pid: number): boolean {
@@ -191,7 +195,9 @@ export async function isRunning(s: ServerState): Promise<boolean> {
   if (!s.ready || !pidAlive(s.pid)) return false;
   const host = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
   return new Promise((resolve) => {
-    const req = http.request({ host, port: s.port, method: 'HEAD', path: '/', headers: { 'x-sitefile-probe': s.id }, timeout: 1500, agent: false }, (res) => {
+    // Over HTTPS the probe skips certificate checks: it only reads this server's own id header.
+    const request = s.tlsCert !== undefined ? (o: https.RequestOptions, cb: (r: http.IncomingMessage) => void) => https.request({ ...o, rejectUnauthorized: false }, cb) : http.request;
+    const req = request({ host, port: s.port, method: 'HEAD', path: '/', headers: { 'x-sitefile-probe': s.id }, timeout: 1500, agent: false }, (res) => {
       res.resume();
       resolve(res.headers['x-sitefile-server'] === s.id);
     });

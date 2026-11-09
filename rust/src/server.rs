@@ -70,6 +70,8 @@ pub struct SiteServerOptions {
     pub noindex: bool,
     /// Add the client address and device to access-log lines of non-loopback clients.
     pub client_info: bool,
+    /// `--tls-cert`, `--tls-key`: serve HTTPS ([`tls_config`]).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -585,7 +587,7 @@ impl LiveReload {
     /// Hold `out` open as a text/event-stream until the client goes away or [`LiveReload::close`].
     /// The headers keep proxies and tunnels from buffering or compressing it, and a comment every
     /// 15 s keeps idle connections from being cut (and finds clients that went away).
-    fn stream(&self, out: &mut TcpStream, options: &SiteServerOptions) {
+    fn stream(&self, out: &mut Conn, options: &SiteServerOptions) {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
@@ -780,6 +782,96 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// A served connection: plain TCP, or a TLS session over it (`--tls-cert`). Clones share the
+/// socket and the session; the connection loop reads and writes from one thread.
+pub struct Conn {
+    tcp: TcpStream,
+    tls: Option<Arc<Mutex<rustls::ServerConnection>>>,
+}
+
+impl Conn {
+    fn try_clone(&self) -> io::Result<Conn> {
+        Ok(Conn {
+            tcp: self.tcp.try_clone()?,
+            tls: self.tls.clone(),
+        })
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.tcp.peer_addr()
+    }
+    fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        self.tcp.set_read_timeout(d)
+    }
+    fn set_nodelay(&self, on: bool) -> io::Result<()> {
+        self.tcp.set_nodelay(on)
+    }
+    fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
+        if let Some(t) = &self.tls {
+            if let Ok(mut c) = t.lock() {
+                c.send_close_notify();
+                let _ = c.complete_io(&mut self.tcp);
+            }
+        }
+        self.tcp.shutdown(how)
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.read(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).read(buf)
+            }
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &self.tls {
+            None => self.tcp.write(buf),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).write(buf)
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match &self.tls {
+            None => self.tcp.flush(),
+            Some(t) => {
+                let mut c = t.lock().map_err(|_| io::Error::other("tls session"))?;
+                rustls::Stream::new(&mut *c, &mut self.tcp).flush()
+            }
+        }
+    }
+}
+
+/// The TLS configuration of `--tls-cert`/`--tls-key`: a PEM certificate chain and private key.
+pub fn tls_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<rustls::ServerConfig>> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let bad = |m: String| SitefileError::plain(E_USAGE, m);
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| bad(format!("--tls-cert: not a PEM certificate: {e}")))?;
+    if certs.is_empty() {
+        return Err(bad("--tls-cert: no certificate in the file".into()));
+    }
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| bad(format!("--tls-key: not a PEM private key: {e}")))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| bad(format!("TLS: {e}")))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| bad(format!("--tls-key does not match --tls-cert: {e}")))?;
+    Ok(Arc::new(config))
+}
+
 /// A parsed CIDR block: 4 or 16 address bytes and a prefix length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cidr {
@@ -2227,7 +2319,7 @@ struct Request {
 
 /// Read one request head. `Ok(None)` on a clean EOF before any byte.
 fn read_request(
-    r: &mut BufReader<TcpStream>,
+    r: &mut BufReader<Conn>,
 ) -> io::Result<Option<std::result::Result<Request, ()>>> {
     let mut head: Vec<u8> = Vec::new();
     loop {
@@ -2316,7 +2408,7 @@ fn read_request(
 }
 
 fn serve_connection(
-    stream: TcpStream,
+    stream: Conn,
     tree: &SharedTree,
     rules: &RulesCache,
     options: &SiteServerOptions,
@@ -2603,7 +2695,18 @@ pub fn listen_shared(
                 per_ip.clone(),
             );
             std::thread::spawn(move || {
-                serve_connection(stream, &tree, &rules, &options, busy);
+                let conn = Conn {
+                    tls: options.tls.as_ref().and_then(|cfg| {
+                        rustls::ServerConnection::new(cfg.clone())
+                            .ok()
+                            .map(|c| Arc::new(Mutex::new(c)))
+                    }),
+                    tcp: stream,
+                };
+                if options.tls.is_some() && conn.tls.is_none() {
+                    return;
+                }
+                serve_connection(conn, &tree, &rules, &options, busy);
                 if let Ok(mut m) = conns.lock() {
                     m.remove(&id);
                 }
@@ -2791,6 +2894,14 @@ pub fn network_urls(bind_host: &str, port: u16) -> Vec<String> {
         .collect()
 }
 
+/// `http://` URL made `https://` for a TLS server.
+pub fn with_scheme(url: String, tls: bool) -> String {
+    match url.strip_prefix("http://").filter(|_| tls) {
+        Some(rest) => format!("https://{rest}"),
+        None => url,
+    }
+}
+
 pub fn format_url(host: &str, port: u16) -> String {
     let shown = if host == "0.0.0.0" || host == "::" {
         "127.0.0.1"
@@ -2898,6 +3009,7 @@ mod tests {
             ip_rules: None,
             noindex: false,
             client_info: false,
+            tls: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -3174,6 +3286,19 @@ mod tests {
         );
         assert_eq!(device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")), "Mac");
         assert_eq!(device_of(None), "other");
+    }
+
+    #[test]
+    fn tls_config_errors() {
+        let e = tls_config(b"not pem", b"").err().unwrap();
+        assert!(e.message().contains("--tls-cert"), "{}", e.message());
+        let cert = b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+        assert!(tls_config(cert, b"no key").is_err());
+        assert_eq!(
+            with_scheme("http://127.0.0.1:1/".into(), true),
+            "https://127.0.0.1:1/"
+        );
+        assert_eq!(with_scheme("http://a/".into(), false), "http://a/");
     }
 
     #[test]
@@ -3564,6 +3689,7 @@ mod tests {
             ip_rules: None,
             noindex: false,
             client_info: false,
+            tls: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

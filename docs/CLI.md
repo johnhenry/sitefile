@@ -1176,6 +1176,14 @@ to `image` (`imageId`) and `dir` (`path`).
   - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
   - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
     (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
+- **HTTPS.** `--tls-cert <pem> --tls-key <pem>` (or `SITEFILE_TLS_CERT` / `SITEFILE_TLS_KEY`) serve HTTPS: a phone
+  on the LAN then gets a secure context (service workers, `crypto.subtle`, clipboard, camera). The printed URLs,
+  `servers` and the log say `https://`. The files are read at start and the record keeps only their absolute paths
+  (`tlsCert`, `tlsKey`), so `server restart` and detached servers read them again; the key is never logged or
+  copied into the store. sitefile does not create or install a CA: trusting a root certificate is a system change
+  for you to make, e.g. with mkcert (`mkcert -install && mkcert 192.168.1.20 localhost`, then
+  `--tls-cert 192.168.1.20+1.pem --tls-key 192.168.1.20+1-key.pem`). HTTP/2 is not offered (both servers speak
+  HTTP/1.1 over TLS). The Rust server uses rustls, already in its build for HTTPS imports.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

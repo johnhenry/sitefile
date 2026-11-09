@@ -499,6 +499,31 @@ test('sharing safety: random route, IP rules, noindex, client info (johnhenry/si
   assert.equal(deviceOf(undefined), 'other');
 });
 
+test('--tls-cert/--tls-key: HTTPS with a certificate (johnhenry/sitefile#170)', async (t) => {
+  const { createTestPki, opensslAvailable } = await import('./helpers/tls.js');
+  if (!opensslAvailable()) return t.skip('openssl is not installed');
+  const pki = createTestPki();
+  const { cert, key } = pki.issue('IP:127.0.0.1');
+  const s = createSiteServer(tree, { tls: { cert, key } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const https = await import('node:https');
+    const body = await new Promise<string>((resolve, reject) => {
+      const r = https.request({ host: '127.0.0.1', port, path: '/app.js', ca: pki.caCert, agent: false }, (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => resolve(d));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.equal(body, 'console.log(1)');
+  } finally {
+    await closeServer(s);
+    pki.dispose();
+  }
+});
+
 test('an access log line is written per request: method path status bytes ms', async () => {
   await withServer({}, async (port, log) => {
     await req(port, '/app.js');
