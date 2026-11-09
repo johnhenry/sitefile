@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.0.4 (2026-11-09)
+## 0.0.5 (2026-11-09)
 
 - **`PRECOMPRESS br`** (johnhenry/sitefile#203): Brotli sidecars `<file>.br`, alone or with gzip
   (`PRECOMPRESS br gzip /`), each written only when smaller. Byte-identical in both
@@ -9,6 +9,9 @@
   compiled by `rust/build.rs` in Rust (approved by the owner; building the Rust port now needs a C
   compiler). Checked over about 1,250 inputs (`rust/tests/fixtures/brotli/corpus.mjs`).
   `PRECOMPRESS zstd` is still `E_UNSUPPORTED`.
+
+## 0.0.4 (2026-11-09)
+
 - **`.tar.zst` / `.tzst` archives** (johnhenry/sitefile#221): `IMPORT … AS tree`, `serve`, `verify` and
   `diff` read Zstandard-compressed tars (detected by magic bytes, like gzip), with the same entry,
   size and ratio limits. TypeScript uses node:zlib's `zstdDecompress`; Rust uses the `ruzstd` crate
