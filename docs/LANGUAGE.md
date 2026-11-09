@@ -1567,7 +1567,9 @@ the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
+- **zip**: raw deflate (stored when deflate does not shrink the entry, and always for already-compressed media by
+  extension: png, jpg/jpeg, gif, webp, avif, heic, jxl, woff/woff2, mp3, m4a, aac, ogg/oga, opus, flac, mp4, m4v,
+  webm, mov, mkv, zip, gz, tgz, br, zst, xz, bz2, 7z, rar, wbn; tar.gz and OCI layers are unchanged), CRC-32, central directory, UTF-8 names (flag bit 11), an
   extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
   same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
   the external attributes (version made by = 3 << 8). No zip64: more than

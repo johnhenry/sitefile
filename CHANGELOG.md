@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Zip export stores already-compressed media** (#203, writer half): png,
+  jpg, webp, avif, woff2, mp4, zip, gz and similar extensions are stored
+  without running deflate, so exports of media-heavy sites are faster. Zip
+  bytes change only for such entries that deflate had shrunk slightly; tar.gz
+  and OCI layers (image IDs) are unchanged. Both implementations, with a
+  byte-for-byte conformance case (`zip-stored-media`).
 - **Zip export writes the extended timestamp** (#187): every entry carries the
   0x5455 "UT" extra field (mtime only) in its local and central header, so
   `SOURCE_DATE_EPOCH` survives extraction in any time zone (unzippers read
