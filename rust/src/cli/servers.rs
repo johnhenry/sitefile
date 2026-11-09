@@ -263,6 +263,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             allowed_hosts,
             cors: v.flag("cors"),
             isolate,
+            project: None,
         },
         None,
         &warn,
@@ -624,7 +625,7 @@ fn run_ps(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-fn grace_of(v: &Parsed) -> Result<Duration> {
+pub fn grace_of(v: &Parsed) -> Result<Duration> {
     let Some(t) = v.str("time") else {
         return Ok(Duration::from_secs(5));
     };

@@ -1199,7 +1199,7 @@ to `image` (`imageId`) and `dir` (`path`).
     `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
     the value are ignored, as are `! Name` detach lines and patterns that are not paths.
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
-  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`) and `<id>.log`. `serve -d` writes the
+  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker
   has recorded its pid and port (a failure to start is reported with the worker's error and leaves no entry).
   `servers` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's
@@ -1208,3 +1208,54 @@ to `image` (`imageId`) and `dir` (`path`).
 - `stop` sends `SIGTERM`, waits `--time` seconds (default 5), then `SIGKILL`; stopping an exited server is a no-op.
   `rm` refuses a running server unless `-f`. `restart` stops and starts it again with the same name and bind
   address, serving the same image ID (a directory or archive file is re-read). `logs -f` follows the log until Ctrl-C.
+
+### Several servers: `up`, `down`, `ps`
+
+```
+sitefile up   [-f sitefile.servers.yaml] [--time secs]
+sitefile down [-f sitefile.servers.yaml] [--time secs]
+sitefile ps   [-f sitefile.servers.yaml] [--json]
+```
+
+A **servers file** describes several detached servers, like a Compose file. Without `-f`, the first of
+`sitefile.servers.yaml`, `sitefile.servers.yml` and `sitefile.servers.json` in the current directory is used.
+
+```yaml
+servers:
+  docs:                       # the server's name (as serve -d --name)
+    source: ./docs/dist       # what serve takes: a directory or archive file, or an image
+    publish: 8081             # [host:]port, as serve -p (default: 127.0.0.1 and a free port)
+  app:
+    source: ./app/dist
+    spa: true                 # as serve --spa (default false)
+  theme:
+    source: theme:1           # an image from the local store
+```
+
+- `servers` is the only top-level key; each server takes `source` (required), `publish` (a string, or a port
+  number) and `spa`. Unknown keys, bad names and bad values are `E_DATA` naming the file and server. Names
+  follow `serve --name` (letters, digits, `_`, `.`, `-`), and a name of digits only is refused.
+- A `source` written as a path (starting with `./`, `../`, `/` or `~`, or ending in `/`) is relative to the
+  servers file's directory, not the current one. A bare name is an image reference or ID, else an archive file
+  of that name next to the servers file (`site.zip`).
+- `up` resolves every entry first, so a typo or a missing directory starts nothing, then starts the servers in
+  file order as `serve -d` would, recorded with the servers file's real path (`"project"` in the server record).
+  It is idempotent:
+  - a server that is running with the same source (the same image ID, or the same real path), `publish` and
+    `spa` is left alone: `docs (<id>) is up to date at <url>`;
+  - an exited one is restarted with the same ID (`Restarted …`);
+  - one whose entry changed is stopped and replaced (`Recreated …`);
+  - a new one is started (`Started …`).
+
+  A server with the same name that the file did not start (`serve -d --name docs`, or another servers file)
+  is refused (`E_SERVER`) before anything starts. A server the file started but no longer lists gets a
+  warning and keeps running until `down`. If one server fails to start, the others still start, and `up`
+  exits 1.
+- `down` stops (SIGTERM, then SIGKILL after `--time` seconds) and removes every server the file started,
+  also ones it no longer lists, and prints `Removed <name> (<id>)` for each. Other servers are not touched.
+- `ps` lists the file's servers in file order (`NAME SITE URL STATUS ID`): `running`, `exited`, or `not
+  created`. For a server that was never started, SITE is the `source` as written. Servers the file started
+  but no longer lists come after the others, with `(not in the file)` added to their status. `--json` gives
+  `[{"name", "site", "url", "status", "id", "listed"}]`.
+- Not yet: watch-mode servers (`serve --watch` runs in the foreground only), and parked folders
+  (`<name>.localhost` for every subfolder, which needs host-name routing). See johnhenry/sitefile#223.

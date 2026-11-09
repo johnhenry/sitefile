@@ -37,7 +37,7 @@ async function isFile(p: string): Promise<boolean> {
 }
 
 /** An archive file source: labelled by its absolute path, stored by its real path. */
-async function archiveSource(arg: string): Promise<{ label: string; source: ServerState['source'] }> {
+export async function archiveSource(arg: string): Promise<{ label: string; source: ServerState['source'] }> {
   const file = path.resolve(arg);
   return { label: file, source: { kind: 'archive', path: await fs.realpath(file).catch(() => file) } };
 }
@@ -46,7 +46,7 @@ async function archiveSource(arg: string): Promise<{ label: string; source: Serv
  * A directory or archive file when `arg` looks like a path, else an image reference or ID, else an
  * archive file by that name (`site.zip`). Whether a file is an archive is checked when it is loaded.
  */
-async function resolveSource(store: Store, arg: string): Promise<{ label: string; source: ServerState['source'] }> {
+export async function resolveSource(store: Store, arg: string): Promise<{ label: string; source: ServerState['source'] }> {
   if (/^(\.\.?|~.*|\.\.?\/.*|\/.*|.*\/)$/.test(arg)) {
     const dir = path.resolve(arg);
     if (await isFile(dir)) return archiveSource(arg);
@@ -186,38 +186,82 @@ const run: Command = {
       return 0;
     }
 
-    await loadServedTree(store, source, { keepOsMetadata, warn }); // fail fast on a bad image, directory or archive
     const reg = await ServerRegistry.open(store);
-    const { id, name: finalName } = await reg.allocate(name);
-    const state: ServerState = {
-      id,
-      name: finalName,
-      image: label,
-      source,
-      spa: !!v.spa,
-      ...(keepOsMetadata ? { keepOsMetadata } : {}),
-      ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
-      ...(v.cors ? { cors: true } : {}),
-      ...(isolate ? { isolate } : {}),
-      bind,
-      host: bind.host,
-      port: bind.port,
-      pid: 0,
-      started: new Date().toISOString(),
-      logFile: reg.logPath(id),
-      ready: false,
-    };
-    await reg.write(state);
-    try {
-      const up = await startDetached(reg, state);
-      process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
-      return 0;
-    } catch (e) {
-      await reg.remove(id);
-      throw e;
-    }
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}) }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
+    return 0;
   },
 };
+
+/** What a detached server serves and how (`serve -d`, `sitefile up`). */
+export interface DetachedServe {
+  readonly label: string;
+  readonly source: ServerState['source'];
+  readonly name?: string | undefined;
+  readonly bind: { readonly host: string; readonly port: number };
+  readonly spa: boolean;
+  /** `--keep-os-metadata`. */
+  readonly keepOsMetadata?: boolean | undefined;
+  /** `--allowed-host` names. */
+  readonly allowedHosts?: readonly string[] | undefined;
+  /** `--cors`. */
+  readonly cors?: boolean | undefined;
+  /** `--isolate`: the COEP value. */
+  readonly isolate?: 'require-corp' | 'credentialless' | undefined;
+  /** The servers file it belongs to (`sitefile up`). */
+  readonly project?: string | undefined;
+}
+
+/**
+ * `serve -d`: check that the source loads, allocate an ID and name, record the server, start its worker and
+ * wait until it listens. On failure the record is removed.
+ */
+export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?: (m: string) => void): Promise<ServerState> {
+  await loadServedTree(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) }); // fail fast on a bad image, directory or archive
+  const { id, name: finalName } = await reg.allocate(d.name);
+  const state: ServerState = {
+    id,
+    name: finalName,
+    image: d.label,
+    source: d.source,
+    spa: d.spa,
+    ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
+    ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
+    ...(d.cors ? { cors: true } : {}),
+    ...(d.isolate ? { isolate: d.isolate } : {}),
+    bind: d.bind,
+    host: d.bind.host,
+    port: d.bind.port,
+    pid: 0,
+    started: new Date().toISOString(),
+    logFile: reg.logPath(id),
+    ready: false,
+    ...(d.project !== undefined ? { project: d.project } : {}),
+  };
+  await reg.write(state);
+  try {
+    return await startDetached(reg, state);
+  } catch (e) {
+    await reg.remove(id);
+    throw e;
+  }
+}
+
+/**
+ * `server restart`: stop `s` if it is running, then start it again with the same ID, name, source and
+ * requested bind address. On failure the record stays, marked not ready.
+ */
+export async function restartDetached(reg: ServerRegistry, s: ServerState, graceMs: number): Promise<ServerState> {
+  await stopServer(reg, s, graceMs);
+  await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
+  const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
+  delete (fresh as { error?: string }).error;
+  await reg.write(fresh);
+  return startDetached(reg, fresh).catch(async (e: unknown) => {
+    await reg.update(s.id, { ready: false });
+    throw e;
+  });
+}
 
 /** serve flags that only mean something with --watch. */
 const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache', 'no-lockfile', 'keep-service-workers', 'poll', 'poll-interval', 'no-css-inject', 'console', 'no-overlay', 'navigate-to-changed', 'reload'] as const;
@@ -383,7 +427,7 @@ export async function stopServer(reg: ServerRegistry, s: ServerState, graceMs: n
   return true;
 }
 
-function graceOf(v: ParsedValues): number {
+export function graceOf(v: ParsedValues): number {
   const t = str(v.time);
   if (t === undefined) return 5000;
   const n = Number(t);
@@ -508,19 +552,13 @@ const restart: Command = {
     requireArgs(pos, 1, 1, 'a server id or name');
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
-    await stopServer(reg, s, graceOf(v));
-    await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
-    const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
-    delete (fresh as { error?: string }).error;
-    await reg.write(fresh);
-    const up = await startDetached(reg, fresh).catch(async (e: unknown) => {
-      await reg.update(s.id, { ready: false });
-      throw e;
-    });
+    const up = await restartDetached(reg, s, graceOf(v));
     process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n`);
     return 0;
   },
 };
+
+export { isFile };
 
 /** Top-level: `sitefile serve`, `sitefile servers`. */
 export const serverCommands: ReadonlyMap<string, Command> = new Map([
