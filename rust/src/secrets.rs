@@ -290,7 +290,9 @@ mod tests {
         }];
         let span = SourceSpan::new("Sitefile", 1, 1);
         assert_eq!(
-            secret_headers("api", &refs, &span, &crlf).unwrap_err().code,
+            secret_headers("api", &refs, &span, &crlf, None)
+                .unwrap_err()
+                .code,
             E_SECRET
         );
     }
