@@ -159,6 +159,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             watch: false,
             poll_ms: None,
             sync: None,
+            reload: None,
             project: Some(project.clone()),
         });
     }

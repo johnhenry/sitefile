@@ -271,7 +271,8 @@ sitefile serve --watch examples/hello     # build in memory, serve on 127.0.0.1,
 Rebuilds are debounced (100 ms) and changes made during a build become one follow-up build. The output
 directory, `.git`, `Sitefile.lock` and the store are not watched. A failed rebuild prints the error and keeps the
 last good output (exports are swapped in atomically; `serve --watch` keeps serving the last good build). Live
-reload is a small script added to HTML responses only under `serve --watch`, listening on the reserved
+reload is a small script added to HTML responses only under `serve --watch` (or `serve --reload`, which
+reloads pages left open after a server restart), listening on the reserved
 `/__sitefile/reload` event stream; it is never written to exports. Rebuilds are incremental: steps whose inputs
 are unchanged (by content digest) are reused from the previous build, in memory, and the result is identical to a
 clean build (`SITEFILE_NO_INCREMENTAL=1` turns it off). See [docs/CLI.md](docs/CLI.md#watch-mode).

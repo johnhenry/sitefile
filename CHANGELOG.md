@@ -19,6 +19,14 @@
   file APIs). README "Install" covers npm, the prebuilt binaries with checksum verification, and
   `cargo install`; docs/RUST.md and the editor READMEs point at the binaries. The MIT `LICENSE`
   was already present and in the npm package.
+- **`serve --reload` without `--watch`** (johnhenry/sitefile#317): servers of images, archive files and
+  directory snapshots (foreground or `-d`) inject the live-reload script and serve `/__sitefile/reload`, so pages
+  left open reload after a restart (`server restart`, a restart on a new image), using the per-process instance ID
+  from #305. With `-d` it is kept in the server record as `"reload": "morph"|"full"` (`servers --json`), and
+  `-d --watch` now accepts `--reload` too. `--reload` takes its mode only when the next argument is `full` or
+  `morph`, so a bare `--reload` works before the operand; `--reload <other>` is now a bare `--reload` followed by
+  an operand (write `--reload=<mode>`). Detached live-reload servers now log the CSP warning. Both
+  implementations, conformance cases `reload/detached-image` and `reload/foreground`.
 - **Tag index pages and per-tag feeds** (johnhenry/sitefile#135): templates can group a list with
   `${#each posts by tags as tag}…${/each}` (`tag` is `{ key, count, items }`, grouped exactly like
   `RENDER … FOR … BY`), so one page (`/tags/index.html`) lists every tag with its count; and

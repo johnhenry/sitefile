@@ -699,7 +699,7 @@ test('build --watch: usage errors', async () => {
   r = await runCli(home, ['serve', '--build-arg', 'A=1', './x/']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /--build-arg needs --watch/);
-  r = await runCli(home, ['serve', '--watch', '--reload', 'soft', site]);
+  r = await runCli(home, ['serve', '--watch', '--reload=soft', site]);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /--reload expects full or morph, got 'soft'/);
   r = await runCli(home, ['serve', '--keep-service-workers', './x/']);
@@ -874,6 +874,94 @@ test('serve -d --watch ./dir: the detached server re-reads the directory, live-r
     again.close();
   } finally {
     await runCli(home, ['server', 'rm', '-f', 'dw']);
+  }
+});
+
+/** A port that was free a moment ago (a detached server binds it, so `server restart` keeps the URL). */
+function freePort(): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const s = http.createServer().listen(0, '127.0.0.1', () => {
+      const p = (s.address() as { port: number }).port;
+      s.close(() => resolve(p));
+    });
+  });
+}
+
+test('serve -d --reload <image> (no --watch): the script and stream, kept over a restart, and pages left open reload (#317)', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const site = await makeSite();
+  assert.equal((await runCli(home, ['build', site, '--no-lockfile', '-t', 'rl:1'])).code, 0);
+  const port = await freePort();
+  let r = await runCli(home, ['serve', '-d', '--reload', 'full', '--name', 'rl', '-p', `127.0.0.1:${port}`, 'rl:1']);
+  assert.equal(r.code, 0, r.stderr);
+  try {
+    const state = JSON.parse(await fs.readFile(path.join(home, 'servers', `${/\((\w{12})\)/.exec(r.stdout)![1]}.json`), 'utf8'));
+    assert.equal(state.reload, 'full');
+    assert.equal(state.watch, undefined);
+    assert.equal((await get(port, '/about/', NAV)).body, `<h1>About</h1>${RELOAD_SCRIPT}`);
+    assert.equal((await get(port, '/about/')).body, '<h1>About</h1>', 'not a navigation: unchanged');
+    assert.match((await get(port, RELOAD_SCRIPT_PATH)).body, /"reload":"full"/);
+    const ev = await events(port);
+    assert.equal(await ev.next(), 'retry: 1000');
+    const id = (await ev.next()).slice(4);
+    assert.match(id, /^[0-9a-f]{16}$/);
+    ev.close();
+
+    r = await runCli(home, ['server', 'restart', 'rl']);
+    assert.equal(r.code, 0, r.stderr);
+    const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as { name: string; reload?: string }[];
+    assert.deepEqual(ps.filter((s) => s.name === 'rl').map((s) => s.reload), ['full'], 'restart keeps --reload');
+    const again = await events(port, { lastEventId: id });
+    assert.equal(await again.next(), 'retry: 1000');
+    assert.notEqual(await again.next(), `id: ${id}`, 'a new instance');
+    assert.equal(await again.next(), 'data: {"type":"reload"}', 'pages left open across the restart reload');
+    again.close();
+  } finally {
+    await runCli(home, ['server', 'rm', '-f', 'rl']);
+  }
+});
+
+test('serve --reload in the foreground: a bare --reload before the operand, a page of an earlier instance reloads; without it nothing is injected (#317)', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const dir = await tmpDir('sitefile-plain-');
+  await fs.writeFile(path.join(dir, 'index.html'), '<h1>fg</h1>');
+  for (const reload of [true, false]) {
+    const p = startCli(home, ['serve', ...(reload ? ['--reload'] : []), dir]);
+    try {
+      await p.waitFor(/^Serving .* at http:\/\/127\.0\.0\.1:\d+\//m);
+      const port = Number(/127\.0\.0\.1:(\d+)\//.exec(p.stdout())![1]);
+      const page = await get(port, '/', NAV);
+      if (!reload) {
+        assert.equal(page.body, '<h1>fg</h1>');
+        assert.equal((await get(port, RELOAD_PATH)).status, 404);
+        continue;
+      }
+      assert.equal(page.body, `<h1>fg</h1>${RELOAD_SCRIPT}`);
+      assert.match((await get(port, RELOAD_SCRIPT_PATH)).body, /"reload":"morph"/);
+      const ev = await events(port, { lastEventId: '0123456789abcdef' });
+      assert.equal(await ev.next(), 'retry: 1000');
+      assert.match(await ev.next(), /^id: [0-9a-f]{16}$/);
+      assert.equal(await ev.next(), 'data: {"type":"reload"}');
+      ev.close();
+    } finally {
+      await p.stop();
+    }
+  }
+});
+
+test('serve -d --watch --reload full: accepted and recorded (#317)', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const dir = await tmpDir('sitefile-plain-');
+  await fs.writeFile(path.join(dir, 'index.html'), '<h1>w</h1>');
+  const r = await runCli(home, ['serve', '-d', '--watch', '--reload', 'full', '--name', 'wr', dir]);
+  assert.equal(r.code, 0, r.stderr);
+  try {
+    const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as { name: string; watch?: boolean; reload?: string; port: number }[];
+    const s = ps.find((x) => x.name === 'wr')!;
+    assert.deepEqual([s.watch, s.reload], [true, 'full']);
+    assert.match((await get(s.port, RELOAD_SCRIPT_PATH)).body, /"reload":"full"/);
+  } finally {
+    await runCli(home, ['server', 'rm', '-f', 'wr']);
   }
 });
 
