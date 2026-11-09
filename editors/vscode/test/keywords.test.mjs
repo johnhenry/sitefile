@@ -31,8 +31,8 @@ function inGrammar(word) {
 
 test('instruction keywords match the parser (TypeScript and Rust)', () => {
   const body = parserTs.slice(parserTs.indexOf('function parseInstruction'), parserTs.indexOf('function parseFrom'));
-  const ts = all(/case '([A-Z]+)':/g, body).filter((k) => k !== 'RUN');
-  const rs = all(/"([A-Z]+)" => parse_/g, parserRs);
+  const ts = all(/case '([A-Z_]+)':/g, body).filter((k) => k !== 'RUN');
+  const rs = all(/"([A-Z_]+)" => parse_/g, parserRs);
   assert.deepEqual([...ts].sort(), [...KEYWORDS.instructions].sort());
   assert.deepEqual([...rs].sort(), [...KEYWORDS.instructions].sort());
   for (const k of KEYWORDS.instructions) assert.ok(inGrammar(k), `${k} missing from grammar JSON`);

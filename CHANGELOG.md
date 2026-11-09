@@ -25,6 +25,12 @@
   them an error), `validate` warns about REDIRECT/HEADER lines serve would
   ignore (lint rule `serve-ignored`), and the access log names the rule that
   answered (`→ /new (_redirects:3)`).
+- **CANONICAL links and split sitemaps** (johnhenry/sitefile#218):
+  `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical">` before
+  `</head>` of every page that has none (PRETTY drops `.html`), and SITEMAP
+  writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
+  Both implementations, with conformance cases; example `examples/canonical`.
+  hreflang alternates are not done yet.
 - **Identical `--help` in both CLIs**: the `--node` line now reads "default
   $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
   default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
