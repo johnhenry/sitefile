@@ -138,6 +138,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             quiet: false,
             auth: Vec::new(),
             auth_file: None,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

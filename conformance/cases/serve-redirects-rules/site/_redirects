@@ -1,0 +1,11 @@
+# johnhenry/sitefile#193
+/blog/:year/:slug /posts/:year/:slug 301
+/store id=:id /items/:id 302
+/search q=cats /cats 302
+/lang / 302 Language=es,pt-BR
+/ab /b-variant 302 Cookie=ab_test
+/geo /nz 302! Country=nz,au
+/removed /gone.html 410
+/legal /gone.html 451
+/files/* /f/:splat 301
+/p/:name /posts 200
