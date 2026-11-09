@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
 - **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
   a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
   gets its slash, everything else is 404, and the server's redirects and
