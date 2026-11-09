@@ -3,6 +3,7 @@ import { importedStage, isFragment, isImageBase, isInline, stageNames, type Imag
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
+import { isLanguageTag } from './hreflang.js';
 import { checkBaseUrl, checkFieldUri, checkCspPolicy, checkHeaderName, checkHeaderValue, checkMimeExtension, checkMimeType, checkRedirectTarget, checkSitePath, pageUrl, parseFeedDate, robotsTxt, securityTxt } from './site.js';
 import { coerce, evaluateOperand, type Scalar } from './values.js';
 import { isGitUri, parseGitUri, type GitLocation } from './resources/git.js';
@@ -104,6 +105,17 @@ export interface CspSpec {
 /** CSP's base policy when POLICY is not given: same-origin resources only, no plugins, no `<base>` hijacking. */
 export const DEFAULT_CSP = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
+/**
+ * LANGUAGES, evaluated, as CANONICAL and SITEMAP see it: the language folders, the DEFAULT language, and the
+ * stage's `RENDER … FOR` lines before them (without BY or PAGE), whose documents may set `lang` and
+ * `translationKey`.
+ */
+export interface LanguagesSpec {
+  readonly codes: readonly string[];
+  readonly default?: string;
+  readonly sources: ReadonlyArray<{ readonly as: string; readonly list: string; readonly dest: Operand }>;
+}
+
 export type Operation =
   | {
       /** Report the references in the tree's HTML and CSS files that point at nothing. */
@@ -141,6 +153,8 @@ export type Operation =
       /** The EXPORT path: a page's URL is its path below it. */
       readonly root: string;
       readonly span: SourceSpan;
+      /** With LANGUAGES: hreflang alternates too. */
+      readonly languages?: LanguagesSpec;
     }
   | {
       /** Write a `.gz` sidecar for each matching compressible file of at least `min` bytes, when smaller. */
@@ -171,6 +185,8 @@ export type Operation =
       readonly dest: string;
       readonly overwrite: boolean;
       readonly span: SourceSpan;
+      /** With LANGUAGES: `xhtml:link` alternates too. */
+      readonly languages?: LanguagesSpec;
     }
   | {
       /** An Atom feed of a list import; `link` is interpolated per element (`${item…}`). */
@@ -330,6 +346,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   const sitemapUrls: string[] = [];
   const robots: Array<{ op: Extract<Operation, { kind: 'ROBOTS' }>; rules: Array<{ allow: boolean; path: string }>; stage: number }> = [];
   let csp: CspSpec | undefined;
+  let languages: { codes: string[]; default?: string; span: SourceSpan } | undefined;
   const mimes = new Map<string, number>();
   const warnings: string[] = [];
   const declaredArgs = new Set<string>();
@@ -602,6 +619,23 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         });
         break;
       }
+      case 'LANGUAGES': {
+        if (languages) throw new SitefileError('E_VALIDATION', `LANGUAGES given twice (line ${languages.span.line} already lists the languages)`, ins.span);
+        const codes: string[] = [];
+        for (const o of ins.codes) {
+          const code = languageTag(evaluateOperand(o, vars), o.span);
+          if (codes.some((c) => c.toLowerCase() === code.toLowerCase())) throw new SitefileError('E_VALIDATION', `LANGUAGES: '${code}' is listed twice`, o.span);
+          codes.push(code);
+        }
+        let dflt: string | undefined;
+        if (ins.default) {
+          dflt = languageTag(evaluateOperand(ins.default, vars), ins.default.span);
+          const d = dflt;
+          if (!codes.some((c) => c === d)) throw new SitefileError('E_VALIDATION', `LANGUAGES … DEFAULT ${d}: '${d}' is not one of the languages listed (${codes.join(' ')})`, ins.default.span);
+        }
+        languages = { codes, ...(dflt !== undefined ? { default: dflt } : {}), span: ins.span };
+        break;
+      }
       case 'CSP': {
         if (csp) throw new SitefileError('E_VALIDATION', `CSP given twice (line ${csp.span.line} already sets the policy)`, ins.span);
         const policy = ins.policy ? checkCspPolicy(evaluateOperand(ins.policy, vars), ins.policy.span) : DEFAULT_CSP;
@@ -649,6 +683,16 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
       if (op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECACHE') st.operations[i] = { ...op, root: exportPath ?? '/' };
       if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
+    if (languages) {
+      // Each CANONICAL and SITEMAP sees the stage's RENDER … FOR lines before it.
+      const sources: Array<{ as: string; list: string; dest: Operand }> = [];
+      st.operations.forEach((op, i) => {
+        if (op.kind === 'RENDER' && op.each && op.each.by === undefined && op.each.page === undefined) sources.push({ as: op.each.as, list: op.each.list, dest: op.each.dest });
+        if (op.kind === 'CANONICAL' || op.kind === 'SITEMAP') {
+          st.operations[i] = { ...op, languages: { codes: languages!.codes, ...(languages!.default !== undefined ? { default: languages!.default } : {}), sources: [...sources] } };
+        }
+      });
+    }
   }
   // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
   for (const st of stages.slice(0, -1)) {
@@ -752,6 +796,12 @@ function minSize(op: Operand, vars: ReadonlyMap<string, Scalar>): number {
     throw new SitefileError('E_VALIDATION', `PRECOMPRESS … MIN: '${raw}' is not a size (a whole number of bytes from 0 to 9999999999)`, op.span);
   }
   return Number(raw);
+}
+
+/** A LANGUAGES code: a basic BCP 47 tag (`E_VALIDATION` otherwise). */
+function languageTag(raw: string, span: SourceSpan): string {
+  if (!isLanguageTag(raw)) throw new SitefileError('E_VALIDATION', `LANGUAGES: '${raw}' is not a language code (a BCP 47 tag such as en, fr or pt-BR)`, span);
+  return raw;
 }
 
 /** `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default. */

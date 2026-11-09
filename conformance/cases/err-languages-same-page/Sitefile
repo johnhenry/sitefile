@@ -1,0 +1,11 @@
+# /about.html is the DEFAULT language's page, so /en/about.html is a second 'en' page of it.
+FROM scratch
+COPY <<P /about.html
+<html><head></head></html>
+P
+COPY <<P /en/about.html
+<html><head></head></html>
+P
+LANGUAGES en fr DEFAULT en
+CANONICAL BASE https://example.com
+EXPORT /

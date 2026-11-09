@@ -1,0 +1,10 @@
+# LANGUAGES without CANONICAL or SITEMAP: nothing to write, and no error.
+FROM scratch
+COPY <<P /en/index.html
+<html><head></head></html>
+P
+COPY <<P /fr/index.html
+<html><head></head></html>
+P
+LANGUAGES en fr DEFAULT en
+EXPORT /

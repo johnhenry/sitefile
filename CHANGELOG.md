@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **hreflang alternates: `LANGUAGES <code>… [DEFAULT <code>]`** (johnhenry/sitefile#303):
+  names the site's language folders, so `/en/about.html` and `/fr/about.html` are the same page
+  (pages outside the folders are the DEFAULT language's); documents with frontmatter `lang` and
+  a shared `translationKey` (rendered by an earlier `RENDER … FOR`) are paired by key instead,
+  for different slugs per language. CANONICAL then adds `<link rel="alternate" hreflang="…">`
+  for every translation (plus `x-default` for the DEFAULT language's page), and SITEMAP adds
+  `xhtml:link` alternates, also in a split sitemap. Unknown language codes and two pages of one
+  language in a group are `E_VALIDATION`. Both implementations, with conformance cases, LSP
+  hover and completion, grammars; example `examples/hreflang`.
 - **Synced browsing: `serve --watch --sync[=scroll]`** (johnhenry/sitefile#309): opt-in, for
   `serve --watch` and `serve -d --watch` (the record keeps it). Each open page reports its path,
   fragment and title (and with `=scroll` its scroll position) to `POST /__sitefile/client`

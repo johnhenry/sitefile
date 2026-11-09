@@ -26,6 +26,7 @@ use crate::export::oci::{
     build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions,
 };
 use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
+use crate::hreflang::{alternates, is_language_tag, Languages, Translation};
 use crate::language::ast::{
     ExportFormat, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart,
     FEED_ITEM,
@@ -36,7 +37,7 @@ use crate::memo::{lock as lock_memo, memo_key, memoize, BuildMemo, MemoStats, Sh
 use crate::paths::{basename_virtual, join_virtual, normalize_virtual};
 use crate::planner::{
     imported_stage_refs, plan, plan_with, target_plan, FragmentSpec, ImportLocation, ImportSpec,
-    ImportedStageRef, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase,
+    ImportedStageRef, LanguagesSpec, Operation, Plan, PluginSpec, SourceRef, Stage, StageBase,
 };
 use crate::plugins::cache::{cache_key, digest_folder, CacheStats, TransformCache};
 use crate::plugins::exec::{
@@ -71,7 +72,7 @@ use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::site::{
     atom_xml, cache_header_rules, headers_file, page_url, parse_feed_date, redirects_file,
-    sitemap_files, FeedEntry, SITEMAP_LIMITS,
+    sitemap_files, sitemap_pages, FeedEntry, SITEMAP_LIMITS,
 };
 use crate::store::Store;
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
@@ -4689,9 +4690,10 @@ impl<'a> Exec<'a> {
             self.last_renames = Some(renames);
             return Ok((out, key, Some("miss")));
         }
-        if let Operation::Canonical { .. } = op {
+        if let Operation::Canonical { languages, .. } = op {
             // Reads the whole tree: only the chain key can say it is unchanged; a hit prints its warnings again.
-            let key = memo_key(&["chain", prev, &op_id]);
+            // With LANGUAGES, also the documents' lists.
+            let key = self.chain_key(prev, &op_id, languages.as_ref());
             type Hit = (Tree, Vec<String>);
             if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
                 for w in &warnings {
@@ -4761,9 +4763,9 @@ impl<'a> Exec<'a> {
             lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
             return Ok((out, key, Some("miss")));
         }
-        if let Operation::Sitemap { .. } = op {
-            // Reads the whole tree: only the chain key can say it is unchanged.
-            let key = memo_key(&["chain", prev, &op_id]);
+        if let Operation::Sitemap { languages, .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged (with LANGUAGES, also the lists).
+            let key = self.chain_key(prev, &op_id, languages.as_ref());
             if let Some(hit) = lock_memo(memo).get::<Tree>(&key) {
                 return Ok((hit, key, Some("hit")));
             }
@@ -4854,15 +4856,96 @@ impl<'a> Exec<'a> {
         fingerprint(tree, &op, &origin, warn)
     }
 
+    /// The chain key of a step that reads the whole tree; with LANGUAGES it also covers the lists and
+    /// destination variables of the RENDER … FOR lines whose documents it reads.
+    fn chain_key(&self, prev: &str, op_id: &str, languages: Option<&LanguagesSpec>) -> String {
+        let Some(l) = languages else {
+            return memo_key(&["chain", prev, op_id]);
+        };
+        let dests: Vec<&Operand> = l.sources.iter().map(|s| &s.dest).collect();
+        let mut names = operand_names(&dests);
+        names.extend(l.sources.iter().map(|s| s.list.clone()));
+        memo_key(&["chain", prev, op_id, &self.names_key(names, None)])
+    }
+
+    /// LANGUAGES with the translations of the documents of the stage's earlier `RENDER … FOR` lines
+    /// (`languagesOf` in src/executor.ts).
+    fn languages_of(
+        &self,
+        spec: &LanguagesSpec,
+        what: &str,
+        span: &SourceSpan,
+    ) -> Result<Languages> {
+        let mut docs = HashMap::new();
+        let scope = self.scope();
+        for src in &spec.sources {
+            let items = scope.value_of(&src.list, &[], span, false)?;
+            let Some(Value::Array(items)) = items.as_deref() else {
+                continue;
+            };
+            for (i, item) in items.iter().enumerate() {
+                let Value::Object(doc) = item else {
+                    continue;
+                };
+                let key = match doc.get("translationKey") {
+                    Some(v @ (Value::String(_) | Value::Number(_))) => js_string_of(v),
+                    _ => continue,
+                };
+                let Some(Value::String(lang)) = doc.get("lang") else {
+                    continue;
+                };
+                if !is_language_tag(lang) {
+                    let name = match doc.get("path") {
+                        Some(Value::String(p)) => p.clone(),
+                        _ => format!("#{}", i + 1),
+                    };
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!(
+                            "{what}: document '{name}' of '{}' has lang '{lang}', which is not a language code (a BCP 47 tag such as en, fr or pt-BR)",
+                            src.list
+                        ),
+                        span,
+                    ));
+                }
+                let raw = scope.with_item(&src.as_name, item).interpolate(&src.dest)?;
+                let target = normalize_virtual(
+                    &raw,
+                    Some(&src.dest.span),
+                    &format!("RENDER destination for {}", src.as_name),
+                )?;
+                if !target.trailing_slash {
+                    docs.insert(
+                        target.path,
+                        Translation {
+                            lang: lang.clone(),
+                            key,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(Languages {
+            codes: spec.codes.clone(),
+            default: spec.default.clone(),
+            docs,
+        })
+    }
+
     fn canonical(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
         let Operation::Canonical {
             base,
             pretty,
             root,
             span,
+            languages,
         } = op
         else {
             unreachable!()
+        };
+        let langs = match languages {
+            Some(l) => Some(self.languages_of(l, "CANONICAL", span)?),
+            None => None,
         };
         let origin = format!("{}:{} CANONICAL", self.label, span.line);
         let op = CanonicalOp {
@@ -4871,7 +4954,7 @@ impl<'a> Exec<'a> {
             root,
             span,
         };
-        canonical(tree, &op, &origin, warn)
+        canonical(tree, &op, &origin, warn, langs.as_ref())
     }
 
     fn precompress(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
@@ -4926,15 +5009,28 @@ impl<'a> Exec<'a> {
             dest,
             overwrite,
             span,
+            languages,
         } = op
         else {
             unreachable!()
         };
         let origin = format!("{}:{} SITEMAP", self.label, span.line);
-        let files: Vec<(String, Node)> = sitemap_files(&tree, base, dest, SITEMAP_LIMITS)
-            .into_iter()
-            .map(|(p, xml)| (p, make_file(xml.into_bytes(), origin.as_str(), 0o644)))
-            .collect();
+        let alts = match languages {
+            Some(l) => {
+                let langs = self.languages_of(l, "SITEMAP", span)?;
+                let pages: Vec<(String, String)> = sitemap_pages(&tree)
+                    .into_iter()
+                    .map(|p| (p.clone(), p))
+                    .collect();
+                Some(alternates(&pages, &langs, "SITEMAP", span)?)
+            }
+            None => None,
+        };
+        let files: Vec<(String, Node)> =
+            sitemap_files(&tree, base, dest, SITEMAP_LIMITS, alts.as_ref())
+                .into_iter()
+                .map(|(p, xml)| (p, make_file(xml.into_bytes(), origin.as_str(), 0o644)))
+                .collect();
         tree.with_files(files, policy_of(*overwrite), Some(span))
     }
 

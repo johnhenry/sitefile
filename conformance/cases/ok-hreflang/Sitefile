@@ -1,0 +1,12 @@
+# LANGUAGES: folder translations, frontmatter translationKey groups (which win over folders), DEFAULT and
+# x-default, pages that already have alternates, CANONICAL PRETTY and SITEMAP alternates.
+FROM scratch
+IMPORT posts FROM ./posts AS markdown
+COPY ./public/ /
+RENDER <<HTML TO /fr/${post.slug}.html FOR post IN posts
+<html lang="${post.lang}"><head><title>${post.title}</title></head><body>${post.content|raw}</body></html>
+HTML
+LANGUAGES en fr de DEFAULT en
+CANONICAL BASE https://example.com/ PRETTY
+SITEMAP BASE https://example.com
+EXPORT /
