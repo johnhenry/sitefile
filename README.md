@@ -174,6 +174,7 @@ sitefile graph    [context] [--json | --dot]   # dependency graph of imports, st
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
+sitefile import-config netlify.toml      # a host's config (Netlify, Vercel, Firebase, Azure, wrangler, .htaccess) as _redirects/_headers
 sitefile hosts [context] [--json]        # the hosts a build would contact and whether they are allowed (no fetch)
 sitefile bake [targets...] [-f sitefile.bake.yaml] [--print [--json]] [-j n]   # build several variants
 

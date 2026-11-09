@@ -1083,6 +1083,46 @@ is accepted (clients pass it) and is the only transport. It exits 0 after `shutd
 **Rust binary only** (a tooling exception, see [RUST.md](RUST.md#tooling-exception-the-language-server)): the
 TypeScript CLI prints a usage error pointing to `rust/target/release/sitefile lsp` and exits 2.
 
+## Host config files: `import-config`
+
+```
+sitefile import-config <file> [--format netlify|vercel|firebase|azure|wrangler|htaccess]
+                       [--redirects | --headers] [--json]
+```
+
+Sites often keep their redirects and headers in a host's own config file. `import-config` translates one
+into the `_redirects` and `_headers` that `sitefile serve` reads (and that `REDIRECT`/`HEADER` write), so
+the site behaves the same locally. The format comes from the file name (`netlify.toml`, `vercel.json`,
+`firebase.json`, `staticwebapp.config.json`, `wrangler.toml`, `wrangler.json`, `.htaccess`) unless
+`--format` names it.
+
+- Output: `# _redirects` and its lines, then `# _headers` and its blocks (both files accept `#`
+  comments). `--redirects` or `--headers` prints just that file's text, ready for
+  `> dist/_redirects`; `--json` prints `{"format", "redirects": [<line>…], "headers": [{"pattern",
+  "headers": [[name, value]…]}], "unsupported": [{"entry", "reason"}]}`.
+- **Every line printed is one `serve` applies as written** (each is checked against `serve`'s own parser).
+  Anything else is listed on stderr, one `warning: <file>: <entry>: <reason>` per entry, and left out
+  rather than half translated. Examples: `:placeholders` (until johnhenry/sitefile#193), conditions,
+  regular expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301,
+  302, 303, 307, 308 and 404, and settings with no `_redirects` form. The exit code is 0 either way.
+- Catch-all rules (a 404 page, an SPA fallback) are written after every other rule, since the first
+  matching rule wins and they would shadow the rest. Consecutive header blocks for the same pattern are
+  merged.
+- netlify.toml and wrangler.toml are read with a TOML subset: tables, arrays of tables, inline tables,
+  arrays, strings, integers, floats and booleans. Multi-line strings and dates are an error.
+
+| File | Translated | Listed as unsupported |
+| --- | --- | --- |
+| `netlify.toml` | `[[redirects]]` `from`, `to`, `status` (default 301), `force` (`!`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `query`, `conditions`, `headers`, `signed` on a redirect; placeholders; `functions`, `edge_functions`, `plugins` |
+| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` that is exact or ends in `/:name*` or `/(.*)` becomes the path or `/*`, and `:name*`, `:name` or `$1` in the destination become `:splat` | `has`/`missing`, other parameters, regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
+| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` that is exact or ends in `/**`, or is `**` | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
+| `staticwebapp.config.json` | `routes` (exact or trailing `/*`) with `redirect` (`statusCode`, default 302), `rewrite` (200), `headers`; `navigationFallback` (`/* <rewrite> 200`); `responseOverrides.404` with a `rewrite` (`/* <page> 404`); `globalHeaders` (`/*`) | `allowedRoles`, `methods`, other route patterns, `navigationFallback.exclude`, other overrides, `mimeTypes` (johnhenry/sitefile#220) |
+| `wrangler.toml` / `wrangler.json` | `[assets] not_found_handling = "single-page-application"` (`/* /index.html 200`); `404-page` and `none` need nothing | `html_handling` other than `auto-trailing-slash` (johnhenry/sitefile#192), `run_worker_first` |
+| `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410, other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
+
+Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the same. The language form
+(`REDIRECT … FROM <file>`) is not implemented yet (johnhenry/sitefile#204).
+
 ## Site servers
 
 ```
@@ -1121,6 +1161,14 @@ An xz, zstd or bzip2 stream (`.tar.xz`, `.tar.zst`, `.tar.bz2`), a 7z or a RAR a
 what to do: `(it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip)`.
 In a server record (`$SITEFILE_HOME/servers/<id>.json`) the source is `{"kind": "archive", "path": ...}`, next
 to `image` (`imageId`) and `dir` (`path`).
+A zip is served **in place**: its central directory and local headers are checked at start and every entry is
+inflated once (one at a time) for its CRC-32 and digest, but only the index is kept; each request reads its entry
+from the file again, so memory does not grow with the archive. Responses are the same as for the extracted zip,
+except that a client sending `accept-encoding: gzip` gets a deflated entry as it is in the zip, wrapped as gzip
+(`content-encoding: gzip`, `vary: accept-encoding`, ETag `"<digest>-gzip"`), without re-encoding. Byte ranges,
+`Last-Modified` (the zip file's mtime) and `If-Modified-Since` work as for any served file; a request with a
+`range` header always gets the identity representation, so ranges are byte ranges of the file. A zip changed
+on disk after the server started answers `500` for the entries that changed (`server restart` re-reads it).
 
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
