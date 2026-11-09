@@ -74,10 +74,23 @@ test('a zip served in place answers exactly as the extracted zip does, holding n
     assert.deepEqual(lazy.tree.entries().map(([p, n]) => [p, n.digest, n.mode]), eager.entries().map(([p, n]) => [p, n.digest, n.mode]));
     assert.ok(lazy.tree.entries().every(([, n]) => n.bytes.byteLength === 0));
     const paths = ['/', '/index.html', '/about', '/about/', '/old', '/rewrite', '/app.js', '/tiny.txt', '/nope', '/.env', '/_headers'];
+    // Byte ranges and Last-Modified / If-Modified-Since work on entries read from the zip, as on extracted ones.
+    const variants: Array<Record<string, string>> = [
+      {},
+      { range: 'bytes=0-9' },
+      { range: 'bytes=5-' },
+      { range: 'bytes=9999-' },
+      { range: 'bytes=0-9', 'accept-encoding': 'gzip' },
+      { 'if-modified-since': 'Tue, 14 Nov 2023 22:13:20 GMT' },
+      { 'if-modified-since': 'Mon, 01 Jan 2001 00:00:00 GMT' },
+    ];
+    const lastModified = (): number => 1_700_000_000;
     for (const method of ['GET', 'HEAD']) {
-      const want: Res[] = await serving(eager, {}, (port) => Promise.all(paths.map((p) => get(port, p, {}, method))));
-      const got: Res[] = await serving(lazy.tree, { content: lazy.content }, (port) => Promise.all(paths.map((p) => get(port, p, {}, method))));
-      assert.deepEqual(got, want);
+      for (const h of variants) {
+        const want: Res[] = await serving(eager, { lastModified }, (port) => Promise.all(paths.map((p) => get(port, p, h, method))));
+        const got: Res[] = await serving(lazy.tree, { content: lazy.content, lastModified }, (port) => Promise.all(paths.map((p) => get(port, p, h, method))));
+        assert.deepEqual(got, want, JSON.stringify(h));
+      }
     }
   } finally {
     lazy.close();

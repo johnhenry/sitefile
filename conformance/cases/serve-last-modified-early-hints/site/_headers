@@ -1,0 +1,8 @@
+/
+  Link: </a.css>; rel=preload; as=style
+/*
+  Link: <https://cdn.example>; rel=preconnect
+/a.css
+  Link: </font.woff2>; rel=preload; as=font
+/plain.html
+  Link: </a.css>; rel=stylesheet
