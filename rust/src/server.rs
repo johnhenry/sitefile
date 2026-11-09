@@ -55,6 +55,9 @@ pub struct SiteServerOptions {
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
     pub base: Option<BaseFn>,
+    /// `--rewrite-base`: the production URL ([`normalize_production_url`]) that HTML, CSS and XML
+    /// responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+    pub rewrite_base: Option<BaseFn>,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
@@ -1204,6 +1207,87 @@ pub fn spa_fallback(
     None
 }
 
+/// A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port.
+fn is_safe_host(h: &str) -> bool {
+    let (name, port) = if let Some(rest) = h.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let inner = &rest[..end];
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return false;
+        }
+        ("x", &rest[end + 1..])
+    } else {
+        match h.find(':') {
+            Some(i) => (&h[..i], &h[i..]),
+            None => (h, ""),
+        }
+    };
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok = port.is_empty()
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+    name_ok && port_ok
+}
+
+/// Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG).
+pub fn is_rebased_type(mime: &str) -> bool {
+    mime.starts_with("text/html")
+        || mime.starts_with("text/css")
+        || mime.split(';').next().unwrap_or("").contains("xml")
+}
+
+/// A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query
+/// or fragment, or `None` when it is not an http(s) URL with a host (port of `normalizeProductionUrl`).
+pub fn normalize_production_url(raw: &str) -> Option<String> {
+    let raw = &raw[..raw.find(['?', '#']).unwrap_or(raw.len())];
+    let n = http_prefix(raw);
+    if n == 0 || raw.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let rest = &raw[n..];
+    let host_end = rest.find('/').unwrap_or(rest.len());
+    if host_end == 0 {
+        return None;
+    }
+    let path = rest[host_end..].trim_end_matches('/');
+    Some(format!("{}{}{path}", &raw[..n], &rest[..host_end]))
+}
+
+/// `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+/// the next byte cannot continue a host or path segment (port of `rewriteBaseUrls`).
+pub fn rewrite_base_urls(body: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let f = from.as_bytes();
+    if f.is_empty() {
+        return body.to_vec();
+    }
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with(f) {
+            let next = body.get(i + f.len()).copied();
+            let continues = next.is_some_and(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b':' | b'%' | b'-')
+            });
+            out.extend_from_slice(if continues { f } else { to.as_bytes() });
+            i += f.len();
+        } else {
+            out.push(body[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// The `--base` of a server, read per request.
 pub type BaseFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -2141,8 +2225,15 @@ pub fn respond(
                 .map(|(_, v)| v.as_str());
             lr.warn_csp(options.warn.as_ref(), served, csp);
         }
+        let prod_now = options.rewrite_base.as_ref().and_then(|f| f());
+        let rebase = match (prod_now, headers.get("host")) {
+            (Some(from), Some(host)) if is_rebased_type(mime) && is_safe_host(host) => {
+                Some((from, format!("http://{host}{mount}")))
+            }
+            _ => None,
+        };
         // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
-        let delta = if live {
+        let delta = if live || rebase.is_some() {
             None
         } else {
             crate::dictionary::delta_for(
@@ -2157,6 +2248,7 @@ pub fn respond(
         // range request: ranges are served from the identity body).
         let deflated = if !live
             && delta.is_none()
+            && rebase.is_none()
             && !headers.contains_key("range")
             && accepts_gzip(headers.get("accept-encoding").map(String::as_str))
         {
@@ -2179,6 +2271,10 @@ pub fn respond(
                 }
                 return page(500, ERROR_PAGE, vec![]);
             }
+        };
+        let body = match &rebase {
+            Some((from, to)) => rewrite_base_urls(&body, from, to),
+            None => body,
         };
         let body = if live {
             inject_reload_script(&body)
@@ -2214,8 +2310,9 @@ pub fn respond(
         }
         // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
         let etag = format!(
-            "\"{}{}{}{}\"",
+            "\"{}{}{}{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
+            if rebase.is_some() { "-rebased" } else { "" },
             if live { "-live" } else { "" },
             if deflated.is_some() { "-gzip" } else { "" },
             if delta.is_some() { "-dcz" } else { "" }
@@ -3658,6 +3755,57 @@ mod tests {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#196 (test/server.test.ts)
+    #[test]
+    fn rewrite_base_urls_in_text_responses() {
+        assert_eq!(
+            normalize_production_url("https://example.com/blog/?x#y").as_deref(),
+            Some("https://example.com/blog")
+        );
+        assert_eq!(
+            normalize_production_url("https://example.com").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(normalize_production_url("/blog"), None);
+        let r = rewrite_base_urls(
+            b"https://e.x/b/a https://e.x/bc https://e.x/b https://e.x/b.x https://e.x/b?q",
+            "https://e.x/b",
+            "http://h:1",
+        );
+        assert_eq!(
+            String::from_utf8(r).unwrap(),
+            "http://h:1/a https://e.x/bc http://h:1 https://e.x/b.x http://h:1?q"
+        );
+        assert!(is_safe_host("localhost:8000") && is_safe_host("[::1]:80"));
+        assert!(!is_safe_host("evil\"><script>") && !is_safe_host("a:b"));
+        let t = Tree::from_files(
+            [
+                ("/index.html", "<a href=\"https://e.x/b/about\">x</a>"),
+                ("/a.css", "url(https://e.x/b/i.png)"),
+                ("/t.txt", "https://e.x/b/"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            rewrite_base: Some(Arc::new(|| Some("https://e.x/b".to_string()))),
+            ..Default::default()
+        };
+        let get = |u: &str, host: &str| {
+            let h: HashMap<String, String> = [("host".to_string(), host.to_string())].into();
+            handle_request(&t, &opts, "GET", u, &h)
+        };
+        let r = get("/", "h:1");
+        assert_eq!(body(&r), "<a href=\"http://h:1/about\">x</a>");
+        assert!(r.header("etag").unwrap().ends_with("-rebased\""));
+        assert_eq!(body(&get("/a.css", "h:1")), "url(http://h:1/i.png)");
+        assert_eq!(body(&get("/t.txt", "h:1")), "https://e.x/b/");
+        assert_eq!(
+            body(&get("/", "evil\"><script>")),
+            "<a href=\"https://e.x/b/about\">x</a>"
+        );
     }
 
     // johnhenry/sitefile#195 (test/server.test.ts)

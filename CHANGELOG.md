@@ -13,6 +13,13 @@
   `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
   `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
   `examples/precache`.
+- **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
+  URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
+  a preview with absolute self-links stays local. On by default in
+  `serve --watch` (from EXPORT, SITEMAP or FEED BASE; `--no-rewrite-base`
+  turns it off); never applied to exports. Both implementations.
+- **`serve -d` printed its `Started …` line twice** (a merge of
+  johnhenry/sitefile#195): it is printed once, with the `--base` URL.
 - **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
   <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
   SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>
