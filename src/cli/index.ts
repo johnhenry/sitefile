@@ -125,9 +125,15 @@ export async function runExtraCommand(argv: readonly string[]): Promise<number> 
 
 /**
  * `serve --open` and `--sync` take a value only as `--open=<path>`, `--sync=scroll`: a bare `--open`
- * or `--sync` (before `--`) is `--open=`, `--sync=`.
+ * or `--sync` (before `--`) is `--open=`, `--sync=`. `--reload` takes `full` or `morph` as the next
+ * argument too (`--reload full`); followed by anything else (or nothing) it is `--reload=`.
  */
 export function optionalOpen(args: readonly string[]): string[] {
   const end = args.indexOf('--');
-  return args.map((a, i) => ((a === '--open' || a === '--sync') && (end === -1 || i < end) ? `${a}=` : a));
+  return args.map((a, i) => {
+    if (end !== -1 && i >= end) return a;
+    if (a === '--open' || a === '--sync') return `${a}=`;
+    if (a === '--reload' && !(i + 1 < (end === -1 ? args.length : end) && (args[i + 1] === 'full' || args[i + 1] === 'morph'))) return '--reload=';
+    return a;
+  });
 }

@@ -410,14 +410,22 @@ fn run_extra_command(argv: &[String]) -> i32 {
 }
 
 /// `serve --open` and `--sync` take a value only as `--open=<path>`, `--sync=scroll`: a bare
-/// `--open` or `--sync` (before `--`) is `--open=`, `--sync=`.
+/// `--open` or `--sync` (before `--`) is `--open=`, `--sync=`. `--reload` takes `full` or
+/// `morph` as the next argument too (`--reload full`); followed by anything else (or nothing)
+/// it is `--reload=` (`optionalOpen` in src/cli/index.ts).
 fn optional_open(args: &[String]) -> Vec<String> {
     let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     args.iter()
         .enumerate()
         .map(|(i, a)| {
-            if (a == "--open" || a == "--sync") && i < end {
+            if i >= end {
+                a.clone()
+            } else if a == "--open" || a == "--sync" {
                 format!("{a}=")
+            } else if a == "--reload"
+                && !(i + 1 < end && (args[i + 1] == "full" || args[i + 1] == "morph"))
+            {
+                "--reload=".to_string()
             } else {
                 a.clone()
             }
@@ -1264,6 +1272,24 @@ pub fn main(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_open_and_reload() {
+        let v = |a: &[&str]| optional_open(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            v(&["./site", "--open", "-p", "8"]),
+            ["./site", "--open=", "-p", "8"]
+        );
+        assert_eq!(v(&["--reload", "full", "img"]), ["--reload", "full", "img"]);
+        assert_eq!(v(&["--reload", "morph"]), ["--reload", "morph"]);
+        assert_eq!(v(&["--reload", "img:1"]), ["--reload=", "img:1"]);
+        assert_eq!(v(&["-d", "--reload"]), ["-d", "--reload="]);
+        assert_eq!(
+            v(&["--reload=full", "--reload", "--", "full"]),
+            ["--reload=full", "--reload=", "--", "full"]
+        );
+        assert_eq!(v(&["--", "--reload"]), ["--", "--reload"]);
+    }
 
     #[test]
     fn help_mentions_defaults() {

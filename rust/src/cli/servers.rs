@@ -704,7 +704,6 @@ const WATCH_ONLY: &[&str] = &[
     "console",
     "no-overlay",
     "navigate-to-changed",
-    "reload",
     "no-rewrite-base",
     "sync",
 ];
@@ -775,7 +774,7 @@ pub const SERVE: Command = Command {
         "--console         also forward console.log/info from pages to the log, not only errors and warnings (--watch)",
         "--no-overlay      no Rebuilding badge or build-error overlay in pages (--watch)",
         "--navigate-to-changed        after a rebuild that changed one page, open pages go to it (--watch)",
-        "--reload <full|morph>        morph (default): update a page in place when only HTML changed; full: always reload (--watch)",
+        "--reload [full|morph]        morph (default): update a page in place when only HTML changed; full: always reload (--watch); without --watch (also -d): pages left open reload after a restart",
         "--sync[=scroll]   open pages report where they are and follow each other's navigation (=scroll: and scrolling) (--watch, -d --watch)",
     ],
     options: SERVE_OPTS,
@@ -785,6 +784,18 @@ pub const SERVE: Command = Command {
 /// The --watch flags `serve -d --watch` takes (it watches a plain directory; the rest are for
 /// builds or the page script).
 const DETACHED_WATCH: &[&str] = &["poll", "poll-interval", "sync"];
+
+/// `--reload [full|morph]` (a bare `--reload` arrives as `--reload=`): Some(true) for morph (the
+/// default), Some(false) for full, None without it. Without --watch it turns on the live-reload
+/// script, so open pages reload after a restart (`reloadOf` in src/cli/servers.ts).
+fn reload_of(v: &Parsed) -> Result<Option<bool>> {
+    match v.str("reload") {
+        None => Ok(None),
+        Some("") | Some("morph") => Ok(Some(true)),
+        Some("full") => Ok(Some(false)),
+        Some(other) => usage(format!("--reload expects full or morph, got '{other}'")),
+    }
+}
 
 /// `--sync` (a bare `--sync` arrives as `--sync=`): `nav`, or `scroll` for `--sync=scroll`;
 /// None without it (`syncOf` in src/cli/servers.ts).
@@ -852,6 +863,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         None
     };
     let sync = if watch_detached { sync_of(v)? } else { None };
+    // `--reload` without --watch: the live-reload script and stream, so pages reload after a restart.
+    let reload = reload_of(v)?;
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
@@ -927,9 +940,16 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 dev_not_found: !is_wildcard(&bind.host),
                 country: country.clone(),
                 server_id: None,
-                live_reload: None,
+                live_reload: reload.map(|morph| {
+                    LiveReload::with_options(&crate::server::LiveReloadOptions {
+                        morph,
+                        ..Default::default()
+                    })
+                }),
                 last_modified: Some(Arc::new(move || modified)),
-                warn: None,
+                warn: reload.map(|_| -> crate::server::LogFn {
+                    Arc::new(|m: &str| err(&format!("warning: {m}\n")))
+                }),
                 allowed_hosts: Some(allowed_hosts.clone()),
                 proxy: Some(proxy_option(v)?),
                 cors: v.flag("cors"),
@@ -1100,6 +1120,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             watch: watch_detached,
             poll_ms,
             sync,
+            reload,
             project: None,
         },
         None,
@@ -1149,11 +1170,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let css_inject = !v.flag("no-css-inject");
     let navigate = v.flag("navigate-to-changed");
     let sync = sync_of(v)?;
-    let morph = match v.str("reload").unwrap_or("morph") {
-        "morph" => true,
-        "full" => false,
-        other => return usage(format!("--reload expects full or morph, got '{other}'")),
-    };
+    let morph = reload_of(v)?.unwrap_or(true);
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base_flag = match &sharing.random_base {
         Some(b) => Some(b.clone()),
@@ -1627,16 +1644,19 @@ pub fn serve_worker(id: &str) -> i32 {
         .filter(|l| *l > 0)
         .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
     // `-d --watch`: the directory is re-read on change and open pages reload (or swap stylesheets).
-    let live = (state.watch && matches!(state.source, crate::servers::ServerSource::Dir { .. }))
-        .then(|| {
-            LiveReload::with_options(&crate::server::LiveReloadOptions {
-                sync: state
-                    .sync
-                    .as_deref()
-                    .and_then(crate::server::SyncMode::parse),
-                ..Default::default()
-            })
-        });
+    let watching = state.watch && matches!(state.source, crate::servers::ServerSource::Dir { .. });
+    // `-d --reload` (without --watch too): the script and stream, so open pages reload after a
+    // restart.
+    let live = (watching || state.reload.is_some()).then(|| {
+        LiveReload::with_options(&crate::server::LiveReloadOptions {
+            sync: state
+                .sync
+                .as_deref()
+                .and_then(crate::server::SyncMode::parse),
+            morph: state.reload.as_deref() != Some("full"),
+            ..Default::default()
+        })
+    });
     let current: crate::server::SharedTree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
     let modified: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
     let started = (|| -> Result<crate::server::ListeningServer> {
@@ -1705,7 +1725,9 @@ pub fn serve_worker(id: &str) -> i32 {
                     let modified = modified.clone();
                     move || modified.read().ok().and_then(|m| *m)
                 })),
-                warn: None,
+                warn: live.as_ref().map(|_| -> crate::server::LogFn {
+                    Arc::new(move |m: &str| stamp(&format!("warning: {m}")))
+                }),
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
                 isolate: state.isolate.clone(),
@@ -1780,7 +1802,7 @@ pub fn serve_worker(id: &str) -> i32 {
     match started {
         Ok(server) => {
             let stop_watch = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let watcher = live.as_ref().map(|live| {
+            let watcher = live.as_ref().filter(|_| watching).map(|live| {
                 let ctx = WatchedDirectory {
                     store: reg.store.clone(),
                     state: state.clone(),

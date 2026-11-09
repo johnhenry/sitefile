@@ -555,7 +555,8 @@ sitefile serve --watch [-p [host:]port] [--spa] [-f Sitefile] [--target stage] [
                        [--no-overlay] [--navigate-to-changed]
                        [--reload full|morph] [--sync[=scroll]] [context | ./plain-directory]
 sitefile serve -d --watch [--name n] [-p [host:]port] [--poll] [--poll-interval ms] [--sync[=scroll]]
-                       [serve options] [./plain-directory]
+                       [--reload [full|morph]] [serve options] [./plain-directory]
+sitefile serve [-d] --reload [full|morph] [serve options] <ref|id|./dir|file>
 ```
 
 `build --watch` builds once, then rebuilds whenever something it reads changes, until Ctrl-C (exit 0).
@@ -578,11 +579,11 @@ gets `Change detected, re-reading`, `Read N files (sha256:...)`, and on failure 
 `Read failed; serving the last good copy` (each with its time stamp); open pages show the error until a good read.
 The record keeps `"watch": true`, `pollMs` and `sync`, so `server restart` (and anything that restarts from the record)
 watches again. Every other `serve -d` option applies (`--name`, `--spa`, `--base`, `--auth`, `--stop-after`, ...).
-Refused: a directory with a `Sitefile` (`error: -d --watch serves a plain directory, and <dir> has a Sitefile:
-build it with serve --watch in the foreground`), and the build and page-script flags (`-f`, `--target`,
-`--build-arg*`, `--no-cache`, `--no-lockfile`, `--keep-service-workers`, `--no-css-inject`, `--console`,
-`--no-overlay`, `--navigate-to-changed`, `--reload`: `error: --<flag> is for serve --watch in the foreground, not
--d`). The default directory is `.`. Building a Sitefile project in a detached server is not supported yet.
+`--reload full|morph` is kept in the record as `reload`. Refused: a directory with a `Sitefile` (`error: -d --watch
+serves a plain directory, and <dir> has a Sitefile: build it with serve --watch in the foreground`), and the build
+and page-script flags (`-f`, `--target`, `--build-arg*`, `--no-cache`, `--no-lockfile`, `--keep-service-workers`,
+`--no-css-inject`, `--console`, `--no-overlay`, `--navigate-to-changed`: `error: --<flag> is for serve --watch in
+the foreground, not -d`). The default directory is `.`. Building a Sitefile project in a detached server is not supported yet.
 
 - **What is watched**: every file under the build context, the Sitefile (also when `-f` points outside the context)
   and each `--build-arg-file` (re-read on every build, so editing one changes the ARGs).
@@ -625,7 +626,7 @@ build it with serve --watch in the foreground`), and the build and page-script f
 
 ### Live reload
 
-Only under `serve --watch` (and `serve -d --watch`):
+Only under `serve --watch` (and `serve -d --watch`), and `serve --reload` (below):
 
 - `GET /__sitefile/reload` is reserved (it takes precedence over a file at that path) and answers with a
   `text/event-stream` that sends `retry: 1000` and `id: <instance>` (16 random hex digits, new for every server
@@ -641,6 +642,15 @@ Only under `serve --watch` (and `serve -d --watch`):
   `serve --watch` on the same port, a detached server started again), the stream sends `data: {"type":"reload"}`
   right after the `id`, so pages left open reload once the new server answers. This needs the same URL: give
   `-p host:port` to a detached server that will be restarted (a server started on a free port gets a new one).
+- **Reload after a restart without watching** (`serve --reload`, also `serve -d --reload`): a server of an image,
+  an archive file or a directory snapshot, which never rebuilds, still injects the script and serves
+  `/__sitefile/reload` (and `reload.js`), so pages left open reload once a restarted server answers (`server
+  restart` after a new build of the image, a restart on a new image). Nothing else is ever sent. The same rules as
+  watch mode apply (page navigations only, the CSP warning; a detached server writes it to its log). `--reload`
+  takes an optional mode: `--reload full` or `--reload morph` (the default) when the next argument is one of those,
+  else a bare `--reload` (`serve --reload site.zip`; write `--reload=full` or `./full` for a file named `full`).
+  With `-d` it is kept in the server record (`"reload": "morph"` or `"full"`), so `server restart` keeps it. The
+  other page-script flags (`--console`, `--keep-service-workers`, `--no-overlay`, ...) still need `--watch`.
 - **Go to the changed page** (`--navigate-to-changed`, off by default): when a rebuild added or changed exactly one
   HTML file (other files may change too), its `reload` event names the page that serves it:
   `data: {"type":"reload","path":"/posts/hello/"}` (`/dir/index.html` becomes `/dir/`, other files keep their path;

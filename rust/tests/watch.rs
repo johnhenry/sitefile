@@ -778,3 +778,135 @@ fn build_watch_rebuilds_incrementally() {
     );
     assert_eq!(w.stop(), 0);
 }
+
+/// johnhenry/sitefile#317: `serve -d --reload full <image>` without --watch injects the script,
+/// serves the stream, keeps `reload` in the record over a restart, and pages left open reload.
+#[test]
+fn serve_detached_reload_without_watch_reloads_pages_after_a_restart() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let site = make_site(&t, &[], DEFAULT_SITEFILE);
+    let (code, _, err) = run(&home, &["build", s(&site), "--no-lockfile", "-t", "rl:1"]);
+    assert_eq!(code, 0, "{err}");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let bind = format!("127.0.0.1:{port}");
+    let (code, out, err) = run(
+        &home,
+        &[
+            "serve", "-d", "--reload", "full", "--name", "rl", "-p", &bind, "rl:1",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let check = || {
+        let id = out.split('(').nth(1).unwrap().split(')').next().unwrap();
+        let state = fs::read_to_string(home.join("servers").join(format!("{id}.json"))).unwrap();
+        assert!(state.contains("\"reload\": \"full\""), "{state}");
+        assert!(!state.contains("\"watch\""), "{state}");
+        assert_eq!(
+            get(port, "/about/").2,
+            format!("<h1>About</h1>{RELOAD_SCRIPT}")
+        );
+        assert_eq!(
+            get_with(port, "/about/", "accept: */*\r\n").2,
+            "<h1>About</h1>",
+            "not a navigation: unchanged"
+        );
+        assert!(get(port, "/__sitefile/reload.js")
+            .2
+            .contains("\"reload\":\"full\""));
+        let mut ev = Events::open(port);
+        assert_eq!(ev.next(), "retry: 1000");
+        let instance = ev.next()[4..].to_string();
+        assert_eq!(instance.len(), 16);
+        drop(ev);
+        let (code, _, err) = run(&home, &["server", "restart", "rl"]);
+        assert_eq!(code, 0, "{err}");
+        let (_, ps, _) = run(&home, &["servers", "--json"]);
+        assert!(
+            ps.contains("\"reload\": \"full\""),
+            "restart keeps --reload: {ps}"
+        );
+        let mut again = Events::open_after(port, Some(&instance));
+        assert_eq!(again.next(), "retry: 1000");
+        assert_ne!(again.next(), format!("id: {instance}"), "a new instance");
+        assert_eq!(
+            again.next(),
+            "data: {\"type\":\"reload\"}",
+            "pages left open across the restart reload"
+        );
+    };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+    run(&home, &["server", "rm", "-f", "rl"]);
+    if let Err(e) = r {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// A bare `--reload` before the operand in the foreground: morph, a page of an earlier instance
+/// reloads; without it nothing is injected (#317).
+#[test]
+fn serve_reload_in_the_foreground() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let dir = t.0.join("plain");
+    fs::create_dir_all(&dir).unwrap();
+    write(dir.join("index.html"), "<h1>fg</h1>");
+    for reload in [true, false] {
+        let mut args = vec!["serve"];
+        if reload {
+            args.push("--reload");
+        }
+        args.push(s(&dir));
+        let p = Proc::start(&home, &args);
+        p.wait_lines("Serving ", 1);
+        let port = port_of(&p.stdout());
+        if reload {
+            assert_eq!(get(port, "/").2, format!("<h1>fg</h1>{RELOAD_SCRIPT}"));
+            assert!(get(port, "/__sitefile/reload.js")
+                .2
+                .contains("\"reload\":\"morph\""));
+            let mut ev = Events::open_after(port, Some("0123456789abcdef"));
+            assert_eq!(ev.next(), "retry: 1000");
+            assert!(ev.next().starts_with("id: "));
+            assert_eq!(ev.next(), "data: {\"type\":\"reload\"}");
+        } else {
+            assert_eq!(get(port, "/").2, "<h1>fg</h1>");
+            assert_eq!(get(port, "/__sitefile/reload").0, 404);
+        }
+        assert_eq!(p.stop(), 0);
+    }
+}
+
+/// `serve -d --watch --reload full`: accepted and recorded (#317).
+#[test]
+fn serve_detached_watch_takes_reload() {
+    let t = Tmp::new();
+    let home = t.0.join("home");
+    let dir = t.0.join("plain");
+    fs::create_dir_all(&dir).unwrap();
+    write(dir.join("index.html"), "<h1>w</h1>");
+    let (code, _, err) = run(
+        &home,
+        &[
+            "serve",
+            "-d",
+            "--watch",
+            "--reload",
+            "full",
+            "--name",
+            "wr",
+            s(&dir),
+        ],
+    );
+    let (_, ps, _) = run(&home, &["servers", "--json"]);
+    run(&home, &["server", "rm", "-f", "wr"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        ps.contains("\"watch\": true") && ps.contains("\"reload\": \"full\""),
+        "{ps}"
+    );
+}
