@@ -108,6 +108,20 @@
   `webfinger` as `application/jrd+json` and `host-meta` as
   `application/xrd+xml`, instead of `application/octet-stream`. Extension
   matching is ASCII case-insensitive in both implementations.
+- **`EXPORT … AS html` and `AS mhtml`** (johnhenry/sitefile#210): a single
+  self-contained page. `html` inlines every asset `index.html` references
+  (and what its stylesheets reference) as `data:` URIs; `mhtml` writes the
+  page and the same assets as one `multipart/related` file under `BASE`
+  (default `https://site.invalid/`). A missing asset fails with `E_EXPORT`;
+  links, other pages and external URLs stay. Both implementations;
+  conformance cases `ok-html`, `ok-mhtml`, `err-html-missing`. The reference
+  scanner now records each attribute URL's element (`img src`).
+- **`EXPORT … AS car`** (johnhenry/sitefile#208): an IPFS CARv1 file of the
+  tree as a UnixFS DAG (raw leaves, 256 KiB chunks, balanced 174-link file
+  nodes, CIDv1), the same DAG and root CID as kubo's `ipfs add -r --hidden
+  --cid-version=1` (and the same bytes as its `ipfs dag export`). `-o x.car`
+  selects it; `build` and `save` print the root CID. Both implementations;
+  conformance cases `example/blog:car-bytes`, `case/ok-car`.
 - **A fuller content-type table** (johnhenry/sitefile#179): `serve` and Web
   Bundle export type 75 extensions (WebVTT, XSLT, feeds, `.cjs`, source maps,
   fonts, more images, audio, video, HLS/DASH, glTF, archives, ...) instead of
