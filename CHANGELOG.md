@@ -9,6 +9,13 @@
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
   subdomains, `*` for any) adds names and is kept in the server record.
+- **PRECOMPRESS writes `.gz` sidecars** (johnhenry/sitefile#203):
+  `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes
+  `<file>.gz` next to matching text files of at least MIN bytes (default 1024)
+  when smaller, with the shared deterministic deflate encoder, for nginx
+  `gzip_static` and Caddy `precompressed`. `br` and `zstd` are rejected as not
+  supported yet. Both implementations, with conformance cases; example
+  `examples/precompress`.
 - **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
   a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
   gets its slash, everything else is 404, and the server's redirects and
