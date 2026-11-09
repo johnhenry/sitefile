@@ -176,10 +176,37 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
   symlink to a JavaScript file runs as JavaScript and needs the flag.
 
 Allowing a plugin is still trusting it: treat it like any dependency, keep it
-in your repository, and pin it with `INTEGRITY` (which covers the module file
-itself; other files in its folder are not hashed). Because a plugin can read
-its whole folder, sitefile refuses a plugin placed directly in the build
-context root.
+in your repository, and pin it with `INTEGRITY`. Because a plugin can read its
+whole folder, sitefile refuses a plugin placed directly in the build context
+root.
+
+### What `INTEGRITY` pins
+
+A JavaScript plugin can read and import every file in its folder (helpers,
+data, fonts, a vendored `node_modules`), so **`INTEGRITY` on a JavaScript
+plugin pins the whole folder**, not just the module: it is `sha256:` followed by
+the same folder digest the TRANSFORM cache uses (below). A changed, added or
+removed file anywhere under the folder fails the build with `E_INTEGRITY`
+before any plugin starts; the error gives the digest the folder has now, so
+the easiest way to pin a plugin is to write any digest and copy the one from
+the error:
+
+```
+error[E_INTEGRITY]: Sitefile:3:1: integrity mismatch for ./plugins/ (PLUGIN motion's folder: INTEGRITY covers every file in it): expected sha256:…, got sha256:48225c…
+```
+
+The digest is SHA-256 over one line per regular file, in UTF-16 code unit
+order of the relative path, recursing into directories:
+`<relative/path>\0sha256:<hex of the file>\n`. A pinned folder may hold only
+regular files and directories: a symlink (which could change what an import
+resolves to without changing any file) is `E_INTEGRITY`, as is a folder over
+2000 files or 128 MiB. The check runs when the build starts; sitefile does not
+stop the files changing between the check and the plugin reading them, so
+keep the folder in your repository. A **wasm** plugin reads nothing, so its
+`INTEGRITY` is the digest of the module file (`shasum -a 256 x.wasm`).
+
+Before johnhenry/sitefile#158, `INTEGRITY` on a JavaScript plugin hashed only
+the module file; such a pin now fails with the folder's digest in the error.
 
 ## Determinism
 
@@ -396,8 +423,8 @@ node-html-parser it uses) from the repository's `node_modules`, where
 fileable is a devDependency, into `plugins/fileable/node_modules/`. That copy
 is gitignored and rebuilt by `npm run examples` and `npm run conformance`. In
 your own project, vendor it the same way (or with any bundler) and commit or
-rebuild it; `INTEGRITY` covers only the plugin module, not the vendored
-files.
+rebuild it; `INTEGRITY` covers the vendored files too (the whole folder), so
+pin it only when the vendored copy is reproducible or committed.
 
 The browser entry point needs no filesystem, processes or environment, so it
 fits the sandbox. What does need them fails with `E_PLUGIN` and says why:
