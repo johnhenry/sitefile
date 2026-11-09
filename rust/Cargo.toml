@@ -30,6 +30,8 @@ path = "src/main.rs"
 #                     directly so an extra CA (FetchPolicy.ca) is added to
 #                     exactly those roots (same version as ureq 2's, one copy)
 #   wasmtime          WebAssembly plugins (fuel-limited, no imports)
+#   ring              Ed25519 signing for `EXPORT … AS swbn` (constant time; already in the
+#                     build through ureq -> rustls, same version, so it adds no crate)
 #   icu_normalizer    Unicode NFC for paths (String.prototype.normalize in
 #                     TypeScript). Already in the build through ureq -> url ->
 #                     idna -> idna_adapter, same version and features, so it
@@ -46,6 +48,7 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 webpki-roots = "0.26"
 wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "std"] }
+ring = { version = "0.17", default-features = false }
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 
 [profile.release]

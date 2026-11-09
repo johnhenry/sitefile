@@ -1228,7 +1228,10 @@ mod tests {
             ExportFormat::ALL.map(|f| f.as_str().to_string())
         );
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
-        assert_eq!(labels("EXPORT / AS oci BASE x "), ["AT", "COMPRESSION"]);
+        assert_eq!(
+            labels("EXPORT / AS oci BASE x "),
+            ["AT", "COMPRESSION", "KEY"]
+        );
         assert_eq!(labels("EXPORT / AS oci COMPRESSION "), ["gzip", "none"]);
         assert_eq!(labels("RENDER --escape="), ["none", "html"]);
         assert_eq!(labels("ARG N: "), ["string", "number", "boolean"]);

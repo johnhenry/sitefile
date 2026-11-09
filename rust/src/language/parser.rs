@@ -62,7 +62,7 @@ pub const SECRET_FORMS: [&str; 2] = ["HEADER", "BEARER"];
 /// `SORT BY key` directions.
 pub const SORT_ORDERS: [&str; 2] = ["ASC", "DESC"];
 /// Clauses after `EXPORT <path>`, in this order.
-pub const EXPORT_CLAUSES: [&str; 4] = ["AS", "BASE", "AT", "COMPRESSION"];
+pub const EXPORT_CLAUSES: [&str; 5] = ["AS", "BASE", "AT", "COMPRESSION", "KEY"];
 /// Clauses after `TRANSFORM … TO <dest>`.
 pub const TRANSFORM_CLAUSES: [&str; 3] = ["OPTIONS", "FOR", "ARGS"];
 /// Clauses after `SITEMAP`, in this order (`BASE` is required).
@@ -1389,7 +1389,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         format = ExportFormat::parse(&name).ok_or_else(|| {
             SitefileError::at(
                 E_UNSUPPORTED,
-                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml or warc)"),
+                format!("export format '{name}' is not supported (expected directory, zip, tar, tgz, wbn, oci, car, html, mhtml, warc or swbn)"),
                 &at,
             )
         })?;
@@ -1418,6 +1418,12 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         };
         compression = Some((v, cspan));
     }
+    let key = if c.keyword("KEY") {
+        let kspan = c.span();
+        Some((c.ident("secret id", "")?, kspan))
+    } else {
+        None
+    };
     c.expect_end()?;
     Ok(Instruction::Export {
         span,
@@ -1426,6 +1432,7 @@ fn parse_export(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         base,
         at,
         compression,
+        key,
     })
 }
 

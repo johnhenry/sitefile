@@ -321,6 +321,13 @@
         "value": "[Cc][Oo][Mm][Pp][Rr][Ee][Ss][Ss][Ii][Oo][Nn]"
       }
     },
+    "_kw_key": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Kk][Ee][Yy]"
+      }
+    },
     "_kw_link": {
       "type": "TOKEN",
       "content": {
@@ -3200,6 +3207,36 @@
                     },
                     "named": true,
                     "value": "compression"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_kw_key"
+                  },
+                  "named": false,
+                  "value": "KEY"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "key",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
                   }
                 }
               ]

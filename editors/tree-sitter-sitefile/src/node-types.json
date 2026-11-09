@@ -423,6 +423,16 @@
           }
         ]
       },
+      "key": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "path": {
         "multiple": false,
         "required": true,
@@ -3107,6 +3117,10 @@
   },
   {
     "type": "INTO",
+    "named": false
+  },
+  {
+    "type": "KEY",
     "named": false
   },
   {
