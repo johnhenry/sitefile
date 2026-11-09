@@ -44,7 +44,12 @@ export function tar(entries: TarEntry[]): Buffer {
 }
 
 export interface ZipEntry {
-  name: string;
+  /** A string is written as UTF-8; bytes as they are. */
+  name: string | Uint8Array;
+  /** General-purpose flags (0x800: the name is UTF-8). */
+  flags?: number;
+  /** Extra fields, in both headers. */
+  extra?: Uint8Array;
   data?: string | Uint8Array;
   deflate?: boolean;
   /** Unix mode in the external attributes (e.g. 0o120777 for a symlink). */
@@ -61,29 +66,35 @@ export function zip(entries: ZipEntry[]): Buffer {
     const raw = Buffer.from(e.data ?? '');
     const body = e.deflate ? deflateRawSync(raw) : raw;
     const name = Buffer.from(e.name);
+    const extra = Buffer.from(e.extra ?? new Uint8Array(0));
+    const isDirName = name.length > 0 && name[name.length - 1] === 0x2f;
     const usize = e.fakeSize ?? raw.length;
     const l = Buffer.alloc(30);
     l.writeUInt32LE(0x04034b50, 0);
     l.writeUInt16LE(20, 4);
+    l.writeUInt16LE(e.flags ?? 0, 6);
     l.writeUInt16LE(e.deflate ? 8 : 0, 8);
     l.writeUInt32LE(crc32(raw), 14);
     l.writeUInt32LE(body.length, 18);
     l.writeUInt32LE(usize, 22);
     l.writeUInt16LE(name.length, 26);
+    l.writeUInt16LE(extra.length, 28);
     const c = Buffer.alloc(46);
     c.writeUInt32LE(0x02014b50, 0);
     c.writeUInt16LE((3 << 8) | 20, 4);
     c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(e.flags ?? 0, 8);
     c.writeUInt16LE(e.deflate ? 8 : 0, 10);
     c.writeUInt32LE(crc32(raw), 16);
     c.writeUInt32LE(body.length, 20);
     c.writeUInt32LE(usize, 24);
     c.writeUInt16LE(name.length, 28);
-    c.writeUInt32LE(((e.mode ?? (e.name.endsWith('/') ? 0o040755 : 0o100644)) << 16) >>> 0, 38);
+    c.writeUInt16LE(extra.length, 30);
+    c.writeUInt32LE(((e.mode ?? (isDirName ? 0o040755 : 0o100644)) << 16) >>> 0, 38);
     c.writeUInt32LE(offset, 42);
-    local.push(l, name, body);
-    central.push(c, name);
-    offset += l.length + name.length + body.length;
+    local.push(l, name, extra, body);
+    central.push(c, name, extra);
+    offset += l.length + name.length + extra.length + body.length;
   }
   const cd = Buffer.concat(central);
   const end = Buffer.alloc(22);
