@@ -110,6 +110,16 @@ export type Operation =
       readonly span: SourceSpan;
     }
   | {
+      /** Add a canonical link to every page below `root` that has none. */
+      readonly kind: 'CANONICAL';
+      /** Checked base URL without trailing slashes. */
+      readonly base: string;
+      readonly pretty: boolean;
+      /** The EXPORT path: a page's URL is its path below it. */
+      readonly root: string;
+      readonly span: SourceSpan;
+    }
+  | {
       /** sitemaps.org XML of the `.html` files in the tree at this point. */
       readonly kind: 'SITEMAP';
       /** Checked base URL without trailing slashes. */
@@ -452,6 +462,10 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         fingerprints.push({ span: ins.span, headers: !ins.noCacheHeaders });
         break;
       }
+      case 'CANONICAL':
+        // `root` is the EXPORT path, filled in below.
+        operations().push({ kind: 'CANONICAL', base: checkBaseUrl(evaluateOperand(ins.base, vars), 'CANONICAL BASE', ins.base.span), pretty: ins.pretty, root: '/', span: ins.span });
+        break;
       case 'CHECKLINKS':
         // `root` and `redirects` are filled in below, once every line is planned.
         operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
@@ -507,7 +521,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
 
   for (const st of stages) {
     st.operations.forEach((op, i) => {
-      if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL') st.operations[i] = { ...op, root: exportPath ?? '/' };
       if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
   }

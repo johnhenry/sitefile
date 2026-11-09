@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- **`serve --base /repo/`** (johnhenry/sitefile#195): serves the site under
+  a path prefix (GitHub Pages project sites): `/` redirects to it, `/repo`
+  gets its slash, everything else is 404, and the server's redirects and
+  `_redirects` path targets stay under it. `serve --watch` defaults it to the
+  path of the EXPORT BASE URL. Kept in the server record and shown in URLs.
+  Both implementations.
+- **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
+  app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
+  else `Accept: text/html`), never subresources, so `/users/jane.doe` works
+  and a missing script stays 404. The shell is the nearest `200.html`
+  (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
+  <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
+  implementations.
+- **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
+  404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
+  `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters
+  (`/store id=:id /items/:id`), `Language=`, `Cookie=` and `Country=`
+  conditions (`--country` sets the country), statuses 410 and 451, and a
+  `404.html` in the nearest directory. Every `_redirects`/`_headers` line it
+  ignores is a warning with its line and reason (`--strict-site-files` makes
+  them an error), `validate` warns about REDIRECT/HEADER lines serve would
+  ignore (lint rule `serve-ignored`), and the access log names the rule that
+  answered (`→ /new (_redirects:3)`).
+- **CANONICAL links and split sitemaps** (johnhenry/sitefile#218):
+  `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical">` before
+  `</head>` of every page that has none (PRETTY drops `.html`), and SITEMAP
+  writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
+  Both implementations, with conformance cases; example `examples/canonical`.
+  hreflang alternates are not done yet.
+- **`--oci-layers <n>`** (johnhenry/sitefile#214): split an oci image's files
+  over `n` site layers (1-64, by a hash of each path) so pushing a new version
+  uploads only the layers whose files changed; `dev.sitefile.layers` in the
+  config marks them, and every reader (store, save, serve, push, pull,
+  `FROM image`) merges them. Default unchanged (one layer, same image IDs).
+  Both implementations; conformance `example/blog:oci-layers-*`,
+  `case/steps-oci-layers`.
 - **Identical `--help` in both CLIs**: the `--node` line now reads "default
   $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
   default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for

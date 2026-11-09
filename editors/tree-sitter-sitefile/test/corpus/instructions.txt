@@ -458,6 +458,23 @@ FINGERPRINT /app.js INTEGRITY
     (path)))
 
 ================================================================================
+CANONICAL with and without PRETTY
+================================================================================
+
+CANONICAL BASE https://example.com/
+canonical base ${URL} pretty
+
+---
+
+(source_file
+  (canonical_instruction
+    (url))
+  (canonical_instruction
+    (word
+      (substitution
+        (identifier)))))
+
+================================================================================
 CHECKLINKS with and without flags
 ================================================================================
 

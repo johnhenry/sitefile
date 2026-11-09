@@ -357,6 +357,17 @@ export interface FingerprintInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CANONICAL BASE <url> [PRETTY]`: add `<link rel="canonical" href="…">` before `</head>` of every page of
+ * the stage that has none. PRETTY drops `.html` from the URL (`/about.html` -> `/about`).
+ */
+export interface CanonicalInstruction {
+  readonly kind: 'CANONICAL';
+  readonly span: SourceSpan;
+  readonly base: Operand;
+  readonly pretty: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -383,6 +394,7 @@ export type Instruction =
   | RedirectInstruction
   | HeaderInstruction
   | FingerprintInstruction
+  | CanonicalInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

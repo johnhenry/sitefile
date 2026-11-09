@@ -8,6 +8,10 @@
         "named": true
       },
       {
+        "type": "canonical_instruction",
+        "named": true
+      },
+      {
         "type": "checklinks_instruction",
         "named": true
       },
@@ -151,6 +155,38 @@
           },
           {
             "type": "placeholder",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "canonical_instruction",
+    "named": true,
+    "fields": {
+      "base": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
             "named": true
           },
           {
@@ -2526,6 +2562,10 @@
     "named": false
   },
   {
+    "type": "CANONICAL",
+    "named": false
+  },
+  {
     "type": "CHECKLINKS",
     "named": false
   },
@@ -2627,6 +2667,10 @@
   },
   {
     "type": "PLUGIN",
+    "named": false
+  },
+  {
+    "type": "PRETTY",
     "named": false
   },
   {

@@ -132,6 +132,13 @@
         "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
       }
     },
+    "_kw_canonical": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Cc][Aa][Nn][Oo][Nn][Ii][Cc][Aa][Ll]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -335,6 +342,13 @@
         "value": "[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt]"
       }
     },
+    "_kw_pretty": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Pp][Rr][Ee][Tt][Tt][Yy]"
+      }
+    },
     "_kw_run": {
       "type": "TOKEN",
       "content": {
@@ -524,6 +538,10 @@
         {
           "type": "SYMBOL",
           "name": "fingerprint_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "canonical_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2366,6 +2384,54 @@
               },
               "named": false,
               "value": "INTEGRITY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "canonical_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_canonical"
+          },
+          "named": false,
+          "value": "CANONICAL"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_base"
+          },
+          "named": false,
+          "value": "BASE"
+        },
+        {
+          "type": "FIELD",
+          "name": "base",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_operand"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_pretty"
+              },
+              "named": false,
+              "value": "PRETTY"
             },
             {
               "type": "BLANK"

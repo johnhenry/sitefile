@@ -105,6 +105,7 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(options.iter().map(|o| (&o.value, true)))
             .chain(args.iter().flatten().map(|a| (a, true)))
             .collect(),
+        Instruction::Canonical { base, .. } => vec![(base, false)],
         Instruction::Sitemap { base, dest, .. } => std::iter::once(base)
             .chain(dest)
             .map(|o| (o, false))
@@ -673,6 +674,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             | Instruction::Redirect { .. }
             | Instruction::Header { .. }
             | Instruction::Fingerprint { .. }
+            | Instruction::Canonical { .. }
             | Instruction::CheckLinks { .. } => {}
             Instruction::Export { .. } => saw_export = true,
             Instruction::From { .. } => {}

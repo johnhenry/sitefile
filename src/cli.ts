@@ -9,7 +9,7 @@ import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
 import { cacheLimitFromEnv } from './cache-limit.js';
 import { parseCacheRef, RegistryCache } from './registry-cache.js';
-import { parseLabels } from './oci.js';
+import { MAX_OCI_LAYERS, parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
@@ -64,6 +64,8 @@ Options:
                                (default gzip; none: plain tar), or the whole wbn (default none; gzip:
                                gzip(application/webbundle), also chosen by -o *.wbn.gz)
       --oci-compression <c>    the same as --compression, for oci only
+      --oci-layers <n>         split the oci image's files over n layers (1-64, default 1) by a hash of each
+                               path, so pushing a new version uploads only the layers that changed
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -157,6 +159,7 @@ export async function main(
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
         'oci-compression': { type: 'string' },
+        'oci-layers': { type: 'string' },
         compression: { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
@@ -317,6 +320,12 @@ export async function main(
       formatOverride = parseExportFormat(o.format);
       if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
     }
+    let ociLayers: number | undefined;
+    if (o['oci-layers'] !== undefined) {
+      if (command !== 'build') return usageError('--oci-layers is only for build');
+      ociLayers = /^[0-9]{1,2}$/.test(o['oci-layers']) ? Number(o['oci-layers']) : 0;
+      if (ociLayers < 1 || ociLayers > MAX_OCI_LAYERS) return usageError(`--oci-layers expects an integer from 1 to ${MAX_OCI_LAYERS}, got '${o['oci-layers']}'`);
+    }
     let ociCompression: OciCompression | undefined;
     if (o['oci-compression'] !== undefined) {
       ociCompression = parseOciCompression(o['oci-compression']);
@@ -406,6 +415,7 @@ export async function main(
           contextDir: context,
           ociRoot: o['oci-root'],
           ociCompression,
+          ociLayers,
           platform: o.platform,
           labels,
           gitLabels: !!o['git-labels'],
@@ -432,6 +442,7 @@ export async function main(
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
           ...(ociCompression !== undefined ? { ociCompression } : {}),
+          ...(ociLayers !== undefined ? { ociLayers } : {}),
           ...(wbnCompression !== undefined ? { wbnCompression } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
           imageLabels: labels,
