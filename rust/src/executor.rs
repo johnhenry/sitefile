@@ -1421,6 +1421,8 @@ pub struct ExportedBuild {
     pub file_digest: Option<String>,
     /// oci: the image's manifest digest.
     pub manifest_digest: Option<String>,
+    /// car: the root CID (CIDv1, base32).
+    pub root_cid: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
 }
@@ -1692,6 +1694,7 @@ fn export_build(
                 bytes: Some(written.bytes),
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
+                root_cid: None,
                 incremental: None,
             });
         }
@@ -1707,6 +1710,7 @@ fn export_build(
             bytes: None,
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
+            root_cid: None,
             incremental: None,
         });
     }
@@ -1723,7 +1727,22 @@ fn export_build(
             bytes: None,
             file_digest: None,
             manifest_digest: None,
+            root_cid: None,
             incremental: written.incremental,
+        });
+    }
+    if format == ExportFormat::Car {
+        let (data, root) = crate::export::car::encode_car(&result.output)?;
+        let written = export_file(&data, out, &export_options)?;
+        return Ok(ExportedBuild {
+            result,
+            format,
+            out_path: written.out_file,
+            bytes: Some(written.bytes),
+            file_digest: Some(sha256(&data)),
+            manifest_digest: None,
+            root_cid: Some(root),
+            incremental: None,
         });
     }
     let data = encode_tree(
@@ -1756,6 +1775,7 @@ fn export_build(
         bytes: Some(written.bytes),
         file_digest: Some(digest),
         manifest_digest: None,
+        root_cid: None,
         incremental: None,
     })
 }

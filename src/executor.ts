@@ -1,3 +1,4 @@
+import { encodeCar } from './car.js';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import os from 'node:os';
@@ -685,6 +686,8 @@ export interface ExportedBuild extends BuildResult {
   readonly fileDigest?: string;
   /** oci: the image's manifest digest (its image ID). */
   readonly manifestDigest?: string;
+  /** car: the root CID (CIDv1, base32). */
+  readonly rootCid?: string;
   /** Watch mode: set when the directory export applied only the changes (src/exporter.ts). */
   readonly incremental?: { readonly written: number; readonly removed: number };
 }
@@ -739,6 +742,11 @@ async function exportBuild(
   if (!isArchiveFormat(format)) {
     const written = await exportDirectory(result.output, options.outDir, { ...exportOptions, ...(exportState ? { incremental: exportState } : {}) });
     return { ...result, format, outDir: written.outDir, ...(written.incremental ? { incremental: written.incremental } : {}) };
+  }
+  if (format === 'car') {
+    const car = encodeCar(result.output);
+    const written = await exportFile(car.bytes, options.outDir, exportOptions);
+    return { ...result, format, outDir: written.outFile, bytes: written.bytes, fileDigest: sha256(car.bytes), rootCid: car.root };
   }
   const data = encodeTree(result.output, format, {
     epoch: sourceDateEpoch(),
