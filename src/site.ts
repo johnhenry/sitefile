@@ -45,16 +45,65 @@ function utf8Compare(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 }
 
+const SITEMAP_HEAD = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+const SITEMAP_TAIL = '</urlset>\n';
+
+/** The sitemaps.org limits of one sitemap file: 50,000 URLs and 50 MiB (52,428,800 bytes) uncompressed. */
+export const SITEMAP_LIMITS = { urls: 50_000, bytes: 52_428_800 } as const;
+
 /** sitemaps.org XML for every `.html` file in the tree except `/404.html`, sorted by path. */
 export function sitemapXml(tree: Tree, base: string): string {
-  const paths = tree
+  return SITEMAP_HEAD + sitemapEntries(tree, base).join('') + SITEMAP_TAIL;
+}
+
+function sitemapEntries(tree: Tree, base: string): string[] {
+  return tree
     .entries()
     .map(([p]) => p)
     .filter((p) => p.endsWith('.html') && p !== '/404.html')
-    .sort(utf8Compare);
-  let out = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-  for (const p of paths) out += `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc></url>\n`;
-  return out + '</urlset>\n';
+    .sort(utf8Compare)
+    .map((p) => `  <url><loc>${xmlEscape(pageUrl(base, p))}</loc></url>\n`);
+}
+
+/** `/sitemap.xml` -> `/sitemap-2.xml`: the n-th part of a split sitemap (before the extension, or at the end). */
+export function sitemapPart(dest: string, n: number): string {
+  const slash = dest.lastIndexOf('/');
+  const dot = dest.lastIndexOf('.');
+  return dot > slash + 1 ? `${dest.slice(0, dot)}-${n}${dest.slice(dot)}` : `${dest}-${n}`;
+}
+
+/**
+ * The sitemap files for the tree: one at `dest` when it is within `limits`, or else a sitemap index at
+ * `dest` and the parts (`sitemapPart`) it lists, each with at most `limits.urls` URLs and `limits.bytes`
+ * bytes (a part is closed when the next URL would pass either limit).
+ */
+export function sitemapFiles(tree: Tree, base: string, dest: string, limits: { urls: number; bytes: number } = SITEMAP_LIMITS): Array<[string, string]> {
+  const entries = sitemapEntries(tree, base);
+  const frame = utf8Length(SITEMAP_HEAD) + utf8Length(SITEMAP_TAIL);
+  const sizes = entries.map(utf8Length);
+  const total = frame + sizes.reduce((a, b) => a + b, 0);
+  if (entries.length <= limits.urls && total <= limits.bytes) return [[dest, SITEMAP_HEAD + entries.join('') + SITEMAP_TAIL]];
+  const parts: string[][] = [];
+  let cur: string[] = [];
+  let bytes = frame;
+  entries.forEach((e, i) => {
+    if (cur.length > 0 && (cur.length >= limits.urls || bytes + sizes[i]! > limits.bytes)) {
+      parts.push(cur);
+      cur = [];
+      bytes = frame;
+    }
+    cur.push(e);
+    bytes += sizes[i]!;
+  });
+  if (cur.length > 0) parts.push(cur);
+  const out: Array<[string, string]> = parts.map((p, i) => [sitemapPart(dest, i + 1), SITEMAP_HEAD + p.join('') + SITEMAP_TAIL]);
+  let index = '<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+  for (const [p] of out) index += `  <sitemap><loc>${xmlEscape(pageUrl(base, p))}</loc></sitemap>\n`;
+  return [[dest, index + '</sitemapindex>\n'], ...out];
+}
+
+function utf8Length(s: string): number {
+  return Buffer.byteLength(s, 'utf8');
 }
 
 // ---------------------------------------------------------------- dates
@@ -221,7 +270,7 @@ export const NO_CACHE = 'no-cache';
  * URL paths of every file in the exported directory, `hashed` those of the fingerprinted ones. A
  * fingerprinted file gets `Cache-Control: public, max-age=31536000, immutable`, by a `/dir/*` rule for the
  * topmost directory (below the root) that holds only fingerprinted files, or else by its own path; pages
- * get `Cache-Control: no-cache` through `/`, `/*​/` and `/*.html` (each only when a page it matches
+ * get `Cache-Control: no-cache` through `/`, `/*/` and `/*.html` (each only when a page it matches
  * exists). Paths with spaces or control characters are left out (a `_headers` path cannot hold them).
  * Rules are in path order (UTF-8), immutable ones first; none when nothing is fingerprinted.
  */
@@ -266,6 +315,43 @@ export function cacheHeaderRules(files: readonly string[], hashed: ReadonlySet<s
   if (pages.some((f) => f !== '/index.html' && /\/index\.html$/i.test(f))) add('/*/', NO_CACHE);
   if (pages.length > 0) add('/*.html', NO_CACHE);
   return out;
+}
+// ---------------------------------------------------------------- robots.txt and security.txt
+
+/** `/robots.txt` (RFC 9309) for every user agent: the rules in order (an empty `Disallow:` when none), then a `Sitemap:` line per URL. */
+export function robotsTxt(rules: ReadonlyArray<{ readonly allow: boolean; readonly path: string }>, sitemaps: readonly string[]): string {
+  let out = 'User-agent: *\n';
+  if (rules.length === 0) out += 'Disallow:\n';
+  for (const r of rules) out += `${r.allow ? 'Allow' : 'Disallow'}: ${r.path}\n`;
+  if (sitemaps.length > 0) out += '\n' + sitemaps.map((u) => `Sitemap: ${u}\n`).join('');
+  return out;
+}
+
+/** A security.txt URI field: one of `schemes` (lowercase, with their `:` or `://`), no spaces or control characters. */
+export function checkFieldUri(raw: string, field: string, schemes: readonly string[], span: SourceSpan): string {
+  const lower = raw.toLowerCase();
+  if (SPACE_OR_CONTROL.test(raw) || !schemes.some((s) => lower.startsWith(s) && raw.length > s.length)) {
+    throw new SitefileError('E_VALIDATION', `SECURITY_TXT ${field} '${raw}' must be a ${schemes.map((s) => s.replace(/\/\/$/, '//…')).join(', ')} URI with no spaces`, span);
+  }
+  return raw;
+}
+
+export interface SecurityTxt {
+  readonly contact: readonly string[];
+  /** RFC 3339, as {@link parseFeedDate} writes it. */
+  readonly expires: string;
+  readonly encryption: readonly string[];
+  readonly policy: readonly string[];
+}
+
+/** RFC 9116 `security.txt`: Contact lines, Expires, then Encryption and Policy lines, in source order. */
+export function securityTxt(s: SecurityTxt): string {
+  return [
+    ...s.contact.map((v) => `Contact: ${v}\n`),
+    `Expires: ${s.expires}\n`,
+    ...s.encryption.map((v) => `Encryption: ${v}\n`),
+    ...s.policy.map((v) => `Policy: ${v}\n`),
+  ].join('');
 }
 
 // ---------------------------------------------------------------- CSP

@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { ATTEST, referrersTag, type Referrer, type ReferrerDescriptor } from './attest.js';
 import { isSitefileError, SitefileError } from './errors.js';
-import { canonicalJson, MEDIA, parseConfig, parseManifest, parsePlatform, type Descriptor, type ParsedManifest } from './oci.js';
+import { canonicalJson, type Descriptor, MEDIA, parseConfig, type ParsedManifest, parseManifest, parsePlatform, siteLayerIndices } from './oci.js';
 import { parseRef, withDefaultRegistry, type ImageRef } from './ref.js';
 import type { RegistryClient } from './registry.js';
 import { shortId, Store } from './store.js';
@@ -189,7 +189,9 @@ export async function pushImage(store: Store, client: RegistryClient, id: string
       const b = withDefaultRegistry(parseRef(ann));
       if (b.registry === client.registry && b.name !== repo) {
         mountFrom = b.name;
-        baseLayers = new Set(parsed.layers.slice(0, -1).map((l) => l.digest));
+        // Every layer but the site layers (`--oci-layers` may give several).
+        const site = new Set(siteLayerIndices(parsed, parseConfig(await store.readBlob(parsed.config.digest))));
+        baseLayers = new Set(parsed.layers.filter((_, i) => !site.has(i)).map((l) => l.digest));
       }
     } catch {
       /* not a reference we understand */

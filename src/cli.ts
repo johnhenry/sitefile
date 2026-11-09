@@ -9,7 +9,7 @@ import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
 import { cacheLimitFromEnv } from './cache-limit.js';
 import { parseCacheRef, RegistryCache } from './registry-cache.js';
-import { parseLabels } from './oci.js';
+import { MAX_OCI_LAYERS, parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
@@ -25,7 +25,9 @@ import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 import { loadSecrets } from './secrets.js';
 import { exportFile } from './exporter.js';
-import { encodeManifest, manifestOf } from './integrity.js';
+import { encodeManifest, loadTarget, manifestOf, resolveTarget } from './integrity.js';
+import { addDictionaryDeltas } from './dictionary.js';
+import { Store } from './store.js';
 import type { Tree } from './tree.js';
 import { NETWORK_OPTIONS, networkHelp, networkOption } from './cli/network.js';
 
@@ -63,6 +65,8 @@ Options:
                                (default gzip; none: plain tar), or the whole wbn (default none; gzip:
                                gzip(application/webbundle), also chosen by -o *.wbn.gz)
       --oci-compression <c>    the same as --compression, for oci only
+      --oci-layers <n>         split the oci image's files over n layers (1-64, default 1) by a hash of each
+                               path, so pushing a new version uploads only the layers that changed
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -100,6 +104,10 @@ Options:
                                later files win, --build-arg wins over files)
       --manifest <file>        also write a manifest of the exported files (build only): path, size and
                                SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
+      --experimental-dictionary <previous>
+                               Compression Dictionary Transport (experimental, build only): add a .dcz delta
+                               against <previous> (image, directory or archive) for each changed .js/.css/...
+                               and Use-As-Dictionary headers; 'serve' answers Available-Dictionary with them
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -156,6 +164,7 @@ export async function main(
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
         'oci-compression': { type: 'string' },
+        'oci-layers': { type: 'string' },
         compression: { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
@@ -196,6 +205,7 @@ export async function main(
         'poll-interval': { type: 'string' },
         profile: { type: 'string' },
         manifest: { type: 'string' },
+        'experimental-dictionary': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -275,6 +285,8 @@ export async function main(
   if (o.manifest !== undefined && command !== 'build') return usageError('--manifest is only for build');
   if (o.manifest === '') return usageError('--manifest expects a file path');
   if (o.manifest !== undefined) run.wrote?.push(o.manifest);
+  if (o['experimental-dictionary'] !== undefined && command !== 'build') return usageError('--experimental-dictionary is only for build');
+  if (o['experimental-dictionary'] === '') return usageError('--experimental-dictionary expects an image, directory or archive');
   // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
   const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
   if (o.profile !== undefined) run.wrote?.push(o.profile);
@@ -315,6 +327,12 @@ export async function main(
     if (o.format !== undefined) {
       formatOverride = parseExportFormat(o.format);
       if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
+    }
+    let ociLayers: number | undefined;
+    if (o['oci-layers'] !== undefined) {
+      if (command !== 'build') return usageError('--oci-layers is only for build');
+      ociLayers = /^[0-9]{1,2}$/.test(o['oci-layers']) ? Number(o['oci-layers']) : 0;
+      if (ociLayers < 1 || ociLayers > MAX_OCI_LAYERS) return usageError(`--oci-layers expects an integer from 1 to ${MAX_OCI_LAYERS}, got '${o['oci-layers']}'`);
     }
     let ociCompression: OciCompression | undefined;
     if (o['oci-compression'] !== undefined) {
@@ -405,6 +423,7 @@ export async function main(
           contextDir: context,
           ociRoot: o['oci-root'],
           ociCompression,
+          ociLayers,
           platform: o.platform,
           labels,
           gitLabels: !!o['git-labels'],
@@ -412,9 +431,11 @@ export async function main(
           build: { contextDir: context, ...(file ? { sitefile: file } : {}), ...(fetched ? { label: o.file ?? 'Sitefile' } : {}), buildArgs },
         };
         await remoteCache?.load();
+        const dictionaryFrom = await previousBuild(o['experimental-dictionary']);
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
-          const built = await build(options);
+          const raw = await build(options);
+          const built = dictionaryFrom ? { ...raw, output: addDictionaryDeltas(raw.output, dictionaryFrom).tree } : raw;
           if (o.manifest !== undefined) await writeManifest(built.output, o.manifest, context, !!o.force);
           await storeBuildAsImage(built, tags, imageInfo);
           await remoteCache?.push(transformCacheDir());
@@ -431,12 +452,14 @@ export async function main(
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
           ...(ociCompression !== undefined ? { ociCompression } : {}),
+          ...(ociLayers !== undefined ? { ociLayers } : {}),
           ...(wbnCompression !== undefined ? { wbnCompression } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
           imageLabels: labels,
           gitLabels: !!o['git-labels'],
           ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
           attest,
+          ...(dictionaryFrom ? { dictionaryFrom } : {}),
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';
         const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
@@ -447,6 +470,7 @@ export async function main(
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
               : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest}${r.rootCid ? `, root ${r.rootCid}` : ''})\n`,
         );
+        if (r.dictionaryDeltas) process.stdout.write(`Dictionary deltas: ${r.dictionaryDeltas.length} (.dcz)\n`);
         if (o.manifest !== undefined) await writeManifest(r.output, o.manifest, context, !!o.force);
         // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
         if (r.lockfileWritten && !fetched) process.stdout.write('Updated Sitefile.lock\n');
@@ -545,6 +569,14 @@ function pluginNode(flag: string | undefined): { node?: string } {
 function isInsideDir(file: string, dir: string): boolean {
   const rel = path.relative(path.resolve(dir), path.resolve(file));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** `--experimental-dictionary <previous>`: the previous build's files (an image, directory or archive). */
+async function previousBuild(arg: string | undefined): Promise<Tree | undefined> {
+  if (arg === undefined) return undefined;
+  let store: Promise<Store> | undefined;
+  const open = (): Promise<Store> => (store ??= Store.open());
+  return loadTarget(await resolveTarget(arg, open), open);
 }
 
 /** `--manifest`: the exported files' manifest, written with the export's destination rules (and --force). */

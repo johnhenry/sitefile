@@ -318,7 +318,7 @@ fn get_with(port: u16, path: &str, extra: &str) -> (u16, String, String) {
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(
         c,
-        "GET {path} HTTP/1.1\r\nhost: x\r\n{extra}connection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: 127.0.0.1\r\n{extra}connection: close\r\n\r\n"
     )
     .unwrap();
     let mut buf = String::new();
@@ -333,7 +333,11 @@ struct Events(TcpStream, String);
 impl Events {
     fn open(port: u16) -> Events {
         let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        write!(c, "GET /__sitefile/reload HTTP/1.1\r\nhost: x\r\n\r\n").unwrap();
+        write!(
+            c,
+            "GET /__sitefile/reload HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
+        )
+        .unwrap();
         c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let mut e = Events(c, String::new());
         let head = e.until("\r\n\r\n");

@@ -3,7 +3,7 @@
 // Usage: node serve-worker.js <server id>. State and logs live in $SITEFILE_HOME/servers.
 import { SitefileError } from '../errors.js';
 import { closeServer, createSiteServer, formatUrl, listen } from '../server.js';
-import { loadServedSite, servedLastModified, ServerRegistry } from '../servers.js';
+import { checkSiteFiles, loadServedSite, servedLastModified, ServerRegistry } from '../servers.js';
 
 const stamp = (m: string): void => void process.stdout.write(`${new Date().toISOString()} ${m}\n`);
 
@@ -14,11 +14,12 @@ async function main(): Promise<void> {
   if (!state) throw new SitefileError('E_SERVER', `no state for server '${id}'`);
   try {
     const { tree, content } = await loadServedSite(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
+    checkSiteFiles(tree, !!state.strictSiteFiles, (m) => stamp(`warning: ${m}`), content);
     const modified = await servedLastModified(reg.store, state.source);
-    const server = createSiteServer(tree, { spa: state.spa, serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}) });
+    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), serverId: id, lastModified: () => modified, log: stamp, ...(content ? { content } : {}), ...(state.country !== undefined ? { country: state.country } : {}), ...(state.spaExclude ? { spaExclude: state.spaExclude } : {}), ...(state.spaFallback !== undefined ? { spaFallback: state.spaFallback } : {}), ...(state.base !== undefined ? { base: state.base } : {}) });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
-    stamp(`serving ${state.image} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}`);
+    stamp(`serving ${state.image} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}${(state.base ?? '/').slice(1)}`);
     const stop = (signal: string) => (): void => {
       stamp(`received ${signal}, shutting down`);
       void closeServer(server).then(async () => {

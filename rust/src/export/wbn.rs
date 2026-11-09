@@ -318,7 +318,14 @@ fn exact_redirect(rules: &[ServeRedirect], forced: bool, path: &str) -> Option<u
 /// redirect responses with a `location`.
 pub fn bundle_responses(tree: &Tree) -> (Vec<Vec<u8>>, Vec<(String, usize)>) {
     let rules = SiteRules::from_tree(tree);
-    let redirects = &rules.redirects;
+    // Rules with placeholders, query parameters or conditions depend on the request: left to `/_redirects`.
+    let plain: Vec<ServeRedirect> = rules
+        .redirects
+        .iter()
+        .filter(|r| r.is_plain())
+        .cloned()
+        .collect();
+    let redirects = &plain;
     let mut responses: Vec<Vec<u8>> = Vec::new();
     let mut urls: Vec<(String, usize)> = Vec::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();

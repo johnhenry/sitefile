@@ -135,6 +135,25 @@ fn dos_date_time(epoch: Option<u64>) -> (u16, u16) {
 
 use crate::deflate::deflate_raw;
 
+/// File extensions (ASCII, lowercase) whose content is already compressed; zip stores them without deflating.
+pub const COMPRESSED_MEDIA: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "heic", "jxl", "woff", "woff2", "mp3", "m4a",
+    "aac", "ogg", "oga", "opus", "flac", "mp4", "m4v", "webm", "mov", "mkv", "zip", "gz", "tgz",
+    "br", "zst", "xz", "bz2", "7z", "rar", "wbn",
+];
+
+/// Whether a zip entry name ends in an already-compressed media extension ([`COMPRESSED_MEDIA`]), ASCII case-insensitively.
+pub fn is_compressed_media(name: &str) -> bool {
+    let base = name.rsplit('/').next().unwrap_or("");
+    match base.rfind('.') {
+        Some(dot) if dot > 0 => {
+            let ext = base[dot + 1..].to_ascii_lowercase();
+            COMPRESSED_MEDIA.contains(&ext.as_str())
+        }
+        _ => false,
+    }
+}
+
 /// The extended-timestamp extra field (0x5455 "UT", APPNOTE 4.4.6, Info-ZIP
 /// extrafld.txt) with the modification time only: unlike the DOS time, which
 /// unzippers read as local time, it is UTC seconds, so SOURCE_DATE_EPOCH
@@ -182,9 +201,17 @@ pub fn write_zip(tree: &Tree, options: &WriterOptions) -> Result<Vec<u8>> {
                 ),
             ));
         }
-        let deflated = deflate_raw(e.bytes);
-        let stored = deflated.len() >= e.bytes.len();
-        let data: &[u8] = if stored { e.bytes } else { &deflated };
+        // Already-compressed media is stored as is: deflate would only spend time to gain nothing (#203).
+        let deflated = if is_compressed_media(&e.name) {
+            None
+        } else {
+            Some(deflate_raw(e.bytes))
+        };
+        let stored = !matches!(&deflated, Some(d) if d.len() < e.bytes.len());
+        let data: &[u8] = match &deflated {
+            Some(d) if !stored => d,
+            _ => e.bytes,
+        };
         if e.bytes.len() as u64 > ZIP_MAX || data.len() as u64 > ZIP_MAX {
             return Err(SitefileError::plain(
                 E_EXPORT,
@@ -779,6 +806,32 @@ pub(crate) mod tests {
             sha256(&write_zip(&stored, &e1).unwrap()),
             "sha256:b29ffe03ae09ced4411a7d5f9d4be6ab6f5949843b5e0d614bea732dfdb1d55f"
         );
+    }
+
+    /// Already-compressed media is stored (#203); same bytes as the TypeScript writer.
+    #[test]
+    fn compressed_media_is_stored_without_deflating() {
+        use crate::digest::sha256;
+        for n in [
+            "a.png", "d/b.JPG", "f.woff2", "v.Mp4", "x.tar.gz", "site.zip",
+        ] {
+            assert!(is_compressed_media(n), "{n}");
+        }
+        for n in ["a.txt", "png", ".png", "d.png/x", "a.svg", "a.pngx"] {
+            assert!(!is_compressed_media(n), "{n}");
+        }
+        let a = "a".repeat(1000);
+        let t = mk(&[
+            ("/logo.PNG", a.as_bytes(), 0o644),
+            ("/index.html", a.as_bytes(), 0o644),
+            ("/f/a.woff2", a.as_bytes(), 0o644),
+        ]);
+        let z = write_zip(&t, &WriterOptions::default()).unwrap();
+        assert_eq!(
+            sha256(&z),
+            "sha256:d155021b4098fe36dbe9aaa10617dddea8e102eb4a89688f6fb090acfca27b06"
+        );
+        assert_eq!(&*read_zip(&z).get("/logo.PNG").unwrap().bytes, a.as_bytes());
     }
 
     fn has_tool(cmd: &str, arg: &str) -> bool {
