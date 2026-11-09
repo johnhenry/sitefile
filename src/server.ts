@@ -73,6 +73,8 @@ export interface SiteServerOptions {
   readonly compress?: boolean;
   /** `--throttle`: response bandwidth (bytes per second) and latency added before each response. */
   readonly throttle?: Throttle;
+  /** `--mime`, `--mime-file`: content types by lowercase extension, checked before the built-in table. */
+  readonly mime?: ReadonlyMap<string, string>;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -513,6 +515,35 @@ export function parseThrottle(value: string): Throttle | undefined {
   const m = /^([0-9]{1,7})(?:\/([0-9]{1,5}))?$/.exec(value);
   if (!m || Number(m[1]) === 0) return undefined;
   return { bytesPerSecond: Number(m[1]) * 125, latencyMs: Number(m[2] ?? 0) };
+}
+
+/** A content type `--mime` accepts: `type/subtype`, then optional parameters, printable ASCII. */
+const MIME_VALUE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*( *;[\x20-\x7e]*)?$/;
+
+/** `--mime ext=type` (a leading `.` is dropped; the extension is lowercased), else undefined. */
+export function parseMimeFlag(value: string): [string, string] | undefined {
+  const i = value.indexOf('=');
+  if (i <= 0) return undefined;
+  const ext = value.slice(0, i).replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const type = value.slice(i + 1).trim();
+  return /^[a-z0-9_+-]+$/.test(ext) && MIME_VALUE.test(type) ? [ext, type] : undefined;
+}
+
+/** A `mime.types` file (nginx `types { type ext ...; }` or Apache `type ext ...` lines; `#` comments): ext → type. */
+export function parseMimeTypes(text: string, origin: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [n, raw] of text.split('\n').entries()) {
+    const line = raw.replace(/#.*$/, '').replace(/^[ \t]*types\b/, ' ').replace(/[{};]/g, ' ').trim();
+    if (line === '') continue;
+    const [type, ...exts] = line.split(/[ \t]+/);
+    if (type === undefined || !MIME_VALUE.test(type)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not a content type: ${type ?? ''}`);
+    for (const e of exts) {
+      const ext = e.replace(/^\./, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+      if (!/^[a-z0-9_+-]+$/.test(ext)) throw new SitefileError('E_USAGE', `${origin}:${n + 1}: not an extension: ${e}`);
+      out.set(ext, type);
+    }
+  }
+  return out;
 }
 
 /** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
@@ -956,7 +987,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
 
     const sendFile = (status: number, served: string): void => {
       const file = tree.get(served)!;
-      const type = mimeTypeFor(served);
+      const ext = served.slice(served.lastIndexOf('/') + 1).split('.').slice(1).pop()?.replace(/[A-Z]/g, (c) => c.toLowerCase());
+      const type = (ext !== undefined ? options.mime?.get(ext) : undefined) ?? mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
       const body = live ? injectReloadScript(file.bytes) : file.bytes;

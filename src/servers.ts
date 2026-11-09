@@ -72,6 +72,8 @@ export interface ServerState {
   readonly compress?: boolean;
   /** `--throttle` as given (absent: none). */
   readonly throttle?: string;
+  /** `--mime`, `--mime-file`: extension → content type (absent: the built-in table only). */
+  readonly mime?: Readonly<Record<string, string>>;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

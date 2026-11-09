@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { acceptsEncoding, parseThrottle, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { acceptsEncoding, parseMimeFlag, parseMimeTypes, parseThrottle, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -575,6 +575,23 @@ test('--throttle: bandwidth and latency within tolerance (johnhenry/sitefile#227
     assert.equal(r.status, 200);
     // 15 000 bytes at 10 000 B/s in 1 000-byte slices every 100 ms, plus 200 ms latency: about 1.6 s.
     assert.ok(ms >= 1500 && ms < 4000, `took ${ms} ms`);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('--mime and --mime-file (johnhenry/sitefile#220)', async () => {
+  assert.deepEqual(parseMimeFlag('.TS=video/mp2t'), ['ts', 'video/mp2t']);
+  assert.deepEqual(parseMimeFlag('bin=application/x-a; charset=binary'), ['bin', 'application/x-a; charset=binary']);
+  for (const bad of ['ts', '=video/mp2t', 'ts=video', 'ts=/x', 'a.b=x/y', 'ts=vid eo/x']) assert.equal(parseMimeFlag(bad), undefined, bad);
+  const m = parseMimeTypes('types {\n  model/vnd.usdz+zip usdz;\n  application/x-types a b; # c\n}\ntext/x-apache  .ap\n', 'f');
+  assert.deepEqual([...m], [['usdz', 'model/vnd.usdz+zip'], ['a', 'application/x-types'], ['b', 'application/x-types'], ['ap', 'text/x-apache']]);
+  assert.throws(() => parseMimeTypes('notatype ext', 'f'), /f:1/);
+  const t = Tree.fromFiles([['/x.usdz', makeFile(enc('x'), 't')]]);
+  const s = createSiteServer(t, { mime: m });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    assert.equal((await req(port, '/x.usdz')).headers['content-type'], 'model/vnd.usdz+zip');
   } finally {
     await closeServer(s);
   }

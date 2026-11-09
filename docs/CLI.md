@@ -1197,6 +1197,11 @@ to `image` (`imageId`) and `dir` (`path`).
   slices of the bandwidth. `3g` is 1600 kbit/s and 150 ms, `slow-3g` 400 kbit/s and 400 ms (Chrome DevTools'
   presets); `400/400` gives both numbers. The start message shows it (`  Throttle: 3g (1600 kbit/s, 150 ms
   latency)`), and the record keeps it (`throttle`). The live-reload stream is not throttled.
+- **Custom content types.** `--mime <ext=type>` (repeatable; `.usdz=model/vnd.usdz+zip`, `ts=video/mp2t`; a leading
+  `.` is dropped, the extension is case-insensitive, the type is sent as written) and `--mime-file <mime.types>` (an
+  nginx `types { type ext ...; }` or Apache `type ext ...` file; `#` comments) are checked before the built-in
+  table; a `--mime` value wins over the file. The Sitefile instruction `MIME` (it writes `_headers` rules) is the
+  way to ship types with a site. Stored in the server record (`mime`, extension → type).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

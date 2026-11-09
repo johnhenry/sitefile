@@ -277,6 +277,38 @@ fn throttle_of(v: &Parsed) -> Result<Option<(String, crate::server::Throttle)>> 
     }
 }
 
+/// `--mime-file` entries, then `--mime` values, in order (`mimeOf` in src/cli/servers.ts).
+fn mime_of(v: &Parsed) -> Result<Option<Vec<(String, String)>>> {
+    let file = v.str("mime-file");
+    let flags = v.strs("mime");
+    if file.is_none() && flags.is_empty() {
+        return Ok(None);
+    }
+    let mut out = match file {
+        Some(f) => {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                return usage(format!("--mime-file: cannot read {f}"));
+            };
+            crate::server::parse_mime_types(&text, f)?
+        }
+        None => Vec::new(),
+    };
+    for f in flags {
+        let Some((ext, t)) = crate::server::parse_mime_flag(&f) else {
+            return usage(format!("--mime expects ext=type/subtype, not '{f}'"));
+        };
+        match out.iter_mut().find(|(k, _)| *k == ext) {
+            Some(slot) => slot.1 = t,
+            None => out.push((ext, t)),
+        }
+    }
+    Ok(Some(out))
+}
+
+fn mime_map(pairs: &[(String, String)]) -> Arc<std::collections::HashMap<String, String>> {
+    Arc::new(pairs.iter().cloned().collect())
+}
+
 /// The start message's `  Throttle: …` line (none without --throttle).
 fn throttle_line(spec: Option<&str>) -> String {
     match spec.and_then(crate::server::parse_throttle) {
@@ -407,6 +439,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("tls-cert"),
     flag("compress"),
     string("throttle"),
+    strings("mime"),
+    string("mime-file"),
     string("tls-key"),
     flag("watch"),
     string_s("file", 'f'),
@@ -471,6 +505,8 @@ pub const SERVE: Command = Command {
         "--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied",
         "--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)",
         "--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)",
+        "--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)",
+        "--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -518,6 +554,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let sharing = sharing_of(v, &bind.host)?;
     let (tls, tls_paths) = tls_of(v)?;
     let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -572,6 +609,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 compress: v.flag("compress"),
                 gzip_cache: Default::default(),
                 throttle: throttle.as_ref().map(|t| t.1),
+                mime: mime.as_deref().map(mime_map),
             },
             &bind.host,
             bind.port,
@@ -635,6 +673,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
             compress: v.flag("compress"),
             throttle: throttle.as_ref().map(|t| t.0.clone()),
+            mime: mime.as_ref().map(|m| {
+                m.iter()
+                    .map(|(k, t)| (k.clone(), Value::String(t.clone())))
+                    .collect()
+            }),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
                 crate::store::iso_of_time(
                     std::time::SystemTime::now() + Duration::from_secs(*secs),
@@ -678,6 +721,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let sharing = sharing_of(v, &bind.host)?;
     let (tls, _) = tls_of(v)?;
     let throttle = throttle_of(v)?;
+    let mime = mime_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -841,6 +885,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             compress: v.flag("compress"),
             gzip_cache: Default::default(),
             throttle: throttle.as_ref().map(|t| t.1),
+            mime: mime.as_deref().map(mime_map),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -1017,6 +1062,13 @@ pub fn serve_worker(id: &str) -> i32 {
                 compress: state.compress,
                 gzip_cache: Default::default(),
                 throttle: state.throttle.as_deref().and_then(crate::server::parse_throttle),
+                mime: state.mime.as_ref().map(|m| {
+                    Arc::new(
+                        m.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|t| (k.clone(), t.to_string())))
+                            .collect(),
+                    )
+                }),
             },
             &state.bind.host,
             state.bind.port,

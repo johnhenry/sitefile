@@ -79,6 +79,8 @@ pub struct SiteServerOptions {
     pub gzip_cache: GzipCache,
     /// `--throttle`: response bandwidth and latency ([`parse_throttle`]).
     pub throttle: Option<Throttle>,
+    /// `--mime`, `--mime-file`: content types by lowercase extension, checked before the table.
+    pub mime: Option<Arc<HashMap<String, String>>>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -1339,6 +1341,85 @@ pub fn parse_throttle(value: &str) -> Option<Throttle> {
     })
 }
 
+/// A content type `--mime` accepts (`MIME_VALUE` in src/server.ts).
+fn is_mime_value(t: &str) -> bool {
+    let tok = |s: &str| {
+        let b = s.as_bytes();
+        !b.is_empty()
+            && b[0].is_ascii_alphanumeric()
+            && b.iter().all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+    };
+    let (main, params) = match t.find(';') {
+        Some(i) => (&t[..i], Some(&t[i..])),
+        None => (t, None),
+    };
+    let main = if params.is_some() { main.trim_end_matches(' ') } else { main };
+    let Some((a, b)) = main.split_once('/') else {
+        return false;
+    };
+    tok(a) && tok(b) && params.is_none_or(|p| p.bytes().all(|c| (0x20..=0x7e).contains(&c)))
+}
+
+fn mime_ext(e: &str) -> Option<String> {
+    let ext = e.strip_prefix('.').unwrap_or(e).to_ascii_lowercase();
+    (!ext.is_empty()
+        && ext
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_+-".contains(&c)))
+    .then_some(ext)
+}
+
+/// `--mime ext=type` (`parseMimeFlag` in src/server.ts).
+pub fn parse_mime_flag(value: &str) -> Option<(String, String)> {
+    let i = value.find('=').filter(|i| *i > 0)?;
+    let ext = mime_ext(&value[..i])?;
+    let t = value[i + 1..].trim();
+    is_mime_value(t).then(|| (ext, t.to_string()))
+}
+
+/// A `mime.types` file (`parseMimeTypes` in src/server.ts), in file order.
+pub fn parse_mime_types(text: &str, origin: &str) -> Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (n, raw) in text.split('\n').enumerate() {
+        let mut line = raw.split('#').next().unwrap_or("").to_string();
+        let lead = line.trim_start_matches([' ', '\t']);
+        if let Some(rest) = lead.strip_prefix("types") {
+            if !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+                line = format!(" {rest}");
+            }
+        }
+        let line: String = line
+            .chars()
+            .map(|c| if matches!(c, '{' | '}' | ';') { ' ' } else { c })
+            .collect();
+        let line = js_trim(&line);
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split([' ', '\t']).filter(|p| !p.is_empty());
+        let t = parts.next().unwrap_or("");
+        if !is_mime_value(t) {
+            return Err(SitefileError::plain(
+                E_USAGE,
+                format!("{origin}:{}: not a content type: {t}", n + 1),
+            ));
+        }
+        for e in parts {
+            let Some(ext) = mime_ext(e) else {
+                return Err(SitefileError::plain(
+                    E_USAGE,
+                    format!("{origin}:{}: not an extension: {e}", n + 1),
+                ));
+            };
+            match out.iter_mut().find(|(k, _)| *k == ext) {
+                Some(slot) => slot.1 = t.to_string(),
+                None => out.push((ext, t.to_string())),
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2206,7 +2287,19 @@ pub fn respond(
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");
-        let mime = mime_type_for(served);
+        let ext = served
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .skip(1)
+            .last()
+            .map(str::to_ascii_lowercase);
+        let custom_type = ext.and_then(|e| options.mime.as_ref().and_then(|m| m.get(&e).cloned()));
+        let mime: &str = match &custom_type {
+            Some(t) => t.as_str(),
+            None => mime_type_for(served),
+        };
         let live = options.live_reload.is_some()
             && mime.starts_with("text/html")
             && is_navigation(headers);
@@ -3179,6 +3272,7 @@ mod tests {
             compress: false,
             gzip_cache: Default::default(),
             throttle: None,
+            mime: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -3537,6 +3631,30 @@ mod tests {
         assert!(buf.len() > 15000);
         assert!((1500..4000).contains(&ms), "took {ms} ms");
         srv.close();
+    }
+
+    #[test]
+    fn mime_flags() {
+        assert_eq!(
+            parse_mime_flag(".TS=video/mp2t"),
+            Some(("ts".into(), "video/mp2t".into()))
+        );
+        assert_eq!(
+            parse_mime_flag("bin=application/x-a; charset=binary").map(|p| p.1),
+            Some("application/x-a; charset=binary".into())
+        );
+        for bad in ["ts", "=video/mp2t", "ts=video", "ts=/x", "a.b=x/y", "ts=vid eo/x"] {
+            assert_eq!(parse_mime_flag(bad), None, "{bad}");
+        }
+        let m = parse_mime_types(
+            "types {\n  model/vnd.usdz+zip usdz;\n  application/x-types a b; # c\n}\ntext/x-apache  .ap\n",
+            "f",
+        )
+        .unwrap();
+        let keys: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["usdz", "a", "b", "ap"]);
+        assert_eq!(m[1].1, "application/x-types");
+        assert!(parse_mime_types("notatype ext", "f").is_err());
     }
 
     #[test]
@@ -3931,6 +4049,7 @@ mod tests {
             compress: false,
             gzip_cache: Default::default(),
             throttle: None,
+            mime: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

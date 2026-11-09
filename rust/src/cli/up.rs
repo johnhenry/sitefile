@@ -147,6 +147,7 @@ fn run_up(v: &Parsed) -> Result<i32> {
             tls_key: None,
             compress: false,
             throttle: None,
+            mime: None,
             project: Some(project.clone()),
         });
     }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve --mime ext=type` and `--mime-file mime.types`** (the CLI half of
+  johnhenry/sitefile#220): custom content types before the built-in table,
+  kept in the server record. Both servers.
 - **`serve --throttle 3g|slow-3g|<kbit>[/<ms>]`** (johnhenry/sitefile#227):
   per-response latency and bandwidth limits, shown in the start message and kept
   in the server record. Both servers.

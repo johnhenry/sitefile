@@ -142,6 +142,9 @@ pub struct ServerState {
     /// `--throttle` as given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub throttle: Option<String>,
+    /// `--mime`, `--mime-file`: extension → content type (file order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<serde_json::Map<String, serde_json::Value>>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -919,6 +922,8 @@ pub struct DetachedServe {
     pub compress: bool,
     /// `--throttle` as given.
     pub throttle: Option<String>,
+    /// `--mime`, `--mime-file`: extension → content type.
+    pub mime: Option<serde_json::Map<String, serde_json::Value>>,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -953,6 +958,7 @@ impl DetachedServe {
             tls_key: None,
             compress: false,
             throttle: None,
+            mime: None,
             project: None,
         })
     }
@@ -1012,6 +1018,7 @@ pub fn serve_detached_with(
         tls_key: serve.tls_key.clone(),
         compress: serve.compress,
         throttle: serve.throttle.clone(),
+        mime: serve.mime.clone(),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1238,6 +1245,7 @@ mod tests {
             tls_key: None,
             compress: false,
             throttle: None,
+            mime: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
