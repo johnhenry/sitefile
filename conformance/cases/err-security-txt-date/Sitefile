@@ -1,0 +1,5 @@
+# EXPIRES is a date, not a duration.
+FROM scratch
+ARG E = P1Y
+SECURITY_TXT CONTACT tel:+1-201-555-0123 EXPIRES ${E}
+EXPORT /

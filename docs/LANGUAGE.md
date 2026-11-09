@@ -815,7 +815,7 @@ properties:
   width, height and a `srcset`. See `docs/PLUGINS.md` ("The image plugin")
   and `examples/image/`.
 
-### Site files: SITEMAP, FEED, REDIRECT and HEADER (see `examples/blog/`)
+### Site files: SITEMAP, FEED, ROBOTS, SECURITY_TXT, REDIRECT and HEADER (see `examples/blog/`, `examples/robots/`)
 Common files a static host reads, generated from the tree and the imports.
 Every one takes `--overwrite` (see Writes and conflicts) and operands that may
 use `${NAME}`.
@@ -878,6 +878,38 @@ use `${NAME}`.
     non-empty `author`, `summary` from a non-empty `excerpt`, and
     `content type="html"` from `content` (the rendered Markdown). `TITLE`
     defaults to the BASE URL. Characters XML 1.0 forbids become U+FFFD.
+- `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`
+  (clauses in this order; ALLOW and DISALLOW repeat, mixed) writes a
+  [robots.txt](https://www.rfc-editor.org/rfc/rfc9309) (default `/robots.txt`)
+  with one group for every crawler: `User-agent: *`, then an `Allow:` or
+  `Disallow:` line per rule in source order, or an empty `Disallow:` (allow
+  everything) when there are none. Paths are absolute, without spaces or
+  control characters (`E_VALIDATION`); `*` and `$` pass through as robots.txt
+  wildcards. `SITEMAP` adds, after a blank line, a `Sitemap: <url>` line for
+  every SITEMAP instruction of the Sitefile, in source order and also those
+  after the ROBOTS line (`<base><dest>`, as the sitemap writes its own
+  locations; duplicates once); with no SITEMAP it is `E_VALIDATION`. Like
+  SITEMAP it writes the file at its place in the stage:
+
+  ```text
+  User-agent: *
+  Disallow: /drafts/
+
+  Sitemap: https://example.com/sitemap.xml
+  ```
+- `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`
+  (clauses in any order; CONTACT, ENCRYPTION and POLICY repeat) writes an
+  [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116) file (default
+  `/.well-known/security.txt`): the `Contact:` lines, `Expires:`, then the
+  `Encryption:` and `Policy:` lines, in source order. CONTACT and EXPIRES are
+  required (`E_VALIDATION`, as RFC 9116 requires both). A CONTACT is a
+  `mailto:`, `tel:` or `https://` URI, an ENCRYPTION an `https://`,
+  `openpgp4fpr:` or `dns:` URI, and a POLICY an `https://` URL, none with
+  spaces (`E_VALIDATION`). EXPIRES is a date (`YYYY-MM-DD`, written as
+  `…T00:00:00Z`) or an RFC 3339 date-time, as FEED reads dates; a duration
+  (`P1Y`, `365d`) is not accepted, since it would make the file depend on the
+  day of the build. A date in the past, or less than 30 days away, prints a
+  warning (validate and build). The file is not signed.
 - `REDIRECT [--overwrite] <from> <to> [STATUS 301|302|303|307|308]` and
   `HEADER [--overwrite] <path-pattern> <Name>: <value …>` accumulate, **in
   source order and from every stage**, into `/_redirects` and `/_headers` in
@@ -1040,6 +1072,38 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   FINGERPRINT step is reused only when the whole tree before it is unchanged
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
+
+### Precompressed sidecars: PRECOMPRESS (see `examples/precompress/`)
+`PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes a gzip
+sidecar `<file>.gz` next to each matching file, for servers that send it in
+place of the file to clients that accept gzip (nginx `gzip_static`, Caddy
+`file_server precompressed`, sirv, http-server `--gzip`). Like FINGERPRINT it
+runs **at its place in the stage** on the tree at that point, so put it after
+the files it compresses (and after a FINGERPRINT, so the hashed names get
+sidecars).
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below; `PRECOMPRESS /` is the whole tree). Patterns that
+  match nothing print a warning.
+- **Which files**: only compressible types, by extension (ASCII
+  case-insensitive): `html htm css js mjs cjs json map xml svg txt md csv tsv
+  webmanifest rss atom ics vtt yaml yml toml wasm ttf otf eot ico`. Already
+  compressed formats (images other than SVG, `woff2`, video, archives) are left
+  alone. A file needs at least `MIN` bytes (an operand, a whole number;
+  default **1024**), and its sidecar is written only when it is smaller than
+  the file.
+- **Formats**: `gzip` (the default, and the only one so far). `br` and `zstd`
+  are `E_UNSUPPORTED`: sitefile has no Brotli or Zstandard encoder that writes
+  the same bytes in both implementations without a new dependency.
+- **Deterministic**: the sidecar is a gzip member with a fixed header (no
+  modification time, no file name) around the shared deflate encoder
+  (`src/deflate.ts`, `rust/src/deflate.rs`) that zip, tar.gz and OCI layers use,
+  so both implementations write the same bytes on every run.
+- Sidecars keep the file's mode and get the origin `Sitefile:<line> PRECOMPRESS`;
+  `why` shows `<file> (compressed)` as the input. A sidecar path that already
+  holds different content is `E_CONFLICT` unless `--overwrite`. In watch mode an
+  unchanged step is reused only when the whole tree before it is unchanged (like
+  SITEMAP).
 
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
@@ -1603,7 +1667,9 @@ the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
+- **zip**: raw deflate (stored when deflate does not shrink the entry, and always for already-compressed media by
+  extension: png, jpg/jpeg, gif, webp, avif, heic, jxl, woff/woff2, mp3, m4a, aac, ogg/oga, opus, flac, mp4, m4v,
+  webm, mov, mkv, zip, gz, tgz, br, zst, xz, bz2, 7z, rar, wbn; tar.gz and OCI layers are unchanged), CRC-32, central directory, UTF-8 names (flag bit 11), an
   extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
   same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
   the external attributes (version made by = 3 << 8). No zip64 is written: more than
