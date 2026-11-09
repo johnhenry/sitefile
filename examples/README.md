@@ -19,6 +19,7 @@ both implementations and requires identical output.
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
 | [`canonical/`](./canonical/) | `CANONICAL … PRETTY`: a `<link rel="canonical">` in every page that has none, without `.html`. |
 | [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
+| [`precache/`](./precache/) | `PRECACHE … INTO /sw.js`: a Workbox precache manifest injected into a service worker (`revision: null` for the fingerprinted stylesheet). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
 | [`image/`](./image/) | The first-party image plugin (pinned with `INTEGRITY`) writes resized variants and a metadata file. |
 | [`theme/`](./theme/) | A site image: built with `-t theme:1` into the local image store rather than exported. |

@@ -61,6 +61,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [...ins.rules.map((r) => r.path), ...(ins.dest ? [ins.dest] : [])];
     case 'SECURITY_TXT':
       return [...ins.contact, ins.expires, ...ins.encryption, ...ins.policy, ...(ins.dest ? [ins.dest] : [])];
+    case 'PRECACHE':
+      return [...ins.patterns, ...(ins.dest ? [ins.dest] : []), ...(ins.into ? [ins.into] : [])];
     case 'CHECKLINKS':
       return [];
     case 'EXPORT':
@@ -287,6 +289,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'PRECOMPRESS':
       case 'ROBOTS':
       case 'SECURITY_TXT':
+      case 'PRECACHE':
       case 'CHECKLINKS':
         break;
       case 'EXPORT':
