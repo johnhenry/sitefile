@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, normalizeBase, reloadEventFor, safeSegments } from '../server.js';
-import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments } from '../server.js';
+import { isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState, checkSiteFiles } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -159,6 +159,11 @@ const run: Command = {
     '--name <n>        name for the server (-d only; default site-<6 hex>)',
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
+    '--spa             serve /index.html for unknown paths without a file extension',
+    '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
+    '--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response',
+    '--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)',
+    '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
@@ -193,6 +198,10 @@ const run: Command = {
     country: { type: 'string' },
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
+    'allowed-host': { type: 'string', multiple: true },
+    cors: { type: 'boolean' },
+    isolate: { type: 'boolean' },
+    coep: { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -214,6 +223,8 @@ const run: Command = {
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
+    const allowedHosts = allowedHostsOf(v);
+    const isolate = isolateOf(v);
     const spa = spaOptions(v);
     const base = parseBase(str(v.base));
     const country = parseCountry(str(v.country));
@@ -231,7 +242,7 @@ const run: Command = {
       checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { ...spa, ...(base !== undefined ? { base } : {}), ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
+      const server = createSiteServer(tree, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -241,7 +252,8 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, ...spa, base, keepOsMetadata, country, strictSiteFiles }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), country, strictSiteFiles, ...spa, base }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
     return 0;
   },
@@ -262,6 +274,12 @@ export interface DetachedServe {
   readonly base?: string | undefined;
   /** `--keep-os-metadata`. */
   readonly keepOsMetadata?: boolean | undefined;
+  /** `--allowed-host` names. */
+  readonly allowedHosts?: readonly string[] | undefined;
+  /** `--cors`. */
+  readonly cors?: boolean | undefined;
+  /** `--isolate`: the COEP value. */
+  readonly isolate?: 'require-corp' | 'credentialless' | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -293,6 +311,9 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.spaFallback !== undefined ? { spaFallback: d.spaFallback } : {}),
     ...(d.base !== undefined ? { base: d.base } : {}),
     ...(d.keepOsMetadata ? { keepOsMetadata: true } : {}),
+    ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
+    ...(d.cors ? { cors: true } : {}),
+    ...(d.isolate ? { isolate: d.isolate } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -337,11 +358,32 @@ const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache',
  * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
  * as it is (re-read on change) instead of built.
  */
+/** `--allowed-host` values, validated and lowercased (the server always adds localhost names and IP addresses). */
+function allowedHostsOf(v: ParsedValues): string[] {
+  const out: string[] = [];
+  for (const raw of strs(v['allowed-host'])) {
+    const h = parseAllowedHost(raw);
+    if (h === undefined) usage(`--allowed-host: invalid host name '${raw}'`);
+    if (!out.includes(h)) out.push(h);
+  }
+  return out;
+}
+
+/** `--isolate [--coep require-corp|credentialless]`: the Cross-Origin-Embedder-Policy to send, or undefined. */
+function isolateOf(v: ParsedValues): 'require-corp' | 'credentialless' | undefined {
+  const coep = str(v.coep);
+  if (coep !== undefined && !v.isolate) usage('--coep needs --isolate');
+  if (coep !== undefined && coep !== 'require-corp' && coep !== 'credentialless') usage(`--coep must be require-corp or credentialless, not '${coep}'`);
+  return v.isolate ? (coep ?? 'require-corp') : undefined;
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
   if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
   const bind = parsePublish(str(v.publish));
+  const allowedHosts = allowedHostsOf(v);
+  const isolate = isolateOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -384,7 +426,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { ...spa, base: () => base, ...(country !== undefined ? { country } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base });
   try {
     return await watchLoop({
       context,

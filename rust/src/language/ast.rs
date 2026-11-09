@@ -481,6 +481,16 @@ pub enum Instruction {
         base: Operand,
         pretty: bool,
     },
+    /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
+    /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
+    /// when none is given.
+    Precompress {
+        span: SourceSpan,
+        formats: Vec<String>,
+        patterns: Vec<Operand>,
+        min: Option<Operand>,
+        overwrite: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -517,6 +527,7 @@ impl Instruction {
             | Instruction::Header { span, .. }
             | Instruction::Fingerprint { span, .. }
             | Instruction::Canonical { span, .. }
+            | Instruction::Precompress { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -539,6 +550,7 @@ impl Instruction {
             Instruction::Header { .. } => "HEADER",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Canonical { .. } => "CANONICAL",
+            Instruction::Precompress { .. } => "PRECOMPRESS",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

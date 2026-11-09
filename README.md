@@ -88,6 +88,7 @@ no runtime dependencies.
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest, `Cache-Control` lines in `/_headers` and (INTEGRITY) SRI attributes |
+| `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` | yes; deterministic `.gz` sidecars of text files for hosts that serve them in place of the file (nginx `gzip_static`, Caddy `precompressed`); `br` and `zstd` are not supported yet |
 | `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci\|car\|html\|mhtml\|warc\|wacz] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`), `car` is an IPFS CARv1 file whose root CID matches kubo's `ipfs add -r --cid-version=1`, `html` is `index.html` with its assets inlined as `data:` URIs, `mhtml` the same page and assets as one MHTML file, `warc` a WARC/1.1 web archive of every file at `BASE` (also imported and served), `wacz` that WARC as a WACZ package for ReplayWeb.page |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
@@ -430,6 +431,10 @@ tools are code, and run only when you name them on the command line.
   read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **`serve` answers only local names.** A request whose `Host` is not
+  `localhost`, `*.localhost` or an IP address is refused (`403`), so a web page
+  that DNS-rebinds its name to `127.0.0.1` cannot read a local server;
+  `--allowed-host` adds names ([docs/CLI.md](docs/CLI.md#site-servers)).
 - **Caches are trusted.** A TRANSFORM cache hit (local, or from
   `--cache-from <registry>`) is used as if the plugin had returned it, and the
   Rust build loads compiled wasm modules from `$SITEFILE_HOME/cache/wasm` as

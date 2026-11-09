@@ -1041,6 +1041,38 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
 
+### Precompressed sidecars: PRECOMPRESS (see `examples/precompress/`)
+`PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes a gzip
+sidecar `<file>.gz` next to each matching file, for servers that send it in
+place of the file to clients that accept gzip (nginx `gzip_static`, Caddy
+`file_server precompressed`, sirv, http-server `--gzip`). Like FINGERPRINT it
+runs **at its place in the stage** on the tree at that point, so put it after
+the files it compresses (and after a FINGERPRINT, so the hashed names get
+sidecars).
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below; `PRECOMPRESS /` is the whole tree). Patterns that
+  match nothing print a warning.
+- **Which files**: only compressible types, by extension (ASCII
+  case-insensitive): `html htm css js mjs cjs json map xml svg txt md csv tsv
+  webmanifest rss atom ics vtt yaml yml toml wasm ttf otf eot ico`. Already
+  compressed formats (images other than SVG, `woff2`, video, archives) are left
+  alone. A file needs at least `MIN` bytes (an operand, a whole number;
+  default **1024**), and its sidecar is written only when it is smaller than
+  the file.
+- **Formats**: `gzip` (the default, and the only one so far). `br` and `zstd`
+  are `E_UNSUPPORTED`: sitefile has no Brotli or Zstandard encoder that writes
+  the same bytes in both implementations without a new dependency.
+- **Deterministic**: the sidecar is a gzip member with a fixed header (no
+  modification time, no file name) around the shared deflate encoder
+  (`src/deflate.ts`, `rust/src/deflate.rs`) that zip, tar.gz and OCI layers use,
+  so both implementations write the same bytes on every run.
+- Sidecars keep the file's mode and get the origin `Sitefile:<line> PRECOMPRESS`;
+  `why` shows `<file> (compressed)` as the input. A sidecar path that already
+  holds different content is `E_CONFLICT` unless `--overwrite`. In watch mode an
+  unchanged step is reused only when the whole tree before it is unchanged (like
+  SITEMAP).
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and
@@ -1603,7 +1635,9 @@ the `SOURCE_DATE_EPOCH` environment variable is set (non-negative integer
 seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
-- **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), an
+- **zip**: raw deflate (stored when deflate does not shrink the entry, and always for already-compressed media by
+  extension: png, jpg/jpeg, gif, webp, avif, heic, jxl, woff/woff2, mp3, m4a, aac, ogg/oga, opus, flac, mp4, m4v,
+  webm, mov, mkv, zip, gz, tgz, br, zst, xz, bz2, 7z, rar, wbn; tar.gz and OCI layers are unchanged), CRC-32, central directory, UTF-8 names (flag bit 11), an
   extended-timestamp extra field (0x5455, mtime only: `SOURCE_DATE_EPOCH`, else 1980-01-01, in UTC, so unzip shows the
   same time in every time zone; the DOS time fields hold the same instant in UTC), unix modes in
   the external attributes (version made by = 3 << 8). No zip64 is written: more than

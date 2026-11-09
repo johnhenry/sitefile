@@ -13,6 +13,7 @@ both implementations and requires identical output.
 | [`multistage/`](./multistage/) | Several `FROM` stages and `COPY --from`: only the last stage is exported. |
 | [`shared-stages/`](./shared-stages/) | `IMPORT theme FROM ./theme AS sitefile ARG …`: another Sitefile's stages are reusable as `theme+<stage>`, and an `ARG` passed to it changes its output. |
 | [`blog/`](./blog/) | Markdown posts with a frontmatter `SCHEMA`, one page per post (`FOR`), per tag (`BY`) and per page of 2 (`PAGE`), plus `FEED`, `SITEMAP`, `FINGERPRINT` and `CHECKLINKS`. |
+| [`precompress/`](./precompress/) | `PRECOMPRESS`: deterministic `.gz` sidecars of the text files (not of the ones under `MIN`), for nginx `gzip_static` and Caddy `precompressed`. |
 | [`data/`](./data/) | YAML, CSV and Web Bundle imports as template data, and a `.wbn` unpacked `AS tree`. |
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
 | [`canonical/`](./canonical/) | `CANONICAL … PRETTY`: a `<link rel="canonical">` in every page that has none, without `.html`. |

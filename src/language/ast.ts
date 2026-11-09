@@ -366,6 +366,25 @@ export interface CanonicalInstruction {
   readonly pretty: boolean;
 }
 
+/** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz` (`br` and `zstd` are reserved: no encoder yet). */
+export type PrecompressFormat = 'gzip';
+
+/**
+ * `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each matching
+ * compressible file of at least MIN bytes, when it is smaller.
+ */
+export interface PrecompressInstruction {
+  readonly kind: 'PRECOMPRESS';
+  readonly span: SourceSpan;
+  /** In the order written, without repeats; `['gzip']` when none is given. */
+  readonly formats: readonly PrecompressFormat[];
+  /** Absolute path patterns, as FINGERPRINT's. */
+  readonly patterns: readonly Operand[];
+  /** `MIN <bytes>`: the smallest file compressed (default 1024). */
+  readonly min?: Operand;
+  readonly overwrite: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -393,6 +412,7 @@ export type Instruction =
   | HeaderInstruction
   | FingerprintInstruction
   | CanonicalInstruction
+  | PrecompressInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 
