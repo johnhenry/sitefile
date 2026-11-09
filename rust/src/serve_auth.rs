@@ -135,7 +135,12 @@ pub fn parse_htpasswd(text: &str, origin: &str) -> Result<Vec<AuthEntry>> {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
-        let bad = |m: String| Err(SitefileError::plain(E_USAGE, format!("{origin}:{}: {m}", n + 1)));
+        let bad = |m: String| {
+            Err(SitefileError::plain(
+                E_USAGE,
+                format!("{origin}:{}: {m}", n + 1),
+            ))
+        };
         let Some(i) = line.find(':').filter(|i| *i > 0) else {
             return bad("expected user:hash".into());
         };
@@ -258,11 +263,7 @@ mod tests {
             "x"
         ));
         // htpasswd -bns alice password
-        let e = parse_htpasswd(
-            "# c\nalice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n\n",
-            "f",
-        )
-        .unwrap();
+        let e = parse_htpasswd("# c\nalice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n\n", "f").unwrap();
         assert!(verify_password(&e[0].verifier, "password"));
         for bad in ["bob:$2y$05$abc", "bob:$apr1$x$y", "bob:plain", "nouser"] {
             assert!(parse_htpasswd(bad, "f").is_err(), "{bad}");
