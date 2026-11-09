@@ -25,8 +25,10 @@ export interface WatchLoopOptions {
   readonly pollMs?: number;
   /** `serve --watch ./dir` without a Sitefile: the directory is re-read, not built (other messages). */
   readonly plain?: boolean;
-  /** For tests: resolves to stop the loop (default: SIGINT or SIGTERM). */
+  /** Resolves to stop the loop (default: SIGINT or SIGTERM). */
   readonly stop?: Promise<void>;
+  /** Filled in with `rebuild()`: build again now, as if a file had changed (`serve --watch`, key `r`). */
+  readonly control?: { rebuild?: () => void };
 }
 
 /**
@@ -96,6 +98,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
     }
     process.stdout.write(`Watching ${o.context} for changes (Ctrl-C to stop)\n`);
   });
+  if (o.control) o.control.rebuild = () => scheduler.notify(sitefile);
   const close = watchPaths({
     dirs: [root],
     files: [sitefile, ...argFiles],

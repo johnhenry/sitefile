@@ -249,6 +249,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("keep-os-metadata"),
     strings("allowed-host"),
     flag("cors"),
+    string("open"),
+    flag("qr"),
     flag("isolate"),
     string("coep"),
     flag("watch"),
@@ -310,6 +312,8 @@ pub const SERVE: Command = Command {
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
+        "--open[=<path>]   open the site (at <path>) in the browser once it is served ($BROWSER, else the system default)",
+        "--qr              print a QR code of the network URL (with -p 0.0.0.0:...), else of the local URL",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
         "--target <stage>             build up to this stage and serve its whole tree (--watch)",
@@ -388,8 +392,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let n = tree.len();
         catch_signals();
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
-        let server = listen(
-            Arc::new(tree),
+        let shared: crate::server::SharedTree = Arc::new(std::sync::RwLock::new(Arc::new(tree)));
+        let server = listen_shared(
+            shared.clone(),
             SiteServerOptions {
                 spa,
                 spa_exclude,
@@ -421,11 +426,68 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
             site_url(&server.host, server.port, base.as_deref())
         ));
-        wait_for_signal();
+        let restart: Box<dyn Fn() + Send> = {
+            let (source, label, shared) = (source.clone(), label.clone(), shared.clone());
+            Box::new(move || {
+                if !matches!(source, crate::servers::ServerSource::Dir { .. }) {
+                    let what = if matches!(source, crate::servers::ServerSource::Image { .. }) {
+                        "an image"
+                    } else {
+                        "an archive file"
+                    };
+                    out(&format!("Nothing to re-read: {label} is {what}; start serve again to read it again\n"));
+                    return;
+                }
+                let warn = |m: &str| err(&format!("warning: {m}\n"));
+                let next = Store::open_default().and_then(|store| {
+                    load_served_site(
+                        &store,
+                        &source,
+                        &ServedTreeOptions {
+                            keep_os_metadata,
+                            warn: Some(&warn),
+                        },
+                    )
+                });
+                match next {
+                    Ok(site) => {
+                        let _ = check_site_files(&site.tree, false, &warn, site.content.as_deref());
+                        let n = site.tree.len();
+                        if let Ok(mut t) = shared.write() {
+                            *t = Arc::new(site.tree);
+                        }
+                        out(&format!("Re-read {label} ({n} files)\n"));
+                    }
+                    Err(e) => err(&format!("error[{}]: {}\n", e.code, e.message())),
+                }
+            })
+        };
+        let keys = super::serve_keys::terminal(
+            v.flag("qr"),
+            v.str("open"),
+            &server.host,
+            server.port,
+            base.as_deref(),
+            restart,
+        );
+        loop {
+            if received().is_some()
+                || keys
+                    .as_ref()
+                    .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(keys);
         server.close();
         return Ok(0);
     }
 
+    if v.has("open") || v.flag("qr") {
+        return usage("--open and --qr are for a server in the foreground, not -d");
+    }
     let reg = ServerRegistry::open(Some(store))?;
     let up = serve_detached_with(
         &reg,
@@ -660,6 +722,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             Err(e) => failed(&e),
         }
     };
+    let keys: std::cell::RefCell<Option<super::serve_keys::Keys>> = std::cell::RefCell::new(None);
+    let rebuild = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut on_started = || -> Result<()> {
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
@@ -700,10 +764,26 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 base.read().ok().and_then(|b| b.clone()).as_deref()
             )
         ));
+        let rebuild = rebuild.clone();
+        let shown_base = base.read().ok().and_then(|b| b.clone());
+        *keys.borrow_mut() = super::serve_keys::terminal(
+            v.flag("qr"),
+            v.str("open"),
+            &s.host,
+            s.port,
+            shown_base.as_deref(),
+            Box::new(move || rebuild.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
         server = Some(s);
         started.set(true);
         Ok(())
     };
+    let quit = || {
+        keys.borrow()
+            .as_ref()
+            .is_some_and(|k| k.quit.load(std::sync::atomic::Ordering::SeqCst))
+    };
+    let take_rebuild = || rebuild.swap(false, std::sync::atomic::Ordering::SeqCst);
     let code = watch_loop(
         &WatchOptions {
             context: &context,
@@ -711,11 +791,13 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             arg_files: &arg_files,
             poll,
             plain,
+            rebuild: Some(&take_rebuild),
         },
         &mut run_build,
         &mut on_started,
-        &|| received().is_some(),
+        &|| received().is_some() || quit(),
     )?;
+    drop(keys.borrow_mut().take());
     live.close();
     if let Some(s) = server {
         s.close();
