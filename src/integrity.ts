@@ -219,3 +219,106 @@ export async function pathInside(dir: string, file: string): Promise<string | un
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
   return '/' + rel.split(path.sep).join('/');
 }
+
+export interface DiffFile {
+  readonly path: string;
+  readonly size: number;
+  readonly digest: string;
+  /** `644` or `755`. */
+  readonly mode: string;
+}
+
+export interface RuleDiff {
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+}
+
+export interface DiffReport {
+  readonly added: readonly DiffFile[];
+  readonly removed: readonly DiffFile[];
+  readonly changed: ReadonlyArray<{ readonly path: string; readonly before: DiffFile; readonly after: DiffFile }>;
+  /** Rule changes in `/_redirects` and `/_headers`, when either side has the file and they differ. */
+  readonly rules: { readonly [file: string]: RuleDiff };
+}
+
+const RULE_FILES = ['/_redirects', '/_headers'] as const;
+
+/**
+ * The rules of a `_redirects` or `_headers` file, one string each: `_redirects` lines with their
+ * fields joined by one space; for `_headers`, `<path> <Name>: <value>` per header line. Blank lines
+ * and `#` comments are not rules.
+ */
+export function ruleLines(file: string, bytes: Uint8Array | undefined): string[] {
+  if (!bytes) return [];
+  const text = new TextDecoder().decode(bytes);
+  const out: string[] = [];
+  let current: string | undefined;
+  for (const raw of text.split(/\r?\n/)) {
+    const t = raw.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    if (file === '/_redirects') out.push(t.split(/[ \t]+/).join(' '));
+    else if (!/^[ \t]/.test(raw)) current = t;
+    else out.push(`${current ?? '(no path)'} ${t}`);
+  }
+  return out;
+}
+
+/** Lines of `a` not matched one for one in `b`, in `a`'s order. */
+function minus(a: readonly string[], b: readonly string[]): string[] {
+  const left = new Map<string, number>();
+  for (const l of b) left.set(l, (left.get(l) ?? 0) + 1);
+  return a.filter((l) => {
+    const n = left.get(l) ?? 0;
+    if (n > 0) left.set(l, n - 1);
+    return n === 0;
+  });
+}
+
+const fileOf = (p: string, n: { bytes: Uint8Array; digest: string; mode: number }): DiffFile => ({ path: p, size: n.bytes.byteLength, digest: n.digest, mode: n.mode.toString(8) });
+
+/** Files added, removed and changed (digest or mode) going from `a` to `b`, in path order. */
+export function diffTrees(a: Tree, b: Tree): DiffReport {
+  const am = new Map(a.entries());
+  const bm = new Map(b.entries());
+  const added: DiffFile[] = [];
+  const removed: DiffFile[] = [];
+  const changed: Array<{ path: string; before: DiffFile; after: DiffFile }> = [];
+  for (const p of [...new Set([...am.keys(), ...bm.keys()])].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))) {
+    const x = am.get(p);
+    const y = bm.get(p);
+    if (!x && y) added.push(fileOf(p, y));
+    else if (x && !y) removed.push(fileOf(p, x));
+    else if (x && y && (x.digest !== y.digest || x.mode !== y.mode)) changed.push({ path: p, before: fileOf(p, x), after: fileOf(p, y) });
+  }
+  const rules: Record<string, RuleDiff> = {};
+  for (const f of RULE_FILES) {
+    const x = am.get(f);
+    const y = bm.get(f);
+    if ((!x && !y) || x?.digest === y?.digest) continue;
+    const before = ruleLines(f, x?.bytes);
+    const after = ruleLines(f, y?.bytes);
+    const r = { added: minus(after, before), removed: minus(before, after) };
+    if (r.added.length || r.removed.length) rules[f] = r;
+  }
+  return { added, removed, changed, rules };
+}
+
+/** The text report: `A|D|C <path>` lines (with sizes), then rule changes, then a summary line. */
+export function diffText(r: DiffReport): string {
+  const size = (f: DiffFile): string => `${f.size} B`;
+  const lines: string[] = [
+    ...r.added.map((f) => [f.path, `A  ${f.path}  (${size(f)})`] as const),
+    ...r.removed.map((f) => [f.path, `D  ${f.path}  (${size(f)})`] as const),
+    ...r.changed.map(
+      (c) => [c.path, `C  ${c.path}  (${size(c.before)} -> ${size(c.after)}${c.before.mode !== c.after.mode ? `, mode ${c.before.mode} -> ${c.after.mode}` : ''})`] as const,
+    ),
+  ]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, l]) => l);
+  for (const [file, d] of Object.entries(r.rules)) {
+    for (const l of d.removed) lines.push(`-  ${file}: ${l}`);
+    for (const l of d.added) lines.push(`+  ${file}: ${l}`);
+  }
+  lines.push(`${r.added.length} added, ${r.removed.length} removed, ${r.changed.length} changed`);
+  return lines.join('\n') + '\n';
+}

@@ -1,4 +1,4 @@
-import { deflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync } from 'node:zlib';
 
 /** Hand-built archive fixtures; no binary files are committed. */
 
@@ -66,6 +66,7 @@ export function zip(entries: ZipEntry[]): Buffer {
     l.writeUInt32LE(0x04034b50, 0);
     l.writeUInt16LE(20, 4);
     l.writeUInt16LE(e.deflate ? 8 : 0, 8);
+    l.writeUInt32LE(crc32(raw), 14);
     l.writeUInt32LE(body.length, 18);
     l.writeUInt32LE(usize, 22);
     l.writeUInt16LE(name.length, 26);
@@ -74,6 +75,7 @@ export function zip(entries: ZipEntry[]): Buffer {
     c.writeUInt16LE((3 << 8) | 20, 4);
     c.writeUInt16LE(20, 6);
     c.writeUInt16LE(e.deflate ? 8 : 0, 10);
+    c.writeUInt32LE(crc32(raw), 16);
     c.writeUInt32LE(body.length, 20);
     c.writeUInt32LE(usize, 24);
     c.writeUInt16LE(name.length, 28);
