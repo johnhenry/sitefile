@@ -68,14 +68,6 @@ fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'stati
     }
 }
 
-fn wait_for_signal() -> &'static str {
-    loop {
-        if let Some(s) = received() {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
 
 // ------------------------------------------------------------ helpers
 
