@@ -77,6 +77,8 @@ pub struct SiteServerOptions {
     pub compress: bool,
     /// gzip output by file digest (at most 256 files), shared by the server's connections.
     pub gzip_cache: GzipCache,
+    /// `--throttle`: response bandwidth and latency ([`parse_throttle`]).
+    pub throttle: Option<Throttle>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -1293,6 +1295,48 @@ pub fn is_compressible(mime: &str) -> bool {
             "image/svg+xml",
         ]
         .contains(&t)
+}
+
+/// `--throttle` limits (`Throttle` in src/server.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Throttle {
+    pub bytes_per_second: u64,
+    pub latency_ms: u64,
+}
+
+/// `3g`, `slow-3g` (Chrome DevTools' presets) or `<kbit/s>[/<latency ms>]`.
+pub fn parse_throttle(value: &str) -> Option<Throttle> {
+    match value {
+        "3g" => {
+            return Some(Throttle {
+                bytes_per_second: 200_000,
+                latency_ms: 150,
+            })
+        }
+        "slow-3g" => {
+            return Some(Throttle {
+                bytes_per_second: 50_000,
+                latency_ms: 400,
+            })
+        }
+        _ => {}
+    }
+    let (rate, latency) = match value.split_once('/') {
+        Some((r, l)) => (r, Some(l)),
+        None => (value, None),
+    };
+    let digits = |s: &str, max: usize| (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(rate, 7) || latency.is_some_and(|l| !digits(l, 5)) {
+        return None;
+    }
+    let kbps: u64 = rate.parse().ok()?;
+    if kbps == 0 {
+        return None;
+    }
+    Some(Throttle {
+        bytes_per_second: kbps * 125,
+        latency_ms: latency.map(|l| l.parse().unwrap_or(0)).unwrap_or(0),
+    })
 }
 
 /// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
@@ -2661,11 +2705,28 @@ fn serve_connection(
         } else {
             "connection: close\r\n\r\n"
         });
-        let ok = out
-            .write_all(head.as_bytes())
-            .and_then(|_| out.write_all(&res.body))
-            .and_then(|_| out.flush())
-            .is_ok();
+        let ok = match options.throttle {
+            None => out
+                .write_all(head.as_bytes())
+                .and_then(|_| out.write_all(&res.body))
+                .and_then(|_| out.flush())
+                .is_ok(),
+            // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+            Some(t) => {
+                std::thread::sleep(Duration::from_millis(t.latency_ms));
+                let slice = (t.bytes_per_second / 10).max(1) as usize;
+                let mut ok = out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_ok();
+                let mut chunks = res.body.chunks(slice).peekable();
+                while ok {
+                    let Some(c) = chunks.next() else { break };
+                    ok = out.write_all(c).and_then(|_| out.flush()).is_ok();
+                    if ok && chunks.peek().is_some() {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                ok
+            }
+        };
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         // `servers` probes carry the server's own id; they would only clutter the access log.
         let probe = options.server_id.is_some()
@@ -3117,6 +3178,7 @@ mod tests {
             tls: None,
             compress: false,
             gzip_cache: Default::default(),
+            throttle: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -3830,6 +3892,7 @@ mod tests {
             tls: None,
             compress: false,
             gzip_cache: Default::default(),
+            throttle: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

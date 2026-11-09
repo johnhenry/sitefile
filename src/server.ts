@@ -71,6 +71,8 @@ export interface SiteServerOptions {
   readonly tls?: { readonly cert: string | Uint8Array; readonly key: string | Uint8Array };
   /** `--compress`: gzip compressible files of at least 1024 bytes on the fly when no precompressed variant exists. */
   readonly compress?: boolean;
+  /** `--throttle`: response bandwidth (bytes per second) and latency added before each response. */
+  readonly throttle?: Throttle;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -492,6 +494,27 @@ export function isCompressible(type: string): boolean {
   return t.startsWith('text/') || t.endsWith('+json') || t.endsWith('+xml') || ['application/json', 'application/xml', 'application/javascript', 'application/wasm', 'image/svg+xml'].includes(t);
 }
 
+/** `--throttle` limits ({@link parseThrottle}). */
+export interface Throttle {
+  readonly bytesPerSecond: number;
+  readonly latencyMs: number;
+}
+
+/** Presets: Chrome DevTools' "3G" (1.6 Mbit/s, 150 ms) and "Slow 3G" (400 kbit/s, 400 ms). */
+export const THROTTLE_PRESETS: Readonly<Record<string, Throttle>> = {
+  '3g': { bytesPerSecond: 200_000, latencyMs: 150 },
+  'slow-3g': { bytesPerSecond: 50_000, latencyMs: 400 },
+};
+
+/** `3g`, `slow-3g` or `<kbit/s>[/<latency ms>]`, else undefined. */
+export function parseThrottle(value: string): Throttle | undefined {
+  const preset = THROTTLE_PRESETS[value];
+  if (preset) return preset;
+  const m = /^([0-9]{1,7})(?:\/([0-9]{1,5}))?$/.exec(value);
+  if (!m || Number(m[1]) === 0) return undefined;
+  return { bytesPerSecond: Number(m[1]) * 125, latencyMs: Number(m[2] ?? 0) };
+}
+
 /** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
 export interface CachePreview {
   /** Seconds for files other than HTML: `public, max-age=N`. */
@@ -803,12 +826,29 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const hints = earlyHints(link);
         if (hints.length > 0) res.writeEarlyHints({ link: hints });
       }
-      res.writeHead(status, { ...base, ...headers });
-      if (buf !== undefined && method !== 'HEAD' && status !== 304) {
-        bytes = buf.byteLength;
-        res.end(buf);
+      const send = buf !== undefined && method !== 'HEAD' && status !== 304 ? buf : undefined;
+      if (send !== undefined) bytes = send.byteLength;
+      const t = options.throttle;
+      if (t === undefined) {
+        res.writeHead(status, { ...base, ...headers });
+        res.end(send);
       } else {
-        res.end();
+        // --throttle: wait the latency, then send the body in 100 ms slices of the bandwidth.
+        const slice = Math.max(1, Math.floor(t.bytesPerSecond / 10));
+        setTimeout(() => {
+          res.writeHead(status, { ...base, ...headers });
+          if (send === undefined) return void res.end();
+          let at = 0;
+          const next = (): void => {
+            if (res.destroyed) return;
+            const end = Math.min(send.byteLength, at + slice);
+            res.write(send.subarray(at, end));
+            at = end;
+            if (at >= send.byteLength) res.end();
+            else setTimeout(next, 100);
+          };
+          next();
+        }, t.latencyMs);
       }
       const ms = Number((process.hrtime.bigint() - started) / 1000n) / 1000;
       if (quiet) return;

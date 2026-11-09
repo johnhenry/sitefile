@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, type Cidr, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import { Store } from '../store.js';
@@ -134,6 +134,7 @@ const run: Command = {
     '--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)',
     '--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied',
     '--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)',
+    '--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -177,6 +178,7 @@ const run: Command = {
     'stop-after': { type: 'string' },
     'tls-cert': { type: 'string' },
     compress: { type: 'boolean' },
+    throttle: { type: 'string' },
     'tls-key': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
@@ -207,6 +209,7 @@ const run: Command = {
     const perIp = perIpOf(v);
     const sharing = sharingOf(v, bind.host);
     const tls = await tlsOf(v);
+    const throttle = throttleOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -218,11 +221,11 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, lastModified: () => modified, log: logWriter(logging) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       const bp = sharing.server.basePath;
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}${throttleLine(throttle?.spec)}`);
       const stop = sharing.stopAfter;
       const timer = stop === undefined ? undefined : new Promise<string>((r) => setTimeout(() => r('stop-after'), stop.seconds * 1000).unref());
       const why = await Promise.race([waitForSignal(), ...(timer ? [timer] : [])]);
@@ -232,8 +235,8 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}) }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}`);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}) }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
 };
@@ -276,6 +279,8 @@ export interface DetachedServe {
   readonly expires?: string | undefined;
   /** `--compress`. */
   readonly compress?: boolean | undefined;
+  /** `--throttle` as given. */
+  readonly throttle?: string | undefined;
   /** `--tls-cert`, `--tls-key`, absolute paths. */
   readonly tlsCert?: string | undefined;
   readonly tlsKey?: string | undefined;
@@ -313,6 +318,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.expires !== undefined ? { expires: d.expires } : {}),
     ...(d.tlsCert !== undefined ? { tlsCert: d.tlsCert, tlsKey: d.tlsKey } : {}),
     ...(d.compress ? { compress: true } : {}),
+    ...(d.throttle !== undefined ? { throttle: d.throttle } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -434,6 +440,21 @@ async function tlsOf(v: ParsedValues): Promise<{ server?: { cert: Buffer; key: B
   };
 }
 
+/** `--throttle`: the spec as given and its limits. */
+function throttleOf(v: ParsedValues): { spec: string; limits: Throttle } | undefined {
+  const spec = str(v.throttle);
+  if (spec === undefined) return undefined;
+  const limits = parseThrottle(spec);
+  if (limits === undefined) usage(`--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '${spec}'`);
+  return { spec, limits };
+}
+
+/** The start message's `  Throttle: …` line (none without --throttle). */
+function throttleLine(spec: string | undefined): string {
+  const t = spec === undefined ? undefined : parseThrottle(spec);
+  return t === undefined ? '' : `  Throttle: ${spec} (${t.bytesPerSecond / 125} kbit/s, ${t.latencyMs} ms latency)\n`;
+}
+
 /** A server URL (`http://host:port/`) under a --random-route prefix. */
 function withBase(url: string, basePath: string | undefined): string {
   return basePath === undefined ? url : `${url.slice(0, -1)}${basePath}/`;
@@ -529,6 +550,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   if (v['stop-after'] !== undefined) usage('--stop-after does not apply to --watch');
   const sharing = sharingOf(v, bind.host);
   const tls = await tlsOf(v);
+  const throttle = throttleOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -555,7 +577,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,
@@ -601,7 +623,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         started = true;
         const bp = sharing.server.basePath;
         if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, bp, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, bp, tls.scheme)}${throttleLine(throttle?.spec)}`);
       },
     });
   } finally {

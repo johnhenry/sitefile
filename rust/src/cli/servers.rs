@@ -264,6 +264,32 @@ struct Sharing {
     stop_after: Option<(u64, String)>,
 }
 
+/// `--throttle`: the spec as given and its limits.
+fn throttle_of(v: &Parsed) -> Result<Option<(String, crate::server::Throttle)>> {
+    let Some(spec) = v.str("throttle") else {
+        return Ok(None);
+    };
+    match crate::server::parse_throttle(spec) {
+        Some(t) => Ok(Some((spec.to_string(), t))),
+        None => usage(format!(
+            "--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '{spec}'"
+        )),
+    }
+}
+
+/// The start message's `  Throttle: …` line (none without --throttle).
+fn throttle_line(spec: Option<&str>) -> String {
+    match spec.and_then(crate::server::parse_throttle) {
+        Some(t) => format!(
+            "  Throttle: {} ({} kbit/s, {} ms latency)\n",
+            spec.unwrap_or(""),
+            t.bytes_per_second / 125,
+            t.latency_ms
+        ),
+        None => String::new(),
+    }
+}
+
 fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
     let cidrs = |flag: &str| -> Result<(Vec<String>, Vec<crate::server::Cidr>)> {
         let text = v.strs(flag);
@@ -380,6 +406,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     string("stop-after"),
     string("tls-cert"),
     flag("compress"),
+    string("throttle"),
     string("tls-key"),
     flag("watch"),
     string_s("file", 'f'),
@@ -443,6 +470,7 @@ pub const SERVE: Command = Command {
         "--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)",
         "--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied",
         "--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)",
+        "--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -489,6 +517,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let per_ip = per_ip_of(v)?;
     let sharing = sharing_of(v, &bind.host)?;
     let (tls, tls_paths) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -542,9 +571,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 tls: worker_tls(&state)?,
                 compress: state.compress,
                 gzip_cache: Default::default(),
+                throttle: state.throttle.as_deref().and_then(crate::server::parse_throttle),
                 tls: tls.clone(),
                 compress: v.flag("compress"),
                 gzip_cache: Default::default(),
+                throttle: throttle.as_ref().map(|t| t.1),
             },
             &bind.host,
             bind.port,
@@ -562,9 +593,10 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             ));
         } else {
             out(&format!(
-                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
                 site_url(&server.host, server.port, bp, tls.is_some()),
-                network_lines(&server.host, server.port, bp, tls.is_some())
+                network_lines(&server.host, server.port, bp, tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
             ));
         }
         let deadline = sharing
@@ -606,6 +638,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             tls_cert: tls_paths.as_ref().map(|p| p.0.clone()),
             tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
             compress: v.flag("compress"),
+            throttle: throttle.as_ref().map(|t| t.0.clone()),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
                 crate::store::iso_of_time(
                     std::time::SystemTime::now() + Duration::from_secs(*secs),
@@ -617,11 +650,12 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         &warn,
     )?;
     out(&format!(
-        "Started {} ({}) serving {label} at {}\n{}",
+        "Started {} ({}) serving {label} at {}\n{}{}",
         up.name,
         up.id,
         site_url(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
-        network_lines(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some())
+        network_lines(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
+        throttle_line(up.throttle.as_deref())
     ));
     Ok(0)
 }
@@ -647,6 +681,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     }
     let sharing = sharing_of(v, &bind.host)?;
     let (tls, _) = tls_of(v)?;
+    let throttle = throttle_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -809,6 +844,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             tls: tls.clone(),
             compress: v.flag("compress"),
             gzip_cache: Default::default(),
+            throttle: throttle.as_ref().map(|t| t.1),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -824,9 +860,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             ));
         } else {
             out(&format!(
-                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}{}",
                 site_url(&s.host, s.port, sharing.base_path.as_deref(), tls.is_some()),
-                network_lines(&s.host, s.port, sharing.base_path.as_deref(), tls.is_some())
+                network_lines(&s.host, s.port, sharing.base_path.as_deref(), tls.is_some()),
+                throttle_line(throttle.as_ref().map(|t| t.0.as_str()))
             ));
         }
         server = Some(s);

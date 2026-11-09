@@ -70,6 +70,8 @@ export interface ServerState {
   readonly tlsKey?: string;
   /** `--compress` (absent: false). */
   readonly compress?: boolean;
+  /** `--throttle` as given (absent: none). */
+  readonly throttle?: string;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
