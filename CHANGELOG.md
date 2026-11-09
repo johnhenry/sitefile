@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
+  `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
+  response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept
+  in the server record. Both servers.
 - **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
   on every response (`_headers` still wins) and `OPTIONS` preflights answered
   with `204`; kept in the server record. Both servers.

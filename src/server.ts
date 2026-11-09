@@ -35,6 +35,12 @@ export interface SiteServerOptions {
   readonly allowedHosts?: readonly string[];
   /** `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and `OPTIONS` preflights answered with `204`. */
   readonly cors?: boolean;
+  /**
+   * `--isolate`: cross-origin isolation (SharedArrayBuffer, wasm threads) on every response:
+   * `Cross-Origin-Opener-Policy: same-origin`, this `Cross-Origin-Embedder-Policy` and
+   * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+   */
+  readonly isolate?: 'require-corp' | 'credentialless';
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -511,6 +517,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
   const base: Record<string, string> = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' };
   if (options.serverId) base['x-sitefile-server'] = options.serverId;
   if (options.cors) base['access-control-allow-origin'] = '*';
+  if (options.isolate !== undefined) {
+    base['cross-origin-opener-policy'] = 'same-origin';
+    base['cross-origin-embedder-policy'] = options.isolate;
+    base['cross-origin-resource-policy'] = 'same-origin';
+  }
   // `_redirects` / `_headers` are parsed once per tree (a watched server gets a new tree per rebuild).
   let rulesTree: Tree | undefined;
   let rules: { redirects: ReturnType<typeof parseRedirectRules>; headers: ReturnType<typeof parseHeaderRules> } = { redirects: [], headers: [] };

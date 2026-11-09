@@ -89,6 +89,9 @@ pub struct ServerState {
     /// `--cors`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolate: Option<String>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -768,6 +771,8 @@ pub struct DetachedServe {
     pub allowed_hosts: Vec<String>,
     /// `--cors`.
     pub cors: bool,
+    /// `--isolate`: the Cross-Origin-Embedder-Policy (`require-corp` or `credentialless`).
+    pub isolate: Option<String>,
 }
 
 impl DetachedServe {
@@ -784,6 +789,7 @@ impl DetachedServe {
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
             cors: false,
+            isolate: None,
         })
     }
 }
@@ -826,6 +832,7 @@ pub fn serve_detached_with(
         keep_os_metadata: serve.keep_os_metadata,
         allowed_hosts: serve.allowed_hosts.clone(),
         cors: serve.cors,
+        isolate: serve.isolate.clone(),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1035,6 +1042,7 @@ mod tests {
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
             cors: false,
+            isolate: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

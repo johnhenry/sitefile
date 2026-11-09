@@ -318,6 +318,24 @@ test('--cors: Access-Control-Allow-Origin and OPTIONS preflights (johnhenry/site
   assert.equal(preflightHeaders(''), undefined);
 });
 
+test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)', async () => {
+  for (const coep of ['require-corp', 'credentialless'] as const) {
+    const s = createSiteServer(tree, { isolate: coep });
+    const { port } = await listen(s, '127.0.0.1', 0);
+    try {
+      for (const p of ['/app.js', '/missing']) {
+        const r = await req(port, p);
+        assert.equal(r.headers['cross-origin-opener-policy'], 'same-origin');
+        assert.equal(r.headers['cross-origin-embedder-policy'], coep);
+        assert.equal(r.headers['cross-origin-resource-policy'], 'same-origin');
+      }
+    } finally {
+      await closeServer(s);
+    }
+  }
+  await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
+});
+
 test('an access log line is written per request: method path status bytes ms', async () => {
   await withServer({}, async (port, log) => {
     await req(port, '/app.js');

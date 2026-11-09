@@ -42,6 +42,10 @@ pub struct SiteServerOptions {
     /// `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and
     /// `OPTIONS` preflights answered with `204`.
     pub cors: bool,
+    /// `--isolate`: cross-origin isolation on every response: `Cross-Origin-Opener-Policy:
+    /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
+    /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
+    pub isolate: Option<String>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -565,6 +569,9 @@ impl LiveReload {
         if options.cors {
             head.push_str("access-control-allow-origin: *\r\n");
         }
+        for (k, v) in isolation_headers(options) {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
         for (k, v) in STREAM_HEADERS {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -761,7 +768,20 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     if options.cors {
         base.push(("access-control-allow-origin".into(), "*".into()));
     }
+    base.extend(isolation_headers(options));
     base
+}
+
+/// The `--isolate` headers ([`SiteServerOptions::isolate`]).
+fn isolation_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    match &options.isolate {
+        Some(coep) => vec![
+            ("cross-origin-opener-policy".into(), "same-origin".into()),
+            ("cross-origin-embedder-policy".into(), coep.clone()),
+            ("cross-origin-resource-policy".into(), "same-origin".into()),
+        ],
+        None => Vec::new(),
+    }
 }
 
 /// `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of
@@ -2243,6 +2263,7 @@ mod tests {
             warn: None,
             allowed_hosts: None,
             cors: false,
+            isolate: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2417,6 +2438,26 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn isolate_flag() {
+        let t = site();
+        let h = HashMap::new();
+        for coep in ["require-corp", "credentialless"] {
+            let opts = SiteServerOptions {
+                isolate: Some(coep.into()),
+                ..Default::default()
+            };
+            for p in ["/", "/missing"] {
+                let r = handle_request(&t, &opts, "GET", p, &h);
+                assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
+                assert_eq!(r.header("cross-origin-embedder-policy"), Some(coep));
+                assert_eq!(r.header("cross-origin-resource-policy"), Some("same-origin"));
+            }
+        }
+        let r = handle_request(&t, &SiteServerOptions::default(), "GET", "/", &h);
+        assert_eq!(r.header("cross-origin-embedder-policy"), None);
     }
 
     #[test]
@@ -2684,6 +2725,7 @@ mod tests {
             warn: None,
             allowed_hosts: None,
             cors: false,
+            isolate: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

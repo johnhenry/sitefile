@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   try {
     const tree = await loadServedTree(reg.store, state.source, { keepOsMetadata: !!state.keepOsMetadata, warn: (m) => stamp(`warning: ${m}`) });
     const modified = await servedLastModified(reg.store, state.source);
-    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, serverId: id, lastModified: () => modified, log: stamp });
+    const server = createSiteServer(tree, { spa: state.spa, allowedHosts: state.allowedHosts ?? [], cors: !!state.cors, ...(state.isolate ? { isolate: state.isolate } : {}), serverId: id, lastModified: () => modified, log: stamp });
     const addr = await listen(server, state.bind.host, state.bind.port);
     await reg.update(id, { pid: process.pid, host: addr.host, port: addr.port, ready: true, error: undefined });
     stamp(`serving ${state.image} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}`);

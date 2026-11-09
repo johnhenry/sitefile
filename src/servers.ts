@@ -39,6 +39,8 @@ export interface ServerState {
   readonly allowedHosts?: readonly string[];
   /** `--cors` (absent: false). */
   readonly cors?: boolean;
+  /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
+  readonly isolate?: 'require-corp' | 'credentialless';
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;
