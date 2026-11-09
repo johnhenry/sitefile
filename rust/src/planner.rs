@@ -10,7 +10,8 @@ use crate::language::ast::{
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_csp_policy, check_header_name, check_header_value, check_redirect_target, check_site_path,
+    check_base_url, check_csp_policy, check_header_name, check_header_value, check_redirect_target,
+    check_site_path,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};

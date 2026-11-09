@@ -7,8 +7,9 @@ use crate::language::ast::{
     is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType,
 };
 use crate::language::parser::{
-    flags_of, Shape, CSP_CLAUSES, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    flags_of, Shape, CSP_CLAUSES, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES,
+    IMPORT_CLAUSES, INSTRUCTIONS, REDIRECT_CLAUSES, SECRET_FORMS, SITEMAP_CLAUSES, SORT_ORDERS,
+    TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;

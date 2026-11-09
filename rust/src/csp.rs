@@ -24,7 +24,13 @@ pub struct CspResult {
 }
 
 /// See `cspPages` in the TypeScript module.
-pub fn csp_pages(tree: &Tree, export_path: &str, base: &str, meta: bool, origin: &str) -> CspResult {
+pub fn csp_pages(
+    tree: &Tree,
+    export_path: &str,
+    base: &str,
+    meta: bool,
+    origin: &str,
+) -> CspResult {
     let mut out = CspResult::default();
     for (p, node) in tree.entries() {
         if reference_kind(p) != Some("html") {
