@@ -8,6 +8,19 @@
   `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
   `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
   `examples/precache`.
+- **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
+  route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
+  (canonical page URLs and their redirect status, whether `_redirects` and
+  `_headers` are read, which 404 answers, Cloudflare's SPA fallback), or pick
+  Cloudflare's `auto`, `force-slash`, `drop-slash` or `none` directly. Kept in
+  the server record. Both implementations, with a conformance case per mode.
+- **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
+  URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
+  a preview with absolute self-links stays local. On by default in
+  `serve --watch` (from EXPORT, SITEMAP or FEED BASE; `--no-rewrite-base`
+  turns it off); never applied to exports. Both implementations.
+- **`serve -d` printed its `Started …` line twice** (a merge of
+  johnhenry/sitefile#195): it is printed once, with the `--base` URL.
 - **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
   <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
   SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>

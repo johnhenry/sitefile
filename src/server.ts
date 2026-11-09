@@ -61,6 +61,13 @@ export interface SiteServerOptions {
    * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
    */
   readonly base?: string | (() => string | undefined);
+  /**
+   * `--rewrite-base`: the production URL ({@link normalizeProductionUrl}) that HTML, CSS and XML
+   * responses have replaced by this server's origin and `--base`, so absolute self-links stay local.
+   */
+  readonly rewriteBase?: string | (() => string | undefined);
+  /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
+  readonly profile?: RoutingProfile;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -589,6 +596,97 @@ export function spaFallback(segs: readonly string[], trailingSlash: boolean, isF
   return undefined;
 }
 
+/** `--html-handling` (Cloudflare's names): `auto`, `force-slash`, `drop-slash` or `none`. */
+export type HtmlHandling = 'auto' | 'force-slash' | 'drop-slash' | 'none';
+export const HTML_HANDLINGS: readonly HtmlHandling[] = ['auto', 'force-slash', 'drop-slash', 'none'];
+export const HOST_PROFILES = ['netlify', 'cloudflare', 'vercel', 'github-pages', 'firebase'] as const;
+export type HostProfileName = (typeof HOST_PROFILES)[number];
+
+/** How a server routes like a static host (`--host-profile`, `--html-handling`). */
+export interface RoutingProfile {
+  /** Canonical page URLs; undefined keeps sitefile's own rules (clean URLs plus both spellings). */
+  readonly htmlHandling?: HtmlHandling;
+  /** The status of a canonicalizing redirect. */
+  readonly redirectStatus: number;
+  /** Whether `/_redirects` and `/_headers` are read (and hidden). */
+  readonly siteFiles: boolean;
+  /** Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200. */
+  readonly notFound: 'nearest' | 'root' | 'index';
+  /** Sitefile's own rules only: `/about/` with only `about.html` redirects to `/about`, or is 404. */
+  readonly slashHtml: 'redirect' | 'not-found';
+}
+
+/**
+ * The routing of a host profile, with `--html-handling` replacing its HTML handling (the profile
+ * undefined: sitefile's rules, a 307 for the canonical redirects as on Cloudflare).
+ *
+ * | profile | HTML handling | redirect | `_redirects`/`_headers` | 404 |
+ * | netlify | auto | 301 | yes | nearest 404.html |
+ * | cloudflare | auto | 307 | yes | nearest 404.html, else /index.html (200) |
+ * | vercel | none | 308 | no | /404.html |
+ * | github-pages | sitefile's, `/about/` 404 | 301 | no | /404.html |
+ * | firebase | none | 301 | no | /404.html |
+ */
+export function hostProfile(name: HostProfileName | undefined, htmlHandling?: HtmlHandling): RoutingProfile {
+  const base: RoutingProfile =
+    name === 'netlify'
+      ? { htmlHandling: 'auto', redirectStatus: 301, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' }
+      : name === 'cloudflare'
+        ? { htmlHandling: 'auto', redirectStatus: 307, siteFiles: true, notFound: 'index', slashHtml: 'redirect' }
+        : name === 'vercel'
+          ? { htmlHandling: 'none', redirectStatus: 308, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+          : name === 'github-pages'
+            ? { redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'not-found' }
+            : name === 'firebase'
+              ? { htmlHandling: 'none', redirectStatus: 301, siteFiles: false, notFound: 'root', slashHtml: 'redirect' }
+              : { redirectStatus: 307, siteFiles: true, notFound: 'nearest', slashHtml: 'redirect' };
+  return htmlHandling === undefined ? base : { ...base, htmlHandling };
+}
+
+/** The server's routing profile for the flags (undefined: sitefile's own rules). */
+export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlHandling?: HtmlHandling | undefined }): RoutingProfile | undefined {
+  return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
+}
+
+/** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
+const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
+/** Types `--rewrite-base` rewrites: HTML, CSS and any XML (feeds, sitemaps, SVG). */
+export function isRebasedType(type: string): boolean {
+  return type.startsWith('text/html') || type.startsWith('text/css') || type.split(';', 1)[0]!.includes('xml');
+}
+
+/**
+ * A production URL for `--rewrite-base`: `scheme://host[/path]` without a trailing slash, query or
+ * fragment (`https://example.com/blog/` → `https://example.com/blog`), or undefined when it is not an
+ * http(s) URL with a host.
+ */
+export function normalizeProductionUrl(raw: string): string | undefined {
+  const m = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?$/i.exec(raw.replace(/[?#].*$/, ''));
+  if (!m) return undefined;
+  return m[1]! + (m[2] ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * `body` with every `from` (a production URL) replaced by `to` (the local origin and base), where
+ * the next byte cannot continue a host or path segment (a letter, digit, `.`, `-`, `_`, `~`, `:` or `%`),
+ * so `https://example.com` does not match `https://example.com.evil` and `/blog` not `/blogroll`.
+ */
+export function rewriteBaseUrls(body: Uint8Array, from: string, to: string): Uint8Array {
+  const text = Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString('latin1');
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(from, i);
+    if (at === -1) break;
+    const next = text[at + from.length];
+    out += text.slice(i, at) + (next !== undefined && /[A-Za-z0-9._~:%-]/.test(next) ? from : to);
+    i = at + from.length;
+  }
+  if (i === 0) return body;
+  return Buffer.from(out + text.slice(i), 'latin1');
+}
+
 /**
  * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
  * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
@@ -728,8 +826,10 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (method !== 'GET' && method !== 'HEAD') return page(405, METHOD_PAGE, { allow: options.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' });
     const tree = current();
-    const { redirects, headers: headerRules } = rulesFor(tree);
-    const isFile = (p: string): boolean => tree.isFile(p) && p !== '/_redirects' && p !== '/_headers';
+    const profile = options.profile;
+    const siteFiles = profile?.siteFiles !== false;
+    const { redirects, headers: headerRules } = siteFiles ? rulesFor(tree) : { redirects: [], headers: [] };
+    const isFile = (p: string): boolean => tree.isFile(p) && !(siteFiles && (p === '/_redirects' || p === '/_headers'));
 
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
@@ -770,12 +870,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const type = mimeTypeFor(served);
       const live = options.liveReload !== undefined && type.startsWith('text/html') && isNavigation(req.headers);
       if (live) warnCsp(served, custom['content-security-policy']);
+      const prodNow = typeof options.rewriteBase === 'function' ? options.rewriteBase() : options.rewriteBase;
+      const host = req.headers.host;
+      const rebase = prodNow !== undefined && isRebasedType(type) && host !== undefined && SAFE_HOST.test(host) ? { from: prodNow, to: `http://${host}${mount}` } : undefined;
       // A `.dcz` sidecar (build --experimental-dictionary): sent when the request offers its dictionary.
-      const delta = live ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
+      const delta = live || rebase ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
       const dictionaryVary = tree.isFile(`${served}.dcz`);
       // A deflated zip entry goes to a gzip client as is, wrapped in a gzip header and trailer (not for a
       // range request: ranges are served from the identity body).
-      const deflated = !live && !delta && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
+      const deflated = !live && !delta && !rebase && req.headers.range === undefined && acceptsGzip(req.headers['accept-encoding']) ? options.content?.deflated?.(served) : undefined;
       let body: Uint8Array;
       try {
         body = deflated ? gzipMember(deflated.deflate, deflated.crc, deflated.size) : (options.content?.read(served) ?? file.bytes);
@@ -783,13 +886,14 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         options.log?.(`error: ${e instanceof SitefileError ? e.message : String(e)}`);
         return page(500, ERROR_PAGE);
       }
+      if (rebase) body = rewriteBaseUrls(body, rebase.from, rebase.to);
       if (live) body = injectReloadScript(body);
       const varyOn = dictionaryVary ? 'accept-encoding, available-dictionary' : 'accept-encoding';
       const encoding: Record<string, string> = deflated ? { 'content-encoding': 'gzip', vary: varyOn } : {};
       const vary: Record<string, string> = !deflated && dictionaryVary ? { vary: varyOn } : {};
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...encoding, ...custom }, body);
       // An injected page, a gzip response and a delta are other representations of the file: they get their own ETags.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${rebase ? '-rebased' : ''}${live ? '-live' : ''}${deflated ? '-gzip' : ''}${delta ? '-dcz' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
       if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...encoding, ...custom, ...vary, etag, ...lm }, undefined);
@@ -898,15 +1002,49 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     };
 
     if (redirect(true)) return;
-    let served = resolve(vpath, trailingSlash);
-    if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
+    const handling = profile?.htmlHandling;
+    let served: string | undefined;
+    if (handling !== undefined) {
+      // `--html-handling` (Cloudflare's modes): one canonical spelling per page, the others redirect to it.
+      const go = (to: readonly string[], slash: boolean): void => {
+        const path = to.length === 0 ? '/' : '/' + to.map(encodeURIComponent).join('/') + (slash ? '/' : '');
+        finish(profile!.redirectStatus, { location: mount + path + search, 'content-length': 0 }, undefined);
+      };
+      const last = segs[segs.length - 1];
+      const index = vpath === '/' ? '/index.html' : `${vpath}/index.html`;
+      const hasIndex = isFile(index);
+      const hasHtml = segs.length > 0 && isFile(`${vpath}.html`);
+      if (!trailingSlash && last !== undefined && last.endsWith('.html') && isFile(vpath) && handling !== 'none') {
+        // `/x.html` and `/x/index.html` are spelled out: send them to the clean form.
+        const dir = segs.slice(0, -1);
+        if (last === 'index.html') return go(dir, dir.length > 0 && handling !== 'drop-slash');
+        return go([...dir, last.slice(0, -'.html'.length)], handling === 'force-slash');
+      }
+      if (!trailingSlash && isFile(vpath)) served = vpath;
+      else if (handling === 'none') served = trailingSlash && hasIndex ? index : undefined;
+      else if (segs.length === 0) served = hasIndex ? index : undefined;
+      else if (handling === 'auto') {
+        if (hasIndex) {
+          if (!trailingSlash) return go(segs, true);
+          served = index;
+        } else if (hasHtml) {
+          if (trailingSlash) return go(segs, false);
+          served = `${vpath}.html`;
+        }
+      } else if (hasIndex || hasHtml) {
+        const slash = handling === 'force-slash';
+        if (trailingSlash !== slash) return go(segs, slash);
+        served = slash ? (hasIndex ? index : `${vpath}.html`) : hasHtml ? `${vpath}.html` : index;
+      }
+    } else served = resolve(vpath, trailingSlash);
+    if (handling === undefined && served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
-    if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
+    if (handling === undefined && profile?.slashHtml !== 'not-found' && served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
       const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
@@ -914,12 +1052,15 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
     }
     if (served !== undefined) return sendFile(200, served);
-    // The nearest 404.html: in the request's directory, then each parent up to the root.
+    // The nearest 404.html: in the request's directory, then each parent up to the root (only the
+    // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
-    for (let n = dirs.length; n >= 0; n--) {
+    for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
       if (isFile(notFound)) return sendFile(404, notFound);
     }
+    // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
+    if (profile?.notFound === 'index' && isFile('/index.html')) return sendFile(200, '/index.html');
     page(404, NOT_FOUND_PAGE, custom);
   };
 
