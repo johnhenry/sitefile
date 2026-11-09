@@ -185,6 +185,7 @@ sitefile cache du                                       # cache sizes; SITEFILE_
 sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir|site.zip>
 sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
+sitefile up | down | ps [-f sitefile.servers.yaml]   # several servers from one file, like docker compose
 ```
 
 `--target <stage>` (like `docker build --target`) stops after a named stage and exports that stage's whole

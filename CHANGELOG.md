@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`sitefile up`, `down` and `ps`** (johnhenry/sitefile#223): a servers file
+  (`sitefile.servers.yaml`, `.yml` or `.json`) names several detached servers
+  (`source`, `publish`, `spa`). `up` starts them all, idempotently: it leaves
+  running ones alone, restarts exited ones and replaces changed ones. `down`
+  stops and removes the ones it started, and `ps` lists them, including those
+  not created yet. Sources are relative to the servers file. Server records
+  gain an optional `project` field. Both implementations, with conformance
+  cases.
 - **DOM-morphing reload with scroll restore** (johnhenry/sitefile#200): when a
   rebuild changed only existing HTML files, the reload event carries
   `"morph":true` and pages update in place (scroll, focus and form input
