@@ -175,6 +175,7 @@ sitefile graph    [context] [--json | --dot]   # dependency graph of imports, st
 sitefile why <path> [context] [--json]         # which instructions wrote an exported file, and what overwrote it
 sitefile vendor   [context] [--vendor-dir vendor/sitefile]   # download remote inputs for offline builds
 sitefile outdated [context] [--json]     # compare remote imports and BASE images with their pins (read-only)
+sitefile hosts [context] [--json]        # the hosts a build would contact and whether they are allowed (no fetch)
 sitefile bake [targets...] [-f sitefile.bake.yaml] [--print [--json]] [-j n]   # build several variants
 
 # images and servers (see below and docs/CLI.md)
@@ -400,7 +401,8 @@ tools are code, and run only when you name them on the command line.
   `SITEFILE_NETWORK=strict`) a build contacts only hosts you list with
   `--allow-hosts`, none when you list none. A refused host fails with
   `E_HOST_BLOCKED` naming the flag to add, also as `needs` in the library
-  error and in `--json` output, so a tool can ask before allowing it. A
+  error and in `--json` output, so a tool can ask before allowing it.
+  `sitefile hosts` lists the hosts a build needs before any is contacted. A
   vendored build with pinned, stored images contacts nothing
   ([docs/CLI.md](docs/CLI.md#strict-network-mode)).
 - **Pins are enforced.** Unpinned URLs are recorded in `Sitefile.lock` and must
@@ -419,9 +421,11 @@ tools are code, and run only when you name them on the command line.
   only with `--allow-plugin <name>`, in its own Node process under Node's
   permission model (read access to its own folder only, no writes, network,
   processes or environment) with a heap limit (`--plugin-memory`, default
-  1 GiB); a `TOOL` runs only with `--allow-exec <name>`, argv
+  1 GiB), on a Node you can name with `--node` (checked to be at least Node 26
+  and printed); a `TOOL` runs only with `--allow-exec <name>`, argv
   only, no shell, scrubbed environment. The Sitefile cannot allow itself. A
-  WebAssembly plugin must import nothing (checked before the build starts) and
+  JavaScript plugin's `INTEGRITY` pins its whole folder (everything it can
+  read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
 - **No silent overwrites.** Writing different content to an existing path fails
