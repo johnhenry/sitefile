@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve --max-age`, `--immutable`, `--max-age-html`** (johnhenry/sitefile#175):
+  preview production `Cache-Control` on files (HTML keeps `no-cache` unless
+  `--max-age-html`); `_headers` still wins; kept in the server record. Both
+  servers.
 - **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
   `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
   response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept

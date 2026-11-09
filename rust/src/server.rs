@@ -46,6 +46,9 @@ pub struct SiteServerOptions {
     /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
     /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for
+    /// files ([`cache_control_for`]).
+    pub cache: Option<CachePreview>,
 }
 
 pub type LastModifiedFn = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
@@ -770,6 +773,36 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     }
     base.extend(isolation_headers(options));
     base
+}
+
+/// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachePreview {
+    /// Seconds for files other than HTML: `public, max-age=N`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<u64>,
+    /// Adds `immutable` to the non-HTML value (needs `max_age`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub immutable: bool,
+    /// Seconds for HTML pages (`None`: they keep `no-cache`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_html: Option<u64>,
+}
+
+/// The `Cache-Control` a file of media type `mime` gets under `cache` (`cacheControlFor` in
+/// src/server.ts), or `None` to keep `no-cache`.
+pub fn cache_control_for(mime: &str, cache: Option<&CachePreview>) -> Option<String> {
+    let c = cache?;
+    if mime.starts_with("text/html") {
+        return c.max_age_html.map(|n| format!("public, max-age={n}"));
+    }
+    c.max_age.map(|n| {
+        format!(
+            "public, max-age={n}{}",
+            if c.immutable { ", immutable" } else { "" }
+        )
+    })
 }
 
 /// The `--isolate` headers ([`SiteServerOptions::isolate`]).
@@ -1582,10 +1615,18 @@ pub fn respond(
         } else {
             file.bytes.to_vec()
         };
+        let cc: Vec<(String, String)> = if status == 200 {
+            cache_control_for(mime, options.cache.as_ref())
+                .map(|v| vec![("cache-control".to_string(), v)])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut h = owned(vec![
             ("content-type", mime.into()),
             ("content-length", body.len().to_string()),
         ]);
+        h.extend(cc.iter().cloned());
         h.extend(custom.iter().cloned());
         if status != 200 {
             return finish(status, h, Some(body));
@@ -1601,7 +1642,8 @@ pub fn respond(
             .map(|m| vec![("last-modified".to_string(), http_date(m))])
             .unwrap_or_default();
         let not_modified = || {
-            let mut h: Vec<(String, String)> = custom.clone();
+            let mut h: Vec<(String, String)> = cc.clone();
+            h.extend(custom.iter().cloned());
             h.push(("etag".into(), etag.clone()));
             h.extend(lm.iter().cloned());
             finish(304, h, None)
@@ -2264,6 +2306,7 @@ mod tests {
             allowed_hosts: None,
             cors: false,
             isolate: None,
+            cache: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         f(s.port, &log);
@@ -2438,6 +2481,41 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn cache_preview() {
+        let c = |max_age, immutable, max_age_html| CachePreview {
+            max_age,
+            immutable,
+            max_age_html,
+        };
+        let html = "text/html; charset=utf-8";
+        assert_eq!(
+            cache_control_for(html, Some(&c(None, false, Some(0)))).as_deref(),
+            Some("public, max-age=0")
+        );
+        assert_eq!(cache_control_for("text/css", Some(&c(None, false, Some(5)))), None);
+        assert_eq!(
+            cache_control_for("image/png", Some(&c(Some(5), true, None))).as_deref(),
+            Some("public, max-age=5, immutable")
+        );
+        assert_eq!(cache_control_for(html, Some(&c(Some(5), true, None))), None);
+        assert_eq!(cache_control_for("image/png", None), None);
+        let t = Tree::from_files(
+            [("/a.css", "a{}"), ("/index.html", "x")]
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            cache: Some(c(Some(600), false, None)),
+            ..Default::default()
+        };
+        let h = HashMap::new();
+        let r = handle_request(&t, &opts, "GET", "/a.css", &h);
+        assert_eq!(r.header("cache-control"), Some("public, max-age=600"));
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.header("cache-control"), Some("no-cache"));
     }
 
     #[test]
@@ -2726,6 +2804,7 @@ mod tests {
             allowed_hosts: None,
             cors: false,
             isolate: None,
+            cache: None,
         };
         let s = listen(site(), opts, "127.0.0.1", 0).unwrap();
         let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();

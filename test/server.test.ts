@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { byteRange, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { byteRange, cacheControlFor, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -334,6 +334,24 @@ test('--isolate: COOP, COEP and CORP on every response (johnhenry/sitefile#197)'
     }
   }
   await withServer({}, async (port) => assert.equal((await req(port, '/app.js')).headers['cross-origin-embedder-policy'], undefined));
+});
+
+test('--max-age/--immutable/--max-age-html: a production cache preview (johnhenry/sitefile#175)', async () => {
+  const s = createSiteServer(tree, { cache: { maxAge: 600, immutable: true } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const r = await req(port, '/app.js');
+    assert.equal(r.headers['cache-control'], 'public, max-age=600, immutable');
+    assert.equal((await req(port, '/app.js', 'GET', { 'if-none-match': String(r.headers.etag) })).headers['cache-control'], 'public, max-age=600, immutable');
+    assert.equal((await req(port, '/')).headers['cache-control'], 'no-cache');
+    assert.equal((await req(port, '/missing')).headers['cache-control'], 'no-cache');
+  } finally {
+    await closeServer(s);
+  }
+  assert.equal(cacheControlFor('text/html; charset=utf-8', { maxAgeHtml: 0 }), 'public, max-age=0');
+  assert.equal(cacheControlFor('text/css; charset=utf-8', { maxAgeHtml: 5 }), undefined);
+  assert.equal(cacheControlFor('image/png', { maxAge: 5 }), 'public, max-age=5');
+  assert.equal(cacheControlFor('image/png', undefined), undefined);
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

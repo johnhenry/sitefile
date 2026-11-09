@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -116,6 +116,9 @@ const run: Command = {
     '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
     '--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response',
     '--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)',
+    '--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML',
+    '--immutable       add immutable to the --max-age value (fingerprinted assets)',
+    '--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
@@ -144,6 +147,9 @@ const run: Command = {
     cors: { type: 'boolean' },
     isolate: { type: 'boolean' },
     coep: { type: 'string' },
+    'max-age': { type: 'string' },
+    immutable: { type: 'boolean' },
+    'max-age-html': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -167,6 +173,7 @@ const run: Command = {
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
+    const cache = cacheOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -178,7 +185,7 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -199,6 +206,7 @@ const run: Command = {
       ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
       ...(v.cors ? { cors: true } : {}),
       ...(isolate ? { isolate } : {}),
+      ...(cache ? { cache } : {}),
       bind,
       host: bind.host,
       port: bind.port,
@@ -246,6 +254,21 @@ function isolateOf(v: ParsedValues): 'require-corp' | 'credentialless' | undefin
   return v.isolate ? (coep ?? 'require-corp') : undefined;
 }
 
+/** `--max-age`, `--immutable`, `--max-age-html`, or undefined when none is given. */
+function cacheOf(v: ParsedValues): CachePreview | undefined {
+  const secs = (flag: string): number | undefined => {
+    const raw = str(v[flag]);
+    if (raw === undefined) return undefined;
+    if (!/^[0-9]{1,10}$/.test(raw) || Number(raw) > 2147483647) usage(`--${flag} must be a number of seconds (0 to 2147483647), not '${raw}'`);
+    return Number(raw);
+  };
+  const maxAge = secs('max-age');
+  const maxAgeHtml = secs('max-age-html');
+  if (v.immutable && maxAge === undefined) usage('--immutable needs --max-age');
+  if (maxAge === undefined && maxAgeHtml === undefined) return undefined;
+  return { ...(maxAge !== undefined ? { maxAge } : {}), ...(v.immutable ? { immutable: true } : {}), ...(maxAgeHtml !== undefined ? { maxAgeHtml } : {}) };
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
@@ -253,6 +276,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const bind = parsePublish(str(v.publish));
   const allowedHosts = allowedHostsOf(v);
   const isolate = isolateOf(v);
+  const cache = cacheOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -279,7 +303,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,

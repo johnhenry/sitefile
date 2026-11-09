@@ -41,6 +41,8 @@ export interface SiteServerOptions {
    * `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
    */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for files ({@link cacheControlFor}). */
+  readonly cache?: CachePreview;
 }
 
 /** Reserved for the live-reload event stream while `serve --watch` runs. */
@@ -360,6 +362,24 @@ export function safeSegments(rawPath: string): string[] | undefined {
  * section 3.2.2, sent by proxies and some clients) loses its scheme and authority (`/path?q`, or
  * `/` for an empty path); any other target is returned as it is. The authority is not checked.
  */
+/** Production cache headers to preview instead of `no-cache` (`serve --max-age`). */
+export interface CachePreview {
+  /** Seconds for files other than HTML: `public, max-age=N`. */
+  readonly maxAge?: number;
+  /** Adds `immutable` to the non-HTML value (needs {@link maxAge}). */
+  readonly immutable?: boolean;
+  /** Seconds for HTML pages (absent: they keep `no-cache`, the common production practice). */
+  readonly maxAgeHtml?: number;
+}
+
+/** The `Cache-Control` a file of media `type` gets under `cache`, or undefined to keep `no-cache`. */
+export function cacheControlFor(type: string, cache: CachePreview | undefined): string | undefined {
+  if (cache === undefined) return undefined;
+  if (type.startsWith('text/html')) return cache.maxAgeHtml === undefined ? undefined : `public, max-age=${cache.maxAgeHtml}`;
+  if (cache.maxAge === undefined) return undefined;
+  return `public, max-age=${cache.maxAge}${cache.immutable ? ', immutable' : ''}`;
+}
+
 /** `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of header names. */
 export function preflightHeaders(value: string | undefined): string | undefined {
   const v = value?.trim();
@@ -651,15 +671,17 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (live) warnCsp(served, custom['content-security-policy']);
       const body = live ? injectReloadScript(file.bytes) : file.bytes;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
+      const preview = cacheControlFor(type, options.cache);
+      const cc: Record<string, string> = preview === undefined ? {} : { 'cache-control': preview };
       // An injected page is a different representation of the file: give it its own ETag.
       const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
       const modified = options.lastModified?.();
       const lm: Record<string, string> = modified === undefined ? {} : { 'last-modified': httpDate(modified) };
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag, ...lm }, undefined);
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...cc, ...custom, etag, ...lm }, undefined);
       // If-Modified-Since only counts without If-None-Match (RFC 9110 section 13.2.2).
       const ims = req.headers['if-none-match'] === undefined ? req.headers['if-modified-since'] : undefined;
       const since = ims === undefined ? undefined : parseHttpDate(ims);
-      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...custom, etag, ...lm }, undefined);
+      if (modified !== undefined && since !== undefined && modified <= since) return finish(304, { ...cc, ...custom, etag, ...lm }, undefined);
       // A single byte range of a GET (`If-Range` must name this ETag); anything else gets the whole file.
       const ifRange = req.headers['if-range'] as string | undefined;
       const range = method === 'GET' && (ifRange === undefined || ifRange.trim() === etag) ? byteRange(req.headers.range, body.byteLength) : undefined;
@@ -671,11 +693,11 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const part = body.subarray(start, end + 1);
         return finish(
           206,
-          { 'content-type': type, 'content-length': part.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
+          { 'content-type': type, 'content-length': part.byteLength, ...cc, ...custom, etag, ...lm, 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${body.byteLength}` },
           part,
         );
       }
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...cc, ...custom, etag, ...lm, 'accept-ranges': 'bytes' }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {

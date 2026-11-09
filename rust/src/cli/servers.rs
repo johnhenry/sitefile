@@ -88,6 +88,40 @@ fn isolate_of(v: &Parsed) -> Result<Option<String>> {
         .then(|| coep.unwrap_or("require-corp").to_string()))
 }
 
+/// `--max-age`, `--immutable`, `--max-age-html`, or `None` when none is given.
+fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
+    let secs = |flag: &str| -> Result<Option<u64>> {
+        let Some(raw) = v.str(flag) else {
+            return Ok(None);
+        };
+        match raw.parse::<u64>() {
+            Ok(n)
+                if (1..=10).contains(&raw.len())
+                    && raw.bytes().all(|b| b.is_ascii_digit())
+                    && n <= 2_147_483_647 =>
+            {
+                Ok(Some(n))
+            }
+            _ => usage(format!(
+                "--{flag} must be a number of seconds (0 to 2147483647), not '{raw}'"
+            )),
+        }
+    };
+    let max_age = secs("max-age")?;
+    let max_age_html = secs("max-age-html")?;
+    if v.flag("immutable") && max_age.is_none() {
+        return usage("--immutable needs --max-age");
+    }
+    if max_age.is_none() && max_age_html.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(crate::server::CachePreview {
+        max_age,
+        immutable: v.flag("immutable"),
+        max_age_html,
+    }))
+}
+
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for raw in v.strs("allowed-host") {
@@ -111,6 +145,9 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("cors"),
     flag("isolate"),
     string("coep"),
+    string("max-age"),
+    flag("immutable"),
+    string("max-age-html"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -157,6 +194,9 @@ pub const SERVE: Command = Command {
         "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
         "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
         "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
+        "--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML",
+        "--immutable       add immutable to the --max-age value (fingerprinted assets)",
+        "--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -197,6 +237,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -237,6 +278,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 allowed_hosts: Some(allowed_hosts.clone()),
                 cors: v.flag("cors"),
                 isolate: isolate.clone(),
+                cache: cache.clone(),
             },
             &bind.host,
             bind.port,
@@ -263,6 +305,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             allowed_hosts,
             cors: v.flag("cors"),
             isolate,
+            cache,
         },
         None,
         &warn,
@@ -288,6 +331,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -437,6 +481,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             allowed_hosts: Some(allowed_hosts.clone()),
             cors: v.flag("cors"),
             isolate: isolate.clone(),
+            cache: cache.clone(),
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -514,6 +559,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
                 isolate: state.isolate.clone(),
+                cache: state.cache.clone(),
             },
             &state.bind.host,
             state.bind.port,

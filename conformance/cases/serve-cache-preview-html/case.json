@@ -1,0 +1,8 @@
+{
+  "command": "serve",
+  "args": ["--max-age-html", "60"],
+  "requests": [
+    { "target": "/", "expect": { "status": 200, "headers": { "cache-control": "public, max-age=60" } } },
+    { "target": "/app.css", "expect": { "status": 200, "headers": { "cache-control": "no-cache" } } }
+  ]
+}

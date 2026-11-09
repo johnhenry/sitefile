@@ -92,6 +92,9 @@ pub struct ServerState {
     /// `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<crate::server::CachePreview>,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -773,6 +776,8 @@ pub struct DetachedServe {
     pub cors: bool,
     /// `--isolate`: the Cross-Origin-Embedder-Policy (`require-corp` or `credentialless`).
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`.
+    pub cache: Option<crate::server::CachePreview>,
 }
 
 impl DetachedServe {
@@ -790,6 +795,7 @@ impl DetachedServe {
             allowed_hosts: Vec::new(),
             cors: false,
             isolate: None,
+            cache: None,
         })
     }
 }
@@ -833,6 +839,7 @@ pub fn serve_detached_with(
         allowed_hosts: serve.allowed_hosts.clone(),
         cors: serve.cors,
         isolate: serve.isolate.clone(),
+        cache: serve.cache.clone(),
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1043,6 +1050,7 @@ mod tests {
             allowed_hosts: Vec::new(),
             cors: false,
             isolate: None,
+            cache: None,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

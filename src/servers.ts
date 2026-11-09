@@ -10,6 +10,7 @@ import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
 import { Tree } from './tree.js';
+import type { CachePreview } from './server.js';
 
 /**
  * Detached site servers ("containers"). One state file per server:
@@ -41,6 +42,8 @@ export interface ServerState {
   readonly cors?: boolean;
   /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html` (absent: every response keeps `no-cache`). */
+  readonly cache?: CachePreview;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

@@ -1133,6 +1133,12 @@ to `image` (`imageId`) and `dir` (`path`).
   `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
   cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
   same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
+- **Production cache preview.** `cache-control: no-cache` (with the ETag) is right for previews but hides caching
+  bugs. `--max-age <secs>` sends `Cache-Control: public, max-age=<secs>` on file responses (`200`, `206`, `304`)
+  other than HTML, `--immutable` adds `, immutable` to it (fingerprinted assets), and `--max-age-html <secs>` gives
+  HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
+  `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
+  host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
