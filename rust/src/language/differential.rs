@@ -268,6 +268,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("into", into.as_ref().map(operand)),
             ("overwrite", Some(json!(overwrite))),
         ]),
+        Instruction::Csp { span: sp, policy, meta } => obj(vec![
+            ("kind", s("CSP")),
+            ("span", Some(span(sp))),
+            ("policy", policy.as_ref().map(operand)),
+            ("meta", Some(json!(meta))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

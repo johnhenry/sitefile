@@ -63,6 +63,8 @@ export function operandsOf(ins: Instruction): Operand[] {
       return [...ins.contact, ins.expires, ...ins.encryption, ...ins.policy, ...(ins.dest ? [ins.dest] : [])];
     case 'PRECACHE':
       return [...ins.patterns, ...(ins.dest ? [ins.dest] : []), ...(ins.into ? [ins.into] : [])];
+    case 'CSP':
+      return ins.policy ? [ins.policy] : [];
     case 'CHECKLINKS':
       return [];
     case 'EXPORT':
@@ -290,6 +292,7 @@ export function validate(instructions: readonly Instruction[], file: string): Pr
       case 'ROBOTS':
       case 'SECURITY_TXT':
       case 'PRECACHE':
+      case 'CSP':
       case 'CHECKLINKS':
         break;
       case 'EXPORT':

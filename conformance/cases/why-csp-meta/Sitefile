@@ -1,0 +1,5 @@
+# CSP META: a <meta> after <head> in each page, the default base policy.
+FROM scratch
+COPY ./public/ /
+CSP META
+EXPORT /

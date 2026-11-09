@@ -3,10 +3,10 @@
 // src/language/ast.ts, src/language/scanner.ts and rust/src/language/parser.rs.
 
 export const KEYWORDS = {
-  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CHECKLINKS', 'EXPORT'],
+  instructions: ['FROM', 'STAGE', 'ARG', 'LET', 'IMPORT', 'COPY', 'RENDER', 'TRANSFORM', 'PLUGIN', 'TOOL', 'SITEMAP', 'FEED', 'REDIRECT', 'HEADER', 'FINGERPRINT', 'CANONICAL', 'PRECOMPRESS', 'ROBOTS', 'SECURITY_TXT', 'PRECACHE', 'CSP', 'CHECKLINKS', 'EXPORT'],
   /** Rejected by the parser (E_UNSUPPORTED); parsed as `unsupported_instruction`. */
   unsupported: ['RUN', 'REMOVE', 'GENERATE', 'ASSERT', 'META', 'EXEC'],
-  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'KEY', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'ARG'],
+  clauses: ['FROM', 'AS', 'TO', 'INTEGRITY', 'SORT', 'BY', 'ASC', 'DESC', 'SCHEMA', 'DRAFTS', 'PAGE', 'FIRST', 'FOR', 'IN', 'WITH', 'OPTIONS', 'ARGS', 'BASE', 'AT', 'COMPRESSION', 'KEY', 'LINK', 'TITLE', 'STATUS', 'IMAGE', 'SECRET', 'HEADER', 'BEARER', 'MANIFEST', 'PRETTY', 'MIN', 'ALLOW', 'DISALLOW', 'SITEMAP', 'CONTACT', 'EXPIRES', 'ENCRYPTION', 'POLICY', 'INTO', 'POLICY', 'META', 'ARG'],
   scratch: 'scratch',
   valueTypes: ['string', 'number', 'boolean'],
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],

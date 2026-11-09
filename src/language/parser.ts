@@ -83,6 +83,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseSecurityTxt(c, span);
     case 'PRECACHE':
       return parsePrecache(c, span);
+    case 'CSP':
+      return parseCsp(c, span);
     case 'CHECKLINKS':
       return parseCheckLinks(c, span);
     case 'RUN':
@@ -685,6 +687,14 @@ function parsePrecache(c: Cursor, span: SourceSpan): Instruction {
   const into = c.keyword('INTO') ? c.operand('service worker path') : undefined;
   c.expectEnd();
   return { kind: 'PRECACHE', span, patterns, ...(dest ? { dest } : {}), ...(into ? { into } : {}), overwrite: flags.has('overwrite') };
+}
+
+/** `CSP [POLICY <policy>] [META]` */
+function parseCsp(c: Cursor, span: SourceSpan): Instruction {
+  const policy = c.keyword('POLICY') ? c.operand('policy') : undefined;
+  const meta = c.keyword('META');
+  c.expectEnd();
+  return { kind: 'CSP', span, ...(policy ? { policy } : {}), meta };
 }
 
 /** `CHECKLINKS [--warn] [--external]` */

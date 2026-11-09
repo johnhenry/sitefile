@@ -1,0 +1,5 @@
+# CSP alone: /_headers has the CSP origin.
+FROM scratch
+COPY ./public/ /
+CSP
+EXPORT /

@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 22] = [
+pub const INSTRUCTIONS: [&str; 23] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -39,6 +39,7 @@ pub const INSTRUCTIONS: [&str; 22] = [
     "ROBOTS",
     "SECURITY_TXT",
     "PRECACHE",
+    "CSP",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -82,6 +83,8 @@ pub const ROBOTS_CLAUSES: [&str; 4] = ["ALLOW", "DISALLOW", "SITEMAP", "TO"];
 pub const SECURITY_TXT_CLAUSES: [&str; 5] = ["CONTACT", "EXPIRES", "ENCRYPTION", "POLICY", "TO"];
 /// Clauses after `PRECACHE <pattern>…`, in this order.
 pub const PRECACHE_CLAUSES: [&str; 2] = ["TO", "INTO"];
+/// Clauses of CSP, in this order.
+pub const CSP_CLAUSES: [&str; 2] = ["POLICY", "META"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
@@ -186,6 +189,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "ROBOTS" => parse_robots(c, span),
         "SECURITY_TXT" => parse_security_txt(c, span),
         "PRECACHE" => parse_precache(c, span),
+        "CSP" => parse_csp(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1344,6 +1348,18 @@ fn parse_precache(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         into,
         overwrite: flags.has("overwrite"),
     })
+}
+
+/// `CSP [POLICY <policy>] [META]`
+fn parse_csp(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let policy = if c.keyword("POLICY") {
+        Some(c.operand("policy")?)
+    } else {
+        None
+    };
+    let meta = c.keyword("META");
+    c.expect_end()?;
+    Ok(Instruction::Csp { span, policy, meta })
 }
 
 /// `CHECKLINKS [--warn] [--external]`

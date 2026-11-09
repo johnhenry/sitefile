@@ -116,6 +116,7 @@ export default grammar({
         $.robots_instruction,
         $.security_txt_instruction,
         $.precache_instruction,
+        $.csp_instruction,
         $.checklinks_instruction,
         $.export_instruction,
         $.unsupported_instruction,
@@ -372,6 +373,10 @@ export default grammar({
         optional(seq(kw($, 'TO'), field('dest', $._operand))),
         optional(seq(kw($, 'INTO'), field('into', $._operand))),
       ),
+
+    // CSP [POLICY <policy>] [META]
+    csp_instruction: ($) =>
+      seq(kw($, 'CSP'), optional(seq(kw($, 'POLICY'), field('policy', $._operand))), optional(kw($, 'META'))),
 
     // CHECKLINKS [--warn] [--external]
     checklinks_instruction: ($) => seq(kw($, 'CHECKLINKS'), repeat(field('flag', $.flag))),
