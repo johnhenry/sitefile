@@ -240,3 +240,14 @@ test('a flipped byte in a stored entry fails the CRC-32 check (#183)', async () 
   e[at] = e[at]! ^ 1;
   await rejects(e, 'E_ARCHIVE', /'empty' fails its CRC-32 check/);
 });
+
+test('formats sitefile does not read are named in the E_TYPE error (#221)', async () => {
+  const pad = (m: number[]): Uint8Array => Buffer.concat([Buffer.from(m), Buffer.alloc(600)]);
+  await rejects(pad([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), 'E_TYPE', /not a recognized archive \(it is xz-compressed, e\.g\. \.tar\.xz; recompress it as \.tar\.gz or zip\)$/);
+  await rejects(pad([0x28, 0xb5, 0x2f, 0xfd]), 'E_TYPE', /\(it is zstd-compressed, e\.g\. \.tar\.zst;/);
+  await rejects(Buffer.from('BZh91AY&SY'), 'E_TYPE', /\(it is bzip2-compressed/);
+  await rejects(pad([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), 'E_TYPE', /\(it is a 7z archive; convert it to zip or tar\)$/);
+  await rejects(Buffer.from('Rar!\x1a\x07\x01\x00', 'latin1'), 'E_TYPE', /\(it is a RAR archive; convert it to zip or tar\)$/);
+  // Text that merely starts like a magic number is just unrecognized.
+  await rejects(Buffer.from('BZhello'), 'E_TYPE', /\(expected tar, tar\.gz, zip or web bundle\)$/);
+});

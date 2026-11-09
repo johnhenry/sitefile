@@ -1511,8 +1511,11 @@ checked:
 
 ### Archives (`IMPORT … AS tree` on a file)
 - Formats are detected from magic bytes, not names: tar (ustar or v7), tar.gz /
-  tgz (gzip), and zip (stored and deflate; no zip64, no encryption). Anything
-  else fails with `E_TYPE`. Supported tar extras: POSIX ustar prefix (old GNU
+  tgz (gzip), and zip (stored and deflate, including ZIP64 records: the zip64
+  end record and locator and the 0x0001 extra field, as streaming writers add
+  them even to small archives; no encryption). Anything
+  else fails with `E_TYPE`; xz, zstd and bzip2 streams and 7z and RAR
+  archives are named in the message, with what to convert them to. Supported tar extras: POSIX ustar prefix (old GNU
   headers keep timestamps there and are read without it), GNU long names, pax
   `path`/`size` (a malformed record is `E_ARCHIVE`). Other pax keys are ignored.
   Zip directories are recognized by a trailing `/` or by a directory mode.
@@ -1578,7 +1581,7 @@ seconds), it is used for the zip (clamped to 1980..2107, 2-second resolution)
 and tar timestamps instead.
 
 - **zip**: raw deflate (stored when deflate does not shrink the entry), CRC-32, central directory, UTF-8 names (flag bit 11), unix modes in
-  the external attributes (version made by = 3 << 8). No zip64: more than
+  the external attributes (version made by = 3 << 8). No zip64 is written: more than
   65535 entries, a file of 4 GiB or more, or an archive of 4 GiB or more fails
   with `E_EXPORT`.
 - **tar**: POSIX ustar. A name over 100 bytes is split into `prefix`/`name` at

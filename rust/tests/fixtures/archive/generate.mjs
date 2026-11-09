@@ -664,6 +664,78 @@ function zipOf(...entries) {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, cd, end]);
 }
+/**
+ * A zip as a forced-ZIP64 streaming writer (Node archiver/zip-stream with forceZip64, Java) writes it:
+ * data descriptors, central sizes and offsets 0xffffffff with a ZIP64 extra field, a zip64 end record
+ * and locator, and 0xffff/0xffffffff in the end record. `o` breaks one part: `noExtra`, `shortExtra`,
+ * `badLocator`, `keepEocd` (real counts in the end record), `noLocator`.
+ */
+function zip64Of(entries, o = {}) {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const [n, data] of entries) {
+    const name = B(n);
+    const body = deflateRawSync(data);
+    const l = Buffer.alloc(30);
+    l.writeUInt32LE(0x04034b50, 0);
+    l.writeUInt16LE(45, 4);
+    l.writeUInt16LE(8, 6);
+    l.writeUInt16LE(8, 8);
+    l.writeUInt16LE(name.length, 26);
+    const d = Buffer.alloc(24);
+    d.writeUInt32LE(0x08074b50, 0);
+    d.writeUInt32LE(crc32(data), 4);
+    d.writeBigUInt64LE(BigInt(body.length), 8);
+    d.writeBigUInt64LE(BigInt(data.length), 16);
+    let z = Buffer.alloc(28);
+    z.writeUInt16LE(1, 0);
+    z.writeUInt16LE(24, 2);
+    z.writeBigUInt64LE(BigInt(data.length), 4);
+    z.writeBigUInt64LE(BigInt(body.length), 12);
+    z.writeBigUInt64LE(BigInt(offset), 20);
+    if (o.noExtra) z = Buffer.alloc(0);
+    if (o.shortExtra) { z = z.subarray(0, 20); z.writeUInt16LE(16, 2); }
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0);
+    c.writeUInt16LE((3 << 8) | 45, 4);
+    c.writeUInt16LE(45, 6);
+    c.writeUInt16LE(8, 8);
+    c.writeUInt16LE(8, 10);
+    c.writeUInt32LE(crc32(data), 16);
+    c.writeUInt32LE(0xffffffff, 20);
+    c.writeUInt32LE(0xffffffff, 24);
+    c.writeUInt16LE(name.length, 28);
+    c.writeUInt16LE(z.length, 30);
+    c.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    c.writeUInt32LE(0xffffffff, 42);
+    local.push(l, name, body, d);
+    central.push(c, name, z);
+    offset += 30 + name.length + body.length + d.length;
+  }
+  const cd = Buffer.concat(central);
+  const r = Buffer.alloc(56);
+  r.writeUInt32LE(0x06064b50, 0);
+  r.writeBigUInt64LE(44n, 4);
+  r.writeUInt16LE(45, 12);
+  r.writeUInt16LE(45, 14);
+  r.writeBigUInt64LE(BigInt(entries.length), 24);
+  r.writeBigUInt64LE(BigInt(entries.length), 32);
+  r.writeBigUInt64LE(BigInt(cd.length), 40);
+  r.writeBigUInt64LE(BigInt(offset), 48);
+  const loc = Buffer.alloc(20);
+  loc.writeUInt32LE(0x07064b50, 0);
+  loc.writeBigUInt64LE(BigInt(o.badLocator ? offset + cd.length + 1 : offset + cd.length), 8);
+  loc.writeUInt32LE(1, 16);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(o.keepEocd ? entries.length : 0xffff, 8);
+  end.writeUInt16LE(o.keepEocd ? entries.length : 0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(o.keepEocd ? offset : 0xffffffff, 16);
+  return Buffer.concat([...local, cd, ...(o.noLocator ? [] : [r, loc]), end]);
+}
+
 /** Info-ZIP Unicode Path extra field (0x7075) for raw name `raw`, naming `unicode`. */
 function unicodePath(raw, unicode, { crc = crc32(B(raw)), version = 1 } = {}) {
   const u = B(unicode);
@@ -723,6 +795,22 @@ const EDGE = [
   // Python zipfile, force_zip64=True: 0xffffffff local sizes with a local ZIP64 field; seekable and streamed (data descriptors).
   () => Buffer.from('UEsDBC0AAAAIAAAAIVATjxBo//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAsAAAAAAAAACwAAAAAAAACzyTC0y8i00QdSAFBLAwQtAAAACAAAACFQe8wlO///////////CgAUAHNpdGUvYS5jc3MBABAAlgAAAAAAAAAIAAAAAAAAAEusrk0cfAgAUEsBAi0DLQAAAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0AAAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAUwAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAJAAAAAAAA==', 'base64'),
   () => Buffer.from('UEsDBC0ACAAIAAAAIVAAAAAA//////////8PABQAc2l0ZS9pbmRleC5odG1sAQAQAAAAAAAAAAAAAAAAAAAAAACzyTC0y8i00QdSAFBLBwgTjxBoCwAAAAAAAAALAAAAAAAAAFBLAwQtAAgACAAAACFQAAAAAP//////////CgAUAHNpdGUvYS5jc3MBABAAAAAAAAAAAAAAAAAAAAAAAEusrk0cfAgAUEsHCHvMJTsIAAAAAAAAAJYAAAAAAAAAUEsBAi0DLQAIAAgAAAAhUBOPEGgLAAAACwAAAA8AAAAAAAAAAAAAAIABAAAAAHNpdGUvaW5kZXguaHRtbFBLAQItAy0ACAAIAAAAIVB7zCU7CAAAAJYAAAAKAAAAAAAAAAAAAACAAWQAAABzaXRlL2EuY3NzUEsFBgAAAAACAAIAdQAAAMAAAAAAAA==', 'base64'),
+  // ZIP64 (#185): a forced-ZIP64 streaming writer, and broken variants.
+  () => zip64Of([['site/index.html', B('<h1>hi</h1>')], ['site/a.css', B('a{}'.repeat(50))]]),
+  () => zip64Of([['site/index.html', B('<h1>hi</h1>')]], { keepEocd: true }),
+  () => zip64Of([['a.txt', B('x')]], { noExtra: true }),
+  () => zip64Of([['a.txt', B('x')]], { shortExtra: true }),
+  () => zip64Of([['a.txt', B('x')]], { badLocator: true }),
+  () => zip64Of([['a.txt', B('x')]], { noLocator: true }),
+  () => zip64Of(Array.from({ length: 3 }, (_, i) => [`f${i}`, B('x')])),
+  // Formats sitefile does not read are named in the E_TYPE error (#221).
+  () => Buffer.concat([Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), Buffer.alloc(600)]),
+  () => Buffer.concat([Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), Buffer.alloc(600)]),
+  () => Buffer.from('BZh91AY&SY'),
+  () => Buffer.from('BZhello, not bzip2'),
+  () => Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4]), Buffer.alloc(600)]),
+  () => Buffer.from('Rar!\u001a\u0007\u0001\u0000', 'latin1'),
+  () => Buffer.from([0x28, 0xb5, 0x2f]),
 ];
 
 const fuzzOut = process.env.FUZZ_OUT;

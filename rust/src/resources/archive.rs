@@ -124,9 +124,10 @@ pub fn extract_archive(
     } else if is_tar(bytes) {
         read_tar(bytes, &mut c)?;
     } else {
+        let what = other_format(bytes).unwrap_or("expected tar, tar.gz, zip or web bundle");
         return Err(SitefileError::new(
             E_TYPE,
-            format!("{origin}: not a recognized archive (expected tar, tar.gz, zip or web bundle)"),
+            format!("{origin}: not a recognized archive ({what})"),
             span.cloned(),
         ));
     }
@@ -169,6 +170,26 @@ pub fn os_metadata_warning(what: &str, skipped: usize) -> String {
         "{what}: skipped {skipped} OS metadata {} (__MACOSX, ._*, .DS_Store, Thumbs.db, desktop.ini, Icon\\r); --keep-os-metadata keeps them",
         if skipped == 1 { "file" } else { "files" }
     )
+}
+
+/// Formats sitefile does not read, by magic bytes: what the file is and what to do instead.
+fn other_format(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+        return Some("it is xz-compressed, e.g. .tar.xz; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        return Some("it is zstd-compressed, e.g. .tar.zst; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(b"BZh") && b.len() > 3 && (b'1'..=b'9').contains(&b[3]) {
+        return Some("it is bzip2-compressed, e.g. .tar.bz2; recompress it as .tar.gz or zip");
+    }
+    if b.starts_with(&[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]) {
+        return Some("it is a 7z archive; convert it to zip or tar");
+    }
+    if b.starts_with(&[0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]) {
+        return Some("it is a RAR archive; convert it to zip or tar");
+    }
+    None
 }
 
 fn is_gzip(b: &[u8]) -> bool {
@@ -591,9 +612,9 @@ struct ZipEntry {
     raw_name: (usize, usize),
     method: u16,
     crc: u32,
-    csize: u32,
-    usize_: u32,
-    local: u32,
+    csize: u64,
+    usize_: u64,
+    local: u64,
     mode: u32,
     is_dir: bool,
 }
@@ -694,12 +715,20 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
         }
     }
     let eocd = eocd.ok_or_else(|| bad("zip end-of-central-directory record not found".into()))?;
-    let count = u16le(b, eocd + 10);
-    let mut p = u32le(b, eocd + 16) as usize;
-    if count == 0xffff || p == 0xffff_ffff {
-        return Err(bad("zip64 archives are not supported".into()));
+    let mut count = u16le(b, eocd + 10) as u64;
+    let mut p0 = u32le(b, eocd + 16) as u64;
+    // ZIP64 (APPNOTE 4.3.14-4.3.15): a locator right before the end record points at the zip64 end
+    // record, whose counts and offsets replace the 16- and 32-bit ones. Streaming writers add it even to small archives.
+    if eocd >= 20 && u32le(b, eocd - 20) == 0x07064b50 {
+        let r = u64le(b, eocd - 12);
+        if b.len() < 56 || r > (b.len() - 56) as u64 || u32le(b, r as usize) != 0x06064b50 {
+            return Err(bad("corrupt zip64 end-of-central-directory record".into()));
+        }
+        let r = r as usize;
+        count = u64le(b, r + 32);
+        p0 = u64le(b, r + 48);
     }
-    if count as u64 > limits.max_entries {
+    if count > limits.max_entries {
         return Err(limit(
             origin,
             format!("archive has more than {} entries", limits.max_entries),
@@ -709,6 +738,8 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
 
     let mut list: Vec<ZipEntry> = Vec::new();
     let mut declared: u64 = 0;
+    // Past the end: any offset that cannot hold a record.
+    let mut p = usize::try_from(p0).unwrap_or(usize::MAX).min(b.len());
     for _ in 0..count {
         if p + 46 > b.len() || u32le(b, p) != 0x02014b50 {
             return Err(bad("corrupt zip central directory".into()));
@@ -727,13 +758,13 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
             u16le(b, p + 8),
             &b[p + 46 + name_len..p + 46 + name_len + extra_len],
         );
-        let e = ZipEntry {
+        let mut e = ZipEntry {
             raw_name: (p + 46, name_len),
             method: u16le(b, p + 10),
             crc: u32le(b, p + 16),
-            csize: u32le(b, p + 20),
-            usize_: u32le(b, p + 24),
-            local: u32le(b, p + 42),
+            csize: u32le(b, p + 20) as u64,
+            usize_: u32le(b, p + 24) as u64,
+            local: u32le(b, p + 42) as u64,
             mode: if unix { attr & 0o7777 } else { 0o644 },
             // Some tools mark directories only by mode, without a trailing slash.
             is_dir: name.ends_with('/') || (unix && file_type == 0o040000),
@@ -745,8 +776,30 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                 e.name
             )));
         }
-        if e.csize == 0xffff_ffff || e.usize_ == 0xffff_ffff {
-            return Err(bad("zip64 archives are not supported".into()));
+        // ZIP64 extra field (0x0001): the 64-bit values of the fields that are 0xffffffff, in this order.
+        const MAX: u64 = 0xffff_ffff;
+        if e.usize_ == MAX || e.csize == MAX || e.local == MAX {
+            let z = extra_field(&b[p + 46 + name_len..p + 46 + name_len + extra_len], 0x0001);
+            let mut at = 0usize;
+            let name = e.name.clone();
+            let mut next = || -> Result<u64> {
+                match z {
+                    Some(z) if at + 8 <= z.len() => {
+                        at += 8;
+                        Ok(u64le(z, at - 8))
+                    }
+                    _ => Err(bad(format!("corrupt zip64 extra field for '{name}'"))),
+                }
+            };
+            if e.usize_ == MAX {
+                e.usize_ = next()?;
+            }
+            if e.csize == MAX {
+                e.csize = next()?;
+            }
+            if e.local == MAX {
+                e.local = next()?;
+            }
         }
         if unix && file_type != 0 && file_type != 0o100000 && file_type != 0o040000 {
             return Err(SitefileError::new(
@@ -758,7 +811,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                 span.cloned(),
             ));
         }
-        declared += e.usize_ as u64;
+        declared = declared.saturating_add(e.usize_);
         list.push(e);
         p += advance;
     }
@@ -793,13 +846,14 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
     // (entry, local header offset, data start, data end)
     let mut spans: Vec<(&ZipEntry, usize, usize, usize)> = Vec::with_capacity(list.len());
     for e in &list {
-        let h = e.local as usize;
+        // Past the end: any offset that cannot hold a header.
+        let h = usize::try_from(e.local).unwrap_or(usize::MAX).min(b.len());
         if h + 30 > b.len() || u32le(b, h) != 0x04034b50 {
             return Err(bad(format!("corrupt zip local header for '{}'", e.name)));
         }
         let name_len = u16le(b, h + 26) as usize;
         let start = h + 30 + name_len + u16le(b, h + 28) as usize;
-        if start + e.csize as usize > b.len() {
+        if start as u64 + e.csize > b.len() as u64 {
             return Err(bad(format!("truncated zip entry '{}'", e.name)));
         }
         let (at, len) = e.raw_name;
@@ -824,7 +878,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                     }
                 }
             }
-            if csize != e.csize as u64 || usize_ != e.usize_ as u64 {
+            if csize != e.csize || usize_ != e.usize_ {
                 return Err(unsafe_(e, "its local header has different sizes"));
             }
         }
@@ -852,7 +906,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
             0 => raw.to_vec(),
             8 => {
                 // Headers can lie: never inflate more than the declared size.
-                match inflate_like_node(raw, false, (e.usize_ as u64).max(1)) {
+                match inflate_like_node(raw, false, e.usize_.max(1)) {
                     Inflated::Done(d) => d,
                     Inflated::TooLarge => return Err(too_large(origin, false, &limits, span)),
                     Inflated::Corrupt => return Err(bad("corrupt compressed data".into())),
@@ -865,7 +919,7 @@ fn read_zip(b: &[u8], c: &mut Collector) -> Result<()> {
                 )))
             }
         };
-        if data.len() as u64 != e.usize_ as u64 {
+        if data.len() as u64 != e.usize_ {
             return Err(bad(format!(
                 "zip entry '{}' size does not match its header",
                 e.name

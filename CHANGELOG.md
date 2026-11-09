@@ -15,6 +15,15 @@
   not created yet. Sources are relative to the servers file. Server records
   gain an optional `project` field. Both implementations, with conformance
   cases.
+- **E_TYPE names the format** (#221): an xz, zstd or bzip2 stream, a 7z or a
+  RAR archive given to `IMPORT … AS tree` or `serve` is named in the error,
+  with what to convert it to. (zstd decoding is not added: the Rust side has
+  no zstd decoder without a new dependency; see #221.) Both implementations.
+- **ZIP64 zips are read** (#185): the zip64 end record and locator and the
+  0x0001 extra field (central and local) are read, so zips from Python's
+  `force_zip64`, Java, Go and Node `archiver` with `forceZip64` import and
+  serve; the archive limits still refuse large ones. Writing ZIP64 stays
+  unsupported. Both implementations.
 - **Zip local headers are cross-checked** (#184): a local header whose name,
   compression method or sizes (without a data descriptor) differ from the
   central directory, or entries whose bytes overlap, are `E_ARCHIVE_UNSAFE`,
