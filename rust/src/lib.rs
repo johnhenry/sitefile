@@ -77,6 +77,7 @@ pub mod outdated;
 pub mod plugins;
 pub mod profile;
 pub mod vendor;
+pub mod wacz;
 pub mod warc;
 pub mod watch;
 

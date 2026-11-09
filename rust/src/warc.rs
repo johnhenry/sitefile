@@ -50,6 +50,21 @@ fn record(fields: &[(&str, String)], block: &[u8]) -> Vec<u8> {
     out
 }
 
+/// What an index needs about a response record (WACZ).
+pub struct WarcResponse {
+    pub uri: String,
+    pub path: String,
+    pub ty: String,
+    /// `sha256:<hex>` of the payload.
+    pub digest: String,
+}
+
+/// One WARC record and, for a response, what an index needs.
+pub struct WarcRecord {
+    pub bytes: Vec<u8>,
+    pub response: Option<WarcResponse>,
+}
+
 /// `EXPORT … AS warc`: the tree as WARC/1.1 records.
 pub fn write_warc(
     tree: &Tree,
@@ -57,6 +72,20 @@ pub fn write_warc(
     epoch: Option<u64>,
     compression: Option<OciCompression>,
 ) -> Result<Vec<u8>> {
+    let records = warc_records(tree, base_url, epoch)?;
+    Ok(if compression == Some(OciCompression::Gzip) {
+        records.iter().flat_map(|r| gzip(&r.bytes)).collect()
+    } else {
+        records.into_iter().flat_map(|r| r.bytes).collect()
+    })
+}
+
+/// The records [`write_warc`] writes, in order.
+pub fn warc_records(
+    tree: &Tree,
+    base_url: Option<&str>,
+    epoch: Option<u64>,
+) -> Result<Vec<WarcRecord>> {
     let Some(raw) = base_url.filter(|b| !b.is_empty()) else {
         return Err(SitefileError::plain(
             E_VALIDATION,
@@ -68,18 +97,21 @@ pub fn write_warc(
     let rules = parse_header_rules(&String::from_utf8_lossy(
         tree.get("/_headers").map(|n| &n.bytes[..]).unwrap_or(&[]),
     ));
-    let mut records: Vec<Vec<u8>> = Vec::new();
+    let mut records: Vec<WarcRecord> = Vec::new();
     let info_id = record_id(&format!("warcinfo\0{base}"));
-    records.push(record(
-        &[
-            ("WARC-Type", "warcinfo".into()),
-            ("WARC-Record-ID", info_id.clone()),
-            ("WARC-Date", date.clone()),
-            ("Content-Type", "application/warc-fields".into()),
-        ],
-        format!("software: sitefile{CRLF}format: WARC File Format 1.1{CRLF}").as_bytes(),
-    ));
-    let response = |uri: &str, path: &str, node: &Node| -> Vec<u8> {
+    records.push(WarcRecord {
+        response: None,
+        bytes: record(
+            &[
+                ("WARC-Type", "warcinfo".into()),
+                ("WARC-Record-ID", info_id.clone()),
+                ("WARC-Date", date.clone()),
+                ("Content-Type", "application/warc-fields".into()),
+            ],
+            format!("software: sitefile{CRLF}format: WARC File Format 1.1{CRLF}").as_bytes(),
+        ),
+    });
+    let response = |uri: &str, path: &str, node: &Node| -> WarcRecord {
         let headers = headers_for(&rules, path);
         let ty = headers
             .iter()
@@ -99,7 +131,8 @@ pub fn write_warc(
         let mut block = (lines.join(CRLF) + CRLF + CRLF).into_bytes();
         block.extend_from_slice(&node.bytes);
         let block_digest = format!("sha256:{}", sha256_hex(&block));
-        record(
+        let digest = format!("sha256:{}", sha256_hex(&node.bytes));
+        let bytes = record(
             &[
                 ("WARC-Type", "response".into()),
                 (
@@ -109,15 +142,21 @@ pub fn write_warc(
                 ("WARC-Warcinfo-ID", info_id.clone()),
                 ("WARC-Date", date.clone()),
                 ("WARC-Target-URI", uri.to_string()),
-                (
-                    "WARC-Payload-Digest",
-                    format!("sha256:{}", sha256_hex(&node.bytes)),
-                ),
+                ("WARC-Payload-Digest", digest.clone()),
                 ("WARC-Block-Digest", block_digest.clone()),
                 ("Content-Type", "application/http;msgtype=response".into()),
             ],
             &block,
-        )
+        );
+        WarcRecord {
+            bytes,
+            response: Some(WarcResponse {
+                uri: uri.to_string(),
+                path: path.to_string(),
+                ty,
+                digest,
+            }),
+        }
     };
     let mut entries: Vec<_> = tree.entries().collect();
     entries.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
@@ -131,11 +170,7 @@ pub fn write_warc(
             records.push(response(&format!("{base}{}", encode_path(&dir[1..])), p, n));
         }
     }
-    Ok(if compression == Some(OciCompression::Gzip) {
-        records.iter().flat_map(|r| gzip(r)).collect()
-    } else {
-        records.concat()
-    })
+    Ok(records)
 }
 
 /// True when `bytes` start a WARC file, plain or gzipped.

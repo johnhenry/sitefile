@@ -6,6 +6,7 @@ import type { Tree } from './tree.js';
 import { writeWebBundle } from './wbn.js';
 import { writeCar } from './car.js';
 import { writeMhtml, writeSingleFile } from './single-file.js';
+import { writeWacz } from './wacz.js';
 import { writeWarc } from './warc.js';
 
 export type ArchiveFormat = Exclude<ExportFormat, 'directory' | 'oci'>;
@@ -17,7 +18,7 @@ export function isArchiveFormat(f: ExportFormat): f is ArchiveFormat {
 
 /**
  * Default output path relative to the context: `dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`, `dist.wbn`
- * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` gzipped), `dist.swbn`.
+ * (`dist.wbn.gz` for a gzipped bundle), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` gzipped), `dist.swbn`, `dist.wacz`.
  */
 export function defaultOutName(format: ExportFormat, compression?: OciCompression): string {
   switch (format) {
@@ -43,6 +44,8 @@ export function defaultOutName(format: ExportFormat, compression?: OciCompressio
       return compression === 'gzip' ? 'dist.warc.gz' : 'dist.warc';
     case 'swbn':
       return 'dist.swbn';
+    case 'wacz':
+      return 'dist.wacz';
   }
 }
 
@@ -78,6 +81,8 @@ export function encodeTree(tree: Tree, format: ArchiveFormat, options: EncodeOpt
     case 'swbn':
       // Signing needs the build's secrets: see exportBuild in executor.ts.
       throw new SitefileError('E_VALIDATION', "swbn export needs a signing key: build with 'EXPORT ... AS swbn KEY <secret-id>' and --secret");
+    case 'wacz':
+      return writeWacz(tree, { baseUrl: options.baseUrl, epoch: options.epoch });
   }
 }
 
@@ -92,6 +97,7 @@ export function formatFromExtension(out: string): ExportFormat | undefined {
   if (name.endsWith('.car')) return 'car';
   if (name.endsWith('.swbn')) return 'swbn';
   if (name.endsWith('.warc') || name.endsWith('.warc.gz')) return 'warc';
+  if (name.endsWith('.wacz')) return 'wacz';
   if (name.endsWith('.mhtml') || name.endsWith('.mht')) return 'mhtml';
   return undefined;
 }

@@ -23,7 +23,7 @@ export const KEYWORDS = {
   importKinds: ['file', 'text', 'json', 'tree', 'markdown', 'yaml', 'csv', 'wbn', 'html', 'sitefile'],
   /** The LET-only type of an html fragment (`LET name: html`). */
   fragmentType: 'html',
-  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn'],
+  exportFormats: ['directory', 'zip', 'tar', 'tgz', 'tar.gz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc', 'swbn', 'wacz'],
   compressions: ['gzip', 'none'],
   exportHosts: ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'],
   escapeModes: ['none', 'html'],

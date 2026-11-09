@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>] [FOR <host>]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn|wacz] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>] [FOR <host>]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -1781,8 +1781,8 @@ content is `E_CONFLICT`, as for any other write.
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.
 Default `--out`: `<context>/dist`, `dist.zip`, `dist.tar`, `dist.tar.gz`,
-`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`), `dist.swbn`. The format is chosen by, in order: `--format`; the `--out`
-extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`, `.swbn`; not `.html`, which stays a directory name), so `-o site.zip` writes a
+`dist.wbn` (`dist.wbn.gz` for `AS wbn COMPRESSION gzip`), `dist.oci.tar`, `dist.car`, `dist.html`, `dist.mhtml`, `dist.warc` (`dist.warc.gz` for `AS warc COMPRESSION gzip`), `dist.swbn`, `dist.wacz`. The format is chosen by, in order: `--format`; the `--out`
+extension (`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.wbn`, `.wbn.gz`, `.car`, `.mhtml`/`.mht`, `.warc`, `.warc.gz`, `.swbn`, `.wacz`; not `.html`, which stays a directory name), so `-o site.zip` writes a
 zip; then the Sitefile's `EXPORT ... AS`; then `directory`. `.oci.tar` selects `oci`.
 A wbn written to `*.wbn.gz` is gzipped unless `--compression none` says otherwise.
 
@@ -1995,8 +1995,15 @@ and tar timestamps instead.
   usual `.warc.gz` layout. WARCs are also read: `IMPORT x FROM site.warc AS tree` (plain or gzipped) and
   `sitefile serve site.warc` take the `200` responses of the first response's host, a URL ending in `/`
   as that directory's `index.html`, the first record of each path; paths are checked like archive entries
-  (`E_ARCHIVE_UNSAFE`) and the archive limits apply. WACZ (a zip of WARCs with an index) is not written
-  yet.
+  (`E_ARCHIVE_UNSAFE`) and the archive limits apply.
+- **wacz**: a [WACZ 1.1.1](https://specs.webrecorder.net/wacz/1.1.1/) package, the format
+  ReplayWeb.page opens; needs `BASE` like `warc`. A zip (written like `AS zip`) of
+  `archive/data.warc.gz` (the same bytes as `AS warc COMPRESSION gzip`), `indexes/index.cdx` (one
+  CDXJ line per response record, `<SURT> <YYYYMMDDhhmmss> {url, mime, status, digest, length, offset,
+  filename}`, sorted, the offset and length addressing the record's gzip member), `pages/pages.jsonl`
+  (every HTML page, a directory index by its directory URL, with its `<title>`), `datapackage.json`
+  (every file's SHA-256 and size) and `datapackage-digest.json`. Dates are `SOURCE_DATE_EPOCH`
+  (default `1970-01-01T00:00:00Z`). The package is not signed and is not read back (import a `.warc`).
 
 - **swbn**: a [Signed Web Bundle](https://github.com/WICG/webpackage/blob/main/explainers/integrity-signature.md)
   for an [Isolated Web App](https://github.com/WICG/isolated-web-apps). `EXPORT / AS swbn KEY iwa` with

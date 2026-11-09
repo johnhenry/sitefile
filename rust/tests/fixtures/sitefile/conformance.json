@@ -326,6 +326,7 @@
 {"dir":"conformance/cases/ok-transform-dir-tool","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 2 operations)\n","stderr":""},
 {"dir":"conformance/cases/ok-unicode-nfc","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 5 operations)\n","stderr":""},
 {"dir":"conformance/cases/ok-vendored","args":[],"code":0,"stdout":"Sitefile: OK (1 import, 2 operations)\n","stderr":""},
+{"dir":"conformance/cases/ok-wacz","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 4 operations)\n","stderr":""},
 {"dir":"conformance/cases/ok-warc","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 4 operations)\n","stderr":""},
 {"dir":"conformance/cases/ok-warc-gzip","args":[],"code":0,"stdout":"Sitefile: OK (0 imports, 4 operations)\n","stderr":""},
 {"dir":"conformance/cases/ok-warc-import","args":[],"code":0,"stdout":"Sitefile: OK (1 import, 1 operation)\n","stderr":""},

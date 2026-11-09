@@ -72,8 +72,8 @@
     "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "HTML" "SITEFILE"))
 ((export_format) @type.builtin
   (#any-of? @type.builtin
-    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml" "warc" "swbn"
-    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML" "WARC" "SWBN"))
+    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml" "warc" "swbn" "wacz"
+    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML" "WARC" "SWBN" "WACZ"))
 ((compression) @constant.builtin
   (#any-of? @constant.builtin "gzip" "none" "GZIP" "NONE"))
 ((export_host) @constant.builtin
