@@ -14,6 +14,7 @@ pub mod network;
 pub mod outdated;
 pub mod registry;
 pub mod servers;
+pub mod up;
 pub mod vendor;
 
 use crate::build_args::collect_build_args;
@@ -90,6 +91,9 @@ Serving sites (detached servers are tracked by name):
   sitefile serve --watch [-p [host:]port] [ctx]    build in memory, serve, rebuild + live reload
   sitefile servers [-a] [--json]                   list servers (alias: server ls)
   sitefile server stop|rm [-f]|restart|logs [-f] <name|id>
+  sitefile up [-f sitefile.servers.yaml]           start every server of a servers file (detached, idempotent)
+  sitefile down [-f file]                          stop and remove the servers it started
+  sitefile ps [-f file] [--json]                   list them: running, exited or not created
 
 Editor support:
   sitefile lsp [--stdio]                           language server over stdio (Rust build only; docs/LSP.md)
@@ -286,6 +290,9 @@ const TOP: &[&Command] = &[
     &bake::BAKE,
     &integrity::VERIFY,
     &integrity::DIFF,
+    &up::UP,
+    &up::DOWN,
+    &up::PS,
 ];
 
 struct Group {

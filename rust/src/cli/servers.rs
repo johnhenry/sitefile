@@ -136,7 +136,10 @@ fn logging_of(v: &Parsed) -> Result<(bool, bool, bool)> {
 fn log_writer(json: bool) -> crate::server::LogFn {
     Arc::new(move |l: &str| {
         if json && !l.starts_with('{') {
-            out(&format!("{}\n", crate::server::json_log_line(&now_iso(), l)));
+            out(&format!(
+                "{}\n",
+                crate::server::json_log_line(&now_iso(), l)
+            ));
         } else {
             out(&format!("{l}\n"));
         }
@@ -351,6 +354,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             log_format: log_json.then(|| "json".to_string()),
             log_ip,
             quiet,
+            project: None,
         },
         None,
         &warn,
@@ -536,7 +540,12 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         if log_json {
             out(&format!(
                 "{}\n",
-                crate::server::started_log_line(&now_iso(), &context, n, &format_url(&s.host, s.port))
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &context,
+                    n,
+                    &format_url(&s.host, s.port)
+                )
             ));
         } else {
             out(&format!(
@@ -681,7 +690,10 @@ pub fn serve_worker(id: &str) -> i32 {
             let message = format!("error[{}]: {}", e.code, e.message());
             let ts = now_iso();
             if json {
-                err(&format!("{}\n", crate::server::json_log_line(&ts, &message)));
+                err(&format!(
+                    "{}\n",
+                    crate::server::json_log_line(&ts, &message)
+                ));
             } else {
                 err(&format!("{ts} {message}\n"));
             }
@@ -760,7 +772,7 @@ fn run_ps(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-fn grace_of(v: &Parsed) -> Result<Duration> {
+pub fn grace_of(v: &Parsed) -> Result<Duration> {
     let Some(t) = v.str("time") else {
         return Ok(Duration::from_secs(5));
     };
