@@ -13,9 +13,9 @@
 use crate::cli::common::{err, out};
 use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::export::exporter::{matches_temp_pattern, resolve_path};
+use crate::platform::MetadataExt;
 use crate::store::resolve_store_home;
 use std::collections::BTreeMap;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,7 @@ pub struct Stamp {
     ino: u64,
 }
 
-fn stamp(m: &std::fs::Metadata) -> Stamp {
+fn stamp(m: &crate::platform::Meta) -> Stamp {
     Stamp {
         kind: m.mode() & 0o170000,
         len: m.len(),
@@ -134,7 +134,7 @@ impl Watched {
             if self.ignores(&p) {
                 continue;
             }
-            let Ok(m) = std::fs::symlink_metadata(&p) else {
+            let Ok(m) = crate::platform::lstat(&p) else {
                 continue;
             };
             let is_dir = m.is_dir();
@@ -153,7 +153,7 @@ impl Watched {
         }
         for f in &self.files {
             if !snap.contains_key(f) && !self.ignores(f) {
-                snap.insert(f.clone(), std::fs::metadata(f).ok().map(|m| stamp(&m)));
+                snap.insert(f.clone(), crate::platform::stat(f).ok().map(|m| stamp(&m)));
             }
         }
         snap

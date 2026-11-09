@@ -172,9 +172,11 @@ fn private_dir(dir: &Path) -> bool {
         Err(_) => false,
     }
 }
+/// Elsewhere (Windows) there is no permission-bit check for "nobody else can
+/// write here", so the cache is not used: every load compiles (#318).
 #[cfg(not(unix))]
-fn private_dir(dir: &Path) -> bool {
-    std::fs::create_dir_all(dir).is_ok()
+fn private_dir(_: &Path) -> bool {
+    false
 }
 
 /// Atomic write (temp file + rename), mode 0600.
@@ -830,6 +832,7 @@ mod tests {
         COMPILES.with(|c| c.get())
     }
 
+    #[cfg(unix)] // the disk cache is Unix-only (private_dir)
     #[test]
     fn disk_cache_miss_then_hit_then_corrupt_fallback() {
         let dir = tmp("hit").join("cache");
@@ -889,6 +892,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
+    #[cfg(unix)] // the disk cache is Unix-only (private_dir)
     #[test]
     fn disk_hits_still_check_the_module_and_bad_modules_are_never_cached() {
         let dir = tmp("check").join("cache");

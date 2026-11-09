@@ -72,6 +72,33 @@ jobs:
           path: rust/target/release/sitefile
           retention-days: 3
 
+  # The Rust port on Windows (#318): it must build there, and the tests that
+  # don't need Unix (symlinks, permission bits, shell scripts, detached
+  # servers; those are #[cfg(unix)]) must pass. docs/RUST.md, "Windows".
+  rust-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: cargo build
+        run: cargo build --locked
+
+      - name: cargo test
+        run: cargo test --locked
+
   # Both implementations on the same inputs: same exit codes, error lines and
   # output bytes (offline and network cases; the network cases need openssl,
   # which ubuntu-latest has).

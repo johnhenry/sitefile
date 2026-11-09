@@ -32,13 +32,13 @@ use crate::export::oci::{
     layout_tree, parse_config, parse_manifest, site_layer_index, site_layer_indices, IndexEntry,
     LayoutParts, OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
 };
+use crate::platform::{DirBuilderExt, OpenOptionsExt};
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key, ImageRef};
 use crate::tree::Tree;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

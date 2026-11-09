@@ -5,8 +5,8 @@ are maintained: same language, same CLI, same output.
 
 ## Roles (decided in #82)
 
-- **The Rust binary is the product.** It's what releases ship for macOS
-  and Linux, and what editors run (`sitefile lsp`). Install instructions,
+- **The Rust binary is the product.** It's what releases ship for macOS,
+  Linux and Windows, and what editors run (`sitefile lsp`). Install instructions,
   benchmarks and editor setup assume it. See [Release binaries](#release-binaries).
 - **TypeScript is the reference specification and the library.**
   - When the two disagree, the TypeScript behaviour is the specification
@@ -51,14 +51,14 @@ when a version bump reaches `main`; this workflow then builds that tag.
 | `x86_64-apple-darwin` | `macos-latest` | cross-compiled, not smoke-tested |
 | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | glibc 2.35 or later |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | glibc 2.35 or later |
+| `x86_64-pc-windows-msvc` | `windows-latest` | a `.zip` with `sitefile.exe`; see [Windows](#windows) |
 
 Each is `cargo build --release --locked --target <target>`, packed as
-`sitefile-<version>-<target>.tar.gz` with `LICENSE` and `README.md`. The same
+`sitefile-<version>-<target>.tar.gz` (Windows: `sitefile-<version>-<target>.zip`
+with `sitefile.exe`) with `LICENSE` and `README.md`. The same
 run packs the VS Code extension as `sitefile-vscode-<extension version>.vsix`
 and uploads everything plus `SHA256SUMS` (uploaded last; its presence marks
-a release as done). There is no Windows target: the port uses
-`std::os::unix` APIs unconditionally (store, local resources, watch,
-plugins).
+a release as done).
 
 Triggers:
 
@@ -77,6 +77,49 @@ Triggers:
 Building from source needs a stable toolchain (1.85 or later, `rust-version`
 in `Cargo.toml`) and a C compiler for `ring` and the vendored Brotli encoder:
 `cargo install --locked --path rust`.
+
+## Windows
+
+The binary builds for `x86_64-pc-windows-msvc` (johnhenry/sitefile#318), and CI
+runs the Rust tests there (the `rust-windows` job; tests that need symlinks,
+permission bits, shell scripts or detached servers are `#[cfg(unix)]`). Unix
+behaviour is unchanged: `rust/src/platform.rs` re-exports the `std::os::unix`
+items on Unix and supplies a Windows stand-in for each. On Windows:
+
+- **Permission bits are neither applied nor read.** Files are created without
+  a mode (the store, server records and logs rely on the default ACL of the
+  user's profile instead of `0600`/`0700`), exported files get no mode, and
+  every file read from a build context has mode `0644` in the tree (Windows has
+  no execute bit).
+- **Hard links and file identity use `GetFileInformationByHandle`** (declared
+  in `platform.rs`; kernel32 is linked by std already, so no new crate): the
+  link count for `E_HARDLINK`, and volume serial number plus file index as the
+  device and inode that the exporter's race checks and incremental exports
+  compare. `ctime` is the file's creation time there (that call has no inode
+  change time). On ReFS the 64-bit file index is a truncation of the 128-bit
+  ID.
+- **Detached servers are not supported.** `serve -d` and `server restart`
+  fail with `E_UNSUPPORTED` ("detached servers (serve -d, server restart) are
+  not supported on Windows; run serve in the foreground"): the worker relies
+  on a separate process group and SIGTERM, which have no sound std-only
+  equivalent. `servers` still lists records (a pid is checked with
+  `tasklist`), and `server stop` ends one with `taskkill /F`.
+- **`serve` on `0.0.0.0` or `::` prints no network URLs** (and `--qr` encodes the
+  local URL): listing interfaces needs `GetAdaptersAddresses`, which std does
+  not wrap.
+- **`serve`'s single keys act after Enter**: there is no `stty`, so the
+  console stays line-buffered. Ctrl-C stops the server (the C runtime's
+  `signal`). `--open` and `o` use `explorer <url>` unless `$BROWSER` is set.
+- **The wasm module disk cache is off**: it trusts the files it maps, and
+  without permission bits there is no cheap "nobody else can write here"
+  check, so every process compiles each wasm plugin (~55 ms).
+- **`TOOL` lookup on `PATH` takes the name as given**: `--allow-exec node`
+  finds a file named `node`, not `node.exe` (there is no `PATHEXT` search);
+  pass `--allow-exec node=C:\path\to\node.exe`.
+- A symlink loop is recognised by Windows' `ERROR_CANT_RESOLVE_FILENAME`
+  (`E_UNSUPPORTED_FILE`, as `ELOOP` on Unix). Creating symlinks needs
+  Developer Mode or an elevated prompt on Windows, so the symlink tests do not
+  run there.
 
 ## Layout
 

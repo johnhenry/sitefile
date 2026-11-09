@@ -1,6 +1,8 @@
 //! Incremental rebuilds (src/memo.rs), ported from test/incremental.test.ts: a
 //! build with a memo must be byte-identical to a clean build (same files, modes,
 //! contents and origins, same warnings, same errors) across random edits.
+//! The random-edit and tampering runs use symlinks and permission bits, so they are Unix-only.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 use sitefile::build_args::BuildArgs;
 use sitefile::digest::sha256;
@@ -10,11 +12,11 @@ use sitefile::executor::{
 use sitefile::export::exporter::{export_directory, ExportOptions};
 use sitefile::export::incremental::{Applied, ExportState, SharedExportState};
 use sitefile::memo::BuildMemo;
+use sitefile::platform::{MetadataExt, PermissionsExt};
 use sitefile::profile::Profiler;
 use sitefile::tree::{make_file, Tree};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -501,6 +503,7 @@ fn list_dir(dir: &Path) -> Option<Vec<String>> {
     Some(out)
 }
 
+#[cfg(unix)]
 const TAMPERS: &[&str] = &[
     "rewrite-same-size",
     "append",
@@ -514,6 +517,7 @@ const TAMPERS: &[&str] = &[
 ];
 
 /// Modify an exported directory behind the exporter's back (`victim`: a directory outside it).
+#[cfg(unix)]
 fn tamper(out: &Path, victim: &Path, kind: &str, pick: &mut dyn FnMut(usize) -> usize) {
     let all = list_dir(out).unwrap_or_default();
     let files: Vec<String> = all
@@ -589,6 +593,7 @@ fn tamper(out: &Path, victim: &Path, kind: &str, pick: &mut dyn FnMut(usize) -> 
     }
 }
 
+#[cfg(unix)]
 fn random_edits(seed: u32) {
     let work = Tmp::new();
     let mut site = Site::new(work.0.join("ctx"), seed);
@@ -655,26 +660,31 @@ fn random_edits(seed: u32) {
     assert!(tampered > 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_equals_clean_seed_1() {
     random_edits(1);
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_equals_clean_seed_7() {
     random_edits(7);
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_equals_clean_seed_42() {
     random_edits(42);
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_equals_clean_seed_1234() {
     random_edits(1234);
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_equals_clean_seed_99991() {
     random_edits(99991);
@@ -818,7 +828,7 @@ impl Pair {
 }
 
 fn ino(p: &Path) -> u64 {
-    fs::symlink_metadata(p).unwrap().ino()
+    sitefile::platform::lstat(p).unwrap().ino()
 }
 
 const fn applied(written: usize, removed: usize) -> Option<Applied> {
@@ -844,6 +854,7 @@ fn incremental_export_writes_only_what_changed() {
         p.run(&files(20, &[("/d1/f1.txt", "edited", 0o755)])),
         applied(1, 0)
     );
+    #[cfg(unix)] // Windows applies no permission bits (docs/RUST.md, "Windows")
     assert_eq!(
         fs::metadata(p.out.join("d1/f1.txt"))
             .unwrap()
@@ -882,6 +893,7 @@ fn incremental_export_large_or_case_changes_are_full() {
     p.run(&files(20, &[("/about.html", "b", 0o644)]));
 }
 
+#[cfg(unix)]
 #[test]
 fn incremental_export_detects_and_undoes_tampering() {
     for kind in TAMPERS {

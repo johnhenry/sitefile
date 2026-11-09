@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Windows build of the Rust binary** (johnhenry/sitefile#318): `rust/` now builds for
+  `x86_64-pc-windows-msvc`. Unix-only code is behind `cfg(unix)`, with Windows stand-ins in the new
+  `rust/src/platform.rs` (on Unix it re-exports the `std::os::unix` items, so nothing changes there):
+  hard-link counts and file identity come from `GetFileInformationByHandle` (kernel32, no new crate),
+  permission bits are neither applied nor read, and `serve -d` / `server restart` fail with
+  `E_UNSUPPORTED`. `serve` shows no network URLs and reads keys line by line there, and the wasm
+  module disk cache is off. sha2's `asm` feature is now enabled everywhere but MSVC (sha2-asm does
+  not build there). CI gains a `rust-windows` job (build and the tests that can run on Windows; the
+  rest are `#[cfg(unix)]`), and release-binaries.yml a `x86_64-pc-windows-msvc` zip with
+  `sitefile.exe`, `LICENSE` and `README.md`, included in `SHA256SUMS`. docs/RUST.md, "Windows",
+  lists every difference.
 - **`pattern` in schemas** (johnhenry/sitefile#135): a property rule can say
   `pattern: '^[a-z0-9-]+$'`; string values (and each element of a list) must match it, like JSON
   Schema's `pattern`. Patterns are a subset of JavaScript regular expressions (`u` flag: literals,

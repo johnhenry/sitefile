@@ -247,9 +247,8 @@ impl TempDir {
             }
             let dir = base.join(format!("{prefix}{suffix}"));
             let mut b = fs::DirBuilder::new();
-            #[cfg(unix)]
             {
-                use std::os::unix::fs::DirBuilderExt;
+                use crate::platform::DirBuilderExt;
                 b.mode(0o700);
             }
             match b.create(&dir) {

@@ -30,6 +30,7 @@ use crate::export::exporter::random_hex;
 use crate::export::oci::{
     blob_path_of, decode_index, media, parse_config, parse_manifest, site_layer_indices,
 };
+use crate::platform::{DirBuilderExt, OpenOptionsExt};
 use crate::resources::archive::{
     extract_archive, open_zip_file, os_metadata_warning, without_os_metadata,
 };
@@ -42,7 +43,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -498,6 +498,7 @@ fn url_of(host: &str, port: u16) -> String {
 /// Whether a process exists (`kill -0`; EPERM counts as alive). A zombie (a
 /// child that exited and was not waited for) still counts; detached workers
 /// are reaped by [`start_detached`], so this sees them exit.
+#[cfg(unix)]
 pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 || pid > i32::MAX as i64 {
         return false;
@@ -514,6 +515,36 @@ pub fn pid_alive(pid: i64) -> bool {
             .contains("not permitted"),
         Err(_) => false,
     }
+}
+
+/// Whether a process exists (Windows: `tasklist /FI "PID eq <pid>"` lists it).
+#[cfg(windows)]
+pub fn pid_alive(pid: i64) -> bool {
+    if pid <= 0 || pid > u32::MAX as i64 {
+        return false;
+    }
+    match std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\""))
+        }
+        _ => false,
+    }
+}
+
+/// The error of `serve -d` and `server restart` on Windows (#318): the worker
+/// is a detached process in its own process group, stopped with SIGTERM, which
+/// has no sound std-only equivalent there. docs/RUST.md, "Windows".
+#[cfg(windows)]
+fn detached_unsupported() -> SitefileError {
+    SitefileError::plain(
+        E_UNSUPPORTED,
+        "detached servers (serve -d, server restart) are not supported on Windows; run serve in the foreground",
+    )
 }
 
 /// Alive AND answering on its port with its own id header (guards against pid and port reuse).
@@ -1277,6 +1308,12 @@ pub fn serve_detached_with(
     worker_exe: Option<&Path>,
     warn: &dyn Fn(&str),
 ) -> Result<ServerState> {
+    #[cfg(windows)]
+    {
+        let _ = (reg, serve, worker_exe, warn);
+        return Err(detached_unsupported());
+    }
+    #[cfg_attr(windows, allow(unreachable_code))]
     let options = ServedTreeOptions {
         keep_os_metadata: serve.keep_os_metadata,
         warn: Some(warn),
@@ -1379,6 +1416,12 @@ pub fn restart_detached(
     grace: Duration,
     worker_exe: Option<&Path>,
 ) -> Result<ServerState> {
+    #[cfg(windows)]
+    {
+        let _ = (reg, s, grace, worker_exe);
+        return Err(detached_unsupported());
+    }
+    #[cfg_attr(windows, allow(unreachable_code))]
     stop_server(reg, s, grace)?;
     let options = ServedTreeOptions {
         keep_os_metadata: s.keep_os_metadata,
@@ -1408,6 +1451,18 @@ pub fn restart_detached(
 /// group, stdin closed, output appended to its log, `SITEFILE_HOME` set to the
 /// registry's store) and wait until the record says ready, the worker fails, or
 /// [`START_TIMEOUT`]. The worker is reaped on a background thread.
+#[cfg(windows)]
+pub fn start_detached(
+    reg: &ServerRegistry,
+    state: &ServerState,
+    worker_exe: Option<&Path>,
+) -> Result<ServerState> {
+    let _ = (reg, state, worker_exe);
+    Err(detached_unsupported())
+}
+
+/// Spawn the detached worker (see the Unix version); not supported on Windows.
+#[cfg(unix)]
 pub fn start_detached(
     reg: &ServerRegistry,
     state: &ServerState,
@@ -1486,6 +1541,7 @@ pub fn start_detached(
 
 /// Wait for `child` on a background thread, so it never lingers as a zombie.
 /// (If no thread can be started, it stays unreaped until this process exits.)
+#[cfg(unix)]
 fn reap(mut child: std::process::Child) {
     let _ = std::thread::Builder::new()
         .name("sitefile-reaper".into())
@@ -1497,16 +1553,35 @@ fn reap(mut child: std::process::Child) {
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 
+#[cfg(unix)]
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
+#[cfg(unix)]
 fn send(pid: i64, sig: i32) -> bool {
     if pid <= 0 || pid > i32::MAX as i64 {
         return false;
     }
     // SAFETY: plain syscall wrapper.
     unsafe { kill(pid as i32, sig) == 0 }
+}
+
+/// Windows has no SIGTERM for a console-less process: both signals end it
+/// with `taskkill /F` (only reachable for a record written elsewhere, since
+/// detached servers cannot start on Windows).
+#[cfg(windows)]
+fn send(pid: i64, _sig: i32) -> bool {
+    if pid <= 0 || pid > u32::MAX as i64 {
+        return false;
+    }
+    std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// `server stop`: SIGTERM, wait up to `grace`, then SIGKILL (and 2 s more).
@@ -1718,6 +1793,7 @@ mod tests {
         assert!(!pid_alive(0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_trees_hide_dotfiles_and_refuse_escapes() {
         let d = TmpDir::new("servers");

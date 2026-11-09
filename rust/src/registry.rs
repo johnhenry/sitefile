@@ -3356,6 +3356,7 @@ mod tests {
     use crate::refs::parse_local_ref;
     use crate::tree::{make_file, Tree};
     use serde_json::json;
+    #[cfg(unix)]
     use std::path::Path;
 
     const SECRET: &str = "s3cr3t-pw-do-not-print";
@@ -3977,6 +3978,7 @@ mod tests {
         assert!(!e.message().contains("nope"));
     }
 
+    #[cfg(unix)]
     fn fake_helper(bin: &Path, log: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
@@ -3988,6 +3990,7 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn credential_helpers_only_the_named_one_url_on_stdin_nothing_on_argv() {
         let reg = MockRegistry::start(MockOptions {

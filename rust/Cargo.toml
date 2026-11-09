@@ -67,7 +67,7 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = { version = "0.10", features = ["asm"] }
+sha2 = "0.10"
 base64 = "0.22"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
@@ -78,6 +78,11 @@ icu_normalizer = { version = "2", default-features = false, features = ["compile
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 bcrypt = { version = "0.19", default-features = false }
 ruzstd = "0.8"
+
+# sha2's `asm` backend (sha2-asm) does not build for MSVC, so it is enabled on
+# every other target only (#318); Windows uses sha2's portable/intrinsics code.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }
 
 [build-dependencies]
 # Compiles the vendored C Brotli encoder (vendor/brotli; see the rationale above).

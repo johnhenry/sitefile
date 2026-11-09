@@ -16,10 +16,10 @@ use super::exporter::{
     remove_if_same, show, split_parent, unsafe_err, ExportOptions, ExportResult, FileId, Planned,
 };
 use crate::error::Result;
+use crate::platform::{Meta, MetadataExt, OpenOptionsExt};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -61,7 +61,7 @@ pub(super) struct Stamp {
     mode: u32,
 }
 
-pub(super) fn stamp_of(m: &fs::Metadata) -> Stamp {
+pub(super) fn stamp_of(m: &Meta) -> Stamp {
     Stamp {
         dev: m.dev(),
         ino: m.ino(),
@@ -72,7 +72,7 @@ pub(super) fn stamp_of(m: &fs::Metadata) -> Stamp {
     }
 }
 
-fn same_stamp(m: Option<&fs::Metadata>, s: &Stamp) -> bool {
+fn same_stamp(m: Option<&Meta>, s: &Stamp) -> bool {
     matches!(m, Some(m) if is_real_file(m) && stamp_of(m) == *s)
 }
 
@@ -206,7 +206,7 @@ fn matches_snapshot(out: &Path, snap: &Snapshot) -> bool {
 pub(super) fn try_incremental(
     planned: &[Planned],
     out_real: &Path,
-    st: Option<&fs::Metadata>,
+    st: Option<&Meta>,
     state: &mut ExportState,
     options: &ExportOptions,
 ) -> Option<ExportResult> {
@@ -294,8 +294,8 @@ pub(super) fn try_incremental(
                 .mode(0o600)
                 .open(&file)?;
             f.write_all(e.bytes)?;
-            f.set_permissions(fs::Permissions::from_mode(e.mode))?;
-            let id = id_of(&f.metadata()?);
+            crate::platform::set_file_mode(&f, e.mode)?;
+            let id = id_of(&crate::platform::fstat(&f)?);
             staged.push((*e, file, id));
         }
         Ok(staged)

@@ -1,5 +1,7 @@
 //! `serve` keys, `--open` and `--qr` (issue #224), driven through a pipe
 //! (`SITEFILE_SERVE_KEYS=1`): the same session as test/serve-keys.test.ts.
+//! Unix-only: the fake browser is a shell script.
+#![cfg(unix)]
 
 use std::fs;
 use std::io::{Read, Write};

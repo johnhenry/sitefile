@@ -86,13 +86,14 @@ pub fn open_url(base: &str, path: &str) -> String {
 }
 
 /// Open `url` in the browser: `$BROWSER` when set (run with the URL as its
-/// only argument, no shell), else `open` (macOS) or `xdg-open`. A failure is a
+/// only argument, no shell), else `open` (macOS), `explorer` (Windows) or `xdg-open`. A failure is a
 /// warning: the server keeps running.
 pub fn open_browser(url: &str) {
     let browser = std::env::var("BROWSER").ok().filter(|b| !b.is_empty());
     let (cmd, args): (String, Vec<String>) = match browser {
         Some(b) => (b, vec![url.to_string()]),
         None if cfg!(target_os = "macos") => ("open".into(), vec![url.to_string()]),
+        None if cfg!(windows) => ("explorer".into(), vec![url.to_string()]),
         None => ("xdg-open".into(), vec![url.to_string()]),
     };
     let spawned = Command::new(&cmd)
@@ -111,8 +112,21 @@ pub fn open_browser(url: &str) {
     }
 }
 
+#[cfg(unix)]
 extern "C" {
     fn isatty(fd: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn stdin_is_tty() -> bool {
+    // SAFETY: isatty only inspects a file descriptor.
+    unsafe { isatty(0) == 1 }
+}
+
+#[cfg(windows)]
+fn stdin_is_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 /// The terminal's settings before raw mode (`stty -g`), restored on drop.
@@ -129,6 +143,14 @@ impl Drop for Raw {
     }
 }
 
+/// Windows has no `stty`: the console stays line-buffered, so a key acts
+/// after Enter (docs/RUST.md, "Windows").
+#[cfg(windows)]
+fn raw_mode() -> Raw {
+    Raw(None)
+}
+
+#[cfg(unix)]
 fn raw_mode() -> Raw {
     let saved = Command::new("stty")
         .arg("-g")
@@ -158,8 +180,7 @@ pub struct Keys {
 /// `SITEFILE_SERVE_KEYS=1` (tests drive it through a pipe), and run `on_action`
 /// for each on a background thread. None when keys are off.
 pub fn read_keys(on_action: Box<dyn Fn(KeyAction) + Send>) -> Option<Keys> {
-    // SAFETY: isatty only inspects a file descriptor.
-    let tty = unsafe { isatty(0) } == 1;
+    let tty = stdin_is_tty();
     if !tty && std::env::var("SITEFILE_SERVE_KEYS").ok().as_deref() != Some("1") {
         return None;
     }
