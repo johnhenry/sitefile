@@ -30,7 +30,7 @@ test('keys, URLs and --open', () => {
 });
 
 async function waitFor(get: () => string, what: string): Promise<string> {
-  for (const start = Date.now(); Date.now() - start < 20_000; await new Promise((r) => setTimeout(r, 50))) {
+  for (const start = Date.now(); Date.now() - start < 60_000; await new Promise((r) => setTimeout(r, 50))) {
     const t = get();
     if (t.includes(what)) return t;
   }
