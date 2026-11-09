@@ -1179,6 +1179,11 @@ on disk after the server started answers `500` for the entries that changed (`se
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
   `Access-Control-Allow-Headers` (when it is a plain list of header names) and `Access-Control-Max-Age: 600`.
   Without it `OPTIONS` is `405` as before. Stored in the server record (`cors`).
+- **`--isolate`** makes pages cross-origin isolated (`SharedArrayBuffer`, wasm threads, precise timers need it,
+  and only response headers can turn it on): every response gets `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
+  cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
+  same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
