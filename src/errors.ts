@@ -79,16 +79,20 @@ export type ErrorCode =
   | 'E_CANCELLED';
 
 /**
- * The permission a build needs: carried by the `E_UNSUPPORTED` error of a JavaScript PLUGIN
- * (`--allow-plugin <name>`) or a TOOL (`--allow-exec <name>`) that was not allowed, so callers
- * need not parse the message.
+ * The permission a build needs, so callers need not parse the message. Carried by:
+ *   - the `E_UNSUPPORTED` error of a JavaScript PLUGIN (`--allow-plugin <name>`) or a TOOL
+ *     (`--allow-exec <name>`) that was not allowed;
+ *   - the `E_HOST_BLOCKED` error of a host that matches no allow-hosts rule (`--allow-hosts <host>`;
+ *     a deny-hosts match carries none, since no flag overrides it);
+ *   - in strict network mode, the `E_HOST_BLOCKED` error of an `IMPORT … SECRET` whose secret may not be
+ *     sent to the import's host (`--allow-secret-host <id>=<host>`).
  */
 export interface Needs {
-  readonly kind: 'plugin' | 'tool';
-  /** The declared PLUGIN or TOOL name. */
+  readonly kind: 'plugin' | 'tool' | 'host' | 'secret-host';
+  /** The declared PLUGIN or TOOL name, the host, or `<secret id>=<host>`. */
   readonly name: string;
-  /** The flag that grants it. */
-  readonly flag: '--allow-plugin' | '--allow-exec';
+  /** The flag that grants it (its value is `name`). */
+  readonly flag: '--allow-plugin' | '--allow-exec' | '--allow-hosts' | '--allow-secret-host';
 }
 
 export function needsPlugin(name: string): Needs {
@@ -97,6 +101,28 @@ export function needsPlugin(name: string): Needs {
 
 export function needsTool(name: string): Needs {
   return { kind: 'tool', name, flag: '--allow-exec' };
+}
+
+export function needsHost(host: string): Needs {
+  return { kind: 'host', name: host, flag: '--allow-hosts' };
+}
+
+export function needsSecretHost(id: string, host: string): Needs {
+  return { kind: 'secret-host', name: `${id}=${host}`, flag: '--allow-secret-host' };
+}
+
+/**
+ * The `--json` form of a failed command (printed on stdout, next to the `error[CODE]:` line on stderr):
+ * `{ "error": { code, message, span, needs } }`, with `span` and `needs` null when absent.
+ */
+export function errorJson(e: SitefileError): string {
+  const error = {
+    code: e.code,
+    message: e.message,
+    span: e.span ? { file: e.span.file, line: e.span.line, column: e.span.column } : null,
+    needs: e.needs ? { kind: e.needs.kind, name: e.needs.name, flag: e.needs.flag } : null,
+  };
+  return JSON.stringify({ error }, null, 2) + '\n';
 }
 
 export interface SitefileErrorOptions extends ErrorOptions {
@@ -109,7 +135,7 @@ export class SitefileError extends Error {
   readonly span: SourceSpan | undefined;
   /** The message without the location prefix. */
   readonly detail: string;
-  /** For a permission error (`E_UNSUPPORTED` at a PLUGIN or TOOL line): what must be allowed. Not part of the message. */
+  /** For a permission error (`E_UNSUPPORTED` at a PLUGIN or TOOL line, `E_HOST_BLOCKED`): what must be allowed. Not part of the message. */
   readonly needs: Needs | undefined;
 
   constructor(code: ErrorCode, detail: string, span?: SourceSpan, options?: SitefileErrorOptions) {

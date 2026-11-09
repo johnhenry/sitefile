@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import path from 'node:path';
-import { SitefileError, isSitefileError } from './errors.js';
+import { errorJson, SitefileError, isSitefileError } from './errors.js';
 import { build, buildToDirectory, checkPlanPins, lintBuild, planBuild, sitefileCompression, type BuildOptions } from './executor.js';
 import { LINT_RULES } from './lint.js';
 import { compressionFromExtension, defaultOutName, formatFromExtension } from './export-formats.js';
@@ -17,13 +17,16 @@ import { EXTRA_HELP, isExtraCommand, runExtraCommand } from './cli/index.js';
 import { evictAfterBuild, transformCacheDir } from './cli/cache.js';
 import { storeBuildAsImage, validateImageTags } from './cli/build-image.js';
 import { SITEFILE_VERSION } from './attest.js';
-import { watchLoop } from './cli/watch.js';
+import { pollOption, watchLoop } from './cli/watch.js';
 import { Profiler } from './profile.js';
 import { watchMemo, type BuildMemo } from './memo.js';
 import { promises as fs } from 'node:fs';
 import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 import { loadSecrets } from './secrets.js';
+import { exportFile } from './exporter.js';
+import { encodeManifest, manifestOf } from './integrity.js';
+import type { Tree } from './tree.js';
 import { NETWORK_OPTIONS, networkHelp, networkOption } from './cli/network.js';
 
 const VERSION = SITEFILE_VERSION;
@@ -78,6 +81,10 @@ Options:
                                a build secret for IMPORT ... SECRET <id> AS HEADER <Name> | AS BEARER
                                (repeatable); sent only to that import's origin, never recorded
       --plugin-timeout <ms>    per-call time limit for TRANSFORM plugins and tools (default 60000)
+      --plugin-memory <MiB>    memory limit for each plugin: a JavaScript plugin's heap, a wasm
+                               plugin's linear memory (default 1024)
+      --node <path>            the Node binary JavaScript plugins run on (absolute path; default
+                               $SITEFILE_NODE, else the Node running sitefile); must be >= 26
       --allow-exec <name[=path]> allow a TOOL (external program) to run, resolved on PATH or at
                                the absolute path (repeatable); programs run with your privileges
       --allow-plugin <name>    allow a JavaScript PLUGIN to run (repeatable; wasm plugins need no flag)
@@ -90,6 +97,8 @@ Options:
                                registry cache (build only, once); registry problems only warn
       --build-arg-file <path>  read ARGs from a .json, .yaml/.yml or .env file (repeatable;
                                later files win, --build-arg wins over files)
+      --manifest <file>        also write a manifest of the exported files (build only): path, size and
+                               SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -102,13 +111,19 @@ Options:
       --allow-http             permit plain http:// imports
       --allow-private-network  permit loopback/private network addresses
       --allow-hardlinks        permit hard-linked files in the context (you assert they are safe)
+      --keep-os-metadata       keep __MACOSX, ._*, .DS_Store, Thumbs.db and desktop.ini in archives
+                               imported AS tree (default: skipped with a warning)
       --max-download-bytes <n> per-resource size limit (default ${DEFAULT_FETCH_POLICY.maxBytes})
       --timeout <ms>           per-resource fetch timeout (default ${DEFAULT_FETCH_POLICY.timeoutMs})
 ${networkHelp(25).map((l) => `      ${l}`).join('\n')}
-      --json                   machine-readable output (validate, inspect, graph, why)
+      --json                   machine-readable output (validate, inspect, graph, why); with any
+                               command, a failure is also printed on stdout as JSON (code, span, needs)
       --dot                    Graphviz DOT output (graph only)
       --watch                  build, then rebuild when the context, the Sitefile or a
                                --build-arg-file changes (build only; Ctrl-C stops)
+      --poll                   --watch: poll for changes (every 1000 ms) instead of file system
+                               events (network shares, Docker bind mounts, WSL)
+      --poll-interval <ms>     --watch: poll every <ms> milliseconds (implies --poll)
       --profile <file>         write a timing trace of the build (Chrome trace event JSON:
                                chrome://tracing, ui.perfetto.dev); --watch rewrites it per build
   -h, --help                   show this help
@@ -152,6 +167,8 @@ export async function main(
         'build-arg-file': { type: 'string', multiple: true },
         secret: { type: 'string', multiple: true },
         'plugin-timeout': { type: 'string' },
+        'plugin-memory': { type: 'string' },
+        node: { type: 'string' },
         'allow-exec': { type: 'string', multiple: true },
         'allow-plugin': { type: 'string', multiple: true },
         'allow-plugins': { type: 'boolean' },
@@ -168,12 +185,16 @@ export async function main(
         'allow-http': { type: 'boolean' },
         'allow-private-network': { type: 'boolean' },
         'allow-hardlinks': { type: 'boolean' },
+        'keep-os-metadata': { type: 'boolean' },
         'max-download-bytes': { type: 'string' },
         timeout: { type: 'string' },
         json: { type: 'boolean' },
         dot: { type: 'boolean' },
         watch: { type: 'boolean' },
+        poll: { type: 'boolean' },
+        'poll-interval': { type: 'string' },
         profile: { type: 'string' },
+        manifest: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -220,13 +241,21 @@ export async function main(
     if (o['no-cache']) return usageError('--no-cache cannot be combined with --cache-from or --cache-to');
     if (cacheTo.length > 1) return usageError('--cache-to can be given only once');
   }
+  if (!o.watch && (o.poll || o['poll-interval'] !== undefined)) return usageError(`--${o['poll-interval'] !== undefined ? 'poll-interval' : 'poll'} needs --watch`);
   if (o.watch && !run.once) {
     if (command !== 'build') return usageError(`--watch is only for build (and serve --watch), not ${command}`);
     if ((o.tag ?? []).length) return usageError('--watch cannot be combined with -t');
+    let pollMs: number | undefined;
+    try {
+      pollMs = pollOption(o.poll, o['poll-interval']);
+    } catch (e) {
+      return usageError((e as SitefileError).detail);
+    }
     try {
       const memo = watchMemo();
       return await watchLoop({
         context: contextArg,
+        ...(pollMs !== undefined ? { pollMs } : {}),
         ...(o.file ? { sitefile: o.file } : {}),
         argFiles: o['build-arg-file'] ?? [],
         build: async () => {
@@ -242,6 +271,9 @@ export async function main(
   }
 
   if (o.profile === '') return usageError('--profile expects a file path');
+  if (o.manifest !== undefined && command !== 'build') return usageError('--manifest is only for build');
+  if (o.manifest === '') return usageError('--manifest expects a file path');
+  if (o.manifest !== undefined) run.wrote?.push(o.manifest);
   // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
   const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
   if (o.profile !== undefined) run.wrote?.push(o.profile);
@@ -318,9 +350,16 @@ export async function main(
       fetchPolicy,
       ...(o['no-lockfile'] ? { lockfile: false as const } : {}),
       ...(o['vendor-dir'] !== undefined ? { vendorDir: o['vendor-dir'] } : {}),
-      ...(o['plugin-timeout']
-        ? { pluginPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') }, toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } }
+      ...(o['plugin-timeout'] || o['plugin-memory']
+        ? {
+            pluginPolicy: {
+              ...(o['plugin-timeout'] ? { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } : {}),
+              ...(o['plugin-memory'] ? { maxMemoryMiB: positiveInt(o['plugin-memory'], '--plugin-memory') } : {}),
+            },
+            ...(o['plugin-timeout'] ? { toolPolicy: { timeoutMs: positiveInt(o['plugin-timeout'], '--plugin-timeout') } } : {}),
+          }
         : {}),
+      ...pluginNode(o.node),
       ...(o['allow-exec'] ? { allowExec: o['allow-exec'] } : {}),
       ...(o['allow-plugin'] ? { allowPlugin: o['allow-plugin'] } : {}),
       allowAllPlugins: !!o['allow-plugins'],
@@ -328,6 +367,7 @@ export async function main(
       ...(remoteCache ? { remoteCache } : {}),
       onNotice: (m) => process.stderr.write(`${m}\n`),
       allowHardlinks: !!o['allow-hardlinks'],
+      keepOsMetadata: !!o['keep-os-metadata'],
       ...(o.platform !== undefined ? { platform: o.platform } : {}),
       ...(o.base !== undefined ? { baseImage: o.base } : {}),
       // inspect never pulls; a non-oci export (with no image tag) has no use for a BASE
@@ -373,9 +413,14 @@ export async function main(
         await remoteCache?.load();
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
-          await storeBuildAsImage(await build(options), tags, imageInfo);
+          const built = await build(options);
+          if (o.manifest !== undefined) await writeManifest(built.output, o.manifest, context, !!o.force);
+          await storeBuildAsImage(built, tags, imageInfo);
           await remoteCache?.push(transformCacheDir());
           return 0;
+        }
+        if (o.manifest !== undefined && (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat) === 'directory' && isInsideDir(o.manifest, out)) {
+          return usageError(`--manifest '${o.manifest}' is inside the exported directory '${out}': write it elsewhere`);
         }
         const r = await buildToDirectory({
           ...options,
@@ -401,6 +446,7 @@ export async function main(
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
               : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest}${r.rootCid ? `, root ${r.rootCid}` : ''})\n`,
         );
+        if (o.manifest !== undefined) await writeManifest(r.output, o.manifest, context, !!o.force);
         // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
         if (r.lockfileWritten && !fetched) process.stdout.write('Updated Sitefile.lock\n');
         if (tags.length) await storeBuildAsImage(r, tags, imageInfo);
@@ -464,6 +510,8 @@ export async function main(
     failed = true;
     if (isSitefileError(e)) {
       if (e.code === 'E_USAGE') return usageError(e.detail);
+      // With --json, the failure is also machine-readable on stdout (code, span, needs).
+      if (o.json) process.stdout.write(errorJson(e));
       process.stderr.write(`error[${e.code}]: ${e.message}\n`);
       return 1;
     }
@@ -482,6 +530,25 @@ export async function main(
       }
     }
   }
+}
+
+/** `--node`, else `$SITEFILE_NODE` (ignored when empty): an absolute path. */
+function pluginNode(flag: string | undefined): { node?: string } {
+  const [value, from] = flag !== undefined ? [flag, '--node'] : [process.env['SITEFILE_NODE'] || undefined, 'SITEFILE_NODE'];
+  if (value === undefined) return {};
+  if (!path.isAbsolute(value)) throw new SitefileError('E_USAGE', `${from} expects an absolute path to a Node binary, got '${value}'`);
+  return { node: value };
+}
+
+/** True when `file` would be written inside the directory `dir` (lexically, from the cwd). */
+function isInsideDir(file: string, dir: string): boolean {
+  const rel = path.relative(path.resolve(dir), path.resolve(file));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** `--manifest`: the exported files' manifest, written with the export's destination rules (and --force). */
+async function writeManifest(tree: Tree, file: string, contextDir: string, force: boolean): Promise<void> {
+  await exportFile(encodeManifest(manifestOf(tree)), file, { contextDir, force });
 }
 
 function positiveInt(raw: string, flag: string): number {

@@ -1,0 +1,7 @@
+# A host outside --allow-hosts (issue #176): outdated --json rows and a failed
+# --json build carry needs { kind: host, name, flag: --allow-hosts }; a deny-hosts
+# match carries none.
+FROM scratch
+IMPORT css FROM ${HTTPS}/style.css
+COPY css: /style.css
+EXPORT /

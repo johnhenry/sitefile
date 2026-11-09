@@ -1,0 +1,4 @@
+/*
+  X-Frame-Options: DENY
+/assets/*
+  Cache-Control: immutable

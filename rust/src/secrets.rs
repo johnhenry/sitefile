@@ -154,12 +154,17 @@ pub fn redact_error(e: SitefileError, secrets: &Secrets) -> SitefileError {
     }
 }
 
-/// The request headers of an import's SECRET clauses (lowercase names); a secret that was not given is E_SECRET.
+/// The request headers of an import's SECRET clauses (lowercase names); a
+/// secret that was not given is E_SECRET. With `target` (the origin they are
+/// about to be sent to, and the network settings), strict network mode also
+/// requires an `--allow-secret-host` rule for each secret (E_HOST_BLOCKED, see
+/// [`check_secret_hosts`](crate::resources::network::check_secret_hosts)).
 pub fn secret_headers(
     name: &str,
     refs: &[SecretRef],
     span: &SourceSpan,
     secrets: &Secrets,
+    target: Option<(&str, &crate::resources::network::NetworkSettings)>,
 ) -> Result<Vec<(String, String)>> {
     let mut headers: Vec<(String, String)> = Vec::new();
     for s in refs {
@@ -183,6 +188,15 @@ pub fn secret_headers(
             Some(h) => h.1 = value,
             None => headers.push((key, value)),
         }
+    }
+    if let Some((url, network)) = target {
+        let mut ids: Vec<&str> = Vec::new();
+        for s in refs {
+            if !ids.contains(&s.id.as_str()) {
+                ids.push(&s.id);
+            }
+        }
+        crate::resources::network::check_secret_hosts(name, &ids, url, network, Some(span))?;
     }
     Ok(headers)
 }
@@ -276,13 +290,13 @@ mod tests {
             },
         ];
         assert_eq!(
-            secret_headers("d", &refs, &span, &s).unwrap(),
+            secret_headers("d", &refs, &span, &s, None).unwrap(),
             [
                 ("x-api-key".to_string(), "abc".to_string()),
                 ("authorization".to_string(), "Bearer abcdef".to_string())
             ]
         );
-        let e = secret_headers("d", &refs, &span, &Secrets::default()).unwrap_err();
+        let e = secret_headers("d", &refs, &span, &Secrets::default(), None).unwrap_err();
         assert_eq!(e.code, E_SECRET);
         assert_eq!(e.detail, "IMPORT d: secret 'k' was not given; pass --secret id=k,env=<VAR> or --secret id=k,src=<file>");
     }

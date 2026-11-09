@@ -107,31 +107,43 @@ pub enum NeedsKind {
     Plugin,
     /// A `TOOL` (an external program): allowed by `--allow-exec <name>`.
     Tool,
+    /// A host that matches no allow-hosts rule (`E_HOST_BLOCKED`): allowed by `--allow-hosts <host>`.
+    Host,
+    /// In strict network mode, an `IMPORT … SECRET` sending secret `<id>` to `<host>`
+    /// (`E_HOST_BLOCKED`, name `<id>=<host>`): allowed by `--allow-secret-host <id>=<host>`.
+    SecretHost,
 }
 
 impl NeedsKind {
-    /// `plugin` or `tool` (the TypeScript `needs.kind`).
+    /// `plugin`, `tool`, `host` or `secret-host` (the TypeScript `needs.kind`).
     pub fn as_str(self) -> &'static str {
         match self {
             NeedsKind::Plugin => "plugin",
             NeedsKind::Tool => "tool",
+            NeedsKind::Host => "host",
+            NeedsKind::SecretHost => "secret-host",
         }
     }
-    /// The flag that grants it: `--allow-plugin` or `--allow-exec`.
+    /// The flag that grants it: `--allow-plugin`, `--allow-exec`, `--allow-hosts` or `--allow-secret-host`.
     pub fn flag(self) -> &'static str {
         match self {
             NeedsKind::Plugin => "--allow-plugin",
             NeedsKind::Tool => "--allow-exec",
+            NeedsKind::Host => "--allow-hosts",
+            NeedsKind::SecretHost => "--allow-secret-host",
         }
     }
 }
 
-/// The permission a build needs, carried by the `E_UNSUPPORTED` error of a
-/// `PLUGIN` or `TOOL` that was not allowed, so an embedder need not parse the message.
+/// The permission a build needs, so an embedder need not parse the message:
+/// carried by the `E_UNSUPPORTED` error of a `PLUGIN` or `TOOL` that was not
+/// allowed, and by the `E_HOST_BLOCKED` error of a host that matches no
+/// allow-hosts rule (a deny-hosts match carries none) or, in strict network
+/// mode, of a secret that may not be sent to its import's host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Needs {
     pub kind: NeedsKind,
-    /// The declared `PLUGIN` or `TOOL` name.
+    /// The declared `PLUGIN` or `TOOL` name, the host, or `<secret id>=<host>`.
     pub name: String,
 }
 
@@ -148,9 +160,25 @@ impl Needs {
             name: name.into(),
         }
     }
-    /// The flag that grants it: `--allow-plugin` or `--allow-exec`.
+    pub fn host(host: impl Into<String>) -> Self {
+        Needs {
+            kind: NeedsKind::Host,
+            name: host.into(),
+        }
+    }
+    pub fn secret_host(id: &str, host: &str) -> Self {
+        Needs {
+            kind: NeedsKind::SecretHost,
+            name: format!("{id}={host}"),
+        }
+    }
+    /// The flag that grants it (see [`NeedsKind::flag`]).
     pub fn flag(&self) -> &'static str {
         self.kind.flag()
+    }
+    /// `{ kind, name, flag }`, as in the TypeScript `needs`.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({ "kind": self.kind.as_str(), "name": self.name, "flag": self.flag() })
     }
     /// The command-line arguments that grant it, e.g. `["--allow-plugin", "shout"]`.
     pub fn args(&self) -> [String; 2] {
@@ -164,7 +192,7 @@ pub struct SitefileError {
     /// The message without the location prefix.
     pub detail: String,
     pub span: Option<SourceSpan>,
-    /// For a permission error (`E_UNSUPPORTED` at a `PLUGIN` or `TOOL` line):
+    /// For a permission error (`E_UNSUPPORTED` at a `PLUGIN` or `TOOL` line, `E_HOST_BLOCKED`):
     /// what must be allowed. `None` for every other error. Not part of the message.
     pub needs: Option<Needs>,
 }
@@ -209,6 +237,20 @@ impl SitefileError {
     /// `E_CANCELLED`: the build was stopped through its [`CancelToken`](crate::executor::CancelToken).
     pub fn cancelled() -> Self {
         SitefileError::plain(ErrorCode::E_CANCELLED, "the build was cancelled")
+    }
+    /// The `--json` form of a failed command, printed on stdout next to the
+    /// `error[CODE]:` line: `{ "error": { code, message, span, needs } }`
+    /// (`span` and `needs` null when absent; the same as the TypeScript `errorJson`).
+    pub fn to_json(&self) -> serde_json::Value {
+        let span = match &self.span {
+            Some(s) => serde_json::json!({ "file": s.file, "line": s.line, "column": s.column }),
+            None => serde_json::Value::Null,
+        };
+        let needs = match &self.needs {
+            Some(n) => n.to_json(),
+            None => serde_json::Value::Null,
+        };
+        serde_json::json!({ "error": { "code": self.code.as_str(), "message": self.message(), "span": span, "needs": needs } })
     }
     /// `file:line:col: detail`, or just `detail`.
     pub fn message(&self) -> String {

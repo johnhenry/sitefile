@@ -37,7 +37,7 @@ export const KEYWORDS = {
     FEED: ['overwrite'],
     REDIRECT: ['overwrite'],
     HEADER: ['overwrite'],
-    FINGERPRINT: ['overwrite'],
+    FINGERPRINT: ['overwrite', 'no-cache-headers'],
     CHECKLINKS: ['warn', 'external'],
   },
 };
@@ -375,7 +375,7 @@ export function buildGrammar() {
           instruction('PLUGIN', [head('entity.name.function.plugin'), kw(['FROM']), integrity, { include: '#operands' }]),
           instruction('TOOL', [head('entity.name.function.tool')]),
           instruction('SITEMAP', [...flags('SITEMAP'), kw(['BASE', 'TO']), { include: '#operands' }]),
-          instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST']), { include: '#operands' }]),
+          instruction('FINGERPRINT', [...flags('FINGERPRINT'), kw(['MANIFEST', 'INTEGRITY']), { include: '#operands' }]),
           instruction('CHECKLINKS', [...flags('CHECKLINKS')]),
           instruction('FEED', [
             // FEED [--overwrite] <import> BASE … LINK … [TO …] [TITLE …]

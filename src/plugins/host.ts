@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { SitefileError, type SourceSpan } from '../errors.js';
@@ -7,7 +8,7 @@ import { WasmPlugin } from './wasm.js';
 /**
  * Plugins run one Node process each, under Node's permission model:
  *
- *   node --permission --allow-fs-read=<plugin folder> --input-type=module -e <runner>
+ *   node --permission --allow-fs-read=<plugin folder> --max-old-space-size=<MiB> --input-type=module -e <runner>
  *
  * so a plugin can read files in its own folder and nothing else: no writes,
  * child processes, workers, native addons, WASI or network, and an empty
@@ -16,16 +17,84 @@ import { WasmPlugin } from './wasm.js';
  * Node documents the permission model as a "seat belt" for trusted code, not a
  * defence against deliberately malicious code: plugins are code you choose to
  * run. Pin them with INTEGRITY.
+ *
+ * The sandbox is only as strong as the Node that runs it: by default the Node
+ * running sitefile (`process.execPath`), or the one named by `--node` /
+ * `SITEFILE_NODE` / `BuildOptions.node`. Its version is checked (at least
+ * MIN_NODE) before the first plugin starts, and reported with `onNotice`.
  */
+
+/**
+ * The oldest Node that JavaScript plugins run on. Node 25 added network permissions
+ * (before it, `--permission` did not block sockets); 26 is the release sitefile
+ * requires and tests with (package.json `engines`).
+ */
+export const MIN_NODE = [26, 0, 0] as const;
+
+/** The Node binary JavaScript plugins run on, as checked when the first one starts. */
+export interface NodeRuntime {
+  /** Absolute real path. */
+  readonly path: string;
+  /** `process.version` of that binary, e.g. `v26.11.1`. */
+  readonly version: string;
+}
+
+/** `vX.Y.Z` → [X, Y, Z], or undefined. */
+export function parseNodeVersion(v: string): [number, number, number] | undefined {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+const atLeast = (v: readonly number[], min: readonly number[]): boolean => {
+  for (let i = 0; i < 3; i++) if (v[i]! !== min[i]!) return v[i]! > min[i]!;
+  return true;
+};
+
+/**
+ * Resolve and check the Node binary for JavaScript plugins (`node`: an absolute path; default
+ * `process.execPath`). The error text is the part after `PLUGIN name: `.
+ */
+export async function checkNode(node: string | undefined, timeoutMs: number): Promise<NodeRuntime> {
+  const given = node ?? process.execPath;
+  const choose = 'choose another with --node or SITEFILE_NODE';
+  if (!path.isAbsolute(given)) throw new Error(`the Node binary must be an absolute path, got '${given}'`);
+  let real: string;
+  try {
+    real = await realpath(given);
+    if (!(await stat(real)).isFile()) throw new Error('not a file');
+  } catch {
+    throw new Error(`could not start: no Node binary at ${given}`);
+  }
+  const out = await new Promise<string>((resolve, reject) =>
+    execFile(real, ['--version'], { env: {}, timeout: timeoutMs, maxBuffer: 4096 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout)))),
+  ).catch(() => undefined);
+  const parsed = out === undefined ? undefined : parseNodeVersion(out);
+  if (!parsed) throw new Error(`could not start: ${real} --version did not print a Node version; ${choose}`);
+  const version = out!.trim();
+  if (!atLeast(parsed, MIN_NODE)) {
+    throw new Error(`node ${version} (${real}) is too old for the plugin sandbox: JavaScript plugins need Node ${MIN_NODE.join('.')} or later; ${choose}`);
+  }
+  return { path: real, version };
+}
 
 export interface PluginPolicy {
   /** Per-call time limit (default 60 s); the process is killed when it passes. */
   readonly timeoutMs: number;
   /** Largest result accepted from one call (default 64 MiB). */
   readonly maxOutputBytes: number;
+  /**
+   * Memory limit in MiB (default 1024, `--plugin-memory`): a JavaScript plugin's heap
+   * (`node --max-old-space-size`) and a wasm plugin's linear memory.
+   */
+  readonly maxMemoryMiB: number;
 }
 
-export const DEFAULT_PLUGIN_POLICY: PluginPolicy = { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 * 1024 };
+export const DEFAULT_PLUGIN_POLICY: PluginPolicy = { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 * 1024, maxMemoryMiB: 1024 };
+
+/** What V8 prints when a heap passes --max-old-space-size (followed by a native stack trace). */
+const OUT_OF_MEMORY = 'JavaScript heap out of memory';
+/** V8's out-of-memory report starts with one of these; it and everything after it is not logged. */
+const isFatalReport = (line: string): boolean => line.startsWith('<--- Last few GCs --->') || line.startsWith('FATAL ERROR:');
 
 /** A directory TRANSFORM runs at most this many wasm or tool calls at a time (a JS plugin, one). */
 export const TRANSFORM_JOBS = Math.max(1, Math.min(4, os.availableParallelism()));
@@ -120,6 +189,10 @@ class PluginProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private buf = '';
   private stderr = '';
+  /** V8 reported that the heap passed the memory limit. */
+  private outOfMemory = false;
+  /** Set once V8's fatal error report starts on stderr: the rest is a native stack trace, not logged. */
+  private quiet = false;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   /** False when the module exports `cache = false`; known once it has loaded. */
@@ -130,14 +203,15 @@ class PluginProcess {
   constructor(
     readonly name: string,
     file: string,
+    node: string,
     private readonly policy: PluginPolicy,
     private readonly log: (line: string) => void,
     span: SourceSpan | undefined,
   ) {
     const dir = path.dirname(file);
     this.child = spawn(
-      process.execPath,
-      ['--permission', `--allow-fs-read=${dir}`, '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', RUNNER],
+      node,
+      ['--permission', `--allow-fs-read=${dir}`, `--max-old-space-size=${policy.maxMemoryMiB}`, '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', RUNNER],
       { cwd: dir, env: {}, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     this.child.stdout.setEncoding('utf8');
@@ -145,7 +219,11 @@ class PluginProcess {
     this.child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
     this.child.stderr.on('data', (chunk: string) => {
       this.stderr = (this.stderr + chunk).slice(-8192);
-      for (const line of chunk.split('\n')) if (line.trim()) this.log(line);
+      if (this.stderr.includes(OUT_OF_MEMORY)) this.outOfMemory = true;
+      for (const line of chunk.split('\n')) {
+        if (isFatalReport(line)) this.quiet = true;
+        if (line.trim() && !this.quiet) this.log(line);
+      }
     });
     let onReady: () => void = () => {};
     let onLoadError: (e: Error) => void = () => {};
@@ -158,7 +236,8 @@ class PluginProcess {
     this.onReadyMsg = onReady;
     this.onLoadError = (m) => onLoadError(new SitefileError('E_PLUGIN', `PLUGIN ${name}: ${m}`, span));
     this.child.on('error', (e) => this.fail(`could not start: ${e.message}`));
-    this.child.on('exit', (code, signal) => this.fail(signal ? `stopped by ${signal}` : `exited with code ${code}`));
+    // 'close' (not 'exit'): stderr has been read by then, so the reason can say why it died.
+    this.child.on('close', (code, signal) => this.fail(signal ? `stopped by ${signal}` : `exited with code ${code}`));
     this.write({ type: 'load', url: new URL(`file://${file}`).href });
   }
 
@@ -222,6 +301,11 @@ class PluginProcess {
 
   private fail(reason: string): void {
     if (this.exited) return;
+    if (this.outOfMemory) {
+      // The stderr tail would be V8's native stack trace: machine-specific, and no help.
+      reason = `ran out of memory (more than the ${this.policy.maxMemoryMiB} MiB limit)`;
+      this.stderr = '';
+    }
     this.exited = reason;
     const tail = this.stderr.trim() ? `\n${this.stderr.trim().split('\n').slice(-5).join('\n')}` : '';
     const err = new Error(`${reason}${tail}`);
@@ -280,15 +364,37 @@ interface PluginRunner {
   close(): void;
 }
 
+/** Where JavaScript plugins' Node comes from, and where to report it. */
+export interface PluginHostOptions {
+  /** Absolute path of the Node binary (default: `process.execPath`, the Node running sitefile). */
+  readonly node?: string;
+  /** Receives `plugins run on node <version> (<path>)` when the first JavaScript plugin starts. */
+  readonly onNotice?: (message: string) => void;
+}
+
 export class PluginHost {
   private readonly registered = new Map<string, { file: string; span: SourceSpan | undefined; wasm?: Uint8Array }>();
   private readonly procs = new Map<string, PluginRunner>();
   readonly stats: HostStats = { spawned: 0, calls: 0 };
+  private runtime: Promise<NodeRuntime> | undefined;
 
   constructor(
     private readonly policy: PluginPolicy = DEFAULT_PLUGIN_POLICY,
     private readonly log: (line: string) => void = () => {},
+    private readonly options: PluginHostOptions = {},
   ) {}
+
+  /** The checked Node binary (resolved once, on the first JavaScript plugin). */
+  node(): Promise<NodeRuntime> {
+    if (!this.runtime) {
+      this.runtime = checkNode(this.options.node, this.policy.timeoutMs).then((rt) => {
+        this.options.onNotice?.(`plugins run on node ${rt.version} (${rt.path})`);
+        return rt;
+      });
+      this.runtime.catch(() => {});
+    }
+    return this.runtime;
+  }
 
   /**
    * `file` is the plugin's absolute real path (already sandbox- and integrity-checked).
@@ -313,11 +419,23 @@ export class PluginHost {
     if (!p) {
       const reg = this.registered.get(name);
       if (!reg) throw new SitefileError('E_UNDEFINED', `unknown plugin '${name}'`, span);
-      p = reg.wasm
-        ? new WasmPlugin(name, reg.wasm, this.policy, TRANSFORM_JOBS)
-        : new PluginProcess(name, reg.file, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
-      this.procs.set(name, p);
-      this.stats.spawned++;
+      let node: NodeRuntime | undefined;
+      if (!reg.wasm) {
+        try {
+          node = await this.node();
+        } catch (e) {
+          throw new SitefileError('E_PLUGIN', `PLUGIN ${name}: ${(e as Error).message}`, reg.span);
+        }
+        // Another call may have started it while this one waited for the check.
+        p = this.procs.get(name);
+      }
+      if (!p) {
+        p = reg.wasm
+          ? new WasmPlugin(name, reg.wasm, this.policy, TRANSFORM_JOBS)
+          : new PluginProcess(name, reg.file, node!.path, this.policy, (l) => this.log(`[plugin ${name}] ${l}`), reg.span);
+        this.procs.set(name, p);
+        this.stats.spawned++;
+      }
     }
     this.stats.calls++;
     return p.call(request, span);

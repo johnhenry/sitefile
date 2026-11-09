@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { closeServer, createSiteServer, listen, LiveReload, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { closeServer, createSiteServer, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -163,6 +163,28 @@ test('traversal, encoded separators, NUL and backslashes are rejected', async ()
   assert.deepEqual(safeSegments('/a/b'), ['a', 'b']);
   assert.deepEqual(safeSegments('/a%20b/c'), ['a b', 'c']);
   assert.equal(safeSegments('relative'), undefined);
+});
+
+test('absolute-form request targets are served by their path and query (johnhenry/sitefile#189)', async () => {
+  await withServer({}, async (port, log) => {
+    const home = await req(port, 'http://example.com/index.html');
+    assert.equal(home.status, 200);
+    assert.equal(home.body, '<h1>home</h1>');
+    assert.equal((await req(port, 'http://example.com')).body, '<h1>home</h1>');
+    assert.equal((await req(port, 'HTTPS://Example.COM:8443?x=1')).body, '<h1>home</h1>');
+    assert.equal((await req(port, 'http://example.com/about/')).body, '<h1>about</h1>');
+    const dir = await req(port, 'http://example.com/about?x=1');
+    assert.equal(dir.status, 301);
+    assert.equal(dir.headers.location, '/about/?x=1');
+    assert.equal((await req(port, 'http://example.com/..%2f')).status, 400);
+    assert.equal((await req(port, 'ftp://example.com/index.html')).status, 400);
+    assert.match(log[0]!, /^GET http:\/\/example\.com\/index\.html 200 /);
+  });
+  assert.equal(originForm('http://h/a?b'), '/a?b');
+  assert.equal(originForm('http://h?b'), '/?b');
+  assert.equal(originForm('http://h'), '/');
+  assert.equal(originForm('/a'), '/a');
+  assert.equal(originForm('*'), '*');
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {
@@ -417,6 +439,19 @@ test('serve: clean URLs: /about serves /about.html; a directory still redirects 
     assert.equal(d.status, 301);
     assert.equal(d.headers.location, '/docs/');
   });
+  // johnhenry/sitefile#188: `/about/` with only `/about.html` redirects to the clean URL.
+  await withTree({ '/about.html': 'about page', '/a b.html': 'space', '/x/index.html': 'x', '/x.html': 'x file' }, { spa: true }, async (port) => {
+    const r = await req(port, '/about/?q=1');
+    assert.equal(r.status, 301);
+    assert.equal(r.headers.location, '/about?q=1');
+    assert.equal(r.body, '');
+    assert.equal((await req(port, '/a%20b/')).headers.location, '/a%20b');
+    assert.equal((await req(port, '/about')).body, 'about page');
+    assert.equal((await req(port, '/about.html')).body, 'about page', 'the .html spelling still answers');
+    assert.equal((await req(port, '/x/')).body, 'x', 'an index file wins over the redirect');
+    assert.equal((await req(port, '/x')).body, 'x file');
+    assert.equal((await req(port, '/about.html/')).status, 404);
+  });
 });
 
 test('serve: _redirects: exact paths, splats, rewrites, 404s, shadowing and force', async () => {
@@ -467,13 +502,15 @@ test('serve: _headers: glob patterns, joined values, protected names and invalid
   });
 });
 
+const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
+
 test('live reload: 404.html is injected too, and a swapped tree brings its own _redirects', async () => {
   const mk = (files: Record<string, string>): Tree => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
   let current = mk({ '/index.html': 'home', '/404.html': '<p>gone</p></body>', '/_redirects': '/a /b 302\n' });
   const s = createSiteServer(() => current, { liveReload: new LiveReload() });
   const { port } = await listen(s, '127.0.0.1', 0);
   try {
-    let r = await req(port, '/missing');
+    let r = await req(port, '/missing', 'GET', NAV);
     assert.equal(r.status, 404);
     assert.equal(r.body, `<p>gone</p>${RELOAD_SCRIPT}</body>`);
     assert.equal(r.headers['content-length'], String(Buffer.byteLength(r.body)));
@@ -482,7 +519,32 @@ test('live reload: 404.html is injected too, and a swapped tree brings its own _
     r = await req(port, '/a');
     assert.equal(r.status, 301);
     assert.equal(r.headers.location, '/c');
-    assert.equal((await req(port, '/')).body, `v2${RELOAD_SCRIPT}`);
+    assert.equal((await req(port, '/', 'GET', NAV)).body, `v2${RELOAD_SCRIPT}`);
+  } finally {
+    await closeServer(s);
+  }
+});
+
+test('live reload: a _headers CSP that blocks the script or the event stream is warned about once per policy', async () => {
+  const mk = (files: Record<string, string>): Tree => Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const site = mk({
+    '/index.html': 'home',
+    '/a.html': 'a',
+    '/ok.html': 'ok',
+    '/frag.html': '<li>x</li>',
+    '/_headers': "/*\n  Content-Security-Policy: script-src 'nonce-x'\n/ok\n  X-Ok: 1\n/frag\n  X-Frag: 1\n",
+  });
+  const warnings: string[] = [];
+  const s = createSiteServer(site, { liveReload: new LiveReload(), warn: (m) => warnings.push(m) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    await req(port, '/', 'GET', { 'sec-fetch-mode': 'cors' });
+    assert.deepEqual(warnings, [], 'only navigations are checked');
+    await req(port, '/', 'GET', NAV);
+    await req(port, '/a', 'GET', NAV);
+    assert.deepEqual(warnings, [
+      "live reload: the Content-Security-Policy that _headers sets for /index.html does not allow scripts from 'self' (/__sitefile/reload.js), so open pages will not reload: script-src 'nonce-x'",
+    ]);
   } finally {
     await closeServer(s);
   }

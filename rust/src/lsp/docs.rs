@@ -74,8 +74,8 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "FINGERPRINT",
-        "FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]",
-        "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten.",
+        "FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]",
+        "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",
     ),
     (
         "CHECKLINKS",
@@ -149,6 +149,7 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "TO", "`TO <dest>`: the feed file (default `/feed.xml`)."),
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
     ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
+    ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
     ("REDIRECT", "STATUS", "`STATUS 301|302|303|307|308`: the redirect's status (default 301)."),
     ("EXPORT", "AS", "`AS format`: directory (default), zip, tar, tgz (alias tar.gz), wbn, oci or car (an IPFS CARv1 file; its root CID is the one `ipfs add -r --hidden --cid-version=1` prints)."),
     ("EXPORT", "BASE", "`BASE <url>`: for wbn, the https URL the files are mounted at; for oci, a container image to build on."),
@@ -166,6 +167,7 @@ const FLAGS: &[(&str, &str)] = &[
     ("include", "`--include=<pattern>` (repeatable, TRANSFORM): keep only the files of a directory source matching a `.sitefileignore` pattern, relative to the source (`*.jpg`, `gallery/`); `--exclude` then leaves files out."),
     ("chmod", "`--chmod=644|755`: the mode of every copied file (Sitefile trees hold only 0644 and 0755 files)."),
     ("parents", "`--parents`: keep the source's path under the destination (`COPY --parents ./src/a.css /out/` writes `/out/src/a.css`)."),
+    ("no-cache-headers", "`--no-cache-headers` (FINGERPRINT): EXPORT writes no `Cache-Control` lines to `/_headers` for the fingerprinted files and the pages."),
     ("inline-svg", "`--inline-svg`: let the template's `${file \"/x.svg\" | svg}` paste SVG markup into the page. SVG can run scripts, so this is an explicit opt-in; `img` needs no flag."),
 ];
 

@@ -64,11 +64,16 @@ pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 /// Clauses after `FEED <import>`, in this order (`BASE` and `LINK` are required).
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
 /// Clauses after `FINGERPRINT <pattern>…`.
-pub const FINGERPRINT_CLAUSES: [&str; 1] = ["MANIFEST"];
+pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
 pub const SITE_FLAGS: &[(&str, Shape)] = &[("overwrite", Shape::Bare)];
+/// Leading flags of FINGERPRINT.
+pub const FINGERPRINT_FLAGS: &[(&str, Shape)] = &[
+    ("overwrite", Shape::Bare),
+    ("no-cache-headers", Shape::Bare),
+];
 /// Leading flags of CHECKLINKS.
 pub const CHECKLINKS_FLAGS: &[(&str, Shape)] = &[("warn", Shape::Bare), ("external", Shape::Bare)];
 /// Leading flags of COPY, RENDER and TRANSFORM.
@@ -98,7 +103,8 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "FINGERPRINT" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" => SITE_FLAGS,
+        "FINGERPRINT" => FINGERPRINT_FLAGS,
         "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
     }
@@ -1096,11 +1102,11 @@ fn parse_header(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     })
 }
 
-/// `FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]`
+/// `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`
 fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
-    let flags = parse_flags(c, SITE_FLAGS)?;
+    let flags = parse_flags(c, FINGERPRINT_FLAGS)?;
     let mut patterns = Vec::new();
-    while !c.at_end() && !c.peek_keyword("MANIFEST") {
+    while !c.at_end() && !c.peek_keyword("MANIFEST") && !c.peek_keyword("INTEGRITY") {
         patterns.push(c.operand("path pattern")?);
     }
     if patterns.is_empty() {
@@ -1114,11 +1120,14 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     } else {
         None
     };
+    let integrity = c.keyword("INTEGRITY");
     c.expect_end()?;
     Ok(Instruction::Fingerprint {
         span,
         patterns,
         manifest,
+        integrity,
+        no_cache_headers: flags.has("no-cache-headers"),
         overwrite: flags.has("overwrite"),
     })
 }
@@ -2450,7 +2459,7 @@ mod tests {
             ("FEED", SITE_FLAGS),
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
-            ("FINGERPRINT", SITE_FLAGS),
+            ("FINGERPRINT", FINGERPRINT_FLAGS),
             ("CHECKLINKS", CHECKLINKS_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);

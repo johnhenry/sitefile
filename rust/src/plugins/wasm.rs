@@ -16,7 +16,7 @@
 //!
 //! Request and result are UTF-8 JSON (see docs/PLUGINS.md). Each call gets a
 //! fresh Store and Instance (no state carries over), linear memory is capped at
-//! 1 GiB, and the call is interrupted when it runs past `policy.timeout_ms` of
+//! `policy.max_memory_mib` (1 GiB), and the call is interrupted when it runs past `policy.timeout_ms` of
 //! wall-clock time (epoch interruption driven by a ticker thread).
 //!
 //! Compiling with Cranelift costs ~55 ms, so compiled modules are cached in
@@ -51,9 +51,6 @@ use wasmtime::{
 use crate::error::{ErrorCode, Result, SitefileError, SourceSpan};
 use crate::plugins::host::{b64_decode_lenient, PluginPolicy, PluginRequest, PluginResult};
 use crate::store::resolve_store_home;
-
-/// Largest linear memory a wasm plugin may use (1 GiB).
-pub const DEFAULT_MAX_MEMORY: usize = 1024 * 1024 * 1024;
 
 /// How often the ticker advances the engine's epoch while a call runs.
 const TICK: Duration = Duration::from_millis(5);
@@ -473,8 +470,9 @@ fn run(
     policy: &PluginPolicy,
 ) -> std::result::Result<Vec<u8>, String> {
     let engine = engine();
+    let max_memory = policy.max_memory_mib.saturating_mul(1024 * 1024);
     let limits = StoreLimitsBuilder::new()
-        .memory_size(DEFAULT_MAX_MEMORY)
+        .memory_size(max_memory)
         .instances(1)
         .build();
     let mut store = Store::new(engine, Ctx { limits });
@@ -499,7 +497,7 @@ fn run(
             }
         })
     };
-    let result = call_abi(&mut store, module, request);
+    let result = call_abi(&mut store, module, request, max_memory);
     drop(stop);
     let _ = ticker.join();
     result.map_err(|e| describe(&e, policy))
@@ -531,7 +529,12 @@ fn abi(msg: impl Into<String>) -> wasmtime::Error {
     wasmtime::Error::new(AbiError(msg.into()))
 }
 
-fn call_abi(store: &mut Store<Ctx>, module: &Module, request: &[u8]) -> wasmtime::Result<Vec<u8>> {
+fn call_abi(
+    store: &mut Store<Ctx>,
+    module: &Module,
+    request: &[u8],
+    max_memory: usize,
+) -> wasmtime::Result<Vec<u8>> {
     let instance = Instance::new(&mut *store, module, &[])?;
     if let Some(f) = instance.get_func(&mut *store, "sitefile_api_version") {
         let mut out = vec![Val::I32(0); f.ty(&*store).results().len()];
@@ -556,9 +559,9 @@ fn call_abi(store: &mut Store<Ctx>, module: &Module, request: &[u8]) -> wasmtime
     let out_ptr = (packed >> 32) as usize;
     let out_len = (packed & 0xffff_ffff) as usize;
     let size = memory.data_size(&*store);
-    if size > DEFAULT_MAX_MEMORY {
+    if size > max_memory {
         return Err(abi(format!(
-            "used {size} bytes of memory, more than the {DEFAULT_MAX_MEMORY} allowed"
+            "used {size} bytes of memory, more than the {max_memory} allowed"
         )));
     }
     if out_ptr + out_len > size {
@@ -618,6 +621,30 @@ mod tests {
             e.message()
         );
         assert!(e.message().starts_with("PLUGIN p: "), "{}", e.message());
+    }
+
+    #[test]
+    fn plugin_memory_caps_linear_memory() {
+        // grow.wasm grows by 2 MiB and traps when the grow is refused (#157).
+        let p = PluginPolicy::default();
+        fails(
+            fixture("grow"),
+            "unreachable",
+            PluginPolicy {
+                max_memory_mib: 1,
+                ..p
+            },
+        );
+        let r = call(
+            fixture("grow"),
+            &req("/out.txt", &[]),
+            PluginPolicy {
+                max_memory_mib: 4,
+                ..p
+            },
+        )
+        .unwrap();
+        assert_eq!(text(r), "grew");
     }
 
     #[test]
