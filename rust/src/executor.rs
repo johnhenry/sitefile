@@ -1769,6 +1769,7 @@ fn export_build_inner(
             manifest_digest: None,
             root_cid: Some(root),
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     let data = encode_tree(
