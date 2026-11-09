@@ -1,0 +1,19 @@
+# Apache (issue #204 fixture)
+DirectoryIndex index.html
+ErrorDocument 404 /404.html
+ErrorDocument 500 /500.html
+Redirect 301 /old /new
+Redirect /moved https://example.com/moved
+Redirect gone /removed
+RedirectMatch 301 ^/blog/(.*)$ /posts/$1
+RedirectMatch ^/(\d+)$ /n/$1
+<IfModule mod_headers.c>
+  Header set X-Frame-Options "DENY"
+  Header always set Strict-Transport-Security "max-age=63072000"
+  Header unset ETag
+</IfModule>
+<FilesMatch "\.(js|css)$">
+  Header set Cache-Control "max-age=31536000"
+</FilesMatch>
+AddType application/manifest+json .webmanifest
+RewriteEngine On

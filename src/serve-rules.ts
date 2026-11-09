@@ -228,9 +228,9 @@ export function parseHeaderRules(text: string): ServeHeaders[] {
 
 /**
  * The warnings for a tree's `/_redirects` and `/_headers` lines `serve` ignores, one per line:
- * `_redirects:3: ignored: <reason>`.
+ * `_redirects:3: ignored: <reason>`. `content` reads files a zip served in place holds only as digests.
  */
-export function siteFileWarnings(tree: Tree): string[] {
+export function siteFileWarnings(tree: Tree, content?: { read(path: string): Uint8Array | undefined }): string[] {
   const out: string[] = [];
   for (const [file, parse] of [
     ['_redirects', parseRedirects],
@@ -238,7 +238,7 @@ export function siteFileWarnings(tree: Tree): string[] {
   ] as const) {
     const f = tree.get(`/${file}`);
     if (!f) continue;
-    for (const i of parse(new TextDecoder().decode(f.bytes)).ignored) out.push(`${file}:${i.line}: ignored: ${i.reason}`);
+    for (const i of parse(new TextDecoder().decode(content?.read(`/${file}`) ?? f.bytes)).ignored) out.push(`${file}:${i.line}: ignored: ${i.reason}`);
   }
   return out;
 }

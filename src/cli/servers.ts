@@ -7,7 +7,7 @@ import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor, safeSegments } from '../server.js';
-import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
+import { checkSiteFiles, isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -206,15 +206,16 @@ const run: Command = {
     const keepOsMetadata = !!v['keep-os-metadata'];
     const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
-      const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
-      checkSiteFiles(tree, strictSiteFiles, warn);
+      const { tree, content, close } = await loadServedSite(store, source, { keepOsMetadata, warn });
+      checkSiteFiles(tree, strictSiteFiles, warn, content);
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { ...spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
+      const server = createSiteServer(tree, { ...spa, ...(country !== undefined ? { country } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
       await closeServer(server);
+      close();
       return 0;
     }
 
@@ -252,8 +253,12 @@ export interface DetachedServe {
  */
 export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?: (m: string) => void): Promise<ServerState> {
   // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
-  const tree = await loadServedTree(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
-  checkSiteFiles(tree, !!d.strictSiteFiles, warn ?? (() => undefined));
+  const site = await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
+  try {
+    checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
+  } finally {
+    site.close();
+  }
   const { id, name: finalName } = await reg.allocate(d.name);
   const state: ServerState = {
     id,
@@ -290,7 +295,7 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
  */
 export async function restartDetached(reg: ServerRegistry, s: ServerState, graceMs: number): Promise<ServerState> {
   await stopServer(reg, s, graceMs);
-  await loadServedTree(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata });
+  (await loadServedSite(reg.store, s.source, { keepOsMetadata: !!s.keepOsMetadata })).close();
   const fresh: ServerState = { ...s, host: s.bind.host, port: s.bind.port, pid: 0, ready: false, started: new Date().toISOString() };
   delete (fresh as { error?: string }).error;
   await reg.write(fresh);
