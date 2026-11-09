@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
-import { createSocket } from 'node:dgram';
 import { encodeQr, qrTerminal } from '../qr.js';
-import { formatUrl } from '../server.js';
+import { formatUrl, networkUrls } from '../server.js';
 
 /**
  * `serve` in a terminal (issue #224): single keys while serving in the foreground, `--open[=path]` and
@@ -37,42 +36,20 @@ export const CLEAR = '\x1b[2J\x1b[3J\x1b[H';
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
 
 /**
- * This machine's address on the network: the local address of a UDP socket "connected" to a public
- * address (nothing is sent), or undefined without a route. IPv4 for 0.0.0.0, IPv6 for ::.
+ * The URLs to show (below `serve --base`, `https://` for a TLS server): the local one, and when bound to every
+ * interface the same network URLs as the start line (one per interface address, IPv4 first).
  */
-export async function networkAddress(bindHost: string): Promise<string | undefined> {
-  const v6 = bindHost === '::';
-  return new Promise((resolve) => {
-    const s = createSocket(v6 ? 'udp6' : 'udp4');
-    const done = (a: string | undefined): void => {
-      s.close();
-      resolve(a);
-    };
-    s.on('error', () => done(undefined));
-    s.connect(9, v6 ? '2001:db8::1' : '192.0.2.1', () => {
-      try {
-        const a = s.address().address;
-        done(a === '0.0.0.0' || a === '::' ? undefined : a);
-      } catch {
-        done(undefined);
-      }
-    });
-  });
-}
-
-/** The URLs to show (below `serve --base`): the local one, and the network one when bound to every interface. */
-export async function serveUrls(host: string, port: number, base = '/'): Promise<{ local: string; network: string | undefined }> {
+export function serveUrls(host: string, port: number, base = '/', scheme: 'http' | 'https' = 'http'): { local: string; network: string[] } {
   const path = base.slice(1);
-  const local = formatUrl(host, port) + path;
-  if (!isWildcard(host)) return { local, network: undefined };
-  const a = await networkAddress(host);
-  return { local, network: a === undefined ? undefined : formatUrl(a, port) + path };
+  const local = formatUrl(host, port, scheme) + path;
+  return { local, network: isWildcard(host) ? networkUrls(host, port, scheme).map((u) => u + path) : [] };
 }
 
-/** `u`: the URLs, and a QR code of the network URL when there is one. */
-export function urlsText(urls: { local: string; network: string | undefined }): string {
+/** `u`: the URLs, and a QR code of the first network URL when there is one. */
+export function urlsText(urls: { local: string; network: readonly string[] }): string {
   let out = `  Local:   ${urls.local}\n`;
-  if (urls.network !== undefined) out += `  Network: ${urls.network}\n${qrText(urls.network)}`;
+  for (const n of urls.network) out += `  Network: ${n}\n`;
+  if (urls.network[0] !== undefined) out += qrText(urls.network[0]);
   return out;
 }
 

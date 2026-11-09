@@ -852,6 +852,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             &server.host,
             server.port,
             base.as_deref(),
+            tls.is_some(),
             restart,
         );
         let deadline = sharing
@@ -1230,6 +1231,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             &s.host,
             s.port,
             shown_base.as_deref(),
+            tls.is_some(),
             Box::new(move || rebuild.store(true, std::sync::atomic::Ordering::SeqCst)),
         );
         server = Some(s);
