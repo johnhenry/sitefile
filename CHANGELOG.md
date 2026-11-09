@@ -36,6 +36,13 @@
   writes a sitemap index with numbered parts above 50,000 URLs or 50 MiB.
   Both implementations, with conformance cases; example `examples/canonical`.
   hreflang alternates are not done yet.
+- **`--oci-layers <n>`** (johnhenry/sitefile#214): split an oci image's files
+  over `n` site layers (1-64, by a hash of each path) so pushing a new version
+  uploads only the layers whose files changed; `dev.sitefile.layers` in the
+  config marks them, and every reader (store, save, serve, push, pull,
+  `FROM image`) merges them. Default unchanged (one layer, same image IDs).
+  Both implementations; conformance `example/blog:oci-layers-*`,
+  `case/steps-oci-layers`.
 - **Identical `--help` in both CLIs**: the `--node` line now reads "default
   $SITEFILE_NODE, else the default Node, see docs/PLUGINS.md" in both. The
   default itself differs (the TypeScript CLI's own Node, `node` on `PATH` for
