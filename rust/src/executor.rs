@@ -1396,6 +1396,8 @@ pub struct ExportTarget {
     pub oci_root: Option<String>,
     /// oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip).
     pub oci_compression: Option<OciCompression>,
+    /// oci: split the site's files over this many layers (`--oci-layers`, default 1).
+    pub oci_layers: Option<usize>,
     /// wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none).
     pub wbn_compression: Option<OciCompression>,
     /// Extra OCI config labels.
@@ -1521,6 +1523,8 @@ pub struct ImageInfo {
     pub oci_root: Option<String>,
     /// `--oci-compression` / `--compression`: overrides `EXPORT … AS oci COMPRESSION`.
     pub oci_compression: Option<OciCompression>,
+    /// `--oci-layers`: split the site's files over this many layers.
+    pub oci_layers: Option<usize>,
     /// `--platform`: `os/arch` of the image.
     pub platform: Option<String>,
     /// `--label key=value`.
@@ -1576,7 +1580,7 @@ pub fn store_build_as_image(
 ) -> Result<StoredImage> {
     validate_image_tags(tags)?;
     build_options.check_cancelled()?;
-    let opts = oci_options(
+    let mut opts = oci_options(
         result,
         &info.context_dir,
         info.oci_root.as_deref(),
@@ -1585,6 +1589,7 @@ pub fn store_build_as_image(
         &info.labels,
         info.git_labels,
     )?;
+    opts.layers = info.oci_layers;
     let added = store.add_image(&result.output, &opts)?;
     if info.attest.any() {
         let manifest_bytes = store.read_blob(&added.id, None)?;
@@ -1652,7 +1657,7 @@ fn export_build(
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
-        let opts = oci_options(
+        let mut opts = oci_options(
             &result,
             &options.context_dir,
             target.oci_root.as_deref(),
@@ -1661,6 +1666,7 @@ fn export_build(
             &target.image_labels,
             target.git_labels,
         )?;
+        opts.layers = target.oci_layers;
         let img = build_oci_image(&result.output, &opts)?;
         // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {

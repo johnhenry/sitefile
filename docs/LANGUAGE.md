@@ -1616,6 +1616,13 @@ and tar timestamps instead.
   are never written into the image (`--provenance` records the non-secret
   ones in a separate attestation, [CLI.md](CLI.md#attestations)). The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
+  `--oci-layers <n>` (build only, 1 to 64, default 1) splits the site's files over `n` layers instead
+  of one: a file goes to layer `u32be(sha256(path)[0..4]) mod n` (its path in the exported tree), each
+  layer is a deterministic tar of its files under the root (with the root's parent directories), and the
+  config carries `dev.sitefile.layers=<n>`. A push after changing a few files then uploads only the
+  layers holding them (with 8 layers, a one-file change re-uploads about an eighth of the site). The
+  store, `save`, `serve`, `push`, `pull` and `FROM image` read the files from all `n` site layers. The
+  default stays one layer, so existing image IDs do not change.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
   layout, below); any other `--out` with `--format oci` is an *OCI layout
   directory*: `oci-layout`, `index.json` (one manifest entry, annotated
