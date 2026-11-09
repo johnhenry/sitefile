@@ -741,6 +741,30 @@ pub enum CanonicalSlot {
 /// Where a canonical link goes: before the first `</head`, unless a `<link>` whose `rel` has the token
 /// `canonical` comes first. Comments, declarations and raw text are skipped as in [`scan_html`].
 pub fn canonical_slot(text: &str) -> CanonicalSlot {
+    let h = head_links(text);
+    match (h.canonical, h.at) {
+        (true, _) => CanonicalSlot::Has,
+        (false, Some(at)) => CanonicalSlot::Before(at),
+        (false, None) => CanonicalSlot::NoHead,
+    }
+}
+
+/// What CANONICAL needs from a page's head (`headLinks` in src/links.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadLinks {
+    /// The byte offset of the first `</head` end tag; `None` when there is none.
+    pub at: Option<usize>,
+    /// A `<link>` whose `rel` has the token `canonical` comes before it (or anywhere, without `</head>`).
+    pub canonical: bool,
+    /// So does a `<link>` whose `rel` has the token `alternate` and that has an `hreflang` attribute.
+    pub hreflang: bool,
+}
+
+/// Where links go in a page's head and which it already has (ASCII case-insensitive `rel` tokens).
+/// Comments, declarations and raw text are skipped as in [`scan_html`].
+pub fn head_links(text: &str) -> HeadLinks {
+    let mut canonical = false;
+    let mut hreflang = false;
     let b = text.as_bytes();
     let n = b.len();
     let mut i = 0;
@@ -760,7 +784,11 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
                 && b[i + 2..end].eq_ignore_ascii_case(b"head")
                 && (end >= n || is_ws(b[end]) || b[end] == b'/' || b[end] == b'>')
             {
-                return CanonicalSlot::Before(i);
+                return HeadLinks {
+                    at: Some(i),
+                    canonical,
+                    hreflang,
+                };
             }
         }
         if matches!(next, Some(b'!' | b'?' | b'/')) {
@@ -778,6 +806,7 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
         let tag = lower_ascii(&b[i + 1..j]);
         i = j;
         let mut rel: Option<(usize, usize)> = None;
+        let mut lang = false;
         loop {
             while i < n && (is_ws(b[i]) || b[i] == b'/') {
                 i += 1;
@@ -795,6 +824,9 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
                 i += 1;
             }
             let name = lower_ascii(&b[name_start..i]);
+            if name == "hreflang" {
+                lang = true;
+            }
             let mut k = i;
             while k < n && is_ws(b[k]) {
                 k += 1;
@@ -833,10 +865,12 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
         if tag == "link" {
             if let Some((s, e)) = rel {
                 let r = decode_html_text(&text[s..e]).to_ascii_lowercase();
-                if r.split([' ', '\t', '\n', '\r', '\x0c'])
-                    .any(|t| t == "canonical")
-                {
-                    return CanonicalSlot::Has;
+                let mut tokens = r.split([' ', '\t', '\n', '\r', '\x0c']);
+                if tokens.clone().any(|t| t == "canonical") {
+                    canonical = true;
+                }
+                if lang && tokens.any(|t| t == "alternate") {
+                    hreflang = true;
                 }
             }
         }
@@ -844,7 +878,11 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
             i = index_of_close_tag(b, &tag, i);
         }
     }
-    CanonicalSlot::NoHead
+    HeadLinks {
+        at: None,
+        canonical,
+        hreflang,
+    }
 }
 
 /// What CSP needs from a page (`inlineBlocks` in src/links.ts): inline script and style texts, and the
@@ -1223,6 +1261,36 @@ pub fn rewrite_references(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_links_matches_typescript() {
+        // The cases of 'headLinks' in test/hreflang.test.ts.
+        let h = |at, canonical, hreflang| HeadLinks {
+            at,
+            canonical,
+            hreflang,
+        };
+        assert_eq!(
+            head_links("<head><link rel=alternate hreflang=fr href=/fr/></head>"),
+            h(Some(48), false, true)
+        );
+        assert_eq!(
+            head_links("<head><link rel=\"ALTERNATE canonical\" href=/x></head>"),
+            h(Some(46), true, false)
+        );
+        assert_eq!(
+            head_links("<head><link rel=alternate type=application/rss+xml href=/feed></head>"),
+            h(Some(62), false, false)
+        );
+        assert_eq!(
+            head_links("<head></head><link rel=alternate hreflang=fr href=/fr/>"),
+            h(Some(6), false, false)
+        );
+        assert_eq!(
+            head_links("<p><link rel=canonical href=x>"),
+            h(None, true, false)
+        );
+    }
 
     fn urls(refs: &[Reference]) -> Vec<(u32, &str)> {
         refs.iter().map(|r| (r.line, r.url.as_str())).collect()

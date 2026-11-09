@@ -10,7 +10,7 @@ import { sha256 } from './digest.js';
 import { FEED_ITEM, type ExportFormat, type OciCompression, type Program } from './language/ast.js';
 import { fragmentText, parseProgram } from './language/validate.js';
 import { joinVirtual, basenameVirtual, normalizeVirtual } from './paths.js';
-import { importedStageRefs, plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportedStageRef, type ImportSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
+import { importedStageRefs, plan, targetPlan, type FragmentSpec, type ImageStageBase, type ImportedStageRef, type ImportSpec, type LanguagesSpec, type Operation, type Plan, type PluginSpec, type SourceRef, type Stage } from './planner.js';
 import { checkWasmPlugin } from './plugins/wasm.js';
 import { DEFAULT_PLUGIN_POLICY, PluginHost, TRANSFORM_JOBS, type PluginPolicy, type PluginRequest, type PluginResult } from './plugins/host.js';
 import { cacheKey, digestFolder, pluginFolderIntegrity, TransformCache, type CacheStats, type RemoteCache } from './plugins/cache.js';
@@ -49,12 +49,13 @@ import { groupBy, paginate } from './pages.js';
 import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { canonical } from './canonical.js';
+import { alternates, isLanguageTag, type Languages, type Translation } from './hreflang.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
 import { exportForHost, type HostHeader, type HostRedirect } from './export-for.js';
 import { portabilityProblems } from './portable.js';
 import { precache } from './precache.js';
 import { precompress } from './precompress.js';
-import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
+import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, sitemapPages, SITEMAP_LIMITS, type FeedEntry, type HeaderRule } from './site.js';
 import { cspPages } from './csp.js';
 
 export interface BuildOptions {
@@ -1790,8 +1791,11 @@ async function executeOp(
   }
   const opId = memoKey('op', env.envKey, valueKey(op));
   if (op.kind === 'SITEMAP' || op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL' || op.kind === 'PRECOMPRESS' || op.kind === 'PRECACHE' || op.kind === 'CHECKLINKS') {
-    // Reads the whole tree: only the chain key can say it is unchanged.
-    const key = memoKey('chain', prevKey, opId);
+    // Reads the whole tree: only the chain key can say it is unchanged. With LANGUAGES, also the documents' lists.
+    const langs = (op.kind === 'CANONICAL' || op.kind === 'SITEMAP') && op.languages ? op.languages : undefined;
+    const key = langs
+      ? memoKey('chain', prevKey, opId, namesKey(env, operandNames(langs.sources.map((src) => src.dest), new Set(langs.sources.map((src) => src.list)))))
+      : memoKey('chain', prevKey, opId);
     if (op.kind === 'CHECKLINKS') {
       // The tree is unchanged; a hit skips the check (and its requests) and prints its warnings again.
       const hit = memo.get<{ warnings: readonly string[] }>(key);
@@ -1875,8 +1879,35 @@ function fingerprintOp(op: Extract<Operation, { kind: 'FINGERPRINT' }>, tree: Tr
   return fingerprint(tree, op, `${env.label}:${op.span.line} FINGERPRINT`, env.warn);
 }
 
-function canonicalOp(op: Extract<Operation, { kind: 'CANONICAL' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
-  return canonical(tree, op, `${env.label}:${op.span.line} CANONICAL`, env.warn);
+function canonicalOp(op: Extract<Operation, { kind: 'CANONICAL' }>, tree: Tree, env: ExecEnv): Tree {
+  return canonical(tree, op, `${env.label}:${op.span.line} CANONICAL`, env.warn, op.languages ? languagesOf(op.languages, 'CANONICAL', op.span, env) : undefined);
+}
+
+/**
+ * LANGUAGES with the translations of the documents of the stage's earlier `RENDER … FOR` lines: an element with
+ * a `translationKey` (text or a number) and a `lang` (text) gives the page its destination names. A `lang` that is
+ * not a language code is `E_VALIDATION`.
+ */
+function languagesOf(spec: LanguagesSpec, what: string, span: SourceSpan, env: ExecEnv): Languages {
+  const docs = new Map<string, Translation>();
+  for (const src of spec.sources) {
+    const items = valueOf(src.list, [], span, false, env);
+    if (!Array.isArray(items)) continue;
+    items.forEach((item: unknown, i: number) => {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) return;
+      const doc = item as Record<string, unknown>;
+      const key = doc['translationKey'];
+      const lang = doc['lang'];
+      if ((typeof key !== 'string' && typeof key !== 'number') || typeof lang !== 'string') return;
+      if (!isLanguageTag(lang)) {
+        const name = typeof doc['path'] === 'string' ? doc['path'] : `#${i + 1}`;
+        throw new SitefileError('E_VALIDATION', `${what}: document '${name}' of '${src.list}' has lang '${lang}', which is not a language code (a BCP 47 tag such as en, fr or pt-BR)`, span);
+      }
+      const target = normalizeVirtual(interpolate(src.dest, { ...env, loop: { name: src.as, value: item } }), src.dest.span, `RENDER destination for ${src.as}`);
+      if (!target.trailingSlash) docs.set(target.path, { lang, key: String(key) });
+    });
+  }
+  return { codes: spec.codes, ...(spec.default !== undefined ? { default: spec.default } : {}), docs };
 }
 
 function precompressOp(op: Extract<Operation, { kind: 'PRECOMPRESS' }>, tree: Tree, env: Pick<ExecEnv, 'label' | 'warn'>): Tree {
@@ -1889,7 +1920,15 @@ function precacheOp(op: Extract<Operation, { kind: 'PRECACHE' }>, tree: Tree, en
 
 function sitemap(op: Extract<Operation, { kind: 'SITEMAP' }>, tree: Tree, env: ExecEnv): Tree {
   const origin = `${env.label}:${op.span.line} SITEMAP`;
-  const files = sitemapFiles(tree, op.base, op.dest).map(([p, xml]) => [p, makeFile(new TextEncoder().encode(xml), origin)] as const);
+  const alts = op.languages
+    ? alternates(
+        sitemapPages(tree).map((p) => [p, p] as const),
+        languagesOf(op.languages, 'SITEMAP', op.span, env),
+        'SITEMAP',
+        op.span,
+      )
+    : undefined;
+  const files = sitemapFiles(tree, op.base, op.dest, SITEMAP_LIMITS, alts).map(([p, xml]) => [p, makeFile(new TextEncoder().encode(xml), origin)] as const);
   return tree.withFiles(files, op.overwrite ? 'overwrite' : 'error', op.span);
 }
 

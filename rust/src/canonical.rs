@@ -2,7 +2,8 @@
 //! in every page that has none. Pages and messages match the TypeScript implementation.
 
 use crate::error::{Result, SourceSpan};
-use crate::links::{canonical_slot, reference_kind, CanonicalSlot};
+use crate::hreflang::{alternates, Languages};
+use crate::links::{head_links, reference_kind};
 use crate::site::{page_url, xml_escape};
 use crate::tree::{make_file, ConflictPolicy, Node, Tree};
 
@@ -24,9 +25,14 @@ pub fn canonical_url(base: &str, url: &str, pretty: bool) -> String {
 }
 
 /// See `canonical` in the TypeScript module.
-pub fn canonical(tree: Tree, op: &CanonicalOp, origin: &str, warn: &dyn Fn(&str)) -> Result<Tree> {
-    let mut files: Vec<(String, Node)> = Vec::new();
-    let mut headless: Vec<&str> = Vec::new();
+pub fn canonical(
+    tree: Tree,
+    op: &CanonicalOp,
+    origin: &str,
+    warn: &dyn Fn(&str),
+    langs: Option<&Languages>,
+) -> Result<Tree> {
+    let mut pages: Vec<(&String, &str, &Node)> = Vec::new();
     for (p, node) in tree.entries() {
         if reference_kind(p) != Some("html") {
             continue;
@@ -39,21 +45,53 @@ pub fn canonical(tree: Tree, op: &CanonicalOp, origin: &str, warn: &dyn Fn(&str)
         let Some(url) = url.filter(|u| *u != "/404.html") else {
             continue;
         };
+        pages.push((p, url, node));
+    }
+    let alts = match langs {
+        Some(l) => {
+            let pairs: Vec<(String, String)> = pages
+                .iter()
+                .map(|(p, u, _)| ((*p).clone(), u.to_string()))
+                .collect();
+            Some(alternates(&pairs, l, "CANONICAL", op.span)?)
+        }
+        None => None,
+    };
+    let mut files: Vec<(String, Node)> = Vec::new();
+    let mut headless: Vec<&str> = Vec::new();
+    for (p, url, node) in pages {
         let Ok(text) = std::str::from_utf8(&node.bytes) else {
             continue;
         };
-        match canonical_slot(text) {
-            CanonicalSlot::Has => {}
-            CanonicalSlot::NoHead => headless.push(p),
-            CanonicalSlot::Before(at) => {
-                let link = format!(
-                    "<link rel=\"canonical\" href=\"{}\">",
-                    xml_escape(&canonical_url(op.base, url, op.pretty))
-                );
-                let out = format!("{}{link}{}", &text[..at], &text[at..]);
-                files.push((p.clone(), make_file(out.into_bytes(), origin, node.mode)));
+        let head = head_links(text);
+        let alt = alts.as_ref().and_then(|a| a.get(p.as_str()));
+        let add_alternates = alt.is_some() && !head.hreflang;
+        if head.canonical && !add_alternates {
+            continue;
+        }
+        let Some(at) = head.at else {
+            headless.push(p);
+            continue;
+        };
+        let mut links = if head.canonical {
+            String::new()
+        } else {
+            format!(
+                "<link rel=\"canonical\" href=\"{}\">",
+                xml_escape(&canonical_url(op.base, url, op.pretty))
+            )
+        };
+        if add_alternates {
+            for (lang, u) in alt.into_iter().flatten() {
+                links.push_str(&format!(
+                    "<link rel=\"alternate\" hreflang=\"{}\" href=\"{}\">",
+                    xml_escape(lang),
+                    xml_escape(&canonical_url(op.base, u, op.pretty))
+                ));
             }
         }
+        let out = format!("{}{links}{}", &text[..at], &text[at..]);
+        files.push((p.clone(), make_file(out.into_bytes(), origin, node.mode)));
     }
     if !headless.is_empty() {
         let count = if headless.len() == 1 {

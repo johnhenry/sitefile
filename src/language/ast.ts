@@ -388,6 +388,17 @@ export interface CanonicalInstruction {
   readonly pretty: boolean;
 }
 
+/**
+ * `LANGUAGES <code>… [DEFAULT <code>]`: the site's language folders (`/en/…`, `/fr/…`, pages at the root in the
+ * DEFAULT language). CANONICAL and SITEMAP write hreflang alternates for the pages that translate each other.
+ */
+export interface LanguagesInstruction {
+  readonly kind: 'LANGUAGES';
+  readonly span: SourceSpan;
+  readonly codes: readonly Operand[];
+  readonly default?: Operand;
+}
+
 /** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz` (`br` and `zstd` are reserved: no encoder yet). */
 export type PrecompressFormat = 'gzip';
 
@@ -497,6 +508,7 @@ export type Instruction =
   | MimeInstruction
   | FingerprintInstruction
   | CanonicalInstruction
+  | LanguagesInstruction
   | PrecompressInstruction
   | RobotsInstruction
   | SecurityTxtInstruction

@@ -106,6 +106,9 @@ pub(crate) fn operands_of(ins: &Instruction) -> Vec<(&Operand, bool)> {
             .chain(args.iter().flatten().map(|a| (a, true)))
             .collect(),
         Instruction::Canonical { base, .. } => vec![(base, false)],
+        Instruction::Languages { codes, default, .. } => {
+            codes.iter().chain(default).map(|o| (o, false)).collect()
+        }
         Instruction::Precompress { patterns, min, .. } => {
             patterns.iter().chain(min).map(|o| (o, false)).collect()
         }
@@ -715,6 +718,7 @@ fn check(input: Vec<Instruction>, file: &str) -> Result<Vec<Instruction>> {
             | Instruction::Mime { .. }
             | Instruction::Fingerprint { .. }
             | Instruction::Canonical { .. }
+            | Instruction::Languages { .. }
             | Instruction::Precompress { .. }
             | Instruction::Robots { .. }
             | Instruction::SecurityTxt { .. }

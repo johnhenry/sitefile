@@ -196,6 +196,40 @@ pub struct CspSpec {
     pub span: SourceSpan,
 }
 
+/// LANGUAGES, evaluated, as CANONICAL and SITEMAP see it (`LanguagesSpec` in src/planner.ts): the language
+/// folders, the DEFAULT language and the stage's earlier `RENDER … FOR` lines (without BY or PAGE).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LanguagesSpec {
+    pub codes: Vec<String>,
+    pub default: Option<String>,
+    pub sources: Vec<LanguageSource>,
+}
+
+/// A `RENDER … FOR as IN list` whose documents may set `lang` and `translationKey`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LanguageSource {
+    pub as_name: String,
+    pub list: String,
+    pub dest: Operand,
+}
+
+impl LanguagesSpec {
+    fn to_json(&self) -> Value {
+        let mut m = Map::new();
+        m.insert("codes".into(), json!(self.codes));
+        if let Some(d) = &self.default {
+            m.insert("default".into(), json!(d));
+        }
+        let sources: Vec<Value> = self
+            .sources
+            .iter()
+            .map(|s| json!({ "as": s.as_name, "list": s.list, "dest": operand_json(&s.dest) }))
+            .collect();
+        m.insert("sources".into(), Value::Array(sources));
+        Value::Object(m)
+    }
+}
+
 /// CSP's base policy when POLICY is not given.
 pub const DEFAULT_CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
@@ -220,6 +254,8 @@ pub enum Operation {
         pretty: bool,
         root: String,
         span: SourceSpan,
+        /// With LANGUAGES: hreflang alternates too.
+        languages: Option<LanguagesSpec>,
     },
     /// Write a `.gz` sidecar for each file matching `patterns` (checked, NFC) that is compressible, has at
     /// least `min` bytes and gets smaller.
@@ -264,6 +300,8 @@ pub enum Operation {
         dest: String,
         overwrite: bool,
         span: SourceSpan,
+        /// With LANGUAGES: `xhtml:link` alternates too.
+        languages: Option<LanguagesSpec>,
     },
     /// An Atom feed of a list import; `link` is interpolated per element (`${item…}`).
     Feed {
@@ -509,6 +547,7 @@ pub fn plan_with(
     let mut robots: Vec<(usize, usize, Vec<(bool, String)>, SourceSpan)> = Vec::new();
     let ops_len = |stages: &[Stage]| stages.last().map_or(0, |s| s.operations.len());
     let mut csp: Option<CspSpec> = None;
+    let mut languages: Option<(Vec<String>, Option<String>, SourceSpan)> = None;
     let mut mimes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
@@ -905,6 +944,7 @@ pub fn plan_with(
                     dest,
                     overwrite: *overwrite,
                     span: span.clone(),
+                    languages: None,
                 });
             }
             Instruction::Precompress {
@@ -969,7 +1009,54 @@ pub fn plan_with(
                     pretty: *pretty,
                     root: "/".into(),
                     span: span.clone(),
+                    languages: None,
                 });
+            }
+            Instruction::Languages {
+                span,
+                codes,
+                default,
+            } => {
+                if let Some((_, _, prior)) = &languages {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!(
+                            "LANGUAGES given twice (line {} already lists the languages)",
+                            prior.line
+                        ),
+                        span,
+                    ));
+                }
+                let mut list: Vec<String> = Vec::new();
+                for o in codes {
+                    let code = language_tag(evaluate_operand(o, &vars)?, &o.span)?;
+                    if list.iter().any(|c| c.eq_ignore_ascii_case(&code)) {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!("LANGUAGES: '{code}' is listed twice"),
+                            &o.span,
+                        ));
+                    }
+                    list.push(code);
+                }
+                let dflt = match default {
+                    Some(o) => {
+                        let d = language_tag(evaluate_operand(o, &vars)?, &o.span)?;
+                        if !list.contains(&d) {
+                            return Err(SitefileError::at(
+                                E_VALIDATION,
+                                format!(
+                                    "LANGUAGES … DEFAULT {d}: '{d}' is not one of the languages listed ({})",
+                                    list.join(" ")
+                                ),
+                                &o.span,
+                            ));
+                        }
+                        Some(d)
+                    }
+                    None => None,
+                };
+                languages = Some((list, dflt, span.clone()));
             }
             Instruction::Robots {
                 span,
@@ -1372,6 +1459,32 @@ pub fn plan_with(
                 _ => {}
             }
         }
+        if let Some((codes, dflt, _)) = &languages {
+            // Each CANONICAL and SITEMAP sees the stage's RENDER … FOR lines before it.
+            let mut sources: Vec<LanguageSource> = Vec::new();
+            for op in &mut st.operations {
+                match op {
+                    Operation::Render { each: Some(e), .. }
+                        if e.by.is_none() && e.page.is_none() =>
+                    {
+                        sources.push(LanguageSource {
+                            as_name: e.as_name.clone(),
+                            list: e.list.clone(),
+                            dest: e.dest.clone(),
+                        });
+                    }
+                    Operation::Canonical { languages: l, .. }
+                    | Operation::Sitemap { languages: l, .. } => {
+                        *l = Some(LanguagesSpec {
+                            codes: codes.clone(),
+                            default: dflt.clone(),
+                            sources: sources.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
     // An unnamed stage can be neither a FROM base nor a COPY --from source; only the last one is useful (EXPORT reads it).
     if let Some((_, earlier)) = stages.split_last() {
@@ -1431,6 +1544,20 @@ pub fn plan_with(
         warnings,
         target: None,
     })
+}
+
+/// A LANGUAGES code: a basic BCP 47 tag (`E_VALIDATION` otherwise).
+fn language_tag(raw: String, span: &SourceSpan) -> Result<String> {
+    if !crate::hreflang::is_language_tag(&raw) {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!(
+                "LANGUAGES: '{raw}' is not a language code (a BCP 47 tag such as en, fr or pt-BR)"
+            ),
+            span,
+        ));
+    }
+    Ok(raw)
 }
 
 /// `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default.
@@ -1917,11 +2044,15 @@ impl Operation {
                 pretty,
                 root,
                 span,
+                languages,
             } => {
                 m.insert("base".into(), json!(base));
                 m.insert("pretty".into(), json!(pretty));
                 m.insert("root".into(), json!(root));
                 m.insert("span".into(), span_json(span));
+                if let Some(l) = languages {
+                    m.insert("languages".into(), l.to_json());
+                }
             }
             Operation::Precompress {
                 formats,
@@ -1972,11 +2103,15 @@ impl Operation {
                 dest,
                 overwrite,
                 span,
+                languages,
             } => {
                 m.insert("base".into(), json!(base));
                 m.insert("dest".into(), json!(dest));
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
+                if let Some(l) = languages {
+                    m.insert("languages".into(), l.to_json());
+                }
             }
             Operation::Feed {
                 list,
@@ -2588,7 +2723,8 @@ mod tests {
                 base: "https://x.example".into(),
                 dest: "/sitemap.xml".into(),
                 overwrite: false,
-                span: SourceSpan::new("Sitefile", 2, 1)
+                span: SourceSpan::new("Sitefile", 2, 1),
+                languages: None,
             }
         );
         assert_eq!(

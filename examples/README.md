@@ -18,6 +18,7 @@ both implementations and requires identical output.
 | [`robots/`](./robots/) | `ROBOTS` (with the `SITEMAP` URL) and `SECURITY_TXT`: `/robots.txt` and an RFC 9116 `/.well-known/security.txt`. |
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
 | [`canonical/`](./canonical/) | `CANONICAL … PRETTY`: a `<link rel="canonical">` in every page that has none, without `.html`. |
+| [`hreflang/`](./hreflang/) | `LANGUAGES en fr DEFAULT en`: `/en/…` and `/fr/…` pages, and Markdown posts paired by frontmatter `translationKey`, get `hreflang` alternates from CANONICAL and `xhtml:link` alternates in the SITEMAP. |
 | [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
 | [`precache/`](./precache/) | `PRECACHE … INTO /sw.js`: a Workbox precache manifest injected into a service worker (`revision: null` for the fingerprinted stylesheet). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
