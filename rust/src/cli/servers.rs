@@ -728,7 +728,7 @@ pub const SERVE: Command = Command {
         "--log-ip          add the client address to access-log lines",
         "--quiet           no access-log lines",
         "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
-        "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
+        "--auth-file <htpasswd>       users from an htpasswd file ({SHA} or bcrypt: htpasswd -s or -B)",
         "--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)",
         "--random-route    serve the site only under a random secret path (printed in the URL)",
         "--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)",

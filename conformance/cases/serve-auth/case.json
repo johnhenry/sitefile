@@ -10,6 +10,10 @@
     { "target": "/a.txt", "headers": { "authorization": "Basic Ym9iOnBhc3N3b3Jk" }, "expect": { "status": 200 } },
     { "target": "/a.txt", "headers": { "authorization": "Basic Ym9iOnBhc3N3b3Jk", "host": "evil.example" }, "expect": { "status": 403 } },
     { "target": "/missing", "headers": { "authorization": "Basic YWxpY2U6czNjcmV0" }, "expect": { "status": 404 } },
-    { "target": "/a.txt", "headers": { "authorization": "Bearer YWxpY2U6czNjcmV0" }, "expect": { "status": 401 } }
+    { "target": "/a.txt", "headers": { "authorization": "Bearer YWxpY2U6czNjcmV0" }, "expect": { "status": 401 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic Y2Fyb2w6Y29ycmVjdCBob3JzZQ==" }, "expect": { "status": 200, "body": "secret\n" } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic Y2Fyb2w6Y29ycmVjdCBob3JzRQ==" }, "expect": { "status": 401 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic ZGF2ZTphYmM=" }, "expect": { "status": 200 } },
+    { "target": "/a.txt", "headers": { "authorization": "Basic ZGF2ZTphYmQ=" }, "expect": { "status": 401 } }
   ]
 }

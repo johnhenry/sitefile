@@ -1285,12 +1285,15 @@ on disk after the server started answers `500` for the entries that changed (`se
   host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
 - **Basic authentication (for sharing).** `--auth user:password` (repeatable; `SITEFILE_SERVE_AUTH=user:password`
   keeps it out of shell history and `ps`) and `--auth-file <htpasswd>` (`user:{SHA}…` lines as `htpasswd -s`
-  writes them; bcrypt, `$apr1$`, crypt and plain-text entries are refused, bcrypt support is a follow-up) make every
+  writes them, or bcrypt `user:$2y$…` lines as `htpasswd -B` writes them, `$2a$` and `$2b$` too, cost 4 to 31;
+  `$apr1$`, crypt, plain-text and malformed bcrypt entries are refused with `E_USAGE` naming the line) make every
   request, the live-reload endpoints included, need `Authorization: Basic`; otherwise the answer is `401` with
   `WWW-Authenticate: Basic realm="sitefile", charset="UTF-8"` (and the server-id header, so `servers` still
   detects it). Passwords are compared in constant time and never stored: the record keeps a PBKDF2-SHA256
   verifier per `--auth` user (`auth`) and the htpasswd path (`authFile`, read at every start); `servers --json`
-  shows `auth: true`, never the entries. Logs never contain the `Authorization` header. On a non-loopback bind a
+  shows `auth: true`, never the entries. A good `Authorization` value is remembered by the running server,
+  so bcrypt's cost is paid once per credential, but every wrong password costs a full bcrypt run (and holds the
+  TypeScript server's event loop while it runs): for `serve`, a low cost such as `htpasswd -B -C 5` is enough. Logs never contain the `Authorization` header. On a non-loopback bind a
   warning says that basic auth over plain HTTP sends the password in the clear. `_headers` cannot set
   `www-authenticate`.
 - **`--max-connections-per-ip <n>`** caps the connections one non-loopback client may hold open (default `0`, no

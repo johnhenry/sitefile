@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **bcrypt entries in `serve --auth-file`** (johnhenry/sitefile#278): `$2y$` (what `htpasswd -B` writes),
+  `$2a$` and `$2b$` hashes at cost 4 to 31 are accepted next to `{SHA}`. Keys are the password's UTF-8 bytes
+  up to a NUL, at most 72 bytes; digests are compared in constant time. TypeScript has its own
+  EksBlowfish (src/bcrypt.ts, no npm dependency); Rust uses the `bcrypt` crate's raw function (new
+  dependency approved by the owner, rationale in rust/Cargo.toml). Tested with OpenBSD's and
+  htpasswd's vectors in both, and in the `serve-auth` conformance case.
 - **Synced browsing: `serve --watch --sync[=scroll]`** (johnhenry/sitefile#309): opt-in, for
   `serve --watch` and `serve -d --watch` (the record keeps it). Each open page reports its path,
   fragment and title (and with `=scroll` its scroll position) to `POST /__sitefile/client`
