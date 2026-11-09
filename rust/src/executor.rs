@@ -493,7 +493,7 @@ pub(crate) fn realpath_loose(p: &Path) -> PathBuf {
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut cur = p.to_path_buf();
     loop {
-        if let Ok(r) = std::fs::canonicalize(&cur) {
+        if let Ok(r) = crate::platform::canonicalize(&cur) {
             let mut out = r;
             for t in tail.iter().rev() {
                 out.push(t);
@@ -784,7 +784,7 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     let tools = resolve_tools(&p, options, &warn)?;
     let plugin_permission = check_plugins(&p, options, &warn)?;
 
-    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+    let context_real = crate::platform::canonicalize(&options.context_dir).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,
             format!("build context '{}' does not exist", options.context_dir),
@@ -3622,7 +3622,7 @@ pub fn root_sitefile_source(
     label: &str,
     sitefile_path: &Path,
 ) -> Result<SitefileSource> {
-    let context_real = std::fs::canonicalize(&options.context_dir).map_err(|_| {
+    let context_real = crate::platform::canonicalize(&options.context_dir).map_err(|_| {
         SitefileError::plain(
             E_NOT_FOUND,
             format!("build context '{}' does not exist", options.context_dir),

@@ -158,10 +158,15 @@ pub fn resolve_path(p: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("/"))
             .join(p)
     };
-    let mut out = PathBuf::from("/");
+    let mut out = PathBuf::from(std::path::MAIN_SEPARATOR_STR);
     for c in joined.components() {
         match c {
-            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
+            // Windows: keep the drive or UNC prefix (`C:\`), the root of the result.
+            Component::Prefix(prefix) => {
+                out = PathBuf::from(prefix.as_os_str());
+                out.push(std::path::MAIN_SEPARATOR_STR);
+            }
+            Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
             }
@@ -220,7 +225,7 @@ fn fs_root(p: &Path) -> bool {
 }
 
 fn realpath_or(p: &Path, what: &str) -> Result<PathBuf> {
-    fs::canonicalize(p).map_err(|e| {
+    crate::platform::canonicalize(p).map_err(|e| {
         SitefileError::plain(
             E_EXPORT,
             format!("cannot resolve {what} '{}': {e}", show(p)),
@@ -229,10 +234,12 @@ fn realpath_or(p: &Path, what: &str) -> Result<PathBuf> {
 }
 
 fn home_dir() -> PathBuf {
-    let h = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    fs::canonicalize(&h).unwrap_or_else(|_| resolve_path(&h))
+    #[cfg(unix)]
+    let h = std::env::var_os("HOME");
+    #[cfg(windows)]
+    let h = crate::platform::home_var().map(std::ffi::OsString::from);
+    let h = h.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+    crate::platform::canonicalize(&h).unwrap_or_else(|_| resolve_path(&h))
 }
 
 /// The real location of `abs` without following a final symlink: realpath the
@@ -247,7 +254,7 @@ fn realpath_missing(abs: &Path) -> Result<PathBuf> {
         .unwrap_or_default()];
     let mut dir = abs.parent().unwrap_or(Path::new("/")).to_path_buf();
     loop {
-        match fs::canonicalize(&dir) {
+        match crate::platform::canonicalize(&dir) {
             Ok(real) => {
                 let mut out = real;
                 for r in rest.iter().rev() {
@@ -320,7 +327,7 @@ fn verified_parent_id(parent: &Path) -> Result<FileId> {
             show(parent)
         ))
     };
-    let real = fs::canonicalize(parent).map_err(changed)?;
+    let real = crate::platform::canonicalize(parent).map_err(changed)?;
     if real != parent {
         return Err(unsafe_err(format!(
             "export parent '{}' resolves to '{}'; aborting",
@@ -433,7 +440,7 @@ fn check_destination(
     if let Some(s) = &st {
         if s.file_type().is_symlink() {
             // Never write through a final symlink; but if it points at something dangerous, say so.
-            if let Ok(target) = fs::canonicalize(&out_real) {
+            if let Ok(target) = crate::platform::canonicalize(&out_real) {
                 assert_safe_destination(&target, &context_real, &home)?;
             }
             return Err(SitefileError::plain(
@@ -945,7 +952,7 @@ pub(crate) mod tests {
                 random_hex(6)
             ));
             fs::create_dir_all(&p).unwrap();
-            TmpDir(fs::canonicalize(&p).unwrap())
+            TmpDir(crate::platform::canonicalize(&p).unwrap())
         }
         pub fn path(&self) -> &Path {
             &self.0
@@ -1447,11 +1454,22 @@ pub(crate) mod tests {
 
     #[test]
     fn resolve_is_lexical() {
-        assert_eq!(
-            resolve_path(Path::new("/a/b/../c/./d/")),
-            PathBuf::from("/a/c/d")
-        );
-        assert_eq!(resolve_path(Path::new("/..")), PathBuf::from("/"));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                resolve_path(Path::new("/a/b/../c/./d/")),
+                PathBuf::from("/a/c/d")
+            );
+            assert_eq!(resolve_path(Path::new("/..")), PathBuf::from("/"));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                resolve_path(Path::new(r"C:\a\b\..\c\.\d\")),
+                PathBuf::from(r"C:\a\c\d")
+            );
+            assert_eq!(resolve_path(Path::new(r"C:\..")), PathBuf::from(r"C:\"));
+        }
         assert!(resolve_path(Path::new("rel")).is_absolute());
     }
 }

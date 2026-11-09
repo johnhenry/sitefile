@@ -124,7 +124,7 @@ impl LocalContext {
     pub fn open(dir: impl AsRef<Path>, options: &LocalContextOptions) -> Result<LocalContext> {
         let dir = dir.as_ref();
         let shown = dir.display().to_string();
-        let root = match fs::canonicalize(dir) {
+        let root = match crate::platform::canonicalize(dir) {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(SitefileError::plain(
@@ -303,7 +303,7 @@ impl LocalContext {
         link_name: Option<&str>,
     ) -> Result<(PathBuf, Meta)> {
         let abs = self.host_path(rel, span)?;
-        let real = match fs::canonicalize(&abs) {
+        let real = match crate::platform::canonicalize(&abs) {
             Ok(r) => r,
             Err(e) => {
                 let detail = if e.kind() == io::ErrorKind::NotFound
@@ -779,7 +779,7 @@ pub(crate) mod tests {
     fn open_resolves_the_real_root() {
         with_temp(|ctx, _| {
             let c = open(ctx);
-            assert_eq!(c.root, fs::canonicalize(ctx).unwrap());
+            assert_eq!(c.root, crate::platform::canonicalize(ctx).unwrap());
             assert_eq!(
                 code(LocalContext::open(
                     ctx.join("nope"),

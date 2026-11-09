@@ -36,6 +36,24 @@ pub fn lstat(p: &Path) -> io::Result<Meta> {
     fs::symlink_metadata(p)
 }
 
+/// The user's home directory as Node's `os.homedir()` reads it: `$HOME`
+/// (Windows: `%USERPROFILE%`, then `$HOME`). Only Windows callers use it; Unix
+/// code reads `HOME` directly, as before.
+#[cfg(windows)]
+pub fn home_var() -> Option<String> {
+    std::env::var("USERPROFILE")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("HOME").ok())
+}
+
+/// `realpath`.
+#[cfg(unix)]
+#[inline]
+pub fn canonicalize<P: AsRef<Path>>(p: P) -> io::Result<std::path::PathBuf> {
+    fs::canonicalize(p)
+}
+
 /// `stat`: metadata of `p`, following symlinks.
 #[cfg(unix)]
 #[inline]
@@ -81,7 +99,7 @@ mod windows {
     use std::io;
     use std::os::windows::fs::{FileExt, OpenOptionsExt as _};
     use std::os::windows::io::AsRawHandle;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::UNIX_EPOCH;
 
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -182,6 +200,43 @@ mod windows {
 
     pub fn fstat(f: &fs::File) -> io::Result<Meta> {
         from_handle(f)
+    }
+
+    /// `realpath`: `fs::canonicalize`, without the `\\?\` verbatim prefix when the
+    /// path is an ordinary drive path that means the same without it (as Node's
+    /// `fs.realpathSync` returns it), so it compares with paths built from the
+    /// working directory or the arguments. UNC and over-long paths keep it.
+    pub fn canonicalize<P: AsRef<Path>>(p: P) -> io::Result<PathBuf> {
+        let real = fs::canonicalize(p)?;
+        Ok(simplify(&real).unwrap_or(real))
+    }
+
+    fn simplify(p: &Path) -> Option<PathBuf> {
+        let s = p.to_str()?;
+        let rest = s.strip_prefix(r"\\?\")?;
+        let b = rest.as_bytes();
+        if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+            return None;
+        }
+        // Over MAX_PATH, or a component Win32 would rewrite (trailing dot or
+        // space, a reserved device name): keep the verbatim form.
+        if rest.len() >= 260 {
+            return None;
+        }
+        for c in rest[3..].split('\\').filter(|c| !c.is_empty()) {
+            if c.ends_with('.') || c.ends_with(' ') {
+                return None;
+            }
+            let stem = c.split('.').next().unwrap_or("").to_ascii_uppercase();
+            let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || (stem.len() == 4
+                    && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                    && stem.as_bytes()[3].is_ascii_digit());
+            if reserved {
+                return None;
+            }
+        }
+        Some(PathBuf::from(rest))
     }
 
     /// Permission bits are not applied on Windows.

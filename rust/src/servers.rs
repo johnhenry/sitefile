@@ -1068,7 +1068,7 @@ pub fn looks_like_dir(arg: &str) -> bool {
 /// An archive file source: labelled by its absolute path, stored by its real path.
 pub fn archive_source(arg: &str) -> (String, ServerSource) {
     let file = crate::export::exporter::resolve_path(Path::new(arg));
-    let real = fs::canonicalize(&file).unwrap_or(file.clone());
+    let real = crate::platform::canonicalize(&file).unwrap_or(file.clone());
     (
         file.display().to_string(),
         ServerSource::Archive {
@@ -1101,7 +1101,7 @@ pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)
                 format!("'{arg}' is not a directory or a file"),
             ));
         }
-        let real = fs::canonicalize(&dir).unwrap_or(dir.clone());
+        let real = crate::platform::canonicalize(&dir).unwrap_or(dir.clone());
         return Ok((
             dir.display().to_string(),
             ServerSource::Dir {
@@ -1904,7 +1904,10 @@ mod tests {
         for (name, file) in write_archives(d.path()) {
             let arg = file.display().to_string();
             let (label, source) = resolve_source(&store, &arg).unwrap();
-            let real = fs::canonicalize(&file).unwrap().display().to_string();
+            let real = crate::platform::canonicalize(&file)
+                .unwrap()
+                .display()
+                .to_string();
             assert_eq!(label, arg, "{name}");
             assert_eq!(source, ServerSource::Archive { path: real }, "{name}");
             let t = load_served_tree(&store, &source).unwrap();
@@ -2216,7 +2219,7 @@ mod tests {
             e.message(),
             format!(
                 "{}: not a recognized archive (expected tar, tar.gz, tar.zst, zip or web bundle)",
-                fs::canonicalize(&notes).unwrap().display()
+                crate::platform::canonicalize(&notes).unwrap().display()
             )
         );
         let gone = d.path().join("gone.zip");

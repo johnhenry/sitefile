@@ -18,7 +18,7 @@ fn tmp(name: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("sitefile-keys-rs-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&p);
     fs::create_dir_all(&p).unwrap();
-    fs::canonicalize(&p).unwrap()
+    sitefile::platform::canonicalize(&p).unwrap()
 }
 
 fn wait_for(path: &std::path::Path, what: &str) -> String {

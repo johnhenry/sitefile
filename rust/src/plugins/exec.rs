@@ -90,7 +90,7 @@ pub fn resolve_tool(
         }
     }
     for c in candidates {
-        let Ok(real) = fs::canonicalize(&c) else {
+        let Ok(real) = crate::platform::canonicalize(&c) else {
             continue;
         };
         let Ok(st) = fs::metadata(&real) else {
@@ -472,7 +472,7 @@ mod tests {
         let d = TempDir::new(prefix).unwrap();
         let p = d.0.clone();
         std::mem::forget(d);
-        fs::canonicalize(p).unwrap()
+        crate::platform::canonicalize(p).unwrap()
     }
 
     fn node() -> Option<PathBuf> {
@@ -610,6 +610,7 @@ switch (mode) {{
         assert_eq!(safe_ext("/d.x/"), ".x");
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_by_path_name_explicit_and_errors() {
         let cat = resolve_tool(
@@ -619,7 +620,7 @@ switch (mode) {{
             None,
         )
         .unwrap();
-        assert_eq!(cat.path, fs::canonicalize("/bin/cat").unwrap());
+        assert_eq!(cat.path, crate::platform::canonicalize("/bin/cat").unwrap());
         assert!(cat.size > 0 && cat.mtime_ms > 0.0);
         let e = resolve_tool("fake", None, Some("/nonexistent"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_NOT_FOUND);
@@ -649,12 +650,13 @@ switch (mode) {{
                 resolve_tool("kat", Some(d.join("kat").to_str().unwrap()), None, None)
                     .unwrap()
                     .path,
-                fs::canonicalize("/bin/cat").unwrap()
+                crate::platform::canonicalize("/bin/cat").unwrap()
             );
         }
         fs::remove_dir_all(d).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn mtime_ms_matches_node() {
         let Some(node) = node() else { return };
@@ -666,6 +668,7 @@ switch (mode) {{
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn system_tools_copy_and_translate() {
         let cp = resolve_tool("cp", None, Some("/bin"), None).unwrap();
@@ -697,6 +700,7 @@ switch (mode) {{
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn argv_placeholders_no_shell_scrubbed_env_temp_cwd_closed_stdin() {
         let Some((d, tool)) = fake_tool() else { return };

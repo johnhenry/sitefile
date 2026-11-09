@@ -41,7 +41,7 @@ fn file_source(store: &Store, dir: &Path, src: &str) -> Result<(String, ServerSo
 fn open(v: &Parsed) -> Result<(ServersFile, String)> {
     let name = find_servers_file(v.str("file"))?;
     let file = load_servers_file(&name)?;
-    let real = std::fs::canonicalize(&name)
+    let real = crate::platform::canonicalize(&name)
         .map_err(|_| {
             SitefileError::plain(E_NOT_FOUND, format!("cannot read servers file '{name}'"))
         })?

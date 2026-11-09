@@ -882,7 +882,7 @@ fn watched_directory(arg: &str) -> Result<(String, crate::servers::ServerSource)
             format!("'{arg}' is not a directory"),
         ));
     }
-    let real = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+    let real = crate::platform::canonicalize(&dir).unwrap_or(dir.clone());
     Ok((
         dir.display().to_string(),
         crate::servers::ServerSource::Dir {

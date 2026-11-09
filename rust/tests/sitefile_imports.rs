@@ -26,7 +26,7 @@ impl Tmp {
         ));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
-        Tmp(fs::canonicalize(&p).unwrap())
+        Tmp(sitefile::platform::canonicalize(&p).unwrap())
     }
     fn write(&self, rel: &str, text: &str) {
         let p = self.0.join(rel);

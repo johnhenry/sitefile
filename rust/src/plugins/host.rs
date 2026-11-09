@@ -124,7 +124,7 @@ pub fn check_node(
             given.display()
         ));
     }
-    let real = std::fs::canonicalize(&given)
+    let real = crate::platform::canonicalize(&given)
         .ok()
         .filter(|r| r.is_file())
         .ok_or_else(|| format!("could not start: no Node binary at {}", given.display()))?;
@@ -1181,7 +1181,7 @@ mod tests {
             Instant::now().elapsed().as_nanos()
         ));
         fs::create_dir_all(&d).unwrap();
-        fs::canonicalize(d).unwrap()
+        crate::platform::canonicalize(d).unwrap()
     }
 
     /// A project folder with `plugins/<name>.mjs` (+ extra files); returns (root, plugin path).
@@ -1604,7 +1604,7 @@ mod tests {
             return;
         }
         // The chosen Node runs the plugin and is named in one notice.
-        let node = fs::canonicalize(find_on_path("node").unwrap()).unwrap();
+        let node = crate::platform::canonicalize(find_on_path("node").unwrap()).unwrap();
         let version = check_node(Some(&node), 10_000).unwrap().version;
         let notices = Arc::new(Mutex::new(Vec::<String>::new()));
         let n = notices.clone();
@@ -1687,7 +1687,11 @@ mod tests {
     fn a_missing_node_binary_is_an_error_not_a_panic() {
         let (root, file) = plugin("export function transform() { return 'x'; }", &[]);
         let (mut h, _) = host_with(&file, PluginPolicy::default());
-        h.set_node("/nonexistent/node");
+        h.set_node(if cfg!(windows) {
+            r"C:\nonexistent\node.exe"
+        } else {
+            "/nonexistent/node"
+        });
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.code, ErrorCode::E_PLUGIN);
         assert!(

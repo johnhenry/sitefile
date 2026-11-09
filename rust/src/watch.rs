@@ -80,10 +80,13 @@ pub fn is_ignored_change(abs: &Path, roots: &[PathBuf], ignored: &[PathBuf]) -> 
 /// Canonical path of `p`, else of its parent joined with its name, else `p` made absolute.
 pub fn resolve_real(p: &Path) -> PathBuf {
     let abs = resolve_path(p);
-    if let Ok(r) = std::fs::canonicalize(&abs) {
+    if let Ok(r) = crate::platform::canonicalize(&abs) {
         return r;
     }
-    match (abs.parent().map(std::fs::canonicalize), abs.file_name()) {
+    match (
+        abs.parent().map(crate::platform::canonicalize),
+        abs.file_name(),
+    ) {
         (Some(Ok(parent)), Some(name)) => parent.join(name),
         _ => abs,
     }
@@ -206,7 +209,7 @@ pub fn watch_loop(
             format!("'{}' is not a directory", o.context),
         ));
     }
-    let root = std::fs::canonicalize(o.context)
+    let root = crate::platform::canonicalize(o.context)
         .map_err(|e| SitefileError::plain(E_NOT_FOUND, format!("'{}': {e}", o.context)))?;
     let sitefile = resolve_real(&match o.sitefile {
         Some(f) => PathBuf::from(f),
@@ -341,7 +344,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sitefile-watch-rs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("dist")).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
+        let dir = crate::platform::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "1").unwrap();
         let w = Watched {
             dirs: vec![dir.clone()],

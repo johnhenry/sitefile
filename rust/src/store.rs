@@ -115,7 +115,11 @@ pub fn resolve_store_home() -> PathBuf {
 pub fn resolve_store_home_from(h: Option<&str>) -> PathBuf {
     let p = match h {
         Some(h) if !h.is_empty() => PathBuf::from(h),
+        #[cfg(unix)]
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".sitefile"),
+        #[cfg(windows)]
+        _ => PathBuf::from(crate::platform::home_var().unwrap_or_else(|| "/".into()))
+            .join(".sitefile"),
     };
     crate::export::exporter::resolve_path(&p)
 }
