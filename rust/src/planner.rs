@@ -869,8 +869,11 @@ pub fn plan_with(
                 fingerprints.push((span.clone(), !*no_cache_headers));
             }
             Instruction::Canonical { span, base, pretty } => {
-                let base =
-                    check_base_url(&evaluate_operand(base, &vars)?, "CANONICAL BASE", &base.span)?;
+                let base = check_base_url(
+                    &evaluate_operand(base, &vars)?,
+                    "CANONICAL BASE",
+                    &base.span,
+                )?;
                 // `root` is the EXPORT path, filled in below.
                 operations(&mut stages, span)?.push(Operation::Canonical {
                     base,

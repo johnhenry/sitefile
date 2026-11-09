@@ -87,7 +87,10 @@ pub fn xml_escape(s: &str) -> String {
 
 /// sitemaps.org XML for every `.html` file in the tree except `/404.html`, sorted by path (UTF-8 bytes).
 pub fn sitemap_xml(tree: &Tree, base: &str) -> String {
-    format!("{SITEMAP_HEAD}{}{SITEMAP_TAIL}", sitemap_entries(tree, base).concat())
+    format!(
+        "{SITEMAP_HEAD}{}{SITEMAP_TAIL}",
+        sitemap_entries(tree, base).concat()
+    )
 }
 
 const SITEMAP_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
@@ -105,7 +108,12 @@ fn sitemap_entries(tree: &Tree, base: &str) -> Vec<String> {
     paths.sort();
     paths
         .into_iter()
-        .map(|p| format!("  <url><loc>{}</loc></url>\n", xml_escape(&page_url(base, p))))
+        .map(|p| {
+            format!(
+                "  <url><loc>{}</loc></url>\n",
+                xml_escape(&page_url(base, p))
+            )
+        })
         .collect()
 }
 
@@ -531,12 +539,26 @@ mod tests {
     fn sitemap_split_matches_typescript() {
         // The same tree and expected files as SPLIT_EXPECTED in test/canonical.test.ts.
         let t = Tree::from_files(
-            ["/index.html", "/a.html", "/b/index.html", "/404.html", "/x.css"]
-                .iter()
-                .map(|p| (p.to_string(), crate::tree::make_file(Vec::new(), "test", 0o644))),
+            [
+                "/index.html",
+                "/a.html",
+                "/b/index.html",
+                "/404.html",
+                "/x.css",
+            ]
+            .iter()
+            .map(|p| {
+                (
+                    p.to_string(),
+                    crate::tree::make_file(Vec::new(), "test", 0o644),
+                )
+            }),
         )
         .unwrap();
-        assert_eq!(sitemap_files(&t, "https://e.x", "/sitemap.xml", SITEMAP_LIMITS).len(), 1);
+        assert_eq!(
+            sitemap_files(&t, "https://e.x", "/sitemap.xml", SITEMAP_LIMITS).len(),
+            1
+        );
         let split = sitemap_files(&t, "https://e.x", "/maps/site.xml", (2, 1_000_000));
         let head = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
         assert_eq!(

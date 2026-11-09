@@ -9,6 +9,7 @@ use crate::base_image::{
     ResolveBaseOptions,
 };
 use crate::build_args::BuildArgs;
+use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
 use crate::digest::sha256;
 use crate::documents::{
@@ -23,7 +24,6 @@ use crate::export::formats::{encode_tree, is_archive_format, EncodeOptions};
 use crate::export::oci::{
     build_oci_image, image_meta, layout_tree, oci_archive, BaseImage, OciOptions,
 };
-use crate::canonical::{canonical, CanonicalOp};
 use crate::fingerprint::{compose_renames, fingerprint, FingerprintOp};
 use crate::language::ast::{
     ExportFormat, ImportKind, Instruction, OciCompression, Operand, Program, TemplatePart,

@@ -817,7 +817,9 @@ pub fn canonical_slot(text: &str) -> CanonicalSlot {
         if tag == "link" {
             if let Some((s, e)) = rel {
                 let r = decode_html_text(&text[s..e]).to_ascii_lowercase();
-                if r.split([' ', '\t', '\n', '\r', '\x0c']).any(|t| t == "canonical") {
+                if r.split([' ', '\t', '\n', '\r', '\x0c'])
+                    .any(|t| t == "canonical")
+                {
                     return CanonicalSlot::Has;
                 }
             }
