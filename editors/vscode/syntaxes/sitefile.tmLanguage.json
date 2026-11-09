@@ -4111,7 +4111,7 @@
               "include": "#continuation-comment"
             },
             {
-              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "match": "(?<![^\\s])((?i:AS))(?:\\s+(?:((?i:directory|zip|tar|tgz|tar\\.gz|wbn|oci|car|html|mhtml|epub))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
               "captures": {
                 "1": {
                   "name": "keyword.other.clause.sitefile"
