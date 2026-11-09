@@ -2415,6 +2415,95 @@ impl Drop for ListeningServer {
     }
 }
 
+#[repr(C)]
+struct IfAddrs {
+    ifa_next: *mut IfAddrs,
+    ifa_name: *mut std::ffi::c_char,
+    ifa_flags: std::ffi::c_uint,
+    ifa_addr: *mut u8,
+}
+
+extern "C" {
+    fn getifaddrs(ifap: *mut *mut IfAddrs) -> std::ffi::c_int;
+    fn freeifaddrs(ifa: *mut IfAddrs);
+}
+
+const IFF_UP: std::ffi::c_uint = 0x1;
+const IFF_LOOPBACK: std::ffi::c_uint = 0x8;
+const IFF_RUNNING: std::ffi::c_uint = 0x40;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+const AF_INET6: u16 = if cfg!(target_os = "freebsd") { 28 } else { 30 };
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+const AF_INET6: u16 = 10;
+
+/// The family of a `struct sockaddr` (BSDs: a length byte, then the family byte).
+///
+/// # Safety
+/// `sa` points to a readable `struct sockaddr`.
+unsafe fn sa_family(sa: *const u8) -> u16 {
+    if cfg!(any(target_os = "macos", target_os = "ios", target_os = "freebsd")) {
+        u16::from(*sa.add(1))
+    } else {
+        u16::from_ne_bytes([*sa, *sa.add(1)])
+    }
+}
+
+/// The addresses other machines can reach a server bound to all interfaces at
+/// (`networkAddresses` in src/server.ts: up, non-loopback interfaces; IPv4 for `0.0.0.0`, IPv4
+/// then IPv6 for `::`, no IPv6 link-local; each family sorted as text, without duplicates).
+pub fn network_addresses(bind_host: &str) -> Vec<String> {
+    if bind_host != "0.0.0.0" && bind_host != "::" {
+        return Vec::new();
+    }
+    let mut v4: Vec<String> = Vec::new();
+    let mut v6: Vec<String> = Vec::new();
+    let mut head: *mut IfAddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list that freeifaddrs releases; every node and
+    // address is read only while the list is alive, and only through the fields of the common
+    // prefix of `struct ifaddrs` (identical on Linux and the BSDs).
+    unsafe {
+        if getifaddrs(&mut head) != 0 {
+            return Vec::new();
+        }
+        let mut cur = head;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            let up = ifa.ifa_flags & (IFF_UP | IFF_RUNNING) == (IFF_UP | IFF_RUNNING);
+            if up && ifa.ifa_flags & IFF_LOOPBACK == 0 && !ifa.ifa_addr.is_null() {
+                let sa = ifa.ifa_addr as *const u8;
+                let family = sa_family(sa);
+                if family == 2 {
+                    let b = std::slice::from_raw_parts(sa.add(4), 4);
+                    v4.push(std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string());
+                } else if family == AF_INET6 && bind_host == "::" {
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(std::slice::from_raw_parts(sa.add(8), 16));
+                    let a = std::net::Ipv6Addr::from(b);
+                    if a.segments()[0] & 0xffc0 != 0xfe80 && !a.is_loopback() {
+                        v6.push(a.to_string());
+                    }
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        freeifaddrs(head);
+    }
+    v4.sort();
+    v4.dedup();
+    v6.sort();
+    v6.dedup();
+    v4.extend(v6);
+    v4
+}
+
+/// [`network_addresses`] as URLs.
+pub fn network_urls(bind_host: &str, port: u16) -> Vec<String> {
+    network_addresses(bind_host)
+        .iter()
+        .map(|a| format_url(a, port))
+        .collect()
+}
+
 pub fn format_url(host: &str, port: u16) -> String {
     let shown = if host == "0.0.0.0" || host == "::" {
         "127.0.0.1"

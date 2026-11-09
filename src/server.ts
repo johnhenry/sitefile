@@ -1,4 +1,5 @@
 import http from 'node:http';
+import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
 import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
@@ -873,6 +874,31 @@ export function closeServer(server: http.Server): Promise<void> {
     server.close(() => resolve());
     server.closeAllConnections();
   });
+}
+
+/**
+ * The addresses other machines can reach a server bound to all interfaces at: the up, non-loopback
+ * interface addresses, IPv4 for `0.0.0.0`, IPv4 then IPv6 for `::` (IPv6 link-local `fe80::/10`
+ * left out: it needs a zone), each family sorted as text, without duplicates. Empty for any other bind.
+ */
+export function networkAddresses(bindHost: string): string[] {
+  if (bindHost !== '0.0.0.0' && bindHost !== '::') return [];
+  const v4 = new Set<string>();
+  const v6 = new Set<string>();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.internal) continue;
+      if (a.family === 'IPv4') v4.add(a.address);
+      else if (bindHost === '::' && !/^fe[89ab]/i.test(a.address)) v6.add(a.address.toLowerCase());
+    }
+  }
+  const sorted = (xs: Set<string>): string[] => [...xs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return [...sorted(v4), ...sorted(v6)];
+}
+
+/** {@link networkAddresses} as URLs. */
+export function networkUrls(bindHost: string, port: number): string[] {
+  return networkAddresses(bindHost).map((a) => formatUrl(a, port));
 }
 
 export function formatUrl(host: string, port: number): string {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -195,7 +195,7 @@ const run: Command = {
       const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, lastModified: () => modified, log: logWriter(logging) });
       const addr = await listen(server, bind.host, bind.port);
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, formatUrl(addr.host, addr.port))}\n`);
-      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
       await waitForSignal();
       await closeServer(server);
       return 0;
@@ -227,7 +227,7 @@ const run: Command = {
     await reg.write(state);
     try {
       const up = await startDetached(reg, state);
-      process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n`);
+      process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
       return 0;
     } catch (e) {
       await reg.remove(id);
@@ -276,6 +276,13 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
   if (v.immutable && maxAge === undefined) usage('--immutable needs --max-age');
   if (maxAge === undefined && maxAgeHtml === undefined) return undefined;
   return { ...(maxAge !== undefined ? { maxAge } : {}), ...(v.immutable ? { immutable: true } : {}), ...(maxAgeHtml !== undefined ? { maxAgeHtml } : {}) };
+}
+
+/** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
+function networkLines(host: string, port: number): string {
+  return networkUrls(host, port)
+    .map((u) => `  Network: ${u}\n`)
+    .join('');
 }
 
 /** `--log-format`, `--log-ip`, `--quiet`: the server options (and record fields) they set, only those not at their default. */
@@ -370,7 +377,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
         if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, formatUrl(addr.host, addr.port))}\n`);
-        else process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port)}`);
       },
     });
   } finally {
@@ -392,7 +399,11 @@ const ps: Command = {
     const shown = views.filter((s) => v.all || s.status === 'running');
     if (v.json) {
       // 'site' is the image reference or directory being served.
-      const out = shown.map(({ image, ...rest }) => ({ ...rest, site: image }));
+      // A server bound to all interfaces also lists the URLs other machines use (networkUrls).
+      const out = shown.map(({ image, ...rest }) => {
+        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port) : [];
+        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), site: image };
+      });
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
       return 0;
     }
@@ -575,7 +586,7 @@ const restart: Command = {
       await reg.update(s.id, { ready: false });
       throw e;
     });
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
     return 0;
   },
 };
