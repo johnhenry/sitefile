@@ -1,12 +1,47 @@
 {
   "command": "serve",
-  "args": ["--log-format", "json", "--log-ip"],
-  "log": { "lines": 6 },
+  "args": [
+    "--log-format",
+    "json",
+    "--log-ip"
+  ],
+  "log": {
+    "lines": 6
+  },
   "requests": [
-    { "target": "/v.txt?a=1&b=%22x%22", "expect": { "status": 200 } },
-    { "target": "/v.txt", "headers": { "range": "bytes=0-1" }, "expect": { "status": 206 } },
-    { "method": "HEAD", "target": "/v.txt", "expect": { "status": 200 } },
-    { "target": "/missing", "expect": { "status": 404 } },
-    { "target": "/café\"", "expect": { "status": 404 } }
+    {
+      "target": "/v.txt?a=1&b=%22x%22",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/v.txt",
+      "headers": {
+        "range": "bytes=0-1"
+      },
+      "expect": {
+        "status": 206
+      }
+    },
+    {
+      "method": "HEAD",
+      "target": "/v.txt",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "target": "/missing",
+      "expect": {
+        "status": 404
+      }
+    },
+    {
+      "target": "/caf%C3%A9%22",
+      "expect": {
+        "status": 404
+      }
+    }
   ]
 }
