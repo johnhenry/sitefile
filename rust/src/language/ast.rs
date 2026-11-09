@@ -464,6 +464,12 @@ pub enum Instruction {
         value: Vec<Operand>,
         overwrite: bool,
     },
+    /// `MIME <.ext> <type/subtype>`: the Content-Type of the files with that extension, as a `/_headers` rule.
+    Mime {
+        span: SourceSpan,
+        ext: Operand,
+        media_type: Operand,
+    },
     /// `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename
     /// matching files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them. `integrity`
     /// adds SRI attributes; `no_cache_headers` turns off EXPORT's `Cache-Control` lines.
@@ -562,6 +568,7 @@ impl Instruction {
             | Instruction::Feed { span, .. }
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
+            | Instruction::Mime { span, .. }
             | Instruction::Fingerprint { span, .. }
             | Instruction::Canonical { span, .. }
             | Instruction::Precompress { span, .. }
@@ -589,6 +596,7 @@ impl Instruction {
             Instruction::Feed { .. } => "FEED",
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
+            Instruction::Mime { .. } => "MIME",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
             Instruction::Canonical { .. } => "CANONICAL",
             Instruction::Precompress { .. } => "PRECOMPRESS",

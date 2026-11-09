@@ -274,6 +274,12 @@ pub(crate) fn instruction(ins: &Instruction) -> Value {
             ("policy", policy.as_ref().map(operand)),
             ("meta", Some(json!(meta))),
         ]),
+        Instruction::Mime { span: sp, ext, media_type } => obj(vec![
+            ("kind", s("MIME")),
+            ("span", Some(span(sp))),
+            ("ext", Some(operand(ext))),
+            ("type", Some(operand(media_type))),
+        ]),
         Instruction::Sitemap { span: sp, base, dest, overwrite } => obj(vec![
             ("kind", s("SITEMAP")),
             ("span", Some(span(sp))),

@@ -73,6 +73,11 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Adds a response header for paths matching the pattern (`*` matches anything) to `/_headers`, written at EXPORT; one block per pattern, in source order.",
     ),
     (
+        "MIME",
+        "MIME <.ext> <type/subtype>",
+        "Sets the `Content-Type` of the files with that extension: adds `/*<.ext>` with `Content-Type: <type/subtype>` to `/_headers` (in source order with HEADER), which `serve`, Netlify, Cloudflare Pages and a Web Bundle export use. No parameters; written in lowercase.",
+    ),
+    (
         "FINGERPRINT",
         "FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]",
         "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",

@@ -24,6 +24,7 @@
   (security_txt_instruction)
   (precache_instruction)
   (csp_instruction)
+  (mime_instruction)
   (checklinks_instruction)
   (export_instruction)
   (unsupported_instruction)

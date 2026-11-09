@@ -174,6 +174,13 @@
         "value": "[Cc][Ss][Pp]"
       }
     },
+    "_kw_mime": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "[Mm][Ii][Mm][Ee]"
+      }
+    },
     "_kw_checklinks": {
       "type": "TOKEN",
       "content": {
@@ -653,6 +660,10 @@
         {
           "type": "SYMBOL",
           "name": "csp_instruction"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "mime_instruction"
         },
         {
           "type": "SYMBOL",
@@ -3038,6 +3049,36 @@
               "type": "BLANK"
             }
           ]
+        }
+      ]
+    },
+    "mime_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_mime"
+          },
+          "named": false,
+          "value": "MIME"
+        },
+        {
+          "type": "FIELD",
+          "name": "extension",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_operand"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_operand"
+          }
         }
       ]
     },

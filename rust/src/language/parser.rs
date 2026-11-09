@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 23] = [
+pub const INSTRUCTIONS: [&str; 24] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -40,6 +40,7 @@ pub const INSTRUCTIONS: [&str; 23] = [
     "SECURITY_TXT",
     "PRECACHE",
     "CSP",
+    "MIME",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -190,6 +191,7 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "SECURITY_TXT" => parse_security_txt(c, span),
         "PRECACHE" => parse_precache(c, span),
         "CSP" => parse_csp(c, span),
+        "MIME" => parse_mime(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1360,6 +1362,18 @@ fn parse_csp(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let meta = c.keyword("META");
     c.expect_end()?;
     Ok(Instruction::Csp { span, policy, meta })
+}
+
+/// `MIME <.ext> <type/subtype>`
+fn parse_mime(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let ext = c.operand("extension (.ext)")?;
+    let media_type = c.operand("media type (type/subtype)")?;
+    c.expect_end()?;
+    Ok(Instruction::Mime {
+        span,
+        ext,
+        media_type,
+    })
 }
 
 /// `CHECKLINKS [--warn] [--external]`

@@ -399,3 +399,21 @@ export function pagePatterns(url: string): string[] {
 export function cspMeta(policy: string): string {
   return `<meta http-equiv="Content-Security-Policy" content="${policy.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`;
 }
+
+// ---------------------------------------------------------------- MIME
+
+/** Check a MIME extension: `.` and letters, digits, `+`, `-` or `_` (`.usdz`, `.tar-gz`); returned in lowercase. */
+export function checkMimeExtension(raw: string, span: SourceSpan): string {
+  if (!/^\.[A-Za-z0-9+_-]+$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME extension '${raw}' must be a dot and letters, digits, '+', '-' or '_' (e.g. .usdz)`, span);
+  }
+  return raw.toLowerCase();
+}
+
+/** Check a MIME media type: `type/subtype`, both RFC 6838 restricted names (no parameters); returned in lowercase. */
+export function checkMimeType(raw: string, span: SourceSpan): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `MIME type '${raw}' must be type/subtype (e.g. model/vnd.usdz+zip), without parameters`, span);
+  }
+  return raw.toLowerCase();
+}

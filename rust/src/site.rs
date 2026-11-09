@@ -677,6 +677,51 @@ pub fn csp_meta(policy: &str) -> String {
     )
 }
 
+// ---------------------------------------------------------------- MIME
+
+/// Check a MIME extension (`checkMimeExtension` in src/site.ts): `.` and `[A-Za-z0-9+_-]+`, lowercased.
+pub fn check_mime_extension(raw: &str, span: &SourceSpan) -> Result<String> {
+    let ok = raw.len() > 1
+        && raw.starts_with('.')
+        && raw[1..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'_' || b == b'-');
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("MIME extension '{raw}' must be a dot and letters, digits, '+', '-' or '_' (e.g. .usdz)"),
+            span,
+        ));
+    }
+    Ok(raw.to_ascii_lowercase())
+}
+
+/// An RFC 6838 restricted name: an alphanumeric first character, then up to 126 of `[A-Za-z0-9!#$&^_.+-]`.
+fn restricted_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 127
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+}
+
+/// Check a MIME media type (`checkMimeType` in src/site.ts): `type/subtype`, no parameters, lowercased.
+pub fn check_mime_type(raw: &str, span: &SourceSpan) -> Result<String> {
+    let ok = match raw.split_once('/') {
+        Some((t, s)) => restricted_name(t) && restricted_name(s),
+        None => false,
+    };
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("MIME type '{raw}' must be type/subtype (e.g. model/vnd.usdz+zip), without parameters"),
+            span,
+        ));
+    }
+    Ok(raw.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

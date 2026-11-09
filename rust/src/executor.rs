@@ -1348,7 +1348,7 @@ fn with_site_rules(
     let mut auto: Vec<(String, &str)> = Vec::new();
     let mut header_rules: Vec<(bool, &SourceSpan)> =
         p.headers.iter().map(|h| (h.overwrite, &h.span)).collect();
-    let mut header_kind = "HEADER";
+    let mut header_kind = p.headers.first().map_or("HEADER", |h| h.instruction);
     let headers_path = join_virtual(&p.export_path, "_headers");
     if let (Some(fp), false) = (&p.cache_headers, urls.is_empty()) {
         let files: Vec<String> = tree

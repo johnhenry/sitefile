@@ -9,6 +9,11 @@
   them one `E_PATH_PORTABLE` error. A CHECKLINKS broken link whose target
   differs from a file only in case names that file. Both implementations, with
   conformance cases.
+- **MIME: custom content types** (johnhenry/sitefile#220): `MIME <.ext>
+  <type/subtype>` adds a `/*.ext` `Content-Type` rule to `/_headers` (in
+  source order with HEADER), which `serve`, the hosts and `EXPORT … AS wbn`
+  use. Both implementations, with conformance cases. The CLI's `--mime` flag
+  is not part of this change.
 - **CSP: Content-Security-Policy from inline hashes** (johnhenry/sitefile#219):
   `CSP [POLICY <policy>] [META]` writes a per-page policy to `/_headers` (or a
   `<meta>` with META) that allows each page's inline scripts and styles by

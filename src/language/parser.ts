@@ -71,6 +71,8 @@ function parseInstruction(c: Cursor): Instruction {
       return parseRedirect(c, span);
     case 'HEADER':
       return parseHeader(c, span);
+    case 'MIME':
+      return parseMime(c, span);
     case 'FINGERPRINT':
       return parseFingerprint(c, span);
     case 'CANONICAL':
@@ -572,6 +574,14 @@ function parseHeader(c: Cursor, span: SourceSpan): Instruction {
   while (!c.atEnd()) value.push(c.operand('header value'));
   if (value.length === 0) throw c.error('E_SYNTAX', 'expected header value');
   return { kind: 'HEADER', span, pattern, name: { parts, span: raw.span }, value, overwrite: flags.has('overwrite') };
+}
+
+/** `MIME <.ext> <type/subtype>` */
+function parseMime(c: Cursor, span: SourceSpan): Instruction {
+  const ext = c.operand('extension (.ext)');
+  const type = c.operand('media type (type/subtype)');
+  c.expectEnd();
+  return { kind: 'MIME', span, ext, type };
 }
 
 /** `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` */
