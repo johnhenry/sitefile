@@ -442,6 +442,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             quiet,
             auth: auth_entries,
             auth_file,
+            max_connections_per_ip: per_ip,
             project: None,
         },
         None,
