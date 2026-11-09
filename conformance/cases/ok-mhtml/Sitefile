@@ -1,0 +1,25 @@
+# EXPORT ... AS mhtml: index.html and its assets as one MHTML file, compared byte for byte.
+FROM scratch
+COPY <<HTML /index.html
+<!doctype html><title>one file</title>
+<link rel="stylesheet" href="css/site.css"><link rel="canonical" href="/index.html">
+<script src="/js/app.js"></script>
+<img src="img/dot.svg#a" alt=""><a href="/about.html">about</a> <a href="https://example.com/">out</a>
+HTML
+COPY <<CSS /css/site.css
+@import "type.css";
+body { background: url("../img/dot.svg") }
+CSS
+COPY <<CSS /css/type.css
+body { font-family: system-ui }
+CSS
+COPY <<JS /js/app.js
+document.title += '!';
+JS
+COPY <<SVG /img/dot.svg
+<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><circle id="a" cx="2" cy="2" r="2"/></svg>
+SVG
+COPY <<HTML /about.html
+<p>about</p>
+HTML
+EXPORT / AS mhtml BASE https://example.org/
