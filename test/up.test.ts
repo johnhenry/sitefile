@@ -1,3 +1,4 @@
+import http from 'node:http';
 // sitefile up / down / ps and the servers file (issue #223).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +9,20 @@ import { isSitefileError } from '../src/errors.js';
 import { parseServersDefinition } from '../src/servers-file.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
+
+/** GET `url` as a page navigation (fetch() always sends `sec-fetch-mode: cors`, which is not one). */
+function navigate(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(url, { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' } }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      })
+      .on('error', reject);
+  });
+}
+
 
 const homes: string[] = [];
 after(async () => {
@@ -92,7 +107,7 @@ test('up starts every server, is idempotent, restarts exited ones, replaces chan
   assert.match(r.stdout, new RegExp(`^Started docs \\([0-9a-f]{12}\\) serving ${path.join(dir, 'docs').replace(/[./]/g, '\\$&')} at http://127\\.0\\.0\\.1:\\d+/\\nStarted app `));
   const docs = urlOf(r.stdout, 'docs');
   assert.equal(await (await fetch(docs)).text(), 'docs page');
-  assert.equal(await (await fetch(urlOf(r.stdout, 'app') + 'some/route')).text(), 'app page'); // spa
+  assert.equal(await navigate(urlOf(r.stdout, 'app') + 'some/route'), 'app page'); // spa
   // Again: nothing changes.
   r = await runCli(h, ['up'], dir);
   assert.equal(r.code, 0, r.stderr);
