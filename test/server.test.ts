@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { acceptsEncoding, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
+import { acceptsEncoding, parseThrottle, isCompressible, accessLogLine, deviceOf, ipAllowed, ipBytes, parseCidr, networkAddresses, networkUrls, byteRange, cacheControlFor, logLineAsJson, closeServer, createSiteServer, hostAllowed, preflightHeaders, parseAllowedHost, earlyHints, httpDate, parseHttpDate, listen, LiveReload, originForm, RELOAD_SCRIPT, safeSegments } from '../src/server.js';
 import { makeFile, Tree } from '../src/tree.js';
 import { makeSite, runCli, tmpDir } from './helpers/cli.js';
 
@@ -557,6 +557,27 @@ test('compression: precompressed variants, --compress, Vary and per-encoding ETa
   assert.equal(acceptsEncoding(undefined, 'br'), false);
   assert.equal(isCompressible('image/svg+xml; charset=utf-8'), true);
   assert.equal(isCompressible('image/png'), false);
+});
+
+test('--throttle: bandwidth and latency within tolerance (johnhenry/sitefile#227)', async () => {
+  assert.deepEqual(parseThrottle('3g'), { bytesPerSecond: 200000, latencyMs: 150 });
+  assert.deepEqual(parseThrottle('slow-3g'), { bytesPerSecond: 50000, latencyMs: 400 });
+  assert.deepEqual(parseThrottle('80/100'), { bytesPerSecond: 10000, latencyMs: 100 });
+  assert.deepEqual(parseThrottle('80'), { bytesPerSecond: 10000, latencyMs: 0 });
+  for (const bad of ['0', 'fast', '80/', '/100', '-1']) assert.equal(parseThrottle(bad), undefined, bad);
+  const t = Tree.fromFiles([['/big.bin', makeFile(new Uint8Array(15000), 't')]]);
+  const s = createSiteServer(t, { throttle: { bytesPerSecond: 10000, latencyMs: 200 } });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    const start = Date.now();
+    const r = await req(port, '/big.bin');
+    const ms = Date.now() - start;
+    assert.equal(r.status, 200);
+    // 15 000 bytes at 10 000 B/s in 1 000-byte slices every 100 ms, plus 200 ms latency: about 1.6 s.
+    assert.ok(ms >= 1500 && ms < 4000, `took ${ms} ms`);
+  } finally {
+    await closeServer(s);
+  }
 });
 
 test('an access log line is written per request: method path status bytes ms', async () => {

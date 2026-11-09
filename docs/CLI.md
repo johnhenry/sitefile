@@ -1192,6 +1192,11 @@ to `image` (`imageId`) and `dir` (`path`).
   implementations, cached by file digest. Each encoding has its own ETag (`"<digest>-br"`, `"<digest>-gzip"`), so
   `If-None-Match` matches per encoding. Range requests and live-reload pages are served identity. `_headers` cannot
   set `content-encoding`. There is no on-the-fly brotli. Stored in the server record (`compress`).
+- **`--throttle <3g|slow-3g|kbit[/ms]>`** slows every response down like a mobile network (for a phone on the
+  LAN, where browser devtools throttling does not reach): it waits the latency, then sends the body in 100 ms
+  slices of the bandwidth. `3g` is 1600 kbit/s and 150 ms, `slow-3g` 400 kbit/s and 400 ms (Chrome DevTools'
+  presets); `400/400` gives both numbers. The start message shows it (`  Throttle: 3g (1600 kbit/s, 150 ms
+  latency)`), and the record keeps it (`throttle`). The live-reload stream is not throttled.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

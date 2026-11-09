@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve --throttle 3g|slow-3g|<kbit>[/<ms>]`** (johnhenry/sitefile#227):
+  per-response latency and bandwidth limits, shown in the start message and kept
+  in the server record. Both servers.
 - **`serve` compression** (johnhenry/sitefile#167): precompressed `<path>.br`
   / `<path>.gz` variants by `Accept-Encoding` (br first), `--compress` for gzip
   on the fly (byte-identical in both servers), `Vary: Accept-Encoding`, an ETag

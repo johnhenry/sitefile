@@ -3502,6 +3502,44 @@ mod tests {
     }
 
     #[test]
+    fn throttle_bandwidth_and_latency() {
+        assert_eq!(
+            parse_throttle("80/100"),
+            Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 100
+            })
+        );
+        assert_eq!(parse_throttle("slow-3g").map(|t| t.latency_ms), Some(400));
+        for bad in ["0", "fast", "80/", "/100", "-1"] {
+            assert_eq!(parse_throttle(bad), None, "{bad}");
+        }
+        let t = Tree::from_files([(
+            "/big.bin".to_string(),
+            make_file(vec![0u8; 15000], "t", 0o644),
+        )])
+        .unwrap();
+        let opts = SiteServerOptions {
+            throttle: Some(Throttle {
+                bytes_per_second: 10000,
+                latency_ms: 200,
+            }),
+            ..Default::default()
+        };
+        let srv = listen(Arc::new(t), opts, "127.0.0.1", 0).unwrap();
+        let start = std::time::Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+        c.write_all(b"GET /big.bin HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n")
+            .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).unwrap();
+        let ms = start.elapsed().as_millis();
+        assert!(buf.len() > 15000);
+        assert!((1500..4000).contains(&ms), "took {ms} ms");
+        srv.close();
+    }
+
+    #[test]
     fn json_access_log() {
         let e = AccessLogEntry {
             ts: "2026-01-01T00:00:00.000Z",
