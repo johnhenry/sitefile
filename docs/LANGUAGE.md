@@ -828,6 +828,26 @@ use `${NAME}`.
   `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
   segment is percent-encoded like `encodeURIComponent`, and the result is XML
   escaped. There is no `lastmod` (the output depends only on the tree).
+  Above the [protocol's limits](https://www.sitemaps.org/protocol.html) of
+  50,000 URLs or 50 MiB (52,428,800 bytes) the destination becomes a
+  **sitemap index** (`<sitemapindex>`, one `<sitemap><loc>` per part) and the
+  URLs go to numbered parts next to it, `/sitemap-1.xml`, `/sitemap-2.xml`, …
+  (`-N` before the last extension), in path order; a part is closed when the
+  next URL would pass either limit. Search engines and `ROBOTS … SITEMAP`
+  then use the index.
+- `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical" href="…">`
+  right before the first `</head>` of every `.html`/`.htm` page of the
+  **current stage's tree at that point** that is below the EXPORT path (other
+  than `/404.html` there), is valid UTF-8 and has no `<link>` whose `rel`
+  has the token `canonical` before that `</head>` (yours win). The URL is
+  `<base>` and the page's path below the EXPORT path, encoded like a sitemap
+  entry (`…/index.html` becomes `…/`); `PRETTY` also drops `.html` (`/about.html`
+  → `<base>/about`), for hosts that serve pages without the extension. A page
+  with no `</head>` is left alone, and one warning names those pages. Comments
+  and the contents of `<script>` and the other raw-text elements are skipped,
+  as when references are scanned. The rewritten pages get the origin
+  `Sitefile:<line> CANONICAL`. Alternate-language links (`hreflang`) are not
+  written yet.
 - `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
@@ -870,8 +890,10 @@ use `${NAME}`.
     always written; the default is 301). `from` must be an absolute path and
     `to` an absolute path or an `http(s)://host…` URL; neither may contain
     spaces or control characters (`E_VALIDATION`). Host syntax such as
-    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
-    understands exact paths and a trailing `/*` (docs/CLI.md). `EXPORT … AS
+    `/blog/:year/:slug`, `/blog/*` and `:splat` is passed through as written;
+    `sitefile serve` understands placeholders and a trailing `/*`
+    (docs/CLI.md), and `validate` warns about a line it would ignore
+    (`serve-ignored`). `EXPORT … AS
     wbn` also bakes exact-path REDIRECTs into 3xx responses and HEADER values
     into each response (see **wbn** under Export formats).
   - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
@@ -1085,6 +1107,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
 | `sitemap-order` | a `SITEMAP` followed, in the same stage, by an instruction writing a `.html` file it therefore does not list. |
 | `shadowed-write` | a `RENDER` (without `FOR`) or inline `COPY` whose file a later `RENDER`/inline `COPY` in the same stage replaces with `--overwrite`, so the first write has no effect. |
+| `serve-ignored` | a `REDIRECT` or `HEADER` (without `${…}` in it) whose `_redirects`/`_headers` line `sitefile serve` would ignore, with the reason (e.g. `*` in the middle of a path, or a header the server sets itself such as `Content-Length`). |
 
 The unnamed non-final stage warning (above) is a planner warning, printed by `build` too; it is not a lint rule.
 
