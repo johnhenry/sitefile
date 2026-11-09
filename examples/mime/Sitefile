@@ -1,0 +1,8 @@
+# MIME: content types a host doesn't know or gets wrong, as /_headers rules
+# (sitefile serve, Netlify and Cloudflare Pages read them; a Web Bundle export uses them too).
+FROM scratch
+COPY ./public/ /
+MIME .usdz model/vnd.usdz+zip
+# .ts here is an MPEG transport stream segment, not TypeScript.
+MIME .ts video/mp2t
+EXPORT /

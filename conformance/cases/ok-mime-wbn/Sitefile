@@ -1,0 +1,6 @@
+# MIME types the Web Bundle responses.
+FROM scratch
+COPY ./public/ /
+MIME .usdz model/vnd.usdz+zip
+MIME .ts video/mp2t
+EXPORT / AS wbn BASE https://example.com/

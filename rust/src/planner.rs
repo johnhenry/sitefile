@@ -10,8 +10,9 @@ use crate::language::ast::{
 };
 use crate::paths::{normalize_local, normalize_virtual};
 use crate::site::{
-    check_base_url, check_field_uri, check_header_name, check_header_value, check_redirect_target,
-    check_site_path, page_url, parse_feed_date, robots_txt, security_txt,
+    check_base_url, check_csp_policy, check_field_uri, check_header_name, check_header_value,
+    check_mime_extension, check_mime_type, check_redirect_target, check_site_path, page_url,
+    parse_feed_date, robots_txt, security_txt,
 };
 use crate::values::{coerce, evaluate_operand, Env, Scalar};
 use serde_json::{json, Map, Value};
@@ -183,7 +184,20 @@ pub struct HeaderSpec {
     pub value: String,
     pub overwrite: bool,
     pub span: SourceSpan,
+    /// `HEADER`, or `MIME` for a MIME line (a `Content-Type` rule); names it in origins and `why`.
+    pub instruction: &'static str,
 }
+
+/// A CSP, evaluated: the base policy (checked) and whether it goes into `<meta>` elements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CspSpec {
+    pub policy: String,
+    pub meta: bool,
+    pub span: SourceSpan,
+}
+
+/// CSP's base policy when POLICY is not given.
+pub const DEFAULT_CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
@@ -401,6 +415,9 @@ pub struct Plan {
     pub export_compression: Option<OciCompression>,
     /// `KEY <secret-id>` of EXPORT ... AS swbn: the --secret holding the signing key.
     pub export_key: Option<String>,
+    /// `FOR <host>` of EXPORT and its span: which host's files the REDIRECT and HEADER rules become
+    /// (None: `_redirects` and `_headers`).
+    pub export_for: Option<(String, SourceSpan)>,
     /// REDIRECT lines in source order (any stage); EXPORT writes them to `/_redirects`.
     pub redirects: Vec<RedirectSpec>,
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
@@ -409,6 +426,8 @@ pub struct Plan {
     /// for the fingerprinted files and the pages to `/_headers`: the Sitefile has a FINGERPRINT, none says
     /// `--no-cache-headers`, and no HEADER sets `Cache-Control` itself.
     pub cache_headers: Option<SourceSpan>,
+    /// The CSP instruction (any stage): EXPORT adds a policy for every exported page.
+    pub csp: Option<CspSpec>,
     pub warnings: Vec<String>,
     /// `--target <stage>`: the build stops after this stage and exports its whole tree (see [`target_plan`]).
     pub target: Option<String>,
@@ -440,6 +459,7 @@ pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
     p.redirects.clear();
     p.headers.clear();
     p.cache_headers = None;
+    p.csp = None;
     p.target = Some(name.to_string());
     Ok(p)
 }
@@ -488,6 +508,8 @@ pub fn plan_with(
     // ROBOTS … SITEMAP: (stage, operation index + 1, rules, span), completed once every SITEMAP is planned.
     let mut robots: Vec<(usize, usize, Vec<(bool, String)>, SourceSpan)> = Vec::new();
     let ops_len = |stages: &[Stage]| stages.last().map_or(0, |s| s.operations.len());
+    let mut csp: Option<CspSpec> = None;
+    let mut mimes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -497,6 +519,7 @@ pub fn plan_with(
     let mut export_root = None;
     let mut export_compression = None;
     let mut export_key = None;
+    let mut export_for: Option<(String, SourceSpan)> = None;
 
     fn bind(
         vars: &mut Env,
@@ -1074,6 +1097,27 @@ pub fn plan_with(
                     span: span.clone(),
                 });
             }
+            Instruction::Csp { span, policy, meta } => {
+                if let Some(prior) = &csp {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!(
+                            "CSP given twice (line {} already sets the policy)",
+                            prior.span.line
+                        ),
+                        span,
+                    ));
+                }
+                let policy = match policy {
+                    Some(o) => check_csp_policy(&evaluate_operand(o, &vars)?, &o.span)?,
+                    None => DEFAULT_CSP.to_string(),
+                };
+                csp = Some(CspSpec {
+                    policy,
+                    meta: *meta,
+                    span: span.clone(),
+                });
+            }
             Instruction::CheckLinks {
                 span,
                 warn,
@@ -1158,6 +1202,32 @@ pub fn plan_with(
                     value,
                     overwrite: *overwrite,
                     span: span.clone(),
+                    instruction: "HEADER",
+                });
+            }
+            Instruction::Mime {
+                span,
+                ext,
+                media_type,
+            } => {
+                let e = check_mime_extension(&evaluate_operand(ext, &vars)?, &ext.span)?;
+                if let Some(prior) = mimes.get(&e) {
+                    return Err(SitefileError::at(
+                        E_VALIDATION,
+                        format!("MIME {e} given twice (line {prior} already sets its type)"),
+                        &ext.span,
+                    ));
+                }
+                mimes.insert(e.clone(), span.line);
+                let value =
+                    check_mime_type(&evaluate_operand(media_type, &vars)?, &media_type.span)?;
+                headers.push(HeaderSpec {
+                    pattern: format!("/*{e}"),
+                    name: "Content-Type".into(),
+                    value,
+                    overwrite: false,
+                    span: span.clone(),
+                    instruction: "MIME",
                 });
             }
             Instruction::Export {
@@ -1167,6 +1237,7 @@ pub fn plan_with(
                 at,
                 compression,
                 key,
+                for_host,
                 span,
             } => {
                 export_path = Some(
@@ -1228,6 +1299,27 @@ pub fn plan_with(
                     ));
                 }
                 export_key = key.as_ref().map(|(k, _)| k.clone());
+                if let Some((host, hspan)) = for_host {
+                    if !matches!(
+                        format,
+                        ExportFormat::Directory
+                            | ExportFormat::Zip
+                            | ExportFormat::Tar
+                            | ExportFormat::Tgz
+                    ) {
+                        return Err(SitefileError::at(
+                            E_VALIDATION,
+                            format!(
+                                "EXPORT ... FOR applies only to AS directory, zip, tar and tgz, not {}",
+                                format.as_str()
+                            ),
+                            hspan,
+                        ));
+                    }
+                    export_for = Some((host.clone(), hspan.clone()));
+                } else {
+                    export_for = None;
+                }
             }
         }
     }
@@ -1249,6 +1341,18 @@ pub fn plan_with(
         if let Operation::TextFile { text, .. } = &mut stages[si].operations[end - 1] {
             *text = robots_txt(&rules, &unique);
         }
+    }
+    if let (Some(c), Some(h)) = (
+        &csp,
+        headers
+            .iter()
+            .find(|h: &&HeaderSpec| h.name.eq_ignore_ascii_case("content-security-policy")),
+    ) {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("CSP and the HEADER on line {} both set Content-Security-Policy; keep one (put your policy in CSP POLICY \"…\")", h.span.line),
+            &c.span,
+        ));
     }
     let root = export_path.clone().unwrap_or_else(|| "/".into());
     for st in &mut stages {
@@ -1319,9 +1423,11 @@ pub fn plan_with(
         export_root,
         export_compression,
         export_key,
+        export_for,
         redirects,
         headers,
         cache_headers,
+        csp,
         warnings,
         target: None,
     })

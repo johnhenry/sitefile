@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- **`serve` keys under `--tls-cert`, and `u`'s network URLs** (johnhenry/sitefile#300): `o` and `u`
+  use `https://` for an HTTPS server, and `u` lists every interface address (the start line's
+  `Network:` list) instead of only the default route's. Both implementations.
+- **`serve --mime ext=type` and `--mime-file mime.types`** (the CLI half of
+  johnhenry/sitefile#220): custom content types before the built-in table,
+  kept in the server record. Both servers.
+- **`serve --throttle 3g|slow-3g|<kbit>[/<ms>]`** (johnhenry/sitefile#227):
+  per-response latency and bandwidth limits, shown in the start message and kept
+  in the server record. Both servers.
+- **`serve` compression** (johnhenry/sitefile#167): precompressed `<path>.br`
+  / `<path>.gz` variants by `Accept-Encoding` (br first), `--compress` for gzip
+  on the fly (byte-identical in both servers), `Vary: Accept-Encoding`, an ETag
+  per encoding; ranges stay identity.
+- **`serve --tls-cert/--tls-key`** (johnhenry/sitefile#170): HTTPS with your
+  certificate (mkcert works), `https://` URLs, paths kept in the server record,
+  liveness probe over TLS. No CA is created. HTTP/1.1 only. Both servers (Rust
+  through rustls, already in its build).
+- **Sharing safety for `serve`** (johnhenry/sitefile#191): `--random-route`
+  (a secret path prefix), `--allow-ip`/`--deny-ip` CIDR blocks, `--stop-after`
+  (with `expires` in the record), `X-Robots-Tag: noindex` on non-loopback
+  binds, and client address and device on access-log lines of non-loopback
+  clients. Both servers.
+- **`serve --max-connections-per-ip <n>`** (johnhenry/sitefile#178): a
+  non-loopback client over the cap gets `503` with `Retry-After: 1`; kept in the
+  server record. Both servers.
+- **`serve --auth user:password`, `--auth-file`, `SITEFILE_SERVE_AUTH`**
+  (johnhenry/sitefile#177): HTTP basic authentication on every request (401
+  with `WWW-Authenticate` otherwise), constant-time checks, only PBKDF2
+  verifiers in the server record, `auth: true` in `servers --json`, a warning on
+  non-loopback binds. htpasswd `{SHA}` entries; bcrypt is a follow-up. Both
+  servers.
+- **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
+  a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
+  brackets), and `servers --json` gains `networkUrls`. Both implementations
+  (Rust reads the interfaces with `getifaddrs`, no new dependency).
+- **`serve --log-format json`, `--log-ip`, `--quiet`** (johnhenry/sitefile#173):
+  one JSON object per log line (request, started, stopped, warning, error,
+  message), a stable contract in docs/CLI.md, identical in both servers; kept in
+  the server record. `server logs --json` converts text logs of older servers.
+- **`serve --max-age`, `--immutable`, `--max-age-html`** (johnhenry/sitefile#175):
+  preview production `Cache-Control` on files (HTML keeps `no-cache` unless
+  `--max-age-html`); `_headers` still wins; kept in the server record. Both
+  servers.
+- **Portable paths** (johnhenry/sitefile#222): EXPORT warns about exported
+  paths Windows cannot hold (reserved names such as `aux.html`, `:` and other
+  forbidden characters, a trailing dot or space) and about `_` files and
+  folders without `/.nojekyll` (GitHub Pages); `build --strict-paths` makes
+  them one `E_PATH_PORTABLE` error. A CHECKLINKS broken link whose target
+  differs from a file only in case names that file. Both implementations, with
+  conformance cases.
+- **MIME: custom content types** (johnhenry/sitefile#220): `MIME <.ext>
+  <type/subtype>` adds a `/*.ext` `Content-Type` rule to `/_headers` (in
+  source order with HEADER), which `serve`, the hosts and `EXPORT … AS wbn`
+  use. Both implementations, with conformance cases. The CLI's `--mime` flag
+  is not part of this change.
+- **CSP: Content-Security-Policy from inline hashes** (johnhenry/sitefile#219):
+  `CSP [POLICY <policy>] [META]` writes a per-page policy to `/_headers` (or a
+  `<meta>` with META) that allows each page's inline scripts and styles by
+  their SHA-256 instead of `'unsafe-inline'`. Both implementations, with
+  conformance cases; example `examples/csp`.
 - **Development 404s and what-answered log notes** (johnhenry/sitefile#201):
   a foreground or `--watch` server lists near misses on its 404 page
   (letter-case differences, `_redirects` rules that matched the path but not
@@ -40,6 +100,17 @@
 - **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
   on every response (`_headers` still wins) and `OPTIONS` preflights answered
   with `204`; kept in the server record. Both servers.
+- **`serve` proxies** (johnhenry/sitefile#172): a `_redirects` rule with status
+  200 and an `http(s)://` target forwards the request there, as on Netlify,
+  and `--proxy /api=http://localhost:3000` does the same for a dev backend.
+  This is off unless allowed: a `_redirects` proxy rule only reaches hosts in
+  `--allow-hosts`, and any other host gets a `502` naming the flag to add. The
+  build fetch policy applies (https unless `--allow-http`, public addresses
+  unless `--allow-private-network`, timeouts, every hop checked). Only GET and
+  HEAD are proxied, without cookies or credentials, and redirects are passed
+  on. `import-config` now also translates rewrites to URLs (Vercel,
+  Firebase).
+
 - **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
@@ -92,6 +163,17 @@
   (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
   <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
   implementations.
+- **`EXPORT … FOR <host>`** (johnhenry/sitefile#205): writes the REDIRECT
+  and HEADER rules (and FINGERPRINT's cache headers) as Netlify, Cloudflare
+  Pages, Vercel (Build Output API v3), Firebase Hosting (`firebase.json`),
+  Azure Static Web Apps (`staticwebapp.config.json`), GitHub Pages
+  (`.nojekyll`, `CNAME` from `BASE`) or S3 (website configuration and
+  per-object metadata) read them. A rule the host cannot express as Netlify
+  applies it is `E_EXPORT` naming the rule; `build --lossy` leaves it out
+  with a warning. This includes a redirect that a file in the export would
+  answer first on Netlify, on hosts that apply redirects first. Both
+  implementations, with a conformance case per host.
+
 - **`_redirects`: placeholders, query matching, conditions, 410/451, nearest
   404 and warnings** (johnhenry/sitefile#193): `sitefile serve` understands
   `:placeholders` (`/blog/:year/:slug /posts/:slug`), query parameters

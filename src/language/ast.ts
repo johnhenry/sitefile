@@ -209,6 +209,18 @@ export interface ExportInstruction {
   readonly compression?: { readonly value: OciCompression; readonly span: SourceSpan };
   /** `KEY <secret-id>` (`swbn` only): the build secret holding the Ed25519 signing key. */
   readonly key?: { readonly id: string; readonly span: SourceSpan };
+  /** `FOR <host>`: write the host's own files for the REDIRECT and HEADER rules (docs/LANGUAGE.md). */
+  readonly forHost?: { readonly value: ExportHost; readonly span: SourceSpan };
+}
+
+/** `EXPORT ... FOR <host>`: whose config files the REDIRECT and HEADER rules become. */
+export type ExportHost = 'netlify' | 'cloudflare' | 'vercel' | 'firebase' | 'azure' | 'github-pages' | 's3';
+export const EXPORT_HOSTS: readonly ExportHost[] = ['netlify', 'cloudflare', 'vercel', 'firebase', 'azure', 'github-pages', 's3'];
+
+/** An EXPORT host name (case-insensitive), or undefined. */
+export function parseExportHost(name: string): ExportHost | undefined {
+  const n = name.toLowerCase();
+  return (EXPORT_HOSTS as readonly string[]).includes(n) ? (n as ExportHost) : undefined;
 }
 
 /**
@@ -339,6 +351,14 @@ export interface HeaderInstruction {
   readonly overwrite: boolean;
 }
 
+/** `MIME <.ext> <type/subtype>`: the Content-Type of the files with that extension, as a `/_headers` rule. */
+export interface MimeInstruction {
+  readonly kind: 'MIME';
+  readonly span: SourceSpan;
+  readonly ext: Operand;
+  readonly type: Operand;
+}
+
 /**
  * `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]`: rename matching
  * files to `name.<hash>.ext` and rewrite the HTML and CSS that reference them.
@@ -438,6 +458,17 @@ export interface PrecacheInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CSP [POLICY <policy>] [META]`: a Content-Security-Policy for every exported page, with the SHA-256 of
+ * each of its inline scripts and styles; written to `/_headers` at EXPORT, or with META as a `<meta>`.
+ */
+export interface CspInstruction {
+  readonly kind: 'CSP';
+  readonly span: SourceSpan;
+  readonly policy?: Operand;
+  readonly meta: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -463,12 +494,14 @@ export type Instruction =
   | FeedInstruction
   | RedirectInstruction
   | HeaderInstruction
+  | MimeInstruction
   | FingerprintInstruction
   | CanonicalInstruction
   | PrecompressInstruction
   | RobotsInstruction
   | SecurityTxtInstruction
   | PrecacheInstruction
+  | CspInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

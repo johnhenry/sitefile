@@ -1,0 +1,4 @@
+FROM scratch
+MIME .x a/b
+MIME .X c/d
+EXPORT /

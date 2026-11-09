@@ -1,0 +1,9 @@
+# MIME: Content-Type rules in /_headers, in source order with HEADER, from any stage.
+ARG TYPE = video/MP2T
+STAGE rules
+MIME .USDZ model/vnd.usdz+zip
+FROM scratch
+COPY ./public/ /www/
+HEADER /* X-Frame-Options: DENY
+MIME .ts ${TYPE}
+EXPORT /www

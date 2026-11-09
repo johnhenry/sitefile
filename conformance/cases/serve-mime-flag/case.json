@@ -1,0 +1,10 @@
+{
+  "command": "serve",
+  "args": ["--mime-file", "extra.types", "--mime", ".ts=video/mp2t", "--mime", "BIN=application/x-other; charset=binary"],
+  "requests": [
+    { "target": "/scene.usdz", "expect": { "status": 200, "headers": { "content-type": "model/vnd.usdz+zip" } } },
+    { "target": "/clip.ts", "expect": { "status": 200, "headers": { "content-type": "video/mp2t" } } },
+    { "target": "/data.bin", "expect": { "status": 200, "headers": { "content-type": "application/x-other; charset=binary" } } },
+    { "target": "/page.HTML", "expect": { "status": 200, "headers": { "content-type": "text/html; charset=utf-8" } } }
+  ]
+}

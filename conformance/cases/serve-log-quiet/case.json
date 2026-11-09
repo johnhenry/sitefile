@@ -1,0 +1,6 @@
+{
+  "command": "serve",
+  "args": ["--quiet"],
+  "log": { "lines": 1 },
+  "requests": [{ "target": "/a.txt", "expect": { "status": 200 } }]
+}

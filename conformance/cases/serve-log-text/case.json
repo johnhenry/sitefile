@@ -1,0 +1,9 @@
+{
+  "command": "serve",
+  "log": { "lines": 4 },
+  "requests": [
+    { "target": "/v.txt?a=1", "expect": { "status": 200 } },
+    { "target": "/v.txt", "headers": { "range": "bytes=0-1" }, "expect": { "status": 206 } },
+    { "target": "/missing", "expect": { "status": 404 } }
+  ]
+}

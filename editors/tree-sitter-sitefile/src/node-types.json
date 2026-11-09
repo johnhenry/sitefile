@@ -20,6 +20,10 @@
         "named": true
       },
       {
+        "type": "csp_instruction",
+        "named": true
+      },
+      {
         "type": "export_instruction",
         "named": true
       },
@@ -45,6 +49,10 @@
       },
       {
         "type": "let_instruction",
+        "named": true
+      },
+      {
+        "type": "mime_instruction",
         "named": true
       },
       {
@@ -338,6 +346,38 @@
     }
   },
   {
+    "type": "csp_instruction",
+    "named": true,
+    "fields": {
+      "policy": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "export_instruction",
     "named": true,
     "fields": {
@@ -383,6 +423,16 @@
         "types": [
           {
             "type": "export_format",
+            "named": true
+          }
+        ]
+      },
+      "host": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "export_host",
             "named": true
           }
         ]
@@ -1350,6 +1400,64 @@
             "type": "number",
             "named": true
           },
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "mime_instruction",
+    "named": true,
+    "fields": {
+      "extension": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
           {
             "type": "path",
             "named": true
@@ -3004,6 +3112,10 @@
     "named": false
   },
   {
+    "type": "CSP",
+    "named": false
+  },
+  {
     "type": "DESC",
     "named": false
   },
@@ -3097,6 +3209,10 @@
   },
   {
     "type": "META",
+    "named": false
+  },
+  {
+    "type": "MIME",
     "named": false
   },
   {
@@ -3235,6 +3351,10 @@
   },
   {
     "type": "export_format",
+    "named": true
+  },
+  {
+    "type": "export_host",
     "named": true
   },
   {

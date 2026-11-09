@@ -4070,6 +4070,56 @@
           ]
         },
         {
+          "name": "meta.instruction.csp.sitefile",
+          "begin": "^\\s*((?i:CSP))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])((?i:POLICY|META))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
+          "name": "meta.instruction.mime.sitefile",
+          "begin": "^\\s*((?i:MIME))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.checklinks.sitefile",
           "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
           "beginCaptures": {
@@ -4311,6 +4361,20 @@
                 },
                 "3": {
                   "name": "invalid.illegal.compression.sitefile"
+                }
+              }
+            },
+            {
+              "match": "(?<![^\\s])((?i:FOR))(?:\\s+(?:((?i:netlify|cloudflare|vercel|firebase|azure|github-pages|s3))(?=\\s|$)|([^\\s\\\\]\\S*)))?",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                },
+                "2": {
+                  "name": "constant.language.export-host.sitefile"
+                },
+                "3": {
+                  "name": "invalid.illegal.export-host.sitefile"
                 }
               }
             },

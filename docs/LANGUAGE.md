@@ -308,7 +308,7 @@ These pin down what the draft above leaves open. Tests cover each rule.
     plugin as its source, byte for byte; an html LET's body is its template);
     elsewhere it is plain text, so `LET a = <<EOF` is still the string `<<EOF`.
   - See `examples/inline/`.
-- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn|wacz] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>]` must be the last
+- `EXPORT <path> [AS directory|zip|tar|tgz|wbn|oci|car|html|mhtml|warc|swbn|wacz] [BASE <url>] [AT <root>] [COMPRESSION gzip|none] [KEY <secret-id>] [FOR <host>]` must be the last
   instruction, exactly once; it exports from the last stage (`--target <stage>` exports a named stage's whole
   tree instead; see [CLI.md](CLI.md#build-target---target-stage)). The format
   defaults to `directory`; `tar.gz` is accepted as an alias for `tgz`; names
@@ -938,6 +938,17 @@ use `${NAME}`.
     pattern is an absolute path like `from`. `/_headers` has one block per
     pattern, in order of first use: the pattern, then `  Name: value` lines in
     source order.
+  - `MIME <.ext> <type/subtype>` (see `examples/mime/`) sets the `Content-Type` of the files with
+    that extension, for types a host doesn't know (`.usdz`, game data) or
+    gets wrong (`.ts` as MPEG-TS): it adds the rule `/*<.ext>` with
+    `Content-Type: <type/subtype>` to `/_headers`, in source order with the
+    HEADER lines (so `sitefile serve`, Netlify and Cloudflare Pages use it), and
+    `EXPORT … AS wbn` gives those files that content-type, since a Web Bundle
+    takes `content-type` from `/_headers`. The extension is a dot and
+    letters, digits, `+`, `-` or `_`, the type an RFC 6838 `type/subtype`
+    without parameters (`E_VALIDATION` otherwise); both are written in
+    lowercase. An extension given twice is `E_VALIDATION`. With only MIME
+    lines, `/_headers` has the origin `Sitefile:<line> MIME`.
   - If the tree already has `/_redirects` or `/_headers` (from a COPY, say),
     the normal conflict rules apply: identical bytes are fine, different
     content is `E_CONFLICT` naming that COPY, unless one of the REDIRECT (or
@@ -1139,6 +1150,40 @@ and after any FINGERPRINT.
 - The manifest follows the conflict rules (`--overwrite`); the service worker
   is replaced. Both get the origin `Sitefile:<line> PRECACHE`.
 
+### Content Security Policy: CSP (see `examples/csp/`)
+`CSP [POLICY <policy>] [META]` gives every exported page a
+[Content-Security-Policy](https://developer.mozilla.org/docs/Web/HTTP/CSP)
+that allows its own inline `<script>` and `<style>` elements by hash, so the
+policy needs no `'unsafe-inline'`. Like HEADER it may appear in any stage
+(once: a second CSP is `E_VALIDATION`) and is applied **at EXPORT**, to the
+final pages of the exported directory.
+
+- **Base policy**: `POLICY <policy>` (one operand, so quote it; no control
+  characters or commas, `E_VALIDATION`), default
+  `default-src 'self'; base-uri 'self'; object-src 'none'`.
+- **Hashes**: for each `.html`/`.htm` page (valid UTF-8), the SHA-256 (base64)
+  of the exact text of every `<script>` without a `src` and every `<style>`,
+  found by the reference scanner (comments and other raw text skipped). The
+  `'sha256-…'` sources, deduplicated in page order, are appended to the base's
+  `script-src` / `style-src` directive, or added as `script-src 'self' …` /
+  `style-src 'self' …` when the base has none and the page has such
+  elements. Directives are written joined with `; `. Inline event handlers
+  (`onclick=`), `style=` attributes and `javascript:` URLs are not hashed (CSP
+  would need `'unsafe-hashes'`), so a strict policy blocks them; so is the
+  live-reload script `serve --watch` injects (johnhenry/sitefile#181).
+- **Where**: by default as `Content-Security-Policy` lines in `/_headers`
+  after the HEADER lines, one block per page URL: `/a/index.html` as `/a/` and
+  `/a/index.html`, `/b.html` as `/b.html` and `/b` (pretty URLs), other pages
+  by their path (URLs with spaces are left out). A HEADER that sets
+  `Content-Security-Policy` too is `E_VALIDATION`. With no HEADER lines and a
+  COPY'd `/_headers` already in the tree, that file is kept and a warning says
+  the lines were not added. With **`META`**, each page instead gets
+  `<meta http-equiv="Content-Security-Policy" content="…">` right after its
+  `<head>` start tag (pages without one are left alone, with a warning); a
+  `<meta>` policy cannot set `frame-ancestors` or reporting.
+- `--target` writes no policies (like the other EXPORT site files). `why` on a
+  page or on `/_headers` shows the CSP line.
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and
@@ -1224,6 +1269,28 @@ IMPORT data FROM https://example.com/data.json AS json
 # sitefile-lint: disable-next-line=render-escape
 RENDER ./templates/trusted.html TO /index.html
 ```
+
+### Portable paths
+Names that work where you build but break elsewhere are reported when the
+build exports, as warnings (`EXPORT /: …`), or with `build --strict-paths` as
+one `E_PATH_PORTABLE` error that lists them all. The exported files are checked
+(paths below the EXPORT path), in path order:
+
+- **Windows**: a path segment with `<`, `>`, `:`, `"`, `|`, `?`, `*`, `\` or a
+  control character, one that ends with a dot or a space, or a reserved device
+  name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, also with
+  `¹²³`, in any case and with any extension: `aux.html`, `NUL.txt`). Such files
+  cannot be extracted from a zip or written by a Windows checkout:
+  `'/a:b.txt' cannot be extracted on Windows: ':' is not allowed in a Windows file name`.
+- **GitHub Pages**: when a file or folder name starts with `_` (other than
+  `/_headers` and `/_redirects`, which other hosts read) and there is no
+  `/.nojekyll`, one message names up to three of them: Jekyll, which GitHub
+  Pages runs by default, does not publish them.
+- **Case**: two paths that differ only in case are already `E_PATH_COLLISION`
+  (see below). A link whose target differs from a file only in case is a
+  broken link for CHECKLINKS (matching is exact, as on a Linux host), and its
+  message names the file: `not found: /Images/Logo.png; '/images/logo.png'
+  differs only in case, which works on macOS and Windows but not on Linux hosts`.
 
 ### Writes and conflicts
 - Writing a path that already holds identical bytes and mode is a no-op that
@@ -1677,6 +1744,39 @@ checked:
   extremely well). Inflation is bounded with zlib's `maxOutputLength`, so a
   bomb is stopped at the limit, never fully inflated; zip entries are never
   inflated beyond their declared size. The download cap still applies first.
+
+### Host files: EXPORT … FOR <host>
+
+`EXPORT <path> … FOR netlify|cloudflare|vercel|firebase|azure|github-pages|s3` (the last clause; the host
+name is case-insensitive, any other word is `E_SYNTAX`) writes the REDIRECT and HEADER rules,
+FINGERPRINT's `Cache-Control` lines and CSP's `Content-Security-Policy` lines as that host reads them
+(a CSP line the host cannot carry is an error at the CSP line, like a HEADER). It works with `AS directory`, `zip`, `tar`
+and `tgz` (`E_VALIDATION` otherwise), and not with `--target`, which exports the stage's raw tree. It is
+the reverse of `sitefile import-config` (CLI.md).
+
+**A rule the host cannot express as Netlify (and `sitefile serve`) apply it is an error**: `E_EXPORT` at
+the rule's line, for example `EXPORT … FOR firebase: REDIRECT /old /new 303: Firebase Hosting redirects
+are 301 or 302 (build with --lossy to leave it out)`. With `build --lossy`, the rule is left out with a
+warning instead. FINGERPRINT's own cache headers are never an error: when the host cannot carry them,
+they are left out with a warning.
+
+Netlify applies a redirect only when no file answers the path, a file at the path itself, its
+`/index.html` or its `.html` clean URL (`REDIRECT` has no `!`). Cloudflare Pages, Firebase, Azure and S3
+apply redirects first. So on those hosts a redirect that a file in the export answers (for `/blog/*`,
+any file below `/blog/`) is refused: the site would behave differently there.
+
+| Host | Writes | Refused (or left out with `--lossy`) |
+| --- | --- | --- |
+| `netlify` | `_redirects` and `_headers`, as without `FOR` | nothing |
+| `cloudflare` | `_redirects` and `_headers` | redirects a file answers first; more than 2,000 static or 100 dynamic redirects, more than 100 header patterns |
+| `vercel` | the files under `.vercel/output/static/` and `.vercel/output/config.json` (Build Output API v3, for `vercel deploy --prebuilt`). In `routes`, every header pattern comes first as `{src, headers, continue: true}` (`*` becomes `.*`, `:name` becomes `[^/]+`), then `{handle: "filesystem"}`, then each redirect as `{src, headers: {Location}, status}` (an exact path also matches with a trailing slash; `/*` becomes `(?<splat>.*)` and `:name` becomes `(?<name>[^/]+)`, used as `$splat` and `$name` in the target), then `/404.html` for misses when the export has one | `*` other than a trailing `/*`, a `:name` in the target that the source does not have |
+| `firebase` | the files under `public/` and `firebase.json` with `hosting.public`, `redirects` (`/*` becomes `/:splat*`) and `headers` (`*` becomes `**`) | statuses other than 301 and 302, header patterns with `:placeholders`, redirects a file answers first |
+| `azure` | `staticwebapp.config.json` next to the files: `routes` (redirects, then header routes), `globalHeaders` (the `/*` pattern) and `responseOverrides.404` for `/404.html` | statuses other than 301 and 302; `:placeholders`; `:splat` in a target; patterns that are not exact or a trailing `/*`; two routes for the same paths (only the first applies there); a route header that is also in `/*` (Azure replaces rather than adds); redirects a file answers first |
+| `github-pages` | `.nojekyll`, and `CNAME` with the host of `BASE` when it is a custom domain (not `*.github.io`; it must have no path). `/404.html` is used as it is | every REDIRECT and HEADER |
+| `s3` | `_s3/website.json`, the bucket website configuration (`IndexDocument`, `ErrorDocument` for `/404.html`, `RoutingRules` for `/prefix/*` redirects: `KeyPrefixEquals`, `ReplaceKeyPrefixWith` for a target ending in `/:splat`, else `ReplaceKeyWith`, `HostName`/`Protocol` for absolute targets). `_s3/objects.json` lists per-object metadata (`Key`, then `CacheControl`, `ContentType`, …, from HEADER, and `WebsiteRedirectLocation` for exact-path redirects: create an empty object with it). Leave `_s3/` out of the upload (`aws s3 sync … --exclude '_s3/*'`) | exact redirects that are not 301; redirecting `/` or every key; `:placeholders`; a target that keeps the path anywhere but at the end; headers other than Cache-Control, Content-Type, Content-Disposition, Content-Encoding, Content-Language and Expires; redirects a file answers first |
+
+A file the host step writes (`CNAME`, `firebase.json`, …) that the tree already has with different
+content is `E_CONFLICT`, as for any other write.
 
 ### Export formats
 `--out` is a directory for `directory` and a **file** for every other format.

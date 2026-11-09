@@ -2,6 +2,7 @@ import { looksLikeWarc, readWarc } from './warc.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
@@ -13,6 +14,8 @@ import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
 import { Store } from './store.js';
 import { Tree } from './tree.js';
+import type { CachePreview } from './server.js';
+import type { AuthEntry } from './serve-auth.js';
 
 /**
  * Detached site servers ("containers"). One state file per server:
@@ -56,6 +59,36 @@ export interface ServerState {
   readonly cors?: boolean;
   /** `--isolate`: the Cross-Origin-Embedder-Policy sent with COOP and CORP (absent: not isolated). */
   readonly isolate?: 'require-corp' | 'credentialless';
+  /** `--max-age`, `--immutable`, `--max-age-html` (absent: every response keeps `no-cache`). */
+  readonly cache?: CachePreview;
+  /** `--log-format json` (absent: text). */
+  readonly logFormat?: 'json';
+  /** `--log-ip` (absent: false). */
+  readonly logIp?: boolean;
+  /** `--quiet` (absent: false). */
+  readonly quiet?: boolean;
+  /** `--auth`, `SITEFILE_SERVE_AUTH`: users and password verifiers (never passwords; absent: none). */
+  readonly auth?: readonly AuthEntry[];
+  /** `--auth-file`: an htpasswd file, read at every start (absent: none). */
+  readonly authFile?: string;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number;
+  /** `--random-route`: `base` is a secret, so `/` is a plain 404 (absent: false). */
+  readonly hideBase?: boolean;
+  /** `--allow-ip` / `--deny-ip` blocks as given (absent: none). */
+  readonly allowIp?: readonly string[];
+  readonly denyIp?: readonly string[];
+  /** `--stop-after`: when the server stops itself (ISO time; absent: never). */
+  readonly expires?: string;
+  /** `--tls-cert`, `--tls-key`: HTTPS with these PEM files, read at every start (absent: HTTP). */
+  readonly tlsCert?: string;
+  readonly tlsKey?: string;
+  /** `--compress` (absent: false). */
+  readonly compress?: boolean;
+  /** `--throttle` as given (absent: none). */
+  readonly throttle?: string;
+  /** `--mime`, `--mime-file`: extension → content type (absent: the built-in table only). */
+  readonly mime?: Readonly<Record<string, string>>;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */
   readonly country?: string;
   /** `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting (absent: false). */
@@ -167,9 +200,9 @@ export class ServerRegistry {
     return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) + (s.base ?? '/').slice(1) : '' };
   }
 }
-function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {
+function urlOf(s: Pick<ServerState, 'host' | 'port' | 'tlsCert'>): string {
   const shown = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}/`;
+  return `${s.tlsCert !== undefined ? 'https' : 'http'}://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}/`;
 }
 
 export function pidAlive(pid: number): boolean {
@@ -187,7 +220,9 @@ export async function isRunning(s: ServerState): Promise<boolean> {
   if (!s.ready || !pidAlive(s.pid)) return false;
   const host = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
   return new Promise((resolve) => {
-    const req = http.request({ host, port: s.port, method: 'HEAD', path: '/', headers: { 'x-sitefile-probe': s.id }, timeout: 1500, agent: false }, (res) => {
+    // Over HTTPS the probe skips certificate checks: it only reads this server's own id header.
+    const request = s.tlsCert !== undefined ? (o: https.RequestOptions, cb: (r: http.IncomingMessage) => void) => https.request({ ...o, rejectUnauthorized: false }, cb) : http.request;
+    const req = request({ host, port: s.port, method: 'HEAD', path: '/', headers: { 'x-sitefile-probe': s.id }, timeout: 1500, agent: false }, (res) => {
       res.resume();
       resolve(res.headers['x-sitefile-server'] === s.id);
     });

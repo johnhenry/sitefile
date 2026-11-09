@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -6,9 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, normalizeProductionUrl, safeSegments, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
+import { networkOption } from './network.js';
+import { DEFAULT_FETCH_POLICY } from '../resources/types.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, type ServeProxy, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor, normalizeBase, safeSegments, normalizeProductionUrl, routingFor, HOST_PROFILES, HTML_HANDLINGS, type HostProfileName, type HtmlHandling, type RoutingProfile } from '../server.js';
+import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
+import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import type { Plan } from '../planner.js';
-import { isRunning, loadDirectoryTree, loadServedSite, pidAlive, servedLastModified, ServerRegistry, type ServerState, checkSiteFiles } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
 import { transformCacheDir } from './cache.js';
@@ -64,7 +68,7 @@ export function parseBase(v: string | undefined): string | undefined {
 }
 
 /** The URL a server answers at: its origin and `--base`. */
-const siteUrl = (host: string, port: number, base: string | undefined): string => formatUrl(host, port) + (base ?? '/').slice(1);
+const siteUrl = (host: string, port: number, base: string | undefined, scheme: 'http' | 'https' = 'http'): string => formatUrl(host, port, scheme) + (base ?? '/').slice(1);
 
 /** The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`), else undefined. */
 export function exportBasePath(exportBase: string | undefined): string | undefined {
@@ -190,7 +194,33 @@ const run: Command = {
     '--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)',
     '--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response',
     '--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)',
+    '--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML',
+    '--immutable       add immutable to the --max-age value (fingerprinted assets)',
+    '--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)',
+    '--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)',
+    '--log-ip          add the client address to access-log lines',
+    '--quiet           no access-log lines',
+    '--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored',
+    '--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)',
+    '--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)',
+    '--random-route    serve the site only under a random secret path (printed in the URL)',
+    '--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)',
+    '--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)',
+    '--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)',
+    '--tls-cert <pem>  serve HTTPS with this certificate chain (with --tls-key; or SITEFILE_TLS_CERT)',
+    '--tls-key <pem>   the private key of --tls-cert (or SITEFILE_TLS_KEY); read at start, never copied',
+    '--compress        gzip text, JSON, SVG, wasm ... files (1 KiB or more) on the fly (precompressed .br/.gz are always used)',
+    '--throttle <3g|slow-3g|kbit[/ms]>  limit response bandwidth and add latency (e.g. 400/400)',
+    '--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)',
+    '--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
+    '--proxy </prefix=url>        forward GET/HEAD under /prefix to url + the rest of the path (repeatable; its host is allowed)',
+    '--allow-hosts <hosts>        hosts _redirects proxy rules (200 to a URL) may reach (repeatable; also $SITEFILE_ALLOW_HOSTS)',
+    '--deny-hosts <hosts>         hosts never proxied to; beats --allow-hosts and --proxy (also $SITEFILE_DENY_HOSTS)',
+    '--allow-http                 proxy to plain http:// URLs',
+    '--allow-private-network      proxy to loopback/private addresses (localhost:3000 needs it)',
+    '--connect-timeout <ms>       proxy connect time limit; --read-timeout <ms>: longest wait for data',
+    '--read-timeout <ms>          (see --connect-timeout)',
     '--spa             answer page navigations to missing paths with the nearest 200.html or index.html',
     '--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)',
     '--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)',
@@ -236,11 +266,37 @@ const run: Command = {
     'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
     'allowed-host': { type: 'string', multiple: true },
+    proxy: { type: 'string', multiple: true },
+    'allow-hosts': { type: 'string', multiple: true },
+    'deny-hosts': { type: 'string', multiple: true },
+    'allow-http': { type: 'boolean' },
+    'allow-private-network': { type: 'boolean' },
+    'connect-timeout': { type: 'string' },
+    'read-timeout': { type: 'string' },
     cors: { type: 'boolean' },
     open: { type: 'string' },
     qr: { type: 'boolean' },
     isolate: { type: 'boolean' },
     coep: { type: 'string' },
+    'max-age': { type: 'string' },
+    immutable: { type: 'boolean' },
+    'max-age-html': { type: 'string' },
+    'log-format': { type: 'string' },
+    'log-ip': { type: 'boolean' },
+    quiet: { type: 'boolean' },
+    auth: { type: 'string', multiple: true },
+    'auth-file': { type: 'string' },
+    'max-connections-per-ip': { type: 'string' },
+    'random-route': { type: 'boolean' },
+    'allow-ip': { type: 'string', multiple: true },
+    'deny-ip': { type: 'string', multiple: true },
+    'stop-after': { type: 'string' },
+    'tls-cert': { type: 'string' },
+    compress: { type: 'boolean' },
+    throttle: { type: 'string' },
+    mime: { type: 'string', multiple: true },
+    'mime-file': { type: 'string' },
+    'tls-key': { type: 'string' },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -264,8 +320,16 @@ const run: Command = {
     const bind = parsePublish(str(v.publish));
     const allowedHosts = allowedHostsOf(v);
     const isolate = isolateOf(v);
+    const cache = cacheOf(v);
+    const logging = loggingOf(v);
+    const auth = await authOf(v, bind.host);
+    const perIp = perIpOf(v);
+    const sharing = sharingOf(v, bind.host);
+    const tls = await tlsOf(v);
+    const throttle = throttleOf(v);
+    const mime = await mimeOf(v);
     const spa = spaOptions(v);
-    const base = parseBase(str(v.base));
+    const base = sharing.randomBase ?? parseBase(str(v.base));
     const rewriteBase = parseRewriteBase(str(v['rewrite-base']));
     const profiles = profileOptions(v);
     const profile = routingFor(profiles);
@@ -285,10 +349,12 @@ const run: Command = {
       warnSpaFallback(tree, spa.spaFallback, warn);
       const modified = await servedLastModified(store, source);
       let current = tree;
-      const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+      const proxy = proxyOption(v);
+      const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}), ...spa, ...(base !== undefined ? { base } : {}), ...(rewriteBase !== undefined ? { rewriteBase } : {}), ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
       const addr = await listen(server, bind.host, bind.port);
-      process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
-      const quit = await terminal(v, addr, base, warn, async () => {
+      if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
+      else process.stdout.write(`Serving ${label} (${tree.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
+      const quit = await terminal(v, addr, base, tls.scheme, warn, async () => {
         if (source.kind !== 'dir') {
           process.stdout.write(`Nothing to re-read: ${label} is ${source.kind === 'image' ? 'an image' : 'an archive file'}; start serve again to read it again\n`);
           return;
@@ -299,7 +365,10 @@ const run: Command = {
         next.close();
         process.stdout.write(`Re-read ${label} (${current.size} files)\n`);
       });
-      await Promise.race([waitForSignal(), quit.promise]);
+      const stop = sharing.stopAfter;
+      const timer = stop === undefined ? undefined : new Promise<string>((r) => setTimeout(() => r('stop-after'), stop.seconds * 1000).unref());
+      const why = await Promise.race([waitForSignal(), quit.promise.then(() => 'quit'), ...(timer ? [timer] : [])]);
+      if (why === 'stop-after') process.stdout.write(`Stopping: --stop-after ${stop!.text} reached\n`);
       quit.stop();
       await closeServer(server);
       close();
@@ -308,8 +377,9 @@ const run: Command = {
 
     if (v.open !== undefined || v.qr) usage('--open and --qr are for a server in the foreground, not -d');
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
-    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base)}\n`);
+    for (const f of PROXY_FLAGS) if (v[f] !== undefined) usage(`--${f} is for a server in the foreground (or --watch), not -d`);
+    const up = await serveDetached(reg, { label, source, name, bind, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles, ...spa, base, rewriteBase, ...profiles }, warn);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
     return 0;
   },
 };
@@ -341,6 +411,36 @@ export interface DetachedServe {
   readonly cors?: boolean | undefined;
   /** `--isolate`: the COEP value. */
   readonly isolate?: 'require-corp' | 'credentialless' | undefined;
+  /** `--max-age`, `--immutable`, `--max-age-html`. */
+  readonly cache?: CachePreview | undefined;
+  /** `--log-format json`. */
+  readonly logFormat?: 'json' | undefined;
+  /** `--log-ip`. */
+  readonly logIp?: boolean | undefined;
+  /** `--quiet`. */
+  readonly quiet?: boolean | undefined;
+  /** `--auth` verifiers. */
+  readonly auth?: AuthEntry[] | undefined;
+  /** `--auth-file`, an absolute path read at every start. */
+  readonly authFile?: string | undefined;
+  /** `--max-connections-per-ip` (absent: no limit). */
+  readonly maxConnectionsPerIp?: number | undefined;
+  /** `--random-route` prefix. */
+  readonly hideBase?: boolean | undefined;
+  /** `--allow-ip`, `--deny-ip` blocks as given. */
+  readonly allowIp?: string[] | undefined;
+  readonly denyIp?: string[] | undefined;
+  /** `--stop-after`: when the server stops (ISO time). */
+  readonly expires?: string | undefined;
+  /** `--compress`. */
+  readonly compress?: boolean | undefined;
+  /** `--throttle` as given. */
+  readonly throttle?: string | undefined;
+  /** `--mime`, `--mime-file`: extension → content type. */
+  readonly mime?: Record<string, string> | undefined;
+  /** `--tls-cert`, `--tls-key`, absolute paths. */
+  readonly tlsCert?: string | undefined;
+  readonly tlsKey?: string | undefined;
   /** `--country`. */
   readonly country?: string | undefined;
   /** `--strict-site-files`. */
@@ -378,6 +478,21 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.allowedHosts !== undefined && d.allowedHosts.length > 0 ? { allowedHosts: d.allowedHosts } : {}),
     ...(d.cors ? { cors: true } : {}),
     ...(d.isolate ? { isolate: d.isolate } : {}),
+    ...(d.cache ? { cache: d.cache } : {}),
+    ...(d.logFormat === 'json' ? { logFormat: 'json' as const } : {}),
+    ...(d.logIp ? { logIp: true } : {}),
+    ...(d.quiet ? { quiet: true } : {}),
+    ...(d.auth !== undefined ? { auth: d.auth } : {}),
+    ...(d.authFile !== undefined ? { authFile: d.authFile } : {}),
+    ...(d.maxConnectionsPerIp ? { maxConnectionsPerIp: d.maxConnectionsPerIp } : {}),
+    ...(d.hideBase ? { hideBase: true } : {}),
+    ...(d.allowIp !== undefined ? { allowIp: d.allowIp } : {}),
+    ...(d.denyIp !== undefined ? { denyIp: d.denyIp } : {}),
+    ...(d.expires !== undefined ? { expires: d.expires } : {}),
+    ...(d.tlsCert !== undefined ? { tlsCert: d.tlsCert, tlsKey: d.tlsKey } : {}),
+    ...(d.compress ? { compress: true } : {}),
+    ...(d.throttle !== undefined ? { throttle: d.throttle } : {}),
+    ...(d.mime !== undefined ? { mime: d.mime } : {}),
     ...(d.country !== undefined ? { country: d.country } : {}),
     ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
@@ -422,11 +537,12 @@ async function terminal(
   v: ParsedValues,
   addr: { host: string; port: number },
   base: string | undefined,
+  scheme: 'http' | 'https',
   warn: (m: string) => void,
   restart: () => Promise<void>,
 ): Promise<{ promise: Promise<void>; stop: () => void }> {
-  const urls = await serveUrls(addr.host, addr.port, base);
-  if (v.qr) process.stdout.write(qrText(urls.network ?? urls.local));
+  const urls = serveUrls(addr.host, addr.port, base, scheme);
+  if (v.qr) process.stdout.write(qrText(urls.network[0] ?? urls.local));
   const open = str(v.open);
   if (open !== undefined) openBrowser(openUrl(urls.local, open), warn);
   let resolve!: () => void;
@@ -454,6 +570,40 @@ const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache',
  * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
  * as it is (re-read on change) instead of built.
  */
+/** serve flags for proxying (#172); a detached server has none, so its proxy rules are all refused. */
+const PROXY_FLAGS = ['proxy', 'allow-hosts', 'deny-hosts', 'allow-http', 'allow-private-network', 'connect-timeout', 'read-timeout'] as const;
+
+/** `--proxy /prefix=url`: a path prefix (no trailing slash, except `/`) and an http(s) URL. */
+export function parseProxyRoute(raw: string): { prefix: string; target: string } {
+  const bad = (): never => usage(`--proxy expects /prefix=http(s)://host[/path], got '${raw}'`);
+  const eq = raw.indexOf('=');
+  if (eq <= 0) bad();
+  const prefix = raw.slice(0, eq);
+  const target = raw.slice(eq + 1);
+  if (!prefix.startsWith('/') || /[\s?#*:]/.test(prefix) || !/^https?:\/\/[^/?#\s]+(\/[^\s#]*)?$/i.test(target)) bad();
+  return { prefix: prefix.length > 1 ? prefix.replace(/\/+$/, '') : prefix, target };
+}
+
+/**
+ * The proxy settings of a foreground `serve`: `--proxy` routes, and a strict host list (`--allow-hosts`
+ * and `$SITEFILE_ALLOW_HOSTS`, plus each route's host) for `_redirects` proxy rules, under the build fetch
+ * policy (https only unless --allow-http, public addresses only unless --allow-private-network).
+ */
+function proxyOption(v: ParsedValues): ServeProxy {
+  const routes = strs(v.proxy).map(parseProxyRoute);
+  const network = networkOption({ 'allow-hosts': v['allow-hosts'], 'deny-hosts': v['deny-hosts'], 'connect-timeout': v['connect-timeout'], 'read-timeout': v['read-timeout'] }) ?? {};
+  const routeHosts = routes.map((r) => new URL(r.target).host);
+  return {
+    routes,
+    policy: {
+      ...DEFAULT_FETCH_POLICY,
+      allowHttp: !!v['allow-http'],
+      allowPrivateNetwork: !!v['allow-private-network'],
+      network: { ...network, strict: true, allowHosts: [...(network.allowHosts ?? []), ...routeHosts] },
+    },
+  };
+}
+
 /** `--allowed-host` values, validated and lowercased (the server always adds localhost names and IP addresses). */
 function allowedHostsOf(v: ParsedValues): string[] {
   const out: string[] = [];
@@ -473,6 +623,169 @@ function isolateOf(v: ParsedValues): 'require-corp' | 'credentialless' | undefin
   return v.isolate ? (coep ?? 'require-corp') : undefined;
 }
 
+/** `--max-age`, `--immutable`, `--max-age-html`, or undefined when none is given. */
+function cacheOf(v: ParsedValues): CachePreview | undefined {
+  const secs = (flag: string): number | undefined => {
+    const raw = str(v[flag]);
+    if (raw === undefined) return undefined;
+    if (!/^[0-9]{1,10}$/.test(raw) || Number(raw) > 2147483647) usage(`--${flag} must be a number of seconds (0 to 2147483647), not '${raw}'`);
+    return Number(raw);
+  };
+  const maxAge = secs('max-age');
+  const maxAgeHtml = secs('max-age-html');
+  if (v.immutable && maxAge === undefined) usage('--immutable needs --max-age');
+  if (maxAge === undefined && maxAgeHtml === undefined) return undefined;
+  return { ...(maxAge !== undefined ? { maxAge } : {}), ...(v.immutable ? { immutable: true } : {}), ...(maxAgeHtml !== undefined ? { maxAgeHtml } : {}) };
+}
+
+/** `  Network: <url>` lines for a server bound to all interfaces (none otherwise). */
+function networkLines(host: string, port: number, base?: string, scheme: 'http' | 'https' = 'http'): string {
+  return networkUrls(host, port, scheme)
+    .map((u) => `  Network: ${u}${(base ?? '/').slice(1)}\n`)
+    .join('');
+}
+
+/**
+ * `--auth`, `--auth-file`, `SITEFILE_SERVE_AUTH`: the server's checker and what the record keeps (verifiers and the
+ * file path, never a password). Warns when the bind is not loopback: basic auth over plain HTTP sends the password
+ * in the clear.
+ */
+async function authOf(v: ParsedValues, bindHost: string): Promise<{ server?: BasicAuth; record: { auth?: AuthEntry[]; authFile?: string } }> {
+  const pairs = [...strs(v.auth).map((a) => parseAuthPair(a, '--auth'))];
+  const env = process.env.SITEFILE_SERVE_AUTH;
+  if (env !== undefined && env !== '') pairs.push(parseAuthPair(env, 'SITEFILE_SERVE_AUTH'));
+  const authFile = str(v['auth-file']);
+  const entries: AuthEntry[] = pairs.map((p) => ({ user: p.user, verifier: makeVerifier(p.password) }));
+  const fromFile = authFile === undefined ? [] : parseHtpasswd(await fs.readFile(authFile, 'utf8').catch(() => usage(`--auth-file: cannot read ${authFile}`)), authFile);
+  if (entries.length === 0 && authFile === undefined) return { record: {} };
+  if (!isLoopback(bindHost)) process.stderr.write(`warning: basic authentication over plain HTTP on ${bindHost}: the password crosses the network in the clear\n`);
+  return {
+    server: new BasicAuth([...entries, ...fromFile]),
+    record: { ...(entries.length > 0 ? { auth: entries } : {}), ...(authFile !== undefined ? { authFile: path.resolve(authFile) } : {}) },
+  };
+}
+
+/**
+ * `--tls-cert`, `--tls-key` (or `SITEFILE_TLS_CERT`, `SITEFILE_TLS_KEY`): the PEM files, read now (the key is never logged
+ * or copied; the record keeps both paths, absolute, and a detached server reads them at every start).
+ */
+async function tlsOf(v: ParsedValues): Promise<{ server?: { cert: Buffer; key: Buffer }; record: { tlsCert?: string; tlsKey?: string }; scheme: 'http' | 'https' }> {
+  const env = (k: string): string | undefined => (process.env[k] === '' ? undefined : process.env[k]);
+  const cert = str(v['tls-cert']) ?? env('SITEFILE_TLS_CERT');
+  const key = str(v['tls-key']) ?? env('SITEFILE_TLS_KEY');
+  if (cert === undefined && key === undefined) return { record: {}, scheme: 'http' };
+  if (cert === undefined || key === undefined) usage('--tls-cert and --tls-key go together');
+  const read = (f: string, flag: string): Promise<Buffer> => fs.readFile(f).catch(() => usage(`--${flag}: cannot read ${f}`));
+  return {
+    server: { cert: await read(cert, 'tls-cert'), key: await read(key, 'tls-key') },
+    record: { tlsCert: path.resolve(cert), tlsKey: path.resolve(key) },
+    scheme: 'https',
+  };
+}
+
+/** `--throttle`: the spec as given and its limits. */
+function throttleOf(v: ParsedValues): { spec: string; limits: Throttle } | undefined {
+  const spec = str(v.throttle);
+  if (spec === undefined) return undefined;
+  const limits = parseThrottle(spec);
+  if (limits === undefined) usage(`--throttle expects 3g, slow-3g or <kbit/s>[/<latency ms>], not '${spec}'`);
+  return { spec, limits };
+}
+
+/** `--mime-file` entries, then `--mime` values (a later one replaces an earlier type for the extension), or undefined. */
+async function mimeOf(v: ParsedValues): Promise<Map<string, string> | undefined> {
+  const file = str(v['mime-file']);
+  const flags = strs(v.mime);
+  if (file === undefined && flags.length === 0) return undefined;
+  const out = file === undefined ? new Map<string, string>() : parseMimeTypes(await fs.readFile(file, 'utf8').catch(() => usage(`--mime-file: cannot read ${file}`)), file);
+  for (const f of flags) {
+    const pair = parseMimeFlag(f);
+    if (pair === undefined) usage(`--mime expects ext=type/subtype, not '${f}'`);
+    out.set(pair[0], pair[1]);
+  }
+  return out;
+}
+
+/** The start message's `  Throttle: …` line (none without --throttle). */
+function throttleLine(spec: string | undefined): string {
+  const t = spec === undefined ? undefined : parseThrottle(spec);
+  return t === undefined ? '' : `  Throttle: ${spec} (${t.bytesPerSecond / 125} kbit/s, ${t.latencyMs} ms latency)\n`;
+}
+
+/**
+ * `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after`, and the sharing defaults: `noindex` on a non-loopback bind and
+ * client info (address, device) in the access log of non-loopback clients.
+ */
+function sharingOf(
+  v: ParsedValues,
+  bindHost: string,
+): {
+  server: { hideBase?: true; ipRules?: { allow: Cidr[]; deny: Cidr[] }; noindex?: true; clientInfo: true };
+  record: { hideBase?: true; allowIp?: string[]; denyIp?: string[]; expires?: string };
+  randomBase?: string;
+  stopAfter?: { seconds: number; text: string };
+} {
+  const cidrs = (flag: string): { text: string[]; parsed: Cidr[] } => {
+    const text = strs(v[flag]);
+    return {
+      text,
+      parsed: text.map((t) => {
+        const c = parseCidr(t);
+        if (c === undefined) usage(`--${flag}: invalid address or CIDR block '${t}'`);
+        return c;
+      }),
+    };
+  };
+  const allow = cidrs('allow-ip');
+  const deny = cidrs('deny-ip');
+  if (v['random-route'] && v.base !== undefined) usage('--random-route and --base both set the path prefix; use one');
+  const randomBase = v['random-route'] ? `/${randomBytes(12).toString('hex')}/` : undefined;
+  const raw = str(v['stop-after']);
+  let stopAfter: { seconds: number; text: string } | undefined;
+  if (raw !== undefined) {
+    const m = /^([0-9]{1,6})(s|m|h|d)$/.exec(raw);
+    if (!m || Number(m[1]) === 0) usage(`--stop-after expects a duration like 90s, 30m, 2h or 1d, not '${raw}'`);
+    stopAfter = { seconds: Number(m[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[m[2] as 's' | 'm' | 'h' | 'd'], text: raw };
+  }
+  const ipRules = allow.parsed.length + deny.parsed.length > 0 ? { allow: allow.parsed, deny: deny.parsed } : undefined;
+  return {
+    ...(randomBase ? { randomBase } : {}),
+    server: { ...(randomBase ? { hideBase: true as const } : {}), ...(ipRules ? { ipRules } : {}), ...(!isLoopback(bindHost) ? { noindex: true as const } : {}), clientInfo: true },
+    record: {
+      ...(randomBase ? { hideBase: true as const } : {}),
+      ...(allow.text.length > 0 ? { allowIp: allow.text } : {}),
+      ...(deny.text.length > 0 ? { denyIp: deny.text } : {}),
+      ...(stopAfter ? { expires: new Date(Date.now() + stopAfter.seconds * 1000).toISOString() } : {}),
+    },
+    ...(stopAfter ? { stopAfter } : {}),
+  };
+}
+
+/** `--max-connections-per-ip <n>`: the option (and record field) when n > 0. */
+function perIpOf(v: ParsedValues): { maxConnectionsPerIp?: number } {
+  const raw = str(v['max-connections-per-ip']);
+  if (raw === undefined) return {};
+  if (!/^[0-9]{1,6}$/.test(raw)) usage(`--max-connections-per-ip must be a number (0 to 999999), not '${raw}'`);
+  const n = Number(raw);
+  return n > 0 ? { maxConnectionsPerIp: n } : {};
+}
+
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
+/** `--log-format`, `--log-ip`, `--quiet`: the server options (and record fields) they set, only those not at their default. */
+function loggingOf(v: ParsedValues): { logFormat?: 'json'; logIp?: true; quiet?: true } {
+  const format = str(v['log-format']);
+  if (format !== undefined && format !== 'text' && format !== 'json') usage(`--log-format must be text or json, not '${format}'`);
+  return { ...(format === 'json' ? { logFormat: 'json' as const } : {}), ...(v['log-ip'] ? { logIp: true as const } : {}), ...(v.quiet ? { quiet: true as const } : {}) };
+}
+
+/** Where a foreground server's log lines go: stdout, other lines wrapped as JSON objects under `--log-format json`. */
+function logWriter(logging: { logFormat?: 'json' }): (line: string) => void {
+  return (l) => void process.stdout.write(`${logging.logFormat === 'json' && !l.startsWith('{') ? jsonLogLine(new Date().toISOString(), l) : l}\n`);
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
@@ -480,6 +793,15 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const bind = parsePublish(str(v.publish));
   const allowedHosts = allowedHostsOf(v);
   const isolate = isolateOf(v);
+  const cache = cacheOf(v);
+  const logging = loggingOf(v);
+  const auth = await authOf(v, bind.host);
+  const perIp = perIpOf(v);
+  if (v['stop-after'] !== undefined) usage('--stop-after does not apply to --watch');
+  const sharing = sharingOf(v, bind.host);
+  const tls = await tlsOf(v);
+  const throttle = throttleOf(v);
+  const mime = await mimeOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -492,7 +814,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
   const spa = spaOptions(v);
-  const baseFlag = parseBase(str(v.base));
+  const baseFlag = sharing.randomBase ?? parseBase(str(v.base));
   /** `--base`, else the path of the last good build's EXPORT BASE URL. */
   let base = baseFlag;
   const rewriteFlag = parseRewriteBase(str(v['rewrite-base']));
@@ -529,7 +851,8 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
+  const proxy = proxyOption(v);
+  const server = createSiteServer(() => current, { allowedHosts, proxy, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}), ...spa, base: () => base, rewriteBase: () => rewriteBase, ...(profile ? { profile } : {}), devNotFound: !isWildcard(bind.host) });
   const control: { rebuild?: () => void } = {};
   let quit: { promise: Promise<void>; stop: () => void } | undefined;
   let quitNow!: () => void;
@@ -583,8 +906,9 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
       onStarted: async () => {
         const addr = await listen(server, bind.host, bind.port);
         started = true;
-        process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base)}  (Ctrl-C to stop)\n`);
-        quit = await terminal(v, addr, base, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
+        if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), context, current.size, siteUrl(addr.host, addr.port, base, tls.scheme))}\n`);
+        else process.stdout.write(`Serving ${context} (${current.size} files) at ${siteUrl(addr.host, addr.port, base, tls.scheme)}  (Ctrl-C to stop)\n${networkLines(addr.host, addr.port, base, tls.scheme)}${throttleLine(throttle?.spec)}`);
+        quit = await terminal(v, addr, base, tls.scheme, (m) => process.stderr.write(`warning: ${m}\n`), async () => control.rebuild?.());
         void quit.promise.then(() => quitNow());
       },
     });
@@ -608,7 +932,12 @@ const ps: Command = {
     const shown = views.filter((s) => v.all || s.status === 'running');
     if (v.json) {
       // 'site' is the image reference or directory being served.
-      const out = shown.map(({ image, ...rest }) => ({ ...rest, site: image }));
+      // A server bound to all interfaces also lists the URLs other machines use (networkUrls).
+      // Credentials never leave the record: a server that needs them shows auth: true.
+      const out = shown.map(({ image, auth, ...rest }) => {
+        const net = rest.status === 'running' ? networkUrls(rest.host, rest.port, rest.tlsCert !== undefined ? 'https' : 'http') : [];
+        return { ...rest, ...(net.length > 0 ? { networkUrls: net } : {}), ...(auth !== undefined || rest.authFile !== undefined ? { auth: true } : {}), site: image };
+      });
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
       return 0;
     }
@@ -718,10 +1047,10 @@ export function tailLines(text: string, n: number): string {
 const logs: Command = {
   name: 'logs',
   summary: 'show a server\'s access log',
-  usage: 'server logs [-f] [-n lines] <name|id>',
+  usage: 'server logs [-f] [-n lines] [--json] <name|id>',
   description: 'Print the log of a detached server: one line per request ("METHOD /path STATUS BYTES MSms").',
-  flags: ['-f, --follow    keep printing new lines until Ctrl-C', '-n, --tail <n>  only the last n lines'],
-  options: { follow: { type: 'boolean', short: 'f' }, tail: { type: 'string', short: 'n' } },
+  flags: ['-f, --follow    keep printing new lines until Ctrl-C', '-n, --tail <n>  only the last n lines', '--json          one JSON object per line (text lines of older servers are converted)'],
+  options: { follow: { type: 'boolean', short: 'f' }, tail: { type: 'string', short: 'n' }, json: { type: 'boolean' } },
   async run(v, pos) {
     requireArgs(pos, 1, 1, 'a server id or name');
     const reg = await ServerRegistry.open();
@@ -734,8 +1063,19 @@ const logs: Command = {
       if (!Number.isSafeInteger(n) || n < 0) usage('--tail expects a non-negative integer');
       text = tailLines(text, n);
     }
-    process.stdout.write(text);
-    if (!v.follow) return 0;
+    let carry = '';
+    /** Write log bytes; with --json, whole lines only, each converted. */
+    const emit = (chunk: string): void => {
+      if (!v.json) return void process.stdout.write(chunk);
+      const lines = (carry + chunk).split('\n');
+      carry = lines.pop() ?? '';
+      if (lines.length > 0) process.stdout.write(lines.map((l) => `${logLineAsJson(l)}\n`).join(''));
+    };
+    emit(text);
+    if (!v.follow) {
+      if (v.json && carry !== '') process.stdout.write(`${logLineAsJson(carry)}\n`);
+      return 0;
+    }
     let pos2 = offset;
     let done = false;
     void waitForSignal().then(() => (done = true));
@@ -750,7 +1090,7 @@ const logs: Command = {
           const buf = Buffer.alloc(size - pos2);
           await fh.read(buf, 0, buf.length, pos2);
           pos2 = size;
-          process.stdout.write(buf);
+          emit(buf.toString('utf8'));
         }
       } finally {
         await fh.close();
@@ -772,7 +1112,7 @@ const restart: Command = {
     const reg = await ServerRegistry.open();
     const s = await reg.find(pos[0] as string);
     const up = await restartDetached(reg, s, graceOf(v));
-    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base)}\n`);
+    process.stdout.write(`Restarted ${up.name} (${up.id}) serving ${up.image} at ${siteUrl(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.base, up.tlsCert ? 'https' : 'http')}`);
     return 0;
   },
 };

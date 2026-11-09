@@ -115,9 +115,17 @@ const examples = {
   wasm() {
     assert.ok(files(build('wasm')).some((p) => p.endsWith('.svg')), 'an import-free WebAssembly plugin runs with no flag');
   },
+  csp() {
+    const site = build('csp');
+    assert.match(read(site, '_headers'), /^\/\n  Content-Security-Policy: default-src 'self';.*script-src 'self' 'sha256-[A-Za-z0-9+\/]+=';.*style-src 'self' 'sha256-/m, 'CSP hashes the inline script and style');
+  },
   image() {
     const list = files(build('image'));
     assert.ok(list.some((p) => /\.(png|jpe?g|webp)$/.test(p)), 'the image plugin writes resized images');
+  },
+  mime() {
+    const site = build('mime');
+    assert.equal(read(site, '_headers'), '/*.usdz\n  Content-Type: model/vnd.usdz+zip\n/*.ts\n  Content-Type: video/mp2t\n', 'MIME writes Content-Type rules');
   },
   theme() {
     // Stored as an image only: themed-site starts FROM it.

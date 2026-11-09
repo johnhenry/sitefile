@@ -7,9 +7,10 @@ use crate::language::ast::{
     is_ident, EscapeMode, ExportFormat, ImportKind, OciCompression, ValueType,
 };
 use crate::language::parser::{
-    flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    INSTRUCTIONS, PRECACHE_CLAUSES, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES, ROBOTS_CLAUSES,
-    SECRET_FORMS, SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    flags_of, Shape, CSP_CLAUSES, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES,
+    IMPORT_CLAUSES, INSTRUCTIONS, PRECACHE_CLAUSES, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES,
+    ROBOTS_CLAUSES, SECRET_FORMS, SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS,
+    TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -383,6 +384,7 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                 OciCompression::ALL.map(OciCompression::as_str),
                 CIK_ENUM_MEMBER,
             ),
+            "FOR" => kw_items(crate::language::ast::EXPORT_HOSTS, CIK_ENUM_MEMBER),
             "BASE" | "AT" => Vec::new(),
             _ if n >= 2 => {
                 // Clauses come in order: offer the ones after the last one used.
@@ -507,6 +509,17 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
                         .copied(),
                     CIK_KEYWORD,
                 )
+            }
+        }
+        "CSP" => {
+            // [POLICY <policy>] [META], in this order.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if prev == "POLICY" || ops.iter().any(|w| w == "META") {
+                Vec::new()
+            } else if ops.iter().any(|w| w == "POLICY") {
+                kw_items(["META"], CIK_KEYWORD)
+            } else {
+                kw_items(CSP_CLAUSES.iter().copied(), CIK_KEYWORD)
             }
         }
         "SITEMAP" | "FEED" | "REDIRECT" => {
@@ -1218,8 +1231,9 @@ mod tests {
         assert_eq!(labels("EXPORT / "), EXPORT_CLAUSES.map(String::from));
         assert_eq!(
             labels("EXPORT / AS oci BASE x "),
-            ["AT", "COMPRESSION", "KEY"]
+            ["AT", "COMPRESSION", "KEY", "FOR"]
         );
+        assert_eq!(labels("EXPORT / FOR "), crate::language::ast::EXPORT_HOSTS);
         assert_eq!(labels("EXPORT / AS oci COMPRESSION "), ["gzip", "none"]);
         assert_eq!(labels("RENDER --escape="), ["none", "html"]);
         assert_eq!(labels("ARG N: "), ["string", "number", "boolean"]);
@@ -1400,6 +1414,11 @@ mod tests {
         assert!(labels("PRECACHE /a/ TO ").is_empty());
         assert_eq!(labels("PRECACHE /a/ TO /m.json "), ["INTO"]);
         assert!(labels("PRECACHE /a/ INTO /sw.js ").is_empty());
+        // CSP: POLICY, then META
+        assert_eq!(labels("CSP "), ["POLICY", "META"]);
+        assert!(labels("CSP POLICY ").is_empty());
+        assert_eq!(labels("CSP POLICY x "), ["META"]);
+        assert!(labels("CSP META ").is_empty());
         // CHECKLINKS: flags only
         assert_eq!(labels("CHECKLINKS --"), ["--warn", "--external"]);
         assert_eq!(labels("CHECKLINKS --warn --"), ["--external"]);
