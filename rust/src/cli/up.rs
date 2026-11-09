@@ -160,6 +160,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             poll_ms: None,
             sync: None,
             reload: None,
+            build: None,
+            page: Default::default(),
             project: Some(project.clone()),
         });
     }

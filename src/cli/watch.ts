@@ -29,6 +29,8 @@ export interface WatchLoopOptions {
   readonly stop?: Promise<void>;
   /** Filled in with `rebuild()`: build again now, as if a file had changed (`serve --watch`, key `r`). */
   readonly control?: { rebuild?: () => void };
+  /** Where the loop's own lines go (each ends in a newline; `err` for stderr). Default: stdout and stderr (`serve -d --watch` stamps them into its log). */
+  readonly say?: (line: string, err: boolean) => void;
 }
 
 /**
@@ -70,13 +72,14 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
   const ignored = new Set<string>([await resolveReal(resolveStoreHome()), path.join(path.dirname(sitefile), 'Sitefile.lock')]);
   const relevant = (p: string): boolean => !isIgnoredChange(p, [root], ignored);
 
+  const say = o.say ?? ((line: string, err: boolean) => void (err ? process.stderr : process.stdout).write(line));
   let finish!: (code: number) => void;
   const finished = new Promise<number>((r) => (finish = r));
   let first = true;
   const scheduler = new RebuildScheduler(async (changed) => {
     if (!first) {
       if (!changed.some(relevant)) return; // only our own writes
-      process.stdout.write(o.plain ? MSG_CHANGE_PLAIN : MSG_CHANGE);
+      say(o.plain ? MSG_CHANGE_PLAIN : MSG_CHANGE, false);
     }
     const r = await o.build();
     for (const w of r.wrote ?? []) {
@@ -84,7 +87,7 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
       ignored.add(await resolveReal(w));
     }
     if (!first) {
-      if (r.code !== 0) process.stderr.write(o.plain ? MSG_FAILED_PLAIN : MSG_FAILED);
+      if (r.code !== 0) say(o.plain ? MSG_FAILED_PLAIN : MSG_FAILED, true);
       return;
     }
     first = false;
@@ -93,10 +96,10 @@ export async function watchLoop(o: WatchLoopOptions): Promise<number> {
       await o.onStarted?.();
     } catch (e) {
       if (!(e instanceof SitefileError)) throw e;
-      process.stderr.write(`error[${e.code}]: ${e.message}\n`);
+      say(`error[${e.code}]: ${e.message}\n`, true);
       return finish(1);
     }
-    process.stdout.write(`Watching ${o.context} for changes (Ctrl-C to stop)\n`);
+    say(`Watching ${o.context} for changes (Ctrl-C to stop)\n`, false);
   });
   if (o.control) o.control.rebuild = () => scheduler.notify(sitefile);
   const close = watchPaths({

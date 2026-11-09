@@ -74,6 +74,43 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// The build inputs of a `serve -d --watch` server on a build context (johnhenry/sitefile#306;
+/// `WatchBuild` in src/servers.ts).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchBuild {
+    /// `-f`, absolute (None: `<context>/Sitefile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sitefile: Option<String>,
+    /// `--target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// `--build-arg` flags, `NAME=value` (a bare `NAME` is resolved when the server is created).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_args: Vec<String>,
+    /// `--build-arg-file` files, absolute (re-read on every build).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_arg_files: Vec<String>,
+    /// `--no-cache`, `--no-lockfile`, `--no-rewrite-base`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_cache: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_lockfile: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_rewrite_base: bool,
+}
+
+/// The page-script flags of `serve -d --watch`: `--no-css-inject`, `--console`, `--no-overlay`,
+/// `--navigate-to-changed`, `--keep-service-workers`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WatchPage {
+    pub no_css_inject: bool,
+    pub console: bool,
+    pub no_overlay: bool,
+    pub navigate_to_changed: bool,
+    pub keep_service_workers: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerState {
@@ -205,6 +242,21 @@ pub struct ServerState {
     /// stream, so open pages reload after a restart (absent: only with `watch`, morph).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reload: Option<String>,
+    /// `-d --watch` on a build context (a Sitefile, or any build flag): build it in memory and
+    /// rebuild on change (None: a plain directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<WatchBuild>,
+    /// The `-d --watch` page-script flags ([`WatchPage`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_css_inject: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub console: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_overlay: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub navigate_to_changed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_service_workers: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -1144,6 +1196,10 @@ pub struct DetachedServe {
     /// `--reload`: Some(true) morph, Some(false) full; the live-reload script with or without
     /// `watch`.
     pub reload: Option<bool>,
+    /// `-d --watch` on a build context: the build inputs.
+    pub build: Option<WatchBuild>,
+    /// `-d --watch` page-script flags.
+    pub page: WatchPage,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -1191,6 +1247,8 @@ impl DetachedServe {
             poll_ms: None,
             sync: None,
             reload: None,
+            build: None,
+            page: WatchPage::default(),
             project: None,
         })
     }
@@ -1223,21 +1281,24 @@ pub fn serve_detached_with(
         keep_os_metadata: serve.keep_os_metadata,
         warn: Some(warn),
     };
-    // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
-    let site = load_served_site(&reg.store, &serve.source, &options)?;
-    let routing = crate::server::routing_for(
-        serve.host_profile.as_deref(),
-        serve.html_handling.as_deref(),
-    );
-    if routing.is_none_or(|p| p.site_files) {
-        check_site_files(
-            &site.tree,
-            serve.strict_site_files,
-            warn,
-            site.content.as_deref(),
-        )?;
+    // fail fast on a bad image, directory or archive (or an ignored site-file line with
+    // --strict-site-files); a build context is built by the worker (a failed first build is served
+    // as an error page)
+    if !(serve.watch && serve.build.is_some()) {
+        let site = load_served_site(&reg.store, &serve.source, &options)?;
+        let routing = crate::server::routing_for(
+            serve.host_profile.as_deref(),
+            serve.html_handling.as_deref(),
+        );
+        if routing.is_none_or(|p| p.site_files) {
+            check_site_files(
+                &site.tree,
+                serve.strict_site_files,
+                warn,
+                site.content.as_deref(),
+            )?;
+        }
     }
-    drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -1282,6 +1343,12 @@ pub fn serve_detached_with(
         reload: serve
             .reload
             .map(|morph| if morph { "morph" } else { "full" }.to_string()),
+        build: serve.build.clone().filter(|_| serve.watch),
+        no_css_inject: serve.watch && serve.page.no_css_inject,
+        console: serve.watch && serve.page.console,
+        no_overlay: serve.watch && serve.page.no_overlay,
+        navigate_to_changed: serve.watch && serve.page.navigate_to_changed,
+        keep_service_workers: serve.watch && serve.page.keep_service_workers,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1317,7 +1384,9 @@ pub fn restart_detached(
         keep_os_metadata: s.keep_os_metadata,
         warn: None,
     };
-    load_served_site(&reg.store, &s.source, &options)?;
+    if !(s.watch && s.build.is_some()) {
+        load_served_site(&reg.store, &s.source, &options)?;
+    }
     let mut fresh = s.clone();
     fresh.host = s.bind.host.clone();
     fresh.port = s.bind.port;
@@ -1522,6 +1591,12 @@ mod tests {
             poll_ms: None,
             sync: None,
             reload: None,
+            build: None,
+            no_css_inject: false,
+            console: false,
+            no_overlay: false,
+            navigate_to_changed: false,
+            keep_service_workers: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,

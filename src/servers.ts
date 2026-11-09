@@ -28,6 +28,22 @@ import type { AuthEntry } from './serve-auth.js';
  * file alone: a server is `running` only when its pid is alive AND the port answers with
  * this server's `x-sitefile-server` header.
  */
+/** The build inputs of a `serve -d --watch` server on a build context (johnhenry/sitefile#306). */
+export interface WatchBuild {
+  /** `-f`, absolute (absent: `<context>/Sitefile`). */
+  readonly sitefile?: string;
+  /** `--target`. */
+  readonly target?: string;
+  /** `--build-arg` flags, `NAME=value` (a bare `NAME` is resolved from the environment when the server is created). */
+  readonly buildArgs?: readonly string[];
+  /** `--build-arg-file` files, absolute (re-read on every build). */
+  readonly buildArgFiles?: readonly string[];
+  /** `--no-cache`, `--no-lockfile`, `--no-rewrite-base` (absent: false). */
+  readonly noCache?: boolean;
+  readonly noLockfile?: boolean;
+  readonly noRewriteBase?: boolean;
+}
+
 export interface ServerState {
   readonly id: string;
   readonly name: string;
@@ -101,6 +117,14 @@ export interface ServerState {
   readonly sync?: 'nav' | 'scroll';
   /** `--reload` (with or without `--watch`): live-reload script and stream in this mode, so open pages reload after a restart (absent: only with `watch`, in morph mode). */
   readonly reload?: 'full' | 'morph';
+  /** `-d --watch` on a build context (a Sitefile, or any build flag): build it in memory and rebuild on change (absent: a plain directory). */
+  readonly build?: WatchBuild;
+  /** `--no-css-inject`, `--console`, `--no-overlay`, `--navigate-to-changed`, `--keep-service-workers` with `-d --watch` (absent: false). */
+  readonly noCssInject?: boolean;
+  readonly console?: boolean;
+  readonly noOverlay?: boolean;
+  readonly navigateToChanged?: boolean;
+  readonly keepServiceWorkers?: boolean;
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

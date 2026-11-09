@@ -182,6 +182,9 @@ pub struct WatchOptions<'a> {
     pub plain: bool,
     /// Asked between scans: true builds again now, as if a file had changed (`serve --watch`, key `r`).
     pub rebuild: Option<&'a dyn Fn() -> bool>,
+    /// Where the loop's own lines go (each ends in a newline; true for stderr). None: stdout and
+    /// stderr (`serve -d --watch` stamps them into its log).
+    pub say: Option<&'a dyn Fn(&str, bool)>,
 }
 
 /// Build once, then rebuild whenever a watched path changes, until `stop()`.
@@ -222,6 +225,11 @@ pub fn watch_loop(
         ignored: vec![resolve_real(&resolve_store_home()), lock],
     };
 
+    let say = |line: &str, to_err: bool| match o.say {
+        Some(f) => f(line, to_err),
+        None if to_err => err(line),
+        None => out(line),
+    };
     let mut last = w.scan();
     let mut run = |w: &mut Watched, last: &mut Snapshot| -> i32 {
         let r = build();
@@ -241,12 +249,16 @@ pub fn watch_loop(
         return Ok(2);
     }
     if let Err(e) = on_started() {
-        return Ok(crate::cli::common::report(&e));
+        if o.say.is_none() {
+            return Ok(crate::cli::common::report(&e));
+        }
+        say(&format!("error[{}]: {}\n", e.code, e.message()), true);
+        return Ok(1);
     }
-    out(&format!(
-        "Watching {} for changes (Ctrl-C to stop)\n",
-        o.context
-    ));
+    say(
+        &format!("Watching {} for changes (Ctrl-C to stop)\n", o.context),
+        false,
+    );
 
     let mut dirty_since: Option<Instant> = None;
     while !stop() {
@@ -262,17 +274,23 @@ pub fn watch_loop(
         }
         if dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             dirty_since = None;
-            out(if o.plain {
-                MSG_CHANGE_PLAIN
-            } else {
-                MSG_CHANGE
-            });
-            if run(&mut w, &mut last) != 0 {
-                err(if o.plain {
-                    MSG_FAILED_PLAIN
+            say(
+                if o.plain {
+                    MSG_CHANGE_PLAIN
                 } else {
-                    MSG_FAILED
-                });
+                    MSG_CHANGE
+                },
+                false,
+            );
+            if run(&mut w, &mut last) != 0 {
+                say(
+                    if o.plain {
+                        MSG_FAILED_PLAIN
+                    } else {
+                        MSG_FAILED
+                    },
+                    true,
+                );
             }
             // a change during the build differs from `last` in the next scan: one follow-up build
         }

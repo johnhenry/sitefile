@@ -687,12 +687,13 @@ test('build --watch: usage errors', async () => {
   r = await runCli(home, ['build', '--watch', site, '--build-arg', '=x']);
   assert.equal(r.code, 2, 'a usage error in the first build ends the watch');
   assert.match(r.stderr, /^error: --build-arg expects NAME=value, got '=x'\n/);
-  r = await runCli(home, ['serve', '--watch', '-d', site]);
+  // -d --watch on a build context checks the build args up front (#306)
+  r = await runCli(home, ['serve', '--watch', '-d', site, '--build-arg', '=x']);
   assert.equal(r.code, 2);
-  assert.match(r.stderr, /^error: -d --watch serves a plain directory, and .* has a Sitefile: build it with serve --watch in the foreground\n/);
-  r = await runCli(home, ['serve', '-d', '--watch', '--no-css-inject', path.join(site, 'public')]);
+  assert.match(r.stderr, /^error: --build-arg expects NAME=value, got '=x'\n/);
+  r = await runCli(home, ['serve', '-d', '--watch', '--target', 'x', '--no-rewrite-base', '--rewrite-base', 'https://example.com/', site]);
   assert.equal(r.code, 2);
-  assert.match(r.stderr, /^error: --no-css-inject is for serve --watch in the foreground, not -d\n/);
+  assert.match(r.stderr, /^error: --rewrite-base and --no-rewrite-base cannot be combined\n/);
   r = await runCli(home, ['serve', '-d', '--watch', path.join(site, 'nope')]);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /^error\[E_NOT_FOUND\]: '.*nope' is not a directory\n/);
@@ -962,6 +963,67 @@ test('serve -d --watch --reload full: accepted and recorded (#317)', async () =>
     assert.match((await get(s.port, RELOAD_SCRIPT_PATH)).body, /"reload":"full"/);
   } finally {
     await runCli(home, ['server', 'rm', '-f', 'wr']);
+  }
+});
+
+test('serve -d --watch <context>: builds in the detached worker, keeps the build inputs in the record, rebuilds, serves the last good build on failure (#306)', async () => {
+  const home = await tmpDir('sitefile-home-');
+  const site = await makeSite({ 'tmpl/t.html': '<p>${TITLE}</p>' }, 'ARG TITLE = "none"\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n');
+  const args = await tmpDir('sitefile-args-');
+  await fs.writeFile(path.join(args, 'a.env'), 'OTHER=1\n');
+  const port = await freePort();
+  let r = await runCli(home, ['serve', '-d', '--watch', '--name', 'bw', '-p', `127.0.0.1:${port}`, '--poll-interval', '50', '--build-arg', 'TITLE=one', '--build-arg-file', path.join(args, 'a.env'), '--no-lockfile', '--no-cache', '--target', 'build', '--no-overlay', '--console', site]);
+  // --target names a missing stage: the server starts and shows the error until the Sitefile has it
+  assert.equal(r.code, 0, r.stderr);
+  try {
+    const state = JSON.parse(await fs.readFile(path.join(home, 'servers', `${/\((\w{12})\)/.exec(r.stdout)![1]}.json`), 'utf8'));
+    assert.equal(state.watch, true);
+    assert.deepEqual(state.build, { target: 'build', buildArgs: ['TITLE=one'], buildArgFiles: [path.join(args, 'a.env')], noCache: true, noLockfile: true });
+    assert.equal(state.noOverlay, true);
+    assert.equal(state.console, true);
+    const ev = await events(port);
+    assert.equal(await ev.next(), 'retry: 1000');
+    const first = await ev.next();
+    const id = first.slice(4);
+    let e = await ev.next();
+    if (e === 'data: {"type":"building"}') e = await ev.next();
+    assert.match(e, /^data: \{"type":"error","code":"E_[A-Z_]+"/, 'the failed first build is shown');
+    assert.equal((await get(port, '/', NAV)).status, 404, 'nothing built yet');
+    await fs.writeFile(path.join(site, 'Sitefile'), 'ARG TITLE = "none"\nFROM scratch AS build\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"reload"}');
+    assert.equal((await get(port, '/t.html')).body, '<p>one</p>', 'the recorded --build-arg');
+    assert.match((await get(port, RELOAD_SCRIPT_PATH)).body, /"console":true,"overlay":false/);
+    await fs.writeFile(path.join(site, 'public/about/index.html'), '<h1>About 2</h1>');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.equal(await ev.next(), 'data: {"type":"reload","morph":true}');
+    await fs.writeFile(path.join(site, 'Sitefile'), 'FROM scratch AS build\nCOPY ./missing/ /\nEXPORT /\n');
+    assert.equal(await ev.next(), 'data: {"type":"building"}');
+    assert.match(await ev.next(), /^data: \{"type":"error","code":"E_NOT_FOUND"/);
+    assert.equal((await get(port, '/about/', NAV)).body, `<h1>About 2</h1>${RELOAD_SCRIPT}`, 'the last good build is served');
+    ev.close();
+    const log = (await runCli(home, ['server', 'logs', 'bw'])).stdout;
+    assert.match(log, /Z Change detected, rebuilding\n/);
+    assert.match(log, /Z Built \d+ files \(sha256:[0-9a-f]{64}\)\n/);
+    assert.match(log, /Z error: --target 'build' does not name a stage/);
+    assert.match(log, /Z Build failed; keeping the last good output\n/);
+
+    await fs.writeFile(path.join(site, 'Sitefile'), 'ARG TITLE = "none"\nFROM scratch AS build\nCOPY ./public/ /\nRENDER ./tmpl/t.html TO /t.html\nEXPORT /\n');
+    r = await runCli(home, ['server', 'restart', 'bw']);
+    assert.equal(r.code, 0, r.stderr);
+    const ps = JSON.parse((await runCli(home, ['servers', '--json'])).stdout) as { name: string; build?: unknown; noOverlay?: boolean }[];
+    assert.deepEqual(ps.filter((s) => s.name === 'bw').map((s) => [s.build, s.noOverlay]), [[state.build, true]], 'restart keeps the build inputs');
+    const again = await events(port, { lastEventId: id });
+    assert.equal(await again.next(), 'retry: 1000');
+    await again.next(); // id
+    let next = await again.next();
+    while (next === 'data: {"type":"building"}' || next === 'data: {"type":"ok"}') next = await again.next();
+    assert.equal(next, 'data: {"type":"reload"}', 'pages left open across the restart reload');
+    for (let i = 0; i < 50 && (await get(port, '/t.html')).status !== 200; i++) await sleep(100);
+    assert.equal((await get(port, '/t.html')).body, '<p>one</p>', 'the restarted worker builds with the recorded args');
+    again.close();
+  } finally {
+    await runCli(home, ['server', 'rm', '-f', 'bw']);
   }
 });
 

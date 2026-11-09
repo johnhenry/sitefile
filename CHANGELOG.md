@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`serve -d --watch <context>`** (johnhenry/sitefile#306): a detached server can build a Sitefile project. The
+  worker runs the in-memory build loop of `serve --watch` (rebuild on change, live reload, error overlay on a
+  failed build, the last good build served; a failed first build serves an empty site with the error). It listens
+  before the first build, so `serve -d` returns at once. The record keeps the build inputs in a `build` object
+  (`sitefile`, `target`, `buildArgs`, `buildArgFiles`, `noCache`, `noLockfile`, `noRewriteBase`) and the page-script
+  flags (`noCssInject`, `console`, `noOverlay`, `navigateToChanged`, `keepServiceWorkers`; now also for plain
+  directories), so `server restart` keeps them. The `-d --watch` refusals (`… has a Sitefile` and `--<flag> is for
+  serve --watch in the foreground, not -d`) are gone; build args are checked when the server is created. Both
+  implementations; conformance case `watch/detached-build`; the two `err-serve-detach-watch-*` step cases now cover
+  the up-front build-arg and `--rewrite-base` checks.
 - **`serve --reload` without `--watch`** (johnhenry/sitefile#317): servers of images, archive files and
   directory snapshots (foreground or `-d`) inject the live-reload script and serve `/__sitefile/reload`, so pages
   left open reload after a restart (`server restart`, a restart on a new image), using the per-process instance ID
