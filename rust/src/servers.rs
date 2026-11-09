@@ -96,6 +96,9 @@ pub struct ServerState {
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The servers file (`sitefile up`) that started it, by real path; None for `serve -d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -687,7 +690,7 @@ pub fn looks_like_dir(arg: &str) -> bool {
 }
 
 /// An archive file source: labelled by its absolute path, stored by its real path.
-fn archive_source(arg: &str) -> (String, ServerSource) {
+pub fn archive_source(arg: &str) -> (String, ServerSource) {
     let file = crate::export::exporter::resolve_path(Path::new(arg));
     let real = fs::canonicalize(&file).unwrap_or(file.clone());
     (
@@ -698,7 +701,7 @@ fn archive_source(arg: &str) -> (String, ServerSource) {
     )
 }
 
-fn is_regular_file(p: &str) -> bool {
+pub fn is_regular_file(p: &str) -> bool {
     fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
 }
 
@@ -763,6 +766,8 @@ pub struct DetachedServe {
     pub keep_os_metadata: bool,
     /// `--allowed-host` names, lowercased (see [`crate::server::parse_allowed_host`]).
     pub allowed_hosts: Vec<String>,
+    /// The servers file it belongs to (`sitefile up`), by real path.
+    pub project: Option<String>,
 }
 
 impl DetachedServe {
@@ -778,6 +783,7 @@ impl DetachedServe {
             spa: false,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
+            project: None,
         })
     }
 }
@@ -827,6 +833,7 @@ pub fn serve_detached_with(
         log_file: reg.log_path(&id).display().to_string(),
         ready: false,
         error: None,
+        project: serve.project.clone(),
     };
     reg.write(&state)?;
     match start_detached(reg, &state, worker_exe) {
@@ -1038,6 +1045,7 @@ mod tests {
             log_file: reg.log_path(id).to_string_lossy().into_owned(),
             ready: false,
             error: None,
+            project: None,
         }
     }
 

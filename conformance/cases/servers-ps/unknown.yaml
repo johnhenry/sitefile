@@ -1,0 +1,4 @@
+servers:
+  docs:
+    source: ./docs
+    colour: blue

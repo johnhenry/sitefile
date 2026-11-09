@@ -238,6 +238,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             spa: v.flag("spa"),
             keep_os_metadata,
             allowed_hosts,
+            project: None,
         },
         None,
         &warn,
@@ -594,7 +595,7 @@ fn run_ps(v: &Parsed) -> Result<i32> {
     Ok(0)
 }
 
-fn grace_of(v: &Parsed) -> Result<Duration> {
+pub fn grace_of(v: &Parsed) -> Result<Duration> {
     let Some(t) = v.str("time") else {
         return Ok(Duration::from_secs(5));
     };

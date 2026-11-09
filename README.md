@@ -185,6 +185,7 @@ sitefile cache du                                       # cache sizes; SITEFILE_
 sitefile serve [-d] [--name n] [-p [host:]port] [--spa] <image|./dir|site.zip>
 sitefile serve --watch [-p [host:]port] [--spa] [context]   # build in memory, serve, live reload
 sitefile servers [-a] | server stop|rm [-f]|restart|logs [-f] <name>
+sitefile up | down | ps [-f sitefile.servers.yaml]   # several servers from one file, like docker compose
 ```
 
 `--target <stage>` (like `docker build --target`) stops after a named stage and exports that stage's whole
@@ -431,6 +432,14 @@ tools are code, and run only when you name them on the command line.
   `localhost`, `*.localhost` or an IP address is refused (`403`), so a web page
   that DNS-rebinds its name to `127.0.0.1` cannot read a local server;
   `--allowed-host` adds names ([docs/CLI.md](docs/CLI.md#site-servers)).
+- **Caches are trusted.** A TRANSFORM cache hit (local, or from
+  `--cache-from <registry>`) is used as if the plugin had returned it, and the
+  Rust build loads compiled wasm modules from `$SITEFILE_HOME/cache/wasm` as
+  native code (kept `0700`/`0600`). Only pull caches from registries you
+  trust; `--no-cache` skips them
+  ([docs/PLUGINS.md](docs/PLUGINS.md#what-sitefile-trusts-as-is)). JavaScript
+  plugins say whether they are deterministic with `export const cache =
+  true|false`; one that says neither is cached with a warning.
 - **No silent overwrites.** Writing different content to an existing path fails
   unless `--overwrite` is given. Two output paths that differ only in case
   (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is

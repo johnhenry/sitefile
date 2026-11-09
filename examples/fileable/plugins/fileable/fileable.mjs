@@ -21,6 +21,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const apiVersion = 1;
+// The same request always gives the same bytes, so results may be cached.
+export const cache = true;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
