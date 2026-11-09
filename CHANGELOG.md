@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`serve` prints network URLs on `0.0.0.0` / `::`** (johnhenry/sitefile#169):
+  a `Network:` line per non-loopback interface address (IPv4 first, IPv6 in
+  brackets), and `servers --json` gains `networkUrls`. Both implementations
+  (Rust reads the interfaces with `getifaddrs`, no new dependency).
+- **`serve --log-format json`, `--log-ip`, `--quiet`** (johnhenry/sitefile#173):
+  one JSON object per log line (request, started, stopped, warning, error,
+  message), a stable contract in docs/CLI.md, identical in both servers; kept in
+  the server record. `server logs --json` converts text logs of older servers.
+- **`serve --max-age`, `--immutable`, `--max-age-html`** (johnhenry/sitefile#175):
+  preview production `Cache-Control` on files (HTML keeps `no-cache` unless
+  `--max-age-html`); `_headers` still wins; kept in the server record. Both
+  servers.
 - **Portable paths** (johnhenry/sitefile#222): EXPORT warns about exported
   paths Windows cannot hold (reserved names such as `aux.html`, `:` and other
   forbidden characters, a trailing dot or space) and about `_` files and

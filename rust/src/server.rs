@@ -51,6 +51,15 @@ pub struct SiteServerOptions {
     /// same-origin`, this `Cross-Origin-Embedder-Policy` (`require-corp` or `credentialless`) and
     /// `Cross-Origin-Resource-Policy: same-origin`. `_headers` still wins.
     pub isolate: Option<String>,
+    /// `--max-age`, `--immutable`, `--max-age-html`: a production `Cache-Control` preview for
+    /// files ([`cache_control_for`]).
+    pub cache: Option<CachePreview>,
+    /// `--log-format json`: access-log lines as JSON objects ([`access_log_line`]); else text.
+    pub log_json: bool,
+    /// `--log-ip`: add the client address to access-log lines.
+    pub log_ip: bool,
+    /// `--quiet`: no access-log lines (other log lines still go to `log`).
+    pub quiet: bool,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -841,6 +850,232 @@ fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
     }
     base.extend(isolation_headers(options));
     base
+}
+
+/// One access-log request, as [`access_log_line`] writes it.
+pub struct AccessLogEntry<'a> {
+    pub ts: &'a str,
+    pub method: &'a str,
+    /// The request target as received (made printable).
+    pub target: &'a str,
+    pub status: u16,
+    pub bytes: usize,
+    pub ms: f64,
+    /// `Content-Range` of a `206`/`416`.
+    pub range: Option<&'a str>,
+    /// What answered, as the `_redirects` log note (` → /new (_redirects:3)`).
+    pub note: Option<&'a str>,
+    /// The client address (`--log-ip`).
+    pub remote: Option<&'a str>,
+}
+
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// An access-log line, text or JSON (`accessLogLine` in src/server.ts; the JSON form is a stable
+/// contract, docs/CLI.md).
+pub fn access_log_line(json: bool, e: &AccessLogEntry) -> String {
+    let target = printable(e.target);
+    if !json {
+        return format!(
+            "{} {target} {} {} {:.1}ms{}{}",
+            e.method,
+            e.status,
+            e.bytes,
+            e.ms,
+            e.note.unwrap_or(""),
+            e.remote.map(|r| format!(" {r}")).unwrap_or_default()
+        );
+    }
+    let (path, query) = match target.find('?') {
+        Some(q) => (&target[..q], &target[q + 1..]),
+        None => (target.as_str(), ""),
+    };
+    format!(
+        "{{\"type\":\"request\",\"ts\":{},\"method\":{},\"path\":{},\"query\":{},\"status\":{},\"bytes\":{},\"ms\":{:.1},\"encoding\":\"identity\",\"range\":{}{}{}}}",
+        json_str(e.ts),
+        json_str(e.method),
+        json_str(path),
+        json_str(query),
+        e.status,
+        e.bytes,
+        e.ms,
+        e.range.map(json_str).unwrap_or_else(|| "null".into()),
+        e.note
+            .map(|n| format!(",\"note\":{}", json_str(n.strip_prefix(" \u{2192} ").unwrap_or(n))))
+            .unwrap_or_default(),
+        e.remote
+            .map(|r| format!(",\"remote\":{}", json_str(r)))
+            .unwrap_or_default()
+    )
+}
+
+/// A log line that is not a request, as a JSON object (`jsonLogLine` in src/server.ts).
+pub fn json_log_line(ts: &str, line: &str) -> String {
+    let (kind, message) = if let Some(m) = line.strip_prefix("warning: ") {
+        ("warning", m)
+    } else if line.starts_with("error") {
+        ("error", line)
+    } else {
+        ("message", line)
+    };
+    format!(
+        "{{\"type\":{},\"ts\":{},\"message\":{}}}",
+        json_str(kind),
+        json_str(ts),
+        json_str(message)
+    )
+}
+
+/// `{"type":"started","ts","site","files","url"}` (`startedLogLine` in src/server.ts).
+pub fn started_log_line(ts: &str, site: &str, files: usize, url: &str) -> String {
+    format!(
+        "{{\"type\":\"started\",\"ts\":{},\"site\":{},\"files\":{files},\"url\":{}}}",
+        json_str(ts),
+        json_str(site),
+        json_str(url)
+    )
+}
+
+/// `{"type":"stopped","ts","signal"}` (`stoppedLogLine` in src/server.ts).
+pub fn stopped_log_line(ts: &str, signal: &str) -> String {
+    format!(
+        "{{\"type\":\"stopped\",\"ts\":{},\"signal\":{}}}",
+        json_str(ts),
+        json_str(signal)
+    )
+}
+
+/// A detached server's log line as JSON (`logLineAsJson` in src/server.ts).
+pub fn log_line_as_json(line: &str) -> String {
+    if line.starts_with('{') {
+        return line.to_string();
+    }
+    let is_ts = |t: &str| {
+        let b = t.as_bytes();
+        b.len() > 11
+            && b[..4].iter().all(u8::is_ascii_digit)
+            && b[4] == b'-'
+            && b[5..7].iter().all(u8::is_ascii_digit)
+            && b[7] == b'-'
+            && b[8..10].iter().all(u8::is_ascii_digit)
+            && b[10] == b'T'
+            && b.ends_with(b"Z")
+            && b.len() > 12
+            && b[11..b.len() - 1]
+                .iter()
+                .all(|c| c.is_ascii_digit() || *c == b':' || *c == b'.')
+    };
+    let Some((ts, rest)) = line.split_once(' ').filter(|(t, _)| is_ts(t)) else {
+        return json_log_line("", line);
+    };
+    if let Some(r) = parse_text_request(rest) {
+        return access_log_line(
+            true,
+            &AccessLogEntry {
+                ts,
+                method: r.0,
+                target: r.1,
+                status: r.2,
+                bytes: r.3,
+                ms: r.4,
+                range: None,
+                note: None,
+                remote: r.5,
+            },
+        );
+    }
+    if let Some(body) = rest.strip_prefix("serving ") {
+        if let Some((site, tail)) = body.rsplit_once(" (") {
+            if let Some((n, url)) = tail.split_once(" files) at ") {
+                if !n.is_empty()
+                    && n.bytes().all(|b| b.is_ascii_digit())
+                    && !url.is_empty()
+                    && !url.contains(char::is_whitespace)
+                    && !site.is_empty()
+                {
+                    if let Ok(files) = n.parse() {
+                        return started_log_line(ts, site, files, url);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(sig) = rest
+        .strip_prefix("received ")
+        .and_then(|r| r.strip_suffix(", shutting down"))
+        .filter(|s| {
+            s.len() > 3 && s.starts_with("SIG") && s[3..].bytes().all(|b| b.is_ascii_uppercase())
+        })
+    {
+        return stopped_log_line(ts, sig);
+    }
+    json_log_line(ts, rest)
+}
+
+/// `METHOD target STATUS BYTES MS.Dms[ remote]`, a text access-log line.
+#[allow(clippy::type_complexity)]
+fn parse_text_request(rest: &str) -> Option<(&str, &str, u16, usize, f64, Option<&str>)> {
+    let parts: Vec<&str> = rest.split(' ').collect();
+    if !(5..=6).contains(&parts.len()) || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let method = parts[0];
+    let mb = method.as_bytes();
+    if !mb[0].is_ascii_uppercase() || !mb.iter().all(|b| b.is_ascii_uppercase() || *b == b'-') {
+        return None;
+    }
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if parts[2].len() != 3 || !digits(parts[2]) || !digits(parts[3]) {
+        return None;
+    }
+    let ms = parts[4].strip_suffix("ms")?;
+    let (whole, frac) = ms.split_once('.')?;
+    if !digits(whole) || frac.len() != 1 || !digits(frac) {
+        return None;
+    }
+    if parts[1].contains(char::is_whitespace) {
+        return None;
+    }
+    Some((
+        method,
+        parts[1],
+        parts[2].parse().ok()?,
+        parts[3].parse().ok()?,
+        ms.parse().ok()?,
+        parts.get(5).copied(),
+    ))
+}
+
+/// Production cache headers to preview instead of `no-cache` (`serve --max-age`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachePreview {
+    /// Seconds for files other than HTML: `public, max-age=N`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<u64>,
+    /// Adds `immutable` to the non-HTML value (needs `max_age`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub immutable: bool,
+    /// Seconds for HTML pages (`None`: they keep `no-cache`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_html: Option<u64>,
+}
+
+/// The `Cache-Control` a file of media type `mime` gets under `cache` (`cacheControlFor` in
+/// src/server.ts), or `None` to keep `no-cache`.
+pub fn cache_control_for(mime: &str, cache: Option<&CachePreview>) -> Option<String> {
+    let c = cache?;
+    if mime.starts_with("text/html") {
+        return c.max_age_html.map(|n| format!("public, max-age={n}"));
+    }
+    c.max_age.map(|n| {
+        format!(
+            "public, max-age={n}{}",
+            if c.immutable { ", immutable" } else { "" }
+        )
+    })
 }
 
 /// The `--isolate` headers ([`SiteServerOptions::isolate`]).
@@ -2515,6 +2750,13 @@ pub fn respond(
         } else {
             vec![]
         };
+        let cc: Vec<(String, String)> = if status == 200 {
+            cache_control_for(mime, options.cache.as_ref())
+                .map(|v| vec![("cache-control".to_string(), v)])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let vary: Vec<(String, String)> = if deflated.is_none() && dictionary_vary {
             owned(vec![("vary", vary_on.into())])
         } else {
@@ -2524,6 +2766,7 @@ pub fn respond(
             ("content-type", mime.into()),
             ("content-length", body.len().to_string()),
         ]);
+        h.extend(cc.iter().cloned());
         h.extend(encoding.iter().cloned());
         h.extend(custom.iter().cloned());
         if status != 200 {
@@ -2544,6 +2787,7 @@ pub fn respond(
             .unwrap_or_default();
         let not_modified = || {
             let mut h: Vec<(String, String)> = encoding.clone();
+            h.extend(cc.iter().cloned());
             h.extend(custom.iter().cloned());
             h.extend(vary.iter().cloned());
             h.push(("etag".into(), etag.clone()));
@@ -2572,6 +2816,7 @@ pub fn respond(
                 ("content-type", mime.into()),
                 ("content-length", d.len().to_string()),
             ]);
+            h.extend(cc.iter().cloned());
             h.extend(custom.iter().cloned());
             h.extend(vary.iter().cloned());
             h.push(("content-encoding".into(), "dcz".into()));
@@ -2984,6 +3229,7 @@ fn serve_connection(
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
+    let peer = stream.peer_addr().ok().map(|a| a.ip().to_string());
     let mut reader = BufReader::new(stream);
     loop {
         let req = match read_request(&mut reader) {
@@ -3101,15 +3347,22 @@ fn serve_connection(
         // nor do console messages (they are logged as `browser ...` lines)
         let quiet = options.live_reload.is_some()
             && [RELOAD_SCRIPT_PATH, CONSOLE_PATH].contains(&raw_path_of(&req.url));
-        if !probe && !quiet {
+        if !probe && !quiet && !options.quiet {
             if let Some(log) = &options.log {
-                log(&format!(
-                    "{} {} {} {} {ms:.1}ms{}",
-                    req.method,
-                    printable(&req.url),
-                    res.status,
-                    res.body.len(),
-                    res.note.as_deref().unwrap_or("")
+                let remote = if options.log_ip { peer.clone() } else { None };
+                log(&access_log_line(
+                    options.log_json,
+                    &AccessLogEntry {
+                        ts: &crate::store::now_iso(),
+                        method: &req.method,
+                        target: &req.url,
+                        status: res.status,
+                        bytes: res.body.len(),
+                        ms,
+                        range: res.header("content-range"),
+                        note: res.note.as_deref(),
+                        remote: remote.as_deref(),
+                    },
                 ));
             }
         }
@@ -3282,6 +3535,99 @@ impl Drop for ListeningServer {
             self.shutdown();
         }
     }
+}
+
+#[repr(C)]
+struct IfAddrs {
+    ifa_next: *mut IfAddrs,
+    ifa_name: *mut std::ffi::c_char,
+    ifa_flags: std::ffi::c_uint,
+    ifa_addr: *mut u8,
+}
+
+extern "C" {
+    fn getifaddrs(ifap: *mut *mut IfAddrs) -> std::ffi::c_int;
+    fn freeifaddrs(ifa: *mut IfAddrs);
+}
+
+const IFF_UP: std::ffi::c_uint = 0x1;
+const IFF_LOOPBACK: std::ffi::c_uint = 0x8;
+const IFF_RUNNING: std::ffi::c_uint = 0x40;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+const AF_INET6: u16 = if cfg!(target_os = "freebsd") { 28 } else { 30 };
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+const AF_INET6: u16 = 10;
+
+/// The family of a `struct sockaddr` (BSDs: a length byte, then the family byte).
+///
+/// # Safety
+/// `sa` points to a readable `struct sockaddr`.
+unsafe fn sa_family(sa: *const u8) -> u16 {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    )) {
+        u16::from(*sa.add(1))
+    } else {
+        u16::from_ne_bytes([*sa, *sa.add(1)])
+    }
+}
+
+/// The addresses other machines can reach a server bound to all interfaces at
+/// (`networkAddresses` in src/server.ts: up, non-loopback interfaces; IPv4 for `0.0.0.0`, IPv4
+/// then IPv6 for `::`, no IPv6 link-local; each family sorted as text, without duplicates).
+pub fn network_addresses(bind_host: &str) -> Vec<String> {
+    if bind_host != "0.0.0.0" && bind_host != "::" {
+        return Vec::new();
+    }
+    let mut v4: Vec<String> = Vec::new();
+    let mut v6: Vec<String> = Vec::new();
+    let mut head: *mut IfAddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list that freeifaddrs releases; every node and
+    // address is read only while the list is alive, and only through the fields of the common
+    // prefix of `struct ifaddrs` (identical on Linux and the BSDs).
+    unsafe {
+        if getifaddrs(&mut head) != 0 {
+            return Vec::new();
+        }
+        let mut cur = head;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            let up = ifa.ifa_flags & (IFF_UP | IFF_RUNNING) == (IFF_UP | IFF_RUNNING);
+            if up && ifa.ifa_flags & IFF_LOOPBACK == 0 && !ifa.ifa_addr.is_null() {
+                let sa = ifa.ifa_addr as *const u8;
+                let family = sa_family(sa);
+                if family == 2 {
+                    let b = std::slice::from_raw_parts(sa.add(4), 4);
+                    v4.push(std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string());
+                } else if family == AF_INET6 && bind_host == "::" {
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(std::slice::from_raw_parts(sa.add(8), 16));
+                    let a = std::net::Ipv6Addr::from(b);
+                    if a.segments()[0] & 0xffc0 != 0xfe80 && !a.is_loopback() {
+                        v6.push(a.to_string());
+                    }
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        freeifaddrs(head);
+    }
+    v4.sort();
+    v4.dedup();
+    v6.sort();
+    v6.dedup();
+    v4.extend(v6);
+    v4
+}
+
+/// [`network_addresses`] as URLs.
+pub fn network_urls(bind_host: &str, port: u16) -> Vec<String> {
+    network_addresses(bind_host)
+        .iter()
+        .map(|a| format_url(a, port))
+        .collect()
 }
 
 pub fn format_url(host: &str, port: u16) -> String {
@@ -3609,6 +3955,112 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn network_addresses_of_wildcard_binds() {
+        assert!(network_addresses("127.0.0.1").is_empty());
+        assert!(network_addresses("::1").is_empty());
+        let v4 = network_addresses("0.0.0.0");
+        assert!(v4.iter().all(|a| a
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| !ip.is_loopback())));
+        let mut sorted = v4.clone();
+        sorted.sort();
+        assert_eq!(v4, sorted);
+        let all = network_addresses("::");
+        assert_eq!(&all[..v4.len()], &v4[..], "IPv4 first");
+        assert!(all[v4.len()..]
+            .iter()
+            .all(|a| a.contains(':') && !a.starts_with("fe8") && a != "::1"));
+        assert_eq!(
+            network_urls("0.0.0.0", 8080),
+            v4.iter()
+                .map(|a| format!("http://{a}:8080/"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn json_access_log() {
+        let e = AccessLogEntry {
+            ts: "2026-01-01T00:00:00.000Z",
+            method: "GET",
+            target: "/a?b",
+            status: 206,
+            bytes: 2,
+            ms: 1.24,
+            range: Some("bytes 0-1/10"),
+            note: None,
+            remote: None,
+        };
+        assert_eq!(
+            access_log_line(true, &e),
+            "{\"type\":\"request\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"method\":\"GET\",\"path\":\"/a\",\"query\":\"b\",\"status\":206,\"bytes\":2,\"ms\":1.2,\"encoding\":\"identity\",\"range\":\"bytes 0-1/10\"}"
+        );
+        let with_ip = AccessLogEntry {
+            remote: Some("::1"),
+            ..e
+        };
+        assert!(access_log_line(false, &with_ip).ends_with("ms ::1"));
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z GET /a?b 200 5 0.4ms"),
+            "{\"type\":\"request\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"method\":\"GET\",\"path\":\"/a\",\"query\":\"b\",\"status\":200,\"bytes\":5,\"ms\":0.4,\"encoding\":\"identity\",\"range\":null}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z serving ./site (3 files) at http://127.0.0.1:8080/"),
+            "{\"type\":\"started\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"site\":\"./site\",\"files\":3,\"url\":\"http://127.0.0.1:8080/\"}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z received SIGTERM, shutting down"),
+            "{\"type\":\"stopped\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"signal\":\"SIGTERM\"}"
+        );
+        assert_eq!(
+            log_line_as_json("2026-01-01T00:00:00.000Z warning: x \"y\""),
+            "{\"type\":\"warning\",\"ts\":\"2026-01-01T00:00:00.000Z\",\"message\":\"x \\\"y\\\"\"}"
+        );
+        assert_eq!(
+            log_line_as_json("    at stack"),
+            "{\"type\":\"message\",\"ts\":\"\",\"message\":\"    at stack\"}"
+        );
+    }
+
+    #[test]
+    fn cache_preview() {
+        let c = |max_age, immutable, max_age_html| CachePreview {
+            max_age,
+            immutable,
+            max_age_html,
+        };
+        let html = "text/html; charset=utf-8";
+        assert_eq!(
+            cache_control_for(html, Some(&c(None, false, Some(0)))).as_deref(),
+            Some("public, max-age=0")
+        );
+        assert_eq!(
+            cache_control_for("text/css", Some(&c(None, false, Some(5)))),
+            None
+        );
+        assert_eq!(
+            cache_control_for("image/png", Some(&c(Some(5), true, None))).as_deref(),
+            Some("public, max-age=5, immutable")
+        );
+        assert_eq!(cache_control_for(html, Some(&c(Some(5), true, None))), None);
+        assert_eq!(cache_control_for("image/png", None), None);
+        let t = Tree::from_files(
+            [("/a.css", "a{}"), ("/index.html", "x")]
+                .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            cache: Some(c(Some(600), false, None)),
+            ..Default::default()
+        };
+        let h = HashMap::new();
+        let r = handle_request(&t, &opts, "GET", "/a.css", &h);
+        assert_eq!(r.header("cache-control"), Some("public, max-age=600"));
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.header("cache-control"), Some("no-cache"));
     }
 
     #[test]

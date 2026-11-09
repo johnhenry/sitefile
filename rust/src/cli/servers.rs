@@ -219,6 +219,72 @@ fn isolate_of(v: &Parsed) -> Result<Option<String>> {
         .then(|| coep.unwrap_or("require-corp").to_string()))
 }
 
+/// `--max-age`, `--immutable`, `--max-age-html`, or `None` when none is given.
+fn cache_of(v: &Parsed) -> Result<Option<crate::server::CachePreview>> {
+    let secs = |flag: &str| -> Result<Option<u64>> {
+        let Some(raw) = v.str(flag) else {
+            return Ok(None);
+        };
+        match raw.parse::<u64>() {
+            Ok(n)
+                if (1..=10).contains(&raw.len())
+                    && raw.bytes().all(|b| b.is_ascii_digit())
+                    && n <= 2_147_483_647 =>
+            {
+                Ok(Some(n))
+            }
+            _ => usage(format!(
+                "--{flag} must be a number of seconds (0 to 2147483647), not '{raw}'"
+            )),
+        }
+    };
+    let max_age = secs("max-age")?;
+    let max_age_html = secs("max-age-html")?;
+    if v.flag("immutable") && max_age.is_none() {
+        return usage("--immutable needs --max-age");
+    }
+    if max_age.is_none() && max_age_html.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(crate::server::CachePreview {
+        max_age,
+        immutable: v.flag("immutable"),
+        max_age_html,
+    }))
+}
+
+/// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
+fn network_lines(host: &str, port: u16, base: Option<&str>) -> String {
+    crate::server::network_urls(host, port)
+        .iter()
+        .map(|u| format!("  Network: {u}{}\n", &base.unwrap_or("/")[1..]))
+        .collect()
+}
+
+/// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
+fn logging_of(v: &Parsed) -> Result<(bool, bool, bool)> {
+    let format = v.str("log-format");
+    if let Some(f) = format.filter(|f| *f != "text" && *f != "json") {
+        return usage(format!("--log-format must be text or json, not '{f}'"));
+    }
+    Ok((format == Some("json"), v.flag("log-ip"), v.flag("quiet")))
+}
+
+/// Where a foreground server's log lines go: stdout, other lines wrapped as JSON objects under
+/// `--log-format json`.
+fn log_writer(json: bool) -> crate::server::LogFn {
+    Arc::new(move |l: &str| {
+        if json && !l.starts_with('{') {
+            out(&format!(
+                "{}\n",
+                crate::server::json_log_line(&now_iso(), l)
+            ));
+        } else {
+            out(&format!("{l}\n"));
+        }
+    })
+}
+
 fn allowed_hosts_of(v: &Parsed) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     for raw in v.strs("allowed-host") {
@@ -253,6 +319,12 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("qr"),
     flag("isolate"),
     string("coep"),
+    string("max-age"),
+    flag("immutable"),
+    string("max-age-html"),
+    string("log-format"),
+    flag("log-ip"),
+    flag("quiet"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -300,6 +372,12 @@ pub const SERVE: Command = Command {
         "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
         "--isolate         cross-origin isolation headers (COOP same-origin, COEP, CORP same-origin) on every response",
         "--coep <require-corp|credentialless>  the Cross-Origin-Embedder-Policy of --isolate (default require-corp)",
+        "--max-age <secs>  preview production caching: Cache-Control: public, max-age=<secs> on files other than HTML",
+        "--immutable       add immutable to the --max-age value (fingerprinted assets)",
+        "--max-age-html <secs>        Cache-Control: public, max-age=<secs> on HTML pages too (default: they keep no-cache)",
+        "--log-format <text|json>     access-log lines as text (default) or one JSON object per line (a stable format; docs/CLI.md)",
+        "--log-ip          add the client address to access-log lines",
+        "--quiet           no access-log lines",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
@@ -352,6 +430,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
     let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let base = parse_base(v.str("base"))?;
     let rewrite_base = parse_rewrite_base(v.str("rewrite-base"))?;
@@ -391,11 +471,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let shared: crate::server::SharedTree = Arc::new(std::sync::RwLock::new(Arc::new(tree)));
         let server = listen_shared(
             shared.clone(),
             SiteServerOptions {
+                log: Some(log_writer(log_json)),
                 spa,
                 spa_exclude,
                 spa_fallback,
@@ -408,7 +488,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 profile,
                 dev_not_found: !is_wildcard(&bind.host),
                 country: country.clone(),
-                log: Some(log),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
@@ -416,16 +495,33 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 allowed_hosts: Some(allowed_hosts.clone()),
                 cors: v.flag("cors"),
                 isolate: isolate.clone(),
+                cache: cache.clone(),
+                log_json,
+                log_ip,
+                quiet,
                 content: site.content,
                 ..Default::default()
             },
             &bind.host,
             bind.port,
         )?;
-        out(&format!(
-            "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(&server.host, server.port, base.as_deref())
-        ));
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &label,
+                    n,
+                    &site_url(&server.host, server.port, base.as_deref())
+                )
+            ));
+        } else {
+            out(&format!(
+                "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                site_url(&server.host, server.port, base.as_deref()),
+                network_lines(&server.host, server.port, base.as_deref())
+            ));
+        }
         let restart: Box<dyn Fn() + Send> = {
             let (source, label, shared) = (source.clone(), label.clone(), shared.clone());
             Box::new(move || {
@@ -507,6 +603,10 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             allowed_hosts,
             cors: v.flag("cors"),
             isolate,
+            cache,
+            log_format: log_json.then(|| "json".to_string()),
+            log_ip,
+            quiet,
             country,
             strict_site_files,
             project: None,
@@ -515,10 +615,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         &warn,
     )?;
     out(&format!(
-        "Started {} ({}) serving {label} at {}\n",
+        "Started {} ({}) serving {label} at {}\n{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref()),
+        network_lines(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }
@@ -535,6 +636,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let bind = parse_publish(v.str("publish"))?;
     let allowed_hosts = allowed_hosts_of(v)?;
     let isolate = isolate_of(v)?;
+    let cache = cache_of(v)?;
+    let (log_json, log_ip, quiet) = logging_of(v)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -725,8 +828,8 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let keys: std::cell::RefCell<Option<super::serve_keys::Keys>> = std::cell::RefCell::new(None);
     let rebuild = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut on_started = || -> Result<()> {
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
+            log: Some(log_writer(log_json)),
             spa,
             spa_exclude: spa_exclude.clone(),
             spa_fallback: spa_fallback.clone(),
@@ -741,7 +844,6 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             profile,
             dev_not_found: !is_wildcard(&bind.host),
             country: country.clone(),
-            log: Some(log),
             server_id: None,
             live_reload: Some(live.clone()),
             last_modified: Some(Arc::new({
@@ -752,18 +854,32 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             allowed_hosts: Some(allowed_hosts.clone()),
             cors: v.flag("cors"),
             isolate: isolate.clone(),
+            cache: cache.clone(),
+            log_json,
+            log_ip,
+            quiet,
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
-        out(&format!(
-            "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n",
-            site_url(
-                &s.host,
-                s.port,
-                base.read().ok().and_then(|b| b.clone()).as_deref()
-            )
-        ));
+        let current_base = base.read().ok().and_then(|b| b.clone());
+        if log_json {
+            out(&format!(
+                "{}\n",
+                crate::server::started_log_line(
+                    &now_iso(),
+                    &context,
+                    n,
+                    &site_url(&s.host, s.port, current_base.as_deref())
+                )
+            ));
+        } else {
+            out(&format!(
+                "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
+                site_url(&s.host, s.port, current_base.as_deref()),
+                network_lines(&s.host, s.port, current_base.as_deref())
+            ));
+        }
         let rebuild = rebuild.clone();
         let shown_base = base.read().ok().and_then(|b| b.clone());
         *keys.borrow_mut() = super::serve_keys::terminal(
@@ -807,7 +923,6 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
 
 /// `sitefile __serve-worker <id>`: the detached server process.
 pub fn serve_worker(id: &str) -> i32 {
-    let stamp = |m: &str| out(&format!("{} {m}\n", now_iso()));
     let reg = match ServerRegistry::open(None) {
         Ok(r) => r,
         Err(e) => {
@@ -824,6 +939,21 @@ pub fn serve_worker(id: &str) -> i32 {
         Err(e) => {
             err(&format!("{e}\n"));
             return 1;
+        }
+    };
+    // `--log-format json`: every line is a JSON object.
+    let json = state.log_format.as_deref() == Some("json");
+    let stamp = move |m: &str| {
+        let ts = now_iso();
+        if json {
+            let line = if m.starts_with('{') {
+                m.to_string()
+            } else {
+                crate::server::json_log_line(&ts, m)
+            };
+            out(&format!("{line}\n"));
+        } else {
+            out(&format!("{ts} {m}\n"));
         }
     };
     catch_signals();
@@ -852,7 +982,7 @@ pub fn serve_worker(id: &str) -> i32 {
         }
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
-        let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{} {l}\n", now_iso())));
+        let log: crate::server::LogFn = Arc::new(stamp);
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
@@ -880,6 +1010,10 @@ pub fn serve_worker(id: &str) -> i32 {
                 allowed_hosts: Some(state.allowed_hosts.clone()),
                 cors: state.cors,
                 isolate: state.isolate.clone(),
+                cache: state.cache.clone(),
+                log_json: json,
+                log_ip: state.log_ip,
+                quiet: state.quiet,
                 content: site.content,
                 ..Default::default()
             },
@@ -894,17 +1028,30 @@ pub fn serve_worker(id: &str) -> i32 {
             s.ready = true;
             s.error = None;
         })?;
-        stamp(&format!(
-            "serving {} ({n} files) at {}",
-            state.image,
-            site_url(&host, port, state.base.as_deref())
-        ));
+        if json {
+            stamp(&crate::server::started_log_line(
+                &now_iso(),
+                &state.image,
+                n,
+                &site_url(&host, port, state.base.as_deref()),
+            ));
+        } else {
+            stamp(&format!(
+                "serving {} ({n} files) at {}",
+                state.image,
+                site_url(&host, port, state.base.as_deref())
+            ));
+        }
         Ok(server)
     })();
     match started {
         Ok(server) => {
             let sig = wait_for_signal();
-            stamp(&format!("received {sig}, shutting down"));
+            if json {
+                stamp(&crate::server::stopped_log_line(&now_iso(), sig));
+            } else {
+                stamp(&format!("received {sig}, shutting down"));
+            }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 server.close();
@@ -916,7 +1063,15 @@ pub fn serve_worker(id: &str) -> i32 {
         }
         Err(e) => {
             let message = format!("error[{}]: {}", e.code, e.message());
-            err(&format!("{} {message}\n", now_iso()));
+            let ts = now_iso();
+            if json {
+                err(&format!(
+                    "{}\n",
+                    crate::server::json_log_line(&ts, &message)
+                ));
+            } else {
+                err(&format!("{ts} {message}\n"));
+            }
             let _ = reg.update(id, |s| {
                 s.pid = 0;
                 s.ready = false;
@@ -964,6 +1119,18 @@ fn run_ps(v: &Parsed) -> Result<i32> {
                 }
                 m.insert("status".into(), Value::String(s.status.into()));
                 m.insert("url".into(), Value::String(s.url.clone()));
+                // A server bound to all interfaces also lists the URLs other machines use.
+                let net = if s.status == "running" {
+                    crate::server::network_urls(&s.state.host, s.state.port)
+                } else {
+                    Vec::new()
+                };
+                if !net.is_empty() {
+                    m.insert(
+                        "networkUrls".into(),
+                        Value::Array(net.into_iter().map(Value::String).collect()),
+                    );
+                }
                 m.insert("site".into(), Value::String(s.state.image.clone()));
                 Value::Object(m)
             })
@@ -1073,13 +1240,13 @@ fn run_rm(v: &Parsed) -> Result<i32> {
     })
 }
 
-const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n')];
+const LOGS_OPTS: &[OptSpec] = &[flag_s("follow", 'f'), string_s("tail", 'n'), flag("json")];
 pub const LOGS: Command = Command {
     name: "logs",
     summary: "show a server's access log",
-    usage: "server logs [-f] [-n lines] <name|id>",
+    usage: "server logs [-f] [-n lines] [--json] <name|id>",
     description: "Print the log of a detached server: one line per request (\"METHOD /path STATUS BYTES MSms\").",
-    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines"],
+    flags: &["-f, --follow    keep printing new lines until Ctrl-C", "-n, --tail <n>  only the last n lines", "--json          one JSON object per line (text lines of older servers are converted)"],
     options: LOGS_OPTS,
     run: run_logs,
 };
@@ -1113,8 +1280,31 @@ fn run_logs(v: &Parsed) -> Result<i32> {
         }
         text = tail_lines(&text, n as usize);
     }
-    out(&text);
+    let json = v.flag("json");
+    let mut carry = String::new();
+    // Write log bytes; with --json, whole lines only, each converted.
+    let mut emit = |chunk: &str| {
+        if !json {
+            out(chunk);
+            return;
+        }
+        carry.push_str(chunk);
+        let Some(last) = carry.rfind('\n') else {
+            return;
+        };
+        let whole: String = carry[..last]
+            .split('\n')
+            .map(|l| format!("{}\n", crate::server::log_line_as_json(l)))
+            .collect();
+        carry = carry[last + 1..].to_string();
+        out(&whole);
+    };
+    emit(&text);
     if !v.flag("follow") {
+        drop(emit);
+        if json && !carry.is_empty() {
+            out(&format!("{}\n", crate::server::log_line_as_json(&carry)));
+        }
         return Ok(0);
     }
     catch_signals();
@@ -1132,10 +1322,7 @@ fn run_logs(v: &Parsed) -> Result<i32> {
             let mut buf = vec![0u8; (size - pos) as usize];
             if f.seek(SeekFrom::Start(pos)).is_ok() && f.read_exact(&mut buf).is_ok() {
                 pos = size;
-                use std::io::Write;
-                let mut o = std::io::stdout().lock();
-                let _ = o.write_all(&buf);
-                let _ = o.flush();
+                emit(&String::from_utf8_lossy(&buf));
             }
         }
     }
@@ -1158,11 +1345,12 @@ fn run_restart(v: &Parsed) -> Result<i32> {
     let s = reg.find(&v.positionals[0])?;
     let up = restart_detached(&reg, &s, grace_of(v)?, None)?;
     out(&format!(
-        "Restarted {} ({}) serving {} at {}\n",
+        "Restarted {} ({}) serving {} at {}\n{}",
         up.name,
         up.id,
         up.image,
-        site_url(&up.host, up.port, up.base.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref()),
+        network_lines(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }

@@ -1167,7 +1167,7 @@ sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # se
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
 sitefile server rm [-f] <name|id>...
-sitefile server logs [-f] [-n lines] <name|id>
+sitefile server logs [-f] [-n lines] [--json] <name|id>
 sitefile server restart <name|id>
 ```
 
@@ -1209,6 +1209,11 @@ on disk after the server started answers `500` for the entries that changed (`se
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **Network URLs.** Bound to `0.0.0.0` or `::`, `serve` (foreground, `-d`, `--watch`) and `server restart` print a
+  `  Network: http://<address>:<port>/` line after the URL for each address other machines can use: the up,
+  non-loopback interface addresses, IPv4 (each sorted as text) and, for `::`, then IPv6 (in brackets; link-local
+  `fe80::/10` left out, it needs a zone). `servers --json` adds `networkUrls` (the same list) to a running server
+  bound to all interfaces. The default bind stays `127.0.0.1`; sharing is always explicit.
 - **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
   a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
   `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
@@ -1219,6 +1224,12 @@ on disk after the server started answers `500` for the entries that changed (`se
   `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
   cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
   same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
+- **Production cache preview.** `cache-control: no-cache` (with the ETag) is right for previews but hides caching
+  bugs. `--max-age <secs>` sends `Cache-Control: public, max-age=<secs>` on file responses (`200`, `206`, `304`)
+  other than HTML, `--immutable` adds `, immutable` to it (fingerprinted assets), and `--max-age-html <secs>` gives
+  HTML pages `public, max-age=<secs>` too (without it they keep `no-cache`, the common production practice).
+  `404` pages keep `no-cache`, and a `_headers` `Cache-Control` for the path wins. This previews the headers a
+  host would send; it is not a CDN. Stored in the server record (`cache`: `maxAge`, `immutable`, `maxAgeHtml`).
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
@@ -1231,6 +1242,22 @@ on disk after the server started answers `500` for the entries that changed (`se
   checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **Access log formats.** Text (the default) is `METHOD target STATUS BYTES MSms`, the target as received with
+  bytes outside printable ASCII as `%xx`, and ` <client address>` at the end with `--log-ip`. `--quiet` drops the
+  request lines. `--log-format json` writes **one JSON object per line**, a stable contract (field order fixed):
+  - request: `{"type":"request","ts":"2026-11-08T21:30:00.123Z","method":"GET","path":"/a","query":"x=1","status":200,"bytes":1234,"ms":1.2,"encoding":"identity","range":null}`
+    plus `"remote":"127.0.0.1"` with `--log-ip`. `path` and `query` split the target at the first `?` (dropped);
+    `ms` has one decimal; `range` is the `Content-Range` of a `206`/`416`, else `null`; `encoding` is the
+    `Content-Encoding` sent (`identity` until compression lands).
+  - `{"type":"started","ts","site","files","url"}` when the server listens (instead of the `Serving …` line),
+    `{"type":"stopped","ts","signal"}` when a detached server shuts down.
+  - any other line: `{"type":"warning"|"error"|"message","ts","message"}` (`warning: …` and `error…` lines get those
+    types).
+  Under `--watch` the access log, browser console lines and the start line are JSON; build output (`Built …`,
+  errors on stderr) is not part of the log and stays text. The format is stored in the server record
+  (`logFormat: "json"`, `logIp`, `quiet`), so a detached server writes it to its log file. `server logs --json`
+  prints any server's log as JSON, converting the text lines of servers started without it (`<time> GET … 200 …`
+  becomes a request object with `range: null`).
 - **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
   at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
   `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
