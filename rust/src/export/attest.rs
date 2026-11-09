@@ -24,8 +24,9 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Sitefile version recorded as the builder version (also `sitefile --version`).
-pub const SITEFILE_VERSION: &str = "0.1.0";
+/// Sitefile version recorded as the builder version (also `sitefile --version`): Cargo.toml's
+/// `version`, which tests/version.rs keeps equal to ../package.json (johnhenry/sitefile#146).
+pub const SITEFILE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const IN_TOTO: &str = "application/vnd.in-toto+json";
 pub const EMPTY_CONFIG: &str = "application/vnd.oci.empty.v1+json";

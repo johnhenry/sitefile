@@ -83,8 +83,10 @@ CI (`.github/workflows/ci.yml`) runs these in this order; match it locally.
 
 ## Releases
 
-`main` is the release branch. Bump `version` in `package.json` and add the
-dated `CHANGELOG.md` entry in a PR; merging it publishes through
+`main` is the release branch. Bump `version` in `package.json` and the same
+value in `rust/Cargo.toml` (and its `Cargo.lock` entry; `test/version.test.ts`
+and `rust/tests/version.rs` fail otherwise), and add the dated `CHANGELOG.md`
+entry in a PR; merging it publishes through
 `.github/workflows/publish.yml` (npm trusted publishing, idempotent
 `npm view` guard), which then creates the `v<version>` tag and GitHub
 Release. Don't run `gh release create`. Don't rename `publish.yml`: npm

@@ -1268,7 +1268,9 @@ mod tests {
     #[test]
     fn help_mentions_defaults() {
         let h = help();
-        assert!(h.starts_with("sitefile 0.1.0 — Docker-inspired static artifact builder\n"));
+        assert!(h.starts_with(&format!(
+            "sitefile {VERSION} — Docker-inspired static artifact builder\n"
+        )));
         assert!(h.contains("per-resource size limit (default 52428800)"));
         assert!(h.ends_with("Run 'sitefile <command> --help' for the options of a command.\n"));
     }

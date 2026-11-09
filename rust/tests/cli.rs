@@ -114,12 +114,14 @@ fn mvp_acceptance_hello_builds_dist_with_title_and_css() {
 fn version_and_help() {
     let work = Tmp::new();
     let v = sitefile(&work, &["--version"]);
-    assert_eq!((v.code, v.stdout.as_str()), (0, "0.1.0\n"));
+    let want = format!("{}\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!((v.code, v.stdout.as_str()), (0, want.as_str()));
     let h = sitefile(&work, &["--help"]);
     assert_eq!(h.code, 0);
-    assert!(h
-        .stdout
-        .starts_with("sitefile 0.1.0 — Docker-inspired static artifact builder"));
+    assert!(h.stdout.starts_with(&format!(
+        "sitefile {} — Docker-inspired static artifact builder",
+        env!("CARGO_PKG_VERSION")
+    )));
     let none = sitefile(&work, &[]);
     assert_eq!(none.code, 2);
 }

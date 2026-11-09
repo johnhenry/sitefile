@@ -5,6 +5,7 @@ import { SitefileError } from './errors.js';
 import type { BuildResult, Pins } from './executor.js';
 import { canonicalJson, MEDIA } from './oci.js';
 import type { Tree } from './tree.js';
+import { SITEFILE_VERSION } from './version.js';
 
 /**
  * Build attestations for OCI site images (`build --provenance` / `--sbom`).
@@ -26,8 +27,8 @@ import type { Tree } from './tree.js';
  * is set, so the same build gives byte-identical attestations (in both implementations).
  */
 
-/** Sitefile version recorded as the builder version (also `sitefile --version`). */
-export const SITEFILE_VERSION = '0.1.0';
+/** Sitefile version recorded as the builder version (also `sitefile --version`); from package.json. */
+export { SITEFILE_VERSION };
 
 export const ATTEST = {
   /** artifactType of the attestation manifest and media type of its layer. */
