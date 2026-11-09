@@ -1,6 +1,6 @@
 [package]
 name = "sitefile"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 rust-version = "1.85"
 description = "Docker-inspired static artifact builder (Rust port of the TypeScript reference implementation)"
