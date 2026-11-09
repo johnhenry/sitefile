@@ -167,6 +167,7 @@ pub struct ServerState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
     /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
     /// `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting.
     #[serde(

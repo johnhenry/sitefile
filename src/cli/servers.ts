@@ -561,7 +561,6 @@ function cacheOf(v: ParsedValues): CachePreview | undefined {
 function networkLines(host: string, port: number, base?: string): string {
   return networkUrls(host, port)
     .map((u) => `  Network: ${u}${(base ?? '/').slice(1)}\n`)
-    .map((u) => `  Network: ${u}${(base ?? '/').slice(1)}\n`)
     .join('');
 }
 
