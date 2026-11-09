@@ -1125,7 +1125,9 @@ A zip is served **in place**: its central directory and local headers are checke
 inflated once (one at a time) for its CRC-32 and digest, but only the index is kept; each request reads its entry
 from the file again, so memory does not grow with the archive. Responses are the same as for the extracted zip,
 except that a client sending `accept-encoding: gzip` gets a deflated entry as it is in the zip, wrapped as gzip
-(`content-encoding: gzip`, `vary: accept-encoding`, ETag `"<digest>-gzip"`), without re-encoding. A zip changed
+(`content-encoding: gzip`, `vary: accept-encoding`, ETag `"<digest>-gzip"`), without re-encoding. Byte ranges,
+`Last-Modified` (the zip file's mtime) and `If-Modified-Since` work as for any served file; a request with a
+`range` header always gets the identity representation, so ranges are byte ranges of the file. A zip changed
 on disk after the server started answers `500` for the entries that changed (`server restart` re-reads it).
 
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
