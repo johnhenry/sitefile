@@ -57,7 +57,11 @@ pub fn bytes_to_resource(
         // The provenance digest is that of the archive bytes, which is what pins and the lockfile cover.
         ImportKind::Tree => {
             return Ok(Resource::Tree {
-                tree: extract_archive(&bytes, &info.uri, limits, span)?,
+                tree: if crate::warc::looks_like_warc(&bytes) {
+                    crate::warc::read_warc(&bytes, &info.uri, limits, span)?
+                } else {
+                    extract_archive(&bytes, &info.uri, limits, span)?
+                },
                 provenance,
             })
         }

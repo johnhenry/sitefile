@@ -605,7 +605,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         exportBase = ins.base ? evaluateOperand(ins.base, vars) : undefined;
         if (ins.at && ins.format !== 'oci') throw new SitefileError('E_VALIDATION', 'EXPORT ... AT applies only to AS oci', ins.at.span);
         exportRoot = ins.at ? normalizeVirtual(evaluateOperand(ins.at, vars), ins.at.span, 'EXPORT AT path').path : undefined;
-        if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci and AS wbn', ins.compression.span);
+        if (ins.compression && ins.format !== 'oci' && ins.format !== 'wbn' && ins.format !== 'warc') throw new SitefileError('E_VALIDATION', 'EXPORT ... COMPRESSION applies only to AS oci, AS wbn and AS warc', ins.compression.span);
         exportCompression = ins.compression?.value;
         break;
     }
