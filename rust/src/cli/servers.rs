@@ -68,7 +68,6 @@ fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'stati
     }
 }
 
-
 // ------------------------------------------------------------ helpers
 
 fn is_wildcard(h: &str) -> bool {
@@ -136,7 +135,9 @@ type AuthSetup = (
 );
 
 fn auth_of(v: &Parsed, bind_host: &str) -> Result<AuthSetup> {
-    use crate::serve_auth::{make_verifier, parse_auth_pair, parse_htpasswd, AuthEntry, BasicAuth, AUTH_ITERATIONS};
+    use crate::serve_auth::{
+        make_verifier, parse_auth_pair, parse_htpasswd, AuthEntry, BasicAuth, AUTH_ITERATIONS,
+    };
     let mut pairs = Vec::new();
     for a in v.strs("auth") {
         pairs.push(parse_auth_pair(&a, "--auth")?);
@@ -211,15 +212,22 @@ fn network_lines(host: &str, port: u16, base_path: Option<&str>, tls: bool) -> S
 #[allow(clippy::type_complexity)]
 fn tls_of(v: &Parsed) -> Result<(Option<Arc<rustls::ServerConfig>>, Option<(String, String)>)> {
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
-    let cert = v.str("tls-cert").map(str::to_string).or_else(|| env("SITEFILE_TLS_CERT"));
-    let key = v.str("tls-key").map(str::to_string).or_else(|| env("SITEFILE_TLS_KEY"));
+    let cert = v
+        .str("tls-cert")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_CERT"));
+    let key = v
+        .str("tls-key")
+        .map(str::to_string)
+        .or_else(|| env("SITEFILE_TLS_KEY"));
     let (cert, key) = match (cert, key) {
         (None, None) => return Ok((None, None)),
         (Some(c), Some(k)) => (c, k),
         _ => return usage("--tls-cert and --tls-key go together"),
     };
     let read = |f: &str, flag: &str| -> Result<Vec<u8>> {
-        std::fs::read(f).map_err(|_| SitefileError::plain(E_USAGE, format!("--{flag}: cannot read {f}")))
+        std::fs::read(f)
+            .map_err(|_| SitefileError::plain(E_USAGE, format!("--{flag}: cannot read {f}")))
     };
     let config = crate::server::tls_config(&read(&cert, "tls-cert")?, &read(&key, "tls-key")?)?;
     let abs = |f: String| {
@@ -284,7 +292,8 @@ fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
                 "d" => 86400,
                 _ => 0,
             };
-            let n: u64 = if (1..=6).contains(&num.len()) && num.bytes().all(|b| b.is_ascii_digit()) {
+            let n: u64 = if (1..=6).contains(&num.len()) && num.bytes().all(|b| b.is_ascii_digit())
+            {
                 num.parse().unwrap_or(0)
             } else {
                 0
@@ -298,8 +307,8 @@ fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
         }
     };
     let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
-    let ip_rules = (!allow.is_empty() || !deny.is_empty())
-        .then_some(crate::server::IpRules { allow, deny });
+    let ip_rules =
+        (!allow.is_empty() || !deny.is_empty()).then_some(crate::server::IpRules { allow, deny });
     Ok(Sharing {
         base_path,
         ip_rules,
@@ -591,9 +600,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             tls_cert: tls_paths.as_ref().map(|p| p.0.clone()),
             tls_key: tls_paths.as_ref().map(|p| p.1.clone()),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
-                crate::store::iso_of_time(
-                    std::time::SystemTime::now() + Duration::from_secs(*secs),
-                )
+                crate::store::iso_of_time(std::time::SystemTime::now() + Duration::from_secs(*secs))
             }),
             project: None,
         },
@@ -604,8 +611,18 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "Started {} ({}) serving {label} at {}\n{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
-        network_lines(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some())
+        site_url(
+            &up.host,
+            up.port,
+            up.base_path.as_deref(),
+            up.tls_cert.is_some()
+        ),
+        network_lines(
+            &up.host,
+            up.port,
+            up.base_path.as_deref(),
+            up.tls_cert.is_some()
+        )
     ));
     Ok(0)
 }
@@ -849,9 +866,8 @@ fn worker_tls(state: &ServerState) -> Result<Option<Arc<rustls::ServerConfig>>> 
 fn worker_auth(state: &ServerState) -> Result<Option<Arc<crate::serve_auth::BasicAuth>>> {
     let mut all = state.auth.clone();
     if let Some(f) = &state.auth_file {
-        let text = std::fs::read_to_string(f).map_err(|e| {
-            SitefileError::plain(E_SERVER, format!("--auth-file {f}: {e}"))
-        })?;
+        let text = std::fs::read_to_string(f)
+            .map_err(|e| SitefileError::plain(E_SERVER, format!("--auth-file {f}: {e}")))?;
         all.extend(crate::serve_auth::parse_htpasswd(&text, f)?);
     }
     Ok((!all.is_empty() || state.auth_file.is_some())
@@ -895,12 +911,16 @@ pub fn serve_worker(id: &str) -> i32 {
     };
     catch_signals();
     // --stop-after: the record's expiry.
-    let left_ms = state.expires.as_deref().and_then(super::common::parse_iso).map(|ms| {
-        ms - std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    });
+    let left_ms = state
+        .expires
+        .as_deref()
+        .and_then(super::common::parse_iso)
+        .map(|ms| {
+            ms - std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        });
     let deadline = left_ms
         .filter(|l| *l > 0)
         .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
@@ -980,13 +1000,23 @@ pub fn serve_worker(id: &str) -> i32 {
                 &now_iso(),
                 &state.image,
                 n,
-                &site_url(&host, port, state.base_path.as_deref(), state.tls_cert.is_some()),
+                &site_url(
+                    &host,
+                    port,
+                    state.base_path.as_deref(),
+                    state.tls_cert.is_some(),
+                ),
             ));
         } else {
             stamp(&format!(
                 "serving {} ({n} files) at {}",
                 state.image,
-                site_url(&host, port, state.base_path.as_deref(), state.tls_cert.is_some())
+                site_url(
+                    &host,
+                    port,
+                    state.base_path.as_deref(),
+                    state.tls_cert.is_some()
+                )
             ));
         }
         Ok(server)
@@ -1303,8 +1333,18 @@ fn run_restart(v: &Parsed) -> Result<i32> {
         up.name,
         up.id,
         up.image,
-        site_url(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some()),
-        network_lines(&up.host, up.port, up.base_path.as_deref(), up.tls_cert.is_some())
+        site_url(
+            &up.host,
+            up.port,
+            up.base_path.as_deref(),
+            up.tls_cert.is_some()
+        ),
+        network_lines(
+            &up.host,
+            up.port,
+            up.base_path.as_deref(),
+            up.tls_cert.is_some()
+        )
     ));
     Ok(0)
 }
