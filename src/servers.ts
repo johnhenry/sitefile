@@ -6,7 +6,7 @@ import { sha256 } from './digest.js';
 import { SitefileError } from './errors.js';
 import { siteFileWarnings } from './serve-rules.js';
 import type { SiteContent } from './server.js';
-import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndex } from './oci.js';
+import { blobPathOf, decodeIndex, extractImageFiles, MEDIA, parseConfig, parseManifest, siteLayerIndices } from './oci.js';
 import { extractArchive, openZipFile, osMetadataWarning, withoutOsMetadata } from './resources/archive.js';
 import { LocalContext } from './resources/local.js';
 import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from './resources/types.js';
@@ -37,6 +37,12 @@ export interface ServerState {
     /** zip, tar, tar.gz/tgz, a Web Bundle or an OCI image archive; read again on every start, as a directory is. */
     | { readonly kind: 'archive'; readonly path: string };
   readonly spa: boolean;
+  /** `--spa-exclude`: request paths that never fall back (absent: none). */
+  readonly spaExclude?: readonly string[];
+  /** `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html). */
+  readonly spaFallback?: string;
+  /** `--base`: the path prefix the site is served under, `/repo/` (absent: `/`). */
+  readonly base?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
   /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
@@ -59,8 +65,8 @@ export interface ServerState {
   readonly authFile?: string;
   /** `--max-connections-per-ip` (absent: no limit). */
   readonly maxConnectionsPerIp?: number;
-  /** `--random-route`: the secret prefix the site answers under (absent: none). */
-  readonly basePath?: string;
+  /** `--random-route`: `base` is a secret, so `/` is a plain 404 (absent: false). */
+  readonly hideBase?: boolean;
   /** `--allow-ip` / `--deny-ip` blocks as given (absent: none). */
   readonly allowIp?: readonly string[];
   readonly denyIp?: readonly string[];
@@ -174,12 +180,12 @@ export class ServerRegistry {
 
   async view(s: ServerState): Promise<ServerView> {
     const running = await isRunning(s);
-    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) : '' };
+    return { ...s, status: running ? 'running' : 'exited', url: s.ready ? urlOf(s) + (s.base ?? '/').slice(1) : '' };
   }
 }
-function urlOf(s: Pick<ServerState, 'host' | 'port' | 'basePath'>): string {
+function urlOf(s: Pick<ServerState, 'host' | 'port'>): string {
   const shown = s.host === '0.0.0.0' ? '127.0.0.1' : s.host === '::' ? '::1' : s.host;
-  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}${s.basePath ?? ''}/`;
+  return `http://${shown.includes(':') ? `[${shown}]` : shown}:${s.port}/`;
 }
 
 export function pidAlive(pid: number): boolean {
@@ -355,14 +361,18 @@ async function ociArchiveTree(layout: Tree, origin: string, limits: ArchiveLimit
   } catch {
     throw bad("OCI archive's image config is corrupt");
   }
-  const layer = m.layers[siteLayerIndex(m, cfg)];
-  let layerBytes: Uint8Array = new Uint8Array(0); // extractImageFiles reports "not a Sitefile image"
-  if (layer && (layer.mediaType === MEDIA.layer || layer.mediaType === MEDIA.layerTar)) {
-    layerBytes = blob(layer.digest, layer.size);
-    // Hold the site layer to the archive limits before it is fully decoded.
-    await extractArchive(layerBytes, origin, limits);
+  const layers = siteLayerIndices(m, cfg).map((i) => m.layers[i]!);
+  // An empty list makes extractImageFiles report "not a Sitefile image".
+  const blobs: Uint8Array[] = [];
+  if (layers.every((l) => l.mediaType === MEDIA.layer || l.mediaType === MEDIA.layerTar)) {
+    for (const l of layers) {
+      const b = blob(l.digest, l.size);
+      // Hold each site layer to the archive limits before it is fully decoded.
+      await extractArchive(b, origin, limits);
+      blobs.push(b);
+    }
   }
-  return extractImageFiles(m, cfg, layerBytes, origin);
+  return extractImageFiles(m, cfg, layers.length ? blobs : [new Uint8Array(0)], origin);
 }
 
 /** The tree a server state serves (`options` apply to a directory or archive). */

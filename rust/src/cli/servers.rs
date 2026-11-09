@@ -75,6 +75,70 @@ fn is_wildcard(h: &str) -> bool {
     h == "0.0.0.0" || h == "::"
 }
 
+/// `--spa`, `--spa-exclude` and `--spa-fallback` (which implies `--spa`): (spa, exclude, fallback).
+fn spa_options(v: &Parsed) -> Result<(bool, Vec<String>, Option<String>)> {
+    let exclude = v.strs("spa-exclude");
+    if let Some(g) = exclude.iter().find(|g| !g.starts_with('/')) {
+        return usage(format!(
+            "--spa-exclude expects a path pattern starting with '/', got '{g}'"
+        ));
+    }
+    let fallback = match v.str("spa-fallback") {
+        None => None,
+        Some(raw) => {
+            match crate::server::safe_segments(&format!("/{}", raw.trim_start_matches('/')))
+                .filter(|s| !s.is_empty())
+            {
+                Some(segs) => Some(format!("/{}", segs.join("/"))),
+                None => {
+                    return usage(format!(
+                        "--spa-fallback expects a file of the site such as /200.html, got '{raw}'"
+                    ))
+                }
+            }
+        }
+    };
+    let spa = v.flag("spa") || fallback.is_some();
+    if !spa && !exclude.is_empty() {
+        return usage("--spa-exclude needs --spa");
+    }
+    Ok((spa, exclude, fallback))
+}
+
+/// A warning when `--spa-fallback` names a file the site does not have.
+fn warn_spa_fallback(tree: &Tree, fallback: Option<&str>, warn: &dyn Fn(&str)) {
+    if let Some(f) = fallback.filter(|f| !tree.is_file(f)) {
+        warn(&format!(
+            "--spa-fallback {f} is not a file of the site, so navigations to missing paths get 404"
+        ));
+    }
+}
+
+/// `--base`: the path prefix to serve under (`/repo/`), or `None` for `/`.
+fn parse_base(v: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = v else { return Ok(None) };
+    match crate::server::normalize_base(raw) {
+        None => usage(format!("--base expects a path such as /repo/, got '{raw}'")),
+        Some(b) if b == "/" => Ok(None),
+        Some(b) => Ok(Some(b)),
+    }
+}
+
+/// The path of an EXPORT BASE that is an http(s) URL (`https://user.github.io/repo/` → `/repo/`).
+pub fn export_base_path(export_base: Option<&str>) -> Option<String> {
+    let b = export_base?;
+    let lower = b.get(..8).unwrap_or(b).to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return None;
+    }
+    crate::server::normalize_base(b).filter(|p| p != "/")
+}
+
+/// The URL a server answers at: its origin and `--base`.
+fn site_url(host: &str, port: u16, base: Option<&str>) -> String {
+    format!("{}{}", format_url(host, port), &base.unwrap_or("/")[1..])
+}
+
 /// `--country`: an ISO 3166-1 alpha-2 code (any case).
 fn parse_country(v: Option<&str>) -> Result<Option<String>> {
     match v {
@@ -209,29 +273,17 @@ fn per_ip_of(v: &Parsed) -> Result<usize> {
 }
 
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
-fn network_lines(host: &str, port: u16, base_path: Option<&str>) -> String {
+fn network_lines(host: &str, port: u16, base: Option<&str>) -> String {
     crate::server::network_urls(host, port)
         .iter()
-        .map(|u| format!("  Network: {}\n", with_base(u, base_path)))
+        .map(|u| format!("  Network: {u}{}\n", &base.unwrap_or("/")[1..]))
         .collect()
-}
-
-/// A server URL (`http://host:port/`) under a --random-route prefix.
-fn with_base(url: &str, base_path: Option<&str>) -> String {
-    match base_path {
-        Some(p) => format!("{}{p}/", &url[..url.len() - 1]),
-        None => url.to_string(),
-    }
-}
-
-/// The URL a server is reached at locally (its --random-route prefix included).
-fn site_url(host: &str, port: u16, base_path: Option<&str>) -> String {
-    with_base(&format_url(host, port), base_path)
 }
 
 /// `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after` (`sharingOf` in src/cli/servers.ts).
 struct Sharing {
-    base_path: Option<String>,
+    /// `--random-route`: a secret `--base` (`/<24 hex>/`).
+    random_base: Option<String>,
     ip_rules: Option<crate::server::IpRules>,
     noindex: bool,
     allow_text: Vec<String>,
@@ -253,9 +305,12 @@ fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
     };
     let (allow_text, allow) = cidrs("allow-ip")?;
     let (deny_text, deny) = cidrs("deny-ip")?;
-    let base_path = v
+    if v.flag("random-route") && v.has("base") {
+        return usage("--random-route and --base both set the path prefix; use one");
+    }
+    let random_base = v
         .flag("random-route")
-        .then(|| format!("/{}", crate::export::exporter::random_hex(12)));
+        .then(|| format!("/{}/", crate::export::exporter::random_hex(12)));
     let stop_after = match v.str("stop-after") {
         None => None,
         Some(raw) => {
@@ -285,7 +340,7 @@ fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
     let ip_rules =
         (!allow.is_empty() || !deny.is_empty()).then_some(crate::server::IpRules { allow, deny });
     Ok(Sharing {
-        base_path,
+        random_base,
         ip_rules,
         noindex: !loopback,
         allow_text,
@@ -336,6 +391,9 @@ const SERVE_OPTS: &[OptSpec] = &[
     string_s("publish", 'p'),
     flag_s("detach", 'd'),
     flag("spa"),
+    strings("spa-exclude"),
+    string("spa-fallback"),
+    string("base"),
     string("country"),
     flag("strict-site-files"),
     flag("keep-os-metadata"),
@@ -416,6 +474,10 @@ pub const SERVE: Command = Command {
         "--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)",
         "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
+        "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
+        "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
+        "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
+        "--base <path>     serve the site under this path, e.g. /repo/ for a GitHub Pages project site (--watch: default the EXPORT BASE URL's path)",
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
@@ -462,6 +524,11 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
     let per_ip = per_ip_of(v)?;
     let sharing = sharing_of(v, &bind.host)?;
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
+    let base = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
@@ -490,14 +557,20 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         )?;
         let tree = site.tree;
         check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
+        warn_spa_fallback(&tree, spa_fallback.as_deref(), &warn);
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
-                spa: v.flag("spa"),
                 log: Some(log_writer(log_json)),
+                spa,
+                spa_exclude,
+                spa_fallback,
+                base: base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: country.clone(),
                 server_id: None,
                 live_reload: None,
@@ -513,7 +586,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 auth: auth.clone(),
                 max_connections_per_ip: per_ip,
                 limit_loopback: false,
-                base_path: sharing.base_path.clone(),
+                hide_base: sharing.random_base.is_some(),
                 ip_rules: sharing.ip_rules.clone(),
                 noindex: sharing.noindex,
                 client_info: true,
@@ -523,7 +596,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             &bind.host,
             bind.port,
         )?;
-        let bp = sharing.base_path.as_deref();
         if log_json {
             out(&format!(
                 "{}\n",
@@ -531,14 +603,14 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &label,
                     n,
-                    &site_url(&server.host, server.port, bp)
+                    &site_url(&server.host, server.port, base.as_deref())
                 )
             ));
         } else {
             out(&format!(
                 "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                site_url(&server.host, server.port, bp),
-                network_lines(&server.host, server.port, bp)
+                site_url(&server.host, server.port, base.as_deref()),
+                network_lines(&server.host, server.port, base.as_deref())
             ));
         }
         let deadline = sharing
@@ -562,7 +634,10 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             source,
             name: name.map(str::to_string),
             bind,
-            spa: v.flag("spa"),
+            spa,
+            spa_exclude,
+            spa_fallback,
+            base,
             keep_os_metadata,
             allowed_hosts,
             cors: v.flag("cors"),
@@ -574,7 +649,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             auth: auth_entries,
             auth_file,
             max_connections_per_ip: per_ip,
-            base_path: sharing.base_path.clone(),
+            hide_base: sharing.random_base.is_some(),
             allow_ip: (!sharing.allow_text.is_empty()).then(|| sharing.allow_text.clone()),
             deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
@@ -591,8 +666,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "Started {} ({}) serving {label} at {}\n{}",
         up.name,
         up.id,
-        site_url(&up.host, up.port, up.base_path.as_deref()),
-        network_lines(&up.host, up.port, up.base_path.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref()),
+        network_lines(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }
@@ -633,6 +708,13 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         "full" => false,
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
     };
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
+    let base_flag = match &sharing.random_base {
+        Some(b) => Some(b.clone()),
+        None => parse_base(v.str("base"))?,
+    };
+    // `--base`, else the path of the last good build's EXPORT BASE URL.
+    let base: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(base_flag.clone()));
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     // The site-file warnings last printed: a rebuild repeats them only when they change.
@@ -729,7 +811,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 Err(e) => failed(&e),
             };
         }
-        let attempt = || -> Result<Tree> {
+        let attempt = || -> Result<(Tree, Option<String>)> {
             let mut options = BuildOptions {
                 context_dir: context.clone(),
                 sitefile: file.clone(),
@@ -750,10 +832,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             options.on_notice = Some(notice);
             let warning: Callback = Arc::new(|m: &str| err(&format!("warning: {m}\n")));
             options.on_warning = Some(warning);
-            Ok(build(&options)?.output)
+            let r = build(&options)?;
+            Ok((r.output, r.plan.export_base))
         };
         match attempt() {
-            Ok(tree) => {
+            Ok((tree, export_base)) => {
                 let n = tree.len();
                 out(&format!(
                     "Built {n} file{} ({})\n",
@@ -762,6 +845,11 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 ));
                 if let Err(e) = site_files(&tree) {
                     return failed(&e);
+                }
+                if base_flag.is_none() {
+                    if let Ok(mut b) = base.write() {
+                        *b = export_base_path(export_base.as_deref());
+                    }
                 }
                 swap(tree);
                 BuildOutcome {
@@ -774,8 +862,14 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     };
     let mut on_started = || -> Result<()> {
         let opts = SiteServerOptions {
-            spa: v.flag("spa"),
             log: Some(log_writer(log_json)),
+            spa,
+            spa_exclude: spa_exclude.clone(),
+            spa_fallback: spa_fallback.clone(),
+            base: Some(Arc::new({
+                let base = base.clone();
+                move || base.read().ok().and_then(|b| b.clone())
+            })),
             country: country.clone(),
             server_id: None,
             live_reload: Some(live.clone()),
@@ -794,7 +888,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             auth: auth.clone(),
             max_connections_per_ip: per_ip,
             limit_loopback: false,
-            base_path: sharing.base_path.clone(),
+            hide_base: sharing.random_base.is_some(),
             ip_rules: sharing.ip_rules.clone(),
             noindex: sharing.noindex,
             client_info: true,
@@ -802,6 +896,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
+        let current_base = base.read().ok().and_then(|b| b.clone());
         if log_json {
             out(&format!(
                 "{}\n",
@@ -809,14 +904,14 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &context,
                     n,
-                    &site_url(&s.host, s.port, sharing.base_path.as_deref())
+                    &site_url(&s.host, s.port, current_base.as_deref())
                 )
             ));
         } else {
             out(&format!(
                 "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                site_url(&s.host, s.port, sharing.base_path.as_deref()),
-                network_lines(&s.host, s.port, sharing.base_path.as_deref())
+                site_url(&s.host, s.port, current_base.as_deref()),
+                network_lines(&s.host, s.port, current_base.as_deref())
             ));
         }
         server = Some(s);
@@ -937,6 +1032,12 @@ pub fn serve_worker(id: &str) -> i32 {
             Arc::new(tree),
             SiteServerOptions {
                 spa: state.spa,
+                spa_exclude: state.spa_exclude.clone(),
+                spa_fallback: state.spa_fallback.clone(),
+                base: state
+                    .base
+                    .clone()
+                    .map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
@@ -953,7 +1054,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 auth: worker_auth(&state)?,
                 max_connections_per_ip: state.max_connections_per_ip,
                 limit_loopback: false,
-                base_path: state.base_path.clone(),
+                hide_base: state.hide_base,
                 ip_rules: (state.allow_ip.is_some() || state.deny_ip.is_some()).then(|| {
                     let parse = |v: &Option<Vec<String>>| -> Vec<crate::server::Cidr> {
                         v.iter()
@@ -989,13 +1090,13 @@ pub fn serve_worker(id: &str) -> i32 {
                 &now_iso(),
                 &state.image,
                 n,
-                &site_url(&host, port, state.base_path.as_deref()),
+                &site_url(&host, port, state.base.as_deref()),
             ));
         } else {
             stamp(&format!(
                 "serving {} ({n} files) at {}",
                 state.image,
-                site_url(&host, port, state.base_path.as_deref())
+                site_url(&host, port, state.base.as_deref())
             ));
         }
         Ok(server)
@@ -1309,8 +1410,8 @@ fn run_restart(v: &Parsed) -> Result<i32> {
         up.name,
         up.id,
         up.image,
-        site_url(&up.host, up.port, up.base_path.as_deref()),
-        network_lines(&up.host, up.port, up.base_path.as_deref())
+        site_url(&up.host, up.port, up.base.as_deref()),
+        network_lines(&up.host, up.port, up.base.as_deref())
     ));
     Ok(0)
 }

@@ -665,6 +665,8 @@ export interface ExportTarget {
   readonly ociRoot?: string;
   /** oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip). */
   readonly ociCompression?: OciCompression;
+  /** oci: split the site's files over this many layers (`--oci-layers`, default 1). */
+  readonly ociLayers?: number;
   /** wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none). */
   readonly wbnCompression?: OciCompression;
   /** Extra OCI config labels. */
@@ -723,6 +725,7 @@ async function exportBuild(
     const img = buildOciImage(result.output, {
       root: options.ociRoot ?? result.plan.exportRoot,
       compression: options.ociCompression ?? sitefileCompression(result.plan, 'oci'),
+      ...(options.ociLayers !== undefined ? { layers: options.ociLayers } : {}),
       platform: options.platform,
       epoch: sourceDateEpoch(),
       base: result.base,
