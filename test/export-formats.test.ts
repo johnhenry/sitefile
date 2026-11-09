@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { crc32, writeTar, writeTgz, writeZip } from '../src/archive-writers.js';
+import { crc32, isCompressedMedia, writeTar, writeTgz, writeZip } from '../src/archive-writers.js';
 import { compressionFromExtension, defaultOutName, encodeTree, formatFromExtension } from '../src/export-formats.js';
 import { gzip } from '../src/deflate.js';
 import { exportFile } from '../src/exporter.js';
@@ -851,7 +851,7 @@ test('CLI: --compression is usage-checked and belongs to the export format', asy
   const zip = await project('EXPORT / AS zip');
   const z = await sitefile(['build', zip, '--compression', 'gzip']);
   assert.equal(z.code, 2);
-  assert.match(z.stderr, /--compression applies only to oci and wbn exports, not zip/);
+  assert.match(z.stderr, /--compression applies only to oci, wbn and warc exports, not zip/);
   const bad = await sitefile(['build', zip, '--format', 'wbn', '--compression', 'zstd']);
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /--compression expects gzip or none, got 'zstd'/);
@@ -902,4 +902,21 @@ test('zip export: the extended timestamp carries SOURCE_DATE_EPOCH in UTC (#187)
   const cd = z.readUInt32LE(z.length - 22 + 16);
   assert.equal(z.readUInt16LE(cd + 30), 9);
   assert.equal(z.readUInt32LE(cd + 46 + 5 + 5), 1_700_000_001);
+});
+
+test('zip export stores already-compressed media without deflating (#203)', async () => {
+  for (const n of ['a.png', 'd/b.JPG', 'f.woff2', 'v.Mp4', 'x.tar.gz', 'site.zip']) assert.ok(isCompressedMedia(n), n);
+  for (const n of ['a.txt', 'png', '.png', 'd.png/x', 'a.svg', 'a.pngx']) assert.ok(!isCompressedMedia(n), n);
+  const text = new TextEncoder().encode('a'.repeat(1000));
+  const t = Tree.fromFiles([['/logo.PNG', makeFile(text, 't')], ['/index.html', makeFile(text, 't')]]);
+  const z = Buffer.from(writeZip(t));
+  const methods: Record<string, number> = {};
+  let off = z.readUInt32LE(z.length - 22 + 16);
+  for (let i = 0; i < 2; i++) {
+    const nlen = z.readUInt16LE(off + 28);
+    methods[z.subarray(off + 46, off + 46 + nlen).toString()] = z.readUInt16LE(off + 10);
+    off += 46 + nlen + z.readUInt16LE(off + 30) + z.readUInt16LE(off + 32);
+  }
+  assert.deepEqual(methods, { 'index.html': 8, 'logo.PNG': 0 });
+  assert.equal(new TextDecoder().decode((await extractArchive(z, 't')).get('/logo.PNG')?.bytes).length, 1000);
 });

@@ -28,9 +28,9 @@ use crate::export::attest::{
 };
 use crate::export::exporter::random_hex;
 use crate::export::oci::{
-    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_image_files_at,
-    layout_tree, parse_config, parse_manifest, site_layer_index, IndexEntry, LayoutParts,
-    OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
+    ann, blob_path_of, build_oci_image, decode_index, encode_index, extract_site_layers,
+    layout_tree, parse_config, parse_manifest, site_layer_index, site_layer_indices, IndexEntry,
+    LayoutParts, OciOptions, ParsedConfig, ParsedManifest, OCI_LAYOUT_BYTES,
 };
 use crate::refs::{looks_like_image_id, parse_local_ref, ref_key, ImageRef};
 use crate::tree::Tree;
@@ -545,6 +545,9 @@ impl Store {
         let img = build_oci_image(tree, options)?;
         self.with_lock(|| {
             self.put_blob(&img.layer_digest, &img.layer_bytes)?;
+            for (d, b) in &img.extra_layers {
+                self.put_blob(d, b)?;
+            }
             self.put_blob(&img.config_digest, &img.config_bytes)?;
             self.put_blob(&img.manifest_digest, &img.manifest_bytes)?;
             let mut entries = self.read_index()?;
@@ -643,16 +646,20 @@ impl Store {
         let origin = origin
             .map(str::to_string)
             .unwrap_or_else(|| format!("image:{}", short_id(id)));
-        let Some(layer) =
-            site_layer_index(&d.manifest, &d.config).and_then(|i| d.manifest.layers.get(i))
-        else {
+        let indices = site_layer_indices(&d.manifest, &d.config);
+        if indices.is_empty() {
             return Err(store_error(format!(
                 "{origin}: not a Sitefile image (it has {} layers and no site layer)",
                 d.manifest.layers.len()
             )));
-        };
-        let bytes = self.read_blob(&layer.digest, Some(layer.size))?;
-        extract_image_files_at(&d.manifest, &d.config, &bytes, &origin, root)
+        }
+        let mut blobs = Vec::new();
+        for i in indices {
+            let layer = &d.manifest.layers[i];
+            blobs.push(self.read_blob(&layer.digest, Some(layer.size))?);
+        }
+        let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        extract_site_layers(&d.manifest, &d.config, &refs, &origin, root)
     }
 
     /// The image as a standalone OCI layout Tree (for `save`), optionally
@@ -685,6 +692,7 @@ impl Store {
                 config_digest: &d.manifest.config.digest,
                 layer_bytes: &layer_bytes,
                 layer_digest: &site.digest,
+                extra_layers: &[],
             },
             ref_name,
             &base,

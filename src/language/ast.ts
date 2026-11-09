@@ -223,8 +223,8 @@ export function parseOciCompression(name: string): OciCompression | undefined {
   return (OCI_COMPRESSIONS as readonly string[]).includes(n) ? (n as OciCompression) : undefined;
 }
 
-export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml';
-export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml'];
+export type ExportFormat = 'directory' | 'zip' | 'tar' | 'tgz' | 'wbn' | 'oci' | 'car' | 'html' | 'mhtml' | 'warc';
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['directory', 'zip', 'tar', 'tgz', 'wbn', 'oci', 'car', 'html', 'mhtml', 'warc'];
 
 /** Parse a format name (`tar.gz` is an alias for `tgz`); undefined if unknown. */
 export function parseExportFormat(name: string): ExportFormat | undefined {
@@ -355,6 +355,87 @@ export interface FingerprintInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CANONICAL BASE <url> [PRETTY]`: add `<link rel="canonical" href="…">` before `</head>` of every page of
+ * the stage that has none. PRETTY drops `.html` from the URL (`/about.html` -> `/about`).
+ */
+export interface CanonicalInstruction {
+  readonly kind: 'CANONICAL';
+  readonly span: SourceSpan;
+  readonly base: Operand;
+  readonly pretty: boolean;
+}
+
+/** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz` (`br` and `zstd` are reserved: no encoder yet). */
+export type PrecompressFormat = 'gzip';
+
+/**
+ * `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each matching
+ * compressible file of at least MIN bytes, when it is smaller.
+ */
+export interface PrecompressInstruction {
+  readonly kind: 'PRECOMPRESS';
+  readonly span: SourceSpan;
+  /** In the order written, without repeats; `['gzip']` when none is given. */
+  readonly formats: readonly PrecompressFormat[];
+  /** Absolute path patterns, as FINGERPRINT's. */
+  readonly patterns: readonly Operand[];
+  /** `MIN <bytes>`: the smallest file compressed (default 1024). */
+  readonly min?: Operand;
+  readonly overwrite: boolean;
+}
+
+/** One `ALLOW <path>` / `DISALLOW <path>` of a ROBOTS. */
+export interface RobotsRule {
+  readonly allow: boolean;
+  readonly path: Operand;
+  readonly span: SourceSpan;
+}
+
+/**
+ * `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt` for every
+ * user agent, with the rules in source order and, with SITEMAP, the URL of each SITEMAP of the Sitefile.
+ */
+export interface RobotsInstruction {
+  readonly kind: 'ROBOTS';
+  readonly span: SourceSpan;
+  readonly rules: readonly RobotsRule[];
+  readonly sitemap: boolean;
+  /** Default `/robots.txt`. */
+  readonly dest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/**
+ * `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`:
+ * an RFC 9116 `/.well-known/security.txt`. CONTACT and EXPIRES are required; clauses in any order.
+ */
+export interface SecurityTxtInstruction {
+  readonly kind: 'SECURITY_TXT';
+  readonly span: SourceSpan;
+  readonly contact: readonly Operand[];
+  readonly expires: Operand;
+  readonly encryption: readonly Operand[];
+  readonly policy: readonly Operand[];
+  /** Default `/.well-known/security.txt`. */
+  readonly dest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/**
+ * `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache
+ * manifest (`[{url, revision}]`) of the matching files, written to TO (default `/sw-manifest.json`) and/or
+ * injected into a service worker at `self.__WB_MANIFEST`.
+ */
+export interface PrecacheInstruction {
+  readonly kind: 'PRECACHE';
+  readonly span: SourceSpan;
+  readonly patterns: readonly Operand[];
+  readonly dest?: Operand;
+  readonly into?: Operand;
+  readonly overwrite: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -381,6 +462,11 @@ export type Instruction =
   | RedirectInstruction
   | HeaderInstruction
   | FingerprintInstruction
+  | CanonicalInstruction
+  | PrecompressInstruction
+  | RobotsInstruction
+  | SecurityTxtInstruction
+  | PrecacheInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

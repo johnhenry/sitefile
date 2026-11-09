@@ -1,0 +1,4 @@
+# CONTACT is required (RFC 9116).
+FROM scratch
+SECURITY_TXT EXPIRES 2099-01-01
+EXPORT /

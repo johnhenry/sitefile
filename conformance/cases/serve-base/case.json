@@ -1,0 +1,17 @@
+{
+  "command": "serve",
+  "args": ["--base", "/repo/"],
+  "log": true,
+  "expectLog": ["GET /repo/old 301 0 Tms → /repo/about (_redirects:1)"],
+  "requests": [
+    { "target": "/?q=1", "expect": { "status": 302, "headers": { "location": "/repo/?q=1" } } },
+    { "target": "/repo", "expect": { "status": 301, "headers": { "location": "/repo/" } } },
+    { "target": "/repo/", "expect": { "status": 200, "body": "home\n" } },
+    { "target": "/repo/about", "expect": { "status": 200, "body": "about\n" } },
+    { "target": "/repo/docs", "expect": { "status": 301, "headers": { "location": "/repo/docs/" } } },
+    { "target": "/repo/about/", "expect": { "status": 301, "headers": { "location": "/repo/about" } } },
+    { "target": "/repo/old", "expect": { "status": 301, "headers": { "location": "/repo/about" } } },
+    { "target": "/about", "expect": { "status": 404 } },
+    { "target": "/repository/", "expect": { "status": 404 } }
+  ]
+}

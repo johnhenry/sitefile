@@ -177,11 +177,12 @@ pub enum ExportFormat {
     Car,
     Html,
     Mhtml,
+    Warc,
 }
 
 impl ExportFormat {
     /// Every format, in the order docs/LANGUAGE.md lists them (`tar.gz` is an alias, not listed).
-    pub const ALL: [ExportFormat; 9] = [
+    pub const ALL: [ExportFormat; 10] = [
         ExportFormat::Directory,
         ExportFormat::Zip,
         ExportFormat::Tar,
@@ -191,6 +192,7 @@ impl ExportFormat {
         ExportFormat::Car,
         ExportFormat::Html,
         ExportFormat::Mhtml,
+        ExportFormat::Warc,
     ];
     /// `tar.gz` is an alias for `tgz`; case-insensitive.
     pub fn parse(name: &str) -> Option<ExportFormat> {
@@ -211,6 +213,7 @@ impl ExportFormat {
             ExportFormat::Car => "car",
             ExportFormat::Html => "html",
             ExportFormat::Mhtml => "mhtml",
+            ExportFormat::Warc => "warc",
         }
     }
 }
@@ -469,6 +472,50 @@ pub enum Instruction {
         no_cache_headers: bool,
         overwrite: bool,
     },
+    /// `CANONICAL BASE <url> [PRETTY]`: a `<link rel="canonical">` before `</head>` of every page without one.
+    Canonical {
+        span: SourceSpan,
+        base: Operand,
+        pretty: bool,
+    },
+    /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
+    /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
+    /// when none is given.
+    Precompress {
+        span: SourceSpan,
+        formats: Vec<String>,
+        patterns: Vec<Operand>,
+        min: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt`;
+    /// `rules` are (allow, path, span) in source order.
+    Robots {
+        span: SourceSpan,
+        rules: Vec<(bool, Operand, SourceSpan)>,
+        sitemap: bool,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`:
+    /// an RFC 9116 `/.well-known/security.txt`.
+    SecurityTxt {
+        span: SourceSpan,
+        contact: Vec<Operand>,
+        expires: Operand,
+        encryption: Vec<Operand>,
+        policy: Vec<Operand>,
+        dest: Option<Operand>,
+        overwrite: bool,
+    },
+    /// `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache manifest.
+    Precache {
+        span: SourceSpan,
+        patterns: Vec<Operand>,
+        dest: Option<Operand>,
+        into: Option<Operand>,
+        overwrite: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -504,6 +551,11 @@ impl Instruction {
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
             | Instruction::Fingerprint { span, .. }
+            | Instruction::Canonical { span, .. }
+            | Instruction::Precompress { span, .. }
+            | Instruction::Robots { span, .. }
+            | Instruction::SecurityTxt { span, .. }
+            | Instruction::Precache { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -525,6 +577,11 @@ impl Instruction {
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
+            Instruction::Canonical { .. } => "CANONICAL",
+            Instruction::Precompress { .. } => "PRECOMPRESS",
+            Instruction::Robots { .. } => "ROBOTS",
+            Instruction::SecurityTxt { .. } => "SECURITY_TXT",
+            Instruction::Precache { .. } => "PRECACHE",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

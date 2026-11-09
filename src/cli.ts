@@ -9,7 +9,7 @@ import { collectBuildArgs } from './build-args.js';
 import { insecureRegistriesFromEnv, makeClient } from './base-image.js';
 import { cacheLimitFromEnv } from './cache-limit.js';
 import { parseCacheRef, RegistryCache } from './registry-cache.js';
-import { parseLabels } from './oci.js';
+import { MAX_OCI_LAYERS, parseLabels } from './oci.js';
 import { EXPORT_FORMATS, parseExportFormat, parseOciCompression, type ExportFormat, type OciCompression } from './language/ast.js';
 import { DEFAULT_FETCH_POLICY } from './resources/types.js';
 import { parseLocalRef, refKey } from './ref.js';
@@ -25,7 +25,9 @@ import { graphDot, graphText, planGraph, why, whyText } from './explain.js';
 import { isGitContext, materializeGitContext, type GitContext } from './cli/git-context.js';
 import { loadSecrets } from './secrets.js';
 import { exportFile } from './exporter.js';
-import { encodeManifest, manifestOf } from './integrity.js';
+import { encodeManifest, loadTarget, manifestOf, resolveTarget } from './integrity.js';
+import { addDictionaryDeltas } from './dictionary.js';
+import { Store } from './store.js';
 import type { Tree } from './tree.js';
 import { NETWORK_OPTIONS, networkHelp, networkOption } from './cli/network.js';
 
@@ -52,17 +54,20 @@ Options:
                                a file for zip, tar, tgz, wbn (*.wbn.gz: a gzipped bundle), car, html, mhtml
   -t, --tag <name[:tag]>       also store the build as a local image (build only, repeatable);
                                with -t and no -o nothing is written to the context
-      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml
+      --format <fmt>           directory | zip | tar | tgz (alias tar.gz) | wbn | oci | car | html | mhtml | warc
                                (build only).
                                oci writes an OCI archive for -o *.tar (e.g. site.oci.tar), else an
                                OCI image layout directory.
-                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml),
+                               Default: the --out extension (.zip .tar .tar.gz .tgz .wbn .wbn.gz .oci.tar .car .mhtml
+                               .warc .warc.gz),
                                else the Sitefile's EXPORT ... AS <fmt>
       --oci-root <path>        directory inside an oci image layer (default /srv/www; overrides EXPORT ... AT)
       --compression <c>        gzip or none (build only; overrides EXPORT ... COMPRESSION): the oci site layer
                                (default gzip; none: plain tar), or the whole wbn (default none; gzip:
                                gzip(application/webbundle), also chosen by -o *.wbn.gz)
       --oci-compression <c>    the same as --compression, for oci only
+      --oci-layers <n>         split the oci image's files over n layers (1-64, default 1) by a hash of each
+                               path, so pushing a new version uploads only the layers that changed
       --label <key=value>      add an OCI image config label (repeatable)
       --git-labels             add org.opencontainers.image.source/revision from the git checkout
                                (off by default: they change the image ID on every commit)
@@ -75,7 +80,7 @@ Options:
       --base <image>           build the oci image on <image> (runnable; overrides EXPORT ... AS oci BASE);
                                a bare name means Docker Hub. Pin it: nginx:alpine@sha256:...
       --insecure-registry <h>  allow plain http to registry host[:port] (repeatable; localhost always may)
-      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml);
+      --base-url <url>         https URL ending in '/' the files are mounted at (wbn, mhtml, warc);
                                overrides EXPORT ... BASE
       --build-arg <NAME=value> set an ARG (repeatable); --build-arg NAME reads $NAME
       --secret id=<id>,env=<VAR> | id=<id>,src=<file>
@@ -100,6 +105,10 @@ Options:
                                later files win, --build-arg wins over files)
       --manifest <file>        also write a manifest of the exported files (build only): path, size and
                                SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
+      --experimental-dictionary <previous>
+                               Compression Dictionary Transport (experimental, build only): add a .dcz delta
+                               against <previous> (image, directory or archive) for each changed .js/.css/...
+                               and Use-As-Dictionary headers; 'serve' answers Available-Dictionary with them
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -158,6 +167,7 @@ export async function main(
         'base-url': { type: 'string' },
         'oci-root': { type: 'string' },
         'oci-compression': { type: 'string' },
+        'oci-layers': { type: 'string' },
         compression: { type: 'string' },
         label: { type: 'string', multiple: true },
         'git-labels': { type: 'boolean' },
@@ -199,6 +209,7 @@ export async function main(
         'poll-interval': { type: 'string' },
         profile: { type: 'string' },
         manifest: { type: 'string' },
+        'experimental-dictionary': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -278,6 +289,8 @@ export async function main(
   if (o.manifest !== undefined && command !== 'build') return usageError('--manifest is only for build');
   if (o.manifest === '') return usageError('--manifest expects a file path');
   if (o.manifest !== undefined) run.wrote?.push(o.manifest);
+  if (o['experimental-dictionary'] !== undefined && command !== 'build') return usageError('--experimental-dictionary is only for build');
+  if (o['experimental-dictionary'] === '') return usageError('--experimental-dictionary expects an image, directory or archive');
   // --profile: a trace of this command (build, validate, inspect, graph, why), written when it ends.
   const profiler = o.profile !== undefined ? new Profiler(command) : undefined;
   if (o.profile !== undefined) run.wrote?.push(o.profile);
@@ -319,6 +332,12 @@ export async function main(
       formatOverride = parseExportFormat(o.format);
       if (!formatOverride) return usageError(`--format expects one of ${EXPORT_FORMATS.join(', ')} (or tar.gz), got '${o.format}'`);
     }
+    let ociLayers: number | undefined;
+    if (o['oci-layers'] !== undefined) {
+      if (command !== 'build') return usageError('--oci-layers is only for build');
+      ociLayers = /^[0-9]{1,2}$/.test(o['oci-layers']) ? Number(o['oci-layers']) : 0;
+      if (ociLayers < 1 || ociLayers > MAX_OCI_LAYERS) return usageError(`--oci-layers expects an integer from 1 to ${MAX_OCI_LAYERS}, got '${o['oci-layers']}'`);
+    }
     let ociCompression: OciCompression | undefined;
     if (o['oci-compression'] !== undefined) {
       ociCompression = parseOciCompression(o['oci-compression']);
@@ -336,10 +355,10 @@ export async function main(
     // The default destination depends on the format, which the Sitefile may set.
     // (A wbn's default name also depends on its COMPRESSION: dist.wbn or dist.wbn.gz.)
     const sitefilePlan =
-      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
+      command === 'build' && !o.out && (!formatOverride || formatOverride === 'wbn' || formatOverride === 'warc') ? await planBuild({ contextDir: context, ...(file ? { sitefile: file } : {}), buildArgs }) : undefined;
     const sitefileFormat = formatOverride ? undefined : sitefilePlan?.exportFormat;
     const defaultFormat = formatOverride ?? sitefileFormat ?? 'directory';
-    const defaultCompression = defaultFormat === 'wbn' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, 'wbn') : undefined)) : undefined;
+    const defaultCompression = defaultFormat === 'wbn' || defaultFormat === 'warc' ? (compression ?? (sitefilePlan ? sitefileCompression(sitefilePlan, defaultFormat) : undefined)) : undefined;
     // A Git context's default destination is in the current directory, not the temporary checkout.
     const out = o.out ?? path.join(fetched ? '.' : context, defaultOutName(defaultFormat, defaultCompression));
     run.wrote?.push(out);
@@ -391,10 +410,10 @@ export async function main(
     if (command === 'build' && compression !== undefined) {
       const fmt = (o.tag ?? []).length && !o.out ? 'oci' : (formatOverride ?? sitefileFormat ?? (await planBuild(options)).exportFormat);
       if (fmt === 'oci') ociCompression = compression;
-      else if (fmt === 'wbn') wbnCompression = compression;
-      else return usageError(`--compression applies only to oci and wbn exports, not ${fmt}`);
+      else if (fmt === 'wbn' || fmt === 'warc') wbnCompression = compression;
+      else return usageError(`--compression applies only to oci, wbn and warc exports, not ${fmt}`);
     }
-    if (formatOverride === 'wbn' && o.out) wbnCompression ??= compressionFromExtension(o.out, 'wbn');
+    if ((formatOverride === 'wbn' || formatOverride === 'warc') && o.out) wbnCompression ??= compressionFromExtension(o.out, formatOverride);
 
     switch (command) {
       case 'build': {
@@ -409,6 +428,7 @@ export async function main(
           contextDir: context,
           ociRoot: o['oci-root'],
           ociCompression,
+          ociLayers,
           platform: o.platform,
           labels,
           gitLabels: !!o['git-labels'],
@@ -416,9 +436,11 @@ export async function main(
           build: { contextDir: context, ...(file ? { sitefile: file } : {}), ...(fetched ? { label: o.file ?? 'Sitefile' } : {}), buildArgs },
         };
         await remoteCache?.load();
+        const dictionaryFrom = await previousBuild(o['experimental-dictionary']);
         if (tags.length && !o.out) {
           // -t without -o: store the image only; nothing is written to the context.
-          const built = await build(options);
+          const raw = await build(options);
+          const built = dictionaryFrom ? { ...raw, output: addDictionaryDeltas(raw.output, dictionaryFrom).tree } : raw;
           if (o.manifest !== undefined) await writeManifest(built.output, o.manifest, context, !!o.force);
           await storeBuildAsImage(built, tags, imageInfo);
           await remoteCache?.push(transformCacheDir());
@@ -435,12 +457,14 @@ export async function main(
           ...(o['base-url'] !== undefined ? { baseUrl: o['base-url'] } : {}),
           ...(o['oci-root'] !== undefined ? { ociRoot: o['oci-root'] } : {}),
           ...(ociCompression !== undefined ? { ociCompression } : {}),
+          ...(ociLayers !== undefined ? { ociLayers } : {}),
           ...(wbnCompression !== undefined ? { wbnCompression } : {}),
           ...(o.platform !== undefined ? { platform: o.platform } : {}),
           imageLabels: labels,
           gitLabels: !!o['git-labels'],
           ...(tags[0] ? { ociRefName: refKey(parseLocalRef(tags[0])) } : {}),
           attest,
+          ...(dictionaryFrom ? { dictionaryFrom } : {}),
         });
         const where = path.relative(process.cwd(), r.outDir) || '.';
         const n = `${r.output.size} file${r.output.size === 1 ? '' : 's'}`;
@@ -451,6 +475,7 @@ export async function main(
               ? `Exported ${n} to ${where} (oci image ${r.manifestDigest}${r.bytes !== undefined ? `, ${r.bytes} bytes` : ''})\n`
               : `Exported ${n} to ${where} (${r.format === 'tgz' ? 'tar.gz' : r.format}, ${r.bytes} bytes, ${r.fileDigest}${r.rootCid ? `, root ${r.rootCid}` : ''})\n`,
         );
+        if (r.dictionaryDeltas) process.stdout.write(`Dictionary deltas: ${r.dictionaryDeltas.length} (.dcz)\n`);
         if (o.manifest !== undefined) await writeManifest(r.output, o.manifest, context, !!o.force);
         // A Git context's lockfile lives in the temporary checkout: it is used, never written back.
         if (r.lockfileWritten && !fetched) process.stdout.write('Updated Sitefile.lock\n');
@@ -549,6 +574,14 @@ function pluginNode(flag: string | undefined): { node?: string } {
 function isInsideDir(file: string, dir: string): boolean {
   const rel = path.relative(path.resolve(dir), path.resolve(file));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** `--experimental-dictionary <previous>`: the previous build's files (an image, directory or archive). */
+async function previousBuild(arg: string | undefined): Promise<Tree | undefined> {
+  if (arg === undefined) return undefined;
+  let store: Promise<Store> | undefined;
+  const open = (): Promise<Store> => (store ??= Store.open());
+  return loadTarget(await resolveTarget(arg, open), open);
 }
 
 /** `--manifest`: the exported files' manifest, written with the export's destination rules (and --force). */

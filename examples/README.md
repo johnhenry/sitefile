@@ -13,9 +13,13 @@ both implementations and requires identical output.
 | [`multistage/`](./multistage/) | Several `FROM` stages and `COPY --from`: only the last stage is exported. |
 | [`shared-stages/`](./shared-stages/) | `IMPORT theme FROM ./theme AS sitefile ARG …`: another Sitefile's stages are reusable as `theme+<stage>`, and an `ARG` passed to it changes its output. |
 | [`blog/`](./blog/) | Markdown posts with a frontmatter `SCHEMA`, one page per post (`FOR`), per tag (`BY`) and per page of 2 (`PAGE`), plus `FEED`, `SITEMAP`, `FINGERPRINT` and `CHECKLINKS`. |
+| [`precompress/`](./precompress/) | `PRECOMPRESS`: deterministic `.gz` sidecars of the text files (not of the ones under `MIN`), for nginx `gzip_static` and Caddy `precompressed`. |
 | [`data/`](./data/) | YAML, CSV and Web Bundle imports as template data, and a `.wbn` unpacked `AS tree`. |
+| [`robots/`](./robots/) | `ROBOTS` (with the `SITEMAP` URL) and `SECURITY_TXT`: `/robots.txt` and an RFC 9116 `/.well-known/security.txt`. |
 | [`motion/`](./motion/) | A JavaScript `PLUGIN` (text → animated SVG) runs only with `--allow-plugin motion`; without it the build fails before anything runs. |
+| [`canonical/`](./canonical/) | `CANONICAL … PRETTY`: a `<link rel="canonical">` in every page that has none, without `.html`. |
 | [`fileable/`](./fileable/) | A JavaScript plugin renders a `@johnhenry/fileable` tree into the build as `{ files }` (`TRANSFORM docs: WITH fileable TO /docs/`). fileable is vendored into the plugin folder by `node fileable/vendor.mjs` (gitignored), since a plugin reads only its own folder; its `cmd` attribute fails clearly (`--build-arg TEMPLATE=cmd.mjs`). |
+| [`precache/`](./precache/) | `PRECACHE … INTO /sw.js`: a Workbox precache manifest injected into a service worker (`revision: null` for the fingerprinted stylesheet). |
 | [`wasm/`](./wasm/) | An import-free WebAssembly plugin runs with no flag. |
 | [`image/`](./image/) | The first-party image plugin (pinned with `INTEGRITY`) writes resized variants and a metadata file. |
 | [`theme/`](./theme/) | A site image: built with `-t theme:1` into the local image store rather than exported. |

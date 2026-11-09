@@ -881,6 +881,39 @@ stored blob against its digest. The manifest itself is checked first: its root m
 `--json` prints `{ ok, root, files, missing: [path], changed: [{ path, expected: { size, digest },
 actual: { size, digest } }], extra: [path] }`.
 
+## Compression Dictionary Transport (experimental)
+
+`sitefile build --experimental-dictionary <previous>` prepares a build for
+[Compression Dictionary Transport](https://datatracker.ietf.org/doc/draft-ietf-httpbis-compression-dictionary/):
+browsers that have the previous version of a file use it as a dictionary, and the update downloads as
+a small delta. `<previous>` is the previous build: an image reference or ID, a directory or an archive
+(read as `sitefile verify` reads them).
+
+```sh
+sitefile build . -o dist-v2 --experimental-dictionary dist-v1     # or: --experimental-dictionary mysite:1
+```
+
+- Every `.js`, `.mjs`, `.css`, `.json`, `.wasm` and `.html` file whose path is plain (letters, digits,
+  `/ . _ ~ -`) gets `Use-As-Dictionary: match="<path>"` in `/_headers` (appended under a comment), so
+  a browser keeps it as the dictionary for the next version of that URL.
+- Each of those files that also exists in `<previous>` with other content gets `<path>.dcz`: the new
+  file as a `dcz` delta (a Zstandard frame against the previous version, after the 40-byte `dcz` header
+  with the dictionary's SHA-256). A delta is written only when it is smaller than the file and the two
+  versions together fit in 8 MiB (the window browsers accept). An existing `<path>.dcz` in the output
+  fails the build (`E_CONFLICT`). `build` prints `Dictionary deltas: N (.dcz)`.
+- `sitefile serve` (both implementations) answers a request for `<path>` that sends
+  `Accept-Encoding: dcz` (any non-zero quality) and `Available-Dictionary: :<base64 SHA-256>:` matching
+  the delta's dictionary with the `.dcz` bytes, `Content-Encoding: dcz` and an ETag ending in `-dcz`;
+  responses for files with a delta carry `Vary: accept-encoding, available-dictionary`. Other requests
+  get the file as before.
+- The encoder is sitefile's own (`src/zstd.ts`, ported as `rust/src/zstd.rs`, byte for byte): greedy
+  matching against the dictionary, raw literals and the predefined FSE tables. Its frames are standard
+  Zstandard (tests decode them with libzstd); the ratio is below libzstd's, but a small edit to a large
+  file still gives a delta of tens of bytes. `dcb` (Brotli) deltas are not written: there is no shared Brotli encoder.
+- Hosts must serve the `.dcz` themselves for this to help outside `sitefile serve`; most do not
+  negotiate it yet. Fingerprinted assets (new name per version) need a `match` pattern across names,
+  which this flag does not write.
+
 ## Comparing builds: `sitefile diff`
 
 `sitefile diff <a> <b> [--json] [--exit-code]` lists what changed going from `<a>` to `<b>`. Each side is
@@ -1103,9 +1136,10 @@ the site behaves the same locally. The format comes from the file name (`netlify
   "headers": [[name, value]…]}], "unsupported": [{"entry", "reason"}]}`.
 - **Every line printed is one `serve` applies as written** (each is checked against `serve`'s own parser).
   Anything else is listed on stderr, one `warning: <file>: <entry>: <reason>` per entry, and left out
-  rather than half translated. Examples: `:placeholders` (until johnhenry/sitefile#193), conditions,
-  regular expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301,
-  302, 303, 307, 308 and 404, and settings with no `_redirects` form. The exit code is 0 either way.
+  rather than half translated. Examples: a `:name` in a target that the source does not capture,
+  conditions other than language, country and cookie, `:placeholders` in header patterns, regular
+  expressions, proxying to another host (johnhenry/sitefile#172), statuses other than 200, 301, 302,
+  303, 307, 308, 404, 410 and 451, and settings with no `_redirects` form. The exit code is 0 either way.
 - Catch-all rules (a 404 page, an SPA fallback) are written after every other rule, since the first
   matching rule wins and they would shadow the rest. Consecutive header blocks for the same pattern are
   merged.
@@ -1114,12 +1148,12 @@ the site behaves the same locally. The format comes from the file name (`netlify
 
 | File | Translated | Listed as unsupported |
 | --- | --- | --- |
-| `netlify.toml` | `[[redirects]]` `from`, `to`, `status` (default 301), `force` (`!`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `query`, `conditions`, `headers`, `signed` on a redirect; placeholders; `functions`, `edge_functions`, `plugins` |
-| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` that is exact or ends in `/:name*` or `/(.*)` becomes the path or `/*`, and `:name*`, `:name` or `$1` in the destination become `:splat` | `has`/`missing`, other parameters, regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
-| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` that is exact or ends in `/**`, or is `**` | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
+| `netlify.toml` | `[[redirects]]` `from` (with `:placeholders` and a trailing `/*`), `to`, `status` (default 301; also 410 and 451), `force` (`!`), `query` (`name=value` or `name=:placeholder` fields), `conditions` `Language`, `Country`, `Cookie` (`Key=a,b`); `[[headers]]` `for` with `[headers.values]` (a list of values is joined with `, `) | `conditions` on `Role` or other keys, `headers` and `signed` (proxy options); `functions`, `edge_functions`, `plugins` |
+| `vercel.json` | `redirects` (`permanent`: 308, `false`: 307, or `statusCode`), `rewrites` (200), `headers`. A `source` of literal and `:name` segments (`:name` in a header source is refused), ending in `/:name*` or `/(.*)` for everything below, becomes the same path, with `/*` for that end, and `:name*`, `:name` or `$1` in the destination becomes `:splat` | `has`/`missing`, optional or repeated parameters (`:x?`, `:x+`), regular expressions, rewrites to another host, `cleanUrls`, `trailingSlash` |
+| `firebase.json` | `hosting` (one site): `redirects` (`type`, default 301), `rewrites` to a path (200), `headers`. A `source`/`glob` of literal and `:name` segments, ending in `/**` or `/:name*` for everything below (`/*`, with `:name` becoming `:splat` in the destination), or `**`; header sources take literal segments and `/**` only | `regex`, other globs, `function`/`run`/`dynamicLinks` rewrites, `cleanUrls`, `trailingSlash`, `i18n`, several sites |
 | `staticwebapp.config.json` | `routes` (exact or trailing `/*`) with `redirect` (`statusCode`, default 302), `rewrite` (200), `headers`; `navigationFallback` (`/* <rewrite> 200`); `responseOverrides.404` with a `rewrite` (`/* <page> 404`); `globalHeaders` (`/*`) | `allowedRoles`, `methods`, other route patterns, `navigationFallback.exclude`, other overrides, `mimeTypes` (johnhenry/sitefile#220) |
 | `wrangler.toml` / `wrangler.json` | `[assets] not_found_handling = "single-page-application"` (`/* /index.html 200`); `404-page` and `none` need nothing | `html_handling` other than `auto-trailing-slash` (johnhenry/sitefile#192), `run_worker_first` |
-| `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410, other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
+| `.htaccess` | `Redirect [status] /path URL` (the path and everything below it: `/path` and `/path/*` → `URL/:splat`), `RedirectPermanent`, `RedirectTemp`, `RedirectMatch` for `^/path$` and `^/prefix/(.*)$` with `$1`, `ErrorDocument 404 /page`, `DirectoryIndex index.html`, `Header [always] set Name value` (as `/*`), directives inside `<IfModule>` | `gone`/410 (Apache names no page to serve, which a 410 rule in `_redirects` needs), other `RedirectMatch` patterns, other `ErrorDocument`s, `Header` other than `set`, `AddType`, `RewriteRule` and every other directive, `<Files>`, `<Directory>` and other sections |
 
 Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the same. The language form
 (`REDIRECT … FROM <file>`) is not implemented yet (johnhenry/sitefile#204).
@@ -1127,7 +1161,7 @@ Surge's `200.html` needs no import: `/* /200.html 200` in `_redirects` does the 
 ## Site servers
 
 ```
-sitefile serve [--name n] [-p [host:]port] [-d] [--spa] <ref|id|./dir|file>
+sitefile serve [--name n] [-p [host:]port] [-d] [--spa] [--spa-exclude glob]... [--spa-fallback path] [--base /path/] [--rewrite-base url] [--host-profile host] [--html-handling mode] [--country cc] [--strict-site-files] [--open[=path]] [--qr] <ref|id|./dir|file>
 sitefile serve --watch [-p [host:]port] [--spa] [build options] [context]   # see Watch mode
 sitefile servers [-a] [--json]                   # also: sitefile server ls
 sitefile server stop [--time secs] <name|id>...
@@ -1174,12 +1208,48 @@ on disk after the server started answers `500` for the entries that changed (`se
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **`--cors`** adds `Access-Control-Allow-Origin: *` to every response (files, `304`, `404`, redirects, errors;
+  a `_headers` value for the path wins) and answers `OPTIONS` on any path with `204`,
+  `Access-Control-Allow-Methods: GET, HEAD`, the request's `Access-Control-Request-Headers` echoed as
+  `Access-Control-Allow-Headers` (when it is a plain list of header names) and `Access-Control-Max-Age: 600`.
+  Without it `OPTIONS` is `405` as before. Stored in the server record (`cors`).
+- **`--isolate`** makes pages cross-origin isolated (`SharedArrayBuffer`, wasm threads, precise timers need it,
+  and only response headers can turn it on): every response gets `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Embedder-Policy: require-corp` (`--coep credentialless` sends `credentialless`, which lets
+  cross-origin resources without CORP load without credentials) and `Cross-Origin-Resource-Policy:
+  same-origin`. A `_headers` value for the path wins. Stored in the server record (`isolate`, the COEP value).
+- **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
+  `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
+  `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
+  else is looked at (the live-reload endpoints too). A malicious page that rebinds its own name to
+  `127.0.0.1` therefore cannot read the server. `--allowed-host <name>` (repeatable, ASCII
+  case-insensitive) adds a name: `example.test`, or `.example.test` for it and every subdomain (tunnels,
+  `<name>.local`); `--allowed-host '*'` turns the check off. A request without `Host` (HTTP/1.0) is answered.
+  The names are stored in the server record (`allowedHosts`), so `-d` and `server restart` keep them; the
+  liveness probe of `servers` uses the IP address and is never refused. The library's `createSiteServer`
+  checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
+- **In a terminal** (a foreground `serve` or `serve --watch` whose stdin is a terminal), single keys act
+  at once (`Press h for keys` is printed under the URL): `o` opens the site in the browser (at the
+  `--open` path, if one was given), `u` prints the URLs (`  Local:   …`, and with `-p 0.0.0.0:…` or `-p
+  [::]:…` also `  Network: …`, this machine's address on its default route, with a QR code of it), `r`
+  rebuilds (`--watch`, as if a file had changed) or re-reads a served directory (an image or archive file
+  is read only at start: `Nothing to re-read: …`), `c` clears the screen, `q` (or Ctrl-C, Ctrl-D) quits,
+  and `h` lists the keys. Reading keys puts the terminal in raw mode for the session; it is restored on
+  exit. Without a terminal nothing is read from stdin (`SITEFILE_SERVE_KEYS=1` reads keys from a pipe
+  anyway, for tests and scripts).
+- `--open` opens the site in the browser once it is served; `--open=/docs/` opens that path (the path is
+  written with `=`, so `serve --open ./site` serves `./site`). The browser is `$BROWSER` when set, run
+  with the URL as its only argument and no shell, else `open` (macOS), `rundll32
+  url.dll,FileProtocolHandler` (Windows, TypeScript CLI) or `xdg-open`. A browser that fails to start is a
+  warning. `--qr` prints a QR code (byte mode, error correction M, in half-block characters with a quiet
+  zone) of the network URL when bound to every interface, else of the local URL, under the URL line. Both
+  are for a foreground server: with `-d` they are a usage error.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean
   URLs: `/about` serves `/about.html` when there is no file `/about`, and `/about/` redirects (`301`, query kept) to
   `/about` when only `/about.html` answers it (after any `_redirects` rule for the path); `/about.html` and
-  `/about/index.html` still answer as themselves; otherwise a directory `/dir` redirects (`301`) to `/dir/`; no directory listings; a missing path is `404` with the site's `/404.html` if it has one (else a small
+  `/about/index.html` still answer as themselves; otherwise a directory `/dir` redirects (`301`) to `/dir/`; no directory listings; a missing path is `404` with the site's nearest `404.html` if it has one (see below; else a small
   page); `content-type` from the extension (case-insensitive) through one table shared by both implementations
   and by Web Bundle export: `tools/gen-mime.mjs` writes `src/mime-data.ts` and `rust/src/mime_data.rs` (types
   from nginx's `mime.types`, else the IANA registrations: HTML, CSS, JavaScript including `.cjs`, JSON and
@@ -1210,27 +1280,98 @@ on disk after the server started answers `500` for the entries that changed (`se
   `x-content-type-options: nosniff`. An absolute-form request target (`GET http://host/path?q`, as proxies send
   it; RFC 9112 section 3.2.2) is answered by its path and query; the authority is ignored. Paths are
   percent-decoded per segment; `..`, an encoded `/`, NUL, control
-  characters and backslashes are `400`. `--spa` serves `/index.html` for unknown paths whose last segment has no
-  file extension (a missing `/app.js` stays `404`).
+  characters and backslashes are `400`. **`--spa`** (single-page apps) answers a missing path with
+  the app shell only for **page navigations**: `Sec-Fetch-Mode: navigate` when the browser sends it, else
+  `Sec-Fetch-Dest` `document`/`iframe`/`frame`, else an `Accept` naming `text/html` (as Cloudflare and Vite
+  decide). Subresources never fall back, whatever the path looks like, so `/users/jane.doe` is served the
+  app while a missing `/assets/app.js` stays `404` instead of HTML (the "Expected a JavaScript module
+  script" error). The shell is the `200.html` (Surge's name) or `index.html` of the request's directory or
+  the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` (a nested app) before
+  `/index.html`. `--spa-exclude <glob>` (repeatable; `*` matches any characters, as in `_headers`, against
+  the request path) never falls back (Azure Static Web Apps' `navigationFallback.exclude`), e.g.
+  `--spa-exclude '/api/*'`. `--spa-fallback <path>` (implies `--spa`) names the one file every fallback
+  serves, e.g. `--spa-fallback /app.html`; a path the site lacks is warned about at start. A fallback comes
+  after files, clean URLs, directories and `_redirects` rules; the server record keeps `spaExclude` and
+  `spaFallback`.
+- **`--base /repo/`** serves the site under a path prefix, as a GitHub Pages project site lives at
+  `https://user.github.io/repo/`: `/repo/x` answers the site's `/x`, `/` redirects (`302`, query kept) to
+  `/repo/`, `/repo` gets its slash (`301`), and any other path is `404` (the built-in page). The
+  server's own redirects (directories, clean URLs) and `_redirects` targets that are paths are under the
+  prefix too (`/old /new` redirects `/repo/old` to `/repo/new`); `_redirects`/`_headers` patterns match the
+  path inside it. A URL is accepted and its path used (`--base https://user.github.io/repo/`). With
+  `--watch` and no `--base`, the path of the Sitefile's `EXPORT … BASE` URL is the default (re-read after
+  each good build), so a site exported for `https://user.github.io/repo/` previews at `/repo/`. The printed
+  URL, `servers` and the server record (`base`) include it.
+- **`--rewrite-base <url>`** replaces the production URL (`https://example.com/blog/`: scheme, host and
+  path, without the trailing slash) with the local origin and `--base` (`http://<Host>/repo`) in served
+  HTML, CSS and XML (feeds, sitemaps, SVG), so absolute self-links, canonical links and sitemap entries
+  stay on the preview. A match must end where a URL part ends (`https://example.com` does not rewrite
+  `https://example.com.evil`, `/blog` not `/blogroll`). Only responses change, never exports or other
+  types; a rewritten file gets its own `ETag` (`…-rebased`), and the `Host` header is used only when it
+  is a plain host name or address with a port (otherwise nothing is rewritten). Under `serve --watch` it is
+  **on by default** with the build's EXPORT BASE URL, else its first SITEMAP or FEED BASE (re-read after each
+  good build); `--no-rewrite-base` turns that off. Kept in the server record as `rewriteBase`.
+- **Host profiles.** `--host-profile netlify|cloudflare|vercel|github-pages|firebase` routes like that host,
+  so links that work locally work (or break) the same way in production; `--html-handling
+  auto|force-slash|drop-slash|none` (Cloudflare's modes) picks the canonical page URLs on its own, or replaces
+  a profile's. Without either flag sitefile's own rules (above) apply.
+
+  | `--html-handling` | `/about` (about.html) | `/about.html` | `/about/` (only about.html) | `/docs` (docs/index.html) | `/docs/index.html` |
+  | --- | --- | --- | --- | --- | --- |
+  | `auto` | served | → `/about` | → `/about` | → `/docs/` | → `/docs/` |
+  | `force-slash` | → `/about/` | → `/about/` | served | → `/docs/` | → `/docs/` |
+  | `drop-slash` | served | → `/about` | → `/about` | served | → `/docs` |
+  | `none` | 404 | served | 404 | 404 | served (and `/docs/`) |
+
+  | `--host-profile` | HTML handling | redirect status | reads `_redirects`/`_headers` | not found |
+  | --- | --- | --- | --- | --- |
+  | `netlify` | `auto` | 301 | yes | nearest `404.html` |
+  | `cloudflare` | `auto` | 307 | yes | nearest `404.html`, else `/index.html` with 200 (an SPA) |
+  | `vercel` | `none` | 308 | no (served as files) | `/404.html` |
+  | `github-pages` | sitefile's, but `/about/` with only `about.html` is 404 | 301 | no (served as files) | `/404.html` |
+  | `firebase` | `none` | 301 | no (served as files) | `/404.html` |
+
+  `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
+  without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
+  read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
-  - `_redirects`: one `from to [status]` per line (`#` comments). Supported: exact paths (a trailing slash on
-    the request is ignored, so `/old/` matches `/old`), and a trailing `/*` whose remainder replaces `:splat` in
-    the target (`/blog/* https://blog.example/:splat`). Statuses `301` (the default), `302`, `303`, `307`, `308`
-    redirect with `Location` (the request's query string is kept unless the target has one); `200` serves the
-    target path's file instead (a rewrite, e.g. `/app/* /app/index.html 200`); `404` serves it with status
-    404. Like Netlify, a rule applies only when no file answers the path, unless its status ends in `!`
-    (`301!`), which is checked first. The first matching rule wins. Not supported (the line is ignored):
-    `:placeholders`, `*` anywhere but the end, query or country/language conditions, extra fields, and targets
-    with characters outside printable ASCII.
+  - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on
+    Netlify. The source is literal segments (a trailing slash on the request is ignored, so `/old/` matches
+    `/old`), `:placeholders` that match one segment each (`/blog/:year/:slug /posts/:slug`; names are letters,
+    digits and `_`), and an optional trailing `/*` whose remainder is `:splat`
+    (`/blog/* https://blog.example/:splat`). `:name` in the target is replaced by the captured value,
+    percent-encoded (`:splat` keeps its slashes); other `:words` stay as written. **Query parameters** after
+    the source must all be present: `id=:id` captures the value, `q=cats` needs that exact value (`+` and
+    percent-escapes are decoded on both sides); `/store id=:id /items/:id 301`. **Conditions** after the status
+    must all hold: `Language=es,pt-BR` (a language of `Accept-Language` with `q` above 0, where `es` also
+    matches `es-MX`), `Cookie=ab_test` (a cookie with one of these names), `Country=nz,au` (the code given with
+    `--country`, since there is no geolocation locally; without the flag it never matches). Statuses `301`
+    (the default), `302`, `303`, `307`, `308` redirect with `Location` (the request's query string is kept
+    unless the target has one or the rule matches query parameters); `200` serves the target path's file
+    instead (a rewrite, e.g. `/app/* /app/index.html 200`); `404`, `410` and `451` serve it with that status.
+    Like Netlify, a rule applies only when no file answers the path, unless its status ends in `!` (`301!`),
+    which is checked first. The first matching rule wins. The access log notes the rule that answered:
+    `GET /old 301 0 0.3ms → /new (_redirects:3)` (the target, or the file a rewrite served).
+  - **Every line `serve` ignores is a warning** at start (and after a rebuild that changes them under
+    `--watch`), with the file, line and reason: `warning: _redirects:4: ignored: '*' is only supported as the
+    last segment of the source`. Ignored are `Role=` and other conditions, `*` anywhere but the end, statuses
+    other than the ones above, `200`/`404`/`410`/`451` to a URL (proxying), targets with characters outside
+    printable ASCII, malformed placeholders and query parameters, and, in `_headers`, the lines listed below.
+    `--strict-site-files` makes them an error (`E_VALIDATION`; under `--watch` the rebuild fails and the last
+    good one keeps being served). `validate` (and the language server) warns about a `REDIRECT` or `HEADER`
+    that writes such a line (lint rule `serve-ignored`, see LANGUAGE.md "Lint").
+  - **Nearest 404**: a missing path is answered by the `404.html` in its own directory or the closest parent
+    (`/docs/a/missing` tries `/docs/a/404.html`, `/docs/404.html`, then `/404.html`), with status 404.
   - `_headers`: a path pattern line (`*` matches any characters, `/` included), then indented `Name: value`
     lines. Every matching block applies, in file order; a header set by several blocks gets its values joined
     with `, `. They are added to file, `206`, `304`, `404` and `416` responses (not to redirects) and can replace
     `cache-control` and the other defaults; `content-length`, `etag`, `location`, `connection`,
     `keep-alive`, `transfer-encoding`, `accept-ranges`, `content-range` and `last-modified` cannot be set. Lines with an invalid name or a control character in
-    the value are ignored, as are `! Name` detach lines and patterns that are not paths.
+    the value are ignored, as are `! Name` detach lines, patterns that are not paths and header lines before
+    the first pattern (each with a warning).
 - `-d` detaches. A server is tracked by `$SITEFILE_HOME/servers/<id>.json` (`id`, `name`, `image`, `source`, `spa`,
-  requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
+  `country` and `strictSiteFiles` when given, requested `bind`, `host`, `port`, `pid`, `started`, `logFile`, `ready`, and `project` for servers `up` started) and `<id>.log`. `serve -d` writes the
   state, spawns a detached `node serve-worker.js <id>` with stdout/stderr on the log, and waits until the worker
   has recorded its pid and port (a failure to start is reported with the worker's error and leaves no entry).
   `servers` never trusts the file alone: **running** means the pid is alive *and* the port answers with this server's

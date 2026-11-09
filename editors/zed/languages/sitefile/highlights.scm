@@ -16,9 +16,10 @@
 ; Instructions and clauses (case-insensitive in the source).
 [
   "FROM" "STAGE" "ARG" "LET" "IMPORT" "COPY" "RENDER" "TRANSFORM" "PLUGIN" "TOOL" "EXPORT"
-  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CHECKLINKS"
+  "SITEMAP" "FEED" "REDIRECT" "HEADER" "FINGERPRINT" "CANONICAL" "PRECOMPRESS" "ROBOTS" "SECURITY_TXT" "PRECACHE" "CHECKLINKS"
   "AS" "TO" "INTEGRITY" "SORT" "BY" "ASC" "DESC" "SCHEMA" "DRAFTS" "WITH" "OPTIONS" "ARGS" "BASE" "AT" "COMPRESSION"
-  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST"
+  "LINK" "TITLE" "STATUS" "IMAGE" "SECRET" "BEARER" "MANIFEST" "PRETTY" "MIN"
+  "ALLOW" "DISALLOW" "CONTACT" "EXPIRES" "ENCRYPTION" "POLICY" "INTO"
 ] @keyword
 
 (secret_clause id: (identifier) @variable)
@@ -73,8 +74,8 @@
     "FILE" "TEXT" "JSON" "TREE" "MARKDOWN" "YAML" "CSV" "WBN" "HTML" "SITEFILE"))
 ((export_format) @type.builtin
   (#any-of? @type.builtin
-    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml"
-    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML"))
+    "directory" "zip" "tar" "tgz" "tar.gz" "wbn" "oci" "car" "html" "mhtml" "warc"
+    "DIRECTORY" "ZIP" "TAR" "TGZ" "TAR.GZ" "WBN" "OCI" "CAR" "HTML" "MHTML" "WARC"))
 ((compression) @constant.builtin
   (#any-of? @constant.builtin "gzip" "none" "GZIP" "NONE"))
 

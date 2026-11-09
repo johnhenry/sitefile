@@ -8,6 +8,10 @@
         "named": true
       },
       {
+        "type": "canonical_instruction",
+        "named": true
+      },
+      {
         "type": "checklinks_instruction",
         "named": true
       },
@@ -48,11 +52,27 @@
         "named": true
       },
       {
+        "type": "precache_instruction",
+        "named": true
+      },
+      {
+        "type": "precompress_instruction",
+        "named": true
+      },
+      {
         "type": "redirect_instruction",
         "named": true
       },
       {
         "type": "render_instruction",
+        "named": true
+      },
+      {
+        "type": "robots_instruction",
+        "named": true
+      },
+      {
+        "type": "security_txt_instruction",
         "named": true
       },
       {
@@ -151,6 +171,38 @@
           },
           {
             "type": "placeholder",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "canonical_instruction",
+    "named": true,
+    "fields": {
+      "base": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
             "named": true
           },
           {
@@ -1527,6 +1579,168 @@
     }
   },
   {
+    "type": "precache_instruction",
+    "named": true,
+    "fields": {
+      "dest": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "into": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "precompress_instruction",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "min": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "pattern": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "redirect_instruction",
     "named": true,
     "fields": {
@@ -1783,6 +1997,100 @@
     }
   },
   {
+    "type": "robots_instruction",
+    "named": true,
+    "fields": {
+      "allow": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "dest": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "disallow": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "secret_clause",
     "named": true,
     "fields": {
@@ -1802,6 +2110,152 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "security_txt_instruction",
+    "named": true,
+    "fields": {
+      "contact": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "dest": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "encryption": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "expires": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
+            "named": true
+          }
+        ]
+      },
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "flag",
+            "named": true
+          }
+        ]
+      },
+      "policy": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "url",
+            "named": true
+          },
+          {
+            "type": "word",
             "named": true
           }
         ]
@@ -2480,6 +2934,10 @@
     "named": false
   },
   {
+    "type": "ALLOW",
+    "named": false
+  },
+  {
     "type": "ARG",
     "named": false
   },
@@ -2516,11 +2974,19 @@
     "named": false
   },
   {
+    "type": "CANONICAL",
+    "named": false
+  },
+  {
     "type": "CHECKLINKS",
     "named": false
   },
   {
     "type": "COMPRESSION",
+    "named": false
+  },
+  {
+    "type": "CONTACT",
     "named": false
   },
   {
@@ -2532,11 +2998,23 @@
     "named": false
   },
   {
+    "type": "DISALLOW",
+    "named": false
+  },
+  {
     "type": "DRAFTS",
     "named": false
   },
   {
+    "type": "ENCRYPTION",
+    "named": false
+  },
+  {
     "type": "EXEC",
+    "named": false
+  },
+  {
+    "type": "EXPIRES",
     "named": false
   },
   {
@@ -2588,6 +3066,10 @@
     "named": false
   },
   {
+    "type": "INTO",
+    "named": false
+  },
+  {
     "type": "LET",
     "named": false
   },
@@ -2604,6 +3086,10 @@
     "named": false
   },
   {
+    "type": "MIN",
+    "named": false
+  },
+  {
     "type": "OPTIONS",
     "named": false
   },
@@ -2613,6 +3099,22 @@
   },
   {
     "type": "PLUGIN",
+    "named": false
+  },
+  {
+    "type": "POLICY",
+    "named": false
+  },
+  {
+    "type": "PRECACHE",
+    "named": false
+  },
+  {
+    "type": "PRECOMPRESS",
+    "named": false
+  },
+  {
+    "type": "PRETTY",
     "named": false
   },
   {
@@ -2628,6 +3130,10 @@
     "named": false
   },
   {
+    "type": "ROBOTS",
+    "named": false
+  },
+  {
     "type": "RUN",
     "named": false
   },
@@ -2637,6 +3143,10 @@
   },
   {
     "type": "SECRET",
+    "named": false
+  },
+  {
+    "type": "SECURITY_TXT",
     "named": false
   },
   {

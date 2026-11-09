@@ -82,12 +82,16 @@ no runtime dependencies.
 | `PLUGIN name FROM ./plugins/x.mjs\|x.wasm [INTEGRITY sha256:…]` | yes; a custom renderer: a sandboxed JS module (runs only with `--allow-plugin name`) or an import-free WebAssembly module (no flag needed; see [docs/PLUGINS.md](docs/PLUGINS.md), `examples/wasm/`) |
 | `TRANSFORM [--include/--exclude=<pattern>] [<source>] WITH name TO <dest> [OPTIONS k=v …] [FOR item IN list]` | yes; e.g. text → animated SVG (`examples/motion/`), responsive images (`examples/image/`); a directory source runs once per file (`TO /img/thumbs/*.png`) |
 | `TOOL name` + `TRANSFORM … WITH name TO <dest> [OPTIONS …] [FOR …] ARGS …` | yes; run an external program (e.g. `ffmpeg`) you allow with `--allow-exec name`: argv only, no shell, temp files, scrubbed environment (see [docs/PLUGINS.md](docs/PLUGINS.md)) |
-| `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far |
+| `SITEMAP BASE <url> [TO <dest>]` | yes; a sitemaps.org `/sitemap.xml` of the `.html` pages so far (a sitemap index and parts above 50,000 URLs or 50 MiB) |
+| `CANONICAL BASE <url> [PRETTY]` | yes; a `<link rel="canonical">` in every page that has none |
 | `FEED <import> BASE <url> LINK <path> [TO <dest>] [TITLE <text>]` | yes; an Atom `/feed.xml` from Markdown posts (`title` and `date` required) |
+| `ROBOTS [ALLOW\|DISALLOW <path>]… [SITEMAP] [TO <dest>]`, `SECURITY_TXT CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]…` | yes; `/robots.txt` (with the SITEMAP URLs) and an RFC 9116 `/.well-known/security.txt` (Expires required; warns when near) |
 | `REDIRECT <from> <to> [STATUS 301\|302\|303\|307\|308]`, `HEADER <pattern> <Name>: <value>` | yes; `/_redirects` and `/_headers` for Netlify / Cloudflare Pages (and `sitefile serve`); a `wbn` export also bakes HEADER values into each response and exact-path REDIRECTs into 3xx responses (splats stay in `/_redirects`) |
 | `CHECKLINKS [--warn] [--external]` | yes; fails (or warns) on links to files that do not exist, with file and line; `--external` requests http(s) links under the network policy |
 | `FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]` | yes; renames assets to `name.<hash>.ext` and rewrites the HTML and CSS that reference them, plus a JSON manifest, `Cache-Control` lines in `/_headers` and (INTEGRITY) SRI attributes |
-| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci\|car\|html\|mhtml] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`), `car` is an IPFS CARv1 file whose root CID matches kubo's `ipfs add -r --cid-version=1`, `html` is `index.html` with its assets inlined as `data:` URIs, `mhtml` the same page and assets as one MHTML file |
+| `PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` | yes; deterministic `.gz` sidecars of text files for hosts that serve them in place of the file (nginx `gzip_static`, Caddy `precompressed`); `br` and `zstd` are not supported yet |
+| `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` | yes; a Workbox-style `[{url, revision}]` precache manifest (fingerprinted files get `revision: null`), or injected at `self.__WB_MANIFEST` |
+| `EXPORT <path> [AS directory\|zip\|tar\|tgz\|wbn\|oci\|car\|html\|mhtml\|warc] [BASE <https-url>] [AT <root>] [COMPRESSION gzip\|none]` | yes; archives are deterministic, `wbn` is an unsigned Web Bundle (needs `BASE` or `--base-url`; `COMPRESSION gzip` gzips it, default `none`), `oci` is a single-layer OCI image of the files (under `AT`, default `/srv/www`; `COMPRESSION` sets its layer, default `gzip`), `car` is an IPFS CARv1 file whose root CID matches kubo's `ipfs add -r --cid-version=1`, `html` is `index.html` with its assets inlined as `data:` URIs, `mhtml` the same page and assets as one MHTML file, `warc` a WARC/1.1 web archive of every file at `BASE` (also imported and served) |
 
 Templates can also live in the Sitefile itself (see `examples/inline/`):
 
@@ -429,6 +433,10 @@ tools are code, and run only when you name them on the command line.
   read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **`serve` answers only local names.** A request whose `Host` is not
+  `localhost`, `*.localhost` or an IP address is refused (`403`), so a web page
+  that DNS-rebinds its name to `127.0.0.1` cannot read a local server;
+  `--allowed-host` adds names ([docs/CLI.md](docs/CLI.md#site-servers)).
 - **Caches are trusted.** A TRANSFORM cache hit (local, or from
   `--cache-from <registry>`) is used as if the plugin had returned it, and the
   Rust build loads compiled wasm modules from `$SITEFILE_HOME/cache/wasm` as
