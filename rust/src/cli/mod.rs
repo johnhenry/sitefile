@@ -168,6 +168,10 @@ Options:
                                later files win, --build-arg wins over files)
       --manifest <file>        also write a manifest of the exported files (build only): path, size and
                                SHA-256 of each, and their Merkle root; check copies with 'sitefile verify'
+      --experimental-dictionary <previous>
+                               Compression Dictionary Transport (experimental, build only): add a .dcz delta
+                               against <previous> (image, directory or archive) for each changed .js/.css/...
+                               and Use-As-Dictionary headers; 'serve' answers Available-Dictionary with them
       --force                  replace a non-empty --out outside the context
       --frozen-lockfile        fail instead of changing Sitefile.lock
       --update-lock            re-record unpinned URLs whose content changed
@@ -265,6 +269,7 @@ const BUILD_OPTS: &[OptSpec] = &[
     string("poll-interval"),
     string("profile"),
     string("manifest"),
+    string("experimental-dictionary"),
     flag_s("help", 'h'),
     flag_s("version", 'v'),
 ];
@@ -713,6 +718,15 @@ fn run_build_command(
     if let Some(m) = manifest {
         wrote.push(m.to_string());
     }
+    let dictionary = o.str("experimental-dictionary");
+    if dictionary.is_some() && command != "build" {
+        return Ok(usage_error("--experimental-dictionary is only for build"));
+    }
+    if dictionary == Some("") {
+        return Ok(usage_error(
+            "--experimental-dictionary expects an image, directory or archive",
+        ));
+    }
     let network = network::network_option(o)?;
     let mut fetch_policy = crate::resources::types::DEFAULT_FETCH_POLICY;
     fetch_policy.network = network;
@@ -949,6 +963,15 @@ fn run_build_command(
             if let Some(rc) = &remote_cache {
                 rc.load();
             }
+            // `--experimental-dictionary <previous>`: the previous build's files.
+            let dictionary_from = match dictionary {
+                Some(arg) => {
+                    let mut store = crate::integrity::LazyStore::default();
+                    let t = crate::integrity::resolve_target(arg, &mut store)?;
+                    Some(crate::integrity::load_target(&t, &mut store)?)
+                }
+                None => None,
+            };
             let push_cache = || {
                 if let Some(rc) = &remote_cache {
                     rc.push(&cache::transform_cache_dir());
@@ -956,7 +979,11 @@ fn run_build_command(
             };
             if !tags.is_empty() && out_flag.is_none() {
                 // -t without -o: store the image only; nothing is written to the context.
-                let built = build(&options)?;
+                let mut built = build(&options)?;
+                if let Some(previous) = &dictionary_from {
+                    built.output =
+                        crate::dictionary::add_dictionary_deltas(&built.output, previous)?.0;
+                }
                 if let Some(m) = manifest {
                     write_manifest(&built.output, m, context, o.flag("force"))?;
                 }
@@ -978,6 +1005,7 @@ fn run_build_command(
                 },
                 force: o.flag("force"),
                 attest,
+                dictionary_from,
             };
             if let Some(m) = manifest {
                 let format = match format_override.or(sitefile_format) {
@@ -1017,6 +1045,9 @@ fn run_build_command(
                 ),
             };
             out(&line);
+            if let Some(d) = &r.dictionary_deltas {
+                out(&format!("Dictionary deltas: {} (.dcz)\n", d.len()));
+            }
             if let Some(m) = manifest {
                 write_manifest(&r.result.output, m, context, o.flag("force"))?;
             }

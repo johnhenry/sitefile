@@ -1387,6 +1387,9 @@ fn with_site_rules(
 /// Overrides for where and how the export is written.
 #[derive(Debug, Clone, Default)]
 pub struct ExportTarget {
+    /// `--experimental-dictionary`: the previous build's files; the export gets `.dcz` deltas
+    /// against them and `Use-As-Dictionary` headers (crate::dictionary).
+    pub dictionary_from: Option<Tree>,
     /// Overrides the Sitefile's EXPORT format.
     pub format: Option<ExportFormat>,
     /// Overrides the Sitefile's EXPORT ... BASE (wbn).
@@ -1422,6 +1425,8 @@ pub struct ExportedBuild {
     pub manifest_digest: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
+    /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
+    pub dictionary_deltas: Option<Vec<String>>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -1630,6 +1635,24 @@ pub fn build_to_directory(
 }
 
 fn export_build(
+    mut result: BuildResult,
+    format: ExportFormat,
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
+    let mut deltas = None;
+    if let Some(previous) = &target.dictionary_from {
+        let (tree, d) = crate::dictionary::add_dictionary_deltas(&result.output, previous)?;
+        result.output = tree;
+        deltas = Some(d);
+    }
+    let mut exported = export_build_inner(result, format, options, out_dir, target)?;
+    exported.dictionary_deltas = deltas;
+    Ok(exported)
+}
+
+fn export_build_inner(
     result: BuildResult,
     format: ExportFormat,
     options: &BuildOptions,
@@ -1692,6 +1715,7 @@ fn export_build(
                 file_digest: Some(digest),
                 manifest_digest: Some(img.manifest_digest.clone()),
                 incremental: None,
+                dictionary_deltas: None,
             });
         }
         let written = export_directory(
@@ -1707,6 +1731,7 @@ fn export_build(
             file_digest: None,
             manifest_digest: Some(img.manifest_digest.clone()),
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     if !is_archive_format(format) {
@@ -1723,6 +1748,7 @@ fn export_build(
             file_digest: None,
             manifest_digest: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
         });
     }
     let data = encode_tree(
@@ -1756,6 +1782,7 @@ fn export_build(
         file_digest: Some(digest),
         manifest_digest: None,
         incremental: None,
+        dictionary_deltas: None,
     })
 }
 

@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
 import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules } from './serve-rules.js';
+import { deltaFor } from './dictionary.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
@@ -346,6 +347,11 @@ export function originForm(target: string): string {
   return rest.startsWith('/') ? rest : '/' + rest;
 }
 
+/** A request header as one string (repeated headers joined with `, `). */
+function header(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
 function etagMatches(header: string | undefined, etag: string): boolean {
   if (header === undefined) return false;
   if (header.trim() === '*') return true;
@@ -477,10 +483,14 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       if (live) warnCsp(served, custom['content-security-policy']);
       const body = live ? injectReloadScript(file.bytes) : file.bytes;
       if (status !== 200) return finish(status, { 'content-type': type, 'content-length': body.byteLength, ...custom }, body);
-      // An injected page is a different representation of the file: give it its own ETag.
-      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : ''}"`;
-      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, etag }, undefined);
-      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, etag }, body);
+      // A `.dcz` sidecar (build --experimental-dictionary): the response varies with the dictionary offered.
+      const vary: Record<string, string> = tree.isFile(`${served}.dcz`) ? { vary: 'accept-encoding, available-dictionary' } : {};
+      const delta = live ? undefined : deltaFor(tree, served, header(req.headers['available-dictionary']), header(req.headers['accept-encoding']));
+      // An injected page or a delta is a different representation of the file: give it its own ETag.
+      const etag = `"${file.digest.replace(/^sha256:/, '')}${live ? '-live' : delta ? '-dcz' : ''}"`;
+      if (etagMatches(req.headers['if-none-match'], etag)) return finish(304, { ...custom, ...vary, etag }, undefined);
+      if (delta) return finish(200, { 'content-type': type, 'content-length': delta.byteLength, ...custom, ...vary, 'content-encoding': 'dcz', etag }, delta);
+      finish(200, { 'content-type': type, 'content-length': body.byteLength, ...custom, ...vary, etag }, body);
     };
     /** The file for a path: exact, `<path>.html` (clean URLs), or `<dir>/index.html` with a trailing slash. */
     const resolve = (p: string, slash: boolean): string | undefined => {

@@ -1173,17 +1173,55 @@ pub fn respond(
         if status != 200 {
             return finish(status, h, Some(body));
         }
-        // An injected page is a different representation of the file: give it its own ETag.
+        // A `.dcz` sidecar (build --experimental-dictionary): the response varies with the dictionary offered.
+        let vary: Vec<(String, String)> = if tree.is_file(&format!("{served}.dcz")) {
+            vec![(
+                "vary".into(),
+                "accept-encoding, available-dictionary".into(),
+            )]
+        } else {
+            Vec::new()
+        };
+        let delta = if live {
+            None
+        } else {
+            crate::dictionary::delta_for(
+                tree,
+                served,
+                headers.get("available-dictionary").map(String::as_str),
+                headers.get("accept-encoding").map(String::as_str),
+            )
+        };
+        // An injected page or a delta is a different representation of the file: give it its own ETag.
         let etag = format!(
             "\"{}{}\"",
             file.digest.strip_prefix("sha256:").unwrap_or(&file.digest),
-            if live { "-live" } else { "" }
+            if live {
+                "-live"
+            } else if delta.is_some() {
+                "-dcz"
+            } else {
+                ""
+            }
         );
         if etag_matches(headers.get("if-none-match").map(String::as_str), &etag) {
             let mut h: Vec<(String, String)> = custom.clone();
+            h.extend(vary);
             h.push(("etag".into(), etag));
             return finish(304, h, None);
         }
+        if let Some(d) = delta {
+            let mut h = owned(vec![
+                ("content-type", mime.into()),
+                ("content-length", d.len().to_string()),
+            ]);
+            h.extend(custom.iter().cloned());
+            h.extend(vary);
+            h.push(("content-encoding".into(), "dcz".into()));
+            h.push(("etag".into(), etag));
+            return finish(200, h, Some(d.to_vec()));
+        }
+        h.extend(vary);
         h.push(("etag".into(), etag));
         finish(200, h, Some(body))
     };
