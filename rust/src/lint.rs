@@ -21,13 +21,14 @@ use crate::render::parse_render_template;
 use std::collections::{HashMap, HashSet};
 
 /// Every rule, in the order warnings of one line are reported.
-pub const LINT_RULES: [&str; 6] = [
+pub const LINT_RULES: [&str; 7] = [
     "unused-name",
     "unpinned-import",
     "unpinned-image",
     "render-escape",
     "sitemap-order",
     "shadowed-write",
+    "serve-ignored",
 ];
 
 /// Import kinds a RENDER template can read (so a template file may use them).
@@ -415,6 +416,59 @@ pub fn lint(program: &Program, plan: &Plan, source: &str, disabled: &[String]) -
         }
     }
 
+    // ---- serve-ignored: a REDIRECT or HEADER line `sitefile serve` would ignore (operands with ${…} are skipped).
+    let literal = |op: &Operand| {
+        op.parts
+            .iter()
+            .all(|p| matches!(p, TemplatePart::Text(_)))
+            .then(|| written(op))
+    };
+    for ins in &program.instructions {
+        let (what, ignored) = match ins {
+            Instruction::Redirect {
+                from, to, status, ..
+            } => {
+                let (Some(from), Some(to)) = (literal(from), literal(to)) else {
+                    continue;
+                };
+                let text = format!("{from} {to} {status}");
+                (
+                    format!("REDIRECT {from} {to}"),
+                    crate::server::parse_redirects(&text).1.into_iter().next(),
+                )
+            }
+            Instruction::Header {
+                pattern,
+                name,
+                value,
+                ..
+            } => {
+                let parts: Option<Vec<String>> = std::iter::once(pattern)
+                    .chain(std::iter::once(name))
+                    .chain(value.iter())
+                    .map(literal)
+                    .collect();
+                let Some(parts) = parts else { continue };
+                let text = format!("{}\n  {}: {}\n", parts[0], parts[1], parts[2..].join(" "));
+                (
+                    format!("HEADER {} {}", parts[0], parts[1]),
+                    crate::server::parse_headers(&text).1.into_iter().next(),
+                )
+            }
+            _ => continue,
+        };
+        if let Some(i) = ignored {
+            report(
+                ins.span().line,
+                "serve-ignored",
+                format!(
+                    "sitefile serve ignores the line {what} writes: {}",
+                    i.reason
+                ),
+            );
+        }
+    }
+
     let is_off = |f: &Found| {
         let line = off_per_line.get(&f.line);
         off.contains("all")
@@ -490,7 +544,7 @@ mod tests {
             check(src, &[]),
             [
                 "Sitefile:3: [unused-name] ARG B is never used",
-                "Sitefile:4: [lint-comment] unknown lint rule 'bogus' (rules: unused-name, unpinned-import, unpinned-image, render-escape, sitemap-order, shadowed-write, or all)",
+                "Sitefile:4: [lint-comment] unknown lint rule 'bogus' (rules: unused-name, unpinned-import, unpinned-image, render-escape, sitemap-order, shadowed-write, serve-ignored, or all)",
             ]
         );
         assert_eq!(lint_comment("#  SITEFILE-LINT : x"), Some(" x"));

@@ -130,6 +130,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             spa: s.spa,
             keep_os_metadata: false,
             allowed_hosts: Vec::new(),
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }
