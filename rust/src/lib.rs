@@ -40,6 +40,7 @@ pub mod resources;
 
 // Outputs, store and servers
 pub mod cache_limit;
+pub mod canonical;
 pub mod checklinks;
 pub mod export;
 pub mod fingerprint;
