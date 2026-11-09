@@ -14,7 +14,7 @@ function check(src: string, disabled: string[] = [], args: Record<string, string
 const rules = (ws: string[]): string[] => ws.map((w) => w.replace(/^Sitefile:(\d+): \[([a-z-]+)\].*$/, '$1 $2'));
 
 test('rule ids are stable', () => {
-  assert.deepEqual([...LINT_RULES], ['unused-name', 'unpinned-import', 'unpinned-image', 'render-escape', 'sitemap-order', 'shadowed-write']);
+  assert.deepEqual([...LINT_RULES], ['unused-name', 'unpinned-import', 'unpinned-image', 'render-escape', 'sitemap-order', 'shadowed-write', 'serve-ignored']);
 });
 
 test('unused-name: ARG, LET, IMPORT, PLUGIN and TOOL nobody refers to', () => {
@@ -105,6 +105,14 @@ test('shadowed-write: a file replaced by a later --overwrite', () => {
   assert.deepEqual(check('COPY <<H /a.txt\nx\nH\nCOPY <<H /b.txt\ny\nH\nEXPORT /'), []);
 });
 
+test('serve-ignored: REDIRECT and HEADER lines sitefile serve would ignore', () => {
+  const ws = check('REDIRECT /a/*/b /c\nREDIRECT /blog/:year/:slug /posts/:slug\nHEADER /x Content-Length: 5\nHEADER /* X-Ok: 1\nARG T = "/t"\nREDIRECT ${T}/*/x /y\nEXPORT /');
+  assert.deepEqual(ws, [
+    "Sitefile:1: [serve-ignored] sitefile serve ignores the line REDIRECT /a/*/b /c writes: '*' is only supported as the last segment of the source",
+    'Sitefile:3: [serve-ignored] sitefile serve ignores the line HEADER /x Content-Length writes: the server sets this header itself',
+  ]);
+});
+
 test('disabling: comments, next-line comments, the caller, all; bad comments warn', () => {
   const src = (head: string): string => `${head}ARG A = 1\nARG B = 1\nRENDER <<H TO /a.html\nx\nH\nEXPORT /`;
   assert.deepEqual(rules(check(src(''))), ['1 unused-name', '2 unused-name', '3 render-escape']);
@@ -116,7 +124,7 @@ test('disabling: comments, next-line comments, the caller, all; bad comments war
   // A comment anywhere disables for the whole file; a next-line comment skips blank lines and other comments.
   assert.deepEqual(rules(check('ARG A = 1\n# sitefile-lint: disable-next-line=unused-name\n\n# note\nARG B = 1\nEXPORT /\n# sitefile-lint: disable=render-escape')), ['1 unused-name']);
   assert.deepEqual(check('# sitefile-lint: disable=nope\n# sitefile-lint: off\nEXPORT /'), [
-    "Sitefile:1: [lint-comment] unknown lint rule 'nope' (rules: unused-name, unpinned-import, unpinned-image, render-escape, sitemap-order, shadowed-write, or all)",
+    "Sitefile:1: [lint-comment] unknown lint rule 'nope' (rules: unused-name, unpinned-import, unpinned-image, render-escape, sitemap-order, shadowed-write, serve-ignored, or all)",
     'Sitefile:2: [lint-comment] unrecognized # sitefile-lint comment (expected disable=<rule>[,<rule>…] or disable-next-line=<rule>[,<rule>…])',
   ]);
   // Lint comments in a heredoc body are body text.
