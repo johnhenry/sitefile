@@ -50,6 +50,7 @@ import { parseYaml } from './yaml.js';
 import { brokenLinks, reportBrokenLinks } from './checklinks.js';
 import { canonical } from './canonical.js';
 import { composeRenames, fingerprint, type Fingerprinted } from './fingerprint.js';
+import { portabilityProblems } from './portable.js';
 import { precache } from './precache.js';
 import { precompress } from './precompress.js';
 import { atomXml, cacheHeaderRules, headersFile, pageUrl, parseFeedDate, redirectsFile, sitemapFiles, type FeedEntry, type HeaderRule } from './site.js';
@@ -97,6 +98,8 @@ export interface BuildOptions {
    * INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
    */
   readonly strictPins?: boolean;
+  /** `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings. */
+  readonly strictPaths?: boolean;
   /** Maximum imports resolved at once (default 4). */
   readonly concurrency?: number;
   /** Plugin process limits (per-call timeout, maximum result size). */
@@ -552,6 +555,11 @@ async function buildWith(options: BuildOptions, tempDirs: string[]): Promise<Bui
   }
   tree = withSiteRules(tree, p, label, currentRenames, warn);
   const output = tree.subtree(p.exportPath);
+  const portability = portabilityProblems(output.entries().map(([f]) => f).sort((a, b) => Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))));
+  if (portability.length > 0 && options.strictPaths) {
+    throw new SitefileError('E_PATH_PORTABLE', `EXPORT ${p.exportPath}: ${portability.length === 1 ? 'a path is' : `${portability.length} paths are`} not portable (--strict-paths):${portability.map((m) => `\n  ${m}`).join('')}`);
+  }
+  for (const m of portability) warn(`EXPORT ${p.exportPath}: ${m}`);
   if (output.size === 0) warn(p.target === undefined ? `EXPORT ${p.exportPath} contains no files` : `--target ${p.target}: stage '${p.target}' contains no files`);
 
   // BASE: the image to build on. Resolved after the files so a failing build never pulls anything; its

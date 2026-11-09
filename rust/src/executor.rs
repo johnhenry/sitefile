@@ -129,6 +129,8 @@ pub struct BuildOptions {
     /// `--strict-pins`: fail (E_UNPINNED) before fetching anything when a remote IMPORT has neither
     /// INTEGRITY nor a lockfile entry, or the BASE image is neither `@sha256:`-pinned nor locked.
     pub strict_pins: bool,
+    /// `--strict-paths`: exported paths Windows or GitHub Pages cannot hold are E_PATH_PORTABLE, not warnings.
+    pub strict_paths: bool,
     /// Maximum imports resolved at once (default 4).
     pub concurrency: usize,
     pub plugin_policy: PluginPolicy,
@@ -246,6 +248,7 @@ impl Default for BuildOptions {
             update_lock: false,
             vendor_dir: None,
             strict_pins: false,
+            strict_paths: false,
             concurrency: 4,
             plugin_policy: DEFAULT_PLUGIN_POLICY,
             node: None,
@@ -1222,6 +1225,26 @@ fn build_with(options: &BuildOptions, temp_dirs: &Mutex<Vec<PathBuf>>) -> Result
     }
     let tree = with_site_rules(tree, &p, &label, &current_renames, &|m: &str| warn(m))?;
     let output = tree.subtree(&p.export_path);
+    let paths: Vec<String> = output.entries().map(|(f, _)| f.clone()).collect();
+    let portability = crate::portable::portability_problems(&paths);
+    if !portability.is_empty() && options.strict_paths {
+        let count = if portability.len() == 1 {
+            "a path is".to_string()
+        } else {
+            format!("{} paths are", portability.len())
+        };
+        let listed: String = portability.iter().map(|m| format!("\n  {m}")).collect();
+        return Err(SitefileError::plain(
+            E_PATH_PORTABLE,
+            format!(
+                "EXPORT {}: {count} not portable (--strict-paths):{listed}",
+                p.export_path
+            ),
+        ));
+    }
+    for m in &portability {
+        warn(&format!("EXPORT {}: {m}", p.export_path));
+    }
     if output.is_empty() {
         warn(&match &p.target {
             None => format!("EXPORT {} contains no files", p.export_path),

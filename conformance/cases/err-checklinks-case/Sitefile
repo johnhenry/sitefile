@@ -1,0 +1,13 @@
+# A link that differs from a file only in case is broken, and the message names the file.
+FROM scratch
+COPY <<X /index.html
+<img src="Images/Logo.PNG"><a href="docs/">docs</a>
+X
+COPY <<X /images/logo.png
+P
+X
+COPY <<X /Docs/index.html
+x
+X
+CHECKLINKS
+EXPORT /
