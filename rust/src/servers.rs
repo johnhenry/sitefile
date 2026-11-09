@@ -575,6 +575,56 @@ pub fn load_served_tree_with(
     }
 }
 
+/// When a server's files last changed, in Unix seconds (`Last-Modified`): for an image, when it
+/// was first stored (never older than its files, unlike the config's `created`); for a directory,
+/// the newest modification time of the files it serves (hidden entries but `.well-known` skipped,
+/// symbolic links to files followed); for an archive, the file's modification time. `None` when
+/// there is none. Same rules as `servedLastModified` in src/servers.ts.
+pub fn served_last_modified(store: &Store, source: &ServerSource) -> Option<i64> {
+    fn secs(t: std::time::SystemTime) -> Option<i64> {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+    }
+    fn walk(dir: &Path, newest: &mut Option<i64>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') && name != ".well-known" {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            let p = e.path();
+            if ft.is_dir() {
+                walk(&p, newest);
+            } else if ft.is_file() || ft.is_symlink() {
+                if let Ok(m) = fs::metadata(&p) {
+                    if m.is_file() {
+                        if let Some(t) = m.modified().ok().and_then(secs) {
+                            *newest = Some(newest.map_or(t, |n| n.max(t)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match source {
+        ServerSource::Image { image_id } => {
+            let created = store.details(image_id).ok()?.created;
+            crate::cli::common::parse_iso(&created).map(|ms| ms.div_euclid(1000))
+        }
+        ServerSource::Archive { path } => fs::metadata(path).ok()?.modified().ok().and_then(secs),
+        ServerSource::Dir { path } => {
+            let mut newest = None;
+            walk(Path::new(path), &mut newest);
+            newest
+        }
+    }
+}
+
 /// `-p` value: `port`, `host:port` or `[v6]:port`. Default (`None`) bind is
 /// 127.0.0.1 with a free port; `localhost` means 127.0.0.1. Errors are `E_USAGE`.
 pub fn parse_publish(spec: Option<&str>) -> Result<Bind> {
