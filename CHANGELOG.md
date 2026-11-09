@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`serve --spa` falls back by navigation** (johnhenry/sitefile#194): the
+  app shell answers only page navigations (`Sec-Fetch-Mode`/`Sec-Fetch-Dest`,
+  else `Accept: text/html`), never subresources, so `/users/jane.doe` works
+  and a missing script stays 404. The shell is the nearest `200.html`
+  (Surge) or `index.html` (nested apps such as `/admin/`); `--spa-exclude
+  <glob>` skips paths and `--spa-fallback <path>` picks one file. Both
+  implementations.
 - **`EXPORT … FOR <host>`** (johnhenry/sitefile#205): writes the REDIRECT
   and HEADER rules (and FINGERPRINT's cache headers) as Netlify, Cloudflare
   Pages, Vercel (Build Output API v3), Firebase Hosting (`firebase.json`),

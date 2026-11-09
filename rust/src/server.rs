@@ -18,8 +18,13 @@ pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct SiteServerOptions {
-    /// Fall back to `/index.html` for unknown extension-less paths (single-page apps).
+    /// Single-page apps: answer a page navigation ([`is_navigation`]) for a path nothing else
+    /// answers with the nearest app shell ([`spa_fallback`]). Never for subresources.
     pub spa: bool,
+    /// `--spa-exclude`: request paths (`*` matches any characters) that never fall back.
+    pub spa_exclude: Vec<String>,
+    /// `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`.
+    pub spa_fallback: Option<String>,
     /// One access-log line per request: `METHOD /path STATUS BYTES MSms`.
     pub log: Option<LogFn>,
     /// Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port.
@@ -1034,6 +1039,36 @@ fn etag_matches(header: Option<&str>, etag: &str) -> bool {
         let t = t.trim();
         t.strip_prefix("W/").unwrap_or(t) == etag
     })
+}
+
+/// The app shell a `--spa` navigation to a missing path gets: `fallback` when given
+/// (`--spa-fallback`), else the `200.html` (Surge) or `index.html` of the request's directory or
+/// the closest parent that has one, so `/admin/users/5` gets `/admin/index.html` before
+/// `/index.html` (port of `spaFallback`).
+pub fn spa_fallback(
+    segs: &[String],
+    trailing: bool,
+    is_file: &dyn Fn(&str) -> bool,
+    fallback: Option<&str>,
+) -> Option<String> {
+    if let Some(f) = fallback {
+        return is_file(f).then(|| f.to_string());
+    }
+    let dirs = if trailing {
+        segs
+    } else {
+        &segs[..segs.len().saturating_sub(1)]
+    };
+    for n in (0..=dirs.len()).rev() {
+        let dir: String = dirs[..n].iter().map(|d| format!("{d}/")).collect();
+        for name in ["200.html", "index.html"] {
+            let p = format!("/{dir}{name}");
+            if is_file(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// A tree path with each segment percent-encoded like encodeURIComponent.
@@ -2088,11 +2123,17 @@ pub fn respond(
             None,
         );
     }
-    if served.is_none() && options.spa {
-        let last = segs.last().map(String::as_str).unwrap_or("");
-        let has_ext = last.rfind('.').is_some_and(|i| i + 1 < last.len());
-        if !has_ext && is_file("/index.html") {
-            served = Some("/index.html".into());
+    if served.is_none() && options.spa && is_navigation(headers) {
+        let req_path = format!(
+            "{vpath}{}",
+            if trailing && !segs.is_empty() {
+                "/"
+            } else {
+                ""
+            }
+        );
+        if !options.spa_exclude.iter().any(|g| glob_match(g, &req_path)) {
+            served = spa_fallback(&segs, trailing, &is_file, options.spa_fallback.as_deref());
         }
     }
     if let Some(served) = served {
@@ -2679,13 +2720,70 @@ mod tests {
     }
 
     #[test]
-    fn spa_fallback_only_for_extensionless_paths() {
+    fn spa_fallback_by_navigation() {
+        let doc = [
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
         with_server(true, |port, _| {
-            let r = get(port, "/some/client/route");
+            let r = req(port, "/some/client/route", "GET", &doc);
             assert_eq!((r.status, r.body.as_str()), (200, "<h1>home</h1>"));
-            assert_eq!(get(port, "/missing.js").status, 404);
+            assert_eq!(
+                req(port, "/users/jane.doe", "GET", &doc).body,
+                "<h1>home</h1>"
+            );
+            assert_eq!(
+                req(
+                    port,
+                    "/users/jane.doe",
+                    "GET",
+                    &[("accept", "text/html,*/*")]
+                )
+                .status,
+                200
+            );
+            let script = [
+                ("sec-fetch-mode", "no-cors"),
+                ("sec-fetch-dest", "script"),
+                ("accept", "*/*"),
+            ];
+            assert_eq!(req(port, "/assets/app.js", "GET", &script).status, 404);
+            assert_eq!(get(port, "/some/route").status, 404);
+            assert_eq!(req(port, "/about/team", "GET", &doc).body, "<h1>about</h1>");
             assert_eq!(get(port, "/app.js").body, "console.log(1)");
         });
+        // (johnhenry/sitefile#194) 200.html, nested app roots, exclusions and --spa-fallback.
+        let t = Tree::from_files(
+            [
+                ("/index.html", "root"),
+                ("/200.html", "surge shell"),
+                ("/admin/index.html", "admin"),
+                ("/api/x.json", "{}"),
+                ("/app.html", "app"),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let h: HashMap<String, String> = doc
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let opts = SiteServerOptions {
+            spa: true,
+            spa_exclude: vec!["/api/*".into(), "/admin/raw".into()],
+            ..Default::default()
+        };
+        let nav = |o: &SiteServerOptions, u: &str| handle_request(&t, o, "GET", u, &h);
+        assert_eq!(body(&nav(&opts, "/route")), "surge shell");
+        assert_eq!(body(&nav(&opts, "/admin/users/5")), "admin");
+        assert_eq!(nav(&opts, "/api/missing").status, 404);
+        assert_eq!(nav(&opts, "/admin/raw").status, 404);
+        let one = SiteServerOptions {
+            spa: true,
+            spa_fallback: Some("/app.html".into()),
+            ..Default::default()
+        };
+        assert_eq!(body(&nav(&one, "/admin/users/5")), "app");
     }
 
     #[test]

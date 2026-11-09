@@ -1,15 +1,22 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
 import { RELOAD_CLIENT } from './reload-client.js';
 
 export interface SiteServerOptions {
-  /** Fall back to `/index.html` for unknown extension-less paths (single-page apps). */
+  /**
+   * Single-page apps: answer a page navigation ({@link isNavigation}) for a path nothing else answers
+   * with the nearest app shell ({@link spaFallback}). Never for subresources (scripts, images, `fetch()`).
+   */
   readonly spa?: boolean;
+  /** `--spa-exclude`: request paths (`*` matches any characters) that never fall back. */
+  readonly spaExclude?: readonly string[];
+  /** `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`. */
+  readonly spaFallback?: string;
   /** One access-log line per request: `METHOD /path STATUS BYTES MSms`. */
   readonly log?: (line: string) => void;
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
@@ -478,6 +485,21 @@ function etagMatches(header: string | undefined, etag: string): boolean {
   return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
 }
 
+/**
+ * The app shell a `--spa` navigation to a missing path gets: `fallback` when given (`--spa-fallback`),
+ * else the `200.html` (Surge) or `index.html` of the request's directory or the closest parent that
+ * has one, so `/admin/users/5` gets `/admin/index.html` before `/index.html`. Undefined when none exists.
+ */
+export function spaFallback(segs: readonly string[], trailingSlash: boolean, isFile: (p: string) => boolean, fallback?: string): string | undefined {
+  if (fallback !== undefined) return isFile(fallback) ? fallback : undefined;
+  const dirs = trailingSlash ? segs : segs.slice(0, -1);
+  for (let n = dirs.length; n >= 0; n--) {
+    const dir = `/${dirs.slice(0, n).map((d) => d + '/').join('')}`;
+    for (const name of ['200.html', 'index.html']) if (isFile(dir + name)) return dir + name;
+  }
+  return undefined;
+}
+
 /** A tree path with each segment percent-encoded like encodeURIComponent. */
 function encodePath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/');
@@ -709,7 +731,9 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       const location = '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
-    if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
+    if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
+      served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+    }
     if (served !== undefined) return sendFile(200, served);
     // The nearest 404.html: in the request's directory, then each parent up to the root.
     const dirs = trailingSlash ? segs : segs.slice(0, -1);

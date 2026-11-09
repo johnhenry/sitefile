@@ -35,6 +35,10 @@ export interface ServerState {
     /** zip, tar, tar.gz/tgz, a Web Bundle or an OCI image archive; read again on every start, as a directory is. */
     | { readonly kind: 'archive'; readonly path: string };
   readonly spa: boolean;
+  /** `--spa-exclude`: request paths that never fall back (absent: none). */
+  readonly spaExclude?: readonly string[];
+  /** `--spa-fallback`: the file every fallback serves (absent: the nearest 200.html or index.html). */
+  readonly spaFallback?: string;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (absent: none matches). */

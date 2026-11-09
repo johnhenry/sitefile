@@ -71,6 +71,45 @@ fn is_wildcard(h: &str) -> bool {
     h == "0.0.0.0" || h == "::"
 }
 
+/// `--spa`, `--spa-exclude` and `--spa-fallback` (which implies `--spa`): (spa, exclude, fallback).
+fn spa_options(v: &Parsed) -> Result<(bool, Vec<String>, Option<String>)> {
+    let exclude = v.strs("spa-exclude");
+    if let Some(g) = exclude.iter().find(|g| !g.starts_with('/')) {
+        return usage(format!(
+            "--spa-exclude expects a path pattern starting with '/', got '{g}'"
+        ));
+    }
+    let fallback = match v.str("spa-fallback") {
+        None => None,
+        Some(raw) => {
+            match crate::server::safe_segments(&format!("/{}", raw.trim_start_matches('/')))
+                .filter(|s| !s.is_empty())
+            {
+                Some(segs) => Some(format!("/{}", segs.join("/"))),
+                None => {
+                    return usage(format!(
+                        "--spa-fallback expects a file of the site such as /200.html, got '{raw}'"
+                    ))
+                }
+            }
+        }
+    };
+    let spa = v.flag("spa") || fallback.is_some();
+    if !spa && !exclude.is_empty() {
+        return usage("--spa-exclude needs --spa");
+    }
+    Ok((spa, exclude, fallback))
+}
+
+/// A warning when `--spa-fallback` names a file the site does not have.
+fn warn_spa_fallback(tree: &Tree, fallback: Option<&str>, warn: &dyn Fn(&str)) {
+    if let Some(f) = fallback.filter(|f| !tree.is_file(f)) {
+        warn(&format!(
+            "--spa-fallback {f} is not a file of the site, so navigations to missing paths get 404"
+        ));
+    }
+}
+
 /// `--country`: an ISO 3166-1 alpha-2 code (any case).
 fn parse_country(v: Option<&str>) -> Result<Option<String>> {
     match v {
@@ -91,6 +130,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string_s("publish", 'p'),
     flag_s("detach", 'd'),
     flag("spa"),
+    strings("spa-exclude"),
+    string("spa-fallback"),
     string("country"),
     flag("strict-site-files"),
     flag("keep-os-metadata"),
@@ -136,7 +177,9 @@ pub const SERVE: Command = Command {
         "--name <n>        name for the server (-d only; default site-<6 hex>)",
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
-        "--spa             serve /index.html for unknown paths without a file extension",
+        "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
+        "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
+        "--spa-fallback <path>        the file every --spa fallback serves, e.g. /app.html (implies --spa)",
         "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
         "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
@@ -176,6 +219,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "an image reference, ./directory or archive file",
     )?;
     let bind = parse_publish(v.str("publish"))?;
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
@@ -204,6 +248,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         )?;
         let tree = site.tree;
         check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
+        warn_spa_fallback(&tree, spa_fallback.as_deref(), &warn);
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
@@ -211,7 +256,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         let server = listen(
             Arc::new(tree),
             SiteServerOptions {
-                spa: v.flag("spa"),
+                spa,
+                spa_exclude,
+                spa_fallback,
                 country: country.clone(),
                 log: Some(log),
                 server_id: None,
@@ -241,7 +288,9 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             source,
             name: name.map(str::to_string),
             bind,
-            spa: v.flag("spa"),
+            spa,
+            spa_exclude,
+            spa_fallback,
             keep_os_metadata,
             country,
             strict_site_files,
@@ -285,6 +334,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         "full" => false,
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
     };
+    let (spa, spa_exclude, spa_fallback) = spa_options(v)?;
     let country = parse_country(v.str("country"))?;
     let strict_site_files = v.flag("strict-site-files");
     // The site-file warnings last printed: a rebuild repeats them only when they change.
@@ -427,7 +477,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let mut on_started = || -> Result<()> {
         let log: crate::server::LogFn = Arc::new(|l: &str| out(&format!("{l}\n")));
         let opts = SiteServerOptions {
-            spa: v.flag("spa"),
+            spa,
+            spa_exclude: spa_exclude.clone(),
+            spa_fallback: spa_fallback.clone(),
             country: country.clone(),
             log: Some(log),
             server_id: None,
@@ -514,6 +566,8 @@ pub fn serve_worker(id: &str) -> i32 {
             Arc::new(tree),
             SiteServerOptions {
                 spa: state.spa,
+                spa_exclude: state.spa_exclude.clone(),
+                spa_fallback: state.spa_fallback.clone(),
                 country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
