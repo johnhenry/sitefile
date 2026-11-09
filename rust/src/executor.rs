@@ -46,8 +46,8 @@ use crate::plugins::host::{
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
 use crate::plugins::wasm::check_wasm_plugin_in;
-use crate::precompress::{precompress, PrecompressOp};
 use crate::precache::{precache, PrecacheOp};
+use crate::precompress::{precompress, PrecompressOp};
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
 use crate::render::{
