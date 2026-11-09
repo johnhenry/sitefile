@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **`serve` answers byte ranges** (johnhenry/sitefile#166): `Accept-Ranges:
+  bytes` on file responses; a single `Range` on `GET` gets `206` with
+  `Content-Range`, an unsatisfiable one `416`; `If-Range` (strong ETag match)
+  and `HEAD` are handled; multiple ranges are ignored (the whole file). Both
+  servers; `_headers` cannot set `accept-ranges` or `content-range`.
+- **`sitefile up`, `down` and `ps`** (johnhenry/sitefile#223): a servers file
+  (`sitefile.servers.yaml`, `.yml` or `.json`) names several detached servers
+  (`source`, `publish`, `spa`). `up` starts them all, idempotently: it leaves
+  running ones alone, restarts exited ones and replaces changed ones. `down`
+  stops and removes the ones it started, and `ps` lists them, including those
+  not created yet. Sources are relative to the servers file. Server records
+  gain an optional `project` field. Both implementations, with conformance
+  cases.
 - **Zip export stores already-compressed media** (#203, writer half): png,
   jpg, webp, avif, woff2, mp4, zip, gz and similar extensions are stored
   without running deflate, so exports of media-heavy sites are faster. Zip
@@ -148,6 +161,15 @@
   default stays `open`. With `--json`, a failed command also prints
   `{"error": {code, message, span, needs}}` on stdout, and `outdated --json`
   error rows include `needs`. Both implementations, with conformance cases.
+- **JavaScript plugins declare whether they may be cached**
+  (johnhenry/sitefile#160): `export const cache = true` says a plugin is
+  deterministic; `cache = false` opts out as before; any other value fails
+  with `E_PLUGIN`. A JS plugin that exports neither is still cached, with one
+  warning per build when results are cached or memoized. The examples' JS
+  plugins export `cache = true`. docs/PLUGINS.md now says that module state
+  carries over between calls and lists what is trusted as-is (`--cache-from`
+  results, the local TRANSFORM cache, the Rust wasm module cache); the README
+  security model links it.
 - **`INTEGRITY` on a JavaScript plugin pins its folder** (johnhenry/sitefile#158):
   a JS plugin can read and import every file in its folder, so its
   `INTEGRITY` is now the folder digest (`sha256:` + the digest the TRANSFORM
