@@ -77,7 +77,8 @@ pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
 pub const CANONICAL_CLAUSES: [&str; 2] = ["BASE", "PRETTY"];
 /// Clauses after `LANGUAGES <code>…`.
 pub const LANGUAGES_CLAUSES: [&str; 1] = ["DEFAULT"];
-/// Sidecar formats PRECOMPRESS knows; only gzip has an encoder (`crate::deflate`, shared with the TypeScript).
+/// Sidecar formats PRECOMPRESS knows. gzip uses `crate::deflate` (shared with the TypeScript), br the
+/// vendored C Brotli encoder (`crate::brotli`, node:zlib's); zstd has no encoder yet.
 pub const PRECOMPRESS_FORMATS: [&str; 3] = ["gzip", "br", "zstd"];
 /// Clauses after `PRECOMPRESS <pattern>…`.
 pub const PRECOMPRESS_CLAUSES: [&str; 1] = ["MIN"];
@@ -1199,7 +1200,7 @@ fn parse_languages(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     })
 }
 
-/// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`
+/// `PRECOMPRESS [--overwrite] [gzip] [br] <pattern>… [MIN <bytes>]`
 fn parse_precompress(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
     let flags = parse_flags(c, SITE_FLAGS)?;
     let mut formats: Vec<String> = Vec::new();
@@ -1211,11 +1212,10 @@ fn parse_precompress(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
             c.reset(mark);
             break;
         }
-        if w != "gzip" {
-            let name = if w == "br" { "Brotli" } else { "Zstandard" };
+        if w == "zstd" {
             return Err(SitefileError::at(
                 E_UNSUPPORTED,
-                format!("PRECOMPRESS {w} is not supported yet: sitefile has no {name} encoder that writes the same bytes in both implementations (use gzip)"),
+                "PRECOMPRESS zstd is not supported yet: sitefile has no Zstandard encoder that writes the same bytes in both implementations (use gzip or br)",
                 &at,
             ));
         }

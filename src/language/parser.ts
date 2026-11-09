@@ -628,10 +628,11 @@ function parseLanguages(c: Cursor, span: SourceSpan): Instruction {
   return { kind: 'LANGUAGES', span, codes, ...(dflt ? { default: dflt } : {}) };
 }
 
-/** Sidecar formats PRECOMPRESS knows; only gzip has an encoder (src/deflate.ts, shared with the Rust port). */
+/** Sidecar formats PRECOMPRESS knows. gzip uses src/deflate.ts (shared with the Rust port), br node:zlib's Brotli
+ * (the Rust port vendors the same C encoder); zstd has no encoder yet. */
 const PRECOMPRESS_FORMATS = ['gzip', 'br', 'zstd'];
 
-/** `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]` */
+/** `PRECOMPRESS [--overwrite] [gzip] [br] <pattern>… [MIN <bytes>]` */
 function parsePrecompress(c: Cursor, span: SourceSpan): Instruction {
   const flags = parseFlags(c, { overwrite: 'bare' });
   const formats: PrecompressFormat[] = [];
@@ -643,8 +644,8 @@ function parsePrecompress(c: Cursor, span: SourceSpan): Instruction {
       c.reset(mark);
       break;
     }
-    if (w !== 'gzip') {
-      throw c.error('E_UNSUPPORTED', `PRECOMPRESS ${w} is not supported yet: sitefile has no ${w === 'br' ? 'Brotli' : 'Zstandard'} encoder that writes the same bytes in both implementations (use gzip)`, at);
+    if (w === 'zstd') {
+      throw c.error('E_UNSUPPORTED', 'PRECOMPRESS zstd is not supported yet: sitefile has no Zstandard encoder that writes the same bytes in both implementations (use gzip or br)', at);
     }
     if (formats.includes(w as PrecompressFormat)) throw c.error('E_SYNTAX', `${w} given twice`, at);
     formats.push(w as PrecompressFormat);

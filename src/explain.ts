@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import path from 'node:path';
 import { SitefileError } from './errors.js';
 import { joinVirtual, normalizeVirtual } from './paths.js';
+import { sidecarSource } from './precompress.js';
 import { importedStageRefs, type Operation, type Plan, type SourceRef, type Stage } from './planner.js';
 import type { BuildResult, ImportedSitefile } from './executor.js';
 import type { FileNode, Tree } from './tree.js';
@@ -471,7 +472,7 @@ export function why(result: BuildResult, raw: string, contextDir: string): WhyRe
       else if (op.kind === 'ROBOTS' || op.kind === 'SECURITY_TXT') inputs.push('the Sitefile');
       else if (op.kind === 'PRECACHE') inputs.push(op.into === file ? 'the service worker (manifest injected)' : 'the files it lists');
       else if (op.kind === 'FINGERPRINT') inputs.push(op.manifest === file ? 'the files it renamed' : 'references to renamed files');
-      else if (op.kind === 'PRECOMPRESS') inputs.push(`${file.slice(0, -'.gz'.length)} (compressed)`);
+      else if (op.kind === 'PRECOMPRESS') inputs.push(`${sidecarSource(file)} (compressed)`);
       else inputs.push(`list ${op.list}`);
       events.push({ location: at(op.span.line), instruction: operationLabel(op), stage: display, path: file, action: prev ? 'overwrite' : 'write', digest: next.digest, inputs });
       prev = next;

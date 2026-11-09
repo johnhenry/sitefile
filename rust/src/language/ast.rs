@@ -511,7 +511,7 @@ pub enum Instruction {
         codes: Vec<Operand>,
         default: Option<Operand>,
     },
-    /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
+    /// `PRECOMPRESS [--overwrite] [gzip] [br] <pattern>… [MIN <bytes>]`: write a `.gz`/`.br` sidecar next to each
     /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
     /// when none is given.
     Precompress {

@@ -4959,17 +4959,18 @@ impl<'a> Exec<'a> {
 
     fn precompress(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
         let Operation::Precompress {
+            formats,
             patterns,
             min,
             overwrite,
             span,
-            ..
         } = op
         else {
             unreachable!()
         };
         let origin = format!("{}:{} PRECOMPRESS", self.label, span.line);
         let op = PrecompressOp {
+            formats,
             patterns,
             min: *min,
             overwrite: *overwrite,

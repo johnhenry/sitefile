@@ -1,16 +1,17 @@
-// PRECOMPRESS: .gz sidecars from the shared deflate encoder (docs/LANGUAGE.md, "Precompressed sidecars").
+// PRECOMPRESS: .gz sidecars from the shared deflate encoder and .br sidecars from Brotli (docs/LANGUAGE.md, "Precompressed sidecars").
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { build } from '../src/executor.js';
 import { isSitefileError } from '../src/errors.js';
 import { parseSitefile } from '../src/language/parser.js';
 import { parseProgram } from '../src/language/validate.js';
 import { plan } from '../src/planner.js';
-import { compressible } from '../src/precompress.js';
+import { BROTLI_VERSION, brotli, compressible } from '../src/precompress.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -37,8 +38,10 @@ test('parse and plan: PRECOMPRESS forms and errors', () => {
   assert.ok(a?.kind === 'PRECOMPRESS' && a.overwrite && a.formats.join() === 'gzip' && a.patterns.length === 2 && a.min);
   const [b] = parseSitefile('PRECOMPRESS /a/');
   assert.ok(b?.kind === 'PRECOMPRESS' && b.formats.join() === 'gzip' && !b.min);
-  assert.throws(() => parseSitefile('PRECOMPRESS br /a/'), (e: unknown) => isSitefileError(e) && e.code === 'E_UNSUPPORTED' && /no Brotli encoder/.test(e.detail));
-  assert.throws(() => parseSitefile('PRECOMPRESS gzip zstd /a/'), /no Zstandard encoder/);
+  const [c] = parseSitefile('PRECOMPRESS BR gzip /a/');
+  assert.ok(c?.kind === 'PRECOMPRESS' && c.formats.join() === 'br,gzip');
+  assert.throws(() => parseSitefile('PRECOMPRESS gzip zstd /a/'), (e: unknown) => isSitefileError(e) && e.code === 'E_UNSUPPORTED' && /no Zstandard encoder.*\(use gzip or br\)/.test(e.detail));
+  assert.throws(() => parseSitefile('PRECOMPRESS br br /a/'), /br given twice/);
   assert.throws(() => parseSitefile('PRECOMPRESS gzip gzip /a/'), /gzip given twice/);
   assert.throws(() => parseSitefile('PRECOMPRESS gzip'), /expected a path pattern/);
   assert.throws(() => parseSitefile('PRECOMPRESS /a MIN'), /expected minimum size in bytes/);
@@ -81,4 +84,31 @@ test('build: no match warns; a different existing sidecar conflicts unless --ove
   await assert.rejects(run({ 'a.css': big, 'old.gz': 'x', Sitefile: 'COPY ./a.css /\nCOPY ./old.gz /a.css.gz\nPRECOMPRESS /a.css\nEXPORT /\n' }), (e: unknown) => isSitefileError(e) && e.code === 'E_CONFLICT');
   const ok = await run({ 'a.css': big, 'old.gz': 'x', Sitefile: 'COPY ./a.css /\nCOPY ./old.gz /a.css.gz\nPRECOMPRESS --overwrite /a.css\nEXPORT /\n' });
   assert.equal(gunzipSync(ok.output.get('/a.css.gz')!.bytes).toString(), big);
+});
+
+test('br: node:zlib is the Brotli the Rust port vendors, and the bytes are pinned (rust/src/brotli.rs has the same digests)', () => {
+  // A newer Node may bundle a newer libbrotli that writes other bytes: update rust/vendor/brotli with it.
+  assert.equal(process.versions.brotli, BROTLI_VERSION);
+  const digest = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
+  const a = Buffer.from('body { color: red; }\n'.repeat(100));
+  const b = Buffer.from(Array.from({ length: 20000 }, (_, i) => (i * i).toString(36)).join('\n'));
+  assert.equal(digest(brotli(a)), '3645b0cee7d067c4e17a71f145f89ebe78d5b585b19cb43c8ea413cde27fb6b3');
+  assert.equal(digest(brotli(b)), 'b56d7c74f4c412d2821feea91972faf1e823c80b45c61291dc3e4cbaea15db3a');
+  assert.deepEqual(brotliDecompressSync(brotli(b)), b);
+});
+
+test('build: PRECOMPRESS br writes .br sidecars (with gzip ones when both are given), each only when smaller', async () => {
+  const r = await run({
+    'public/a.css': big,
+    'public/sub/b.js': big,
+    'public/random.txt': Array.from({ length: 80 }, (_, i) => String.fromCharCode(33 + ((i * 7919) % 90))).join(''),
+    Sitefile: 'COPY ./public/ /\nPRECOMPRESS br gzip / MIN 4\nEXPORT /\n',
+  });
+  const paths = r.output.entries().map(([p]) => p);
+  assert.deepEqual(paths, ['/a.css', '/a.css.br', '/a.css.gz', '/random.txt', '/sub/b.js', '/sub/b.js.br', '/sub/b.js.gz']);
+  const br = r.output.get('/a.css.br')!;
+  assert.equal(brotliDecompressSync(br.bytes).toString(), big);
+  assert.equal(br.origin.replace(/[^\s']*Sitefile:/g, 'Sitefile:'), 'Sitefile:2 PRECOMPRESS');
+  const only = await run({ 'public/a.css': big, Sitefile: 'COPY ./public/ /\nPRECOMPRESS br /\nEXPORT /\n' });
+  assert.deepEqual(only.output.entries().map(([p]) => p), ['/a.css', '/a.css.br']);
 });
