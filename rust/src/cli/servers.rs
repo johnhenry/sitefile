@@ -11,8 +11,9 @@ use crate::error::{ErrorCode::*, Result, SitefileError};
 use crate::executor::{build, BuildOptions, Callback, LockfileSetting};
 use crate::server::{format_url, listen, listen_shared, LiveReload, SiteServerOptions};
 use crate::servers::{
-    is_running, load_served_site, resolve_source, restart_detached, serve_detached_with,
-    served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry, ServerState,
+    check_site_files, is_running, load_served_site, resolve_source, restart_detached,
+    serve_detached_with, served_last_modified, DetachedServe, ServedTreeOptions, ServerRegistry,
+    ServerState,
 };
 pub use crate::servers::{parse_publish, stop_server};
 use crate::store::{now_iso, Store};
@@ -72,6 +73,19 @@ fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'stati
 
 fn is_wildcard(h: &str) -> bool {
     h == "0.0.0.0" || h == "::"
+}
+
+/// `--country`: an ISO 3166-1 alpha-2 code (any case).
+fn parse_country(v: Option<&str>) -> Result<Option<String>> {
+    match v {
+        None => Ok(None),
+        Some(c) if c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()) => {
+            Ok(Some(c.to_string()))
+        }
+        Some(c) => usage(format!(
+            "--country expects a two-letter country code such as nz, got '{c}'"
+        )),
+    }
 }
 
 // ------------------------------------------------------------ serve
@@ -419,6 +433,8 @@ const SERVE_OPTS: &[OptSpec] = &[
     string_s("publish", 'p'),
     flag_s("detach", 'd'),
     flag("spa"),
+    string("country"),
+    flag("strict-site-files"),
     flag("keep-os-metadata"),
     strings("allowed-host"),
     flag("cors"),
@@ -509,6 +525,8 @@ pub const SERVE: Command = Command {
         "--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)",
         "--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
+        "--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)",
+        "--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
         "-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)",
@@ -556,6 +574,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let (tls, tls_paths) = tls_of(v)?;
     let throttle = throttle_of(v)?;
     let mime = mime_of(v)?;
+    let country = parse_country(v.str("country"))?;
+    let strict_site_files = v.flag("strict-site-files");
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -581,6 +601,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             },
         )?;
         let tree = site.tree;
+        check_site_files(&tree, strict_site_files, &warn, site.content.as_deref())?;
         let modified = served_last_modified(&store, &source);
         let n = tree.len();
         catch_signals();
@@ -589,6 +610,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             SiteServerOptions {
                 spa: v.flag("spa"),
                 log: Some(log_writer(log_json)),
+                country: country.clone(),
                 server_id: None,
                 live_reload: None,
                 last_modified: Some(Arc::new(move || modified)),
@@ -613,6 +635,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 throttle: throttle.as_ref().map(|t| t.1),
                 mime: mime.as_deref().map(mime_map),
                 content: site.content,
+                ..Default::default()
             },
             &bind.host,
             bind.port,
@@ -684,6 +707,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             expires: sharing.stop_after.as_ref().map(|(secs, _)| {
                 crate::store::iso_of_time(std::time::SystemTime::now() + Duration::from_secs(*secs))
             }),
+            country,
+            strict_site_files,
             project: None,
         },
         None,
@@ -748,6 +773,21 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         "morph" => true,
         "full" => false,
         other => return usage(format!("--reload expects full or morph, got '{other}'")),
+    };
+    let country = parse_country(v.str("country"))?;
+    let strict_site_files = v.flag("strict-site-files");
+    // The site-file warnings last printed: a rebuild repeats them only when they change.
+    let last_site_warnings = std::cell::RefCell::new(String::new());
+    let site_files = |tree: &Tree| -> Result<()> {
+        let shown = crate::server::site_file_warnings(tree, None);
+        let text = shown.join("\n");
+        if text != *last_site_warnings.borrow() {
+            for m in &shown {
+                err(&format!("warning: {m}\n"));
+            }
+        }
+        *last_site_warnings.borrow_mut() = text;
+        check_site_files(tree, strict_site_files, &|_| {}, None)
     };
     if is_wildcard(&bind.host) {
         err(&format!(
@@ -818,6 +858,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                         if n == 1 { "" } else { "s" },
                         tree.digest()
                     ));
+                    if let Err(e) = site_files(&tree) {
+                        return failed(&e);
+                    }
                     swap(tree);
                     BuildOutcome {
                         code: 0,
@@ -858,6 +901,9 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     if n == 1 { "" } else { "s" },
                     tree.digest()
                 ));
+                if let Err(e) = site_files(&tree) {
+                    return failed(&e);
+                }
                 swap(tree);
                 BuildOutcome {
                     code: 0,
@@ -871,6 +917,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
         let opts = SiteServerOptions {
             spa: v.flag("spa"),
             log: Some(log_writer(log_json)),
+            country: country.clone(),
             server_id: None,
             live_reload: Some(live.clone()),
             last_modified: Some(Arc::new({
@@ -1035,6 +1082,12 @@ pub fn serve_worker(id: &str) -> i32 {
             },
         )?;
         let tree = site.tree;
+        check_site_files(
+            &tree,
+            state.strict_site_files,
+            &warn,
+            site.content.as_deref(),
+        )?;
         let modified = served_last_modified(&reg.store, &state.source);
         let n = tree.len();
         let log: crate::server::LogFn = Arc::new(stamp);
@@ -1042,6 +1095,7 @@ pub fn serve_worker(id: &str) -> i32 {
             Arc::new(tree),
             SiteServerOptions {
                 spa: state.spa,
+                country: state.country.clone(),
                 log: Some(log),
                 server_id: Some(id.to_string()),
                 live_reload: None,
@@ -1089,6 +1143,7 @@ pub fn serve_worker(id: &str) -> i32 {
                     )
                 }),
                 content: site.content,
+                ..Default::default()
             },
             &state.bind.host,
             state.bind.port,

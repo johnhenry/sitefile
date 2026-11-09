@@ -8,7 +8,7 @@ import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
 import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, jsonLogLine, listen, logLineAsJson, networkUrls, parseCidr, parseMimeFlag, parseMimeTypes, parseThrottle, type Cidr, type Throttle, startedLogLine, type CachePreview, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
-import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite } from '../servers.js';
+import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState, loadServedSite, checkSiteFiles } from '../servers.js';
 import { BasicAuth, makeVerifier, parseAuthPair, parseHtpasswd, type AuthEntry } from '../serve-auth.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -33,6 +33,14 @@ export function parsePublish(spec: string | undefined): { host: string; port: nu
 }
 
 const isWildcard = (h: string): boolean => h === '0.0.0.0' || h === '::';
+
+/** `--country`: an ISO 3166-1 alpha-2 code (any case). */
+export function parseCountry(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  if (!/^[A-Za-z]{2}$/.test(v)) usage(`--country expects a two-letter country code such as nz, got '${v}'`);
+  return v;
+}
+
 
 async function isFile(p: string): Promise<boolean> {
   return fs.stat(p).then((s) => s.isFile(), () => false);
@@ -138,6 +146,8 @@ const run: Command = {
     '--mime <ext=type>            serve files with this extension as this content type (repeatable; before the built-in table)',
     '--mime-file <mime.types>     content types from an nginx or Apache mime.types file (--mime wins)',
     '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
+    '--country <code>  the country _redirects Country= conditions match (there is no geolocation locally)',
+    '--strict-site-files  refuse to serve when a _redirects or _headers line would be ignored',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
@@ -160,6 +170,8 @@ const run: Command = {
     publish: { type: 'string', short: 'p' },
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
+    country: { type: 'string' },
+    'strict-site-files': { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
     'allowed-host': { type: 'string', multiple: true },
     cors: { type: 'boolean' },
@@ -215,6 +227,8 @@ const run: Command = {
     const tls = await tlsOf(v);
     const throttle = throttleOf(v);
     const mime = await mimeOf(v);
+    const country = parseCountry(str(v.country));
+    const strictSiteFiles = !!v['strict-site-files'];
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -225,8 +239,9 @@ const run: Command = {
     const warn = (m: string): void => void process.stderr.write(`warning: ${m}\n`);
     if (!v.detach) {
       const { tree, content, close } = await loadServedSite(store, source, { keepOsMetadata, warn });
+      checkSiteFiles(tree, strictSiteFiles, warn, content);
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), lastModified: () => modified, log: logWriter(logging), ...(content ? { content } : {}), ...(country !== undefined ? { country } : {}) });
       const addr = await listen(server, bind.host, bind.port);
       const bp = sharing.server.basePath;
       if (logging.logFormat === 'json') process.stdout.write(`${startedLogLine(new Date().toISOString(), label, tree.size, siteUrl(addr.host, addr.port, bp, tls.scheme))}\n`);
@@ -241,8 +256,11 @@ const run: Command = {
     }
 
     const reg = await ServerRegistry.open(store);
-    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}) }, warn);
+    const up = await serveDetached(reg, { label, source, name, bind, spa: !!v.spa, keepOsMetadata, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...auth.record, ...perIp, ...sharing.record, ...tls.record, ...(v.compress ? { compress: true } : {}), ...(throttle ? { throttle: throttle.spec } : {}), ...(mime ? { mime: Object.fromEntries(mime) } : {}), country, strictSiteFiles }, warn);
     process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}${throttleLine(up.throttle)}`);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}\n${networkLines(up.host, up.port, up.basePath, up.tlsCert ? 'https' : 'http')}`);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${siteUrl(up.host, up.port, up.basePath)}\n${networkLines(up.host, up.port, up.basePath)}`);
+    process.stdout.write(`Started ${up.name} (${up.id}) serving ${label} at ${formatUrl(up.host, up.port)}\n${networkLines(up.host, up.port)}`);
     return 0;
   },
 };
@@ -292,6 +310,10 @@ export interface DetachedServe {
   /** `--tls-cert`, `--tls-key`, absolute paths. */
   readonly tlsCert?: string | undefined;
   readonly tlsKey?: string | undefined;
+  /** `--country`. */
+  readonly country?: string | undefined;
+  /** `--strict-site-files`. */
+  readonly strictSiteFiles?: boolean | undefined;
   /** The servers file it belongs to (`sitefile up`). */
   readonly project?: string | undefined;
 }
@@ -301,7 +323,13 @@ export interface DetachedServe {
  * wait until it listens. On failure the record is removed.
  */
 export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?: (m: string) => void): Promise<ServerState> {
-  (await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) })).close(); // fail fast on a bad image, directory or archive
+  // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
+  const site = await loadServedSite(reg.store, d.source, { keepOsMetadata: !!d.keepOsMetadata, ...(warn ? { warn } : {}) });
+  try {
+    checkSiteFiles(site.tree, !!d.strictSiteFiles, warn ?? (() => undefined), site.content);
+  } finally {
+    site.close();
+  }
   const { id, name: finalName } = await reg.allocate(d.name);
   const state: ServerState = {
     id,
@@ -328,6 +356,8 @@ export async function serveDetached(reg: ServerRegistry, d: DetachedServe, warn?
     ...(d.compress ? { compress: true } : {}),
     ...(d.throttle !== undefined ? { throttle: d.throttle } : {}),
     ...(d.mime !== undefined ? { mime: d.mime } : {}),
+    ...(d.country !== undefined ? { country: d.country } : {}),
+    ...(d.strictSiteFiles ? { strictSiteFiles: true } : {}),
     bind: d.bind,
     host: d.bind.host,
     port: d.bind.port,
@@ -586,6 +616,18 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   const cssInject = !v['no-css-inject'];
   const navigate = !!v['navigate-to-changed'];
   const reloadMode = str(v.reload) ?? 'morph';
+  const country = parseCountry(str(v.country));
+  const strictSiteFiles = !!v['strict-site-files'];
+  /** The site-file warnings last printed: a rebuild repeats them only when they change. */
+  let lastSiteWarnings = '';
+  const siteFiles = (tree: Tree): void => {
+    const shown: string[] = [];
+    checkSiteFiles(tree, false, (m) => shown.push(m));
+    const text = shown.join('\n');
+    if (text !== lastSiteWarnings) for (const m of shown) process.stderr.write(`warning: ${m}\n`);
+    lastSiteWarnings = text;
+    checkSiteFiles(tree, strictSiteFiles, () => undefined);
+  };
   if (reloadMode !== 'full' && reloadMode !== 'morph') usage(`--reload expects full or morph, got '${reloadMode}'`);
   if (isWildcard(bind.host)) process.stderr.write(`warning: binding ${bind.host}: the site will be reachable from other machines\n`);
 
@@ -601,7 +643,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, cors: !!v.cors, ...(isolate ? { isolate } : {}), ...(cache ? { cache } : {}), ...logging, ...(auth.server ? { auth: auth.server } : {}), ...perIp, ...sharing.server, ...(tls.server ? { tls: tls.server } : {}), compress: !!v.compress, ...(throttle ? { throttle: throttle.limits } : {}), ...(mime ? { mime } : {}), liveReload: live, lastModified: () => builtAt, log: logWriter(logging), warn: (m) => process.stderr.write(`warning: ${m}\n`), ...(country !== undefined ? { country } : {}) });
   try {
     return await watchLoop({
       context,
@@ -615,6 +657,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
           if (plain) {
             const tree = await loadDirectoryTree(context);
             process.stdout.write(`Read ${tree.size} file${tree.size === 1 ? '' : 's'} (${tree.digest()})\n`);
+            siteFiles(tree);
             swap(tree);
             return { code: 0 };
           }
@@ -632,6 +675,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
             onWarning: (m) => process.stderr.write(`warning: ${m}\n`),
           });
           process.stdout.write(`Built ${r.output.size} file${r.output.size === 1 ? '' : 's'} (${r.output.digest()})\n`);
+          siteFiles(r.output);
           swap(r.output);
           return { code: 0 };
         } catch (e) {

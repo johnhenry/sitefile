@@ -1,6 +1,6 @@
 import { SitefileError } from './errors.js';
 import { cborArray, cborBytes, cborMap, cborText, cborUint } from './cbor.js';
-import { headersFor, matchRedirect, parseHeaderRules, parseRedirectRules, type ServeHeaders, type ServeRedirect } from './serve-rules.js';
+import { headersFor, isPlainRule, matchRedirect, parseHeaderRules, parseRedirectRules, type ServeHeaders, type ServeRedirect } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { MIME_TYPES, WELL_KNOWN_TYPES } from './mime-data.js';
 
@@ -146,7 +146,8 @@ function exactRedirect(rules: readonly ServeRedirect[], forced: boolean, path: s
  *   `location` of the rule's target as written, and an empty body: at its path when no file
  *   would be served there, and over the file when forced (`301!`). Like `serve`, the first rule
  *   matching the path decides; when that is a splat or a 200/404 rewrite, the bundle leaves the
- *   path to `/_redirects`. Splat rules and rewrites are not baked in.
+ *   path to `/_redirects`. Splat rules, rewrites and rules with placeholders, query parameters or
+ *   conditions (which are left out entirely) are not baked in.
  *
  * `/_headers` and `/_redirects` stay in the bundle as files. Responses are deduplicated (both URLs
  * of an index page share one when their headers agree; identical redirects share one).
@@ -156,7 +157,8 @@ export function bundleResponses(tree: Tree): { responses: Uint8Array[]; urls: Ar
     const f = tree.get(p);
     return f ? new TextDecoder().decode(f.bytes) : '';
   };
-  const redirects = parseRedirectRules(text('/_redirects'));
+  // Rules with placeholders, query parameters or conditions depend on the request: left to `/_redirects`.
+  const redirects = parseRedirectRules(text('/_redirects')).filter(isPlainRule);
   const headerRules: readonly ServeHeaders[] = parseHeaderRules(text('/_headers'));
 
   const responses: Uint8Array[] = [];

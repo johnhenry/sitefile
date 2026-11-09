@@ -148,6 +148,8 @@ fn run_up(v: &Parsed) -> Result<i32> {
             compress: false,
             throttle: None,
             mime: None,
+            country: None,
+            strict_site_files: false,
             project: Some(project.clone()),
         });
     }

@@ -148,6 +148,15 @@ pub struct ServerState {
     /// `--mime`, `--mime-file`: extension → content type (file order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<serde_json::Map<String, serde_json::Value>>,
+    /// `--country`: what `_redirects` `Country=` conditions match (absent: none matches).
+    pub country: Option<String>,
+    /// `--strict-site-files`: an ignored `_redirects`/`_headers` line stops the server from starting.
+    #[serde(
+        default,
+        rename = "strictSiteFiles",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub strict_site_files: bool,
     /// The requested bind address (port 0 = pick a free port).
     pub bind: Bind,
     pub host: String,
@@ -972,6 +981,32 @@ pub fn resolve_source(store: &Store, arg: &str) -> Result<(String, ServerSource)
     }
 }
 
+/// Warn about every `_redirects`/`_headers` line `serve` ignores; with `strict`
+/// (`--strict-site-files`) any such line is then an error (port of `checkSiteFiles`).
+pub fn check_site_files(
+    tree: &Tree,
+    strict: bool,
+    warn: &dyn Fn(&str),
+    content: Option<&dyn crate::server::SiteContent>,
+) -> Result<()> {
+    let ignored = crate::server::site_file_warnings(tree, content);
+    for m in &ignored {
+        warn(m);
+    }
+    let n = ignored.len();
+    if strict && n > 0 {
+        return Err(SitefileError::plain(
+            E_VALIDATION,
+            format!(
+                "{n} line{} of _redirects/_headers {} ignored (--strict-site-files)",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "is" } else { "are" }
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// A detached server to start ([`serve_detached`]): `serve -d`'s arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedServe {
@@ -1022,6 +1057,10 @@ pub struct DetachedServe {
     pub throttle: Option<String>,
     /// `--mime`, `--mime-file`: extension → content type.
     pub mime: Option<serde_json::Map<String, serde_json::Value>>,
+    /// `--country`.
+    pub country: Option<String>,
+    /// `--strict-site-files`.
+    pub strict_site_files: bool,
     /// The servers file it belongs to (`sitefile up`), by real path.
     pub project: Option<String>,
 }
@@ -1057,6 +1096,8 @@ impl DetachedServe {
             compress: false,
             throttle: None,
             mime: None,
+            country: None,
+            strict_site_files: false,
             project: None,
         })
     }
@@ -1089,7 +1130,15 @@ pub fn serve_detached_with(
         keep_os_metadata: serve.keep_os_metadata,
         warn: Some(warn),
     };
-    load_served_site(&reg.store, &serve.source, &options)?; // fail fast on a bad image, directory or archive
+    // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
+    let site = load_served_site(&reg.store, &serve.source, &options)?;
+    check_site_files(
+        &site.tree,
+        serve.strict_site_files,
+        warn,
+        site.content.as_deref(),
+    )?;
+    drop(site);
     let (id, final_name) = reg.allocate(serve.name.as_deref())?;
     let state = ServerState {
         id: id.clone(),
@@ -1117,6 +1166,8 @@ pub fn serve_detached_with(
         compress: serve.compress,
         throttle: serve.throttle.clone(),
         mime: serve.mime.clone(),
+        country: serve.country.clone(),
+        strict_site_files: serve.strict_site_files,
         host: serve.bind.host.clone(),
         port: serve.bind.port,
         bind: serve.bind.clone(),
@@ -1345,6 +1396,8 @@ mod tests {
             compress: false,
             throttle: None,
             mime: None,
+            country: None,
+            strict_site_files: false,
             bind: Bind {
                 host: "127.0.0.1".into(),
                 port: 0,
