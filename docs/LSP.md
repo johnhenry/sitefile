@@ -18,7 +18,8 @@ an editor tool built on the Rust parser. The TypeScript CLI answers
 ## Editor setup
 
 The server is the `sitefile` **Rust** binary; put it on `PATH` with
-`cargo install --path rust` (from a clone) or give editors its full path.
+a [prebuilt release binary](../README.md#prebuilt-binaries) or
+`cargo install --path rust` (from a clone), or give editors its full path.
 Every client runs `sitefile lsp` (`--stdio` is accepted too) for files named
 `Sitefile`, `*.sitefile` or `*.Sitefile`.
 

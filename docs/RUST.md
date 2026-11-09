@@ -7,13 +7,13 @@ are maintained: same language, same CLI, same output.
 
 - **The Rust binary is the product.** It's what releases ship for macOS
   and Linux, and what editors run (`sitefile lsp`). Install instructions,
-  benchmarks and editor setup assume it.
+  benchmarks and editor setup assume it. See [Release binaries](#release-binaries).
 - **TypeScript is the reference specification and the library.**
   - When the two disagree, the TypeScript behaviour is the specification
     until it is deliberately changed in both.
   - `src/index.ts` is the supported programmatic API.
-  - The npm tarball attached to each release is a secondary way to run the
-    CLI.
+  - The npm package (`npm install -g @johnhenry/sitefile`) is a secondary
+    way to run the CLI.
 - **Parity rules stay.**
   - Every language and CLI feature lands in both implementations, in the same
     PR, with conformance cases.
@@ -37,6 +37,46 @@ cargo build --release            # → target/release/sitefile
 cargo test --release             # unit + CLI integration tests
 ./target/release/sitefile build ../examples/blog
 ```
+
+## Release binaries
+
+`.github/workflows/release-binaries.yml` attaches prebuilt binaries to every
+GitHub Release (johnhenry/sitefile#69). It does not publish anything itself:
+`publish.yml` publishes to npm and creates the `v<version>` tag and Release
+when a version bump reaches `main`; this workflow then builds that tag.
+
+| Target | Runner | Notes |
+| --- | --- | --- |
+| `aarch64-apple-darwin` | `macos-latest` | |
+| `x86_64-apple-darwin` | `macos-latest` | cross-compiled, not smoke-tested |
+| `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | glibc 2.35 or later |
+| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | glibc 2.35 or later |
+
+Each is `cargo build --release --locked --target <target>`, packed as
+`sitefile-<version>-<target>.tar.gz` with `LICENSE` and `README.md`. The same
+run packs the VS Code extension as `sitefile-vscode-<extension version>.vsix`
+and uploads everything plus `SHA256SUMS` (uploaded last; its presence marks
+a release as done). There is no Windows target: the port uses
+`std::os::unix` APIs unconditionally (store, local resources, watch,
+plugins).
+
+Triggers:
+
+- `workflow_run` after a successful **Publish to npm** run on `main`. The
+  Release that publish.yml creates is made with the repository
+  `GITHUB_TOKEN`, and GitHub does not start workflows for events made with
+  that token, so `release: published` would not fire for it. The run reads
+  `version` from `package.json` at that commit and builds only when Release
+  `v<version>` exists and has no `SHA256SUMS` yet.
+- `release: published`, for a Release created by hand.
+- `workflow_dispatch` with `tag` (an existing release) and `dry_run`
+  (default true: build and list the artifacts, upload nothing). To add
+  binaries to an older release:
+  `gh workflow run release-binaries.yml -f tag=v0.0.5 -f dry_run=false`.
+
+Building from source needs a stable toolchain (1.85 or later, `rust-version`
+in `Cargo.toml`) and a C compiler for `ring` and the vendored Brotli encoder:
+`cargo install --locked --path rust`.
 
 ## Layout
 

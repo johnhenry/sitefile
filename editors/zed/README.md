@@ -22,7 +22,8 @@ your settings:
 
 - Highlighting needs nothing.
 - The language server needs the `sitefile` **Rust** binary (crate `rust/`,
-  binary `sitefile`) on the `PATH` Zed sees for the worktree:
+  binary `sitefile`) on the `PATH` Zed sees for the worktree: a
+  [prebuilt release binary](../../README.md#prebuilt-binaries), or
 
   ```bash
   cargo install --path rust        # from a clone; installs ~/.cargo/bin/sitefile

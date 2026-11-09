@@ -88,8 +88,9 @@ Injected heredoc bodies need the parsers for those languages (`html`, `css`,
 
 Diagnostics, completion, hover, go to definition, references, rename and
 document symbols come from `sitefile lsp` ([docs/LSP.md](../../docs/LSP.md)).
-It needs the `sitefile` Rust binary on `PATH` (`cargo install --path rust`
-from a clone) or its full path in `cmd`. The filetype from step 2 must be set.
+It needs the `sitefile` Rust binary on `PATH` (a
+[prebuilt release binary](../../README.md#prebuilt-binaries), or
+`cargo install --path rust` from a clone) or its full path in `cmd`. The filetype from step 2 must be set.
 
 Neovim 0.11+ (`vim.lsp.config`):
 

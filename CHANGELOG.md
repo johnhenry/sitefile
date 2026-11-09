@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Release binaries** (johnhenry/sitefile#69): a new workflow,
+  `.github/workflows/release-binaries.yml`, attaches `sitefile-<version>-<target>.tar.gz` for
+  macOS (arm64, x86_64) and Linux (x86_64, arm64; glibc), the VS Code extension
+  `sitefile-vscode-<version>.vsix` and `SHA256SUMS` to each GitHub Release. It runs after a
+  successful npm publish (or on a hand-made release, or by dispatch with a `dry_run` input) and
+  publishes nothing itself; publish.yml is unchanged. No Windows build yet (the Rust port uses Unix
+  file APIs). README "Install" covers npm, the prebuilt binaries with checksum verification, and
+  `cargo install`; docs/RUST.md and the editor READMEs point at the binaries. The MIT `LICENSE`
+  was already present and in the npm package.
+
 ## 0.0.5 (2026-11-09)
 
 - **`PRECOMPRESS br`** (johnhenry/sitefile#203): Brotli sidecars `<file>.br`, alone or with gzip
