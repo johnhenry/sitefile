@@ -357,6 +357,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 base: base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 rewrite_base: rewrite_base.clone().map(|b| -> crate::server::BaseFn { Arc::new(move || Some(b.clone())) }),
                 profile,
+                dev_not_found: !is_wildcard(&bind.host),
                 country: country.clone(),
                 log: Some(log),
                 server_id: None,
@@ -622,6 +623,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                 move || rb.read().ok().and_then(|b| b.clone())
             })),
             profile,
+            dev_not_found: !is_wildcard(&bind.host),
             country: country.clone(),
             log: Some(log),
             server_id: None,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Development 404s and what-answered log notes** (johnhenry/sitefile#201):
+  a foreground or `--watch` server lists near misses on its 404 page
+  (letter-case differences, `_redirects` rules that matched the path but not
+  their query or conditions), and access-log lines note a clean URL, the SPA
+  fallback or the 404.html that answered. Both implementations.
 - **`serve --host-profile` and `--html-handling`** (johnhenry/sitefile#192):
   route like Netlify, Cloudflare Pages, Vercel, GitHub Pages or Firebase
   (canonical page URLs and their redirect status, whether `_redirects` and

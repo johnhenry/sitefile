@@ -1,7 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRedirect, type RedirectRequest, type ServeRedirect, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { mimeTypeFor } from './wbn.js';
@@ -46,6 +46,11 @@ export interface SiteServerOptions {
   readonly rewriteBase?: string | (() => string | undefined);
   /** `--host-profile` / `--html-handling`: behave like a static host ({@link hostProfile}). Absent: sitefile's own rules. */
   readonly profile?: RoutingProfile;
+  /**
+   * Foreground and `--watch` servers (never detached or shared ones): a 404 with no `404.html` to
+   * answer it lists near misses ({@link nearMisses}).
+   */
+  readonly devNotFound?: boolean;
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -564,6 +569,51 @@ export function routingFor(o: { hostProfile?: HostProfileName | undefined; htmlH
   return o.hostProfile === undefined && o.htmlHandling === undefined ? undefined : hostProfile(o.hostProfile, o.htmlHandling);
 }
 
+/** A near miss for a 404: a file (`path`) or a `_redirects` rule (`line`), and why. */
+export interface NearMiss {
+  readonly path?: string;
+  readonly line?: number;
+  readonly why: string;
+}
+
+const utf8Order = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/**
+ * What a missing path almost matched (at most 20): files whose path differs only in ASCII letter case
+ * from the path, `<path>.html` or `<path>/index.html` (which work on a case-insensitive disk but not on a
+ * host), sorted by path; then `_redirects` rules whose source matches but whose query parameters or
+ * conditions do not, in file order.
+ */
+export function nearMisses(tree: Tree, isFile: (p: string) => boolean, vpath: string, redirects: readonly ServeRedirect[], req: RedirectRequest): NearMiss[] {
+  const lower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const wanted = new Set([vpath, `${vpath === '/' ? '' : vpath}.html`, `${vpath === '/' ? '' : vpath}/index.html`].map(lower));
+  const out: NearMiss[] = [];
+  const files = tree
+    .entries()
+    .map(([p]) => p)
+    .filter((p) => isFile(p) && wanted.has(lower(p)))
+    .sort(utf8Order);
+  for (const p of files) out.push({ path: p, why: 'the letter case differs (a case-insensitive disk finds it, a host does not)' });
+  for (const r of redirects) {
+    if (matchRedirect(r, vpath) !== undefined && matchRule(r, vpath, req) === undefined) {
+      out.push({ line: r.line, why: `matches the path but not its ${r.query.length > 0 ? 'query parameters' : 'conditions'}${r.query.length > 0 && r.conditions.length > 0 ? ' or conditions' : ''}` });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'));
+
+/** The development 404 page listing near misses. */
+export function nearMissPage(vpath: string, misses: readonly NearMiss[], mount = ''): string {
+  let out = `<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n<p>Nothing is served at <code>${escapeHtml(vpath)}</code>. Near misses:</p>\n<ul>\n`;
+  for (const m of misses) {
+    const what = m.path !== undefined ? `<a href="${escapeHtml(mount + encodePath(m.path))}">${escapeHtml(m.path)}</a>` : `<code>_redirects:${m.line}</code>`;
+    out += `<li>${what}: ${escapeHtml(m.why)}</li>\n`;
+  }
+  return out + '</ul>\n';
+}
+
 /** A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port. */
 const SAFE_HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
 
@@ -902,18 +952,27 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     }
     if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
       served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+      if (served !== undefined) note = ` \u2192 ${encodePath(served)} (spa fallback)`;
     }
+    if (served !== undefined && note === '' && served === `${vpath}.html`) note = ` \u2192 ${encodePath(served)} (clean URL)`;
     if (served !== undefined) return sendFile(200, served);
     // The nearest 404.html: in the request's directory, then each parent up to the root (only the
     // root one for a profile whose host does not look further).
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
     for (let n = profile?.notFound === 'root' ? 0 : dirs.length; n >= 0; n--) {
       const notFound = `/${dirs.slice(0, n).map((d) => d + '/').join('')}404.html`;
-      if (isFile(notFound)) return sendFile(404, notFound);
+      if (isFile(notFound)) {
+        note = ` \u2192 ${encodePath(notFound)}`;
+        return sendFile(404, notFound);
+      }
     }
     // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
-    if (profile?.notFound === 'index' && isFile('/index.html')) return sendFile(200, '/index.html');
-    page(404, NOT_FOUND_PAGE, custom);
+    if (profile?.notFound === 'index' && isFile('/index.html')) {
+      note = ' \u2192 /index.html (no 404.html)';
+      return sendFile(200, '/index.html');
+    }
+    const misses = options.devNotFound ? nearMisses(tree, isFile, vpath, redirects, ruleRequest) : [];
+    page(404, misses.length === 0 ? NOT_FOUND_PAGE : nearMissPage(vpath, misses, mount), custom);
   };
 
   const server = http.createServer(handler);

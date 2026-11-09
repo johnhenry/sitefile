@@ -50,6 +50,9 @@ pub struct SiteServerOptions {
     /// `--host-profile` / `--html-handling`: behave like a static host ([`host_profile`]). `None`:
     /// sitefile's own rules.
     pub profile: Option<RoutingProfile>,
+    /// Foreground and `--watch` servers (never detached or shared ones): a 404 with no `404.html`
+    /// to answer it lists near misses ([`near_misses`]).
+    pub dev_not_found: bool,
     /// `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally).
     pub country: Option<String>,
     /// Where file contents come from when the tree holds only digests (a zip served in
@@ -1172,6 +1175,92 @@ pub fn routing_for(
         host_profile_name,
         html_handling.and_then(HtmlHandling::parse),
     ))
+}
+
+/// A near miss for a 404: a file (`path`) or a `_redirects` rule (`line`), and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NearMiss {
+    pub path: Option<String>,
+    pub line: Option<usize>,
+    pub why: String,
+}
+
+/// What a missing path almost matched (port of `nearMisses`, which documents it).
+pub fn near_misses(
+    tree: &Tree,
+    is_file: &dyn Fn(&str) -> bool,
+    vpath: &str,
+    redirects: &[ServeRedirect],
+    req: &RedirectRequest,
+) -> Vec<NearMiss> {
+    let stem = if vpath == "/" { "" } else { vpath };
+    let wanted: Vec<String> = [
+        vpath.to_string(),
+        format!("{stem}.html"),
+        format!("{stem}/index.html"),
+    ]
+    .iter()
+    .map(|w| w.to_ascii_lowercase())
+    .collect();
+    let mut files: Vec<String> = tree
+        .entries()
+        .map(|(p, _)| p.clone())
+        .filter(|p| is_file(p) && wanted.contains(&p.to_ascii_lowercase()))
+        .collect();
+    files.sort();
+    let mut out: Vec<NearMiss> = files
+        .into_iter()
+        .map(|p| NearMiss {
+            path: Some(p),
+            line: None,
+            why: "the letter case differs (a case-insensitive disk finds it, a host does not)".into(),
+        })
+        .collect();
+    for r in redirects {
+        if match_redirect(r, vpath).is_some() && match_rule(r, vpath, req).is_none() {
+            let what = if r.query.is_empty() {
+                "conditions"
+            } else if r.conditions.is_empty() {
+                "query parameters"
+            } else {
+                "query parameters or conditions"
+            };
+            out.push(NearMiss {
+                path: None,
+                line: Some(r.line),
+                why: format!("matches the path but not its {what}"),
+            });
+        }
+    }
+    out.truncate(20);
+    out
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The development 404 page listing near misses (port of `nearMissPage`).
+pub fn near_miss_page(vpath: &str, misses: &[NearMiss], mount: &str) -> String {
+    let mut out = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n<p>Nothing is served at <code>{}</code>. Near misses:</p>\n<ul>\n",
+        escape_html(vpath)
+    );
+    for m in misses {
+        let what = match (&m.path, m.line) {
+            (Some(p), _) => format!(
+                "<a href=\"{}\">{}</a>",
+                escape_html(&format!("{mount}{}", encode_path(p))),
+                escape_html(p)
+            ),
+            (None, line) => format!("<code>_redirects:{}</code>", line.unwrap_or(0)),
+        };
+        out.push_str(&format!("<li>{what}: {}</li>\n", escape_html(&m.why)));
+    }
+    out + "</ul>\n"
 }
 
 /// A `Host` header safe to write into a page: a name, IPv4 or bracketed IPv6 address, and a port.
@@ -2496,10 +2585,19 @@ pub fn respond(
         );
         if !options.spa_exclude.iter().any(|g| glob_match(g, &req_path)) {
             served = spa_fallback(&segs, trailing, &is_file, options.spa_fallback.as_deref());
+            if let Some(f) = &served {
+                let mut res = send_file(200, f);
+                res.note = Some(format!(" \u{2192} {} (spa fallback)", encode_path(f)));
+                return res;
+            }
         }
     }
     if let Some(served) = served {
-        return send_file(200, &served);
+        let mut res = send_file(200, &served);
+        if served == format!("{vpath}.html") {
+            res.note = Some(format!(" \u{2192} {} (clean URL)", encode_path(&served)));
+        }
+        return res;
     }
     // The nearest 404.html: in the request's directory, then each parent up to the root (only the
     // root one for a profile whose host does not look further).
@@ -2518,14 +2616,27 @@ pub fn respond(
         let not_found: String = dirs[..n].iter().map(|d| format!("/{d}")).collect();
         let not_found = format!("{not_found}/404.html");
         if is_file(&not_found) {
-            return send_file(404, &not_found);
+            let mut res = send_file(404, &not_found);
+            res.note = Some(format!(" \u{2192} {}", encode_path(&not_found)));
+            return res;
         }
     }
     // Cloudflare Pages: a site without a 404.html is taken for a single-page app.
     if not_found_mode == Some(NotFound::Index) && is_file("/index.html") {
-        return send_file(200, "/index.html");
+        let mut res = send_file(200, "/index.html");
+        res.note = Some(" \u{2192} /index.html (no 404.html)".into());
+        return res;
     }
-    page(404, NOT_FOUND_PAGE, custom.clone())
+    let misses = if options.dev_not_found {
+        near_misses(tree, &is_file, &vpath, &rules.redirects, &rule_request)
+    } else {
+        Vec::new()
+    };
+    if misses.is_empty() {
+        page(404, NOT_FOUND_PAGE, custom.clone())
+    } else {
+        page(404, &near_miss_page(&vpath, &misses, &mount), custom.clone())
+    }
 }
 
 const MAX_HEAD: usize = 64 * 1024;
@@ -3641,6 +3752,56 @@ mod tests {
             assert_eq!(at(&t, path).status, 404, "{path}");
         }
         assert_eq!(reason(308), "Permanent Redirect");
+    }
+
+    // johnhenry/sitefile#201 (test/server.test.ts)
+    #[test]
+    fn dev_404_near_misses_and_log_notes() {
+        let t = Tree::from_files(
+            [
+                ("/index.html", "home"),
+                ("/About.html", "about"),
+                ("/app/index.html", "app"),
+                ("/sub/404.html", "sub 404"),
+                ("/a.html", "a"),
+                (
+                    "/_redirects",
+                    "/promo /sale 302 Country=nz\n/item id=:id /items/:id\n",
+                ),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.as_bytes().to_vec(), "t", 0o644))),
+        )
+        .unwrap();
+        let opts = SiteServerOptions {
+            spa: true,
+            dev_not_found: true,
+            ..Default::default()
+        };
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &HashMap::new());
+        assert!(body(&get("/about")).contains(
+            "<li><a href=\"/About.html\">/About.html</a>: the letter case differs"
+        ));
+        assert!(body(&get("/promo"))
+            .contains("<code>_redirects:1</code>: matches the path but not its conditions"));
+        assert!(body(&get("/item")).contains("matches the path but not its query parameters"));
+        assert_eq!(body(&get("/zzz")), NOT_FOUND_PAGE);
+        assert_eq!(
+            get("/sub/x").note.as_deref(),
+            Some(" \u{2192} /sub/404.html")
+        );
+        assert_eq!(
+            get("/a").note.as_deref(),
+            Some(" \u{2192} /a.html (clean URL)")
+        );
+        let nav: HashMap<String, String> =
+            [("sec-fetch-mode".to_string(), "navigate".to_string())].into();
+        assert_eq!(
+            handle_request(&t, &opts, "GET", "/app/route", &nav)
+                .note
+                .as_deref(),
+            Some(" \u{2192} /app/index.html (spa fallback)")
+        );
+        assert!(!body(&at(&t, "/about")).contains("Near misses"));
     }
 
     // johnhenry/sitefile#192 (test/server.test.ts)

@@ -795,6 +795,39 @@ test('serve --host-profile and --html-handling: canonical URLs, site files and 4
   });
 });
 
+// johnhenry/sitefile#201
+test('serve: the dev 404 lists near misses; the access log says what answered', async () => {
+  const files = { '/index.html': 'home', '/About.html': 'about', '/docs/Guide/index.html': 'guide', '/app/index.html': 'app', '/sub/404.html': 'sub 404', '/_redirects': '/promo /sale 302 Country=nz\n/item id=:id /items/:id\n' };
+  const t = Tree.fromFiles(Object.entries(files).map(([p, c]) => [p, makeFile(enc(c), 't')] as const));
+  const log: string[] = [];
+  const s = createSiteServer(t, { spa: true, devNotFound: true, log: (l) => log.push(l) });
+  const { port } = await listen(s, '127.0.0.1', 0);
+  try {
+    let r = await req(port, '/about');
+    assert.equal(r.status, 404);
+    assert.match(r.body, /<li><a href="\/About\.html">\/About\.html<\/a>: the letter case differs/);
+    r = await req(port, '/docs/guide/');
+    assert.match(r.body, /href="\/docs\/Guide\/index\.html"/);
+    r = await req(port, '/promo');
+    assert.match(r.body, /<code>_redirects:1<\/code>: matches the path but not its conditions/);
+    assert.match((await req(port, '/item')).body, /_redirects:2<\/code>: matches the path but not its query parameters/);
+    assert.equal((await req(port, '/zzz')).body, '<!doctype html><meta charset="utf-8"><title>404 Not Found</title><h1>404 Not Found</h1>\n', 'no near miss: the plain page');
+    await req(port, '/sub/x');
+    await req(port, '/app/route', 'GET', { 'sec-fetch-mode': 'navigate' });
+  } finally {
+    await closeServer(s);
+  }
+  assert.ok(log.includes(log.find((l) => /^GET \/sub\/x 404 7 [0-9.]+ms \u2192 \/sub\/404\.html$/.test(l))!), log.join('\n'));
+  assert.ok(log.some((l) => /^GET \/app\/route 200 3 [0-9.]+ms \u2192 \/app\/index\.html \(spa fallback\)$/.test(l)), log.join('\n'));
+  await withTree(files, {}, async (port) => assert.doesNotMatch((await req(port, '/about')).body, /Near misses/, 'only with devNotFound'));
+  const clean: string[] = [];
+  const c = createSiteServer(Tree.fromFiles([['/a.html', makeFile(enc('a'), 't')]]), { log: (l) => clean.push(l) });
+  const cp = (await listen(c, '127.0.0.1', 0)).port;
+  await req(cp, '/a');
+  await closeServer(c);
+  assert.match(clean[0]!, /^GET \/a 200 1 [0-9.]+ms \u2192 \/a\.html \(clean URL\)$/);
+});
+
 const NAV = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
 
 test('live reload: 404.html is injected too, and a swapped tree brings its own _redirects', async () => {

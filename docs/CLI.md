@@ -1263,6 +1263,14 @@ on disk after the server started answers `500` for the entries that changed (`se
   `--html-handling` without a profile redirects with 307. These are the hosts' defaults (Vercel and Firebase
   without `cleanUrls`/`trailingSlash`); their own config files (`vercel.json`, `firebase.json`, ...) are not
   read yet. Kept in the server record as `hostProfile` and `htmlHandling`.
+- **Development 404s.** A foreground or `--watch` server (not `-d`, and not one bound to `0.0.0.0`/`::`) answers
+  a miss that no `404.html` covers with a page listing near misses: files whose path differs only in letter
+  case from the path, `<path>.html` or `<path>/index.html` (they work on a case-insensitive disk such as
+  macOS's, not on a host), and `_redirects` rules whose source matches but whose query parameters or
+  conditions do not. Without near misses it is the plain page.
+- **What answered** is noted at the end of the access-log line: `→ /about.html (clean URL)`,
+  `→ /app/index.html (spa fallback)`, `→ /docs/404.html`, `→ /index.html (no 404.html)` (Cloudflare
+  profile), and `→ <target> (_redirects:3)` for a rule. Index files and exact paths get no note.
 - **`_redirects` and `_headers`** at the site root (the Netlify / Cloudflare Pages files, which `REDIRECT` and
   `HEADER` write; see LANGUAGE.md "Site files") are read once at start and never served themselves.
   - `_redirects`: one `from [name=value...] to [status[!]] [Key=values...]` per line (`#` comments), as on
