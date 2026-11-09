@@ -537,7 +537,6 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 ip_rules: sharing.ip_rules.clone(),
                 noindex: sharing.noindex,
                 client_info: true,
-                tls: worker_tls(&state)?,
                 tls: tls.clone(),
             },
             &bind.host,
@@ -971,6 +970,7 @@ pub fn serve_worker(id: &str) -> i32 {
                     || state.bind.host == "::1"
                     || state.bind.host.starts_with("127.")),
                 client_info: true,
+                tls: worker_tls(&state)?,
             },
             &state.bind.host,
             state.bind.port,
