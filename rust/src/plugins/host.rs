@@ -1213,6 +1213,8 @@ mod tests {
     }
 
     /// A project folder with `plugins/<name>.mjs` (+ extra files); returns (root, plugin path).
+    /// Drop the host before removing `root`: its Node process runs in the plugin folder,
+    /// and Windows can't remove a process's working directory (error 32).
     fn plugin(src: &str, extra: &[(&str, &str)]) -> (PathBuf, PathBuf) {
         let root = tmp("sitefile-plugins-rs-");
         fs::create_dir_all(root.join("plugins")).unwrap();
@@ -1346,6 +1348,7 @@ mod tests {
         );
         assert!(h.cacheable("p"));
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1368,6 +1371,7 @@ mod tests {
                 ("sub/b.bin".into(), vec![1, 2, 3])
             ])
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1402,6 +1406,7 @@ mod tests {
             json!({ "readOwn": "allowed", "readContext": "denied", "readEtc": "denied", "write": "denied", "spawn": "denied", "net": "denied", "env": [] })
         );
         assert!(!root.join("plugins/written.txt").exists());
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1416,6 +1421,7 @@ mod tests {
             e.message()
         );
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
         e
     }
@@ -1506,6 +1512,7 @@ mod tests {
         );
         drop(logs);
         h.close();
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
 
         // Within the limit: unaffected.
@@ -1519,6 +1526,7 @@ mod tests {
         };
         let (mut h, _) = host_with(&file, policy);
         assert_eq!(text(&h.call("p", &req("/a"), None).unwrap()), "4194304");
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1541,6 +1549,7 @@ mod tests {
         );
         let e = h.call("p", &req("/a"), None).unwrap_err();
         assert_eq!(e.message(), "PLUGIN p exited with code 4");
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1564,6 +1573,7 @@ mod tests {
             "{:?}",
             logs.lock().unwrap()
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
 
         let (root, file) = plugin(
@@ -1573,6 +1583,7 @@ mod tests {
         let (mut h, _) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(!h.cacheable("p"));
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1640,6 +1651,7 @@ mod tests {
         fs::remove_dir_all(garbage.parent().unwrap()).unwrap();
 
         if !node_available() {
+            drop(h); // stop Node: Windows can\'t remove its working directory
             fs::remove_dir_all(root).unwrap();
             return;
         }
@@ -1660,6 +1672,7 @@ mod tests {
                 node.display()
             )]
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1688,10 +1701,13 @@ mod tests {
             undeclared_cache_warning("p"),
             "PLUGIN p does not export cache, so its results are reused as if it were deterministic: export const cache = true to confirm, or cache = false if a result can depend on the clock, randomness or an earlier call"
         );
-        // Nothing reused: no warning.
+        // Nothing reused: no warning. (Stop the first host's Node first: on
+        // Windows its working directory, the plugin folder, can't be removed.)
+        drop(h);
         let (mut h, logs) = host_with(&file, PluginPolicy::default());
         h.call("p", &req("/a"), None).unwrap();
         assert!(warned(&logs).is_empty());
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
         // Declared either way: no warning.
         for (src, cacheable) in [
@@ -1714,6 +1730,7 @@ mod tests {
             h.call("p", &req("/a"), None).unwrap();
             assert_eq!(h.cacheable("p"), cacheable, "{src}");
             assert!(warned(&logs).is_empty(), "{src}");
+            drop(h); // stop Node: Windows can\'t remove its working directory
             fs::remove_dir_all(root).unwrap();
         }
         rejects(
@@ -1739,6 +1756,7 @@ mod tests {
             "{}",
             e.message()
         );
+        drop(h); // stop Node: Windows can\'t remove its working directory
         fs::remove_dir_all(root).unwrap();
     }
 }
