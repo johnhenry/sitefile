@@ -1,0 +1,14 @@
+{
+  "command": "serve",
+  "args": ["--cors"],
+  "requests": [
+    { "target": "/a.txt", "headers": { "origin": "http://localhost:5173" }, "expect": { "status": 200, "headers": { "access-control-allow-origin": "*" }, "body": "a\n" } },
+    { "target": "/a.txt", "headers": { "if-none-match": "\"87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7\"" }, "expect": { "status": 304, "headers": { "access-control-allow-origin": "*" } } },
+    { "target": "/missing", "expect": { "status": 404, "headers": { "access-control-allow-origin": "*" } } },
+    { "target": "/own/o.txt", "expect": { "status": 200, "headers": { "access-control-allow-origin": "https://app.example" } } },
+    { "method": "OPTIONS", "target": "/a.txt", "headers": { "origin": "http://localhost:5173", "access-control-request-method": "GET", "access-control-request-headers": "x-custom, content-type" }, "expect": { "status": 204, "headers": { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, HEAD", "access-control-allow-headers": "x-custom, content-type", "access-control-max-age": "600", "content-length": null }, "body": "" } },
+    { "method": "OPTIONS", "target": "/anything", "headers": { "access-control-request-headers": "bad\"value" }, "expect": { "status": 204, "headers": { "access-control-allow-headers": null } } },
+    { "method": "POST", "target": "/a.txt", "expect": { "status": 405, "headers": { "allow": "GET, HEAD, OPTIONS", "access-control-allow-origin": "*" } } },
+    { "method": "OPTIONS", "target": "/a.txt", "headers": { "host": "evil.example" }, "expect": { "status": 403 } }
+  ]
+}

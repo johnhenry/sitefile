@@ -48,7 +48,7 @@ pub fn format_of(file: &str) -> Option<&'static str> {
     }
 }
 
-const PLACEHOLDERS: &str = ":placeholders are not supported yet (johnhenry/sitefile#193)";
+const PLACEHOLDERS: &str = ":placeholders are supported in redirects, not in header patterns";
 const MIDDLE_STAR: &str = "* is supported only as a trailing /*";
 const PROXY: &str = "proxying to another host is not supported (johnhenry/sitefile#172)";
 const CONDITIONS: &str = "conditions are not supported";
@@ -89,6 +89,42 @@ impl Out {
         });
     }
 
+    /// Add `from [query…] to status[!] [conditions…]` when `serve` would apply it as written (and
+    /// every `:name` the target uses is captured by the source); otherwise list why not.
+    #[allow(clippy::too_many_arguments)]
+    fn redirect_with(
+        &mut self,
+        entry: &str,
+        from: &str,
+        to: &str,
+        status: i64,
+        force: bool,
+        fallback: bool,
+        query: &[String],
+        conditions: &[String],
+    ) -> bool {
+        let mut fields: Vec<String> = vec![from.to_string()];
+        fields.extend(query.iter().cloned());
+        fields.push(to.to_string());
+        fields.push(format!("{status}{}", if force { "!" } else { "" }));
+        fields.extend(conditions.iter().cloned());
+        let line = fields.join(" ");
+        let unknown = unknown_name(from, query, to);
+        if parse_redirect_rules(&line).len() == 1 && unknown.is_none() {
+            if fallback {
+                self.fallbacks.push(line);
+            } else {
+                self.redirects.push(line);
+            }
+            return true;
+        }
+        match unknown {
+            Some(n) => self.skip(entry, format!(":{n} in the target is not in the source")),
+            None => self.skip(entry, redirect_reason(from, to, status)),
+        }
+        false
+    }
+
     fn redirect(
         &mut self,
         entry: &str,
@@ -98,17 +134,7 @@ impl Out {
         force: bool,
         fallback: bool,
     ) -> bool {
-        let line = format!("{from} {to} {status}{}", if force { "!" } else { "" });
-        if parse_redirect_rules(&line).len() == 1 && !has_placeholder(to) {
-            if fallback {
-                self.fallbacks.push(line);
-            } else {
-                self.redirects.push(line);
-            }
-            return true;
-        }
-        self.skip(entry, redirect_reason(from, to, status));
-        false
+        self.redirect_with(entry, from, to, status, force, fallback, &[], &[])
     }
 
     fn header(&mut self, entry: &str, pattern: &str, headers: Vec<(String, String)>) {
@@ -146,8 +172,8 @@ fn is_ascii_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}' | '\u{b}')
 }
 
-/// `/(^|\/):(?!splat(\/|$|[?#]))[A-Za-z_]/` on the target without its `https://host`.
-fn has_placeholder(to: &str) -> bool {
+/// The `:name`s a target uses (at the start of a path segment, after its `https://host`).
+fn target_names(to: &str) -> Vec<String> {
     let mut path = to;
     let lower = to.to_ascii_lowercase();
     for scheme in ["http://", "https://"] {
@@ -159,37 +185,50 @@ fn has_placeholder(to: &str) -> bool {
         }
     }
     let b = path.as_bytes();
+    let mut out = Vec::new();
     for i in 0..b.len() {
         if b[i] != b':' || !(i == 0 || b[i - 1] == b'/') {
             continue;
         }
-        let after = &path[i + 1..];
-        if after.starts_with("splat") {
-            let n = after.as_bytes().get(5);
-            if n.is_none() || matches!(n, Some(b'/') | Some(b'?') | Some(b'#')) {
-                continue;
-            }
-        }
-        if after
-            .as_bytes()
-            .first()
+        if !b
+            .get(i + 1)
             .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
         {
-            return true;
+            continue;
         }
+        let mut j = i + 1;
+        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+            j += 1;
+        }
+        out.push(path[i + 1..j].to_string());
     }
-    false
+    out
 }
 
+/// A name the target uses that the source (its `:name` segments, `/*` as `splat`, `name=:value`
+/// query fields) does not capture.
+fn unknown_name(from: &str, query: &[String], to: &str) -> Option<String> {
+    let mut captured: Vec<String> = from
+        .split('/')
+        .filter_map(|s| s.strip_prefix(':').map(String::from))
+        .collect();
+    if from == "/*" || from.ends_with("/*") {
+        captured.push("splat".into());
+    }
+    for q in query {
+        let v = &q[q.find('=').map_or(0, |i| i + 1)..];
+        if let Some(n) = v.strip_prefix(':') {
+            captured.push(n.to_string());
+        }
+    }
+    target_names(to).into_iter().find(|n| !captured.contains(n))
+}
+
+const REWRITES: [i64; 4] = [200, 404, 410, 451];
+
 fn redirect_reason(from: &str, to: &str, status: i64) -> String {
-    if status == 410 {
-        return "status 410 is not supported yet (johnhenry/sitefile#193)".into();
-    }
-    if ![200, 301, 302, 303, 307, 308, 404].contains(&status) {
+    if ![200, 301, 302, 303, 307, 308, 404, 410, 451].contains(&status) {
         return format!("status {status} is not supported");
-    }
-    if from.split('/').any(|s| s.starts_with(':')) || has_placeholder(to) {
-        return PLACEHOLDERS.into();
     }
     let head = from.strip_suffix("/*").unwrap_or(from);
     if head.contains('*') {
@@ -198,7 +237,7 @@ fn redirect_reason(from: &str, to: &str, status: i64) -> String {
     if !from.starts_with('/') {
         return format!("'{from}' is not a path");
     }
-    if (status == 200 || status == 404) && is_http(to) {
+    if REWRITES.contains(&status) && is_http(to) {
         return PROXY.into();
     }
     format!("sitefile serve cannot express '{from} {to} {status}'")
@@ -280,19 +319,60 @@ fn netlify(doc: &Map<String, Value>, out: &mut Out) {
                         out.skip(&entry, "expected from and to");
                         continue;
                     };
-                    if let Some(k) = ["query", "conditions", "headers", "signed"]
-                        .iter()
-                        .find(|k| m.contains_key(**k))
-                    {
-                        out.skip(
-                            &entry,
-                            if *k == "query" {
-                                "query matching is not supported"
-                            } else {
-                                CONDITIONS
-                            },
-                        );
+                    if m.contains_key("headers") || m.contains_key("signed") {
+                        out.skip(&entry, "proxy headers and signing are not supported");
                         continue;
+                    }
+                    let mut query: Vec<String> = Vec::new();
+                    if let Some(q) = m.get("query") {
+                        match string_map(q) {
+                            Some(pairs) => {
+                                query = pairs.into_iter().map(|(k, v)| format!("{k}={v}")).collect()
+                            }
+                            None => {
+                                out.skip(&entry, "query must map names to strings");
+                                continue;
+                            }
+                        }
+                    }
+                    let mut conditions: Vec<String> = Vec::new();
+                    if let Some(c) = m.get("conditions") {
+                        let Some(c) = c.as_object() else {
+                            out.skip(&entry, "conditions must be a table");
+                            continue;
+                        };
+                        let mut bad: Option<String> = None;
+                        for k in keys_of(c) {
+                            if !["language", "country", "cookie"]
+                                .contains(&k.to_lowercase().as_str())
+                            {
+                                bad = Some(format!("conditions on {k} are not supported"));
+                                break;
+                            }
+                            let values: Option<Vec<String>> = match &c[k] {
+                                Value::String(v) => Some(vec![v.clone()]),
+                                Value::Array(a) if a.iter().all(Value::is_string) => Some(
+                                    a.iter()
+                                        .filter_map(Value::as_str)
+                                        .map(String::from)
+                                        .collect(),
+                                ),
+                                _ => None,
+                            };
+                            match values.filter(|v| !v.is_empty()) {
+                                Some(v) => conditions.push(format!("{k}={}", v.join(","))),
+                                None => {
+                                    bad = Some(format!(
+                                        "conditions.{k} must be a string or a list of strings"
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(reason) = bad {
+                            out.skip(&entry, reason);
+                            continue;
+                        }
                     }
                     let status = match m.get("status") {
                         None => Some(301),
@@ -310,7 +390,7 @@ fn netlify(doc: &Map<String, Value>, out: &mut Out) {
                             continue;
                         }
                     };
-                    out.redirect(&entry, from, to, status, force, false);
+                    out.redirect_with(&entry, from, to, status, force, false, &query, &conditions);
                 }
             }
         }
@@ -366,37 +446,61 @@ fn has_any(s: &str, set: &str) -> bool {
 
 const VERCEL_SPECIAL: &str = ":*()?+[]{}\\";
 
-/// A Vercel `source` as a `_redirects` path (see the TypeScript `vercelSource`).
-fn vercel_source(source: &str) -> Option<(String, Vec<String>)> {
-    if source.starts_with('/') && !has_any(&source[1..], VERCEL_SPECIAL) {
-        return Some((source.to_string(), Vec::new()));
-    }
-    let slash = source.rfind('/')?;
-    let (prefix, last) = (&source[..=slash], &source[slash + 1..]);
-    if !prefix.starts_with('/') {
-        return None;
-    }
-    if prefix.len() > 1
-        && prefix[1..prefix.len() - 1]
-            .split('/')
-            .any(|seg| seg.is_empty() || has_any(seg, VERCEL_SPECIAL))
-    {
-        return None;
-    }
-    if last == "(.*)" {
-        return Some((format!("{prefix}*"), vec!["$1".into()]));
-    }
-    let name = last.strip_prefix(':')?.strip_suffix('*')?;
-    let mut cs = name.chars();
-    let ok = cs
-        .next()
+fn is_ident(n: &str) -> bool {
+    let mut cs = n.chars();
+    cs.next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    ok.then(|| {
-        (
-            format!("{prefix}*"),
-            vec![format!(":{name}*"), format!(":{name}")],
-        )
+        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A `:name` segment.
+fn is_param(seg: &str) -> bool {
+    seg.strip_prefix(':').is_some_and(is_ident)
+}
+
+/// Literal segments, `:name` segments (`params`), and the given splat form of the last segment:
+/// shared by the Vercel and Firebase sources (see the TypeScript `vercelSource` / `firebaseSource`).
+fn segmented(
+    source: &str,
+    params: bool,
+    special: &str,
+    splat_of: &dyn Fn(&str) -> Option<Vec<String>>,
+) -> Option<(String, Vec<String>)> {
+    let rest = source.strip_prefix('/')?;
+    let segs: Vec<&str> = rest.split('/').collect();
+    let last = segs[segs.len() - 1];
+    let splat = splat_of(last);
+    let body = if splat.is_some() {
+        &segs[..segs.len() - 1]
+    } else {
+        &segs[..]
+    };
+    for (i, seg) in body.iter().enumerate() {
+        if params && is_param(seg) {
+            continue;
+        }
+        if has_any(seg, special) || (seg.is_empty() && (i < body.len() - 1 || splat.is_some())) {
+            return None;
+        }
+    }
+    match splat {
+        Some(names) => {
+            let mut parts: Vec<&str> = body.to_vec();
+            parts.push("*");
+            Some((format!("/{}", parts.join("/")), names))
+        }
+        None => Some((source.to_string(), Vec::new())),
+    }
+}
+
+/// A Vercel `source` as a `_redirects` path (see the TypeScript `vercelSource`).
+fn vercel_source(source: &str, params: bool) -> Option<(String, Vec<String>)> {
+    segmented(source, params, VERCEL_SPECIAL, &|last| {
+        if last == "(.*)" {
+            return Some(vec!["$1".into()]);
+        }
+        let name = last.strip_prefix(':')?.strip_suffix('*')?;
+        is_ident(name).then(|| vec![format!(":{name}*"), format!(":{name}")])
     })
 }
 
@@ -408,11 +512,15 @@ fn vercel_target(dest: &str, params: &[String]) -> String {
     out
 }
 
-fn vercel_source_reason(source: &str) -> &'static str {
+fn vercel_source_reason(source: &str, params: bool) -> &'static str {
     if source.contains('(') || source.contains(')') {
         "regular expressions are not supported"
     } else if source.contains(':') {
-        PLACEHOLDERS
+        if params {
+            "only :name and a trailing :name* are supported"
+        } else {
+            PLACEHOLDERS
+        }
     } else {
         MIDDLE_STAR
     }
@@ -455,8 +563,8 @@ fn vercel(doc: &Map<String, Value>, out: &mut Out) {
         let (Some(source), Some(dest)) = (str_of(r, "source"), str_of(r, "destination")) else {
             return out.skip(entry, "expected source and destination");
         };
-        let Some((from, params)) = vercel_source(source) else {
-            return out.skip(entry, vercel_source_reason(source));
+        let Some((from, params)) = vercel_source(source, true) else {
+            return out.skip(entry, vercel_source_reason(source, true));
         };
         let status = match r.get("statusCode") {
             Some(v) => as_int(v),
@@ -485,8 +593,8 @@ fn vercel(doc: &Map<String, Value>, out: &mut Out) {
         if is_http(dest) {
             return out.skip(entry, PROXY);
         }
-        let Some((from, params)) = vercel_source(source) else {
-            return out.skip(entry, vercel_source_reason(source));
+        let Some((from, params)) = vercel_source(source, true) else {
+            return out.skip(entry, vercel_source_reason(source, true));
         };
         out.redirect(
             entry,
@@ -504,8 +612,8 @@ fn vercel(doc: &Map<String, Value>, out: &mut Out) {
         ) else {
             return out.skip(entry, "expected source and headers");
         };
-        let Some((from, _)) = vercel_source(source) else {
-            return out.skip(entry, vercel_source_reason(source));
+        let Some((from, _)) = vercel_source(source, false) else {
+            return out.skip(entry, vercel_source_reason(source, false));
         };
         let Some(hs) = header_pairs(list) else {
             return out.skip(entry, "expected headers of key and value");
@@ -524,28 +632,23 @@ fn vercel(doc: &Map<String, Value>, out: &mut Out) {
 
 const FIREBASE_SPECIAL: &str = "*?{}[]!:";
 
-fn firebase_source(glob: &str) -> Option<String> {
-    if glob.starts_with('/') && !has_any(&glob[1..], FIREBASE_SPECIAL) {
-        return Some(glob.to_string());
-    }
+fn firebase_source(glob: &str, params: bool) -> Option<(String, Vec<String>)> {
     if glob == "**" {
-        return Some("/*".into());
+        return Some(("/*".into(), Vec::new()));
     }
-    let prefix = glob.strip_suffix("/**")?;
-    if prefix.is_empty() {
-        return Some("/*".into());
-    }
-    let rest = prefix.strip_prefix('/')?;
-    if rest
-        .split('/')
-        .any(|seg| seg.is_empty() || has_any(seg, FIREBASE_SPECIAL))
-    {
-        return None;
-    }
-    Some(format!("{prefix}/*"))
+    segmented(glob, params, FIREBASE_SPECIAL, &|last| {
+        if last == "**" {
+            return Some(Vec::new());
+        }
+        if !params {
+            return None;
+        }
+        let name = last.strip_prefix(':')?.strip_suffix('*')?;
+        is_ident(name).then(|| vec![format!(":{name}")])
+    })
 }
 
-fn firebase_reason(r: &Map<String, Value>) -> &'static str {
+fn firebase_reason(r: &Map<String, Value>, params: bool) -> &'static str {
     if r.contains_key("regex") {
         return "regular expressions are not supported";
     }
@@ -555,14 +658,16 @@ fn firebase_reason(r: &Map<String, Value>) -> &'static str {
         Some(v) => v.to_string(),
         None => String::new(),
     };
-    if s.contains(':') {
+    if s.contains(':') && !params {
         PLACEHOLDERS
+    } else if params {
+        "only exact paths, :name segments and a trailing /** or :name* are supported"
     } else {
         "only exact paths and a trailing /** are supported"
     }
 }
 
-fn firebase_from(r: &Map<String, Value>) -> Option<String> {
+fn firebase_from(r: &Map<String, Value>, params: bool) -> Option<(String, Vec<String>)> {
     if r.contains_key("regex") {
         return None;
     }
@@ -570,7 +675,7 @@ fn firebase_from(r: &Map<String, Value>) -> Option<String> {
         Some(v) => v,
         None => r.get("glob")?,
     };
-    firebase_source(s.as_str()?)
+    firebase_source(s.as_str()?, params)
 }
 
 fn firebase(doc: &Map<String, Value>, out: &mut Out) {
@@ -589,8 +694,8 @@ fn firebase(doc: &Map<String, Value>, out: &mut Out) {
         Some(_) => return out.skip("hosting", "expected an object"),
     };
     each(h, "redirects", at, out, false, |r, entry, out| {
-        let Some(from) = firebase_from(r) else {
-            return out.skip(entry, firebase_reason(r));
+        let Some((from, splat)) = firebase_from(r, true) else {
+            return out.skip(entry, firebase_reason(r, true));
         };
         let Some(dest) = str_of(r, "destination") else {
             return out.skip(entry, "expected a destination");
@@ -602,7 +707,14 @@ fn firebase(doc: &Map<String, Value>, out: &mut Out) {
         let Some(status) = status else {
             return out.skip(entry, "type must be 301 or 302");
         };
-        out.redirect(entry, &from, dest, status, false, false);
+        out.redirect(
+            entry,
+            &from,
+            &vercel_target(dest, &splat),
+            status,
+            false,
+            false,
+        );
     });
     each(h, "rewrites", at, out, false, |r, entry, out| {
         if let Some(k) = ["function", "run", "dynamicLinks"]
@@ -611,8 +723,8 @@ fn firebase(doc: &Map<String, Value>, out: &mut Out) {
         {
             return out.skip(entry, format!("{k} rewrites are not supported"));
         }
-        let Some(from) = firebase_from(r) else {
-            return out.skip(entry, firebase_reason(r));
+        let Some((from, splat)) = firebase_from(r, true) else {
+            return out.skip(entry, firebase_reason(r, true));
         };
         let Some(dest) = str_of(r, "destination") else {
             return out.skip(entry, "expected a destination");
@@ -620,11 +732,18 @@ fn firebase(doc: &Map<String, Value>, out: &mut Out) {
         if is_http(dest) {
             return out.skip(entry, PROXY);
         }
-        out.redirect(entry, &from, dest, 200, false, false);
+        out.redirect(
+            entry,
+            &from,
+            &vercel_target(dest, &splat),
+            200,
+            false,
+            false,
+        );
     });
     each(h, "headers", at, out, false, |r, entry, out| {
-        let Some(from) = firebase_from(r) else {
-            return out.skip(entry, firebase_reason(r));
+        let Some((from, _)) = firebase_from(r, false) else {
+            return out.skip(entry, firebase_reason(r, false));
         };
         let Some(list) = r.get("headers").and_then(Value::as_array) else {
             return out.skip(entry, "expected headers");
@@ -864,7 +983,7 @@ fn status_word(first: &str) -> Option<std::result::Result<i64, String>> {
     }
     if first == "gone" || first == "410" {
         return Some(Err(
-            "status 410 is not supported yet (johnhenry/sitefile#193)".into(),
+            "Redirect gone names no page to serve; a 410 rule in _redirects needs one (/path /gone.html 410)".into(),
         ));
     }
     if let Some(s) = apache_status(first) {

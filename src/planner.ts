@@ -1,5 +1,5 @@
 import { SitefileError, type SourceSpan } from './errors.js';
-import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type Program, type StageRef, type ValueType } from './language/ast.js';
+import { importedStage, isFragment, isImageBase, isInline, stageNames, type ImageBase, type EscapeMode, type RedirectStatus, type ExportFormat, type InlineBody, type ImportKind, type OciCompression, type Operand, type PrecompressFormat, type Program, type StageRef, type ValueType } from './language/ast.js';
 import { normalizeLocal, normalizeVirtual } from './paths.js';
 import { parseRef } from './ref.js';
 import { checkPattern } from './fingerprint.js';
@@ -120,6 +120,26 @@ export type Operation =
     }
   | TextFileOperation<'ROBOTS'>
   | TextFileOperation<'SECURITY_TXT'>
+  | {
+      /** Add a canonical link to every page below `root` that has none. */
+      readonly kind: 'CANONICAL';
+      /** Checked base URL without trailing slashes. */
+      readonly base: string;
+      readonly pretty: boolean;
+      /** The EXPORT path: a page's URL is its path below it. */
+      readonly root: string;
+      readonly span: SourceSpan;
+    }
+  | {
+      /** Write a `.gz` sidecar for each matching compressible file of at least `min` bytes, when smaller. */
+      readonly kind: 'PRECOMPRESS';
+      readonly formats: readonly PrecompressFormat[];
+      /** Checked absolute patterns, NFC; a trailing `/` became `/**`. */
+      readonly patterns: readonly string[];
+      readonly min: number;
+      readonly overwrite: boolean;
+      readonly span: SourceSpan;
+    }
   | {
       /** sitemaps.org XML of the `.html` files in the tree at this point. */
       readonly kind: 'SITEMAP';
@@ -489,6 +509,20 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
         fingerprints.push({ span: ins.span, headers: !ins.noCacheHeaders });
         break;
       }
+      case 'CANONICAL':
+        // `root` is the EXPORT path, filled in below.
+        operations().push({ kind: 'CANONICAL', base: checkBaseUrl(evaluateOperand(ins.base, vars), 'CANONICAL BASE', ins.base.span), pretty: ins.pretty, root: '/', span: ins.span });
+        break;
+      case 'PRECOMPRESS':
+        operations().push({
+          kind: 'PRECOMPRESS',
+          formats: ins.formats,
+          patterns: ins.patterns.map((o) => checkPattern(evaluateOperand(o, vars), o.span, 'PRECOMPRESS')),
+          min: ins.min ? minSize(ins.min, vars) : DEFAULT_PRECOMPRESS_MIN,
+          overwrite: ins.overwrite,
+          span: ins.span,
+        });
+        break;
       case 'CHECKLINKS':
         // `root` and `redirects` are filled in below, once every line is planned.
         operations().push({ kind: 'CHECKLINKS', warn: ins.warn, external: ins.external, root: '/', redirects: [], span: ins.span });
@@ -546,7 +580,7 @@ export function plan(program: Program, buildArgs: Readonly<Record<string, string
   }
   for (const st of stages) {
     st.operations.forEach((op, i) => {
-      if (op.kind === 'FINGERPRINT') st.operations[i] = { ...op, root: exportPath ?? '/' };
+      if (op.kind === 'FINGERPRINT' || op.kind === 'CANONICAL') st.operations[i] = { ...op, root: exportPath ?? '/' };
       if (op.kind === 'CHECKLINKS') st.operations[i] = { ...op, root: exportPath ?? '/', redirects: redirects.map((r) => r.from) };
     });
   }
@@ -635,6 +669,18 @@ function pageSize(op: Operand, vars: ReadonlyMap<string, Scalar>): number {
   const raw = evaluateOperand(op, vars);
   if (!/^[1-9][0-9]{0,8}$/.test(raw)) {
     throw new SitefileError('E_VALIDATION', `RENDER … PAGE: '${raw}' is not a page size (a whole number from 1 to 999999999)`, op.span);
+  }
+  return Number(raw);
+}
+
+/** PRECOMPRESS leaves smaller files alone: below about 1 KiB compression saves little. */
+export const DEFAULT_PRECOMPRESS_MIN = 1024;
+
+/** `PRECOMPRESS … MIN <bytes>`: a whole number of bytes. */
+function minSize(op: Operand, vars: ReadonlyMap<string, Scalar>): number {
+  const raw = evaluateOperand(op, vars);
+  if (!/^(0|[1-9][0-9]{0,9})$/.test(raw)) {
+    throw new SitefileError('E_VALIDATION', `PRECOMPRESS … MIN: '${raw}' is not a size (a whole number of bytes from 0 to 9999999999)`, op.span);
   }
   return Number(raw);
 }

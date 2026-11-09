@@ -40,12 +40,14 @@ pub mod resources;
 
 // Outputs, store and servers
 pub mod cache_limit;
+pub mod canonical;
 pub mod checklinks;
 pub mod export;
 pub mod fingerprint;
 pub mod integrity;
 pub mod links;
 pub mod mime_data;
+pub mod precompress;
 pub mod refs;
 pub mod server;
 pub mod servers;

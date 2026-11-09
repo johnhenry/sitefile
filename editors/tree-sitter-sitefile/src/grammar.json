@@ -132,18 +132,18 @@
         "value": "[Ff][Ii][Nn][Gg][Ee][Rr][Pp][Rr][Ii][Nn][Tt]"
       }
     },
-    "_kw_robots": {
+    "_kw_canonical": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Rr][Oo][Bb][Oo][Tt][Ss]"
+        "value": "[Cc][Aa][Nn][Oo][Nn][Ii][Cc][Aa][Ll]"
       }
     },
-    "_kw_security_txt": {
+    "_kw_precompress": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Ss][Ee][Cc][Uu][Rr][Ii][Tt][Yy]_[Tt][Xx][Tt]"
+        "value": "[Pp][Rr][Ee][Cc][Oo][Mm][Pp][Rr][Ee][Ss][Ss]"
       }
     },
     "_kw_checklinks": {
@@ -342,46 +342,18 @@
         "value": "[Mm][Aa][Nn][Ii][Ff][Ee][Ss][Tt]"
       }
     },
-    "_kw_allow": {
+    "_kw_pretty": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Aa][Ll][Ll][Oo][Ww]"
+        "value": "[Pp][Rr][Ee][Tt][Tt][Yy]"
       }
     },
-    "_kw_disallow": {
+    "_kw_min": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "[Dd][Ii][Ss][Aa][Ll][Ll][Oo][Ww]"
-      }
-    },
-    "_kw_contact": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Cc][Oo][Nn][Tt][Aa][Cc][Tt]"
-      }
-    },
-    "_kw_expires": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Ee][Xx][Pp][Ii][Rr][Ee][Ss]"
-      }
-    },
-    "_kw_encryption": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Ee][Nn][Cc][Rr][Yy][Pp][Tt][Ii][Oo][Nn]"
-      }
-    },
-    "_kw_policy": {
-      "type": "TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[Pp][Oo][Ll][Ii][Cc][Yy]"
+        "value": "[Mm][Ii][Nn]"
       }
     },
     "_kw_run": {
@@ -576,11 +548,11 @@
         },
         {
           "type": "SYMBOL",
-          "name": "robots_instruction"
+          "name": "canonical_instruction"
         },
         {
           "type": "SYMBOL",
-          "name": "security_txt_instruction"
+          "name": "precompress_instruction"
         },
         {
           "type": "SYMBOL",
@@ -2431,17 +2403,65 @@
         }
       ]
     },
-    "robots_instruction": {
+    "canonical_instruction": {
       "type": "SEQ",
       "members": [
         {
           "type": "ALIAS",
           "content": {
             "type": "SYMBOL",
-            "name": "_kw_robots"
+            "name": "_kw_canonical"
           },
           "named": false,
-          "value": "ROBOTS"
+          "value": "CANONICAL"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_base"
+          },
+          "named": false,
+          "value": "BASE"
+        },
+        {
+          "type": "FIELD",
+          "name": "base",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_operand"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_kw_pretty"
+              },
+              "named": false,
+              "value": "PRETTY"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "precompress_instruction": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_kw_precompress"
+          },
+          "named": false,
+          "value": "PRECOMPRESS"
         },
         {
           "type": "REPEAT",
@@ -2455,73 +2475,15 @@
           }
         },
         {
-          "type": "REPEAT",
+          "type": "REPEAT1",
           "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_allow"
-                    },
-                    "named": false,
-                    "value": "ALLOW"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "allow",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              },
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_disallow"
-                    },
-                    "named": false,
-                    "value": "DISALLOW"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "disallow",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "ALIAS",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_kw_sitemap"
-              },
-              "named": false,
-              "value": "SITEMAP"
-            },
-            {
-              "type": "BLANK"
+            "type": "FIELD",
+            "name": "pattern",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_operand"
             }
-          ]
+          }
         },
         {
           "type": "CHOICE",
@@ -2533,14 +2495,14 @@
                   "type": "ALIAS",
                   "content": {
                     "type": "SYMBOL",
-                    "name": "_kw_to"
+                    "name": "_kw_min"
                   },
                   "named": false,
-                  "value": "TO"
+                  "value": "MIN"
                 },
                 {
                   "type": "FIELD",
-                  "name": "dest",
+                  "name": "min",
                   "content": {
                     "type": "SYMBOL",
                     "name": "_operand"
@@ -2552,149 +2514,6 @@
               "type": "BLANK"
             }
           ]
-        }
-      ]
-    },
-    "security_txt_instruction": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_security_txt"
-          },
-          "named": false,
-          "value": "SECURITY_TXT"
-        },
-        {
-          "type": "REPEAT",
-          "content": {
-            "type": "FIELD",
-            "name": "flag",
-            "content": {
-              "type": "SYMBOL",
-              "name": "flag"
-            }
-          }
-        },
-        {
-          "type": "REPEAT",
-          "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_contact"
-                    },
-                    "named": false,
-                    "value": "CONTACT"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "contact",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              },
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_expires"
-                    },
-                    "named": false,
-                    "value": "EXPIRES"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "expires",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              },
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_encryption"
-                    },
-                    "named": false,
-                    "value": "ENCRYPTION"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "encryption",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              },
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_policy"
-                    },
-                    "named": false,
-                    "value": "POLICY"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "policy",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              },
-              {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_kw_to"
-                    },
-                    "named": false,
-                    "value": "TO"
-                  },
-                  {
-                    "type": "FIELD",
-                    "name": "dest",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "_operand"
-                    }
-                  }
-                ]
-              }
-            ]
-          }
         }
       ]
     },

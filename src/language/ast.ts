@@ -355,6 +355,36 @@ export interface FingerprintInstruction {
   readonly overwrite: boolean;
 }
 
+/**
+ * `CANONICAL BASE <url> [PRETTY]`: add `<link rel="canonical" href="…">` before `</head>` of every page of
+ * the stage that has none. PRETTY drops `.html` from the URL (`/about.html` -> `/about`).
+ */
+export interface CanonicalInstruction {
+  readonly kind: 'CANONICAL';
+  readonly span: SourceSpan;
+  readonly base: Operand;
+  readonly pretty: boolean;
+}
+
+/** A PRECOMPRESS sidecar format: `gzip` writes `<file>.gz` (`br` and `zstd` are reserved: no encoder yet). */
+export type PrecompressFormat = 'gzip';
+
+/**
+ * `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each matching
+ * compressible file of at least MIN bytes, when it is smaller.
+ */
+export interface PrecompressInstruction {
+  readonly kind: 'PRECOMPRESS';
+  readonly span: SourceSpan;
+  /** In the order written, without repeats; `['gzip']` when none is given. */
+  readonly formats: readonly PrecompressFormat[];
+  /** Absolute path patterns, as FINGERPRINT's. */
+  readonly patterns: readonly Operand[];
+  /** `MIN <bytes>`: the smallest file compressed (default 1024). */
+  readonly min?: Operand;
+  readonly overwrite: boolean;
+}
+
 /** One `ALLOW <path>` / `DISALLOW <path>` of a ROBOTS. */
 export interface RobotsRule {
   readonly allow: boolean;
@@ -418,6 +448,8 @@ export type Instruction =
   | RedirectInstruction
   | HeaderInstruction
   | FingerprintInstruction
+  | CanonicalInstruction
+  | PrecompressInstruction
   | RobotsInstruction
   | SecurityTxtInstruction
   | CheckLinksInstruction

@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 19] = [
+pub const INSTRUCTIONS: [&str; 21] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -34,6 +34,8 @@ pub const INSTRUCTIONS: [&str; 19] = [
     "REDIRECT",
     "HEADER",
     "FINGERPRINT",
+    "CANONICAL",
+    "PRECOMPRESS",
     "ROBOTS",
     "SECURITY_TXT",
     "CHECKLINKS",
@@ -67,6 +69,12 @@ pub const SITEMAP_CLAUSES: [&str; 2] = ["BASE", "TO"];
 pub const FEED_CLAUSES: [&str; 4] = ["BASE", "LINK", "TO", "TITLE"];
 /// Clauses after `FINGERPRINT <pattern>…`.
 pub const FINGERPRINT_CLAUSES: [&str; 2] = ["MANIFEST", "INTEGRITY"];
+/// Clauses of CANONICAL, in this order (`BASE` is required).
+pub const CANONICAL_CLAUSES: [&str; 2] = ["BASE", "PRETTY"];
+/// Sidecar formats PRECOMPRESS knows; only gzip has an encoder (`crate::deflate`, shared with the TypeScript).
+pub const PRECOMPRESS_FORMATS: [&str; 3] = ["gzip", "br", "zstd"];
+/// Clauses after `PRECOMPRESS <pattern>…`.
+pub const PRECOMPRESS_CLAUSES: [&str; 1] = ["MIN"];
 /// Clauses of ROBOTS, in this order (`ALLOW` and `DISALLOW` repeat, mixed).
 pub const ROBOTS_CLAUSES: [&str; 4] = ["ALLOW", "DISALLOW", "SITEMAP", "TO"];
 /// Clauses of SECURITY_TXT, in any order (all but `EXPIRES` and `TO` repeat; `CONTACT` and `EXPIRES` are required).
@@ -109,7 +117,7 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "ROBOTS" | "SECURITY_TXT" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECOMPRESS" | "ROBOTS" | "SECURITY_TXT" => SITE_FLAGS,
         "FINGERPRINT" => FINGERPRINT_FLAGS,
         "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
@@ -169,6 +177,8 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "REDIRECT" => parse_redirect(c, span),
         "HEADER" => parse_header(c, span),
         "FINGERPRINT" => parse_fingerprint(c, span),
+        "CANONICAL" => parse_canonical(c, span),
+        "PRECOMPRESS" => parse_precompress(c, span),
         "ROBOTS" => parse_robots(c, span),
         "SECURITY_TXT" => parse_security_txt(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
@@ -1136,6 +1146,68 @@ fn parse_fingerprint(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         manifest,
         integrity,
         no_cache_headers: flags.has("no-cache-headers"),
+        overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `CANONICAL BASE <url> [PRETTY]`
+fn parse_canonical(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    c.expect_keyword("BASE")?;
+    let base = c.operand("base URL")?;
+    let pretty = c.keyword("PRETTY");
+    c.expect_end()?;
+    Ok(Instruction::Canonical { span, base, pretty })
+}
+
+/// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`
+fn parse_precompress(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut formats: Vec<String> = Vec::new();
+    loop {
+        let at = c.span();
+        let mark = c.mark();
+        let w = c.word().to_lowercase();
+        if !PRECOMPRESS_FORMATS.contains(&w.as_str()) {
+            c.reset(mark);
+            break;
+        }
+        if w != "gzip" {
+            let name = if w == "br" { "Brotli" } else { "Zstandard" };
+            return Err(SitefileError::at(
+                E_UNSUPPORTED,
+                format!("PRECOMPRESS {w} is not supported yet: sitefile has no {name} encoder that writes the same bytes in both implementations (use gzip)"),
+                &at,
+            ));
+        }
+        if formats.contains(&w) {
+            return Err(SitefileError::at(E_SYNTAX, format!("{w} given twice"), &at));
+        }
+        formats.push(w);
+    }
+    let mut patterns = Vec::new();
+    while !c.at_end() && !c.peek_keyword("MIN") {
+        patterns.push(c.operand("path pattern")?);
+    }
+    if patterns.is_empty() {
+        return Err(c.error(
+            E_SYNTAX,
+            "expected a path pattern (PRECOMPRESS /assets/ or PRECOMPRESS gzip /**/*.css)",
+        ));
+    }
+    let min = if c.keyword("MIN") {
+        Some(c.operand("minimum size in bytes")?)
+    } else {
+        None
+    };
+    c.expect_end()?;
+    if formats.is_empty() {
+        formats.push("gzip".into());
+    }
+    Ok(Instruction::Precompress {
+        span,
+        formats,
+        patterns,
+        min,
         overwrite: flags.has("overwrite"),
     })
 }
@@ -2564,6 +2636,7 @@ mod tests {
             ("REDIRECT", SITE_FLAGS),
             ("HEADER", SITE_FLAGS),
             ("FINGERPRINT", FINGERPRINT_FLAGS),
+            ("PRECOMPRESS", SITE_FLAGS),
             ("ROBOTS", SITE_FLAGS),
             ("SECURITY_TXT", SITE_FLAGS),
             ("CHECKLINKS", CHECKLINKS_FLAGS),

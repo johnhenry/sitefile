@@ -87,20 +87,97 @@ pub fn xml_escape(s: &str) -> String {
 
 /// sitemaps.org XML for every `.html` file in the tree except `/404.html`, sorted by path (UTF-8 bytes).
 pub fn sitemap_xml(tree: &Tree, base: &str) -> String {
+    format!(
+        "{SITEMAP_HEAD}{}{SITEMAP_TAIL}",
+        sitemap_entries(tree, base).concat()
+    )
+}
+
+const SITEMAP_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+const SITEMAP_TAIL: &str = "</urlset>\n";
+
+/// The sitemaps.org limits of one sitemap file: 50,000 URLs and 50 MiB (52,428,800 bytes) uncompressed.
+pub const SITEMAP_LIMITS: (usize, usize) = (50_000, 52_428_800);
+
+fn sitemap_entries(tree: &Tree, base: &str) -> Vec<String> {
     let mut paths: Vec<&String> = tree
         .entries()
         .map(|(p, _)| p)
         .filter(|p| p.ends_with(".html") && p.as_str() != "/404.html")
         .collect();
     paths.sort();
-    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-    for p in paths {
-        out.push_str(&format!(
-            "  <url><loc>{}</loc></url>\n",
+    paths
+        .into_iter()
+        .map(|p| {
+            format!(
+                "  <url><loc>{}</loc></url>\n",
+                xml_escape(&page_url(base, p))
+            )
+        })
+        .collect()
+}
+
+/// `/sitemap.xml` -> `/sitemap-2.xml`: the n-th part of a split sitemap (`sitemapPart` in src/site.ts).
+pub fn sitemap_part(dest: &str, n: usize) -> String {
+    let slash = dest.rfind('/').map_or(0, |i| i + 1);
+    match dest.rfind('.') {
+        Some(dot) if dot > slash => format!("{}-{n}{}", &dest[..dot], &dest[dot..]),
+        _ => format!("{dest}-{n}"),
+    }
+}
+
+/// The sitemap files for the tree (`sitemapFiles` in src/site.ts): one at `dest` within `limits`
+/// (URLs, bytes), or else a sitemap index at `dest` and the parts it lists.
+pub fn sitemap_files(
+    tree: &Tree,
+    base: &str,
+    dest: &str,
+    limits: (usize, usize),
+) -> Vec<(String, String)> {
+    let entries = sitemap_entries(tree, base);
+    let frame = SITEMAP_HEAD.len() + SITEMAP_TAIL.len();
+    let total = frame + entries.iter().map(String::len).sum::<usize>();
+    if entries.len() <= limits.0 && total <= limits.1 {
+        return vec![(
+            dest.to_string(),
+            format!("{SITEMAP_HEAD}{}{SITEMAP_TAIL}", entries.concat()),
+        )];
+    }
+    let mut parts: Vec<Vec<&String>> = Vec::new();
+    let mut cur: Vec<&String> = Vec::new();
+    let mut bytes = frame;
+    for e in &entries {
+        if !cur.is_empty() && (cur.len() >= limits.0 || bytes + e.len() > limits.1) {
+            parts.push(std::mem::take(&mut cur));
+            bytes = frame;
+        }
+        cur.push(e);
+        bytes += e.len();
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    let files: Vec<(String, String)> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let body: String = p.iter().map(|s| s.as_str()).collect();
+            (
+                sitemap_part(dest, i + 1),
+                format!("{SITEMAP_HEAD}{body}{SITEMAP_TAIL}"),
+            )
+        })
+        .collect();
+    let mut index = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+    for (p, _) in &files {
+        index.push_str(&format!(
+            "  <sitemap><loc>{}</loc></sitemap>\n",
             xml_escape(&page_url(base, p))
         ));
     }
-    out.push_str("</urlset>\n");
+    index.push_str("</sitemapindex>\n");
+    let mut out = vec![(dest.to_string(), index)];
+    out.extend(files);
     out
 }
 
@@ -533,6 +610,50 @@ pub fn security_txt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sitemap_split_matches_typescript() {
+        // The same tree and expected files as SPLIT_EXPECTED in test/canonical.test.ts.
+        let t = Tree::from_files(
+            [
+                "/index.html",
+                "/a.html",
+                "/b/index.html",
+                "/404.html",
+                "/x.css",
+            ]
+            .iter()
+            .map(|p| {
+                (
+                    p.to_string(),
+                    crate::tree::make_file(Vec::new(), "test", 0o644),
+                )
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            sitemap_files(&t, "https://e.x", "/sitemap.xml", SITEMAP_LIMITS).len(),
+            1
+        );
+        let split = sitemap_files(&t, "https://e.x", "/maps/site.xml", (2, 1_000_000));
+        let head = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+        assert_eq!(
+            split,
+            vec![
+                ("/maps/site.xml".to_string(), format!("{head}<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <sitemap><loc>https://e.x/maps/site-1.xml</loc></sitemap>\n  <sitemap><loc>https://e.x/maps/site-2.xml</loc></sitemap>\n</sitemapindex>\n")),
+                ("/maps/site-1.xml".to_string(), format!("{head}<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <url><loc>https://e.x/a.html</loc></url>\n  <url><loc>https://e.x/b/</loc></url>\n</urlset>\n")),
+                ("/maps/site-2.xml".to_string(), format!("{head}<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n  <url><loc>https://e.x/</loc></url>\n</urlset>\n")),
+            ]
+        );
+        let by_bytes: Vec<String> = sitemap_files(&t, "https://e.x", "/s.xml", (100, 150))
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(by_bytes, ["/s.xml", "/s-1.xml", "/s-2.xml", "/s-3.xml"]);
+        assert_eq!(sitemap_part("/sitemap.xml", 3), "/sitemap-3.xml");
+        assert_eq!(sitemap_part("/maps/sitemap", 1), "/maps/sitemap-1");
+        assert_eq!(sitemap_part("/a.b/map", 1), "/a.b/map-1");
+    }
 
     fn span() -> SourceSpan {
         SourceSpan::new("S", 1, 1)

@@ -3,7 +3,7 @@
 
 use crate::build_args::BuildArgs;
 use crate::error::{ErrorCode::*, Result, SitefileError, SourceSpan};
-use crate::fingerprint::check_pattern;
+use crate::fingerprint::{check_pattern, check_pattern_of};
 use crate::language::ast::{
     imported_stage, stage_names, EscapeMode, ExportFormat, FromBase, ImportKind, Instruction,
     OciCompression, Operand, Program, Source, StageRef, TemplatePart, ValueType,
@@ -199,6 +199,23 @@ pub enum Operation {
         overwrite: bool,
         span: SourceSpan,
     },
+    /// Add a canonical link to every page below `root` (the EXPORT path) that has none; `base` is checked,
+    /// without trailing slashes.
+    Canonical {
+        base: String,
+        pretty: bool,
+        root: String,
+        span: SourceSpan,
+    },
+    /// Write a `.gz` sidecar for each file matching `patterns` (checked, NFC) that is compressible, has at
+    /// least `min` bytes and gets smaller.
+    Precompress {
+        formats: Vec<String>,
+        patterns: Vec<String>,
+        min: u64,
+        overwrite: bool,
+        span: SourceSpan,
+    },
     /// A file whose text the planner wrote: `keyword` is `ROBOTS` (`/robots.txt`) or `SECURITY_TXT`
     /// (`/.well-known/security.txt`).
     TextFile {
@@ -281,6 +298,8 @@ impl Operation {
             | Operation::Render { span, .. }
             | Operation::Sitemap { span, .. }
             | Operation::Fingerprint { span, .. }
+            | Operation::Canonical { span, .. }
+            | Operation::Precompress { span, .. }
             | Operation::TextFile { span, .. }
             | Operation::CheckLinks { span, .. }
             | Operation::Feed { span, .. } => span,
@@ -293,6 +312,8 @@ impl Operation {
             Operation::Render { .. } => "RENDER",
             Operation::Sitemap { .. } => "SITEMAP",
             Operation::Fingerprint { .. } => "FINGERPRINT",
+            Operation::Canonical { .. } => "CANONICAL",
+            Operation::Precompress { .. } => "PRECOMPRESS",
             Operation::TextFile { keyword, .. } => keyword,
             Operation::CheckLinks { .. } => "CHECKLINKS",
             Operation::Feed { .. } => "FEED",
@@ -848,6 +869,29 @@ pub fn plan_with(
                     span: span.clone(),
                 });
             }
+            Instruction::Precompress {
+                span,
+                formats,
+                patterns,
+                min,
+                overwrite,
+            } => {
+                let patterns = patterns
+                    .iter()
+                    .map(|o| check_pattern_of(&evaluate_operand(o, &vars)?, &o.span, "PRECOMPRESS"))
+                    .collect::<Result<Vec<_>>>()?;
+                let min = match min {
+                    Some(m) => min_size(m, &vars)?,
+                    None => DEFAULT_PRECOMPRESS_MIN,
+                };
+                operations(&mut stages, span)?.push(Operation::Precompress {
+                    formats: formats.clone(),
+                    patterns,
+                    min,
+                    overwrite: *overwrite,
+                    span: span.clone(),
+                });
+            }
             Instruction::Fingerprint {
                 span,
                 patterns,
@@ -874,6 +918,20 @@ pub fn plan_with(
                     span: span.clone(),
                 });
                 fingerprints.push((span.clone(), !*no_cache_headers));
+            }
+            Instruction::Canonical { span, base, pretty } => {
+                let base = check_base_url(
+                    &evaluate_operand(base, &vars)?,
+                    "CANONICAL BASE",
+                    &base.span,
+                )?;
+                // `root` is the EXPORT path, filled in below.
+                operations(&mut stages, span)?.push(Operation::Canonical {
+                    base,
+                    pretty: *pretty,
+                    root: "/".into(),
+                    span: span.clone(),
+                });
             }
             Instruction::Robots {
                 span,
@@ -1125,7 +1183,9 @@ pub fn plan_with(
     for st in &mut stages {
         for op in &mut st.operations {
             match op {
-                Operation::Fingerprint { root: r, .. } => *r = root.clone(),
+                Operation::Fingerprint { root: r, .. } | Operation::Canonical { root: r, .. } => {
+                    *r = root.clone()
+                }
                 Operation::CheckLinks {
                     root: r,
                     redirects: rs,
@@ -1196,6 +1256,28 @@ pub fn plan_with(
 }
 
 /// `TO <dest>` of SITEMAP/FEED or `MANIFEST <dest>` of FINGERPRINT (a file path), or the default.
+/// PRECOMPRESS leaves smaller files alone: below about 1 KiB compression saves little.
+pub const DEFAULT_PRECOMPRESS_MIN: u64 = 1024;
+
+/// `PRECOMPRESS … MIN <bytes>`: a whole number of bytes (`^(0|[1-9][0-9]{0,9})$`).
+fn min_size(op: &Operand, vars: &Env) -> Result<u64> {
+    let raw = evaluate_operand(op, vars)?;
+    let b = raw.as_bytes();
+    let ok = raw == "0"
+        || (!b.is_empty()
+            && b.len() <= 10
+            && (b'1'..=b'9').contains(&b[0])
+            && b.iter().all(u8::is_ascii_digit));
+    if !ok {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            format!("PRECOMPRESS … MIN: '{raw}' is not a size (a whole number of bytes from 0 to 9999999999)"),
+            &op.span,
+        ));
+    }
+    Ok(raw.parse().unwrap_or(0))
+}
+
 fn file_dest(op: Option<&Operand>, vars: &Env, fallback: &str, what: &str) -> Result<String> {
     let Some(op) = op else {
         return Ok(fallback.to_string());
@@ -1649,6 +1731,30 @@ impl Operation {
                     m.insert("integrity".into(), json!(true));
                 }
                 m.insert("root".into(), json!(root));
+                m.insert("overwrite".into(), json!(overwrite));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Canonical {
+                base,
+                pretty,
+                root,
+                span,
+            } => {
+                m.insert("base".into(), json!(base));
+                m.insert("pretty".into(), json!(pretty));
+                m.insert("root".into(), json!(root));
+                m.insert("span".into(), span_json(span));
+            }
+            Operation::Precompress {
+                formats,
+                patterns,
+                min,
+                overwrite,
+                span,
+            } => {
+                m.insert("formats".into(), json!(formats));
+                m.insert("patterns".into(), json!(patterns));
+                m.insert("min".into(), json!(min));
                 m.insert("overwrite".into(), json!(overwrite));
                 m.insert("span".into(), span_json(span));
             }

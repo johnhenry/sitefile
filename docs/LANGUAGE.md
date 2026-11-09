@@ -828,6 +828,26 @@ use `${NAME}`.
   `/a/index.html` as `<base>/a/`, anything else as `<base><path>`; each path
   segment is percent-encoded like `encodeURIComponent`, and the result is XML
   escaped. There is no `lastmod` (the output depends only on the tree).
+  Above the [protocol's limits](https://www.sitemaps.org/protocol.html) of
+  50,000 URLs or 50 MiB (52,428,800 bytes) the destination becomes a
+  **sitemap index** (`<sitemapindex>`, one `<sitemap><loc>` per part) and the
+  URLs go to numbered parts next to it, `/sitemap-1.xml`, `/sitemap-2.xml`, …
+  (`-N` before the last extension), in path order; a part is closed when the
+  next URL would pass either limit. Search engines and `ROBOTS … SITEMAP`
+  then use the index.
+- `CANONICAL BASE <url> [PRETTY]` adds `<link rel="canonical" href="…">`
+  right before the first `</head>` of every `.html`/`.htm` page of the
+  **current stage's tree at that point** that is below the EXPORT path (other
+  than `/404.html` there), is valid UTF-8 and has no `<link>` whose `rel`
+  has the token `canonical` before that `</head>` (yours win). The URL is
+  `<base>` and the page's path below the EXPORT path, encoded like a sitemap
+  entry (`…/index.html` becomes `…/`); `PRETTY` also drops `.html` (`/about.html`
+  → `<base>/about`), for hosts that serve pages without the extension. A page
+  with no `</head>` is left alone, and one warning names those pages. Comments
+  and the contents of `<script>` and the other raw-text elements are skipped,
+  as when references are scanned. The rewritten pages get the origin
+  `Sitefile:<line> CANONICAL`. Alternate-language links (`hreflang`) are not
+  written yet.
 - `BASE` (SITEMAP and FEED) must be an absolute `http://` or `https://` URL
   with a host and no credentials, query, fragment, whitespace or control
   characters (`E_VALIDATION` otherwise); trailing slashes are dropped, so
@@ -902,8 +922,10 @@ use `${NAME}`.
     always written; the default is 301). `from` must be an absolute path and
     `to` an absolute path or an `http(s)://host…` URL; neither may contain
     spaces or control characters (`E_VALIDATION`). Host syntax such as
-    `/blog/*` and `:splat` is passed through as written; `sitefile serve`
-    understands exact paths and a trailing `/*` (docs/CLI.md). `EXPORT … AS
+    `/blog/:year/:slug`, `/blog/*` and `:splat` is passed through as written;
+    `sitefile serve` understands placeholders and a trailing `/*`
+    (docs/CLI.md), and `validate` warns about a line it would ignore
+    (`serve-ignored`). `EXPORT … AS
     wbn` also bakes exact-path REDIRECTs into 3xx responses and HEADER values
     into each response (see **wbn** under Export formats).
   - `HEADER /assets/* Cache-Control: public, max-age=3600`: the name is the
@@ -1051,6 +1073,38 @@ SITEMAP, a COPY into another stage, `--target`) see the renamed files, and
   (like SITEMAP), and its warnings are printed again. `--target` stops before
   a later stage's FINGERPRINT like any other operation.
 
+### Precompressed sidecars: PRECOMPRESS (see `examples/precompress/`)
+`PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]` writes a gzip
+sidecar `<file>.gz` next to each matching file, for servers that send it in
+place of the file to clients that accept gzip (nginx `gzip_static`, Caddy
+`file_server precompressed`, sirv, http-server `--gzip`). Like FINGERPRINT it
+runs **at its place in the stage** on the tree at that point, so put it after
+the files it compresses (and after a FINGERPRINT, so the hashed names get
+sidecars).
+
+- **Patterns** work as FINGERPRINT's (absolute, `*`, `?`, `**`, a trailing `/`
+  for everything below; `PRECOMPRESS /` is the whole tree). Patterns that
+  match nothing print a warning.
+- **Which files**: only compressible types, by extension (ASCII
+  case-insensitive): `html htm css js mjs cjs json map xml svg txt md csv tsv
+  webmanifest rss atom ics vtt yaml yml toml wasm ttf otf eot ico`. Already
+  compressed formats (images other than SVG, `woff2`, video, archives) are left
+  alone. A file needs at least `MIN` bytes (an operand, a whole number;
+  default **1024**), and its sidecar is written only when it is smaller than
+  the file.
+- **Formats**: `gzip` (the default, and the only one so far). `br` and `zstd`
+  are `E_UNSUPPORTED`: sitefile has no Brotli or Zstandard encoder that writes
+  the same bytes in both implementations without a new dependency.
+- **Deterministic**: the sidecar is a gzip member with a fixed header (no
+  modification time, no file name) around the shared deflate encoder
+  (`src/deflate.ts`, `rust/src/deflate.rs`) that zip, tar.gz and OCI layers use,
+  so both implementations write the same bytes on every run.
+- Sidecars keep the file's mode and get the origin `Sitefile:<line> PRECOMPRESS`;
+  `why` shows `<file> (compressed)` as the input. A sidecar path that already
+  holds different content is `E_CONFLICT` unless `--overwrite`. In watch mode an
+  unchanged step is reused only when the whole tree before it is unchanged (like
+  SITEMAP).
+
 ### Link checking: CHECKLINKS (see `examples/blog/`)
 `CHECKLINKS [--warn] [--external]` checks every reference in the HTML and CSS
 files of the stage's tree **at its place in the stage** (like SITEMAP and
@@ -1117,6 +1171,7 @@ warnings never fail `validate`; `build`, `inspect`, `graph` and `why` do not lin
 | `render-escape` | a `RENDER` to a `.html`/`.htm` destination (a `FOR` destination as written) without `--escape=…`; an explicit `--escape=none` is taken as intended. |
 | `sitemap-order` | a `SITEMAP` followed, in the same stage, by an instruction writing a `.html` file it therefore does not list. |
 | `shadowed-write` | a `RENDER` (without `FOR`) or inline `COPY` whose file a later `RENDER`/inline `COPY` in the same stage replaces with `--overwrite`, so the first write has no effect. |
+| `serve-ignored` | a `REDIRECT` or `HEADER` (without `${…}` in it) whose `_redirects`/`_headers` line `sitefile serve` would ignore, with the reason (e.g. `*` in the middle of a path, or a header the server sets itself such as `Content-Length`). |
 
 The unnamed non-final stage warning (above) is a planner warning, printed by `build` too; it is not a lint rule.
 
@@ -1648,6 +1703,13 @@ and tar timestamps instead.
   are never written into the image (`--provenance` records the non-secret
   ones in a separate attestation, [CLI.md](CLI.md#attestations)). The config, manifest and index are canonical JSON (sorted
   keys, no whitespace), so the same build always yields the same manifest digest.
+  `--oci-layers <n>` (build only, 1 to 64, default 1) splits the site's files over `n` layers instead
+  of one: a file goes to layer `u32be(sha256(path)[0..4]) mod n` (its path in the exported tree), each
+  layer is a deterministic tar of its files under the root (with the root's parent directories), and the
+  config carries `dev.sitefile.layers=<n>`. A push after changing a few files then uploads only the
+  layers holding them (with 8 layers, a one-file change re-uploads about an eighth of the site). The
+  store, `save`, `serve`, `push`, `pull` and `FROM image` read the files from all `n` site layers. The
+  default stays one layer, so existing image IDs do not change.
   `--out` ending in `.tar` (`site.oci.tar`) is an *OCI archive* (a tar of the
   layout, below); any other `--out` with `--format oci` is an *OCI layout
   directory*: `oci-layout`, `index.json` (one manifest entry, annotated

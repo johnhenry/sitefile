@@ -8,8 +8,8 @@ use crate::language::ast::{
 };
 use crate::language::parser::{
     flags_of, Shape, EXPORT_CLAUSES, FEED_CLAUSES, FINGERPRINT_CLAUSES, IMPORT_CLAUSES,
-    INSTRUCTIONS, REDIRECT_CLAUSES, ROBOTS_CLAUSES, SECRET_FORMS, SECURITY_TXT_CLAUSES,
-    SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
+    INSTRUCTIONS, PRECOMPRESS_CLAUSES, REDIRECT_CLAUSES, ROBOTS_CLAUSES, SECRET_FORMS,
+    SECURITY_TXT_CLAUSES, SITEMAP_CLAUSES, SORT_ORDERS, TRANSFORM_CLAUSES,
 };
 use crate::language::scanner::{is_js_space, js_trim, version_directive};
 use crate::lsp::diagnostics::Analysis;
@@ -413,6 +413,41 @@ pub fn completion(lines: &Lines, ix: &Index, line: u32, col: u32) -> Completion 
             } else {
                 let from = last.map_or(0, |l| l + 1);
                 kw_items(FINGERPRINT_CLAUSES[from..].iter().copied(), CIK_KEYWORD)
+            }
+        }
+        "CANONICAL" => {
+            // BASE <url>, then PRETTY.
+            let ops: Vec<String> = prior.iter().skip(1).map(|w| w.upper()).collect();
+            if ops.is_empty() {
+                kw_items(["BASE"], CIK_KEYWORD)
+            } else if ops.len() == 2 && ops[0] == "BASE" {
+                kw_items(["PRETTY"], CIK_KEYWORD)
+            } else {
+                Vec::new()
+            }
+        }
+        "PRECOMPRESS" => {
+            // [gzip] (before the patterns), then patterns, then MIN <bytes> once.
+            let ops: Vec<String> = prior
+                .iter()
+                .skip(1)
+                .filter(|w| !w.text.starts_with("--"))
+                .map(|w| w.upper())
+                .collect();
+            let patterns = ops
+                .iter()
+                .filter(|w| !w.eq_ignore_ascii_case("gzip"))
+                .count();
+            if prev == "MIN" || ops.iter().any(|w| w == "MIN") {
+                Vec::new()
+            } else if patterns == 0 {
+                if ops.is_empty() {
+                    kw_items(["gzip"], CIK_KEYWORD)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                kw_items(PRECOMPRESS_CLAUSES.iter().copied(), CIK_KEYWORD)
             }
         }
         "ROBOTS" => {
@@ -1301,6 +1336,19 @@ mod tests {
         assert!(labels("FINGERPRINT /a/ MANIFEST ").is_empty());
         assert_eq!(labels("FINGERPRINT /a/ MANIFEST /m.json "), ["INTEGRITY"]);
         assert!(labels("FINGERPRINT /a/ INTEGRITY ").is_empty());
+        // CANONICAL: BASE <url>, then PRETTY
+        assert_eq!(labels("CANONICAL "), ["BASE"]);
+        assert!(labels("CANONICAL BASE ").is_empty());
+        assert_eq!(labels("CANONICAL BASE https://e.x "), ["PRETTY"]);
+        assert!(labels("CANONICAL BASE https://e.x PRETTY ").is_empty());
+        // PRECOMPRESS: gzip first, then patterns, then MIN once
+        assert_eq!(labels("PRECOMPRESS "), ["gzip"]);
+        assert_eq!(labels("PRECOMPRESS --"), ["--overwrite"]);
+        assert!(labels("PRECOMPRESS gzip ").is_empty());
+        assert_eq!(labels("PRECOMPRESS /a/ "), ["MIN"]);
+        assert_eq!(labels("PRECOMPRESS gzip /a/ "), ["MIN"]);
+        assert!(labels("PRECOMPRESS /a/ MIN ").is_empty());
+        assert!(labels("PRECOMPRESS /a/ MIN 10 ").is_empty());
         // ROBOTS: rules, then SITEMAP, then TO
         assert_eq!(labels("ROBOTS "), ["ALLOW", "DISALLOW", "SITEMAP", "TO"]);
         assert!(labels("ROBOTS ALLOW ").is_empty());

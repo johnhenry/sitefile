@@ -78,6 +78,16 @@ const INSTRUCTIONS: &[(&str, &str, &str)] = &[
         "Renames the files matching the patterns (`*`, `?`, `**`; `/assets/` means everything below it) to `name.<hash>.ext` (10 hex digits of the SHA-256 of the content) and rewrites the references to them in every HTML and CSS file of the stage. HTML pages keep their names. A CSS file is hashed after its own references are rewritten. EXPORT adds `Cache-Control: public, max-age=31536000, immutable` for the renamed files and `no-cache` for the pages to `/_headers`.",
     ),
     (
+        "CANONICAL",
+        "CANONICAL BASE <url> [PRETTY]",
+        "Adds `<link rel=\"canonical\" href=\"<base><path>\">` before `</head>` of every page of the stage below the EXPORT path that has no canonical link (`…/index.html` becomes `…/`). `PRETTY` drops `.html`. Pages without `</head>` are left alone, with a warning.",
+    ),
+    (
+        "PRECOMPRESS",
+        "PRECOMPRESS [--overwrite] [gzip] <pattern>… [MIN <bytes>]",
+        "Writes a gzip sidecar `<file>.gz` next to each matching compressible file (text, scripts, data, SVG, fonts) of at least MIN bytes (default 1024), when it is smaller, for servers that send it in place of the file (nginx `gzip_static`, Caddy `precompressed`). Deterministic: the shared deflate encoder, a fixed header. `br` and `zstd` are not supported yet.",
+    ),
+    (
         "ROBOTS",
         "ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]",
         "Writes `/robots.txt` for every user agent (`User-agent: *`) with the ALLOW and DISALLOW rules in source order (an empty `Disallow:` allows everything). `SITEMAP` adds a `Sitemap:` line for each SITEMAP of the Sitefile (its BASE and destination).",
@@ -160,6 +170,10 @@ const CLAUSES: &[(&str, &str, &str)] = &[
     ("FEED", "TITLE", "`TITLE <text>`: the feed's title (default: the BASE URL)."),
     ("FINGERPRINT", "MANIFEST", "`MANIFEST <dest>`: a JSON file mapping each old path to its fingerprinted path (sorted by old path)."),
     ("FINGERPRINT", "INTEGRITY", "`INTEGRITY`: adds `integrity=\"sha384-…\"` (Subresource Integrity) to each `<script src>` and `<link rel=stylesheet|modulepreload>` that loads a renamed file, unless it has one."),
+    ("CANONICAL", "BASE", "`BASE <url>`: the absolute http(s) URL the site is published at."),
+    ("CANONICAL", "PRETTY", "`PRETTY`: canonical URLs without `.html` (`/about.html` → `<base>/about`)."),
+    ("PRECOMPRESS", "MIN", "`MIN <bytes>`: the smallest file compressed (a whole number; default 1024)."),
+    ("PRECOMPRESS", "gzip", "`gzip`: write `<file>.gz` (the default, and the only format so far)."),
     ("ROBOTS", "ALLOW", "`ALLOW <path>`: an `Allow:` rule (an absolute path; `*` and `$` work as robots.txt wildcards)."),
     ("ROBOTS", "DISALLOW", "`DISALLOW <path>`: a `Disallow:` rule (an absolute path; `/` keeps crawlers out of everything)."),
     ("ROBOTS", "SITEMAP", "`SITEMAP`: a `Sitemap:` line for each SITEMAP of the Sitefile (an error when there is none)."),
@@ -407,6 +421,11 @@ mod tests {
             ("FEED", &FEED_CLAUSES[..]),
             ("REDIRECT", &REDIRECT_CLAUSES[..]),
             ("FINGERPRINT", &FINGERPRINT_CLAUSES[..]),
+            ("CANONICAL", &crate::language::parser::CANONICAL_CLAUSES[..]),
+            (
+                "PRECOMPRESS",
+                &crate::language::parser::PRECOMPRESS_CLAUSES[..],
+            ),
             ("ROBOTS", &crate::language::parser::ROBOTS_CLAUSES[..]),
             (
                 "SECURITY_TXT",

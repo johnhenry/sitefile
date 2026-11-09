@@ -469,6 +469,22 @@ pub enum Instruction {
         no_cache_headers: bool,
         overwrite: bool,
     },
+    /// `CANONICAL BASE <url> [PRETTY]`: a `<link rel="canonical">` before `</head>` of every page without one.
+    Canonical {
+        span: SourceSpan,
+        base: Operand,
+        pretty: bool,
+    },
+    /// `PRECOMPRESS [--overwrite] [gzip]… <pattern>… [MIN <bytes>]`: write a `.gz` sidecar next to each
+    /// matching compressible file of at least MIN bytes, when it is smaller. `formats` is `["gzip"]`
+    /// when none is given.
+    Precompress {
+        span: SourceSpan,
+        formats: Vec<String>,
+        patterns: Vec<Operand>,
+        min: Option<Operand>,
+        overwrite: bool,
+    },
     /// `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt`;
     /// `rules` are (allow, path, span) in source order.
     Robots {
@@ -524,6 +540,8 @@ impl Instruction {
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
             | Instruction::Fingerprint { span, .. }
+            | Instruction::Canonical { span, .. }
+            | Instruction::Precompress { span, .. }
             | Instruction::Robots { span, .. }
             | Instruction::SecurityTxt { span, .. }
             | Instruction::CheckLinks { span, .. }
@@ -547,6 +565,8 @@ impl Instruction {
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
+            Instruction::Canonical { .. } => "CANONICAL",
+            Instruction::Precompress { .. } => "PRECOMPRESS",
             Instruction::Robots { .. } => "ROBOTS",
             Instruction::SecurityTxt { .. } => "SECURITY_TXT",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
