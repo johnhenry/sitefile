@@ -44,6 +44,9 @@ pub struct SiteServerOptions {
     /// name, an IP address or a name this list allows gets `403` ([`host_allowed`]). `*` allows
     /// every host; `None`: no check (the CLI always sets it).
     pub allowed_hosts: Option<Vec<String>>,
+    /// `--cors`: `Access-Control-Allow-Origin: *` on every response (`_headers` still wins) and
+    /// `OPTIONS` preflights answered with `204`.
+    pub cors: bool,
     /// `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
     /// redirects to it, `/repo` gets its slash, everything else is 404. Read per request (a
     /// watched server takes it from the last good build); [`normalize_base`] makes the value.
@@ -516,13 +519,7 @@ impl LiveReload {
         body_len: u64,
         chunked: bool,
     ) -> Response {
-        let mut h: Vec<(String, String)> = vec![
-            ("x-content-type-options".into(), "nosniff".into()),
-            ("cache-control".into(), "no-cache".into()),
-        ];
-        if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-            h.push(("x-sitefile-server".into(), id.to_string()));
-        }
+        let h = base_headers(options);
         let res = |status: u16, mut h: Vec<(String, String)>, extra: &[(&str, &str)]| {
             h.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             Response {
@@ -626,6 +623,9 @@ impl LiveReload {
         let mut head = String::from("HTTP/1.1 200 OK\r\nx-content-type-options: nosniff\r\n");
         if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
             head.push_str(&format!("x-sitefile-server: {id}\r\n"));
+        }
+        if options.cors {
+            head.push_str("access-control-allow-origin: *\r\n");
         }
         for (k, v) in STREAM_HEADERS {
             head.push_str(&format!("{k}: {v}\r\n"));
@@ -811,6 +811,31 @@ fn raw_path_of(url: &str) -> &str {
 const NOT_FOUND_PAGE: &str =
     "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n";
 const BAD_REQUEST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>400 Bad Request</title><h1>400 Bad Request</h1>\n";
+/// The headers every response starts with (`base` in src/server.ts).
+fn base_headers(options: &SiteServerOptions) -> Vec<(String, String)> {
+    let mut base: Vec<(String, String)> = vec![
+        ("x-content-type-options".into(), "nosniff".into()),
+        ("cache-control".into(), "no-cache".into()),
+    ];
+    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
+        base.push(("x-sitefile-server".into(), id.to_string()));
+    }
+    if options.cors {
+        base.push(("access-control-allow-origin".into(), "*".into()));
+    }
+    base
+}
+
+/// `Access-Control-Request-Headers` echoed in a preflight answer, when it is a plain list of
+/// header names (`preflightHeaders` in src/server.ts).
+fn preflight_headers(value: Option<&str>) -> Option<String> {
+    let v = value?.trim();
+    let ok = !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" \t,!#$%&'*+-.^_`|~".contains(&b));
+    ok.then(|| v.to_string())
+}
+
 const FORBIDDEN_HOST_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>403 Forbidden</title><h1>403 Forbidden</h1><p>This server answers requests for localhost and IP addresses only. To allow another host name, restart it with <code>--allowed-host &lt;name&gt;</code>.</p>\n";
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>500 Internal Server Error</title><h1>500 Internal Server Error</h1>\n";
 const METHOD_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>405 Method Not Allowed</title><h1>405 Method Not Allowed</h1>\n";
@@ -1233,6 +1258,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         301 => "Moved Permanently",
         302 => "Found",
         303 => "See Other",
@@ -1924,13 +1950,7 @@ pub fn respond(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Response {
-    let mut base: Vec<(String, String)> = vec![
-        ("x-content-type-options".into(), "nosniff".into()),
-        ("cache-control".into(), "no-cache".into()),
-    ];
-    if let Some(id) = options.server_id.as_deref().filter(|s| !s.is_empty()) {
-        base.push(("x-sitefile-server".into(), id.to_string()));
-    }
+    let base = base_headers(options);
     let finish = |status: u16, extra: Vec<(String, String)>, body: Option<Vec<u8>>| -> Response {
         let mut headers = base.clone();
         for (k, v) in extra {
@@ -1968,8 +1988,26 @@ pub fn respond(
     ) {
         return page(403, FORBIDDEN_HOST_PAGE, vec![]);
     }
+    if options.cors && method == "OPTIONS" {
+        // A CORS preflight: any path, nothing is looked up.
+        let mut h = owned(vec![("access-control-allow-methods", "GET, HEAD".into())]);
+        if let Some(v) = preflight_headers(
+            headers
+                .get("access-control-request-headers")
+                .map(String::as_str),
+        ) {
+            h.push(("access-control-allow-headers".into(), v));
+        }
+        h.push(("access-control-max-age".into(), "600".into()));
+        return finish(204, h, None);
+    }
     if method != "GET" && method != "HEAD" {
-        return page(405, METHOD_PAGE, owned(vec![("allow", "GET, HEAD".into())]));
+        let allow = if options.cors {
+            "GET, HEAD, OPTIONS"
+        } else {
+            "GET, HEAD"
+        };
+        return page(405, METHOD_PAGE, owned(vec![("allow", allow.into())]));
     }
     let url = origin_form(url);
     let url = url.as_ref();
@@ -3069,6 +3107,37 @@ mod tests {
             200
         );
         assert_eq!(ask(&[ims, ("if-none-match", "\"x\"")]).status, 200);
+    }
+
+    #[test]
+    fn cors_flag() {
+        let t = site();
+        let opts = SiteServerOptions {
+            cors: true,
+            ..Default::default()
+        };
+        let mut h = HashMap::new();
+        let r = handle_request(&t, &opts, "GET", "/", &h);
+        assert_eq!(r.header("access-control-allow-origin"), Some("*"));
+        h.insert(
+            "access-control-request-headers".to_string(),
+            "x-a, x-b".to_string(),
+        );
+        let p = handle_request(&t, &opts, "OPTIONS", "/x", &h);
+        assert_eq!(p.status, 204);
+        assert_eq!(p.header("access-control-allow-headers"), Some("x-a, x-b"));
+        assert_eq!(p.header("content-length"), None);
+        assert_eq!(
+            handle_request(&t, &opts, "POST", "/", &h).header("allow"),
+            Some("GET, HEAD, OPTIONS")
+        );
+        let plain = SiteServerOptions::default();
+        assert_eq!(handle_request(&t, &plain, "OPTIONS", "/", &h).status, 405);
+        assert_eq!(
+            preflight_headers(Some(" x-a,x-b ")).as_deref(),
+            Some("x-a,x-b")
+        );
+        assert_eq!(preflight_headers(Some("a\"b")), None);
     }
 
     #[test]

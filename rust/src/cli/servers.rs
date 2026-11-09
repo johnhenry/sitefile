@@ -177,6 +177,7 @@ const SERVE_OPTS: &[OptSpec] = &[
     flag("strict-site-files"),
     flag("keep-os-metadata"),
     strings("allowed-host"),
+    flag("cors"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -220,6 +221,7 @@ pub const SERVE: Command = Command {
         "-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)",
         "-d, --detach      run in the background and print the server ID",
         "--spa             serve /index.html for unknown paths without a file extension",
+        "--cors            Access-Control-Allow-Origin: * on every response and OPTIONS preflights (204)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--spa             answer page navigations to missing paths with the nearest 200.html or index.html",
         "--spa-exclude <glob>         paths that never fall back to the app shell (* matches anything; repeatable)",
@@ -316,6 +318,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(allowed_hosts.clone()),
+                cors: v.flag("cors"),
                 content: site.content,
                 ..Default::default()
             },
@@ -345,6 +348,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             base,
             keep_os_metadata,
             allowed_hosts,
+            cors: v.flag("cors"),
             country,
             strict_site_files,
             project: None,
@@ -557,6 +561,7 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             })),
             warn: Some(Arc::new(|m: &str| err(&format!("warning: {m}\n")))),
             allowed_hosts: Some(allowed_hosts.clone()),
+            cors: v.flag("cors"),
             content: None,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
@@ -651,6 +656,7 @@ pub fn serve_worker(id: &str) -> i32 {
                 last_modified: Some(Arc::new(move || modified)),
                 warn: None,
                 allowed_hosts: Some(state.allowed_hosts.clone()),
+                cors: state.cors,
                 content: site.content,
                 ..Default::default()
             },

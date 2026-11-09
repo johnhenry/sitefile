@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`serve --cors`** (johnhenry/sitefile#171): `Access-Control-Allow-Origin: *`
+  on every response (`_headers` still wins) and `OPTIONS` preflights answered
+  with `204`; kept in the server record. Both servers.
 - **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
   both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
   IP address; `--allowed-host <name>` (repeatable; `.example.test` for
