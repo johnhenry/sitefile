@@ -2753,6 +2753,48 @@ fn check_import_schema(spec: &ImportSpec, res: &Resource, local: &LocalContext) 
     )
 }
 
+/// The language server's schema check (docs/LSP.md): every `IMPORT … SCHEMA` of `p` whose source is a local
+/// path is read from `context_dir` as a build reads it (`.sitefileignore`, DRAFTS), then its schema file is
+/// read and the documents are checked, without building anything. Remote and Git imports are skipped (the
+/// server never fetches). Returns the first error of each checked import, in Sitefile order.
+pub fn check_local_schemas(p: &Plan, context_dir: &Path, label: &str) -> Vec<SitefileError> {
+    let local = match LocalContext::open(context_dir, &LocalContextOptions::default()) {
+        Ok(l) => l,
+        Err(e) => return vec![e],
+    };
+    let lock = Mutex::new(None);
+    let warn: Callback = Arc::new(|_: &str| {});
+    let secrets = Secrets::default();
+    let env = ImportEnv {
+        local: &local,
+        archive_limits: &DEFAULT_ARCHIVE_LIMITS,
+        keep_os_metadata: false,
+        remote: RemoteEnv {
+            policy: &DEFAULT_FETCH_POLICY,
+            lock: &lock,
+            label,
+            warn: &warn,
+            frozen: false,
+            update: false,
+            vendor: None,
+            archive_limits: DEFAULT_ARCHIVE_LIMITS,
+            secrets: &secrets,
+        },
+        memo: None,
+        cancel: None,
+    };
+    p.imports
+        .iter()
+        .filter(|s| s.schema.is_some() && matches!(s.location, ImportLocation::Local { .. }))
+        .filter_map(|spec| {
+            resolve_import(spec, &env)
+                .and_then(|(res, _)| without_drafts(spec, res))
+                .and_then(|res| check_import_schema(spec, &res, &local))
+                .err()
+        })
+        .collect()
+}
+
 /// Apply an import's SORT BY to a list value.
 fn sorted(spec: &ImportSpec, res: Resource) -> Result<Resource> {
     let Some(sort) = &spec.sort else {

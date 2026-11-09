@@ -11,6 +11,11 @@
   (`rust/tests/fixtures/pattern/vectors.json`), a seeded differential fixture (`fuzz.json`) and a
   check that every accepted pattern means what JavaScript's `RegExp` means. `examples/blog`'s schema
   checks tag names with one.
+- **Schema checks in the language server** (johnhenry/sitefile#135): when a Sitefile is opened or
+  saved, `sitefile lsp` reads every local `IMPORT … SCHEMA` (documents and schema file, as a build
+  reads them, DRAFTS applied) and reports `E_SCHEMA` and friends at the IMPORT line or SCHEMA clause,
+  without a build. Remote and Git imports are skipped (the server never fetches); an edit clears
+  these diagnostics until the next save. docs/LSP.md describes it.
 
 ## Unreleased
 

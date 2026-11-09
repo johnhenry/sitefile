@@ -37,7 +37,7 @@ Any other LSP client: command `sitefile lsp`, stdio transport, language id
 
 | Capability | What it does |
 | --- | --- |
-| Diagnostics (`textDocument/publishDiagnostics`) | On open, change and save; cleared on close. Runs the real pipeline: **scan → parse → validate → plan**, plus the template parser on `RENDER` heredoc bodies. Every logical line that fails to parse gets its own error; after parsing, the first validation or planning error is reported (as `sitefile validate` would). Planner warnings (`unnamed stage is not the last one`, `INTEGRITY on a local import …`) are warnings on their whole line. Each diagnostic carries the stable error code (`E_SYNTAX`, `E_UNDEFINED`, …). |
+| Diagnostics (`textDocument/publishDiagnostics`) | On open, change and save; cleared on close. Runs the real pipeline: **scan → parse → validate → plan**, plus the template parser on `RENDER` heredoc bodies. Every logical line that fails to parse gets its own error; after parsing, the first validation or planning error is reported (as `sitefile validate` would). Planner warnings (`unnamed stage is not the last one`, `INTEGRITY on a local import …`) are warnings on their whole line. Each diagnostic carries the stable error code (`E_SYNTAX`, `E_UNDEFINED`, …). On open and save (not on every change), the **schema check** also reads each local `IMPORT … SCHEMA` and its schema file and reports what a build would (`E_SCHEMA`, a missing file, a bad schema) at the IMPORT line or the SCHEMA clause; an edit clears those until the next save. |
 | Lint warnings | `validate`'s [lint rules](LANGUAGE.md#lint-rules-sitefile-validate) are Warning diagnostics on their instruction's first line, with the rule id as the diagnostic `code` (`render-escape`, …; `lint-comment` for a bad `# sitefile-lint:` comment) and the same text as `validate` prints. |
 | Code actions (quick fixes) | `textDocument/codeAction` for the diagnostics in the requested range: `render-escape` → **Add --escape=html**; `unpinned-import` → **Add INTEGRITY from Sitefile.lock** and `unpinned-image` → **Pin the digest from Sitefile.lock** (only when the `Sitefile.lock` next to the document has the URL / the image tag); the unnamed-stage warning → **Name this stage** (`FROM … AS stageN`, or a `STAGE stageN` line before an implicit stage); every lint rule → **Disable <rule> for this instruction** (`# sitefile-lint: disable-next-line=…` above it) and **Disable <rule> in this file** (`# sitefile-lint: disable=…` on the first line). |
 | `ARG` without a default | An **Information** diagnostic (`E_MISSING_ARG`): a build needs `--build-arg NAME=<value>`. The rest of the file is planned with a placeholder value for it (`placeholder`, `0` or `false` by type), and an error found that way says so. |
@@ -62,13 +62,21 @@ and `$/cancelRequest` are ignored (requests are answered synchronously).
 
 ## How it works
 
-- **No IO.** Analysis never reads the build context, fetches, runs plugins or
-  tools, or writes anything: planning binds variables and normalizes paths
-  only. So errors that need the files (`E_NOT_FOUND`, a bad JSON import,
-  `E_CONFLICT`, an undefined name used in a template) appear only when you
-  build. Template *syntax* in heredoc bodies is checked. The one exception is
-  a code action: the pin quick fixes read the `Sitefile.lock` next to the
-  document (never the network) when you ask for actions.
+- **No IO while you type.** Analysis never reads the build context, fetches,
+  runs plugins or tools, or writes anything: planning binds variables and
+  normalizes paths only. So errors that need the files (`E_NOT_FOUND`, a bad
+  JSON import, `E_CONFLICT`, an undefined name used in a template) appear only
+  when you build. Template *syntax* in heredoc bodies is checked. Two
+  exceptions read files, never the network: the pin quick fixes read the
+  `Sitefile.lock` next to the document when you ask for actions, and the
+  **schema check** runs when a `file://` document is opened or saved. It
+  treats the document's directory as the build context and, for every
+  `IMPORT … SCHEMA` whose source is a local path, reads the documents as a
+  build does (`.sitefileignore`, `DRAFTS`), reads the schema file and checks
+  them (docs/LANGUAGE.md, "Schemas"), reporting the first error of each such
+  import. Remote and Git imports are skipped, and nothing is checked while
+  the document has an error or an ARG without a default (its placeholder
+  could name the wrong files).
 - **Single-threaded.** One loop reads a message, handles it and replies.
   Diagnostics are published when no further input is already buffered, so a
   burst of edits is analyzed once, for the last version.

@@ -4,7 +4,9 @@
 //! Single-threaded: one loop reads a message, handles it, and writes any
 //! reply. Documents use full text sync. Diagnostics run the real pipeline
 //! (scan → parse → validate → plan, no IO) and are published when the input
-//! queue is drained, so a burst of edits is analyzed once.
+//! queue is drained, so a burst of edits is analyzed once. When a document is
+//! opened or saved, its local `IMPORT … SCHEMA` imports are also read and
+//! checked (`diagnostics::schema_diagnostics`), the only check that reads files.
 //!
 //! This is a Rust-only tooling exception (docs/RUST.md): the language is the
 //! same in both implementations; the server is an editor tool.
@@ -18,7 +20,7 @@ pub mod index;
 pub mod text;
 
 use crate::resources::lockfile::Lockfile;
-use diagnostics::{analyze, Analysis};
+use diagnostics::{analyze, schema_diagnostics, Analysis, Diagnostic};
 use index::Index;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -43,6 +45,9 @@ struct Document {
     index: Index,
     /// Out of date after an edit until the next publish (or a hover needs it).
     analysis: Option<Analysis>,
+    /// `IMPORT … SCHEMA` errors found by reading the files when the document was opened or last saved;
+    /// cleared by an edit (their lines may have moved) until the next save.
+    schema: Vec<Diagnostic>,
 }
 
 impl Document {
@@ -56,6 +61,7 @@ impl Document {
             lines,
             index,
             analysis: None,
+            schema: Vec::new(),
         }
     }
     fn set_text(&mut self, text: String) {
@@ -63,6 +69,17 @@ impl Document {
         self.index = index::build(&self.lines);
         self.text = text;
         self.analysis = None;
+        self.schema.clear();
+    }
+    /// Read the imports with a SCHEMA (a `file://` document only: its directory is the build context).
+    fn check_schemas(&mut self, uri: &str) {
+        let Some(dir) = uri_path(uri).and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+            return;
+        };
+        self.analysis();
+        if let Some(a) = &self.analysis {
+            self.schema = schema_diagnostics(a, &self.text, &self.file, &dir);
+        }
     }
     fn analysis(&mut self) -> &Analysis {
         if self.analysis.is_none() {
@@ -182,12 +199,13 @@ impl Server {
                 continue;
             };
             let version = doc.version;
-            let diags: Vec<Value> = doc
+            let mut diags: Vec<Value> = doc
                 .analysis()
                 .diagnostics
                 .iter()
                 .map(|d| d.to_json())
                 .collect();
+            diags.extend(doc.schema.iter().map(|d| d.to_json()));
             let mut params = json!({ "uri": uri, "diagnostics": diags });
             if let Some(v) = version {
                 params["version"] = json!(v);
@@ -282,7 +300,7 @@ impl Server {
             ) else {
                 return error(id, INVALID_PARAMS, "expected textDocument and range");
             };
-            // The only file the server reads: the Sitefile.lock next to the document, for pins.
+            // Code actions read the Sitefile.lock next to the document, for pins.
             let lock = uri_path(&uri)
                 .and_then(|p| p.parent().map(|d| d.join("Sitefile.lock")))
                 .and_then(|p| Lockfile::load(p).ok());
@@ -358,8 +376,9 @@ impl Server {
                     .unwrap_or("")
                     .to_string();
                 let version = params["textDocument"]["version"].as_i64();
-                self.docs
-                    .insert(uri.clone(), Document::new(&uri, text, version));
+                let mut doc = Document::new(&uri, text, version);
+                doc.check_schemas(&uri);
+                self.docs.insert(uri.clone(), doc);
                 self.dirty.insert(uri);
             }
             "textDocument/didChange" => {
@@ -391,6 +410,7 @@ impl Server {
                             doc.set_text(t.to_string());
                         }
                     }
+                    doc.check_schemas(&uri);
                     self.dirty.insert(uri);
                 }
             }

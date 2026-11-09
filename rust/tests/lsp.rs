@@ -185,3 +185,74 @@ fn examples_have_no_error_diagnostics() {
     }
     assert!(n > 5);
 }
+
+/// IMPORT … SCHEMA: the files are read when the document is opened and saved, not while it is edited.
+#[test]
+fn schema_errors_on_open_and_save() {
+    let dir = std::env::temp_dir().join(format!("sitefile-lsp-schema-it-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("posts")).unwrap();
+    std::fs::write(dir.join("s.yaml"), "required: [title]\n").unwrap();
+    std::fs::write(dir.join("posts/a.md"), "---\ndate: 2026-01-01\n---\nx\n").unwrap();
+    let mut child = Command::new(BIN)
+        .args(["lsp", "--stdio"])
+        .env("SITEFILE_HOME", dir.join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let uri = format!("file://{}/Sitefile", dir.display());
+    send(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "processId": null, "rootUri": null, "capabilities": {} } }),
+    );
+    recv(&mut stdout);
+    let text = "IMPORT posts FROM ./posts AS markdown SCHEMA ./s.yaml\nEXPORT /\n";
+    send(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": { "textDocument": { "uri": uri, "languageId": "sitefile", "version": 1, "text": text } } }),
+    );
+    let next = |stdout: &mut BufReader<ChildStdout>| {
+        // Errors only (an unused IMPORT is also a lint warning).
+        let all = recv_where(stdout, |m| m["method"] == "textDocument/publishDiagnostics");
+        let errors: Vec<Value> = all["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["severity"] == 1)
+            .cloned()
+            .collect();
+        Value::Array(errors)
+    };
+    let d = next(&mut stdout);
+    assert_eq!(d.as_array().unwrap().len(), 1, "{d}");
+    assert_eq!(d[0]["code"], "E_SCHEMA");
+    assert_eq!(d[0]["range"]["start"], json!({ "line": 0, "character": 0 }));
+    assert_eq!(
+        d[0]["message"],
+        "IMPORT posts: document '/a.md' has no 'title' (required by schema './s.yaml')"
+    );
+    // An edit clears it (until the next save); fixing the post and saving keeps it clear.
+    send(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "method": "textDocument/didChange", "params": { "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": text }] } }),
+    );
+    assert_eq!(next(&mut stdout), json!([]));
+    send(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "method": "textDocument/didSave", "params": { "textDocument": { "uri": uri }, "text": text } }),
+    );
+    assert_eq!(next(&mut stdout)[0]["code"], "E_SCHEMA");
+    std::fs::write(dir.join("posts/a.md"), "---\ntitle: A\n---\nx\n").unwrap();
+    send(
+        &mut stdin,
+        json!({ "jsonrpc": "2.0", "method": "textDocument/didSave", "params": { "textDocument": { "uri": uri }, "text": text } }),
+    );
+    assert_eq!(next(&mut stdout), json!([]));
+    drop(stdin);
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
