@@ -2207,10 +2207,16 @@ pub fn respond(
         if negotiated && !headers.contains_key("range") {
             if has_br && accepts_encoding(ae, "br") {
                 coding = Some("br");
-                sent = tree.get(&br_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+                sent = tree
+                    .get(&br_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
             } else if has_gz && accepts_encoding(ae, "gzip") {
                 coding = Some("gzip");
-                sent = tree.get(&gz_path).map(|f| f.bytes.to_vec()).unwrap_or_default();
+                sent = tree
+                    .get(&gz_path)
+                    .map(|f| f.bytes.to_vec())
+                    .unwrap_or_default();
             } else if on_the_fly && accepts_encoding(ae, "gzip") {
                 coding = Some("gzip");
                 let mut cache = options.gzip_cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -3437,8 +3443,12 @@ mod tests {
         assert!(is_compressible("image/svg+xml; charset=utf-8"));
         assert!(!is_compressible("image/png"));
         let t = Tree::from_files(
-            [("/a.css", "a{}".to_string()), ("/a.css.br", "BR".into()), ("/big.txt", "x".repeat(2000))]
-                .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
+            [
+                ("/a.css", "a{}".to_string()),
+                ("/a.css.br", "BR".into()),
+                ("/big.txt", "x".repeat(2000)),
+            ]
+            .map(|(p, c)| (p.to_string(), make_file(c.into_bytes(), "t", 0o644))),
         )
         .unwrap();
         let opts = SiteServerOptions {
