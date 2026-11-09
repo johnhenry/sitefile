@@ -3,7 +3,7 @@ import https from 'node:https';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { SitefileError } from './errors.js';
-import { headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
+import { globMatch, headersFor, isRewriteStatus, matchRule, parseHeaderRules, parseRedirectRules, substituteTarget } from './serve-rules.js';
 import type { Tree } from './tree.js';
 import { nfc } from './paths.js';
 import { gzip } from './deflate.js';
@@ -12,8 +12,15 @@ import { RELOAD_CLIENT } from './reload-client.js';
 import type { BasicAuth } from './serve-auth.js';
 
 export interface SiteServerOptions {
-  /** Fall back to `/index.html` for unknown extension-less paths (single-page apps). */
+  /**
+   * Single-page apps: answer a page navigation ({@link isNavigation}) for a path nothing else answers
+   * with the nearest app shell ({@link spaFallback}). Never for subresources (scripts, images, `fetch()`).
+   */
   readonly spa?: boolean;
+  /** `--spa-exclude`: request paths (`*` matches any characters) that never fall back. */
+  readonly spaExclude?: readonly string[];
+  /** `--spa-fallback`: the one file every fallback serves, instead of the nearest `200.html` or `index.html`. */
+  readonly spaFallback?: string;
   /** One access-log line per request: `METHOD /path STATUS BYTES MSms`. */
   readonly log?: (line: string) => void;
   /** Sent as `x-sitefile-server` so `servers` can tell its own servers from a reused port. */
@@ -31,6 +38,11 @@ export interface SiteServerOptions {
   readonly lastModified?: () => number | undefined;
   /** Problems a person should know about (without the `warning: ` prefix), e.g. a CSP that blocks live reload. */
   readonly warn?: (message: string) => void;
+  /**
+   * `--base /repo/`: serve the site under this path prefix (a GitHub Pages project site); `/`
+   * redirects to it, `/repo` gets its slash, everything else is 404. Normalized by {@link normalizeBase}.
+   */
+  readonly base?: string | (() => string | undefined);
   /** `--country`: what `_redirects` `Country=` conditions match (there is no geolocation locally). */
   readonly country?: string;
   /**
@@ -61,8 +73,8 @@ export interface SiteServerOptions {
   readonly maxConnectionsPerIp?: number;
   /** Count loopback clients against {@link maxConnectionsPerIp} too (tests only). */
   readonly limitLoopback?: boolean;
-  /** `--random-route`: the site answers only under this prefix (`/<random>`); other paths are a plain `404`. */
-  readonly basePath?: string;
+  /** `--random-route`: {@link base} is a secret, so `/` is a plain `404` instead of a redirect into it. */
+  readonly hideBase?: boolean;
   /** `--allow-ip`, `--deny-ip` (CIDRs, {@link parseCidr}): a non-loopback client they refuse gets `403` before anything else. */
   readonly ipRules?: { readonly allow: readonly Cidr[]; readonly deny: readonly Cidr[] };
   /** `X-Robots-Tag: noindex` on every response (the CLI sets it on non-loopback binds). */
@@ -768,6 +780,33 @@ function etagMatches(header: string | undefined, etag: string): boolean {
   return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
 }
 
+/**
+ * The app shell a `--spa` navigation to a missing path gets: `fallback` when given (`--spa-fallback`),
+ * else the `200.html` (Surge) or `index.html` of the request's directory or the closest parent that
+ * has one, so `/admin/users/5` gets `/admin/index.html` before `/index.html`. Undefined when none exists.
+ */
+export function spaFallback(segs: readonly string[], trailingSlash: boolean, isFile: (p: string) => boolean, fallback?: string): string | undefined {
+  if (fallback !== undefined) return isFile(fallback) ? fallback : undefined;
+  const dirs = trailingSlash ? segs : segs.slice(0, -1);
+  for (let n = dirs.length; n >= 0; n--) {
+    const dir = `/${dirs.slice(0, n).map((d) => d + '/').join('')}`;
+    for (const name of ['200.html', 'index.html']) if (isFile(dir + name)) return dir + name;
+  }
+  return undefined;
+}
+
+/**
+ * A `--base` value as `/a/b/` (segments percent-encoded like encodeURIComponent, NFC), `/` for none, or undefined when it is not a
+ * safe absolute path. The path of a URL (`https://user.github.io/repo/`) is taken as well.
+ */
+export function normalizeBase(raw: string): string | undefined {
+  const m = /^https?:\/\/[^/?#]*(\/[^?#]*)?/i.exec(raw);
+  const p = m ? (m[1] ?? '/') : raw;
+  const segs = safeSegments(p.startsWith('/') ? p : '/' + p);
+  if (!segs) return undefined;
+  return segs.length === 0 ? '/' : `/${segs.map(encodeURIComponent).join('/')}/`;
+}
+
 /** A tree path with each segment percent-encoded like encodeURIComponent. */
 function encodePath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/');
@@ -939,17 +978,7 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     const q = url.indexOf('?');
     const hash = url.indexOf('#');
     const end = Math.min(q === -1 ? url.length : q, hash === -1 ? url.length : hash);
-    let rawPath = url.slice(0, end);
-    const prefix = options.basePath;
-    const search0 = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
-    if (prefix !== undefined && !rawPath.startsWith('/__sitefile/')) {
-      // --random-route: only paths under the secret prefix exist (the reserved /__sitefile/ ones too).
-      if (rawPath === prefix) return finish(301, { location: `${prefix}/${search0}`, 'content-length': 0 }, undefined);
-      if (!rawPath.startsWith(`${prefix}/`)) return page(404, NOT_FOUND_PAGE);
-      rawPath = rawPath.slice(prefix.length);
-    }
-    /** A redirect target inside the site: under the secret prefix with --random-route. */
-    const loc = (l: string): string => (prefix !== undefined && l.startsWith('/') && !l.startsWith('//') ? prefix + l : l);
+    const rawPath = url.slice(0, end);
     if (options.liveReload && rawPath === RELOAD_PATH) {
       if (method === 'HEAD') return finish(200, { ...STREAM_HEADERS }, undefined);
       return options.liveReload.attach(res, base); // not access-logged: one long request per open page
@@ -960,9 +989,22 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
       return finish(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(js) }, js, true);
     }
     const search = q === -1 ? '' : url.slice(q, hash === -1 || hash < q ? undefined : hash);
-    const segs = safeSegments(rawPath);
-    if (!segs) return page(400, BAD_REQUEST_PAGE);
+    const allSegs = safeSegments(rawPath);
+    if (!allSegs) return page(400, BAD_REQUEST_PAGE);
     const trailingSlash = rawPath.endsWith('/');
+    // `--base`: the site lives under `mount`; requests outside it are 404 (or redirected into it).
+    const baseNow = typeof options.base === 'function' ? options.base() : options.base;
+    const baseSegs = baseNow === undefined ? [] : (safeSegments(baseNow) ?? []);
+    /** The `--base` prefix of generated `Location`s (`''` without one), percent-encoded. */
+    const mount = baseSegs.length === 0 ? '' : '/' + baseSegs.map(encodeURIComponent).join('/');
+    let segs = allSegs;
+    if (baseSegs.length > 0) {
+      const inside = baseSegs.every((b, i) => allSegs[i] === b);
+      if (inside && allSegs.length === baseSegs.length && !trailingSlash) return finish(301, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside && allSegs.length === 0 && !options.hideBase) return finish(302, { location: `${mount}/${search}`, 'content-length': 0 }, undefined);
+      if (!inside) return page(404, NOT_FOUND_PAGE);
+      segs = allSegs.slice(baseSegs.length);
+    }
     const vpath = '/' + segs.join('/');
     // `_headers` patterns match the request path (with its trailing slash).
     const custom = headersFor(headerRules, vpath + (trailingSlash && segs.length > 0 ? '/' : ''));
@@ -1051,7 +1093,8 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
         const target = substituteTarget(r.to, caps);
         if (!isRewriteStatus(r.status)) {
           // A rule that matches query parameters passes on only what its target names.
-          const location = loc(target.includes('?') || r.query.length > 0 ? target : target + search);
+          const mounted = target.startsWith('/') ? mount + target : target;
+          const location = mounted.includes('?') || r.query.length > 0 ? mounted : mounted + search;
           note = ` \u2192 ${location} (_redirects:${r.line})`;
           finish(r.status, { location, 'content-length': 0 }, undefined);
           return true;
@@ -1072,17 +1115,19 @@ export function createSiteServer(site: Tree | (() => Tree), options: SiteServerO
     if (redirect(true)) return;
     let served = resolve(vpath, trailingSlash);
     if (served === undefined && !trailingSlash && tree.isDirectory(vpath)) {
-      const location = loc('/' + segs.map(encodeURIComponent).join('/') + '/' + search);
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + '/' + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
     if (served === undefined && redirect(false)) return;
     // `/about/` when only `/about.html` answers: redirect to the clean URL `/about` (relative links in the
     // page then resolve as they do at `/about`). `_redirects` rules for the path come first.
     if (served === undefined && trailingSlash && segs.length > 0 && isFile(`${vpath}.html`)) {
-      const location = loc('/' + segs.map(encodeURIComponent).join('/') + search);
+      const location = mount + '/' + segs.map(encodeURIComponent).join('/') + search;
       return finish(301, { location, 'content-length': 0 }, undefined);
     }
-    if (served === undefined && options.spa && !/\.[^/.]+$/.test(segs[segs.length - 1] ?? '') && isFile('/index.html')) served = '/index.html';
+    if (served === undefined && options.spa && isNavigation(req.headers) && !(options.spaExclude ?? []).some((g) => globMatch(g, vpath + (trailingSlash && segs.length > 0 ? '/' : '')))) {
+      served = spaFallback(segs, trailingSlash, isFile, options.spaFallback);
+    }
     if (served !== undefined) return sendFile(200, served);
     // The nearest 404.html: in the request's directory, then each parent up to the root.
     const dirs = trailingSlash ? segs : segs.slice(0, -1);
