@@ -385,6 +385,57 @@ export interface PrecompressInstruction {
   readonly overwrite: boolean;
 }
 
+/** One `ALLOW <path>` / `DISALLOW <path>` of a ROBOTS. */
+export interface RobotsRule {
+  readonly allow: boolean;
+  readonly path: Operand;
+  readonly span: SourceSpan;
+}
+
+/**
+ * `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]`: a `/robots.txt` for every
+ * user agent, with the rules in source order and, with SITEMAP, the URL of each SITEMAP of the Sitefile.
+ */
+export interface RobotsInstruction {
+  readonly kind: 'ROBOTS';
+  readonly span: SourceSpan;
+  readonly rules: readonly RobotsRule[];
+  readonly sitemap: boolean;
+  /** Default `/robots.txt`. */
+  readonly dest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/**
+ * `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]`:
+ * an RFC 9116 `/.well-known/security.txt`. CONTACT and EXPIRES are required; clauses in any order.
+ */
+export interface SecurityTxtInstruction {
+  readonly kind: 'SECURITY_TXT';
+  readonly span: SourceSpan;
+  readonly contact: readonly Operand[];
+  readonly expires: Operand;
+  readonly encryption: readonly Operand[];
+  readonly policy: readonly Operand[];
+  /** Default `/.well-known/security.txt`. */
+  readonly dest?: Operand;
+  readonly overwrite: boolean;
+}
+
+/**
+ * `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]`: a Workbox-style precache
+ * manifest (`[{url, revision}]`) of the matching files, written to TO (default `/sw-manifest.json`) and/or
+ * injected into a service worker at `self.__WB_MANIFEST`.
+ */
+export interface PrecacheInstruction {
+  readonly kind: 'PRECACHE';
+  readonly span: SourceSpan;
+  readonly patterns: readonly Operand[];
+  readonly dest?: Operand;
+  readonly into?: Operand;
+  readonly overwrite: boolean;
+}
+
 /** `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing. */
 export interface CheckLinksInstruction {
   readonly kind: 'CHECKLINKS';
@@ -413,6 +464,9 @@ export type Instruction =
   | FingerprintInstruction
   | CanonicalInstruction
   | PrecompressInstruction
+  | RobotsInstruction
+  | SecurityTxtInstruction
+  | PrecacheInstruction
   | CheckLinksInstruction
   | ExportInstruction;
 

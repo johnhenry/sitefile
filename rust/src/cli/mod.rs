@@ -14,6 +14,7 @@ pub mod integrity;
 pub mod network;
 pub mod outdated;
 pub mod registry;
+pub mod serve_keys;
 pub mod servers;
 pub mod up;
 pub mod vendor;
@@ -396,9 +397,25 @@ fn run_extra_command(argv: &[String]) -> i32 {
         return run_command(cmd, &rest[1..]);
     }
     match TOP.iter().find(|c| c.name == name) {
+        Some(c) if c.name == "serve" => run_command(c, &optional_open(rest)),
         Some(c) => run_command(c, rest),
         None => usage_error(&format!("unknown command '{name}'")),
     }
+}
+
+/// `serve --open` takes its path only as `--open=<path>`: a bare `--open` (before `--`) is `--open=`.
+fn optional_open(args: &[String]) -> Vec<String> {
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if a == "--open" && i < end {
+                "--open=".to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------ build / validate / inspect
@@ -579,6 +596,7 @@ fn run_main(argv: &[String]) -> i32 {
             arg_files: &arg_files,
             poll,
             plain: false,
+            rebuild: None,
         };
         if o.str("profile") == Some("") {
             return usage_error("--profile expects a file path");

@@ -18,7 +18,7 @@ const NOT_YET: [&str; 5] = ["REMOVE", "GENERATE", "ASSERT", "META", "EXEC"];
 // (`crate::lsp`) completes and documents them from the same lists.
 
 /// Every instruction keyword `parse_instruction` accepts.
-pub const INSTRUCTIONS: [&str; 19] = [
+pub const INSTRUCTIONS: [&str; 22] = [
     "FROM",
     "STAGE",
     "ARG",
@@ -36,6 +36,9 @@ pub const INSTRUCTIONS: [&str; 19] = [
     "FINGERPRINT",
     "CANONICAL",
     "PRECOMPRESS",
+    "ROBOTS",
+    "SECURITY_TXT",
+    "PRECACHE",
     "CHECKLINKS",
     "EXPORT",
 ];
@@ -73,6 +76,12 @@ pub const CANONICAL_CLAUSES: [&str; 2] = ["BASE", "PRETTY"];
 pub const PRECOMPRESS_FORMATS: [&str; 3] = ["gzip", "br", "zstd"];
 /// Clauses after `PRECOMPRESS <pattern>…`.
 pub const PRECOMPRESS_CLAUSES: [&str; 1] = ["MIN"];
+/// Clauses of ROBOTS, in this order (`ALLOW` and `DISALLOW` repeat, mixed).
+pub const ROBOTS_CLAUSES: [&str; 4] = ["ALLOW", "DISALLOW", "SITEMAP", "TO"];
+/// Clauses of SECURITY_TXT, in any order (all but `EXPIRES` and `TO` repeat; `CONTACT` and `EXPIRES` are required).
+pub const SECURITY_TXT_CLAUSES: [&str; 5] = ["CONTACT", "EXPIRES", "ENCRYPTION", "POLICY", "TO"];
+/// Clauses after `PRECACHE <pattern>…`, in this order.
+pub const PRECACHE_CLAUSES: [&str; 2] = ["TO", "INTO"];
 /// Clauses after `REDIRECT <from> <to>`.
 pub const REDIRECT_CLAUSES: [&str; 1] = ["STATUS"];
 /// Leading flags of SITEMAP, FEED, REDIRECT, HEADER and FINGERPRINT.
@@ -111,7 +120,8 @@ pub fn flags_of(keyword: &str) -> &'static [(&'static str, Shape)] {
         "COPY" => COPY_FLAGS,
         "RENDER" => RENDER_FLAGS,
         "TRANSFORM" => TRANSFORM_FLAGS,
-        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECOMPRESS" => SITE_FLAGS,
+        "SITEMAP" | "FEED" | "REDIRECT" | "HEADER" | "PRECOMPRESS" | "ROBOTS" | "SECURITY_TXT"
+        | "PRECACHE" => SITE_FLAGS,
         "FINGERPRINT" => FINGERPRINT_FLAGS,
         "CHECKLINKS" => CHECKLINKS_FLAGS,
         _ => &[],
@@ -173,6 +183,9 @@ fn parse_instruction(c: &mut Cursor) -> Result<Instruction> {
         "FINGERPRINT" => parse_fingerprint(c, span),
         "CANONICAL" => parse_canonical(c, span),
         "PRECOMPRESS" => parse_precompress(c, span),
+        "ROBOTS" => parse_robots(c, span),
+        "SECURITY_TXT" => parse_security_txt(c, span),
+        "PRECACHE" => parse_precache(c, span),
         "CHECKLINKS" => parse_check_links(c, span),
         "RUN" => Err(SitefileError::at(
             E_UNSUPPORTED,
@@ -1200,6 +1213,135 @@ fn parse_precompress(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
         formats,
         patterns,
         min,
+        overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `ROBOTS [--overwrite] [ALLOW <path> | DISALLOW <path>]… [SITEMAP] [TO <dest>]` (in this order)
+fn parse_robots(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut rules = Vec::new();
+    loop {
+        let at = c.span();
+        if c.keyword("ALLOW") {
+            rules.push((true, c.operand("path")?, at));
+        } else if c.keyword("DISALLOW") {
+            rules.push((false, c.operand("path")?, at));
+        } else {
+            break;
+        }
+    }
+    let sitemap = c.keyword("SITEMAP");
+    let dest = if c.keyword("TO") {
+        Some(c.operand("destination")?)
+    } else {
+        None
+    };
+    if !c.at_end() {
+        let at = c.span();
+        let w = c.word();
+        return Err(SitefileError::at(
+            E_SYNTAX,
+            format!("unexpected '{w}' (expected ALLOW, DISALLOW, SITEMAP or TO, in this order)"),
+            &at,
+        ));
+    }
+    Ok(Instruction::Robots {
+        span,
+        rules,
+        sitemap,
+        dest,
+        overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `SECURITY_TXT [--overwrite] CONTACT <uri>… EXPIRES <date> [ENCRYPTION <uri>]… [POLICY <uri>]… [TO <dest>]` (any order)
+fn parse_security_txt(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let (mut contact, mut encryption, mut policy) = (Vec::new(), Vec::new(), Vec::new());
+    let mut expires: Option<Operand> = None;
+    let mut dest: Option<Operand> = None;
+    while !c.at_end() {
+        let at = c.span();
+        if c.keyword("CONTACT") {
+            contact.push(c.operand("contact URI")?);
+        } else if c.keyword("ENCRYPTION") {
+            encryption.push(c.operand("encryption key URI")?);
+        } else if c.keyword("POLICY") {
+            policy.push(c.operand("policy URI")?);
+        } else if c.keyword("EXPIRES") {
+            if expires.is_some() {
+                return Err(SitefileError::at(E_SYNTAX, "EXPIRES given twice", &at));
+            }
+            expires = Some(c.operand("expiry date")?);
+        } else if c.keyword("TO") {
+            if dest.is_some() {
+                return Err(SitefileError::at(E_SYNTAX, "TO given twice", &at));
+            }
+            dest = Some(c.operand("destination")?);
+        } else {
+            let w = c.word();
+            return Err(SitefileError::at(
+                E_SYNTAX,
+                format!("unexpected '{w}' (expected CONTACT, EXPIRES, ENCRYPTION, POLICY or TO)"),
+                &at,
+            ));
+        }
+    }
+    if contact.is_empty() {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            "SECURITY_TXT needs CONTACT <uri> (RFC 9116 requires at least one Contact field)",
+            &span,
+        ));
+    }
+    let Some(expires) = expires else {
+        return Err(SitefileError::at(
+            E_VALIDATION,
+            "SECURITY_TXT needs EXPIRES <date> (RFC 9116 requires an Expires field)",
+            &span,
+        ));
+    };
+    Ok(Instruction::SecurityTxt {
+        span,
+        contact,
+        expires,
+        encryption,
+        policy,
+        dest,
+        overwrite: flags.has("overwrite"),
+    })
+}
+
+/// `PRECACHE [--overwrite] <pattern>… [TO <dest>] [INTO <service-worker>]` (clauses in this order)
+fn parse_precache(c: &mut Cursor, span: SourceSpan) -> Result<Instruction> {
+    let flags = parse_flags(c, SITE_FLAGS)?;
+    let mut patterns = Vec::new();
+    while !c.at_end() && !c.peek_keyword("TO") && !c.peek_keyword("INTO") {
+        patterns.push(c.operand("path pattern")?);
+    }
+    if patterns.is_empty() {
+        return Err(c.error(
+            E_SYNTAX,
+            "expected a path pattern (PRECACHE /assets/ or PRECACHE /**/*.css /index.html)",
+        ));
+    }
+    let dest = if c.keyword("TO") {
+        Some(c.operand("destination")?)
+    } else {
+        None
+    };
+    let into = if c.keyword("INTO") {
+        Some(c.operand("service worker path")?)
+    } else {
+        None
+    };
+    c.expect_end()?;
+    Ok(Instruction::Precache {
+        span,
+        patterns,
+        dest,
+        into,
         overwrite: flags.has("overwrite"),
     })
 }
@@ -2533,6 +2675,9 @@ mod tests {
             ("HEADER", SITE_FLAGS),
             ("FINGERPRINT", FINGERPRINT_FLAGS),
             ("PRECOMPRESS", SITE_FLAGS),
+            ("ROBOTS", SITE_FLAGS),
+            ("SECURITY_TXT", SITE_FLAGS),
+            ("PRECACHE", SITE_FLAGS),
             ("CHECKLINKS", CHECKLINKS_FLAGS),
         ] {
             assert_eq!(flags_of(kw), flags);

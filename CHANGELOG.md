@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **PRECACHE: a service-worker precache manifest** (johnhenry/sitefile#216):
+  `PRECACHE <pattern>… [TO <dest>] [INTO <service-worker>]` writes a
+  Workbox-style `[{url, revision}]` list (10 hex digits of the SHA-256;
+  `null` for fingerprinted files) to `/sw-manifest.json` and/or injects it at
+  `self.__WB_MANIFEST`. Both implementations, with conformance cases; example
+  `examples/precache`.
+- **`serve --rewrite-base <url>`** (johnhenry/sitefile#196): the production
+  URL in served HTML, CSS and XML becomes the local origin (and `--base`), so
+  a preview with absolute self-links stays local. On by default in
+  `serve --watch` (from EXPORT, SITEMAP or FEED BASE; `--no-rewrite-base`
+  turns it off); never applied to exports. Both implementations.
+- **`serve -d` printed its `Started …` line twice** (a merge of
+  johnhenry/sitefile#195): it is printed once, with the `--base` URL.
+- **ROBOTS and SECURITY_TXT** (johnhenry/sitefile#217): `ROBOTS [ALLOW|DISALLOW
+  <path>]… [SITEMAP]` writes `/robots.txt` (with a `Sitemap:` line for each
+  SITEMAP of the Sitefile); `SECURITY_TXT CONTACT <uri>… EXPIRES <date>
+  [ENCRYPTION <uri>]… [POLICY <uri>]…` writes an RFC 9116
+  `/.well-known/security.txt`, rejects a missing Contact or Expires and warns
+  when Expires is near or past. Both implementations, with conformance cases;
+  example `examples/robots`.
 - **`serve --isolate`** (johnhenry/sitefile#197): COOP `same-origin`, COEP
   `require-corp` (or `--coep credentialless`) and CORP `same-origin` on every
   response, for SharedArrayBuffer and wasm threads; `_headers` still wins; kept
@@ -20,6 +40,20 @@
   `gzip_static` and Caddy `precompressed`. `br` and `zstd` are rejected as not
   supported yet. Both implementations, with conformance cases; example
   `examples/precompress`.
+- **`serve` in a terminal** (johnhenry/sitefile#224): single keys in a
+  foreground `serve` or `serve --watch`:
+  - `o` opens the browser;
+  - `u` prints the local URL, plus the network URL and its QR code when
+    bound to every interface;
+  - `r` rebuilds, or re-reads a served directory;
+  - `c` clears the screen;
+  - `q` quits;
+  - `h` lists the keys.
+
+  `--open[=path]` opens the browser at start (`$BROWSER`, else the system
+  default). `--qr` prints a QR code of the network URL. The QR encoder is
+  shared by both implementations: they check the same golden fixtures and
+  the standard's format and version bits.
 - **WACZ export** (johnhenry/sitefile#206, WACZ part): `EXPORT / AS wacz BASE
   <url>` (or `-o site.wacz`) writes a deterministic WACZ 1.1.1 package that
   ReplayWeb.page opens: the site's WARC as `archive/data.warc.gz` (the same
