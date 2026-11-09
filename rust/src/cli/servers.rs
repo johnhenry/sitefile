@@ -422,6 +422,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             log_format: log_json.then(|| "json".to_string()),
             log_ip,
             quiet,
+            auth: auth_entries,
+            auth_file,
             project: None,
         },
         None,
