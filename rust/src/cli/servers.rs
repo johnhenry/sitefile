@@ -55,6 +55,19 @@ pub(crate) fn received() -> Option<&'static str> {
     }
 }
 
+/// [`wait_for_signal`], or `None` once `deadline` passes.
+fn wait_for_signal_until(deadline: Option<std::time::Instant>) -> Option<&'static str> {
+    loop {
+        if let Some(s) = received() {
+            return Some(s);
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn wait_for_signal() -> &'static str {
     loop {
         if let Some(s) = received() {
@@ -189,11 +202,88 @@ fn per_ip_of(v: &Parsed) -> Result<usize> {
 }
 
 /// `  Network: <url>` lines for a server bound to all interfaces (none otherwise).
-fn network_lines(host: &str, port: u16) -> String {
+fn network_lines(host: &str, port: u16, base_path: Option<&str>) -> String {
     crate::server::network_urls(host, port)
         .iter()
-        .map(|u| format!("  Network: {u}\n"))
+        .map(|u| format!("  Network: {}\n", with_base(u, base_path)))
         .collect()
+}
+
+/// A server URL (`http://host:port/`) under a --random-route prefix.
+fn with_base(url: &str, base_path: Option<&str>) -> String {
+    match base_path {
+        Some(p) => format!("{}{p}/", &url[..url.len() - 1]),
+        None => url.to_string(),
+    }
+}
+
+/// The URL a server is reached at locally (its --random-route prefix included).
+fn site_url(host: &str, port: u16, base_path: Option<&str>) -> String {
+    with_base(&format_url(host, port), base_path)
+}
+
+/// `--random-route`, `--allow-ip`, `--deny-ip`, `--stop-after` (`sharingOf` in src/cli/servers.ts).
+struct Sharing {
+    base_path: Option<String>,
+    ip_rules: Option<crate::server::IpRules>,
+    noindex: bool,
+    allow_text: Vec<String>,
+    deny_text: Vec<String>,
+    stop_after: Option<(u64, String)>,
+}
+
+fn sharing_of(v: &Parsed, bind_host: &str) -> Result<Sharing> {
+    let cidrs = |flag: &str| -> Result<(Vec<String>, Vec<crate::server::Cidr>)> {
+        let text = v.strs(flag);
+        let mut parsed = Vec::new();
+        for t in &text {
+            match crate::server::parse_cidr(t) {
+                Some(c) => parsed.push(c),
+                None => return usage(format!("--{flag}: invalid address or CIDR block '{t}'")),
+            }
+        }
+        Ok((text, parsed))
+    };
+    let (allow_text, allow) = cidrs("allow-ip")?;
+    let (deny_text, deny) = cidrs("deny-ip")?;
+    let base_path = v
+        .flag("random-route")
+        .then(|| format!("/{}", crate::export::exporter::random_hex(12)));
+    let stop_after = match v.str("stop-after") {
+        None => None,
+        Some(raw) => {
+            let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+            let mult = match unit {
+                "s" => 1,
+                "m" => 60,
+                "h" => 3600,
+                "d" => 86400,
+                _ => 0,
+            };
+            let n: u64 = if (1..=6).contains(&num.len()) && num.bytes().all(|b| b.is_ascii_digit()) {
+                num.parse().unwrap_or(0)
+            } else {
+                0
+            };
+            if mult == 0 || n == 0 {
+                return usage(format!(
+                    "--stop-after expects a duration like 90s, 30m, 2h or 1d, not '{raw}'"
+                ));
+            }
+            Some((n * mult, raw.to_string()))
+        }
+    };
+    let loopback = bind_host == "localhost" || bind_host == "::1" || bind_host.starts_with("127.");
+    let ip_rules = (!allow.is_empty() || !deny.is_empty())
+        .then_some(crate::server::IpRules { allow, deny });
+    Ok(Sharing {
+        base_path,
+        ip_rules,
+        noindex: !loopback,
+        allow_text,
+        deny_text,
+        stop_after,
+    })
 }
 
 /// `--log-format`, `--log-ip`, `--quiet`: (json, log_ip, quiet).
@@ -252,6 +342,10 @@ const SERVE_OPTS: &[OptSpec] = &[
     strings("auth"),
     string("auth-file"),
     string("max-connections-per-ip"),
+    flag("random-route"),
+    strings("allow-ip"),
+    strings("deny-ip"),
+    string("stop-after"),
     flag("watch"),
     string_s("file", 'f'),
     string("target"),
@@ -307,6 +401,10 @@ pub const SERVE: Command = Command {
         "--auth <user:password>       require HTTP basic authentication (repeatable; or SITEFILE_SERVE_AUTH); only a hash is stored",
         "--auth-file <htpasswd>       users from an htpasswd file ({SHA} entries, htpasswd -s)",
         "--max-connections-per-ip <n> open connections one non-loopback client may hold (default 0: no limit; 503 over it)",
+        "--random-route    serve the site only under a random secret path (printed in the URL)",
+        "--allow-ip <cidr>            only answer clients in this block (repeatable; loopback is always allowed)",
+        "--deny-ip <cidr>             refuse clients in this block (repeatable; checked first)",
+        "--stop-after <n>[s|m|h|d]    stop the server after this long (not with --watch)",
         "--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)",
         "--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)",
         "--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)",
@@ -351,6 +449,7 @@ fn run_serve(v: &Parsed) -> Result<i32> {
     let (log_json, log_ip, quiet) = logging_of(v)?;
     let (auth, auth_entries, auth_file) = auth_of(v, &bind.host)?;
     let per_ip = per_ip_of(v)?;
+    let sharing = sharing_of(v, &bind.host)?;
     let name = v.str("name");
     if name.is_some() && !v.flag("detach") {
         return usage("--name needs -d (only detached servers are tracked)");
@@ -397,10 +496,15 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                 auth: auth.clone(),
                 max_connections_per_ip: per_ip,
                 limit_loopback: false,
+                base_path: sharing.base_path.clone(),
+                ip_rules: sharing.ip_rules.clone(),
+                noindex: sharing.noindex,
+                client_info: true,
             },
             &bind.host,
             bind.port,
         )?;
+        let bp = sharing.base_path.as_deref();
         if log_json {
             out(&format!(
                 "{}\n",
@@ -408,17 +512,25 @@ fn run_serve(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &label,
                     n,
-                    &format_url(&server.host, server.port)
+                    &site_url(&server.host, server.port, bp)
                 )
             ));
         } else {
             out(&format!(
                 "Serving {label} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                format_url(&server.host, server.port),
-                network_lines(&server.host, server.port)
+                site_url(&server.host, server.port, bp),
+                network_lines(&server.host, server.port, bp)
             ));
         }
-        wait_for_signal();
+        let deadline = sharing
+            .stop_after
+            .as_ref()
+            .map(|(secs, _)| std::time::Instant::now() + Duration::from_secs(*secs));
+        if wait_for_signal_until(deadline).is_none() {
+            if let Some((_, text)) = &sharing.stop_after {
+                out(&format!("Stopping: --stop-after {text} reached\n"));
+            }
+        }
         server.close();
         return Ok(0);
     }
@@ -443,6 +555,14 @@ fn run_serve(v: &Parsed) -> Result<i32> {
             auth: auth_entries,
             auth_file,
             max_connections_per_ip: per_ip,
+            base_path: sharing.base_path.clone(),
+            allow_ip: (!sharing.allow_text.is_empty()).then(|| sharing.allow_text.clone()),
+            deny_ip: (!sharing.deny_text.is_empty()).then(|| sharing.deny_text.clone()),
+            expires: sharing.stop_after.as_ref().map(|(secs, _)| {
+                crate::store::iso_of_time(
+                    std::time::SystemTime::now() + Duration::from_secs(*secs),
+                )
+            }),
             project: None,
         },
         None,
@@ -452,8 +572,8 @@ fn run_serve(v: &Parsed) -> Result<i32> {
         "Started {} ({}) serving {label} at {}\n{}",
         up.name,
         up.id,
-        format_url(&up.host, up.port),
-        network_lines(&up.host, up.port)
+        site_url(&up.host, up.port, up.base_path.as_deref()),
+        network_lines(&up.host, up.port, up.base_path.as_deref())
     ));
     Ok(0)
 }
@@ -474,6 +594,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
     let (log_json, log_ip, quiet) = logging_of(v)?;
     let (auth, _, _) = auth_of(v, &bind.host)?;
     let per_ip = per_ip_of(v)?;
+    if v.has("stop-after") {
+        return usage("--stop-after does not apply to --watch");
+    }
+    let sharing = sharing_of(v, &bind.host)?;
     let context = v.positionals.first().cloned().unwrap_or_else(|| ".".into());
     let file = v.str("file").filter(|s| !s.is_empty()).map(str::to_string);
     let arg_files = v.strs("build-arg-file");
@@ -629,6 +753,10 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
             auth: auth.clone(),
             max_connections_per_ip: per_ip,
             limit_loopback: false,
+            base_path: sharing.base_path.clone(),
+            ip_rules: sharing.ip_rules.clone(),
+            noindex: sharing.noindex,
+            client_info: true,
         };
         let s = listen_shared(current.clone(), opts, &bind.host, bind.port)?;
         let n = current.read().map(|t| t.len()).unwrap_or(0);
@@ -639,14 +767,14 @@ fn serve_watch(v: &Parsed) -> Result<i32> {
                     &now_iso(),
                     &context,
                     n,
-                    &format_url(&s.host, s.port)
+                    &site_url(&s.host, s.port, sharing.base_path.as_deref())
                 )
             ));
         } else {
             out(&format!(
                 "Serving {context} ({n} files) at {}  (Ctrl-C to stop)\n{}",
-                format_url(&s.host, s.port),
-                network_lines(&s.host, s.port)
+                site_url(&s.host, s.port, sharing.base_path.as_deref()),
+                network_lines(&s.host, s.port, sharing.base_path.as_deref())
             ));
         }
         server = Some(s);
@@ -721,7 +849,26 @@ pub fn serve_worker(id: &str) -> i32 {
         }
     };
     catch_signals();
+    // --stop-after: the record's expiry.
+    let left_ms = state.expires.as_deref().and_then(super::common::parse_iso).map(|ms| {
+        ms - std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    });
+    let deadline = left_ms
+        .filter(|l| *l > 0)
+        .map(|l| std::time::Instant::now() + Duration::from_millis(l as u64));
     let started = (|| -> Result<crate::server::ListeningServer> {
+        if left_ms.is_some_and(|l| l <= 0) {
+            return Err(SitefileError::plain(
+                E_SERVER,
+                format!(
+                    "server expired at {} (--stop-after)",
+                    state.expires.as_deref().unwrap_or("")
+                ),
+            ));
+        }
         let warn = |m: &str| stamp(&format!("warning: {m}"));
         let tree = load_served_tree_with(
             &reg.store,
@@ -753,6 +900,23 @@ pub fn serve_worker(id: &str) -> i32 {
                 auth: worker_auth(&state)?,
                 max_connections_per_ip: state.max_connections_per_ip,
                 limit_loopback: false,
+                base_path: state.base_path.clone(),
+                ip_rules: (state.allow_ip.is_some() || state.deny_ip.is_some()).then(|| {
+                    let parse = |v: &Option<Vec<String>>| -> Vec<crate::server::Cidr> {
+                        v.iter()
+                            .flatten()
+                            .filter_map(|t| crate::server::parse_cidr(t))
+                            .collect()
+                    };
+                    crate::server::IpRules {
+                        allow: parse(&state.allow_ip),
+                        deny: parse(&state.deny_ip),
+                    }
+                }),
+                noindex: !(state.bind.host == "localhost"
+                    || state.bind.host == "::1"
+                    || state.bind.host.starts_with("127.")),
+                client_info: true,
             },
             &state.bind.host,
             state.bind.port,
@@ -770,24 +934,24 @@ pub fn serve_worker(id: &str) -> i32 {
                 &now_iso(),
                 &state.image,
                 n,
-                &format_url(&host, port),
+                &site_url(&host, port, state.base_path.as_deref()),
             ));
         } else {
             stamp(&format!(
                 "serving {} ({n} files) at {}",
                 state.image,
-                format_url(&host, port)
+                site_url(&host, port, state.base_path.as_deref())
             ));
         }
         Ok(server)
     })();
     match started {
         Ok(server) => {
-            let sig = wait_for_signal();
-            if json {
-                stamp(&crate::server::stopped_log_line(&now_iso(), sig));
-            } else {
-                stamp(&format!("received {sig}, shutting down"));
+            match wait_for_signal_until(deadline) {
+                Some(sig) if json => stamp(&crate::server::stopped_log_line(&now_iso(), sig)),
+                Some(sig) => stamp(&format!("received {sig}, shutting down")),
+                None if json => stamp(&crate::server::stopped_log_line(&now_iso(), "expired")),
+                None => stamp("--stop-after reached, shutting down"),
             }
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -1090,8 +1254,8 @@ fn run_restart(v: &Parsed) -> Result<i32> {
         up.name,
         up.id,
         up.image,
-        format_url(&up.host, up.port),
-        network_lines(&up.host, up.port)
+        site_url(&up.host, up.port, up.base_path.as_deref()),
+        network_lines(&up.host, up.port, up.base_path.as_deref())
     ));
     Ok(0)
 }

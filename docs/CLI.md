@@ -1160,6 +1160,22 @@ to `image` (`imageId`) and `dir` (`path`).
   limit; loopback clients are never limited). A connection over the cap gets one `503` with `Retry-After: 1` (and
   the usual access-log line), then it is closed; the count drops as connections close. Stored in the server record
   (`maxConnectionsPerIp`), so `servers --json` shows it.
+- **Sharing a server** (on a LAN with `-p 0.0.0.0:<port>`, or through a tunnel). Besides `--auth`,
+  `--max-connections-per-ip` and the Host allow-list:
+  - `--random-route` serves the site only under a random secret prefix (`/<24 hex>/`, printed in the URL and kept
+    in the record as `basePath`, so `server restart` keeps the link); every other path is a plain `404` (never the
+    site's `404.html`), `/<prefix>` redirects to `/<prefix>/`, and redirects the server makes stay under the
+    prefix. The reserved `/__sitefile/` paths are not prefixed. Links in the site that start with `/` leave the
+    prefix, as on any host that serves a site from a sub-path.
+  - `--allow-ip <cidr>` / `--deny-ip <cidr>` (repeatable; `192.168.0.0/16`, `fd00::/8` or one address) are checked
+    before anything else: a client in a deny block, or outside every allow block when there are some, gets `403`.
+    Loopback clients are always allowed (the `servers` probe is one). Kept in the record (`allowIp`, `denyIp`).
+  - `--stop-after <n>s|m|h|d` stops the server after that long (foreground: `Stopping: --stop-after 30m
+    reached`; detached: the record's `expires` time, shown by `servers --json`; a server restarted after it
+    fails with `server expired at …`). Not with `--watch`.
+  - On a non-loopback bind every response carries `X-Robots-Tag: noindex`.
+  - Access-log lines of non-loopback clients end with the client address and a device name from `User-Agent`
+    (`iPhone`, `iPad`, `Android`, `Windows`, `Mac`, `Linux` or `other`); in JSON, `remote` and `device`.
 - **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
   `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
   `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything

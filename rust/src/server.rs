@@ -3128,6 +3128,55 @@ mod tests {
     }
 
     #[test]
+    fn sharing_safety() {
+        let opts = SiteServerOptions {
+            base_path: Some("/s3cr3t".into()),
+            noindex: true,
+            ..Default::default()
+        };
+        let t = site();
+        let h = HashMap::new();
+        let get = |u: &str| handle_request(&t, &opts, "GET", u, &h);
+        assert_eq!(get("/app.js").status, 404);
+        assert_eq!(get("/s3cr3t/app.js").status, 200);
+        let r = get("/s3cr3t?x=1");
+        assert_eq!((r.status, r.header("location")), (301, Some("/s3cr3t/?x=1")));
+        assert_eq!(get("/s3cr3t/about").header("location"), Some("/s3cr3t/about/"));
+        assert_eq!(get("/s3cr3tx/app.js").status, 404);
+        assert_eq!(r.header("x-robots-tag"), Some("noindex"));
+        assert_eq!(ip_bytes("10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        assert_eq!(ip_bytes("::ffff:10.1.2.3"), Some(vec![10, 1, 2, 3]));
+        let mut one = vec![0u8; 15];
+        one.push(1);
+        assert_eq!(ip_bytes("::1"), Some(one));
+        for bad in ["1.2.3", "::1::2", "1:2:3:4:5:6:7:8:9", "g::1", ""] {
+            assert_eq!(ip_bytes(bad), None, "{bad}");
+        }
+        let rules = IpRules {
+            allow: vec![
+                parse_cidr("192.168.0.0/16").unwrap(),
+                parse_cidr("fd00::/8").unwrap(),
+            ],
+            deny: vec![parse_cidr("192.168.9.0/24").unwrap()],
+        };
+        assert!(ip_allowed(Some(&rules), "192.168.1.5"));
+        assert!(ip_allowed(Some(&rules), "::ffff:192.168.1.5"));
+        assert!(!ip_allowed(Some(&rules), "192.168.9.5"));
+        assert!(!ip_allowed(Some(&rules), "10.0.0.1"));
+        assert!(ip_allowed(Some(&rules), "fd12::1"));
+        assert!(ip_allowed(Some(&rules), "127.0.0.1"));
+        for bad in ["10.0.0.0/33", "10/8", "x", "1.2.3.4/a", "::/129"] {
+            assert_eq!(parse_cidr(bad), None, "{bad}");
+        }
+        assert_eq!(
+            device_of(Some("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)")),
+            "iPhone"
+        );
+        assert_eq!(device_of(Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")), "Mac");
+        assert_eq!(device_of(None), "other");
+    }
+
+    #[test]
     fn json_access_log() {
         let e = AccessLogEntry {
             ts: "2026-01-01T00:00:00.000Z",

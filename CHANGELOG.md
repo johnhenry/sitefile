@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Sharing safety for `serve`** (johnhenry/sitefile#191): `--random-route`
+  (a secret path prefix), `--allow-ip`/`--deny-ip` CIDR blocks, `--stop-after`
+  (with `expires` in the record), `X-Robots-Tag: noindex` on non-loopback
+  binds, and client address and device on access-log lines of non-loopback
+  clients. Both servers.
 - **`serve --max-connections-per-ip <n>`** (johnhenry/sitefile#178): a
   non-loopback client over the cap gets `503` with `Retry-After: 1`; kept in the
   server record. Both servers.

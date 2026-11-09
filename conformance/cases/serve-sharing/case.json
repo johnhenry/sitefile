@@ -1,0 +1,9 @@
+{
+  "command": "serve",
+  "args": ["-p", "0.0.0.0:0", "--random-route", "--allow-ip", "192.168.0.0/16", "--deny-ip", "10.0.0.0/8"],
+  "requests": [
+    { "target": "/a.txt", "expect": { "status": 404, "headers": { "x-robots-tag": "noindex" }, "body": "<!doctype html><meta charset=\"utf-8\"><title>404 Not Found</title><h1>404 Not Found</h1>\n" } },
+    { "target": "/", "expect": { "status": 404, "headers": { "x-robots-tag": "noindex" } } },
+    { "target": "/__sitefile/reload", "expect": { "status": 404 } }
+  ]
+}
