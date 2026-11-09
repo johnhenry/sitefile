@@ -1,0 +1,5 @@
+# --experimental-dictionary: .dcz deltas against the previous build, Use-As-Dictionary headers.
+ARG V = "1"
+FROM scratch
+COPY ./v${V}/ /
+EXPORT /

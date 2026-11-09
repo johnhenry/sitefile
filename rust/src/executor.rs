@@ -9,6 +9,7 @@ use crate::base_image::{
     ResolveBaseOptions,
 };
 use crate::build_args::BuildArgs;
+use crate::canonical::{canonical, CanonicalOp};
 use crate::checklinks::{broken_links, report_broken_links, CheckLinksOp};
 use crate::digest::sha256;
 use crate::documents::{
@@ -45,6 +46,7 @@ use crate::plugins::host::{
     PluginResult, DEFAULT_PLUGIN_POLICY,
 };
 use crate::plugins::wasm::check_wasm_plugin_in;
+use crate::precompress::{precompress, PrecompressOp};
 use crate::precache::{precache, PrecacheOp};
 use crate::profile::{begin, Profiler};
 use crate::registry::RegistryOptions;
@@ -68,7 +70,7 @@ use crate::resources::vendor::{find_vendor_dir, Vendor};
 use crate::secrets::{redact_error, redact_secrets, secret_headers, Secrets};
 use crate::site::{
     atom_xml, cache_header_rules, headers_file, page_url, parse_feed_date, redirects_file,
-    sitemap_xml, FeedEntry,
+    sitemap_files, FeedEntry, SITEMAP_LIMITS,
 };
 use crate::store::Store;
 use crate::tree::{make_file, ConflictPolicy, FileNode, Node, Tree};
@@ -1389,6 +1391,9 @@ fn with_site_rules(
 /// Overrides for where and how the export is written.
 #[derive(Debug, Clone, Default)]
 pub struct ExportTarget {
+    /// `--experimental-dictionary`: the previous build's files; the export gets `.dcz` deltas
+    /// against them and `Use-As-Dictionary` headers (crate::dictionary).
+    pub dictionary_from: Option<Tree>,
     /// Overrides the Sitefile's EXPORT format.
     pub format: Option<ExportFormat>,
     /// Overrides the Sitefile's EXPORT ... BASE (wbn).
@@ -1397,6 +1402,8 @@ pub struct ExportTarget {
     pub oci_root: Option<String>,
     /// oci: site layer encoding (overrides EXPORT ... COMPRESSION; default gzip).
     pub oci_compression: Option<OciCompression>,
+    /// oci: split the site's files over this many layers (`--oci-layers`, default 1).
+    pub oci_layers: Option<usize>,
     /// wbn: `gzip` wraps the bundle in gzip (overrides EXPORT ... COMPRESSION; default none).
     pub wbn_compression: Option<OciCompression>,
     /// Extra OCI config labels.
@@ -1426,6 +1433,8 @@ pub struct ExportedBuild {
     pub root_cid: Option<String>,
     /// Watch mode: set when the directory export applied only the changes (export::incremental).
     pub incremental: Option<crate::export::incremental::Applied>,
+    /// `--experimental-dictionary`: the paths that got a `.dcz` delta.
+    pub dictionary_deltas: Option<Vec<String>>,
 }
 
 /// The attestations (`--provenance`, `--sbom`) of an image built from
@@ -1508,6 +1517,7 @@ pub fn oci_options(
         compression: compression
             .or(sitefile_compression(&result.plan, ExportFormat::Oci))
             .unwrap_or_default(),
+        layers: None,
     })
 }
 
@@ -1522,6 +1532,8 @@ pub struct ImageInfo {
     pub oci_root: Option<String>,
     /// `--oci-compression` / `--compression`: overrides `EXPORT … AS oci COMPRESSION`.
     pub oci_compression: Option<OciCompression>,
+    /// `--oci-layers`: split the site's files over this many layers.
+    pub oci_layers: Option<usize>,
     /// `--platform`: `os/arch` of the image.
     pub platform: Option<String>,
     /// `--label key=value`.
@@ -1577,7 +1589,7 @@ pub fn store_build_as_image(
 ) -> Result<StoredImage> {
     validate_image_tags(tags)?;
     build_options.check_cancelled()?;
-    let opts = oci_options(
+    let mut opts = oci_options(
         result,
         &info.context_dir,
         info.oci_root.as_deref(),
@@ -1586,6 +1598,7 @@ pub fn store_build_as_image(
         &info.labels,
         info.git_labels,
     )?;
+    opts.layers = info.oci_layers;
     let added = store.add_image(&result.output, &opts)?;
     if info.attest.any() {
         let manifest_bytes = store.read_blob(&added.id, None)?;
@@ -1634,6 +1647,24 @@ pub fn build_to_directory(
 }
 
 fn export_build(
+    mut result: BuildResult,
+    format: ExportFormat,
+    options: &BuildOptions,
+    out_dir: &str,
+    target: &ExportTarget,
+) -> Result<ExportedBuild> {
+    let mut deltas = None;
+    if let Some(previous) = &target.dictionary_from {
+        let (tree, d) = crate::dictionary::add_dictionary_deltas(&result.output, previous)?;
+        result.output = tree;
+        deltas = Some(d);
+    }
+    let mut exported = export_build_inner(result, format, options, out_dir, target)?;
+    exported.dictionary_deltas = deltas;
+    Ok(exported)
+}
+
+fn export_build_inner(
     result: BuildResult,
     format: ExportFormat,
     options: &BuildOptions,
@@ -1653,7 +1684,7 @@ fn export_build(
     let export_options = ExportOptions::new(&options.context_dir).force(target.force);
     let out = Path::new(out_dir);
     if format == ExportFormat::Oci {
-        let opts = oci_options(
+        let mut opts = oci_options(
             &result,
             &options.context_dir,
             target.oci_root.as_deref(),
@@ -1662,6 +1693,7 @@ fn export_build(
             &target.image_labels,
             target.git_labels,
         )?;
+        opts.layers = target.oci_layers;
         let img = build_oci_image(&result.output, &opts)?;
         // An image built on a BASE carries the base's layers: copy them in so the export is self-contained.
         let base_blobs = match &result.base {
@@ -1697,6 +1729,7 @@ fn export_build(
                 manifest_digest: Some(img.manifest_digest.clone()),
                 root_cid: None,
                 incremental: None,
+                dictionary_deltas: None,
             });
         }
         let written = export_directory(
@@ -1713,6 +1746,7 @@ fn export_build(
             manifest_digest: Some(img.manifest_digest.clone()),
             root_cid: None,
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     if !is_archive_format(format) {
@@ -1730,6 +1764,7 @@ fn export_build(
             manifest_digest: None,
             root_cid: None,
             incremental: written.incremental,
+            dictionary_deltas: None,
         });
     }
     if format == ExportFormat::Car {
@@ -1744,6 +1779,7 @@ fn export_build(
             manifest_digest: None,
             root_cid: Some(root),
             incremental: None,
+            dictionary_deltas: None,
         });
     }
     let data = encode_tree(
@@ -1778,6 +1814,7 @@ fn export_build(
         manifest_digest: None,
         root_cid: None,
         incremental: None,
+        dictionary_deltas: None,
     })
 }
 
@@ -4371,6 +4408,14 @@ impl<'a> Exec<'a> {
             if let Operation::Sitemap { .. } = op {
                 return Ok((self.sitemap(op, tree)?, String::new(), None));
             }
+            if let Operation::Canonical { .. } = op {
+                let out = self.canonical(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
+            if let Operation::Precompress { .. } = op {
+                let out = self.precompress(op, tree, &*self.warn.clone())?;
+                return Ok((out, String::new(), None));
+            }
             if let Operation::Precache { .. } = op {
                 let out = self.precache(op, tree, &*self.warn.clone())?;
                 return Ok((out, String::new(), None));
@@ -4443,6 +4488,54 @@ impl<'a> Exec<'a> {
                 Vec::new(),
             );
             self.last_renames = Some(renames);
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Canonical { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged; a hit prints its warnings again.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.canonical(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
+            return Ok((out, key, Some("miss")));
+        }
+        if let Operation::Precompress { .. } = op {
+            // Reads the whole tree: only the chain key can say it is unchanged; a hit prints its warnings again.
+            let key = memo_key(&["chain", prev, &op_id]);
+            type Hit = (Tree, Vec<String>);
+            if let Some((hit, warnings)) = lock_memo(memo).get::<Hit>(&key) {
+                for w in &warnings {
+                    (self.warn)(w);
+                }
+                return Ok((hit, key, Some("hit")));
+            }
+            let printed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let outer = self.warn.clone();
+            let p2 = printed.clone();
+            let record = move |m: &str| {
+                if let Ok(mut v) = p2.lock() {
+                    v.push(m.to_string());
+                }
+                outer(m)
+            };
+            let out = self.precompress(op, tree, &record)?;
+            let warnings = printed.lock().map(|v| v.clone()).unwrap_or_default();
+            lock_memo(memo).set(key.clone(), (out.clone(), warnings), Vec::new());
             return Ok((out, key, Some("miss")));
         }
         if let Operation::Precache { .. } = op {
@@ -4562,6 +4655,47 @@ impl<'a> Exec<'a> {
         fingerprint(tree, &op, &origin, warn)
     }
 
+    fn canonical(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Canonical {
+            base,
+            pretty,
+            root,
+            span,
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} CANONICAL", self.label, span.line);
+        let op = CanonicalOp {
+            base,
+            pretty: *pretty,
+            root,
+            span,
+        };
+        canonical(tree, &op, &origin, warn)
+    }
+
+    fn precompress(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
+        let Operation::Precompress {
+            patterns,
+            min,
+            overwrite,
+            span,
+            ..
+        } = op
+        else {
+            unreachable!()
+        };
+        let origin = format!("{}:{} PRECOMPRESS", self.label, span.line);
+        let op = PrecompressOp {
+            patterns,
+            min: *min,
+            overwrite: *overwrite,
+            span,
+        };
+        precompress(tree, &op, &origin, warn)
+    }
+
     fn precache(&self, op: &Operation, tree: Tree, warn: &dyn Fn(&str)) -> Result<Tree> {
         let Operation::Precache {
             patterns,
@@ -4598,12 +4732,11 @@ impl<'a> Exec<'a> {
             unreachable!()
         };
         let origin = format!("{}:{} SITEMAP", self.label, span.line);
-        let xml = sitemap_xml(&tree, base);
-        tree.with_files(
-            [(dest.clone(), make_file(xml.into_bytes(), origin, 0o644))],
-            policy_of(*overwrite),
-            Some(span),
-        )
+        let files: Vec<(String, Node)> = sitemap_files(&tree, base, dest, SITEMAP_LIMITS)
+            .into_iter()
+            .map(|(p, xml)| (p, make_file(xml.into_bytes(), origin.as_str(), 0o644)))
+            .collect();
+        tree.with_files(files, policy_of(*overwrite), Some(span))
     }
 
     /// The files an operation (other than SITEMAP) adds; `op_id` is its memo identity ("" without a memo).
@@ -4625,9 +4758,27 @@ impl<'a> Exec<'a> {
                 let files = self.feed_files(op)?;
                 Ok(self.memo_store(key, files, Vec::new(), true))
             }
+            Operation::TextFile { dest, text, .. } => {
+                // The planner wrote the text; it reads nothing.
+                let key = memoized.then(|| memo_key(&["text", op_id]));
+                if let Some(hit) = self.memo_lookup(&key) {
+                    return Ok(hit);
+                }
+                let files: Files = vec![(
+                    dest.clone(),
+                    make_file(text.clone().into_bytes(), origin, 0o644),
+                )];
+                Ok(self.memo_store(key, files, Vec::new(), true))
+            }
             Operation::Sitemap { .. } => unreachable!("SITEMAP reads the tree: execute_op runs it"),
             Operation::Fingerprint { .. } => {
                 unreachable!("FINGERPRINT reads the tree: execute_op runs it")
+            }
+            Operation::Canonical { .. } => {
+                unreachable!("CANONICAL reads the tree: execute_op runs it")
+            }
+            Operation::Precompress { .. } => {
+                unreachable!("PRECOMPRESS reads the tree: execute_op runs it")
             }
             Operation::Precache { .. } => {
                 unreachable!("PRECACHE reads the tree: execute_op runs it")
@@ -5920,8 +6071,10 @@ fn op_overwrite(op: &Operation) -> bool {
         | Operation::Feed { overwrite, .. }
         | Operation::Sitemap { overwrite, .. }
         | Operation::Fingerprint { overwrite, .. }
+        | Operation::Precompress { overwrite, .. }
+        | Operation::TextFile { overwrite, .. }
         | Operation::Precache { overwrite, .. } => *overwrite,
-        Operation::CheckLinks { .. } => false,
+        Operation::CheckLinks { .. } | Operation::Canonical { .. } => false,
     }
 }
 

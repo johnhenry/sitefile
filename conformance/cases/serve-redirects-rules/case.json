@@ -1,0 +1,26 @@
+{
+  "command": "serve",
+  "args": ["--country", "NZ"],
+  "log": true,
+  "expectLog": ["GET /blog/2024/a%20b 301 0 Tms → /posts/2024/a%20b (_redirects:2)", "GET /p/x 200 6 Tms → /posts.html (_redirects:11)"],
+  "requests": [
+    { "target": "/blog/2024/a%20b", "expect": { "status": 301, "headers": { "location": "/posts/2024/a%20b" } } },
+    { "target": "/blog/2024", "expect": { "status": 404, "body": "root 404\n" } },
+    { "target": "/store?id=7&x=1", "expect": { "status": 302, "headers": { "location": "/items/7" } } },
+    { "target": "/store", "expect": { "status": 404 } },
+    { "target": "/search?q=cats", "expect": { "status": 302, "headers": { "location": "/cats" } } },
+    { "target": "/search?q=dogs", "expect": { "status": 404 } },
+    { "target": "/lang", "headers": { "accept-language": "fr, es-MX;q=0.8" }, "expect": { "status": 302, "headers": { "location": "/" } } },
+    { "target": "/lang", "headers": { "accept-language": "es;q=0, pt" }, "expect": { "status": 404 } },
+    { "target": "/ab", "headers": { "cookie": "x=1; ab_test=b" }, "expect": { "status": 302 } },
+    { "target": "/ab", "expect": { "status": 404 } },
+    { "target": "/geo", "expect": { "status": 302, "headers": { "location": "/nz" } } },
+    { "target": "/removed", "expect": { "status": 410, "body": "gone\n" } },
+    { "target": "/legal", "expect": { "status": 451, "body": "gone\n" } },
+    { "target": "/files/a/b%20c?x=1", "expect": { "status": 301, "headers": { "location": "/f/a/b%20c?x=1" } } },
+    { "target": "/p/x", "expect": { "status": 200, "body": "posts\n" } },
+    { "target": "/docs/a/missing", "expect": { "status": 404, "body": "docs 404\n" } },
+    { "target": "/docs/missing/", "expect": { "status": 404, "body": "docs 404\n" } },
+    { "target": "/elsewhere", "expect": { "status": 404, "body": "root 404\n" } }
+  ]
+}
