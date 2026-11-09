@@ -1,0 +1,10 @@
+{
+  "network": true,
+  "steps": [
+    ["hosts", "${CTX}"],
+    ["hosts", "${CTX}", "--json"],
+    ["hosts", "${CTX}", "--network", "strict", "--allow-hosts", "127.0.0.1", "--deny-hosts", "example.com"],
+    ["hosts", "${CTX}", "--json", "--network", "strict", "--allow-hosts", "127.0.0.1,docker.io", "--allow-secret-host", "tok=127.0.0.1", "--base", "busybox"]
+  ],
+  "stdout": true
+}

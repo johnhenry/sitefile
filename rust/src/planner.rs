@@ -192,6 +192,8 @@ pub enum Operation {
     Fingerprint {
         patterns: Vec<String>,
         manifest: Option<String>,
+        /// `INTEGRITY`: add `integrity="sha384-…"` to the script and stylesheet tags that load a renamed file.
+        integrity: bool,
         root: String,
         overwrite: bool,
         span: SourceSpan,
@@ -356,6 +358,10 @@ pub struct Plan {
     pub redirects: Vec<RedirectSpec>,
     /// HEADER lines in source order (any stage); EXPORT writes them to `/_headers`.
     pub headers: Vec<HeaderSpec>,
+    /// Set (to the first FINGERPRINT's span, the origin of the lines) when EXPORT adds `Cache-Control` lines
+    /// for the fingerprinted files and the pages to `/_headers`: the Sitefile has a FINGERPRINT, none says
+    /// `--no-cache-headers`, and no HEADER sets `Cache-Control` itself.
+    pub cache_headers: Option<SourceSpan>,
     pub warnings: Vec<String>,
     /// `--target <stage>`: the build stops after this stage and exports its whole tree (see [`target_plan`]).
     pub target: Option<String>,
@@ -386,6 +392,7 @@ pub fn target_plan(mut p: Plan, name: &str) -> Result<Plan> {
     p.export_path = "/".into();
     p.redirects.clear();
     p.headers.clear();
+    p.cache_headers = None;
     p.target = Some(name.to_string());
     Ok(p)
 }
@@ -428,6 +435,8 @@ pub fn plan_with(
     let mut tools = Vec::new();
     let mut redirects = Vec::new();
     let mut headers = Vec::new();
+    // Each FINGERPRINT's span, and whether it allows the Cache-Control lines.
+    let mut fingerprints: Vec<(SourceSpan, bool)> = Vec::new();
     let mut warnings = Vec::new();
     let mut declared_args: BTreeSet<&str> = BTreeSet::new();
     let all_stage_names = stage_names(&program.instructions);
@@ -826,6 +835,8 @@ pub fn plan_with(
                 span,
                 patterns,
                 manifest,
+                integrity,
+                no_cache_headers,
                 overwrite,
             } => {
                 let patterns = patterns
@@ -840,10 +851,12 @@ pub fn plan_with(
                 operations(&mut stages, span)?.push(Operation::Fingerprint {
                     patterns,
                     manifest,
+                    integrity: *integrity,
                     root: "/".into(),
                     overwrite: *overwrite,
                     span: span.clone(),
                 });
+                fingerprints.push((span.clone(), !*no_cache_headers));
             }
             Instruction::CheckLinks {
                 span,
@@ -1022,6 +1035,18 @@ pub fn plan_with(
             "a Sitefile needs FROM and EXPORT",
         ));
     };
+    // FINGERPRINT's Cache-Control lines: unless turned off, or a HEADER already sets Cache-Control.
+    let cache_headers = match fingerprints.first() {
+        Some((first, _))
+            if fingerprints.iter().all(|(_, on)| *on)
+                && !headers
+                    .iter()
+                    .any(|h: &HeaderSpec| h.name.eq_ignore_ascii_case("cache-control")) =>
+        {
+            Some(first.clone())
+        }
+        _ => None,
+    };
     Ok(Plan {
         file: program.file.clone(),
         stages,
@@ -1038,6 +1063,7 @@ pub fn plan_with(
         export_compression,
         redirects,
         headers,
+        cache_headers,
         warnings,
         target: None,
     })
@@ -1484,6 +1510,7 @@ impl Operation {
             Operation::Fingerprint {
                 patterns,
                 manifest,
+                integrity,
                 root,
                 overwrite,
                 span,
@@ -1491,6 +1518,9 @@ impl Operation {
                 m.insert("patterns".into(), json!(patterns));
                 if let Some(d) = manifest {
                     m.insert("manifest".into(), json!(d));
+                }
+                if *integrity {
+                    m.insert("integrity".into(), json!(true));
                 }
                 m.insert("root".into(), json!(root));
                 m.insert("overwrite".into(), json!(overwrite));

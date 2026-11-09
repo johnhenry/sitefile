@@ -1,0 +1,10 @@
+{
+  "stdout": true,
+  "steps": [
+    ["build", "${CTX}", "-o", "${OUT}/a.zip", "--no-lockfile"],
+    ["build", "${CTX}", "-o", "${OUT}/b", "--no-lockfile", "--build-arg", "TITLE=Other", "--build-arg", "RULES=b"],
+    ["diff", "${OUT}/a.zip", "${OUT}/b"],
+    ["diff", "${OUT}/a.zip", "${OUT}/b", "--json"],
+    ["diff", "${OUT}/b", "${OUT}/b", "--exit-code"]
+  ]
+}

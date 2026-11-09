@@ -309,13 +309,14 @@ export default grammar({
         repeat1(field('value', $._operand)),
       ),
 
-    // FINGERPRINT [--overwrite] <pattern>… [MANIFEST <dest>]
+    // FINGERPRINT [--overwrite] [--no-cache-headers] <pattern>… [MANIFEST <dest>] [INTEGRITY]
     fingerprint_instruction: ($) =>
       seq(
         kw($, 'FINGERPRINT'),
         repeat(field('flag', $.flag)),
         repeat1(field('pattern', $._operand)),
         optional(seq(kw($, 'MANIFEST'), field('manifest', $._operand))),
+        optional(kw($, 'INTEGRITY')),
       ),
 
     // CHECKLINKS [--warn] [--external]

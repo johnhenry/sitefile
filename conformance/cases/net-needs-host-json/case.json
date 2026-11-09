@@ -1,0 +1,9 @@
+{
+  "network": true,
+  "steps": [
+    { "args": ["outdated", "${CTX}", "--json", "--allow-private-network", "--allow-hosts", "example.com"] },
+    { "args": ["outdated", "${CTX}", "--json", "--allow-private-network", "--deny-hosts", "127.0.0.1"] },
+    { "args": ["build", "${CTX}", "-o", "${OUT}/dist", "--json", "--allow-private-network", "--allow-hosts", "example.com"] }
+  ],
+  "stdout": true
+}

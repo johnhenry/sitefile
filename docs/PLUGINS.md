@@ -94,18 +94,52 @@ fails unless the TRANSFORM has `--overwrite`.
 Each plugin runs in its own Node process started with Node's permission model:
 
 ```
-node --permission --allow-fs-read=<the plugin's folder> …
+node --permission --allow-fs-read=<the plugin's folder> --max-old-space-size=<MiB> …
 ```
 
 | A plugin can | A plugin cannot |
 | --- | --- |
 | read files in its own folder (helpers, fonts, data) | read other files, including your project |
 | import `node:` built-ins and files in its folder | write files, spawn processes, use workers or native addons |
-| use CPU and memory | open network connections |
+| use CPU, and memory up to `--plugin-memory` (default 1 GiB) | open network connections |
 | | see environment variables (it gets an empty environment) |
 
 Each call has a time limit (`--plugin-timeout`, default 60 s) and results are
 capped at 64 MiB. Processes are stopped when the build ends.
+
+Memory is capped by `--plugin-memory <MiB>` (default 1024, the same limit as a
+wasm plugin's linear memory), passed to Node as `--max-old-space-size`. A
+plugin whose heap passes it is stopped by V8 and the build fails with
+`E_PLUGIN: PLUGIN name: ran out of memory (more than the 1024 MiB limit)`
+(V8's report and native stack trace are not shown). The limit is on the
+JavaScript heap: the contents of `Buffer`s, typed arrays and `ArrayBuffer`s
+live outside it and are only bounded indirectly, so a plugin that allocates
+large buffers can use more memory than the limit before it is stopped.
+
+### Which Node runs plugins
+
+The sandbox is Node's permission model, so it is only as strong as the Node
+binary that enforces it. That binary is:
+
+1. `--node /absolute/path` (`BuildOptions.node` / `BuildOptions::node` for
+   programs that call the library), else
+2. `$SITEFILE_NODE` (an absolute path; ignored when empty), else
+3. the default: in the TypeScript CLI, the Node running sitefile
+   (`process.execPath`); in the Rust binary, `node` on `PATH`. A `PATH` you
+   don't control can swap the runtime, so name the binary when it matters.
+
+A relative `--node` or `SITEFILE_NODE` is a usage error. Before the first
+JavaScript plugin starts, sitefile resolves the binary to its real path, runs
+`<node> --version` (empty environment) and requires **Node 26.0.0 or later**:
+network permissions arrived in Node 25 (an older `--permission` does not block
+sockets), and 26 is the version sitefile requires and tests with. An older or
+unrecognized binary fails the build at the `PLUGIN` line with `E_PLUGIN`, for
+example `PLUGIN motion: node v22.1.0 (/usr/bin/node) is too old for the plugin
+sandbox: JavaScript plugins need Node 26.0.0 or later; choose another with
+--node or SITEFILE_NODE`. The binary that passed is printed (`plugins run on
+node v26.11.1 (/opt/node/bin/node)`), next to the paths of allowed tools.
+The check runs when the first plugin process starts, so a build whose
+plugins are all cache hits does not run it.
 
 ## Trust model: `--allow-plugin`
 
@@ -128,7 +162,9 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
   call the library, that error (and a `TOOL`'s) also carries `needs`:
   `{ kind: 'plugin' | 'tool', name, flag: '--allow-plugin' | '--allow-exec' }`
   in TypeScript, `SitefileError::needs` (`Needs`) in Rust, so nothing has to
-  parse the message.
+  parse the message. Refused hosts carry one too (`kind: 'host'` and
+  `'secret-host'`, see [CLI.md](CLI.md#strict-network-mode)), and `--json`
+  prints it on stdout ([CLI.md](CLI.md#--json-errors)).
 - An `--allow-plugin` name that matches no `PLUGIN` is a warning.
 - `validate` never runs plugins and needs no flag. `inspect` builds in memory,
   so it needs the flag like `build`. The language server never runs plugins.
@@ -140,10 +176,37 @@ sitefile build --allow-plugins         # every PLUGIN in the Sitefile
   symlink to a JavaScript file runs as JavaScript and needs the flag.
 
 Allowing a plugin is still trusting it: treat it like any dependency, keep it
-in your repository, and pin it with `INTEGRITY` (which covers the module file
-itself; other files in its folder are not hashed). Because a plugin can read
-its whole folder, sitefile refuses a plugin placed directly in the build
-context root.
+in your repository, and pin it with `INTEGRITY`. Because a plugin can read its
+whole folder, sitefile refuses a plugin placed directly in the build context
+root.
+
+### What `INTEGRITY` pins
+
+A JavaScript plugin can read and import every file in its folder (helpers,
+data, fonts, a vendored `node_modules`), so **`INTEGRITY` on a JavaScript
+plugin pins the whole folder**, not just the module: it is `sha256:` followed by
+the same folder digest the TRANSFORM cache uses (below). A changed, added or
+removed file anywhere under the folder fails the build with `E_INTEGRITY`
+before any plugin starts; the error gives the digest the folder has now, so
+the easiest way to pin a plugin is to write any digest and copy the one from
+the error:
+
+```
+error[E_INTEGRITY]: Sitefile:3:1: integrity mismatch for ./plugins/ (PLUGIN motion's folder: INTEGRITY covers every file in it): expected sha256:…, got sha256:48225c…
+```
+
+The digest is SHA-256 over one line per regular file, in UTF-16 code unit
+order of the relative path, recursing into directories:
+`<relative/path>\0sha256:<hex of the file>\n`. A pinned folder may hold only
+regular files and directories: a symlink (which could change what an import
+resolves to without changing any file) is `E_INTEGRITY`, as is a folder over
+2000 files or 128 MiB. The check runs when the build starts; sitefile does not
+stop the files changing between the check and the plugin reading them, so
+keep the folder in your repository. A **wasm** plugin reads nothing, so its
+`INTEGRITY` is the digest of the module file (`shasum -a 256 x.wasm`).
+
+Before johnhenry/sitefile#158, `INTEGRITY` on a JavaScript plugin hashed only
+the module file; such a pin now fails with the folder's digest in the error.
 
 ## Determinism
 
@@ -190,8 +253,8 @@ The **request** is UTF-8 JSON: the same object JS plugins receive, with
 
 Each call gets a **fresh instance**, so nothing carries over between calls
 and the module may simply leak its allocations. Calls run in a worker thread
-that is terminated after `--plugin-timeout`; linear memory is capped at 1 GiB
-and results at 64 MiB. Traps, out-of-range results, invalid JSON and
+that is terminated after `--plugin-timeout`; linear memory is capped by
+`--plugin-memory` (default 1 GiB) and results at 64 MiB. Traps, out-of-range results, invalid JSON and
 `{"error"}` all fail the build with `E_PLUGIN`.
 
 ## The image plugin
@@ -360,8 +423,8 @@ node-html-parser it uses) from the repository's `node_modules`, where
 fileable is a devDependency, into `plugins/fileable/node_modules/`. That copy
 is gitignored and rebuilt by `npm run examples` and `npm run conformance`. In
 your own project, vendor it the same way (or with any bundler) and commit or
-rebuild it; `INTEGRITY` covers only the plugin module, not the vendored
-files.
+rebuild it; `INTEGRITY` covers the vendored files too (the whole folder), so
+pin it only when the vendored copy is reproducible or committed.
 
 The browser entry point needs no filesystem, processes or environment, so it
 fits the sandbox. What does need them fails with `E_PLUGIN` and says why:

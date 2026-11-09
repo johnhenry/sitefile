@@ -148,7 +148,7 @@ const INSTRUCTIONS = {
   REDIRECT: () => `REDIRECT ${flags(['--overwrite'])}${pick(['/old', '/a/*', '/${x}', 'old', '/a b', ...PATHS])} ${pick(['/new', 'https://e.x/:splat', '/b', '', '/c\\n'])}${maybe(() => ` STATUS ${pick(['301', '302', '303', '307', '308', '200', '418', 'x', '301!'])}`, 0.4)}`,
   HEADER: () => `HEADER ${flags(['--overwrite'])}${pick(['/*', '/assets/*', '/a', 'a', '/${x}'])} ${pick(['X-Frame-Options: DENY', 'Cache-Control: public, max-age=60', 'X-A:1', 'bad name: 1', 'X-A: "1\\nSet-Cookie: a"', 'X-A', ': v', 'X-É: 1'])}`,
   FINGERPRINT: () =>
-    `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}`,
+    `FINGERPRINT ${flags(['--overwrite', '--bogus', '--from=a', '--no-cache-headers', '--no-cache-headers=1'])}${Array.from({ length: int(4) }, () => pick(['/assets/', '/**/*.css', '/*.js', '/a?.png', 'assets/', '/${x}/', '"/q r/"', '/x\\ty', 'MANIFEST', '/', 'INTEGRITY'])).join(' ')}${maybe(() => ` MANIFEST ${pick(['/m.json', '/a/', 'm.json', '${x}', '', '/m.json extra'])}`, 0.4)}${maybe(() => pick([' INTEGRITY', ' integrity', ' INTEGRITY x', ' INTEGRITY MANIFEST /m.json']), 0.3)}`,
   CHECKLINKS: () => `CHECKLINKS ${flags(['--warn', '--external', '--overwrite', '--warn=1'])}${maybe(() => pick(['/a.html', 'x', '--', 'MANIFEST']), 0.1)}`,
   // The syntax version directive (a comment; only valid before the first instruction).
   DIRECTIVE: () => pick(['#', ' #', '\t#']) + pick([' ', '', '  ']) + pick(['sitefile', 'SITEFILE', 'SiteFile', 'sitefile-lint:', 'ſitefile']) + pick(['=1', ' = 1', '=2', '=10', '=x', '=', '=01', '=1.0', '=1 x', '= \u00a01']),
@@ -319,7 +319,7 @@ function validProgram() {
     () => `REDIRECT ${maybe('--overwrite ')}${pick(['/old', '/blog/*', `/${v()}`])} ${pick(['/new', 'https://e.x/:splat'])}${maybe(() => ` STATUS ${pick(['301', '302', '308'])}`)}`,
     () => `HEADER ${maybe('--overwrite ')}${pick(['/*', '/assets/*'])} ${pick(['X-Frame-Options: DENY', `Cache-Control: public, max-age=${int(99)}`, `X-Title: ${v()}`])}`,
     () => `CHECKLINKS${maybe(' --warn')}${maybe(' --external', 0.2)}`,
-    () => `FINGERPRINT ${maybe('--overwrite ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}`,
+    () => `FINGERPRINT ${maybe('--overwrite ')}${maybe('--no-cache-headers ')}${pick(['/assets/', '/**/*.css /*.js', `/${v()}/`])}${maybe(() => ` MANIFEST ${pick(['/asset-manifest.json', `/${v()}.json`])}`)}${maybe(' INTEGRITY')}`,
     stage,
   ];
   if (chance(0.5)) lines.push(stage());

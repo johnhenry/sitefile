@@ -1,12 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink, chmod, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { build, type BuildOptions } from '../src/executor.js';
 import { isSitefileError, type ErrorCode } from '../src/errors.js';
 import { parseProgram } from '../src/language/validate.js';
 import { sha256 } from '../src/digest.js';
+import { digestFolder, pluginFolderIntegrity } from '../src/plugins/cache.js';
+import { checkNode, parseNodeVersion, MIN_NODE } from '../src/plugins/host.js';
+import { runCli, tmpDir } from './helpers/cli.js';
 
 const temps: string[] = [];
 after(async () => {
@@ -165,10 +168,119 @@ test('plugin errors, bad results, timeouts and placement rules', async () => {
     'E_PROTOCOL',
   );
   await rejects({ 'plugins/p.js': '', Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.js\nEXPORT /' }, 'E_VALIDATION', /\.mjs/);
-  // Pinned and correct: fine.
+  // Pinned and correct (INTEGRITY on a JS plugin pins its folder, here just the module): fine.
   const good = 'export function transform() { return "ok"; }';
-  const r = await run(site(good, ` INTEGRITY ${sha256(good)}`));
+  const r = await run(site(good, ` INTEGRITY sha256:${sha256(`p.mjs\0${sha256(good)}\n`).slice(7)}`));
   assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
+});
+
+/** An executable that prints `out` for --version, standing in for another Node. */
+async function fakeNode(out: string): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sitefile-node-'));
+  temps.push(dir);
+  const file = path.join(dir, 'node');
+  await writeFile(file, `#!/bin/sh\necho '${out}'\n`);
+  await chmod(file, 0o755);
+  return realpath(file);
+}
+
+test('the Node binary for JS plugins: chosen explicitly, version-checked, reported (#159)', { skip: process.platform === 'win32' }, async () => {
+  assert.deepEqual(parseNodeVersion('v26.11.1\n'), [26, 11, 1]);
+  assert.equal(parseNodeVersion('26.1.0'), undefined);
+  assert.equal(parseNodeVersion('v26.1'), undefined);
+  assert.deepEqual(MIN_NODE, [26, 0, 0]);
+
+  // The default is the Node running sitefile, and it passes.
+  const rt = await checkNode(undefined, 10_000);
+  assert.equal(rt.path, await realpath(process.execPath));
+  assert.equal(rt.version, process.version);
+  await assert.rejects(checkNode('node', 10_000), /must be an absolute path, got 'node'/);
+  await assert.rejects(checkNode('/nonexistent/node', 10_000), /could not start: no Node binary at \/nonexistent\/node/);
+  const old = await fakeNode('v22.1.0');
+  await assert.rejects(checkNode(old, 10_000), (e: Error) => {
+    assert.equal(e.message, `node v22.1.0 (${old}) is too old for the plugin sandbox: JavaScript plugins need Node 26.0.0 or later; choose another with --node or SITEFILE_NODE`);
+    return true;
+  });
+  await assert.rejects(checkNode(await fakeNode('hello'), 10_000), /--version did not print a Node version/);
+
+  const site = {
+    'plugins/p.mjs': 'export function transform() { return "ok"; }',
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  };
+  // A too-old Node fails the build at the PLUGIN line, before any plugin process starts.
+  await assert.rejects(run(site, { node: old }), (e: unknown) => {
+    assert.ok(isSitefileError(e), String(e));
+    assert.equal(e.code, 'E_PLUGIN');
+    assert.match(e.message, /Sitefile:2:1: PLUGIN p: node v22\.1\.0 .* is too old for the plugin sandbox/);
+    return true;
+  });
+  // The chosen Node runs the plugin and is named in a notice.
+  const notices: string[] = [];
+  const r = await run(site, { node: process.execPath, onNotice: (m) => notices.push(m) });
+  assert.equal(text(r.output.get('/a.out')?.bytes), 'ok');
+  assert.deepEqual(notices, [`plugins run on node ${process.version} (${await realpath(process.execPath)})`]);
+});
+
+test('a JS plugin that passes --plugin-memory fails with E_PLUGIN, without the V8 report (#157)', async () => {
+  // Retained objects grow the heap until V8 gives up at --max-old-space-size.
+  const hog = 'export function transform() { const keep = []; for (;;) keep.push({ n: keep.length, s: String(keep.length) }); }';
+  const site = (plugin: string): Record<string, string> => ({
+    'plugins/p.mjs': plugin,
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  });
+  const warnings: string[] = [];
+  const t0 = Date.now();
+  await assert.rejects(run(site(hog), { pluginPolicy: { maxMemoryMiB: 32 }, onWarning: (m) => warnings.push(m) }), (e: unknown) => {
+    assert.ok(isSitefileError(e), String(e));
+    assert.equal(e.code, 'E_PLUGIN');
+    assert.match(e.message, /: PLUGIN p: ran out of memory \(more than the 32 MiB limit\)$/);
+    return true;
+  });
+  assert.ok(Date.now() - t0 < 30_000, 'stopped by the memory limit, not the time limit');
+  assert.deepEqual(warnings.filter((w) => /FATAL ERROR|Last few GCs|node::/.test(w)), [], 'the native stack trace is not logged');
+  // A plugin within the limit is unaffected.
+  const r = await run(site('export function transform() { return "x".repeat(4 << 20).length + ""; }'), { pluginPolicy: { maxMemoryMiB: 64 } });
+  assert.equal(text(r.output.get('/a.out')?.bytes), String(4 << 20));
+});
+
+test('INTEGRITY on a JS plugin pins every file in its folder (#158)', async () => {
+  const files = {
+    'plugins/p.mjs': "import { word } from './helper.mjs'; export function transform() { return word; }",
+    'plugins/helper.mjs': "export const word = 'pinned';",
+    'plugins/data/words.txt': 'a\nb\n',
+    'a.txt': 'a',
+  };
+  const dir = await project(files);
+  const folder = path.join(await realpath(dir), 'plugins');
+  const pin = await pluginFolderIntegrity(folder);
+  assert.ok('digest' in pin);
+  assert.equal(pin.digest, `sha256:${await digestFolder(folder)}`);
+  const sitefile = (integrity: string): string => `FROM scratch\nPLUGIN p FROM ./plugins/p.mjs INTEGRITY ${integrity}\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /`;
+  const r = await run({ ...files, Sitefile: sitefile(pin.digest) });
+  assert.equal(text(r.output.get('/a.out')?.bytes), 'pinned');
+  // The module's own digest no longer pins it, and the error gives the folder's.
+  await rejects({ ...files, Sitefile: sitefile(sha256(files['plugins/p.mjs'])) }, 'E_INTEGRITY', new RegExp(`integrity mismatch for \\./plugins/ \\(PLUGIN p's folder: INTEGRITY covers every file in it\\): expected sha256:[0-9a-f]{64}, got ${pin.digest}$`));
+  // A changed helper or data file breaks the pin (the module itself is unchanged).
+  await rejects({ ...files, 'plugins/helper.mjs': "export const word = 'swapped';", Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch for \.\/plugins\//);
+  await rejects({ ...files, 'plugins/data/words.txt': 'c\n', Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch/);
+  await rejects({ ...files, 'plugins/extra.txt': '', Sitefile: sitefile(pin.digest) }, 'E_INTEGRITY', /integrity mismatch/);
+  // A symlink could change what an import resolves to without changing any file: a pinned folder can't hold one.
+  const linked = await project({ ...files, Sitefile: sitefile(pin.digest) });
+  await symlink('helper.mjs', path.join(linked, 'plugins', 'alias.mjs'));
+  await assert.rejects(build({ contextDir: linked, lockfile: false, allowAllPlugins: true }), (e: unknown) => {
+    assert.ok(isSitefileError(e));
+    assert.equal(e.code, 'E_INTEGRITY');
+    assert.match(e.message, /PLUGIN p: INTEGRITY pins the plugin's folder \.\/plugins\/, which contains alias\.mjs, which is not a regular file or directory/);
+    return true;
+  });
+  // Unpinned, the folder may hold anything it did before.
+  const free = await project({ ...files, Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /' });
+  await symlink('helper.mjs', path.join(free, 'plugins', 'alias.mjs'));
+  assert.equal(text((await build({ contextDir: free, lockfile: false, allowAllPlugins: true })).output.get('/a.out')?.bytes), 'pinned');
+  // Not allowed: refused before the folder is read.
+  await rejects({ ...files, Sitefile: sitefile(sha256('x')) }, 'E_UNSUPPORTED', /--allow-plugin p/, { allowAllPlugins: false });
 });
 
 test('a JS PLUGIN needs --allow-plugin NAME or --allow-plugins; it fails before anything starts', async () => {
@@ -237,4 +349,27 @@ test('plugin console output becomes build warnings, not output', async () => {
   // Console lines arrive ahead of the result on stdout, so none is lost when the build ends at once;
   // a line that looks like a protocol message is dropped, not obeyed.
   assert.deepEqual(warnings.filter((w) => w.startsWith('[plugin p]')), ['[plugin p] working…', '[plugin p] two', '[plugin p] lines']);
+});
+
+test('--node and SITEFILE_NODE: absolute paths only; the build log names the Node (#159)', { skip: process.platform === 'win32' }, async () => {
+  const home = await tmpDir();
+  const ctx = await project({
+    'plugins/p.mjs': 'export function transform() { return "ok"; }',
+    'a.txt': 'a',
+    Sitefile: 'FROM scratch\nPLUGIN p FROM ./plugins/p.mjs\nTRANSFORM ./a.txt WITH p TO /a.out\nEXPORT /',
+  });
+  const out = path.join(await tmpDir(), 'out');
+  const rel = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--allow-plugins', '--node', 'node']);
+  assert.notEqual(rel.code, 0);
+  assert.match(rel.stderr, /--node expects an absolute path to a Node binary, got 'node'/);
+  const env = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--allow-plugins'], undefined, { SITEFILE_NODE: 'bin/node' });
+  assert.notEqual(env.code, 0);
+  assert.match(env.stderr, /SITEFILE_NODE expects an absolute path to a Node binary, got 'bin\/node'/);
+  const old = await fakeNode('v20.0.0');
+  const tooOld = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--no-cache', '--allow-plugins'], undefined, { SITEFILE_NODE: old });
+  assert.notEqual(tooOld.code, 0);
+  assert.match(tooOld.stderr, /error\[E_PLUGIN\]: .*PLUGIN p: node v20\.0\.0 .* is too old for the plugin sandbox/);
+  const ok = await runCli(home, ['build', ctx, '-o', out, '--no-lockfile', '--no-cache', '--allow-plugins', '--node', process.execPath], undefined, { SITEFILE_NODE: old });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.ok(ok.stderr.includes(`plugins run on node ${process.version} (${await realpath(process.execPath)})`), ok.stderr);
 });

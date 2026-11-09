@@ -24,7 +24,8 @@
 // create before the case runs and remove after it. `files` maps context paths
 // to contents, created before the case and removed after it (with the
 // top-level directory each one creates), for names that should not be
-// committed as written (NFD file names: write them with JSON \u escapes).
+// committed as written (NFD file names: write them with JSON \u escapes); a
+// `{ "base64": … }` content is written as those bytes (small binary archives).
 // `copy` maps context paths to repository paths copied there the same way, so a
 // case can use a binary that is committed once (plugins/image/image.wasm).
 // `expectPaths` lists output paths (exact code points, as read back from the
@@ -40,6 +41,9 @@
 // ignoring each event's `ts` and `dur` (names, categories, threads, args and order
 // must match; also when the build fails).
 //
+// Step cases: a case.json with "steps" (and no "network") runs a list of CLI steps like a
+// network case (format in conformance/network.mjs), offline: verify, diff, save chains.
+//
 // Network cases (case.json "network": true, conformance/cases/net-*; format in
 // conformance/network.mjs) run a list of CLI steps (build, push, pull, save)
 // against local servers started on the first such case (conformance/servers.mjs):
@@ -48,6 +52,9 @@
 // error line, output trees/OCI configs and Sitefile.lock byte for byte. Each
 // implementation gets its own context copy and SITEFILE_HOME/HOME/DOCKER_CONFIG.
 // They need `openssl` on PATH.
+//
+// Watch cases (conformance/watch.mjs) run `serve --watch` with both CLIs and compare the
+// transcript of a script of requests, file edits and event-stream reads.
 //
 // The run prints how many offline and network cases there are.
 //
@@ -61,6 +68,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runNetworkCase } from './network.mjs';
 import { runServeCase, startServers } from './servers.mjs';
+import { runWatchCases } from './watch.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -239,15 +247,17 @@ async function runBakeCase(c) {
   return { name: c.name, compare: 'bake', pass: detail.length === 0, detail, ts: summary(r.ts), rust: summary(r.rust) };
 }
 
+const NO_SERVERS = { vars: {}, env: {}, manifestDigest: () => null };
 const results = [];
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sitefile-conformance-'));
 let servers; // started on the first network case (conformance/servers.mjs)
 try {
   for (const c of [...cases(), ...(await caseDirs())]) {
     if (only && !c.name.includes(only)) continue;
-    if (c.network) {
-      servers ??= await startServers(root, tmp);
-      const res = await runNetworkCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, cwd: root, servers, run, outputOf, errorLine });
+    if (c.network || c.steps) {
+      // Offline step cases (case.json "steps" without "network") use the same runner with no servers.
+      if (c.network) servers ??= await startServers(root, tmp);
+      const res = await runNetworkCase(c, { impls: [['ts', TS], ['rust', RUST]], tmp, cwd: root, servers: c.network ? servers : NO_SERVERS, run, outputOf, errorLine });
       results.push({ name: res.name, compare: res.compare, pass: res.pass, ts: res.ts, rust: res.rust });
       console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${c.name}`);
       for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
@@ -279,7 +289,7 @@ try {
       const top = path.join(c.context, rel.split('/')[0]);
       if (!generated.includes(top) && (await fs.lstat(top).catch(() => undefined)) === undefined) generated.push(top);
       await fs.mkdir(path.dirname(path.join(c.context, rel)), { recursive: true });
-      await fs.writeFile(path.join(c.context, rel), content);
+      await fs.writeFile(path.join(c.context, rel), typeof content === 'string' ? content : Buffer.from(content.base64, 'base64'));
     }
     for (const [rel, from] of Object.entries(c.copy ?? {})) {
       const top = path.join(c.context, rel.split('/')[0]);
@@ -353,6 +363,13 @@ try {
         console.log(`        ${impl.padEnd(4)} exit ${x.code} ${x.spawnError ?? (x.code === 0 ? `${x.output?.files} files ${x.output?.digest}` : x.error)}${x.warnings ? ` [${x.warnings.replace(/\n/g, ' | ')}]` : ''}`);
       }
     }
+  }
+  // serve --watch (conformance/watch.mjs): the same requests, edits and event reads against both servers.
+  for (const res of await runWatchCases({ impls: [['ts', TS], ['rust', RUST]], tmp, only })) {
+    results.push({ name: res.name, compare: res.compare, pass: res.pass });
+    console.log(`${res.pass ? 'PASS' : 'FAIL'}  ${res.name}`);
+    for (const line of res.detail) console.log(`        ${line.replace(/\n/g, '\n        ')}`);
+    if (process.env.CONFORMANCE_SHOW_WATCH) console.log(JSON.stringify(res.transcript, null, 1));
   }
 } finally {
   await servers?.close();
