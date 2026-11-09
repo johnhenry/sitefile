@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { SitefileError } from '../errors.js';
 import { collectBuildArgs } from '../build-args.js';
 import { build } from '../executor.js';
-import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, reloadEventFor } from '../server.js';
+import { BUILDING_EVENT, closeServer, createSiteServer, errorEvent, formatUrl, listen, LiveReload, OK_EVENT, parseAllowedHost, reloadEventFor } from '../server.js';
 import { isRunning, loadDirectoryTree, loadServedTree, pidAlive, servedLastModified, ServerRegistry, type ServerState } from '../servers.js';
 import { Store } from '../store.js';
 import { Tree } from '../tree.js';
@@ -113,6 +113,7 @@ const run: Command = {
     '-p, --publish <[host:]port>  address to bind (default 127.0.0.1, a free port)',
     '-d, --detach      run in the background and print the server ID',
     '--spa             serve /index.html for unknown paths without a file extension',
+    '--allowed-host <name>        also answer requests for this Host (repeatable; .example.com: and subdomains; *: any)',
     '--keep-os-metadata  serve __MACOSX, ._*, Thumbs.db and desktop.ini of a directory or archive (default: skipped)',
     '--watch           build the context, serve it, rebuild on change and live-reload pages (foreground only)',
     '-f, --file <path>            Sitefile path (--watch; default <context>/Sitefile)',
@@ -136,6 +137,7 @@ const run: Command = {
     detach: { type: 'boolean', short: 'd' },
     spa: { type: 'boolean' },
     'keep-os-metadata': { type: 'boolean' },
+    'allowed-host': { type: 'string', multiple: true },
     watch: { type: 'boolean' },
     file: { type: 'string', short: 'f' },
     target: { type: 'string' },
@@ -157,6 +159,7 @@ const run: Command = {
     for (const f of WATCH_ONLY) if (v[f] !== undefined) usage(`--${f} needs --watch`);
     requireArgs(pos, 1, 1, 'an image reference, ./directory or archive file');
     const bind = parsePublish(str(v.publish));
+    const allowedHosts = allowedHostsOf(v);
     const name = str(v.name);
     if (name !== undefined && !v.detach) usage('--name needs -d (only detached servers are tracked)');
     const store = await Store.open();
@@ -168,7 +171,7 @@ const run: Command = {
     if (!v.detach) {
       const tree = await loadServedTree(store, source, { keepOsMetadata, warn });
       const modified = await servedLastModified(store, source);
-      const server = createSiteServer(tree, { spa: !!v.spa, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
+      const server = createSiteServer(tree, { spa: !!v.spa, allowedHosts, lastModified: () => modified, log: (l) => process.stdout.write(`${l}\n`) });
       const addr = await listen(server, bind.host, bind.port);
       process.stdout.write(`Serving ${label} (${tree.size} files) at ${formatUrl(addr.host, addr.port)}  (Ctrl-C to stop)\n`);
       await waitForSignal();
@@ -186,6 +189,7 @@ const run: Command = {
       source,
       spa: !!v.spa,
       ...(keepOsMetadata ? { keepOsMetadata } : {}),
+      ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
       bind,
       host: bind.host,
       port: bind.port,
@@ -214,11 +218,23 @@ const WATCH_ONLY = ['file', 'target', 'build-arg', 'build-arg-file', 'no-cache',
  * without a `Sitefile`, given none of -f, --target, --build-arg and --build-arg-file, is served
  * as it is (re-read on change) instead of built.
  */
+/** `--allowed-host` values, validated and lowercased (the server always adds localhost names and IP addresses). */
+function allowedHostsOf(v: ParsedValues): string[] {
+  const out: string[] = [];
+  for (const raw of strs(v['allowed-host'])) {
+    const h = parseAllowedHost(raw);
+    if (h === undefined) usage(`--allowed-host: invalid host name '${raw}'`);
+    if (!out.includes(h)) out.push(h);
+  }
+  return out;
+}
+
 async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
   requireArgs(pos, 0, 1, 'a build context directory');
   if (v.detach) usage('--watch cannot be combined with -d');
   if (v.name !== undefined) usage('--name needs -d (only detached servers are tracked)');
   const bind = parsePublish(str(v.publish));
+  const allowedHosts = allowedHostsOf(v);
   const context = pos[0] ?? '.';
   const file = str(v.file);
   const target = str(v.target);
@@ -245,7 +261,7 @@ async function serveWatch(v: ParsedValues, pos: string[]): Promise<number> {
     builtAt = Math.floor(Date.now() / 1000);
     if (event !== undefined) live.send(event);
   };
-  const server = createSiteServer(() => current, { spa: !!v.spa, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
+  const server = createSiteServer(() => current, { spa: !!v.spa, allowedHosts, liveReload: live, lastModified: () => builtAt, log: (l) => process.stdout.write(`${l}\n`), warn: (m) => process.stderr.write(`warning: ${m}\n`) });
   try {
     return await watchLoop({
       context,

@@ -1123,6 +1123,16 @@ to `image` (`imageId`) and `dir` (`path`).
 - Binds `127.0.0.1` and a free port unless `-p` is given. `-p 8080`, `-p 127.0.0.1:8080`, `-p [::1]:8080`.
   **`0.0.0.0` (or `::`) is bound only when you write it in `-p`** (a warning is printed). A port in use is
   `error[E_SERVER]`.
+- **Host allow-list (DNS rebinding).** A request whose `Host` names something other than `localhost`, a
+  `*.localhost` name or an IP address (any IPv4 or bracketed IPv6 literal, so the bind address and, on
+  `0.0.0.0`, every interface address work) gets `403` with a page naming `--allowed-host`, before anything
+  else is looked at (the live-reload endpoints too). A malicious page that rebinds its own name to
+  `127.0.0.1` therefore cannot read the server. `--allowed-host <name>` (repeatable, ASCII
+  case-insensitive) adds a name: `example.test`, or `.example.test` for it and every subdomain (tunnels,
+  `<name>.local`); `--allowed-host '*'` turns the check off. A request without `Host` (HTTP/1.0) is answered.
+  The names are stored in the server record (`allowedHosts`), so `-d` and `server restart` keep them; the
+  liveness probe of `servers` uses the IP address and is never refused. The library's `createSiteServer`
+  checks only when `allowedHosts` is given.
 - Foreground by default: prints the URL and one access-log line per request (`GET /path 200 1234 1.2ms`); Ctrl-C
   stops it. Foreground servers are not listed by `servers`; `--name` needs `-d`.
 - Behaviour: `GET` and `HEAD` only (`405` with `Allow` otherwise); `/` and `/dir/` serve `index.html`; clean

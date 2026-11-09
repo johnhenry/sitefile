@@ -427,6 +427,10 @@ tools are code, and run only when you name them on the command line.
   read), a wasm plugin's its module. A WebAssembly plugin must import nothing (checked before the build starts) and
   runs with a time and memory limit, so it needs no flag
   ([docs/PLUGINS.md](docs/PLUGINS.md#trust-model---allow-plugin)).
+- **`serve` answers only local names.** A request whose `Host` is not
+  `localhost`, `*.localhost` or an IP address is refused (`403`), so a web page
+  that DNS-rebinds its name to `127.0.0.1` cannot read a local server;
+  `--allowed-host` adds names ([docs/CLI.md](docs/CLI.md#site-servers)).
 - **No silent overwrites.** Writing different content to an existing path fails
   unless `--overwrite` is given. Two output paths that differ only in case
   (`/A.html`, `/a.html`) always fail (`E_PATH_COLLISION`), and every path is

@@ -35,6 +35,8 @@ export interface ServerState {
   readonly spa: boolean;
   /** `--keep-os-metadata`: serve a directory's or archive's OS metadata files too (absent: false). */
   readonly keepOsMetadata?: boolean;
+  /** `--allowed-host` names (absent: none; localhost names and IP addresses are always allowed). */
+  readonly allowedHosts?: readonly string[];
   /** The requested bind address (port 0 = pick a free port). */
   readonly bind: { readonly host: string; readonly port: number };
   readonly host: string;

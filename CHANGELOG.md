@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`serve` Host allow-list against DNS rebinding** (johnhenry/sitefile#190):
+  both servers answer `403` unless `Host` is `localhost`, `*.localhost` or an
+  IP address; `--allowed-host <name>` (repeatable; `.example.test` for
+  subdomains, `*` for any) adds names and is kept in the server record.
 - **`serve`: `Last-Modified` and `103 Early Hints`** (johnhenry/sitefile#228):
   file responses carry `Last-Modified` (image: when it was stored; directory:
   newest file mtime; archive: its mtime; `--watch`: the build time), and
