@@ -702,7 +702,8 @@ fn restricted_name(s: &str) -> bool {
     !b.is_empty()
         && b.len() <= 127
         && b[0].is_ascii_alphanumeric()
-        && b.iter().all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(c))
 }
 
 /// Check a MIME media type (`checkMimeType` in src/site.ts): `type/subtype`, no parameters, lowercased.

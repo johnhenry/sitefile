@@ -974,7 +974,10 @@ pub fn why(result: &BuildResult, raw: &str, context_dir: &str) -> Result<WhyRepo
     if let Some(a) = after.filter(|_| !same(before, after)) {
         let (lines, kinds): (Vec<u32>, Vec<&str>) =
             if full == join_virtual(&p.export_path, "_redirects") {
-                p.redirects.iter().map(|r| (r.span.line, "REDIRECT")).unzip()
+                p.redirects
+                    .iter()
+                    .map(|r| (r.span.line, "REDIRECT"))
+                    .unzip()
             } else {
                 p.headers
                     .iter()
