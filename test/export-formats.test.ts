@@ -119,7 +119,9 @@ test('zip: fixed DOS time, UTF-8 flag, unix modes, stored when deflate does not 
     const nlen = z.readUInt16LE(off + 28);
     const name = z.subarray(off + 46, off + 46 + nlen).toString('utf8');
     seen[name] = { method: z.readUInt16LE(off + 10), attr: z.readUInt32LE(off + 38) >>> 16, madeBy: z.readUInt16LE(off + 4) };
-    off += 46 + nlen;
+    // Every entry carries the extended timestamp (0x5455, mtime only): 1980-01-01 without an epoch.
+    assert.deepEqual([...z.subarray(off + 46 + nlen, off + 46 + nlen + 9)], [0x55, 0x54, 5, 0, 1, ...new Uint8Array(new Uint32Array([315532800]).buffer)]);
+    off += 46 + nlen + z.readUInt16LE(off + 30) + z.readUInt16LE(off + 32);
   }
   assert.deepEqual(Object.keys(seen), [...Object.keys(seen)].sort());
   assert.equal(seen['bin/run.sh']!.attr, 0o100755);
@@ -887,4 +889,17 @@ test('wbn: the reference dump-bundle tool reads the bundle (skipped if not insta
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test('zip export: the extended timestamp carries SOURCE_DATE_EPOCH in UTC (#187)', async () => {
+  const t = Tree.fromFiles([['/a.txt', makeFile(new TextEncoder().encode('a'), 't')]]);
+  const z = Buffer.from(writeZip(t, { epoch: 1_700_000_001 }));
+  // Local header: the field follows the name.
+  assert.equal(z.readUInt16LE(28), 9);
+  assert.deepEqual([...z.subarray(30 + 5, 30 + 5 + 5)], [0x55, 0x54, 5, 0, 1]);
+  assert.equal(z.readUInt32LE(30 + 5 + 5), 1_700_000_001);
+  // Central header: the same field.
+  const cd = z.readUInt32LE(z.length - 22 + 16);
+  assert.equal(z.readUInt16LE(cd + 30), 9);
+  assert.equal(z.readUInt32LE(cd + 46 + 5 + 5), 1_700_000_001);
 });
