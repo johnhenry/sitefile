@@ -469,6 +469,12 @@ pub enum Instruction {
         no_cache_headers: bool,
         overwrite: bool,
     },
+    /// `CANONICAL BASE <url> [PRETTY]`: a `<link rel="canonical">` before `</head>` of every page without one.
+    Canonical {
+        span: SourceSpan,
+        base: Operand,
+        pretty: bool,
+    },
     /// `CHECKLINKS [--warn] [--external]`: report references in the stage's HTML and CSS that point at nothing.
     CheckLinks {
         span: SourceSpan,
@@ -504,6 +510,7 @@ impl Instruction {
             | Instruction::Redirect { span, .. }
             | Instruction::Header { span, .. }
             | Instruction::Fingerprint { span, .. }
+            | Instruction::Canonical { span, .. }
             | Instruction::CheckLinks { span, .. }
             | Instruction::Export { span, .. } => span,
         }
@@ -525,6 +532,7 @@ impl Instruction {
             Instruction::Redirect { .. } => "REDIRECT",
             Instruction::Header { .. } => "HEADER",
             Instruction::Fingerprint { .. } => "FINGERPRINT",
+            Instruction::Canonical { .. } => "CANONICAL",
             Instruction::CheckLinks { .. } => "CHECKLINKS",
             Instruction::Export { .. } => "EXPORT",
         }

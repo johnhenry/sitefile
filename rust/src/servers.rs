@@ -993,8 +993,10 @@ pub fn serve_detached_with(
     };
     // fail fast on a bad image, directory or archive (or an ignored site-file line with --strict-site-files)
     let site = load_served_site(&reg.store, &serve.source, &options)?;
-    let routing =
-        crate::server::routing_for(serve.host_profile.as_deref(), serve.html_handling.as_deref());
+    let routing = crate::server::routing_for(
+        serve.host_profile.as_deref(),
+        serve.html_handling.as_deref(),
+    );
     if routing.is_none_or(|p| p.site_files) {
         check_site_files(
             &site.tree,

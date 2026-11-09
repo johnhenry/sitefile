@@ -1103,7 +1103,13 @@ impl HtmlHandling {
     }
 }
 
-pub const HOST_PROFILES: [&str; 5] = ["netlify", "cloudflare", "vercel", "github-pages", "firebase"];
+pub const HOST_PROFILES: [&str; 5] = [
+    "netlify",
+    "cloudflare",
+    "vercel",
+    "github-pages",
+    "firebase",
+];
 
 /// Which 404.html answers a miss: the nearest, only the root one, or (no 404.html) `/index.html` with 200.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1144,11 +1150,35 @@ pub fn host_profile(name: Option<&str>, html_handling: Option<HtmlHandling>) -> 
         slash_html,
     };
     let base = match name {
-        Some("netlify") => p(Some(H::Auto), 301, true, NotFound::Nearest, SlashHtml::Redirect),
-        Some("cloudflare") => p(Some(H::Auto), 307, true, NotFound::Index, SlashHtml::Redirect),
-        Some("vercel") => p(Some(H::None), 308, false, NotFound::Root, SlashHtml::Redirect),
+        Some("netlify") => p(
+            Some(H::Auto),
+            301,
+            true,
+            NotFound::Nearest,
+            SlashHtml::Redirect,
+        ),
+        Some("cloudflare") => p(
+            Some(H::Auto),
+            307,
+            true,
+            NotFound::Index,
+            SlashHtml::Redirect,
+        ),
+        Some("vercel") => p(
+            Some(H::None),
+            308,
+            false,
+            NotFound::Root,
+            SlashHtml::Redirect,
+        ),
         Some("github-pages") => p(None, 301, false, NotFound::Root, SlashHtml::NotFound),
-        Some("firebase") => p(Some(H::None), 301, false, NotFound::Root, SlashHtml::Redirect),
+        Some("firebase") => p(
+            Some(H::None),
+            301,
+            false,
+            NotFound::Root,
+            SlashHtml::Redirect,
+        ),
         _ => p(None, 307, true, NotFound::Nearest, SlashHtml::Redirect),
     };
     match html_handling {
@@ -1181,7 +1211,11 @@ fn is_safe_host(h: &str) -> bool {
             return false;
         };
         let inner = &rest[..end];
-        if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.') {
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
             return false;
         }
         ("x", &rest[end + 1..])
@@ -1196,9 +1230,9 @@ fn is_safe_host(h: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
     let port_ok = port.is_empty()
-        || port.strip_prefix(':').is_some_and(|p| {
-            (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit())
-        });
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
     name_ok && port_ok
 }
 
@@ -2120,7 +2154,8 @@ pub fn respond(
     };
     let mut segs = all_segs.clone();
     if !base_segs.is_empty() {
-        let inside = all_segs.len() >= base_segs.len() && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
+        let inside = all_segs.len() >= base_segs.len()
+            && base_segs.iter().zip(&all_segs).all(|(b, a)| a == b);
         let to_mount = |status: u16| {
             finish(
                 status,
@@ -2155,7 +2190,8 @@ pub fn respond(
             }
         ),
     );
-    let is_file = |p: &str| tree.is_file(p) && !(site_files && (p == "/_redirects" || p == "/_headers"));
+    let is_file =
+        |p: &str| tree.is_file(p) && !(site_files && (p == "/_redirects" || p == "/_headers"));
 
     let send_file = |status: u16, served: &str| -> Response {
         let file = tree.get(served).cloned().expect("resolved file");

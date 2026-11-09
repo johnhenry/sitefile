@@ -3865,6 +3865,35 @@
           ]
         },
         {
+          "name": "meta.instruction.canonical.sitefile",
+          "begin": "^\\s*((?i:CANONICAL))(?=\\s|$)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.instruction.sitefile"
+            }
+          },
+          "end": "(?<=[^\\s\\\\])\\s*$|(?<=\\\\)[ \\t]+$|(?<=[^\\\\]\\\\\\\\)$",
+          "patterns": [
+            {
+              "include": "#continuation"
+            },
+            {
+              "include": "#continuation-comment"
+            },
+            {
+              "match": "(?<![^\\s])((?i:BASE|PRETTY))(?=\\s|$)",
+              "captures": {
+                "1": {
+                  "name": "keyword.other.clause.sitefile"
+                }
+              }
+            },
+            {
+              "include": "#operands"
+            }
+          ]
+        },
+        {
           "name": "meta.instruction.checklinks.sitefile",
           "begin": "^\\s*((?i:CHECKLINKS))(?=\\s|$)",
           "beginCaptures": {
